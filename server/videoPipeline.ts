@@ -135,7 +135,7 @@ import {
   resolveBeatScriptVisualAnchor,
   resolveBeatVisualIntent,
 } from "./scriptVisualKeywords";
-import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, type VisionGateResult } from "./visualQualityGate";
+import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
   clipEmbeddingIndexEnabled,
@@ -2602,7 +2602,9 @@ async function tryBeatRealYouTubeFootage(
                 beatText: beat.text,
                 videoTitle: adoptOpts.videoTitle,
                 fastMode: dedup.perf.fastStockMode,
-              }
+              },
+              dedup.usedContentKeys,
+              dedup.sourcingCache
             ),
         }],
         dedup,
@@ -5070,7 +5072,8 @@ export async function fetchPexelsClips(
   excludeVideoIds?: Set<number>,
   candidateOffset = 0,
   downloadRetries = 3,
-  stockBeatCtx?: StockBeatCtx
+  stockBeatCtx?: StockBeatCtx,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!PEXELS_API_KEY) return [];
   if (isPexelsInCooldown()) return [];
@@ -5100,32 +5103,44 @@ export async function fetchPexelsClips(
     }
 
     try {
-      // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
-      const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
-      // withTimeout only races a timer and never aborts the request — a timed-out Pexels call
-      // keeps running in the background and still counts against the metered quota.
-      const searchResp = await providerLimiter("pexels").run(() => fetchWithTimeout(
-        searchUrl,
-        10_000,
-        `Pexels search scene ${sceneIndex} query "${currentQuery}"`,
-        { headers: { Authorization: PEXELS_API_KEY } }
-      ));
-
-      if (!searchResp.ok) {
-        markPexelsSearchResult(false);
-        console.warn(`[Pipeline] Pexels search HTTP ${searchResp.status} for "${currentQuery}"`);
-        continue;
-      }
-      markPexelsSearchResult(true);
-
-    const searchData = await searchResp.json() as {
-      videos?: Array<{
-        id: number;
-        duration: number;
-        url?: string;
-        video_files: Array<{ width: number; height: number; link: string }>;
-      }>;
-    };
+      type PexelsSearchData = {
+        videos?: Array<{
+          id: number;
+          duration: number;
+          url?: string;
+          video_files: Array<{ width: number; height: number; link: string }>;
+        }>;
+      };
+      // Render-scoped query cache: the exact same provider + normalized query is searched at
+      // most once per render — same cachedProviderSearch helper the other 10 providers use, so
+      // Pexels/Pixabay follow the identical, already-tested pattern rather than a new one.
+      const searchData = await cachedProviderSearch(
+        sourcingCache,
+        "pexels",
+        currentQuery,
+        async (): Promise<PexelsSearchData | null> => {
+          // HD quality: large size (min 1280px), landscape orientation, fetch 15 candidates
+          const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(currentQuery)}&per_page=15&size=large&orientation=landscape`;
+          // withTimeout only races a timer and never aborts the request — a timed-out Pexels
+          // call keeps running in the background and still counts against the metered quota.
+          const searchResp = await providerLimiter("pexels").run(() => fetchWithTimeout(
+            searchUrl,
+            10_000,
+            `Pexels search scene ${sceneIndex} query "${currentQuery}"`,
+            { headers: { Authorization: PEXELS_API_KEY } }
+          ));
+          if (!searchResp.ok) {
+            markPexelsSearchResult(false);
+            console.warn(`[Pipeline] Pexels search HTTP ${searchResp.status} for "${currentQuery}"`);
+            return null;
+          }
+          markPexelsSearchResult(true);
+          return await searchResp.json() as PexelsSearchData;
+        }
+      );
+      if (!searchData) continue;
+      // Phase 20 metrics fix: real search-result count, independent of cache-hit/download/accept.
+      providerMetrics(sourcingCache, "pexels").resultCount += searchData.videos?.length ?? 0;
 
     if (!searchData.videos?.length) continue;
 
@@ -5179,11 +5194,16 @@ export async function fetchPexelsClips(
 
           while (retries > 0 && !downloaded) {
             try {
+              // P0 audit fix: maxBytes matches the existing 80MB ceiling already used by 7 of
+              // the other 10 external video providers in this file (Wikimedia/Flickr/Europeana/
+              // Vimeo/NASA/NARA/YouTube CC) — same established value, not a newly invented one.
               const { response: downloadResp, bytesWritten } = await downloadToFileStreaming(
                 videoFile.link,
                 rawPath,
                 45_000,
-                `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`
+                `Download Pexels clip ${idx} scene ${sceneIndex} (attempt ${4 - retries}/3)`,
+                {},
+                80 * 1024 * 1024
               );
               if (!downloadResp.ok || bytesWritten === null) {
                 retries--;
@@ -5201,6 +5221,7 @@ export async function fetchPexelsClips(
               }
 
               downloaded = true; // Success
+              providerMetrics(sourcingCache, "pexels").downloadCount++;
             } catch (err) {
               console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
               try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
@@ -5418,7 +5439,8 @@ export async function fetchPixabayClips(
   strictQueries = false,
   excludeVideoIds?: Set<number>,
   candidateOffset = 0,
-  stockBeatCtx?: StockBeatCtx
+  stockBeatCtx?: StockBeatCtx,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!PIXABAY_API_KEY) return [];
   if (isPixabayInCooldown()) return [];
@@ -5445,28 +5467,7 @@ export async function fetchPixabayClips(
     }
 
     try {
-      // Pixabay Video API: https://pixabay.com/api/docs/#api_videos
-      // video_type=film gives real footage (not animation); min_width=1280 for HD
-      const searchUrl =
-        `https://pixabay.com/api/videos/?key=${PIXABAY_API_KEY}` +
-        `&q=${encodeURIComponent(currentQuery)}` +
-        `&per_page=10&video_type=film&min_width=1280&safesearch=true`;
-
-      // withTimeout only races a timer and never aborts the request — a timed-out Pixabay call
-      // keeps running in the background and still counts against the metered quota.
-      const searchResp = await providerLimiter("pixabay").run(() => fetchWithTimeout(
-        searchUrl,
-        10_000,
-        `Pixabay search scene ${sceneIndex} query "${currentQuery}"`
-      ));
-      if (!searchResp.ok) {
-        markPixabaySearchResult(false);
-        console.warn(`[Pipeline] Pixabay search HTTP ${searchResp.status} for "${currentQuery}"`);
-        continue;
-      }
-      markPixabaySearchResult(true);
-
-      const searchData = await searchResp.json() as {
+      type PixabaySearchData = {
         totalHits?: number;
         hits?: Array<{
           id: number;
@@ -5479,6 +5480,39 @@ export async function fetchPixabayClips(
           };
         }>;
       };
+      // Render-scoped query cache — same cachedProviderSearch helper the other 10 providers
+      // (and now Pexels) use; "pixabay" as the provider key keeps it isolated from "pexels"
+      // even for an identical query string.
+      const searchData = await cachedProviderSearch(
+        sourcingCache,
+        "pixabay",
+        currentQuery,
+        async (): Promise<PixabaySearchData | null> => {
+          // Pixabay Video API: https://pixabay.com/api/docs/#api_videos
+          // video_type=film gives real footage (not animation); min_width=1280 for HD
+          const searchUrl =
+            `https://pixabay.com/api/videos/?key=${PIXABAY_API_KEY}` +
+            `&q=${encodeURIComponent(currentQuery)}` +
+            `&per_page=10&video_type=film&min_width=1280&safesearch=true`;
+          // withTimeout only races a timer and never aborts the request — a timed-out Pixabay
+          // call keeps running in the background and still counts against the metered quota.
+          const searchResp = await providerLimiter("pixabay").run(() => fetchWithTimeout(
+            searchUrl,
+            10_000,
+            `Pixabay search scene ${sceneIndex} query "${currentQuery}"`
+          ));
+          if (!searchResp.ok) {
+            markPixabaySearchResult(false);
+            console.warn(`[Pipeline] Pixabay search HTTP ${searchResp.status} for "${currentQuery}"`);
+            return null;
+          }
+          markPixabaySearchResult(true);
+          return await searchResp.json() as PixabaySearchData;
+        }
+      );
+      if (!searchData) continue;
+      // Phase 20 metrics fix: real search-result count, independent of cache-hit/download/accept.
+      providerMetrics(sourcingCache, "pixabay").resultCount += searchData.hits?.length ?? 0;
 
       if (!searchData.hits?.length) continue;
 
@@ -5512,11 +5546,15 @@ export async function fetchPixabayClips(
           let downloaded = false;
           for (let attempt = 0; attempt < 3 && !downloaded; attempt++) {
             try {
+              // P0 audit fix: maxBytes matches the existing 80MB ceiling already used by 7 of
+              // the other 10 external video providers in this file — same established value.
               const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
                 videoFile.url,
                 rawPath,
                 20_000,
-                `Pixabay download scene ${sceneIndex} clip ${idx} attempt ${attempt + 1}`
+                `Pixabay download scene ${sceneIndex} clip ${idx} attempt ${attempt + 1}`,
+                {},
+                80 * 1024 * 1024
               );
               if (!dlResp.ok || bytesWritten === null) { await new Promise(r => setTimeout(r, 1000)); continue; }
               if (bytesWritten < 200_000) {
@@ -5525,6 +5563,7 @@ export async function fetchPixabayClips(
                 continue;
               }
               downloaded = true;
+              providerMetrics(sourcingCache, "pixabay").downloadCount++;
             } catch (dlErr) {
               console.warn(`[Pipeline] Pixabay download attempt ${attempt + 1} failed:`, dlErr);
               try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
@@ -7557,23 +7596,36 @@ async function fetchWikimediaVideos(
   count: number = 2,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   if (!query?.trim()) return [];
   if (isWikimediaInCooldown()) return [];
   const results: CelebrityClipCandidate[] = [];
   const UA = { "User-Agent": "Fastvid/1.0 (video generation; CC-licensed clips only)" };
   try {
-    const searchUrl =
-      `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
-      `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=15&format=json&origin=*`;
-    const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(searchUrl, 10_000, `Wikimedia video search scene ${sceneIndex}`, { headers: UA }));
-    if (!searchResp.ok) {
-      markWikimediaSearchResult(false);
-      return [];
-    }
-    markWikimediaSearchResult(true);
-    const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
+    // Phase 5 query cache — see cachedProviderSearch. srlimit/srnamespace are fixed, so the
+    // request is a pure function of `query`.
+    const searchData = await cachedProviderSearch(
+      sourcingCache,
+      "wikimedia",
+      query,
+      async (): Promise<{ query?: { search?: Array<{ title: string }> } } | null> => {
+        const searchUrl =
+          `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
+          `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=15&format=json&origin=*`;
+        const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(searchUrl, 10_000, `Wikimedia video search scene ${sceneIndex}`, { headers: UA }));
+        if (!searchResp.ok) {
+          markWikimediaSearchResult(false);
+          return null;
+        }
+        markWikimediaSearchResult(true);
+        return await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
+      }
+    );
+    if (!searchData) return [];
+    providerMetrics(sourcingCache, "wikimedia").resultCount += searchData.query?.search?.length ?? 0;
     const hits = (searchData.query?.search ?? [])
       .filter((r) => {
         const hay = `${r.title} ${query}`.toLowerCase();
@@ -7595,6 +7647,9 @@ async function fetchWikimediaVideos(
     for (let i = 0; i < hits.length && downloaded < count; i++) {
       try {
         const title = hits[i].title;
+        // Pre-download visual dedup: skip a Commons page we already adopted this render,
+        // before spending the imageinfo call or the download itself — see providerAssetKey.
+        if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "wikimedia", title)) continue;
         const infoUrl =
           `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}` +
           `&prop=imageinfo&iiprop=url|size|mime&format=json&origin=*`;
@@ -7610,7 +7665,11 @@ async function fetchWikimediaVideos(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}_tmp`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}.mp4`),
+          "wikimedia",
+          title
+        );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly — this
         // only makes an already-oversized download abort early instead of fully downloading
@@ -7624,6 +7683,7 @@ async function fetchWikimediaVideos(
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           continue;
         }
+        providerMetrics(sourcingCache, "wikimedia").downloadCount++;
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Wikimedia video scene ${sceneIndex}`)) {
           results.push({ path: outPath, query });
@@ -7675,38 +7735,56 @@ async function fetchFlickrCCVideos(
   count: number = 1,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!FLICKR_API_KEY?.trim() || !query?.trim()) return [];
   if (isFlickrInCooldown()) return [];
   const results: string[] = [];
   try {
-    const searchParams = new URLSearchParams({
-      method: "flickr.photos.search",
-      api_key: FLICKR_API_KEY,
-      text: query,
-      media: "videos",
-      license: "4,5,6,9,10",
-      content_type: "7",
-      per_page: String(Math.min(12, count * 4)),
-      format: "json",
-      nojsoncallback: "1",
-    });
-    const searchResp = await providerLimiter("flickr").run(() => withTimeout(
-      fetch(`https://api.flickr.com/services/rest/?${searchParams}`),
-      12_000,
-      `Flickr video search scene ${sceneIndex}`
-    ));
-    if (!searchResp.ok) {
-      markFlickrSearchResult(false);
-      return [];
-    }
-    markFlickrSearchResult(true);
-    const searchData = await searchResp.json() as {
-      stat?: string;
-      photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
-    };
+    const perPage = Math.min(12, count * 4);
+    // Phase 5 query cache. Flickr's per_page is derived from `count`, which varies per caller,
+    // so the page size is folded into the cache key: replaying a 4-result payload for a later
+    // 12-result request would have silently shrunk the candidate list. Still exact-match only.
+    const searchData = await cachedProviderSearch(
+      sourcingCache,
+      "flickr",
+      `${query}#n${perPage}`,
+      async (): Promise<{
+        stat?: string;
+        photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
+      } | null> => {
+        const searchParams = new URLSearchParams({
+          method: "flickr.photos.search",
+          api_key: FLICKR_API_KEY,
+          text: query,
+          media: "videos",
+          license: "4,5,6,9,10",
+          content_type: "7",
+          per_page: String(perPage),
+          format: "json",
+          nojsoncallback: "1",
+        });
+        const searchResp = await providerLimiter("flickr").run(() => withTimeout(
+          fetch(`https://api.flickr.com/services/rest/?${searchParams}`),
+          12_000,
+          `Flickr video search scene ${sceneIndex}`
+        ));
+        if (!searchResp.ok) {
+          markFlickrSearchResult(false);
+          return null;
+        }
+        markFlickrSearchResult(true);
+        return await searchResp.json() as {
+          stat?: string;
+          photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
+        };
+      }
+    );
+    if (!searchData) return [];
     if (searchData.stat !== "ok") return [];
+    providerMetrics(sourcingCache, "flickr").resultCount += searchData.photos?.photo?.length ?? 0;
     const photos = (searchData.photos?.photo ?? [])
       .filter((photo) => {
         const hay = `${photo.title ?? ""} ${query}`.toLowerCase();
@@ -7723,6 +7801,9 @@ async function fetchFlickrCCVideos(
     let downloaded = 0;
     for (let i = 0; i < photos.length && downloaded < count; i++) {
       const photo = photos[i];
+      // Pre-download visual dedup: skip a Flickr photo we already adopted this render,
+      // before the getSizes call or the download itself — see providerAssetKey.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "flickr", photo.id)) continue;
       try {
         const sizeParams = new URLSearchParams({
           method: "flickr.photos.getSizes",
@@ -7752,7 +7833,11 @@ async function fetchFlickrCCVideos(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}_tmp`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}.mp4`),
+          "flickr",
+          photo.id
+        );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -7768,6 +7853,7 @@ async function fetchFlickrCCVideos(
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           continue;
         }
+        providerMetrics(sourcingCache, "flickr").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 2, `Flickr video scene ${sceneIndex}`)) {
           results.push(outPath);
           downloaded++;
@@ -7814,7 +7900,9 @@ async function fetchSepiaSearchVideos(
   count: number = 1,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
@@ -7838,32 +7926,42 @@ async function fetchSepiaSearchVideos(
     const perQueryHits = await Promise.all(
       queryList.slice(0, 4).map(async (query) => {
         try {
-          const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
-          searchUrl.searchParams.set("search", query);
-          searchUrl.searchParams.set("count", "15");
-          searchUrl.searchParams.append("licenceOneOf", "1");
-          searchUrl.searchParams.append("licenceOneOf", "2");
-          searchUrl.searchParams.append("licenceOneOf", "7");
-
-          const searchResp = await providerLimiter("sepiasearch").run(() => withTimeout(
-            fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
-            14_000,
-            `SepiaSearch scene ${sceneIndex}`
-          ));
-          if (!searchResp.ok) {
-            markSepiaSearchResult(false);
-            return [];
-          }
-          markSepiaSearchResult(true);
-          const data = await searchResp.json() as {
-            data?: Array<{
-              uuid: string;
-              name?: string;
-              duration?: number;
-              isLive?: boolean;
-              channel?: { host?: string };
-            }>;
+          type SepiaHit = {
+            uuid: string;
+            name?: string;
+            duration?: number;
+            isLive?: boolean;
+            channel?: { host?: string };
           };
+          // Phase 5 query cache — count/licence filters are fixed, so the request is a pure
+          // function of `query`.
+          const data = await cachedProviderSearch(
+            sourcingCache,
+            "sepiasearch",
+            query,
+            async (): Promise<{ data?: SepiaHit[] } | null> => {
+              const searchUrl = new URL(`${SEPIA_SEARCH_API}/search/videos`);
+              searchUrl.searchParams.set("search", query);
+              searchUrl.searchParams.set("count", "15");
+              searchUrl.searchParams.append("licenceOneOf", "1");
+              searchUrl.searchParams.append("licenceOneOf", "2");
+              searchUrl.searchParams.append("licenceOneOf", "7");
+
+              const searchResp = await providerLimiter("sepiasearch").run(() => withTimeout(
+                fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
+                14_000,
+                `SepiaSearch scene ${sceneIndex}`
+              ));
+              if (!searchResp.ok) {
+                markSepiaSearchResult(false);
+                return null;
+              }
+              markSepiaSearchResult(true);
+              return await searchResp.json() as { data?: SepiaHit[] };
+            }
+          );
+          if (!data) return [];
+          providerMetrics(sourcingCache, "sepiasearch").resultCount += data.data?.length ?? 0;
           return (data.data ?? []).map((item) => ({ item, query }));
         } catch (err) {
           markSepiaSearchResult(false);
@@ -7891,6 +7989,9 @@ async function fetchSepiaSearchVideos(
     let downloaded = 0;
     for (const hit of ranked) {
       if (downloaded >= count) break;
+      // Pre-download visual dedup: skip a PeerTube video we already adopted this render,
+      // before the per-item metadata call or the download itself — see providerAssetKey.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "sepiasearch", hit.uuid)) continue;
       try {
         const metaUrl = `https://${hit.host}/api/v1/videos/${hit.uuid}`;
         const metaResp = await withTimeout(
@@ -7940,7 +8041,11 @@ async function fetchSepiaSearchVideos(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}_tmp`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}.mp4`),
+          "sepiasearch",
+          hit.uuid
+        );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -7956,6 +8061,7 @@ async function fetchSepiaSearchVideos(
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           continue;
         }
+        providerMetrics(sourcingCache, "sepiasearch").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `SepiaSearch scene ${sceneIndex}`)) {
           results.push({ path: outPath, query: hit.query });
           downloaded++;
@@ -8064,7 +8170,8 @@ async function fetchGdeltTvNewsClips(
   fileTag = "",
   personName = "",
   beatKeywords: string[] = [],
-  fastMode = false
+  fastMode = false,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
@@ -8122,7 +8229,10 @@ async function fetchGdeltTvNewsClips(
       })
     );
 
-    for (const { clip, query } of perQueryClips.flat()) {
+    const flatClips = perQueryClips.flat();
+    providerMetrics(sourcingCache, "gdelt_tv").resultCount += flatClips.length;
+
+    for (const { clip, query } of flatClips) {
       if (ranked.length >= (fastMode ? count * 2 : count * 4)) break;
       if (!clip.preview_url || seenPreviews.has(clip.preview_url)) continue;
       const hay = `${clip.snippet ?? ""} ${clip.show ?? ""} ${query}`.toLowerCase();
@@ -8154,6 +8264,7 @@ async function fetchGdeltTvNewsClips(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}gdelt_${downloaded}.mp4`);
+        providerMetrics(sourcingCache, "gdelt_tv").downloadCount++;
         const ok = await trimArchiveStreamToClip(
           videoUrl,
           outPath,
@@ -8189,7 +8300,9 @@ export async function fetchEuropeanaVideos(
   count: number = 1,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim()) return [];
   if (isEuropeanaInCooldown()) return [];
@@ -8213,30 +8326,40 @@ export async function fetchEuropeanaVideos(
     if (downloaded >= count) break;
     if (cancelled()) break;
     try {
-      const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
-      searchUrl.searchParams.set("query", query);
-      searchUrl.searchParams.set("qf", "TYPE:VIDEO");
-      searchUrl.searchParams.set("reusability", "open");
-      // Credit optimization: each candidate needs its own record-fetch to check edmRights
-      // (the required per-item license gate — unchanged), so this bounds the worst case where
-      // most results in a page lack an explicit rights URL. 6 still gives a real chance of
-      // finding a licensed item per query; the item loop below already breaks the moment
-      // `downloaded >= count` is reached, so this only caps the miss case, not the normal one.
-      searchUrl.searchParams.set("rows", "6");
+      type EuropeanaItem = { id?: string; title?: string[]; edmPreview?: string };
+      // Phase 5 query cache — qf/reusability/rows are fixed, so the request is a pure
+      // function of `query`.
+      const searchData = await cachedProviderSearch(
+        sourcingCache,
+        "europeana",
+        query,
+        async (): Promise<{ items?: EuropeanaItem[] } | null> => {
+          const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
+          searchUrl.searchParams.set("query", query);
+          searchUrl.searchParams.set("qf", "TYPE:VIDEO");
+          searchUrl.searchParams.set("reusability", "open");
+          // Credit optimization: each candidate needs its own record-fetch to check edmRights
+          // (the required per-item license gate — unchanged), so this bounds the worst case where
+          // most results in a page lack an explicit rights URL. 6 still gives a real chance of
+          // finding a licensed item per query; the item loop below already breaks the moment
+          // `downloaded >= count` is reached, so this only caps the miss case, not the normal one.
+          searchUrl.searchParams.set("rows", "6");
 
-      const searchResp = await providerLimiter("europeana").run(() => withTimeout(
-        fetch(searchUrl.toString(), { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
-        14_000,
-        `Europeana search scene ${sceneIndex}`
-      ));
-      if (!searchResp.ok) {
-        markEuropeanaSearchResult(false);
-        continue;
-      }
-      markEuropeanaSearchResult(true);
-      const searchData = await searchResp.json() as {
-        items?: Array<{ id?: string; title?: string[]; edmPreview?: string }>;
-      };
+          const searchResp = await providerLimiter("europeana").run(() => withTimeout(
+            fetch(searchUrl.toString(), { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
+            14_000,
+            `Europeana search scene ${sceneIndex}`
+          ));
+          if (!searchResp.ok) {
+            markEuropeanaSearchResult(false);
+            return null;
+          }
+          markEuropeanaSearchResult(true);
+          return await searchResp.json() as { items?: EuropeanaItem[] };
+        }
+      );
+      if (!searchData) continue;
+      providerMetrics(sourcingCache, "europeana").resultCount += searchData.items?.length ?? 0;
       const items = (searchData.items ?? [])
         .filter((item) => {
           const title = (item.title ?? []).join(" ");
@@ -8256,20 +8379,45 @@ export async function fetchEuropeanaVideos(
         const recordId = item.id;
         if (!recordId || seenIds.has(recordId)) continue;
         seenIds.add(recordId);
+        // Pre-download visual dedup: skip a Europeana record we already adopted this render,
+        // before the per-item record call or the download itself — see providerAssetKey.
+        if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "europeana", recordId)) continue;
         try {
-          const recordUrl = `https://api.europeana.eu/record/v2${recordId}.json?profile=rich`;
-          const recordResp = await withTimeout(
-            fetch(recordUrl, { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
-            12_000,
-            `Europeana record scene ${sceneIndex}`
-          );
-          if (!recordResp.ok) continue;
-          const recordData = await recordResp.json() as {
+          type EuropeanaRecord = {
             object?: {
               aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string; edmRights?: string | string[] }>;
               proxies?: Array<{ dcCreator?: string[] | Record<string, string[]> }>;
             };
           };
+          // Phase 6 provider asset cache: the same mechanism already proven for Internet
+          // Archive — two cascades can surface the same Europeana recordId via two different
+          // queries, so the per-item record (metadata + edmRights license) call is cached per
+          // identifier, including a cached license *rejection*.
+          const cachedAsset = getCachedProviderAsset(sourcingCache, "europeana", recordId);
+          if (cachedAsset && cachedAsset.licenseAllowed === false) {
+            providerMetrics(sourcingCache, "europeana").licenseRejectedCacheHits++;
+            continue;
+          }
+          let recordData = cachedAsset?.metadata as EuropeanaRecord | undefined;
+          if (!recordData) {
+            const recordUrl = `https://api.europeana.eu/record/v2${recordId}.json?profile=rich`;
+            const recordResp = await withTimeout(
+              fetch(recordUrl, { headers: { ...authHeader, "User-Agent": "Fastvid/1.0" } }),
+              12_000,
+              `Europeana record scene ${sceneIndex}`
+            );
+            if (!recordResp.ok) continue;
+            recordData = await recordResp.json() as EuropeanaRecord;
+            providerMetrics(sourcingCache, "europeana").metadataCount++;
+            providerMetrics(sourcingCache, "europeana").licenseCalls++;
+            putCachedProviderAsset(sourcingCache, "europeana", recordId, {
+              canonicalUrl: `https://www.europeana.eu/item${recordId}`,
+              metadata: recordData,
+            });
+          } else {
+            providerMetrics(sourcingCache, "europeana").metadataCacheHits++;
+            providerMetrics(sourcingCache, "europeana").licenseCacheHits++;
+          }
           const aggregations = recordData.object?.aggregations ?? [];
           const mediaAgg = aggregations.find((a) => a.edmIsShownBy) ?? aggregations.find((a) => a.edmIsShownAt);
           const mediaUrl = mediaAgg?.edmIsShownBy ?? mediaAgg?.edmIsShownAt;
@@ -8281,7 +8429,13 @@ export async function fetchEuropeanaVideos(
           // "found it, so it must be free".
           const rawRights = mediaAgg?.edmRights;
           const rightsUrl = Array.isArray(rawRights) ? rawRights[0] : rawRights;
-          if (!rightsUrl?.trim()) continue;
+          if (!rightsUrl?.trim()) {
+            // Cache the rejection (Phase 6) so a later cascade that resurfaces this recordId
+            // skips it above without repeating the record call. The gate itself is unchanged.
+            putCachedProviderAsset(sourcingCache, "europeana", recordId, { licenseAllowed: false });
+            continue;
+          }
+          putCachedProviderAsset(sourcingCache, "europeana", recordId, { licenseAllowed: true });
 
           const creatorField = recordData.object?.proxies?.find((p) => p.dcCreator)?.dcCreator;
           const sourceCreator = Array.isArray(creatorField)
@@ -8292,7 +8446,11 @@ export async function fetchEuropeanaVideos(
 
           const tag = fileTag ? `${fileTag}_` : "";
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}_tmp`);
-          const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}.mp4`);
+          const outPath = tagPathWithProviderAsset(
+            path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}.mp4`),
+            "europeana",
+            recordId
+          );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -8308,6 +8466,7 @@ export async function fetchEuropeanaVideos(
             try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
             continue;
           }
+          providerMetrics(sourcingCache, "europeana").downloadCount++;
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Europeana scene ${sceneIndex}`)) {
             results.push({
               path: outPath,
@@ -8346,7 +8505,9 @@ async function fetchVimeoCCVideos(
   count: number = 1,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   if (!VIMEO_ACCESS_TOKEN?.trim()) return [];
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
@@ -8365,22 +8526,32 @@ async function fetchVimeoCCVideos(
   for (const query of queryList.slice(0, 3)) {
     if (downloaded >= count) break;
     try {
-      const searchUrl =
-        `https://api.vimeo.com/videos?query=${encodeURIComponent(query)}&filter=CC` +
-        `&per_page=10&sort=relevant&fields=uri,name,description,link`;
-      const searchResp = await providerLimiter("vimeo").run(() => withTimeout(
-        fetch(searchUrl, { headers: vimeoHeaders }),
-        14_000,
-        `Vimeo CC search scene ${sceneIndex}`
-      ));
-      if (!searchResp.ok) {
-        markVimeoSearchResult(false);
-        continue;
-      }
-      markVimeoSearchResult(true);
-      const searchData = await searchResp.json() as {
-        data?: Array<{ uri?: string; name?: string; description?: string }>;
-      };
+      type VimeoHit = { uri?: string; name?: string; description?: string };
+      // Phase 5 query cache — per_page/sort/fields are fixed, so the request is a pure
+      // function of `query`.
+      const searchData = await cachedProviderSearch(
+        sourcingCache,
+        "vimeo",
+        query,
+        async (): Promise<{ data?: VimeoHit[] } | null> => {
+          const searchUrl =
+            `https://api.vimeo.com/videos?query=${encodeURIComponent(query)}&filter=CC` +
+            `&per_page=10&sort=relevant&fields=uri,name,description,link`;
+          const searchResp = await providerLimiter("vimeo").run(() => withTimeout(
+            fetch(searchUrl, { headers: vimeoHeaders }),
+            14_000,
+            `Vimeo CC search scene ${sceneIndex}`
+          ));
+          if (!searchResp.ok) {
+            markVimeoSearchResult(false);
+            return null;
+          }
+          markVimeoSearchResult(true);
+          return await searchResp.json() as { data?: VimeoHit[] };
+        }
+      );
+      if (!searchData) continue;
+      providerMetrics(sourcingCache, "vimeo").resultCount += searchData.data?.length ?? 0;
 
       for (const video of searchData.data ?? []) {
         if (downloaded >= count) break;
@@ -8390,6 +8561,9 @@ async function fetchVimeoCCVideos(
         if (personName && !textMentionsPersonName(hay, personName)) continue;
         if (beatKeywords.length > 0 && scoreVisualRelevance(hay, beatKeywords) < 1) continue;
         seenUris.add(uri);
+        // Pre-download visual dedup: skip a Vimeo video we already adopted this render,
+        // before the per-item detail call or the download itself — see providerAssetKey.
+        if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "vimeo", uri)) continue;
 
         try {
           const detailUrl = `https://api.vimeo.com${uri}?fields=download,name`;
@@ -8415,7 +8589,11 @@ async function fetchVimeoCCVideos(
 
           const tag = fileTag ? `${fileTag}_` : "";
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}_tmp`);
-          const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}.mp4`);
+          const outPath = tagPathWithProviderAsset(
+            path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}.mp4`),
+            "vimeo",
+            uri
+          );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -8431,6 +8609,7 @@ async function fetchVimeoCCVideos(
             try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
             continue;
           }
+          providerMetrics(sourcingCache, "vimeo").downloadCount++;
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `Vimeo CC scene ${sceneIndex}`)) {
             results.push({ path: outPath, query });
             downloaded++;
@@ -8456,37 +8635,48 @@ async function fetchMediaCccVideos(
   workDir: string,
   sceneIndex: number,
   count: number = 1,
-  fileTag = ""
+  fileTag = "",
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!query?.trim()) return [];
   if (isMediaCccInCooldown()) return [];
   const results: string[] = [];
   try {
-    const searchUrl = `https://api.media.ccc.de/public/events/search?q=${encodeURIComponent(query)}`;
-    const searchResp = await providerLimiter("mediaccc").run(() => withTimeout(
-      fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (media.ccc.de CC)" } }),
-      12_000,
-      `media.ccc search scene ${sceneIndex}`
-    ));
-    if (!searchResp.ok) {
-      markMediaCccSearchResult(false);
-      return [];
-    }
-    markMediaCccSearchResult(true);
-    const data = await searchResp.json() as {
-      events?: Array<{
-        title?: string;
-        recordings?: Array<{
-          mime_type?: string;
-          folder?: string;
-          filename?: string;
-          recording_url?: string;
-          length?: number;
-          high_quality?: boolean;
-        }>;
+    type MediaCccEvent = {
+      title?: string;
+      recordings?: Array<{
+        mime_type?: string;
+        folder?: string;
+        filename?: string;
+        recording_url?: string;
+        length?: number;
+        high_quality?: boolean;
       }>;
     };
+    // Phase 5 query cache — the search URL is a pure function of `query`.
+    const data = await cachedProviderSearch(
+      sourcingCache,
+      "media_ccc",
+      query,
+      async (): Promise<{ events?: MediaCccEvent[] } | null> => {
+        const searchUrl = `https://api.media.ccc.de/public/events/search?q=${encodeURIComponent(query)}`;
+        const searchResp = await providerLimiter("mediaccc").run(() => withTimeout(
+          fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (media.ccc.de CC)" } }),
+          12_000,
+          `media.ccc search scene ${sceneIndex}`
+        ));
+        if (!searchResp.ok) {
+          markMediaCccSearchResult(false);
+          return null;
+        }
+        markMediaCccSearchResult(true);
+        return await searchResp.json() as { events?: MediaCccEvent[] };
+      }
+    );
+    if (!data) return [];
     const events = data.events ?? [];
+    providerMetrics(sourcingCache, "media_ccc").resultCount += events.length;
 
     let downloaded = 0;
     for (const event of events) {
@@ -8502,11 +8692,20 @@ async function fetchMediaCccVideos(
         );
       if (!videoRec?.recording_url) continue;
       if ((videoRec.length ?? 0) > 0 && (videoRec.length ?? 0) < 8) continue;
+      // Pre-download visual dedup: media.ccc's typed search response never carries a discrete
+      // event/recording ID, so its recording_url (already known here, before download) is the
+      // canonical-URL fallback documented in the provider-key scheme — skip a recording we
+      // already adopted this render before spending the download.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "media_ccc", videoRec.recording_url)) continue;
 
       try {
         const tag = fileTag ? `${fileTag}_` : "";
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}_tmp`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}.mp4`),
+          "media_ccc",
+          videoRec.recording_url
+        );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 120MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -8528,6 +8727,7 @@ async function fetchMediaCccVideos(
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           continue;
         }
+        providerMetrics(sourcingCache, "media_ccc").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `media.ccc scene ${sceneIndex}`)) {
           results.push(outPath);
           downloaded++;
@@ -8565,7 +8765,9 @@ async function fetchPersonCelebrityVideoClips(
   fileTag: string,
   beatIndex: number,
   beatText = "",
-  fastMode = false
+  fastMode = false,
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   const results: CelebrityClipCandidate[] = [];
   const beatKeywords = buildPersonBeatRelevanceKeywords(personName, beatText);
@@ -8584,7 +8786,9 @@ async function fetchPersonCelebrityVideoClips(
       candidateTarget - results.length,
       fileTag,
       personName,
-      beatKeywords
+      beatKeywords,
+      usedProviderKeys,
+      sourcingCache
     );
     results.push(...wikiHits);
   }
@@ -8599,7 +8803,8 @@ async function fetchPersonCelebrityVideoClips(
       fileTag,
       personName,
       beatKeywords,
-      fastMode
+      fastMode,
+      sourcingCache
     );
     results.push(...gdeltHits);
   }
@@ -8613,7 +8818,9 @@ async function fetchPersonCelebrityVideoClips(
       candidateTarget - results.length,
       fileTag,
       personName,
-      beatKeywords
+      beatKeywords,
+      usedProviderKeys,
+      sourcingCache
     );
     results.push(...septubeHits);
   }
@@ -8627,7 +8834,9 @@ async function fetchPersonCelebrityVideoClips(
       candidateTarget - results.length,
       fileTag,
       personName,
-      beatKeywords
+      beatKeywords,
+      usedProviderKeys,
+      sourcingCache
     );
     results.push(...archiveHits);
   }
@@ -8641,7 +8850,9 @@ async function fetchPersonCelebrityVideoClips(
       candidateTarget - results.length,
       fileTag,
       personName,
-      beatKeywords
+      beatKeywords,
+      usedProviderKeys,
+      sourcingCache
     );
     results.push(...euroHits);
   }
@@ -8655,7 +8866,9 @@ async function fetchPersonCelebrityVideoClips(
       candidateTarget - results.length,
       fileTag,
       personName,
-      beatKeywords
+      beatKeywords,
+      usedProviderKeys,
+      sourcingCache
     );
     results.push(...vimeoHits);
   }
@@ -8667,7 +8880,9 @@ async function fetchPersonCelebrityVideoClips(
       workDir,
       sceneIndex,
       candidateTarget - results.length,
-      fileTag
+      fileTag,
+      usedProviderKeys,
+      sourcingCache
     );
     for (const p of cccPaths) {
       results.push({ path: p, query: `${personName} conference` });
@@ -8685,7 +8900,9 @@ async function fetchPersonCelebrityVideoClips(
         candidateTarget - results.length,
         fileTag,
         personName,
-        beatKeywords
+        beatKeywords,
+        usedProviderKeys,
+        sourcingCache
       );
       for (const p of flickrPaths) {
         results.push({ path: p, query: q });
@@ -8716,26 +8933,36 @@ export async function fetchNasaVideoClips(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 2
+  count: number = 2,
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!query?.trim()) return [];
   if (isNasaInCooldown()) return [];
   const results: string[] = [];
   try {
-    const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
-    const searchResp = await providerLimiter("nasa").run(() => withTimeout(
-      fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" } }),
-      12_000,
-      `NASA video search scene ${sceneIndex}`
-    ));
-    if (!searchResp.ok) {
-      markNasaSearchResult(false);
-      return [];
-    }
-    markNasaSearchResult(true);
-    const data = await searchResp.json() as {
-      collection?: { items?: Array<{ data?: Array<{ nasa_id?: string; title?: string }> }> };
-    };
+    type NasaItem = { data?: Array<{ nasa_id?: string; title?: string }> };
+    // Phase 5 query cache — the search URL is a pure function of `query`.
+    const data = await cachedProviderSearch(
+      sourcingCache,
+      "nasa",
+      query,
+      async (): Promise<{ collection?: { items?: NasaItem[] } } | null> => {
+        const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
+        const searchResp = await providerLimiter("nasa").run(() => withTimeout(
+          fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" } }),
+          12_000,
+          `NASA video search scene ${sceneIndex}`
+        ));
+        if (!searchResp.ok) {
+          markNasaSearchResult(false);
+          return null;
+        }
+        markNasaSearchResult(true);
+        return await searchResp.json() as { collection?: { items?: NasaItem[] } };
+      }
+    );
+    if (!data) return [];
     const items = data.collection?.items ?? [];
     let fetched = 0;
     for (const item of items) {
@@ -8743,6 +8970,9 @@ export async function fetchNasaVideoClips(
       const nasaId = item.data?.[0]?.nasa_id;
       const title = item.data?.[0]?.title ?? nasaId;
       if (!nasaId) continue;
+      // Pre-download visual dedup: skip a NASA asset we already adopted this render, before
+      // the asset-manifest call or the download itself — see providerAssetKey.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "nasa", nasaId)) continue;
       try {
         const assetResp = await withTimeout(
           fetch(`https://images-api.nasa.gov/asset/${nasaId}`, { headers: { "User-Agent": "Fastvid/1.0" } }),
@@ -8775,7 +9005,11 @@ export async function fetchNasaVideoClips(
           : `https://images-assets.nasa.gov${mp4Path.startsWith("/") ? mp4Path : `/${mp4Path}`}`;
 
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}_tmp.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}.mp4`),
+          "nasa",
+          nasaId
+        );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -8825,30 +9059,42 @@ export async function fetchNaraClips(
   duration: number,
   workDir: string,
   sceneIndex: number,
-  count: number = 1
+  count: number = 1,
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   const naraApiKey = process.env.NARA_API_KEY?.trim();
   if (!naraApiKey || !query?.trim()) return [];
   if (isNaraInCooldown()) return [];
   const results: string[] = [];
   try {
-    const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${count * 3}`;
-    const searchResp = await providerLimiter("nara").run(() => withTimeout(
-      fetch(searchUrl, { headers: { "x-api-key": naraApiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" } }),
-      12_000,
-      `NARA search scene ${sceneIndex}`
-    ));
-    if (!searchResp.ok) {
-      markNaraSearchResult(false);
-      return [];
-    }
-    markNaraSearchResult(true);
-    const data = await searchResp.json() as {
-      body?: { hits?: { hits?: Array<{ _source?: { record?: {
-        title?: string;
-        digitalObjects?: Array<{ objectUrl?: string; objectType?: string }>;
-      } } }> } };
-    };
+    type NaraHit = { _source?: { record?: {
+      title?: string;
+      digitalObjects?: Array<{ objectUrl?: string; objectType?: string }>;
+    } } };
+    // Phase 5 query cache. NARA's `limit` is derived from `count`, which varies per caller, so
+    // the limit is folded into the cache key — replaying a 3-result payload for a later
+    // 9-result request would have silently shrunk the candidate list. Exact-match only.
+    const data = await cachedProviderSearch(
+      sourcingCache,
+      "nara",
+      `${query}#n${count * 3}`,
+      async (): Promise<{ body?: { hits?: { hits?: NaraHit[] } } } | null> => {
+        const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${count * 3}`;
+        const searchResp = await providerLimiter("nara").run(() => withTimeout(
+          fetch(searchUrl, { headers: { "x-api-key": naraApiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" } }),
+          12_000,
+          `NARA search scene ${sceneIndex}`
+        ));
+        if (!searchResp.ok) {
+          markNaraSearchResult(false);
+          return null;
+        }
+        markNaraSearchResult(true);
+        return await searchResp.json() as { body?: { hits?: { hits?: NaraHit[] } } };
+      }
+    );
+    if (!data) return [];
     const hits = data.body?.hits?.hits ?? [];
     let fetched = 0;
     for (const hit of hits) {
@@ -8859,9 +9105,18 @@ export async function fetchNaraClips(
       );
       const videoUrl = videoObject?.objectUrl;
       if (!videoUrl) continue;
+      // Pre-download visual dedup: NARA's typed search response never carries a discrete
+      // naId field, so its objectUrl (already known here, before download) is the
+      // canonical-URL fallback documented in the provider-key scheme — skip a record we
+      // already adopted this render before spending the download.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "nara", videoUrl)) continue;
       try {
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_nara_${fetched}_tmp.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_nara_${fetched}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_nara_${fetched}.mp4`),
+          "nara",
+          videoUrl
+        );
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
@@ -9072,7 +9327,9 @@ export async function fetchInternetArchiveClips(
   count: number = 2,
   fileTag = "",
   personName = "",
-  beatKeywords: string[] = []
+  beatKeywords: string[] = [],
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
   if (isInternetArchiveInCooldown()) return [];
   const results: CelebrityClipCandidate[] = [];
@@ -9100,19 +9357,31 @@ export async function fetchInternetArchiveClips(
     if (fetched >= count) break;
     if (cancelled()) break;
     try {
-    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
-    const searchResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
-      searchUrl,
-      IS_RAILWAY ? 6_000 : 10_000,
-      `Internet Archive search scene ${sceneIndex}`,
-      { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
-    ));
-    if (!searchResp.ok) {
-      markInternetArchiveSearchResult(false);
-      continue;
-    }
-    markInternetArchiveSearchResult(true);
-    const searchData = await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
+    // Phase 5 query cache: the search URL is a pure function of `query` (rows/fields are fixed),
+    // so an identical query from a second cascade this render replays the parsed payload instead
+    // of re-hitting archive.org. The candidate list below is walked in full either way.
+    const searchData = await cachedProviderSearch(
+      sourcingCache,
+      "internet_archive",
+      query,
+      async (): Promise<{ response?: { docs?: Array<{ identifier: string; title: string }> } } | null> => {
+        const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies&fl[]=identifier,title&rows=12&output=json`;
+        const searchResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
+          searchUrl,
+          IS_RAILWAY ? 6_000 : 10_000,
+          `Internet Archive search scene ${sceneIndex}`,
+          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
+        ));
+        if (!searchResp.ok) {
+          markInternetArchiveSearchResult(false);
+          return null;
+        }
+        markInternetArchiveSearchResult(true);
+        return await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
+      }
+    );
+    if (!searchData) continue;
+    providerMetrics(sourcingCache, "internet_archive").resultCount += searchData.response?.docs?.length ?? 0;
     const docs = (searchData.response?.docs ?? [])
       .filter((doc) => {
         const hay = `${doc.title} ${query}`.toLowerCase();
@@ -9130,6 +9399,9 @@ export async function fetchInternetArchiveClips(
     for (const doc of docs) {
       if (fetched >= count) break;
       if (cancelled()) break;
+      // Pre-download visual dedup: skip an archive.org identifier we already adopted this
+      // render, before the metadata call, license check, or download — see providerAssetKey.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "internet_archive", doc.identifier)) continue;
       try {
         // F3-34: fetch the full item record (metadata + files) instead of just the /files
         // sub-resource, so the uploader-provided rights fields (metadata.licenseurl /
@@ -9140,23 +9412,46 @@ export async function fetchInternetArchiveClips(
         // `{ result: [...] }` for the files field; dropping the "/files" suffix returns the
         // full record as `{ metadata: {...}, files: [...], ... }` in the same single call —
         // no new network call added.
-        const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
-        const metaResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
-          metaUrl,
-          8_000,
-          `Internet Archive metadata scene ${sceneIndex}`,
-          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
-        ));
-        if (!metaResp.ok) {
-          markInternetArchiveSearchResult(false);
-          continue;
-        }
-        markInternetArchiveSearchResult(true);
-        const metaData = await metaResp.json() as {
+        type IaMetaData = {
           metadata?: { licenseurl?: string | string[]; rights?: string | string[] };
           files?: Array<{ name: string; format: string; size?: string }>;
           result?: Array<{ name: string; format: string; size?: string }>;
         };
+        // Phase 6 provider asset cache: two cascades can legitimately surface the same
+        // archive.org identifier via two different queries (the query cache above only
+        // deduplicates identical queries). The metadata call is per-identifier, so it is cached
+        // per-identifier — including a cached license *rejection*, so an item this render
+        // already rejected is never re-fetched just to be rejected a second time.
+        const cachedAsset = getCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier);
+        if (cachedAsset && cachedAsset.licenseAllowed === false) {
+          providerMetrics(sourcingCache, "internet_archive").licenseRejectedCacheHits++;
+          continue;
+        }
+        let metaData = cachedAsset?.metadata as IaMetaData | undefined;
+        if (!metaData) {
+          const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
+          const metaResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
+            metaUrl,
+            8_000,
+            `Internet Archive metadata scene ${sceneIndex}`,
+            { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
+          ));
+          if (!metaResp.ok) {
+            markInternetArchiveSearchResult(false);
+            continue;
+          }
+          markInternetArchiveSearchResult(true);
+          metaData = await metaResp.json() as IaMetaData;
+          providerMetrics(sourcingCache, "internet_archive").metadataCount++;
+          providerMetrics(sourcingCache, "internet_archive").licenseCalls++;
+          putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
+            canonicalUrl: `https://archive.org/details/${doc.identifier}`,
+            metadata: metaData,
+          });
+        } else {
+          providerMetrics(sourcingCache, "internet_archive").metadataCacheHits++;
+          providerMetrics(sourcingCache, "internet_archive").licenseCacheHits++;
+        }
 
         // F3-34/F3-39 license gate: reject before any download unless the item's own metadata
         // carries an explicit, permissive-enough licenseurl OR (when licenseurl is absent) an
@@ -9170,12 +9465,20 @@ export async function fetchInternetArchiveClips(
         const rawRights = metaData.metadata?.rights;
         const rights = (Array.isArray(rawRights) ? rawRights[0] : rawRights)?.trim();
         if (!isAllowedInternetArchiveLicense(licenseUrl, rights)) {
+          // Cache the rejection (Phase 6) so a later cascade that resurfaces this identifier
+          // skips it above without repeating the metadata call. The gate itself is unchanged.
+          putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
+            licenseAllowed: false,
+          });
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} has no usable license ` +
             `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}) — skipping`
           );
           continue;
         }
+        putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
+          licenseAllowed: true,
+        });
 
         const videoFiles = (metaData.files ?? metaData.result ?? []).filter(f =>
           ['h.264', 'MPEG4', 'MP4', 'Ogg Video', 'WebM'].includes(f.format)
@@ -9195,7 +9498,11 @@ export async function fetchInternetArchiveClips(
 
         const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
         const tag = fileTag ? `${fileTag}_` : "";
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`),
+          "internet_archive",
+          doc.identifier
+        );
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
@@ -9216,6 +9523,7 @@ export async function fetchInternetArchiveClips(
           continue;
         }
 
+        providerMetrics(sourcingCache, "internet_archive").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `Internet Archive scene ${sceneIndex}`)) {
           results.push({ path: outPath, query });
           fetched++;
@@ -9623,41 +9931,53 @@ export async function searchYoutubeVideoCandidates(
   relevanceKeywords: string[],
   minRelevanceScore: number,
   requiredPersonName: string,
-  maxResults: number
+  maxResults: number,
+  sourcingCache?: SourcingCache
 ): Promise<YoutubeSearchRow[]> {
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (!youtubeApiKey) return [];
   if (isYoutubeInCooldown()) return [];
 
-  const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
-  searchUrl.searchParams.set("key", youtubeApiKey);
-  searchUrl.searchParams.set("q", query);
-  searchUrl.searchParams.set("type", "video");
-  if (license === "creative_common") {
-    searchUrl.searchParams.set("videoLicense", "creativeCommon");
-  }
-  searchUrl.searchParams.set("maxResults", String(maxResults));
-  searchUrl.searchParams.set("part", "snippet");
-  searchUrl.searchParams.set("videoDuration", "medium");
-  searchUrl.searchParams.set("order", "relevance");
-  searchUrl.searchParams.set("videoEmbeddable", "true");
-
   const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
-  const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
-    searchUrl.toString(),
-    15_000,
-    `${label} search scene ${sceneIndex}`
-  ));
-  if (!searchResp.ok) {
-    markYoutubeSearchResult(false);
-    console.warn(`[Pipeline] Scene ${sceneIndex}: ${label} API error ${searchResp.status} for "${query}"`);
-    return [];
-  }
-  markYoutubeSearchResult(true);
+  // Phase 5 query cache. Cached at the raw API-payload level, before any relevance/person
+  // filtering below — that filtering is caller-specific (relevanceKeywords, requiredPersonName,
+  // minRelevanceScore), so two callers sharing a query still get their own ranking from the one
+  // shared payload. license/maxResults shape the request itself and are therefore part of the
+  // key; the quota-costly search call is what gets spent once.
+  const searchData = await cachedProviderSearch(
+    sourcingCache,
+    "youtube_cc",
+    `${query}#${license}#n${maxResults}`,
+    async (): Promise<{ items?: YoutubeSearchRow["item"][] } | null> => {
+      const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
+      searchUrl.searchParams.set("key", youtubeApiKey);
+      searchUrl.searchParams.set("q", query);
+      searchUrl.searchParams.set("type", "video");
+      if (license === "creative_common") {
+        searchUrl.searchParams.set("videoLicense", "creativeCommon");
+      }
+      searchUrl.searchParams.set("maxResults", String(maxResults));
+      searchUrl.searchParams.set("part", "snippet");
+      searchUrl.searchParams.set("videoDuration", "medium");
+      searchUrl.searchParams.set("order", "relevance");
+      searchUrl.searchParams.set("videoEmbeddable", "true");
 
-  const searchData = (await searchResp.json()) as {
-    items?: YoutubeSearchRow["item"][];
-  };
+      const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
+        searchUrl.toString(),
+        15_000,
+        `${label} search scene ${sceneIndex}`
+      ));
+      if (!searchResp.ok) {
+        markYoutubeSearchResult(false);
+        console.warn(`[Pipeline] Scene ${sceneIndex}: ${label} API error ${searchResp.status} for "${query}"`);
+        return null;
+      }
+      markYoutubeSearchResult(true);
+      return (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
+    }
+  );
+  if (!searchData) return [];
+  providerMetrics(sourcingCache, "youtube_cc").resultCount += searchData.items?.length ?? 0;
 
   return (searchData.items ?? [])
     .map((item) => {
@@ -9684,7 +10004,9 @@ export async function fetchYouTubeCCClips(
   relevanceKeywords: string[] = [],
   minRelevanceScore = 1,
   requiredPersonName = "",
-  scriptGuided?: ScriptGuidedBeatContext
+  scriptGuided?: ScriptGuidedBeatContext,
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!youtubeSourcingEnabled()) return [];
   if (isYoutubeInCooldown()) return [];
@@ -9743,7 +10065,8 @@ export async function fetchYouTubeCCClips(
           relevanceKeywords,
           minRelevanceScore,
           requiredPersonName,
-          Math.max(5, (count - fetched) * 4)
+          Math.max(5, (count - fetched) * 4),
+          sourcingCache
         );
         if (!items.length) {
           console.warn(
@@ -9764,6 +10087,10 @@ export async function fetchYouTubeCCClips(
           const item = row.item;
           const videoId = item.id?.videoId;
           if (!videoId || downloadedIds.has(videoId)) continue;
+          // Pre-download visual dedup: skip a YouTube video we already adopted this render
+          // (possibly via a different cascade/query), before script-guided planning or the
+          // download itself — see providerAssetKey.
+          if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "youtube_cc", videoId)) continue;
 
           const title = row.title;
           if (relevanceKeywords.length > 0 && row.rel < minRelevanceScore) {
@@ -9809,7 +10136,11 @@ export async function fetchYouTubeCCClips(
               );
             }
 
-            const outPath = path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}.mp4`);
+            const outPath = tagPathWithProviderAsset(
+              path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}.mp4`),
+              "youtube_cc",
+              videoId
+            );
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
 
             const ok = await downloadYouTubeCCClip(
@@ -9820,6 +10151,7 @@ export async function fetchYouTubeCCClips(
               sceneIndex,
               item.snippet?.title
             );
+            providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
             if (ok) {
               results.push(outPath);
               downloadedIds.add(videoId);
@@ -11209,6 +11541,10 @@ export interface VisualDedupState {
    *  all of that scene's concurrently-running beats have finished — see
    *  sweepUnadoptedSceneCandidates. Cleared per scene once swept. */
   sceneCandidatePaths: Map<number, Set<string>>;
+  /** Render-scoped query cache + provider asset cache + sourcing counters. Lives here rather
+   *  than in a module-level store so it is created and discarded with exactly the same lifetime
+   *  as usedContentKeys — one render, no cross-render leakage. See createSourcingCache. */
+  sourcingCache: SourcingCache;
 }
 
 /**
@@ -11364,6 +11700,7 @@ export function createVisualDedupState(
     },
     strictRefillAttemptedScenes: new Set(),
     historicalCascadeAttemptedBeats: new Set(),
+    sourcingCache: createSourcingCache(),
   };
 }
 
@@ -11947,10 +12284,337 @@ function isPublishableChapterTitle(title: string | undefined): boolean {
   return title.trim().length >= 4;
 }
 
-function clipContentKey(filePath: string): string {
+// ─── Visual dedup: stable per-provider asset identity ──────────────────────
+// Every external fetch*Clips function below (Internet Archive, YouTube CC, Wikimedia,
+// Flickr, SepiaSearch, Europeana, Vimeo, media.ccc, NASA, NARA) discards its provider's own
+// stable ID (archive.org identifier, YouTube videoId, Commons page title, etc.) once it
+// returns a bare downloaded file path — so two different fetch cascades (e.g. the historical
+// tier cascade in fetchHistoricalBeatVideo and researchBeatClipUnified's own parallel search)
+// that independently find the SAME underlying asset each produce a differently-named local
+// file, and the old clipContentKey() (file:${size}:${basename}) never recognized them as the
+// same content. providerAssetKey + tagPathWithProviderAsset close that gap without changing
+// any fetch function's return type: the provider ID is hashed (never the raw id — keeps
+// arbitrary titles/URIs with spaces/colons/slashes out of on-disk filenames and out of the
+// keyword-based reject filters that scan basenames) and embedded directly in the downloaded
+// filename, so clipContentKey can recover the exact same key regardless of which cascade,
+// sceneIndex, or file-tag produced the file — see the PROVIDER_ASSET_TAG_RE branch below.
+// Exported (visibility only, no logic changed) so the visual-dedup test suite can assert on
+// exact key equality/inequality directly, matching the F3-48-style precedent elsewhere in this
+// file for exporting a pure helper purely so a test can cover it without spinning up network mocks.
+export function providerAssetKey(provider: string, id: string): string {
+  const hash = createHash("sha256").update(id.trim()).digest("hex").slice(0, 16);
+  return `${provider}:${hash}`;
+}
+
+/** Embeds a providerAssetKey into a downloaded clip's filename (right before the extension) so
+ *  clipContentKey can recover it post-download without any fetch function's return type
+ *  changing. No-ops (returns outPath unchanged) when id is empty — callers then fall back to
+ *  clipContentKey's existing file:${size}:${basename} heuristic, per the documented fallback
+ *  chain (stable provider ID → canonical URL → existing content-key heuristic).
+ */
+export function tagPathWithProviderAsset(outPath: string, provider: string, id: string | undefined): string {
+  if (!id?.trim()) return outPath;
+  const key = providerAssetKey(provider, id).replace(":", "-");
+  const ext = path.extname(outPath);
+  return `${outPath.slice(0, -ext.length)}__pid_${key}${ext}`;
+}
+
+// ─── Render-scoped sourcing cache (query cache + provider asset cache) ─────
+// Deliberately NOT a second dedup/cache system: this hangs off the existing VisualDedupState
+// (see its `sourcingCache` field) so it is created, scoped and discarded with exactly the same
+// lifetime as usedContentKeys/usedPaths, and it reuses providerAssetKey — the same identity
+// function the pre-download dedup gate and clipContentKey already agree on — as its asset key.
+//
+// Two distinct jobs, one object:
+//  * queries: the same provider + the exact same normalized query must not hit the network twice
+//    within one render. Cached at the *parsed search payload* level rather than by short-
+//    circuiting the call to an empty result: a later cascade re-running the identical search
+//    still walks the identical candidate list (so it can pick candidate #4 when the first
+//    cascade adopted #1), it just does so without a second HTTP round trip. Skipping blind would
+//    have silently reduced how many candidates a second cascade could consider.
+//  * assets: per-provider-asset metadata/license verdicts, so an asset that two cascades both
+//    surface pays for its metadata + license check exactly once per render.
+//
+// Conservative by construction (per spec): exact normalized-string equality only — "World War II
+// Germany" and "Germany during World War II" stay separate entries. No semantic/fuzzy matching.
+export interface ProviderAssetCacheEntry {
+  provider: string;
+  providerAssetId: string;
+  canonicalUrl?: string;
+  /** Raw provider metadata payload, as already parsed by the fetcher. */
+  metadata?: unknown;
+  /** Result of the provider's license check — false is cached too, so a rejected asset
+   *  surfaced again by another cascade is not re-fetched just to be rejected again. */
+  licenseAllowed?: boolean;
+  localPath?: string;
+  storageUrl?: string;
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  fileSize?: number;
+  contentKey?: string;
+}
+
+/** Per-provider counters (Phase 20). Plain numbers on a render-scoped object — no I/O, no
+ *  awaits, nothing that can fail or block the render. Surfaced once at the end of a render
+ *  through the existing PipelineStepTiming console summary. */
+export interface ProviderSourcingMetrics {
+  searchCount: number;
+  searchLatencyMs: number;
+  resultCount: number;
+  queryCacheHits: number;
+  /** A query was NOT found in the cache and had to actually search — i.e. searchCount's
+   *  complement, tracked as its own counter so callers don't have to infer it. */
+  queryCacheMisses: number;
+  metadataCount: number;
+  metadataCacheHits: number;
+  /** A provider-asset lookup missed the cache entirely (first sighting of this id this render,
+   *  or no sourcingCache supplied). */
+  assetCacheMisses: number;
+  /** How many times this provider's per-item license determination actually required a network
+   *  call (metadata/record fetch that carries the license fields) — providers whose license is
+   *  embedded in the search response itself (no separate per-item call) never increment this. */
+  licenseCalls: number;
+  /** A cached (already-fetched) asset's ALLOWED license verdict was reused instead of
+   *  re-fetching metadata/license for it. */
+  licenseCacheHits: number;
+  /** A cached REJECTED verdict was honoured — the asset was skipped without any network call. */
+  licenseRejectedCacheHits: number;
+  downloadCount: number;
+  downloadCacheHits: number;
+  duplicateSkipped: number;
+  acceptedCount: number;
+}
+
+export interface SourcingCache {
+  /** `${provider}|${normalized query}` → parsed search payload from the first execution. */
+  queries: Map<string, unknown>;
+  /** providerAssetKey(provider, id) → what this render already learned about that asset. */
+  assets: Map<string, ProviderAssetCacheEntry>;
+  /** provider → counters. */
+  metrics: Map<string, ProviderSourcingMetrics>;
+  /** visionGateCacheHits() at render start — the gate's counter is a process-wide monotonic
+   *  total, so the per-render figure is the delta against this baseline. */
+  visionHitBaseline: number;
+  /** Render-wide totals (Phase 20). */
+  totals: {
+    duplicateCandidatesSkipped: number;
+    duplicateDownloadsPrevented: number;
+    visionCacheHits: number;
+    assetCacheHits: number;
+    queryCacheHits: number;
+  };
+}
+
+export function createSourcingCache(): SourcingCache {
+  return {
+    queries: new Map(),
+    assets: new Map(),
+    metrics: new Map(),
+    visionHitBaseline: visionGateCacheHits(),
+    totals: {
+      duplicateCandidatesSkipped: 0,
+      duplicateDownloadsPrevented: 0,
+      visionCacheHits: 0,
+      assetCacheHits: 0,
+      queryCacheHits: 0,
+    },
+  };
+}
+
+function emptyProviderMetrics(): ProviderSourcingMetrics {
+  return {
+    searchCount: 0, searchLatencyMs: 0, resultCount: 0, queryCacheHits: 0, queryCacheMisses: 0,
+    metadataCount: 0, metadataCacheHits: 0, assetCacheMisses: 0,
+    licenseCalls: 0, licenseCacheHits: 0, licenseRejectedCacheHits: 0,
+    downloadCount: 0, downloadCacheHits: 0,
+    duplicateSkipped: 0, acceptedCount: 0,
+  };
+}
+
+/**
+ * Always returns a counter object, never null — when no cache is supplied (every caller that
+ * does not thread one, including all existing tests and any fetch invoked outside a render) it
+ * returns a throwaway object whose increments go nowhere.
+ *
+ * This is deliberately total rather than nullable: a nullable version invites
+ * `providerMetrics(cache, p)!.someCount++` at call sites, and that non-null assertion is erased
+ * at compile time, so an undefined cache turns a pure metrics increment into a runtime
+ * TypeError in the middle of a provider fetch. Metrics must never be able to fail a render.
+ */
+export function providerMetrics(cache: SourcingCache | undefined, provider: string): ProviderSourcingMetrics {
+  if (!cache) return emptyProviderMetrics();
+  let m = cache.metrics.get(provider);
+  if (!m) {
+    m = emptyProviderMetrics();
+    cache.metrics.set(provider, m);
+  }
+  return m;
+}
+
+/** Exact-match normalization only: case-folded and whitespace-collapsed. Intentionally does no
+ *  stemming, token sorting or synonym mapping — two differently-worded queries for the same
+ *  topic must stay two separate searches (spec: "begin bewust conservatief"). */
+export function normalizeProviderQuery(query: string): string {
+  return query.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+export function providerQueryCacheKey(provider: string, query: string): string {
+  return `${provider}|${normalizeProviderQuery(query)}`;
+}
+
+/**
+ * Runs `search` at most once per (provider, exact normalized query) per render.
+ *
+ * `search` must return the already-parsed payload (never a Response — those are single-use).
+ * A null/undefined result is cached too: a provider that legitimately returned nothing for this
+ * exact query will not return something different 30 seconds later in the same render, and
+ * re-asking is precisely the duplicate work this exists to remove.
+ */
+export async function cachedProviderSearch<T>(
+  cache: SourcingCache | undefined,
+  provider: string,
+  query: string,
+  search: () => Promise<T>
+): Promise<T> {
+  if (!cache) return search();
+  const key = providerQueryCacheKey(provider, query);
+  const m = providerMetrics(cache, provider);
+  if (cache.queries.has(key)) {
+    m.queryCacheHits++;
+    cache.totals.queryCacheHits++;
+    return cache.queries.get(key) as T;
+  }
+  m.queryCacheMisses++;
+  const t0 = Date.now();
+  const payload = await search();
+  m.searchCount++;
+  m.searchLatencyMs += Date.now() - t0;
+  cache.queries.set(key, payload);
+  return payload;
+}
+
+/** Reads this render's cached knowledge about one provider asset (Phase 6). Callers that go on
+ *  to reuse cached metadata/license (rather than just checking a cached rejection) additionally
+ *  increment their own provider's metadataCacheHits/licenseCacheHits — this function only
+ *  tracks the generic "did we already know this asset" fact. */
+export function getCachedProviderAsset(
+  cache: SourcingCache | undefined,
+  provider: string,
+  id: string
+): ProviderAssetCacheEntry | null {
+  if (!cache || !id?.trim()) return null;
+  const hit = cache.assets.get(providerAssetKey(provider, id)) ?? null;
+  if (hit) {
+    cache.totals.assetCacheHits++;
+  } else {
+    providerMetrics(cache, provider).assetCacheMisses++;
+  }
+  return hit;
+}
+
+/** Records/merges what this render learned about one provider asset (Phase 6/8). */
+export function putCachedProviderAsset(
+  cache: SourcingCache | undefined,
+  provider: string,
+  id: string,
+  entry: Partial<ProviderAssetCacheEntry>
+): void {
+  if (!cache || !id?.trim()) return;
+  const key = providerAssetKey(provider, id);
+  const prev = cache.assets.get(key);
+  cache.assets.set(key, {
+    ...(prev ?? { provider, providerAssetId: id }),
+    ...entry,
+    provider,
+    providerAssetId: id,
+  });
+}
+
+/**
+ * Single choke point for the pre-download dedup skip, so every provider reports the skip the
+ * same way. Returns true when this exact asset was already adopted this render — the caller
+ * must then `continue` without any metadata/license/download/ffmpeg/CLIP work.
+ */
+export function providerAssetAlreadyUsed(
+  usedProviderKeys: Set<string> | undefined,
+  cache: SourcingCache | undefined,
+  provider: string,
+  id: string | undefined
+): boolean {
+  if (!id?.trim()) return false;
+  if (!usedProviderKeys?.has(providerAssetKey(provider, id))) return false;
+  if (cache) {
+    cache.totals.duplicateCandidatesSkipped++;
+    cache.totals.duplicateDownloadsPrevented++;
+    providerMetrics(cache, provider).duplicateSkipped++;
+  }
+  return true;
+}
+
+/** Emits the render's sourcing counters through the existing timing/console tracing. Never
+ *  throws and never awaits anything — Phase 20's "metrics mogen de render niet blokkeren".
+ *
+ *  The provider-level breakdown fields (queryCacheMisses, assetCacheMisses, licenseCalls,
+ *  licenseCacheHits, licenseRejectedCacheHits) are summed here from `cache.metrics` rather than
+ *  duplicated as separately-incremented render totals — one source of truth, no risk of the two
+ *  drifting apart. `videoId` is optional so existing/other call sites need not change. */
+export function logSourcingMetrics(cache: SourcingCache | undefined, videoId?: number): void {
+  try {
+    if (!cache) return;
+    const t = cache.totals;
+    t.visionCacheHits = Math.max(0, visionGateCacheHits() - cache.visionHitBaseline);
+
+    let searchCount = 0, queryCacheMisses = 0, metadataCount = 0, licenseCalls = 0;
+    let licenseCacheHits = 0, licenseRejectedCacheHits = 0, downloadCount = 0, assetCacheMisses = 0;
+    for (const m of cache.metrics.values()) {
+      searchCount += m.searchCount;
+      queryCacheMisses += m.queryCacheMisses;
+      metadataCount += m.metadataCount;
+      licenseCalls += m.licenseCalls;
+      licenseCacheHits += m.licenseCacheHits;
+      licenseRejectedCacheHits += m.licenseRejectedCacheHits;
+      downloadCount += m.downloadCount;
+      assetCacheMisses += m.assetCacheMisses;
+    }
+    // Render-level rollup, section-10 log format: every field is either an existing tracked
+    // total or a straightforward sum of the per-provider counters above — no new mutable state.
+    const networkCallsAvoided = t.queryCacheHits + t.assetCacheHits + licenseRejectedCacheHits;
+    const downloadsAvoided = t.duplicateDownloadsPrevented;
+    console.log(
+      `[SourcingMetrics] videoId=${videoId ?? "-"} ` +
+      `queryHits=${t.queryCacheHits} queryMisses=${queryCacheMisses} ` +
+      `assetHits=${t.assetCacheHits} assetMisses=${assetCacheMisses} ` +
+      `metadataCalls=${metadataCount} licenseCalls=${licenseCalls} ` +
+      `licenseCacheHits=${licenseCacheHits} licenseRejectedCacheHits=${licenseRejectedCacheHits} ` +
+      `downloads=${downloadCount} downloadsAvoided=${downloadsAvoided} ` +
+      `duplicateAssetsPrevented=${t.duplicateCandidatesSkipped} ` +
+      `networkCallsAvoided=${networkCallsAvoided} visionCacheHits=${t.visionCacheHits} ` +
+      `searches=${searchCount} providers=${cache.metrics.size}`
+    );
+    for (const [provider, m] of [...cache.metrics.entries()].sort()) {
+      console.log(
+        `[SourcingMetrics]   ${provider}: searches=${m.searchCount} (${m.searchLatencyMs}ms) ` +
+        `results=${m.resultCount} queryCacheHits=${m.queryCacheHits} queryCacheMisses=${m.queryCacheMisses} ` +
+        `metadata=${m.metadataCount} metadataCacheHits=${m.metadataCacheHits} assetCacheMisses=${m.assetCacheMisses} ` +
+        `licenseCalls=${m.licenseCalls} licenseCacheHits=${m.licenseCacheHits} licenseRejectedCacheHits=${m.licenseRejectedCacheHits} ` +
+        `downloads=${m.downloadCount} duplicateSkipped=${m.duplicateSkipped} ` +
+        `accepted=${m.acceptedCount}`
+      );
+    }
+  } catch {
+    /* metrics must never affect a render */
+  }
+}
+
+const PROVIDER_ASSET_TAG_RE = /__pid_([a-z_]+)-([0-9a-f]{16})(?=\.[A-Za-z0-9]+$)/;
+
+export function clipContentKey(filePath: string): string {
   const curatedId = curatedClipPathAssetId(filePath);
   if (curatedId != null) return curatedAssetContentKey(curatedId);
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
+  const providerTag = base.match(PROVIDER_ASSET_TAG_RE);
+  if (providerTag) return `${providerTag[1]}:${providerTag[2]}`;
   const vidMatch = base.match(/_vid(\d+)/);
   if (vidMatch) return `stock:vid:${vidMatch[1]}`;
   if (isStillPhotoClip(filePath)) {
@@ -14238,6 +14902,24 @@ async function adoptClip(
 
     for (const p of finalPaths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
+      // Invariant 2 (no duplicate work): this is the authoritative same-render asset-identity
+      // gate, and it now runs FIRST — before isValidVideoFile's ffprobe, before
+      // isMostlyBlackClip's ffmpeg pass, and before clipPassesVisionGate's frame extraction +
+      // CLIP scoring. The identical check used to sit at the very end of this loop body, so a
+      // candidate that a different cascade had already adopted still paid for a full ffprobe,
+      // black-frame probe and CLIP evaluation before being discarded on a key comparison that
+      // was already decidable from its filename. clipContentKey itself is cheap here — a
+      // basename regex for provider-tagged and curated clips, a statSync otherwise.
+      //
+      // Moving it also fixes a real accounting bug: the still-photo branch below increments
+      // dedup.stillPhotosThisScene / the global still budget *before* the old check position,
+      // so a duplicate still image consumed a scarce still-photo slot and then got rejected
+      // anyway, permanently costing the render a still it never used.
+      const contentKey = clipContentKey(p);
+      if (dedup.usedContentKeys.has(contentKey)) {
+        dedup.sourcingCache.totals.duplicateCandidatesSkipped++;
+        continue;
+      }
       if (!(await isValidVideoFile(p))) continue;
       if (isStillPhotoClip(p)) {
         const scriptStill = Boolean(opts.scriptImageFallback);
@@ -14324,16 +15006,27 @@ async function adoptClip(
           undefined,
           gateVisualDesc,
           undefined,
-          null
+          null,
+          // Phase 16: give the vision gate this clip's real asset identity (already computed at
+          // the top of this loop) so its score cache can neither collide across two different
+          // files that happen to share a basename, nor miss when the same physical asset
+          // arrives under a different cascade's filename.
+          contentKey
         ))
       ) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
         continue;
       }
-      const contentKey = clipContentKey(p);
-      if (dedup.usedContentKeys.has(contentKey)) continue;
+      // contentKey was computed and checked at the top of this iteration (see the comment
+      // there). Nothing between that check and here can add to usedContentKeys — the whole
+      // loop runs inside withVisualDedupLock, which serialises every adopt across the render —
+      // so this stays the single acceptance point that marks the asset as used.
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
+      // Phase 20: attribute the acceptance to whatever produced the content key — a provider
+      // name for provider-tagged assets, otherwise the key's own family ("stock", "still",
+      // "curated", "file"). Pure counter increment, no I/O.
+      providerMetrics(dedup.sourcingCache, contentKey.split(":")[0] || "unknown").acceptedCount++;
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       const mustFairUse = clipRequiresFairUseTransform(p);
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
@@ -15517,7 +16210,9 @@ async function fetchPersonBeatClip(
       `${tag}_person`,
       beat.index,
       beat.text,
-      celebrityFetchFastMode(dedup.perf, scene.duration)
+      celebrityFetchFastMode(dedup.perf, scene.duration),
+      dedup.usedContentKeys,
+      dedup.sourcingCache
     ),
     personCelebrityVideoWallMs(dedup.perf, scene.duration),
     `person celebrity video s${sceneIndex} b${beat.index}`
@@ -15671,41 +16366,53 @@ export async function fetchHistoricalBeatVideo(
   const archiveHitsPerQuery = dedup.perf.fastStockMode ? 1 : 2;
   const youtubeReady = !opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady();
 
+  // Visual dedup: dedup.usedContentKeys is the SAME set adoptClip checks/populates on actual
+  // acceptance (see clipContentKey's PROVIDER_ASSET_TAG_RE branch) — passing it into every tier
+  // here lets a provider skip a search hit whose provider:hash(id) key was already accepted
+  // earlier this render (by this cascade or by researchBeatClipUnified's own direct fetch
+  // calls) before spending the metadata/license/download cost on it. adoptClip's own
+  // provider-tag check remains the authoritative, race-safe gate regardless of this optimization.
   const fetchTierPaths = async (tier: HistoricalSourceTier, q: string): Promise<string[]> => {
     switch (tier) {
       case "internet_archive":
         if (!dedup.perf.enableArchival) return [];
         return (await fetchInternetArchiveClips(
-          q, clipFetchDur, workDir, sceneIndex, archiveHitsPerQuery, `${tag}_hist`, "", beatKeywords
+          q, clipFetchDur, workDir, sceneIndex, archiveHitsPerQuery, `${tag}_hist`, "", beatKeywords,
+          dedup.usedContentKeys,
+          dedup.sourcingCache
         )).map((h) => h.path);
       case "youtube_cc":
         if (!youtubeReady) return [];
         return fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
-          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode }
+          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode },
+          dedup.usedContentKeys,
+          dedup.sourcingCache
         );
       case "wikimedia":
         return (await fetchWikimediaVideos(
-          q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_hist`, "", beatKeywords
+          q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_hist`, "", beatKeywords, dedup.usedContentKeys, dedup.sourcingCache
         )).map((h) => h.path);
       case "nara":
-        return fetchNaraClips(q, clipFetchDur, workDir, sceneIndex, 1);
+        return fetchNaraClips(q, clipFetchDur, workDir, sceneIndex, 1, dedup.usedContentKeys, dedup.sourcingCache);
       case "flickr":
-        return fetchFlickrCCVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords);
+        return fetchFlickrCCVideos(
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords, dedup.usedContentKeys, dedup.sourcingCache
+        );
       case "sepiasearch":
         return (await fetchSepiaSearchVideos(
-          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords, dedup.usedContentKeys, dedup.sourcingCache
         )).map((h) => h.path);
       case "vimeo":
         return (await fetchVimeoCCVideos(
-          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords
+          q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords, dedup.usedContentKeys, dedup.sourcingCache
         )).map((h) => h.path);
       case "media_ccc":
         // P0 fix 3: same tech/celebrity topic gate already used elsewhere (e.g.
         // fetchPersonCelebrityVideoClips) — applied here so a beat unrelated to that topic
         // skips this relatively slow, ungated-elsewhere provider instead of always querying it.
         if (!personMatchesTechCccTopic(intent.primaryPerson ?? "", beat.text)) return [];
-        return fetchMediaCccVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`);
+        return fetchMediaCccVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, dedup.usedContentKeys, dedup.sourcingCache);
       case "nasa":
         // P0 fix 3: same space-topic gate already used to build `intent.spaceTopic` elsewhere
         // (e.g. line ~1812) — computed fresh here rather than trusting intent.spaceTopic, since
@@ -15714,7 +16421,7 @@ export async function fetchHistoricalBeatVideo(
         if (!isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, beat.text, scene.text, adoptOpts.videoTitle ?? "")) {
           return [];
         }
-        return fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
+        return fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1, dedup.usedContentKeys, dedup.sourcingCache);
     }
   };
 
@@ -15937,7 +16644,9 @@ async function researchBeatClipUnified(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
-            }
+            },
+            dedup.usedContentKeys,
+            dedup.sourcingCache
           );
           return toCandidates(paths, eq, "youtube_cc", true);
         },
@@ -15963,7 +16672,9 @@ async function researchBeatClipUnified(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
-            }
+            },
+            dedup.usedContentKeys,
+            dedup.sourcingCache
           );
           return toCandidates(paths, q, "youtube_cc", true);
         },
@@ -15984,7 +16695,9 @@ async function researchBeatClipUnified(
           `${tag}_research`,
           beat.index,
           beat.text,
-          fast
+          fast,
+          dedup.usedContentKeys,
+          dedup.sourcingCache
         );
         return hits.map((h) => ({
           path: h.path,
@@ -16008,7 +16721,9 @@ async function researchBeatClipUnified(
           archivalFirst ? 3 : 2,
           `${tag}_research`,
           primary ?? "",
-          beatKeywords
+          beatKeywords,
+          dedup.usedContentKeys,
+          dedup.sourcingCache
         );
         return hits.map((h) => ({
           path: h.path,
@@ -16030,7 +16745,9 @@ async function researchBeatClipUnified(
             2,
             `${tag}_research`,
             primary ?? "",
-            beatKeywords
+            beatKeywords,
+            dedup.usedContentKeys,
+            dedup.sourcingCache
           );
           return hits.map((h) => ({
             path: h.path,
@@ -16060,7 +16777,9 @@ async function researchBeatClipUnified(
           2,
           `${tag}_research`,
           primary ?? "",
-          beatKeywords
+          beatKeywords,
+          dedup.usedContentKeys,
+          dedup.sourcingCache
         );
         return hits.map((h) => ({
           path: h.path,
@@ -16075,7 +16794,9 @@ async function researchBeatClipUnified(
   if (perf.enableNasa && spaceTopic && primaryQ) {
     tasks.push({
       run: async () => {
-        const paths = await fetchNasaVideoClips(primaryQ, clipFetchDur, workDir, sceneIndex, 1);
+        const paths = await fetchNasaVideoClips(
+          primaryQ, clipFetchDur, workDir, sceneIndex, 1, dedup.usedContentKeys, dedup.sourcingCache
+        );
         return toCandidates(paths, primaryQ, "nasa", true);
       },
     });
@@ -25496,6 +26217,9 @@ async function _runVideoPipelineInner(
       console.log(`[Pipeline] P5A scene pipeline: ${scenes.length} scenes in ${((Date.now() - t2p) / 1000).toFixed(1)}s`);
       profiler.recordStageEnd("compose", Date.now());
       pipelineStepTiming.summarizeAll();
+      // Phase 20: sourcing counters alongside the existing timing summary. Synchronous,
+      // try/catch-wrapped, no awaits — it can never delay or fail the render.
+      logSourcingMetrics(visualDedup.sourcingCache);
     } else {
     // ── Sequential: Stage 3 (visuals) then Stage 4 (compose), chunked ~60s at a time ──
     // Long videos are processed in small batches through the exact SAME per-scene Stage
@@ -26259,6 +26983,7 @@ async function _runVideoPipelineInner(
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
     profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
+    logSourcingMetrics(visualDedup.sourcingCache);
     } // end else (sequential Stage 3 + Stage 4)
 
     // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────

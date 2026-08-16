@@ -21,14 +21,40 @@ import {
 
 const VISION_GATE_CACHE_MAX = 512;
 const visionGateCache = new Map<string, boolean>();
+/** Phase 20 counter: how often a full CLIP evaluation was avoided by the cache above.
+ *  Process-wide and monotonic — read as a delta by the caller that reports render metrics. */
+let visionGateCacheHitCount = 0;
+export function visionGateCacheHits(): number {
+  return visionGateCacheHitCount;
+}
 
+/**
+ * Phase 16 (vision/CLIP cache identity).
+ *
+ * The identity half of this key used to be `path.basename(clipPath)` alone, which is neither
+ * unique nor stable:
+ *  * NOT UNIQUE — the pipeline names downloads positionally (`scene_0_hist_0.mp4`,
+ *    `scene_0_nara_0.mp4`, …), so two genuinely different files from two different scenes or
+ *    workDirs can share a basename and inherit each other's cached pass/fail verdict. That is
+ *    exactly the "verschillende bestanden krijgen per ongeluk dezelfde score" failure mode.
+ *  * NOT STABLE — the same physical asset fetched by two cascades lands under two different
+ *    basenames, so its (expensive) CLIP evaluation was recomputed from scratch every time.
+ *
+ * `contentKey`, when supplied, is the pipeline's existing clipContentKey() value — the same
+ * asset-identity function the visual dedup gate uses (provider:hash for provider-tagged assets,
+ * curated asset id for archive rows, size+name otherwise). Passing it in rather than
+ * recomputing identity here keeps a single identity implementation in the codebase. Callers
+ * that have no content key fall back to the previous basename behaviour, unchanged.
+ */
 function visionGateCacheKey(
   clipPath: string,
   beatText: string,
   minScore: number,
-  visualDescription?: string
+  visualDescription?: string,
+  contentKey?: string
 ): string {
-  return `${path.basename(clipPath)}|${minScore}|${beatText.slice(0, 120)}|${(visualDescription ?? "").slice(0, 80)}`;
+  const identity = contentKey?.trim() || path.basename(clipPath);
+  return `${identity}|${minScore}|${beatText.slice(0, 120)}|${(visualDescription ?? "").slice(0, 80)}`;
 }
 
 function rememberVisionGateResult(key: string, pass: boolean): void {
@@ -528,7 +554,8 @@ export async function evaluateClipVisionGate(
   visualDescription?: string,
   _segmentLock?: unknown,
   queryEmb?: number[] | null,
-  shortVideo = false
+  shortVideo = false,
+  contentKey?: string
 ): Promise<VisionGateResult> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) {
     return { pass: true, worstScore10: null, skipped: true };
@@ -549,8 +576,9 @@ export async function evaluateClipVisionGate(
     return { pass: true, worstScore10: null, skipped: true };
   }
 
-  const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription);
+  const cacheKey = visionGateCacheKey(clipPath, beatText, minScore, visualDescription, contentKey);
   if (visionGateCache.has(cacheKey)) {
+    visionGateCacheHitCount++;
     const pass = visionGateCache.get(cacheKey)!;
     return { pass, worstScore10: pass ? minScore : null, skipped: false };
   }
@@ -609,7 +637,8 @@ export async function clipPassesVisionGate(
   minScore = minClipQualityScore(),
   visualDescription?: string,
   _segmentLock?: unknown,
-  queryEmb?: number[] | null
+  queryEmb?: number[] | null,
+  contentKey?: string
 ): Promise<boolean> {
   return (
     await evaluateClipVisionGate(
@@ -623,7 +652,9 @@ export async function clipPassesVisionGate(
       minScore,
       visualDescription,
       _segmentLock,
-      queryEmb
+      queryEmb,
+      undefined,
+      contentKey
     )
   ).pass;
 }
