@@ -18,6 +18,7 @@ import {
   getVideoById,
   getVideoQueuePosition,
   listQueuedVideosOrdered,
+  pipelineStallThresholdMs,
   updateVideoStatus,
 } from "./db";
 import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./queue/activeJobsCounter";
@@ -136,17 +137,39 @@ export async function processQueueTick(): Promise<void> {
         void processQueueTick();
       };
       const jobWatchdog = setTimeout(() => {
-        console.error(`[VideoQueue] Video ${claimed.id} exceeded ${Math.round(maxJobMs / 60_000)}min — force-releasing worker slot`);
-        // Freeing the slot only stops the COUNTER from blocking new work — the original
-        // runVideoJob() promise below keeps running for real (its .catch/.finally are still
-        // attached and will fire whenever it eventually settles, however long that takes),
-        // so without this the actual CPU/ffmpeg/network work behind a hung job was never
-        // being stopped, only left uncounted — letting real concurrency drift arbitrarily
-        // above maxJobsPerWorker under repeated hangs. requestVideoGenerationCancel() is the
-        // same signal user-initiated cancellation already uses; the pipeline's existing
-        // throwIfActiveRenderCancelled()/throwIfVideoGenerationCancelled() checks make it
-        // actually unwind instead of just becoming invisible to the slot count.
+        // F3-47: this used to unconditionally requestVideoGenerationCancel() every job still
+        // running at maxJobMs (3h default), regardless of whether it was still actively making
+        // progress — a legitimately long render got cancelled purely for its age. Now checks
+        // the same DB heartbeat-staleness definition failPipelineIfStalled() uses
+        // (pipelineStallThresholdMs, driven by updatedAt) before cancelling: a video still
+        // updating updatedAt keeps running, uninterrupted — only the local slot COUNTER is
+        // freed (as it already was) so this worker can accept new work; requestVideoGenerationCancel
+        // only fires for a job that's actually stale (no progress), same as before for that case.
         void (async () => {
+          const video = await getVideoById(claimed.id).catch(() => undefined);
+          const updatedAtMs = video?.updatedAt ? new Date(video.updatedAt).getTime() : 0;
+          const stale = !video
+            || video.status === "failed"
+            || video.status === "completed"
+            || Date.now() - updatedAtMs >= pipelineStallThresholdMs(video.videoLength, video.status);
+          if (!stale) {
+            console.warn(
+              `[VideoQueue] Video ${claimed.id} exceeded ${Math.round(maxJobMs / 60_000)}min but is still ` +
+              `actively progressing — freeing worker slot only, leaving the render running`
+            );
+            releaseSlot();
+            return;
+          }
+          console.error(`[VideoQueue] Video ${claimed.id} exceeded ${Math.round(maxJobMs / 60_000)}min and is stale — force-releasing worker slot`);
+          // Freeing the slot only stops the COUNTER from blocking new work — the original
+          // runVideoJob() promise below keeps running for real (its .catch/.finally are still
+          // attached and will fire whenever it eventually settles, however long that takes),
+          // so without this the actual CPU/ffmpeg/network work behind a hung job was never
+          // being stopped, only left uncounted — letting real concurrency drift arbitrarily
+          // above maxJobsPerWorker under repeated hangs. requestVideoGenerationCancel() is the
+          // same signal user-initiated cancellation already uses; the pipeline's existing
+          // throwIfActiveRenderCancelled()/throwIfVideoGenerationCancelled() checks make it
+          // actually unwind instead of just becoming invisible to the slot count.
           const { requestVideoGenerationCancel } = await import("./videoGenerationCancel");
           requestVideoGenerationCancel(claimed.id);
           // Bounded poll for the cancellation to actually land (DB status reaches a terminal
@@ -161,8 +184,8 @@ export async function processQueueTick(): Promise<void> {
           const MAX_POLLS = 30;
           for (let i = 0; i < MAX_POLLS && !slotReleased; i++) {
             await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-            const video = await getVideoById(claimed.id).catch(() => undefined);
-            if (!video || video.status === "failed" || video.status === "completed") break;
+            const polled = await getVideoById(claimed.id).catch(() => undefined);
+            if (!polled || polled.status === "failed" || polled.status === "completed") break;
           }
           releaseSlot();
         })();

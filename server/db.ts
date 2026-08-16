@@ -562,8 +562,10 @@ export { ORPHANED_PIPELINE_STATUSES };
 /**
  * No DB heartbeat for this long → treat as failed.
  * Visual search may run many minutes per scene (celebrity/GDELT/YouTube); use a long window there.
+ * Exported (visibility only, F3-47) so expireStuckVideos() below and videoQueue.ts's job
+ * watchdog can reuse the same activity-staleness definition instead of each inventing their own.
  */
-function pipelineStallThresholdMs(
+export function pipelineStallThresholdMs(
   videoLength: string | null | undefined,
   status?: string | null
 ): number {
@@ -619,20 +621,18 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
 
   const updatedAt = video.updatedAt ? new Date(video.updatedAt).getTime() : Date.now();
   const threshold = pipelineStallThresholdMs(video.videoLength, video.status);
-  const startedAt = video.generationStartedAt
-    ? new Date(video.generationStartedAt).getTime()
-    : updatedAt;
-  const totalHardMs =
-    maxPipelineWallClockHardMin(video.videoLength) * 60 * 1000 +
-    pipelineComposeGraceMs(video.videoLength);
-  const totalElapsed = Date.now() - startedAt;
   const staleProgress = Date.now() - updatedAt >= threshold;
-  const overTotalBudget =
-    pipelineWallClockLimitEnabled() && totalElapsed >= totalHardMs;
-  if (!staleProgress && !overTotalBudget) return video;
+  // F3-47: this used to also fail a video once total elapsed time (regardless of whether
+  // updatedAt was still fresh) passed its target wall-clock budget (overTotalBudget) — the
+  // same "total elapsed, not actual staleness" check videoPipeline.ts's
+  // assertPipelineWithinBudget used to enforce in-process. A render still actively updating
+  // its progress must not be marked failed purely for running longer than its target budget.
+  // staleProgress (real "no heartbeat" stall detection, driven by pipelineStallThresholdMs)
+  // is unchanged below — that's what still catches a genuinely stuck/crashed render.
+  if (!staleProgress) return video;
 
   const step = video.progressStep ?? "unknown step";
-  if (staleProgress && !overTotalBudget && pipelineProgressStallRecoveryEnabled()) {
+  if (pipelineProgressStallRecoveryEnabled()) {
     const meta = readVideoMetadataObject(video);
     const prior = typeof meta.stallRecoveries === "number" ? meta.stallRecoveries : 0;
     const nextRecovery = prior + 1;
@@ -641,9 +641,7 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
     }
   }
 
-  const reason = overTotalBudget
-    ? `Generation exceeded ${Math.round(totalHardMs / 60000)} minute wall-clock budget`
-    : `Generation stalled at "${step}" for over ${Math.round(threshold / 60000)} minutes`;
+  const reason = `Generation stalled at "${step}" for over ${Math.round(threshold / 60000)} minutes`;
   await updateVideoStatus(video.id, "failed", {
     errorMessage: appErrorMessage(PIPELINE_ERROR.STUCK_TIMEOUT, reason),
     progressStep: "Failed — generation stalled",
@@ -827,6 +825,14 @@ export async function expireStuckVideos(maxAgeMinutes = 95) {
       (maxPipelineWallClockHardMin(v.videoLength) * 60_000 + pipelineComposeGraceMs(v.videoLength)) * 1.5;
     const effectiveMaxMs = Math.max(perVideoMaxMs, maxAgeMinutes * 60_000);
     if (Date.now() - startedAt < effectiveMaxMs) continue;
+    // F3-47: age past effectiveMaxMs alone used to fail the video here even if it was still
+    // actively updating its progress — this is meant to be the "old enough that not even its
+    // own wall-clock budget explains it" catch, not a second age-only cap. Same staleness
+    // definition failPipelineIfStalled() uses (pipelineStallThresholdMs, driven by updatedAt) —
+    // a render still updating updatedAt within that window keeps running regardless of age.
+    const updatedAt = v.updatedAt ? new Date(v.updatedAt).getTime() : startedAt;
+    const staleProgress = Date.now() - updatedAt >= pipelineStallThresholdMs(v.videoLength, v.status);
+    if (!staleProgress) continue;
     const effectiveMaxMinutes = Math.round(effectiveMaxMs / 60_000);
     await db.update(videos)
       .set({

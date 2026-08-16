@@ -3645,17 +3645,19 @@ function assertPipelineWithinBudget(
   videoLength: string,
   dedup?: VisualDedupState
 ): void {
-  if (!pipelineWallClockLimitEnabled()) return;
+  // F3-47: this used to hard-abort (PIPELINE_ERROR.STUCK_TIMEOUT) once total elapsed time
+  // passed the video-length's target wall-clock budget (e.g. 26min for a 2-min video),
+  // regardless of whether the render was still making real progress. A render that
+  // legitimately needs longer than its target budget now keeps going instead of being killed
+  // for it. Real cancellation (throwIfVideoGenerationCancelled) and fastShort force-export
+  // mode (ensurePipelineForceExport) are unchanged below — this function simply no longer
+  // throws on elapsed time alone. Every individual timeout (provider calls, downloads, scene
+  // fetches, FFmpeg/process spawns), circuit breaker, and provider limiter is untouched and
+  // still enforced at its own call site; a genuinely stuck/crashed render (no progress at
+  // all, not just a slow one) is still caught separately by db.ts's failPipelineIfStalled()
+  // heartbeat-staleness check.
   throwIfVideoGenerationCancelled(videoId);
   if (dedup) ensurePipelineForceExport(dedup);
-  const hardMs = maxPipelineWallClockHardMin(videoLength) * 60_000;
-  const graceMs = dedup?.forceExportMode ? pipelineComposeGraceMs(videoLength) : 0;
-  if (Date.now() - pipelineStartedMs > hardMs + graceMs) {
-    throw pipelineError(
-      PIPELINE_ERROR.STUCK_TIMEOUT,
-      `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
-    );
-  }
 }
 
 // ─── Documentary workflow (prompt → script → ElevenLabs → editor → per-zin beeld → montage) ─

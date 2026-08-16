@@ -48,10 +48,9 @@ import {
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
-import { isFastShortVideoLength, maxPipelineWallClockHardMin, pipelineComposeGraceMs, pipelineWallClockLimitEnabled, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
-import { clearVideoGenerationCancel, requestVideoGenerationCancel } from "./videoGenerationCancel";
+import { clearVideoGenerationCancel } from "./videoGenerationCancel";
 import { getSessionSecret } from "./_core/sessionSecret";
 import { checkRateLimit } from "./_core/rateLimit";
 
@@ -777,50 +776,25 @@ async function _runVideoGeneration(
         enableSubtitles,
         prompt
       );
-      {
-        // Hard wall-clock cap so a hanging FFmpeg call can't block the worker slot forever —
-        // but honor PIPELINE_WALL_CLOCK_LIMIT=false the same way the other two enforcement
-        // points (videoPipeline.ts's assertPipelineWithinBudget, db.ts's failPipelineIfStalled)
-        // do. Previously this fell through to a flat 150-minute cap for any non-fast-short
-        // video regardless of the flag, silently overriding "let it take as long as it needs".
-        // This ceiling must never sit below videoPipeline.ts's own internal hard wall-clock
-        // budget (assertPipelineWithinBudget's maxPipelineWallClockHardMin) — if it did, this
-        // race would routinely fire while the pipeline was still legitimately within its own
-        // budget, marking a still-healthy render "failed" and freeing its worker slot for
-        // reuse while the real render keeps running in the background, uncounted. Previously a
-        // flat PIPELINE_HARD_TIMEOUT_MS (150min default) could be lower than the internal
-        // budget for the two longest video lengths (up to 260min) — take the max of both so
-        // this is always the outermost, last-resort cap, never the first to fire.
-        const internalHardMs = maxPipelineWallClockHardMin(videoLength) * 60_000 + pipelineComposeGraceMs(videoLength);
-        const hardMs = !pipelineWallClockLimitEnabled()
-          ? PIPELINE_UNLIMITED_MS
-          : isFastShortVideoLength(videoLength)
-            ? internalHardMs
-            : Math.max(internalHardMs, parseInt(process.env.PIPELINE_HARD_TIMEOUT_MS ?? String(150 * 60_000), 10));
-        const elapsed = Date.now() - pipelineStartedAt;
-        const remainingMs = Math.max(45_000, hardMs - elapsed);
-        videoUrl = await Promise.race([
-          pipelineRun,
-          new Promise<never>((_, reject) =>
-            setTimeout(() => {
-              // The pipeline promise below is intentionally left running (it may already be
-              // mid-ffmpeg-call) — without this, the abandoned run keeps consuming CPU/ffmpeg
-              // slots/LLM spend uncounted after this function already returns and frees the
-              // worker's job slot. requestVideoGenerationCancel is the same cooperative signal
-              // the 3-hour job watchdog (videoQueue.ts) already uses; the pipeline's own
-              // exec()/throwIfActiveRenderCancelled() checks (~92 call sites) pick it up on
-              // their next ffmpeg/ffprobe spawn and unwind the run from the inside.
-              requestVideoGenerationCancel(videoId);
-              reject(
-                pipelineError(
-                  PIPELINE_ERROR.STUCK_TIMEOUT,
-                  `Pipeline exceeded ${Math.round(hardMs / 60_000)} minute wall-clock budget`
-                )
-              );
-            }, remainingMs)
-          ),
-        ]);
-      }
+      // F3-47: this outer race previously enforced an absolute total-runtime cap (most
+      // recently PIPELINE_UNLIMITED_MS = 7 days, unconditionally) by racing pipelineRun
+      // against a setTimeout that called requestVideoGenerationCancel() and rejected with
+      // STUCK_TIMEOUT once elapsed time passed the cap — regardless of whether the render was
+      // still actively progressing. Audit: every scenario that timeout arm could catch is
+      // already caught earlier by an independent, activity-aware mechanism — user cancellation
+      // and worker cancellation both call requestVideoGenerationCancel() directly (not through
+      // this timer), which pipelineRun's own exec()/throwIfActiveRenderCancelled() checks
+      // (~92 call sites) already pick up and reject on; a genuinely stuck/non-progressing
+      // render is caught by videoQueue.ts's job watchdog (3h, now stale-checked) and db.ts's
+      // periodic sweeps (failAllStalledPipelines every 90s, expireStuckVideos every 2min, both
+      // now stale-checked) long before any multi-day timer would fire; and renderWatchdog.ts's
+      // idle-since-last-activity check guards a truly stuck FFmpeg/child-process chain from
+      // inside the render itself. With hardMs always unlimited, this arm could no longer fire
+      // for a real render, but the setTimeout it scheduled (up to 7 days) was never cleared on
+      // normal completion, so every successful render leaked one long-lived timer. Removing the
+      // race and its timeout arm leaves pipelineRun's own resolution/rejection — including
+      // every individual operation timeout and both cancellation paths — completely unchanged.
+      videoUrl = await pipelineRun;
     } finally {
       clearInterval(pipelineHeartbeat);
       clearInterval(elapsedHeartbeat);

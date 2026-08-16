@@ -68,6 +68,17 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
   let sceneRetrieveStartMs: Record<number, number> = {};
   let sceneComposeStartMs: Record<number, number> = {};
   let concatStartMs = 0;
+  // F3-47: total-budget kill used to fire on elapsed-since-START alone, regardless of whether
+  // the render was still actively working — a render that legitimately needed longer than its
+  // budget got its child processes SIGKILLed anyway. lastActivityMs tracks the most recent
+  // watchdog signal (a child process spawned, or a scene retrieve/compose/concat phase
+  // starting or ending) as this class's own in-process progress indicator, and the total-budget
+  // check below now measures idle time since that signal instead of total time since start —
+  // reusing the exact same budget value (already scaled per video length), just as a rolling
+  // window instead of an absolute one. The per-stage checks further down (retrieval/compose/
+  // concat max) are unchanged — those already correctly guard a single stuck operation.
+  let lastActivityMs = startMs;
+  const markActivity = (): void => { lastActivityMs = Date.now(); };
 
   const deadline = new Promise<never>((_, reject) => { deadlineReject = reject; });
 
@@ -87,10 +98,11 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
   const timer = setInterval(() => {
     if (stopped) { clearInterval(timer); return; }
     const elapsedMs = Date.now() - startMs;
+    const idleMs = Date.now() - lastActivityMs;
 
-    if (elapsedMs > activeBudgetMs) {
+    if (idleMs > activeBudgetMs) {
       clearInterval(timer);
-      killAll(`total budget exceeded (${Math.round(elapsedMs / 1000)}s > ${Math.round(activeBudgetMs / 1000)}s)`);
+      killAll(`no activity for ${Math.round(idleMs / 1000)}s (limit ${Math.round(activeBudgetMs / 1000)}s), total elapsed ${Math.round(elapsedMs / 1000)}s`);
       return;
     }
 
@@ -144,15 +156,16 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
   return {
     trackChild(cp) {
       if (stopped) { try { cp.kill("SIGKILL"); } catch { /**/ } return; }
+      markActivity();
       children.add(cp);
-      cp.on("exit", () => children.delete(cp));
+      cp.on("exit", () => { markActivity(); children.delete(cp); });
     },
-    sceneRetrieveStart(si) { sceneRetrieveStartMs[si] = Date.now(); },
-    sceneRetrieveEnd(si)   { delete sceneRetrieveStartMs[si]; },
-    sceneComposeStart(si)  { sceneComposeStartMs[si] = Date.now(); },
-    sceneComposeEnd(si)    { delete sceneComposeStartMs[si]; },
-    concatStart()          { concatStartMs = Date.now(); },
-    concatEnd()            { concatStartMs = 0; },
+    sceneRetrieveStart(si) { markActivity(); sceneRetrieveStartMs[si] = Date.now(); },
+    sceneRetrieveEnd(si)   { markActivity(); delete sceneRetrieveStartMs[si]; },
+    sceneComposeStart(si)  { markActivity(); sceneComposeStartMs[si] = Date.now(); },
+    sceneComposeEnd(si)    { markActivity(); delete sceneComposeStartMs[si]; },
+    concatStart()          { markActivity(); concatStartMs = Date.now(); },
+    concatEnd()            { markActivity(); concatStartMs = 0; },
     updateBudget(newBudgetMs: number) {
       if (stopped) return;
       const oldSec = Math.round(activeBudgetMs / 1000);
