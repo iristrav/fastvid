@@ -8509,7 +8509,9 @@ async function fetchPersonCelebrityVideoClips(
 }
 
 // ─── 3c2n. NASA Images & Video Library (public domain US gov footage) ─────────
-async function fetchNasaVideoClips(
+// F3-48: exported (visibility only, no logic changed) so
+// videoPipeline.f348NasaAssetParsing.test.ts can cover the asset-manifest parsing fix directly.
+export async function fetchNasaVideoClips(
   query: string,
   duration: number,
   workDir: string,
@@ -8543,9 +8545,25 @@ async function fetchNasaVideoClips(
           `NASA asset ${nasaId}`
         );
         if (!assetResp.ok) continue;
-        const assets = await assetResp.json() as string[];
-        const mp4Path = assets.find((u) => /\.mp4$/i.test(u) && !/~mobile|~thumb|~preview|~small/i.test(u))
-          ?? assets.find((u) => /\.mp4$/i.test(u));
+        // F3-48: the NASA asset-manifest endpoint (images-api.nasa.gov/asset/{id}) does NOT
+        // return a bare array of URL strings — like the sibling /search endpoint above, it
+        // wraps its items in the same collection.items envelope, but each item here is
+        // { href: string } rather than { data: [...] }. Treating the raw response as string[]
+        // made every single call hit "assets.find is not a function" (assets was really the
+        // {collection:{items:[...]}} object), so every NASA candidate failed via the catch
+        // block below instead of being parsed. Normalized here to the actual href array;
+        // an unexpected/malformed response now yields an empty array via `?? []`, so `.find()`
+        // never throws — a genuinely empty/unusable response falls through the two `continue`s
+        // below exactly like "no mp4 found" already did, not an exception.
+        const assetData = await assetResp.json() as {
+          collection?: { items?: Array<{ href?: string }> };
+        };
+        const assetUrls = (assetData.collection?.items ?? [])
+          .map((i) => i.href)
+          .filter((u): u is string => typeof u === "string" && u.length > 0);
+        if (!assetUrls.length) continue;
+        const mp4Path = assetUrls.find((u) => /\.mp4$/i.test(u) && !/~mobile|~thumb|~preview|~small/i.test(u))
+          ?? assetUrls.find((u) => /\.mp4$/i.test(u));
         if (!mp4Path) continue;
         const mp4Url = mp4Path.startsWith("http")
           ? mp4Path
