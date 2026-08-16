@@ -7686,7 +7686,7 @@ async function fetchWikimediaVideos(
         providerMetrics(sourcingCache, "wikimedia").downloadCount++;
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Wikimedia video scene ${sceneIndex}`)) {
-          results.push({ path: outPath, query });
+          results.push({ path: outPath, query, title });
           downloaded++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Wikimedia video added: ${title}`);
         }
@@ -8063,7 +8063,7 @@ async function fetchSepiaSearchVideos(
         }
         providerMetrics(sourcingCache, "sepiasearch").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `SepiaSearch scene ${sceneIndex}`)) {
-          results.push({ path: outPath, query: hit.query });
+          results.push({ path: outPath, query: hit.query, title: metaTitle });
           downloaded++;
           console.log(
             `[Pipeline] Scene ${sceneIndex}: SepiaSearch CC video (score ${hit.score}): ${metaTitle.slice(0, 60)}`
@@ -8274,7 +8274,7 @@ async function fetchGdeltTvNewsClips(
           fastMode
         );
         if (ok) {
-          results.push({ path: outPath, query: hit.query });
+          results.push({ path: outPath, query: hit.query, title: hit.show ?? hit.snippet });
           downloaded++;
           console.log(
             `[Pipeline] Scene ${sceneIndex}: GDELT TV news (${hit.station ?? "TV"}): ` +
@@ -8611,7 +8611,7 @@ async function fetchVimeoCCVideos(
           }
           providerMetrics(sourcingCache, "vimeo").downloadCount++;
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `Vimeo CC scene ${sceneIndex}`)) {
-            results.push({ path: outPath, query });
+            results.push({ path: outPath, query, title: video.name });
             downloaded++;
             console.log(`[Pipeline] Scene ${sceneIndex}: Vimeo CC video: ${video.name?.slice(0, 60)}`);
           }
@@ -9525,7 +9525,7 @@ export async function fetchInternetArchiveClips(
 
         providerMetrics(sourcingCache, "internet_archive").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `Internet Archive scene ${sceneIndex}`)) {
-          results.push({ path: outPath, query });
+          results.push({ path: outPath, query, title: doc.title });
           fetched++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}`);
         }
@@ -10422,6 +10422,16 @@ async function adoptBestCelebrityClip(
       scoreCelebrityCandidate(a, beatText, personName, keywords)
   );
   for (const c of sorted) {
+    // P0/P1 image-quality patch — Fix 2: real, provider-authored text (not our own search
+    // query) is the only usable "external annotation" signal these providers actually return.
+    // Registering it here — the single point every CelebrityClipCandidate producer (Wikimedia,
+    // GDELT, SepiaSearch, Internet Archive, Vimeo CC, Europeana) already funnels through before
+    // adoptClip — gives both scoreAnnotationFingerprint (assetDirector.ts) and the entity gate
+    // (hasReliableEntityEvidence) something honest to check besides the query/filename.
+    if (c.title) {
+      const existing = dedup.clipAnnotationMeta.get(c.path) ?? {};
+      dedup.clipAnnotationMeta.set(c.path, { ...existing, providerText: { title: c.title } });
+    }
     const clip = await adoptClip(
       [c.path],
       dedup,
@@ -11017,23 +11027,37 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
   return unique.slice(0, 3).join(" ") || clean.split(/\s+/).slice(0, 2).join(" ");
 }
 
-function scriptStockSearchQueries(
+export function scriptStockSearchQueries(
   beatText: string,
   persons: string[] = [],
-  _sceneText = "",
-  _videoTitle?: string
+  sceneText = "",
+  videoTitle?: string
 ): string[] {
   const subject = extractBeatSubject(beatText, persons);
-  if (!subject || subject.length < 2) return ["documentary"];
-
-  const queries: string[] = [subject];
-
-  // Add a person-only fallback if person is present
-  if (persons.length > 0) {
-    queries.push(persons[0]);
+  if (subject && subject.length >= 2) {
+    const queries: string[] = [subject];
+    // Add a person-only fallback if person is present
+    if (persons.length > 0) {
+      queries.push(persons[0]);
+    }
+    return [...new Set(queries.filter(q => q.length >= 2 && !isBlockedStockQuery(q)))].slice(0, 3);
   }
 
-  return [...new Set(queries.filter(q => q.length >= 2 && !isBlockedStockQuery(q)))].slice(0, 3);
+  // P0/P1 image-quality patch — Fix 3: extractBeatSubject failed (beatText itself carried no
+  // usable words). Before collapsing to the maximally generic "documentary", reuse context this
+  // function already received but previously ignored (sceneText, videoTitle) via the same
+  // deterministic subject-extraction/stop-word machinery above — no new LLM call, existing
+  // helpers only.
+  if (persons.length > 0) return [persons[0]];
+  const sceneSubject = sceneText ? extractBeatSubject(sceneText, persons) : "";
+  if (sceneSubject && sceneSubject.length >= 2) return [sceneSubject];
+  const titleWords = (videoTitle ?? "")
+    .split(/\W+/)
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
+  if (titleWords.length > 0) return [titleWords.slice(0, 3).join(" ")];
+  // Truly empty context (no beat text, no scene text, no title, no person) — safe minimal
+  // fallback, unchanged from before.
+  return ["documentary"];
 }
 
 function isGenericNatureStockWord(word: string): boolean {
@@ -11877,7 +11901,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
 ];
 
-function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
+export function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
   const fromBeat = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(beatText));
   if (fromBeat.length > 0) return fromBeat;
   for (const cue of extractInlineVisualCues(beatText)) {
@@ -11887,15 +11911,56 @@ function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle 
   return [];
 }
 
-function clipSatisfiesRealEntities(
+/**
+ * P0/P1 image-quality patch — Fix 1: reliable entity evidence.
+ *
+ * The search query that produced a candidate is never proof of what the candidate actually
+ * shows — a provider can and does return mislabeled/irrelevant hits for a perfectly good query.
+ * A candidate only counts as having entity evidence when there is SOME independently-authored
+ * signal to check the rule against:
+ *   - curated-archive annotation (`meta.annotation`) — the pipeline's own AI-derived
+ *     persons/objects/location/era fields for this exact asset, or
+ *   - provider-supplied text (`meta.providerText` — title/description/tags, as returned by the
+ *     source itself), which is authored independently of whatever query this render happened to
+ *     search with.
+ * `sourceQuery` and the positional download filename are deliberately excluded — see
+ * `clipSatisfiesRealEntities` below.
+ */
+export function hasReliableEntityEvidence(rules: RealEntityRule[], meta?: CandidateMeta): boolean {
+  const ann = meta?.annotation;
+  if (ann) {
+    const annHay = [
+      ...(ann.persons?.named ?? []),
+      ...(ann.persons?.categories ?? []),
+      ...(ann.objects ?? []),
+      ...(ann.actions ?? []),
+      ann.location?.continent, ann.location?.country, ann.location?.region, ann.location?.city,
+      ann.environment?.setting,
+      ann.historicalContext?.event, ann.historicalContext?.period,
+      ann.historicalContext?.year, ann.historicalContext?.decade, ann.historicalContext?.century,
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (annHay && rules.some((r) => r.clipMustMatchRe.test(annHay))) return true;
+  }
+  const pt = meta?.providerText;
+  if (pt) {
+    const providerHay = [pt.title, pt.description, pt.tags].filter(Boolean).join(" ").toLowerCase();
+    if (providerHay && rules.some((r) => r.clipMustMatchRe.test(providerHay))) return true;
+  }
+  return false;
+}
+
+export function clipSatisfiesRealEntities(
   rules: RealEntityRule[],
-  sourceQuery: string,
-  filePath: string
+  meta?: CandidateMeta
 ): boolean {
   if (rules.length === 0) return true;
-  const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
-  // Match the search query (e.g. "Elon Musk interview"), not every entity word in the beat.
-  return rules.some((r) => r.clipMustMatchRe.test(hay));
+  // P0/P1 image-quality patch: a search query containing "Elon Musk" does not prove Elon Musk
+  // is in the pixels — it only proves what we searched for. sourceQuery/filename used to be the
+  // sole "evidence" here, which made this gate pass by construction on every candidate a
+  // REAL_ENTITY_RULES-triggering query itself produced. Now this gate requires independently-
+  // authored evidence (archive annotation or provider title/description/tags); with neither
+  // available, the conservative outcome is reject, not an unproven pass.
+  return hasReliableEntityEvidence(rules, meta);
 }
 
 function realEntityStockQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
@@ -14976,7 +15041,10 @@ async function adoptClip(
           const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
           if (!personHit && !eventHit && beatMatch < 1) continue;
         }
-        if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, sourceQuery, p)) continue;
+        if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, dedup.clipAnnotationMeta.get(p))) {
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "entity_evidence", sourceQuery);
+          continue;
+        }
       }
       if (muskTopic) {
         if (category === "solar" && !/solar|photovoltaic|sun panel/.test(beatText.toLowerCase())) continue;

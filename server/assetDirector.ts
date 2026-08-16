@@ -83,6 +83,25 @@ export type CandidateMeta = {
    * Used by archiveMetadataScorer to award segment-level bonuses and produce TrimHints.
    */
   segmentSimilarities?: SegmentSimilarity[];
+  /**
+   * P0/P1 image-quality patch: raw, unstructured provider-authored text for external
+   * (non-archive) candidates — title/description/tags/categories as returned by the source
+   * (Wikimedia page title, Internet Archive item title, SepiaSearch/Vimeo/GDELT metadata, …).
+   *
+   * Deliberately NOT a synthesized `ClipAnnotation` — none of these fields are parsed into
+   * structured persons/objects/location data here, because that would itself be fabricated
+   * annotation (a title string does not reliably decompose into "this object is in this
+   * location"). It exists only so `scoreAnnotationFingerprint` has real, independently-authored
+   * text to match against for candidates that have no curated-archive annotation, instead of
+   * falling back to the positional download filename. It also doubles as the "reliable
+   * evidence" source for the entity gate (see `hasReliableEntityEvidence` in videoPipeline.ts) —
+   * independent of whatever query the pipeline itself searched with.
+   */
+  providerText?: {
+    title?: string;
+    description?: string;
+    tags?: string;
+  } | null;
 };
 
 // ─── Editorial Memory ─────────────────────────────────────────────────────────
@@ -435,11 +454,26 @@ function scoreAnnotationFingerprint(
 ): FingerprintResult {
   const ann = meta?.annotation;
   if (!ann) {
-    // No annotation — fall back to filename keyword match (gives a weak signal)
+    // No curated-archive annotation (external provider). Match beat words against whatever
+    // real, independently-authored text is available for this candidate — provider
+    // title/description/tags (see CandidateMeta.providerText) first, the positional download
+    // filename only as a last, much weaker resort. providerText is real evidence (the source
+    // describing its own asset); the filename is usually just `scene_0_ccc_0.mp4` and rarely
+    // carries content words, which is why it alone was previously only a "weak signal".
     const words = beatText.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
     const base = path.basename(clipPath).toLowerCase().replace(/[_.-]/g, " ");
-    const hits = words.filter((w) => base.includes(w)).length;
-    const fallback = Math.round(25 + (words.length > 0 ? (hits / words.length) * 35 : 0));
+    const providerHay = meta?.providerText
+      ? [meta.providerText.title, meta.providerText.description, meta.providerText.tags]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+      : "";
+    const hits = words.filter((w) => base.includes(w) || providerHay.includes(w)).length;
+    // providerHay carries a higher ceiling (up to 55) than filename-only ever did (35) — it is
+    // real third-party text, not a guess — but still capped well below a genuine annotation
+    // match, since a title/tag mention is not proof the beat's exact claim is depicted.
+    const ceiling = providerHay ? 55 : 35;
+    const fallback = Math.round(25 + (words.length > 0 ? (hits / words.length) * ceiling : 0));
     return { score: fallback, people: 0, objects: 0, actions: 0, location: 0, era: 0, emotion: 0, style: 0, knowledgeGraph: 0 };
   }
 
