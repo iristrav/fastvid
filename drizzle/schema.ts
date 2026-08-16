@@ -557,7 +557,9 @@ export type InsertMediaAssetCacheRow = typeof mediaAssetCache.$inferInsert;
  *  responses so Pexels/Wikimedia/Archive.org are not re-queried for the same
  *  topic across videos. expiresAt is compared at read time; expired rows are
  *  replaced on next write. */
-export const sceneCandidateCache = mysqlTable("scene_candidate_cache", {
+export const sceneCandidateCache = mysqlTable(
+  "scene_candidate_cache",
+  {
   id: int("id").autoincrement().primaryKey(),
   /** SHA256 of normalised(queryText + "|" + source + "|" + cacheVersion). */
   queryHash: varchar("queryHash", { length: 64 }).notNull(),
@@ -573,7 +575,18 @@ export const sceneCandidateCache = mysqlTable("scene_candidate_cache", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   /** Application-managed TTL (typically 7 days). */
   expiresAt: timestamp("expiresAt").notNull(),
-});
+  },
+  // P0 fix 2: getCandidatePool (sceneCandidateCache.ts) filters on
+  // queryHash+source+expiresAt together on every lookup — was unindexed, a full table scan
+  // that gets worse as this cross-render cache accumulates rows. Composite index matching the
+  // query's own column order, same "Phase 12" pattern already used for the other cache tables
+  // in this file (visual_context_cache, visual_intent_cache, etc.).
+  (t) => ({
+    queryHashSourceExpiresIdx: index("scene_candidate_cache_queryHash_source_expiresAt_idx").on(
+      t.queryHash, t.source, t.expiresAt
+    ),
+  })
+);
 
 export type SceneCandidateCacheRow = typeof sceneCandidateCache.$inferSelect;
 export type InsertSceneCandidateCacheRow = typeof sceneCandidateCache.$inferInsert;

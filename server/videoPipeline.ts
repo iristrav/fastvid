@@ -853,6 +853,163 @@ function markEuropeanaSearchResult(success: boolean): void {
   }
 }
 
+// P0 fix 5: same breaker pattern, applied preemptively to the remaining external search
+// providers used by the historical archival cascade (fetchHistoricalBeatVideo) that had no
+// protection against a sustained outage — NARA, Flickr, SepiaSearch, Vimeo, media.ccc, and NASA.
+// Same shape of dependency as Wikimedia/Internet Archive/Europeana above: an external search API
+// with no existing skip mechanism, so a sustained outage on any of these paid the full per-query
+// timeout on every beat that reached it instead of being skipped after a few consecutive
+// failures, same as Europeana's "not observed failing yet, but the same exposure" reasoning.
+const NARA_FAILURE_STREAK_TRIP = 8;
+const NARA_COOLDOWN_MS = 3 * 60_000;
+let naraFailureStreak = 0;
+let naraCooldownUntilMs = 0;
+
+function isNaraInCooldown(): boolean {
+  return Date.now() < naraCooldownUntilMs;
+}
+
+function markNaraSearchResult(success: boolean): void {
+  if (success) {
+    naraFailureStreak = 0;
+    return;
+  }
+  naraFailureStreak++;
+  if (naraFailureStreak >= NARA_FAILURE_STREAK_TRIP) {
+    naraCooldownUntilMs = Date.now() + NARA_COOLDOWN_MS;
+    naraFailureStreak = 0;
+    console.warn(
+      `[Pipeline] NARA: ${NARA_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(NARA_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const FLICKR_FAILURE_STREAK_TRIP = 8;
+const FLICKR_COOLDOWN_MS = 3 * 60_000;
+let flickrFailureStreak = 0;
+let flickrCooldownUntilMs = 0;
+
+function isFlickrInCooldown(): boolean {
+  return Date.now() < flickrCooldownUntilMs;
+}
+
+function markFlickrSearchResult(success: boolean): void {
+  if (success) {
+    flickrFailureStreak = 0;
+    return;
+  }
+  flickrFailureStreak++;
+  if (flickrFailureStreak >= FLICKR_FAILURE_STREAK_TRIP) {
+    flickrCooldownUntilMs = Date.now() + FLICKR_COOLDOWN_MS;
+    flickrFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Flickr: ${FLICKR_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(FLICKR_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const SEPIASEARCH_FAILURE_STREAK_TRIP = 8;
+const SEPIASEARCH_COOLDOWN_MS = 3 * 60_000;
+let sepiaSearchFailureStreak = 0;
+let sepiaSearchCooldownUntilMs = 0;
+
+function isSepiaSearchInCooldown(): boolean {
+  return Date.now() < sepiaSearchCooldownUntilMs;
+}
+
+function markSepiaSearchResult(success: boolean): void {
+  if (success) {
+    sepiaSearchFailureStreak = 0;
+    return;
+  }
+  sepiaSearchFailureStreak++;
+  if (sepiaSearchFailureStreak >= SEPIASEARCH_FAILURE_STREAK_TRIP) {
+    sepiaSearchCooldownUntilMs = Date.now() + SEPIASEARCH_COOLDOWN_MS;
+    sepiaSearchFailureStreak = 0;
+    console.warn(
+      `[Pipeline] SepiaSearch: ${SEPIASEARCH_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(SEPIASEARCH_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const VIMEO_FAILURE_STREAK_TRIP = 8;
+const VIMEO_COOLDOWN_MS = 3 * 60_000;
+let vimeoFailureStreak = 0;
+let vimeoCooldownUntilMs = 0;
+
+function isVimeoInCooldown(): boolean {
+  return Date.now() < vimeoCooldownUntilMs;
+}
+
+function markVimeoSearchResult(success: boolean): void {
+  if (success) {
+    vimeoFailureStreak = 0;
+    return;
+  }
+  vimeoFailureStreak++;
+  if (vimeoFailureStreak >= VIMEO_FAILURE_STREAK_TRIP) {
+    vimeoCooldownUntilMs = Date.now() + VIMEO_COOLDOWN_MS;
+    vimeoFailureStreak = 0;
+    console.warn(
+      `[Pipeline] Vimeo: ${VIMEO_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(VIMEO_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const MEDIA_CCC_FAILURE_STREAK_TRIP = 8;
+const MEDIA_CCC_COOLDOWN_MS = 3 * 60_000;
+let mediaCccFailureStreak = 0;
+let mediaCccCooldownUntilMs = 0;
+
+function isMediaCccInCooldown(): boolean {
+  return Date.now() < mediaCccCooldownUntilMs;
+}
+
+function markMediaCccSearchResult(success: boolean): void {
+  if (success) {
+    mediaCccFailureStreak = 0;
+    return;
+  }
+  mediaCccFailureStreak++;
+  if (mediaCccFailureStreak >= MEDIA_CCC_FAILURE_STREAK_TRIP) {
+    mediaCccCooldownUntilMs = Date.now() + MEDIA_CCC_COOLDOWN_MS;
+    mediaCccFailureStreak = 0;
+    console.warn(
+      `[Pipeline] media.ccc: ${MEDIA_CCC_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(MEDIA_CCC_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const NASA_FAILURE_STREAK_TRIP = 8;
+const NASA_COOLDOWN_MS = 3 * 60_000;
+let nasaFailureStreak = 0;
+let nasaCooldownUntilMs = 0;
+
+function isNasaInCooldown(): boolean {
+  return Date.now() < nasaCooldownUntilMs;
+}
+
+function markNasaSearchResult(success: boolean): void {
+  if (success) {
+    nasaFailureStreak = 0;
+    return;
+  }
+  nasaFailureStreak++;
+  if (nasaFailureStreak >= NASA_FAILURE_STREAK_TRIP) {
+    nasaCooldownUntilMs = Date.now() + NASA_COOLDOWN_MS;
+    nasaFailureStreak = 0;
+    console.warn(
+      `[Pipeline] NASA: ${NASA_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(NASA_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
 // Same breaker, applied to the two remaining external search providers that had no protection
 // against a sustained outage: YouTube (search/CC-clips/thumbnails) and SerpAPI (image search).
 const YOUTUBE_FAILURE_STREAK_TRIP = 8;
@@ -3561,7 +3718,12 @@ export async function downloadToFileStreaming(
   // chunked responses (or a missing/incorrect Content-Length) that only reveal their true size
   // as they stream.
   if (maxBytes !== undefined) {
-    const contentLength = response.headers.get("content-length");
+    // P0 fix 1: optional chaining — every real fetch Response always has .headers.get, but a
+    // handful of existing tests mock the resolved value as a bare { ok, body } object (this
+    // maxBytes branch was previously unreachable for those callers, so the gap was never
+    // exercised). No behavior change for any real response; a missing header is already handled
+    // identically to an absent one via the `contentLength &&` check right below.
+    const contentLength = response.headers?.get("content-length");
     if (contentLength && Number(contentLength) > maxBytes) {
       throw new Error(`${label}: response exceeds maximum size of ${maxBytes} bytes (Content-Length: ${contentLength})`);
     }
@@ -7450,8 +7612,12 @@ async function fetchWikimediaVideos(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}.mp4`);
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly — this
+        // only makes an already-oversized download abort early instead of fully downloading
+        // first; the post-hoc range check stays as the authoritative safety net unchanged.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
-          imageInfo.url, tmpPath, 45_000, `Wikimedia video download scene ${sceneIndex}`, { headers: UA }
+          imageInfo.url, tmpPath, 45_000, `Wikimedia video download scene ${sceneIndex}`, { headers: UA },
+          80 * 1024 * 1024
         );
         if (!dlResp.ok || bytesWritten === null) continue;
         if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
@@ -7512,6 +7678,7 @@ async function fetchFlickrCCVideos(
   beatKeywords: string[] = []
 ): Promise<string[]> {
   if (!FLICKR_API_KEY?.trim() || !query?.trim()) return [];
+  if (isFlickrInCooldown()) return [];
   const results: string[] = [];
   try {
     const searchParams = new URLSearchParams({
@@ -7525,12 +7692,16 @@ async function fetchFlickrCCVideos(
       format: "json",
       nojsoncallback: "1",
     });
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("flickr").run(() => withTimeout(
       fetch(`https://api.flickr.com/services/rest/?${searchParams}`),
       12_000,
       `Flickr video search scene ${sceneIndex}`
-    );
-    if (!searchResp.ok) return [];
+    ));
+    if (!searchResp.ok) {
+      markFlickrSearchResult(false);
+      return [];
+    }
+    markFlickrSearchResult(true);
     const searchData = await searchResp.json() as {
       stat?: string;
       photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
@@ -7583,12 +7754,14 @@ async function fetchFlickrCCVideos(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}.mp4`);
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
           tmpPath,
           45_000,
           `Flickr video download scene ${sceneIndex}`,
-          { headers: { "User-Agent": "Fastvid/1.0 (CC-licensed clips only)" } }
+          { headers: { "User-Agent": "Fastvid/1.0 (CC-licensed clips only)" } },
+          80 * 1024 * 1024
         );
         if (!dlResp.ok || bytesWritten === null) continue;
         if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
@@ -7608,6 +7781,7 @@ async function fetchFlickrCCVideos(
       }
     }
   } catch (err) {
+    markFlickrSearchResult(false);
     console.warn(`[Pipeline] Flickr search failed scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -7644,6 +7818,7 @@ async function fetchSepiaSearchVideos(
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
+  if (isSepiaSearchInCooldown()) return [];
 
   type RankedHit = {
     uuid: string;
@@ -7670,12 +7845,16 @@ async function fetchSepiaSearchVideos(
           searchUrl.searchParams.append("licenceOneOf", "2");
           searchUrl.searchParams.append("licenceOneOf", "7");
 
-          const searchResp = await withTimeout(
+          const searchResp = await providerLimiter("sepiasearch").run(() => withTimeout(
             fetch(searchUrl.toString(), { headers: { "User-Agent": "Fastvid/1.0 (CC PeerTube clips)" } }),
             14_000,
             `SepiaSearch scene ${sceneIndex}`
-          );
-          if (!searchResp.ok) return [];
+          ));
+          if (!searchResp.ok) {
+            markSepiaSearchResult(false);
+            return [];
+          }
+          markSepiaSearchResult(true);
           const data = await searchResp.json() as {
             data?: Array<{
               uuid: string;
@@ -7687,6 +7866,7 @@ async function fetchSepiaSearchVideos(
           };
           return (data.data ?? []).map((item) => ({ item, query }));
         } catch (err) {
+          markSepiaSearchResult(false);
           console.warn(`[Pipeline] SepiaSearch query "${query}" failed:`, (err as Error).message);
           return [];
         }
@@ -7762,12 +7942,14 @@ async function fetchSepiaSearchVideos(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}.mp4`);
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           downloadUrl,
           tmpPath,
           55_000,
           `SepiaSearch download scene ${sceneIndex}`,
-          { headers: { "User-Agent": "Fastvid/1.0" } }
+          { headers: { "User-Agent": "Fastvid/1.0" } },
+          80 * 1024 * 1024
         );
         if (!dlResp.ok || bytesWritten === null) continue;
         if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
@@ -8112,12 +8294,14 @@ export async function fetchEuropeanaVideos(
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}_tmp`);
           const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}.mp4`);
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+          // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             mediaUrl,
             tmpPath,
             55_000,
             `Europeana download scene ${sceneIndex}`,
-            { headers: { "User-Agent": "Fastvid/1.0" } }
+            { headers: { "User-Agent": "Fastvid/1.0" } },
+            80 * 1024 * 1024
           );
           if (!dlResp.ok || bytesWritten === null) continue;
           if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
@@ -8167,6 +8351,7 @@ async function fetchVimeoCCVideos(
   if (!VIMEO_ACCESS_TOKEN?.trim()) return [];
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
+  if (isVimeoInCooldown()) return [];
 
   const results: CelebrityClipCandidate[] = [];
   const vimeoHeaders = {
@@ -8183,12 +8368,16 @@ async function fetchVimeoCCVideos(
       const searchUrl =
         `https://api.vimeo.com/videos?query=${encodeURIComponent(query)}&filter=CC` +
         `&per_page=10&sort=relevant&fields=uri,name,description,link`;
-      const searchResp = await withTimeout(
+      const searchResp = await providerLimiter("vimeo").run(() => withTimeout(
         fetch(searchUrl, { headers: vimeoHeaders }),
         14_000,
         `Vimeo CC search scene ${sceneIndex}`
-      );
-      if (!searchResp.ok) continue;
+      ));
+      if (!searchResp.ok) {
+        markVimeoSearchResult(false);
+        continue;
+      }
+      markVimeoSearchResult(true);
       const searchData = await searchResp.json() as {
         data?: Array<{ uri?: string; name?: string; description?: string }>;
       };
@@ -8228,12 +8417,14 @@ async function fetchVimeoCCVideos(
           const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}_tmp`);
           const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}.mp4`);
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+          // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             downloadUrl,
             tmpPath,
             55_000,
             `Vimeo download scene ${sceneIndex}`,
-            { headers: { "User-Agent": "Fastvid/1.0" } }
+            { headers: { "User-Agent": "Fastvid/1.0" } },
+            80 * 1024 * 1024
           );
           if (!dlResp.ok || bytesWritten === null) continue;
           if (bytesWritten < 50_000 || bytesWritten > 80 * 1024 * 1024) {
@@ -8251,6 +8442,7 @@ async function fetchVimeoCCVideos(
         }
       }
     } catch (err) {
+      markVimeoSearchResult(false);
       console.warn(`[Pipeline] Vimeo CC search failed scene ${sceneIndex}:`, (err as Error).message);
     }
   }
@@ -8267,15 +8459,20 @@ async function fetchMediaCccVideos(
   fileTag = ""
 ): Promise<string[]> {
   if (!query?.trim()) return [];
+  if (isMediaCccInCooldown()) return [];
   const results: string[] = [];
   try {
     const searchUrl = `https://api.media.ccc.de/public/events/search?q=${encodeURIComponent(query)}`;
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("mediaccc").run(() => withTimeout(
       fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (media.ccc.de CC)" } }),
       12_000,
       `media.ccc search scene ${sceneIndex}`
-    );
-    if (!searchResp.ok) return [];
+    ));
+    if (!searchResp.ok) {
+      markMediaCccSearchResult(false);
+      return [];
+    }
+    markMediaCccSearchResult(true);
     const data = await searchResp.json() as {
       events?: Array<{
         title?: string;
@@ -8311,12 +8508,14 @@ async function fetchMediaCccVideos(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}_tmp`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}.mp4`);
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        // P0 fix 1: maxBytes matches the existing 120MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoRec.recording_url,
           tmpPath,
           90_000,
           `media.ccc download scene ${sceneIndex}`,
-          { headers: { "User-Agent": "Fastvid/1.0" } }
+          { headers: { "User-Agent": "Fastvid/1.0" } },
+          120 * 1024 * 1024
         );
         if (!dlResp.ok || bytesWritten === null) continue;
         let cccFileSize: number;
@@ -8340,6 +8539,7 @@ async function fetchMediaCccVideos(
       }
     }
   } catch (err) {
+    markMediaCccSearchResult(false);
     console.warn(`[Pipeline] media.ccc search failed scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -8519,15 +8719,20 @@ export async function fetchNasaVideoClips(
   count: number = 2
 ): Promise<string[]> {
   if (!query?.trim()) return [];
+  if (isNasaInCooldown()) return [];
   const results: string[] = [];
   try {
     const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("nasa").run(() => withTimeout(
       fetch(searchUrl, { headers: { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" } }),
       12_000,
       `NASA video search scene ${sceneIndex}`
-    );
-    if (!searchResp.ok) return [];
+    ));
+    if (!searchResp.ok) {
+      markNasaSearchResult(false);
+      return [];
+    }
+    markNasaSearchResult(true);
     const data = await searchResp.json() as {
       collection?: { items?: Array<{ data?: Array<{ nasa_id?: string; title?: string }> }> };
     };
@@ -8572,12 +8777,14 @@ export async function fetchNasaVideoClips(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}_tmp.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}.mp4`);
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           mp4Url,
           tmpPath,
           60_000,
           `NASA download scene ${sceneIndex}`,
-          { headers: { "User-Agent": "Fastvid/1.0" } }
+          { headers: { "User-Agent": "Fastvid/1.0" } },
+          80 * 1024 * 1024
         );
         if (!dlResp.ok || bytesWritten === null) continue;
         let nasaFileSize: number;
@@ -8602,6 +8809,7 @@ export async function fetchNasaVideoClips(
       }
     }
   } catch (err) {
+    markNasaSearchResult(false);
     console.warn(`[Pipeline] NASA video search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -8621,15 +8829,20 @@ export async function fetchNaraClips(
 ): Promise<string[]> {
   const naraApiKey = process.env.NARA_API_KEY?.trim();
   if (!naraApiKey || !query?.trim()) return [];
+  if (isNaraInCooldown()) return [];
   const results: string[] = [];
   try {
     const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${count * 3}`;
-    const searchResp = await withTimeout(
+    const searchResp = await providerLimiter("nara").run(() => withTimeout(
       fetch(searchUrl, { headers: { "x-api-key": naraApiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" } }),
       12_000,
       `NARA search scene ${sceneIndex}`
-    );
-    if (!searchResp.ok) return [];
+    ));
+    if (!searchResp.ok) {
+      markNaraSearchResult(false);
+      return [];
+    }
+    markNaraSearchResult(true);
     const data = await searchResp.json() as {
       body?: { hits?: { hits?: Array<{ _source?: { record?: {
         title?: string;
@@ -8649,12 +8862,14 @@ export async function fetchNaraClips(
       try {
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_nara_${fetched}_tmp.mp4`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_nara_${fetched}.mp4`);
+        // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
           tmpPath,
           60_000,
           `NARA download scene ${sceneIndex}`,
-          { headers: { "User-Agent": "Fastvid/1.0" } }
+          { headers: { "User-Agent": "Fastvid/1.0" } },
+          80 * 1024 * 1024
         );
         if (!dlResp.ok || bytesWritten === null) continue;
         let naraFileSize: number;
@@ -8678,6 +8893,7 @@ export async function fetchNaraClips(
       }
     }
   } catch (err) {
+    markNaraSearchResult(false);
     console.warn(`[Pipeline] NARA search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -8983,12 +9199,14 @@ export async function fetchInternetArchiveClips(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+        // P0 fix 1: maxBytes matches the existing MAX_ARCHIVE_SIZE post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
           tmpPath,
           IS_RAILWAY ? 18_000 : 45_000,
           `Internet Archive download scene ${sceneIndex}`,
-          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
+          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } },
+          MAX_ARCHIVE_SIZE
         );
         if (!dlResp.ok || bytesWritten === null) continue;
 
@@ -9040,11 +9258,14 @@ export async function downloadYouTubeCCClip(
     const cloudTmpPath = outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
     try {
       const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
+      // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
       const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
         cloudTmpPath,
         90_000,
-        `YouTube CC cloud download scene ${sceneIndex}`
+        `YouTube CC cloud download scene ${sceneIndex}`,
+        {},
+        80 * 1024 * 1024
       );
       if (!dlResp.ok) {
         const errText = await dlResp.text().catch(() => "");
@@ -9125,6 +9346,7 @@ export async function downloadYouTubeCCClip(
         const format = pickFormat(data.formats) ?? pickFormat(data.adaptiveFormats);
         if (format?.url) {
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
+          // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             format.url,
             tmpPath,
@@ -9136,7 +9358,8 @@ export async function downloadYouTubeCCClip(
                   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 Referer: "https://www.youtube.com/",
               },
-            }
+            },
+            80 * 1024 * 1024
           );
           if (dlResp.ok && bytesWritten !== null) {
             let rapidFileSize = -1;
@@ -15478,8 +15701,19 @@ export async function fetchHistoricalBeatVideo(
           q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`, "", beatKeywords
         )).map((h) => h.path);
       case "media_ccc":
+        // P0 fix 3: same tech/celebrity topic gate already used elsewhere (e.g.
+        // fetchPersonCelebrityVideoClips) — applied here so a beat unrelated to that topic
+        // skips this relatively slow, ungated-elsewhere provider instead of always querying it.
+        if (!personMatchesTechCccTopic(intent.primaryPerson ?? "", beat.text)) return [];
         return fetchMediaCccVideos(q, clipFetchDur, workDir, sceneIndex, 1, `${tag}_hist`);
       case "nasa":
+        // P0 fix 3: same space-topic gate already used to build `intent.spaceTopic` elsewhere
+        // (e.g. line ~1812) — computed fresh here rather than trusting intent.spaceTopic, since
+        // at least one caller (fetchHistoricalBeatRescue) hardcodes that field to false
+        // regardless of actual topic, which would have wrongly disabled NASA for every rescue.
+        if (!isSpaceRelatedTopic(scene.visualCue, scene.pexelsQuery, beat.text, scene.text, adoptOpts.videoTitle ?? "")) {
+          return [];
+        }
         return fetchNasaVideoClips(q, clipFetchDur, workDir, sceneIndex, 1);
     }
   };
@@ -23982,11 +24216,16 @@ async function ensureFinalVideoDuration(
     const out = typeof stderr === "string" ? stderr : String(stderr ?? "");
     const starts = [...out.matchAll(/black_start:([\d.]+)/g)].map((m) => parseFloat(m[1]));
     const ends = [...out.matchAll(/black_end:([\d.]+)/g)].map((m) => parseFloat(m[1]));
-    let trimTo = await probeVideoDurationSec(working);
+    // P0 fix 4: single probe of `working`, reused for all three checks below — `working` is
+    // unchanged across this block (it only becomes `trimmed` further down, after the last read
+    // of this value), so the prior 3 separate probeVideoDurationSec calls always measured the
+    // exact same, already-unchanged file.
+    const workingDurationSec = await probeVideoDurationSec(working);
+    let trimTo = workingDurationSec;
     if (starts.length > 0 && ends.length > 0) {
       const lastBlackStart = starts[starts.length - 1];
       const lastBlackEnd = ends[ends.length - 1];
-      const probedBeforeTrim = await probeVideoDurationSec(working);
+      const probedBeforeTrim = workingDurationSec;
       // Only trim trailing black in the last ~25% — avoid chopping mid-video on dark grading.
       if (
         probedBeforeTrim > 0 &&
@@ -23997,7 +24236,7 @@ async function ensureFinalVideoDuration(
         trimTo = Math.max(1, lastBlackStart - 0.02);
       }
     }
-    const probed = await probeVideoDurationSec(working);
+    const probed = workingDurationSec;
     if (trimTo < probed - 0.4) {
       await withSceneFetchTimeout(
         () => exec(

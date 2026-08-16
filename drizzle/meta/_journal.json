@@ -309,6 +309,13 @@
       "when": 1786490100000,
       "tag": "0043_f326_visual_search_memory_fk_repair",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "5",
+      "when": 1786500000000,
+      "tag": "0044_scene_candidate_cache_index",
+      "breakpoints": true
     }
   ]
 }
