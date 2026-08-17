@@ -135,7 +135,8 @@ const LABEL_STOP = new Set([
   "is", "are", "was", "were", "be", "been", "have", "has", "had", "this", "that", "these", "those",
   "de", "het", "een", "en", "van", "op", "te", "dat", "die", "zijn", "werd", "wordt", "niet", "also",
   "when", "then", "year", "years", "during", "after", "before", "into", "over", "under", "while",
-  "where", "which", "who", "there", "their", "they", "would", "could", "should", "became", "become",
+  "where", "which", "who", "there", "their", "they", "them", "would", "could", "should", "became",
+  "become", "what", "just", "amidst", "own",
 ]);
 
 function collectTagsFromEntries(cleaned: string, entries: TagEntry[]): string[] {
@@ -1386,13 +1387,30 @@ export function isGenericPeopleAsset(
   return generic && !specific;
 }
 
-export function extractPrimaryVisualAnchor(beatText: string): string | null {
+/**
+ * Highest-confidence anchor: a beat that names both a specific person/entity
+ * (Hitler, Eva Braun, Stalin…) AND a specific scene/setting (bunker, rally,
+ * surrender…) from the WWII tag tables. Exposed separately so callers can
+ * short-circuit generic single-keyword hint tables (e.g. a bare "Berlin" ->
+ * "berlin city skyline" hint) that would otherwise outrank this more specific,
+ * beat-level match.
+ */
+export function extractEntitySceneAnchor(beatText: string): string | null {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").toLowerCase();
   const scenes = collectTagsFromEntries(cleaned, SCENE_SEARCH_ENTRIES);
   const entities = collectTagsFromEntries(cleaned, ENTITY_SEARCH_ENTRIES);
   if (entities.length > 0 && scenes.length > 0) {
     return `${entities[0]} ${scenes[0]}`;
   }
+  return null;
+}
+
+export function extractPrimaryVisualAnchor(beatText: string): string | null {
+  const entityScene = extractEntitySceneAnchor(beatText);
+  if (entityScene) return entityScene;
+  const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").toLowerCase();
+  const scenes = collectTagsFromEntries(cleaned, SCENE_SEARCH_ENTRIES);
+  const entities = collectTagsFromEntries(cleaned, ENTITY_SEARCH_ENTRIES);
   if (isGeoStatBeat(beatText)) {
     const geo = extractPrimaryGeoSearchTag(beatText);
     if (geo && /america|usa|united states|american/.test(geo)) return "united states city skyline";

@@ -115,6 +115,7 @@ import {
   buildMediaSearchIntent,
   extractEventCue,
   extractLocationPhrase,
+  extractObjectCue,
   inferTopicKind,
   isHistoricalDocumentary,
   partitionCandidatesForIntent,
@@ -2320,7 +2321,7 @@ async function fetchBeatAuthenticStills(
   // remaining sources, so the common "first source already nails it" case costs no extra network
   // calls versus the old sequential-first-success behavior.
   const pool: string[] = [];
-  const beatFocus = classifyBeatFocus(beat.text, historicalDoc ? undefined : personName);
+  const beatFocus = classifyBeatFocus(beat.text, historicalDoc ? undefined : personName, videoTitle);
   const providerTextFor = (p: string) =>
     dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
   const strongEnoughToStopPooling = (p: string): boolean => {
@@ -2330,11 +2331,20 @@ async function fetchBeatAuthenticStills(
       beatFocus,
       classifyEntityMatchTier(historicalDoc ? undefined : personName, pt),
       eventMatchScore(beat.text, pt),
-      locationMatchScore(dedup.assetDirectorActiveLocation, pt)
+      locationMatchScore(dedup.assetDirectorActiveLocation, pt),
+      objectMatchScore(beat.text, pt)
     );
   };
-  const addToPool = (paths: string[]) => {
+  // Point 11 (final visual intelligence hardening — per-candidate source query): record the
+  // actual query that found each candidate, informational/explainability only (see
+  // CandidateMeta.sourceQuery's doc comment in assetDirector.ts) — the merged adoptClip call
+  // below still uses beat.text as the shared sourceQuery for the whole pool.
+  const addToPool = (paths: string[], query: string) => {
     pool.push(...paths);
+    for (const p of paths) {
+      const existing = dedup.clipAnnotationMeta.get(p) ?? {};
+      if (!existing.sourceQuery) dedup.clipAnnotationMeta.set(p, { ...existing, sourceQuery: query });
+    }
   };
 
   if (trySerp) {
@@ -2351,7 +2361,7 @@ async function fetchBeatAuthenticStills(
         `${tag}_still`,
         { dedup, personPortrait, resultOffset: sceneIndex + beat.index + qi }
       );
-      addToPool(serpPaths);
+      addToPool(serpPaths, serpQ);
       if (serpPaths.some(strongEnoughToStopPooling)) break;
     }
   }
@@ -2366,7 +2376,7 @@ async function fetchBeatAuthenticStills(
         1,
         `${tag}_still`
       );
-      addToPool(wikiPaths);
+      addToPool(wikiPaths, q);
       if (wikiPaths.some(strongEnoughToStopPooling)) break;
     }
   }
@@ -2384,7 +2394,7 @@ async function fetchBeatAuthenticStills(
       `${tag}_still`,
       { dedup, personPortrait }
     );
-    addToPool(ovPaths);
+    addToPool(ovPaths, ovQ);
   }
 
   if (!pool.length) return null;
@@ -15066,21 +15076,128 @@ export function locationMatchScore(
   return hay.includes(loc) ? 6 : 0;
 }
 
-/** What kind of concrete thing a beat is primarily asking the viewer to see. */
-export type BeatFocus = "event" | "location" | "person" | "general";
+/**
+ * Point 18 (final visual intelligence hardening — object/topic beats): a small bonus when the
+ * beat centers on a concrete physical object (see extractObjectCue) and the candidate's own
+ * provider text mentions it — same shape as eventMatchScore/locationMatchScore. 0 (neutral)
+ * whenever the beat names no object, or the candidate has no provider text to check.
+ */
+export function objectMatchScore(
+  beatText: string,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  const cue = extractObjectCue(beatText);
+  if (!cue) return 0;
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return 0;
+  return hay.includes(cue) ? 8 : -2;
+}
 
 /**
- * Point 3 (final multi-candidate visual selection patch — contextual beat type): classifies the
- * beat's dominant visual target using only signals already extracted elsewhere (extractEventCue,
- * extractLocationPhrase, opts.primaryPerson) — no new NER/extraction, same precedence order as
- * extractBeatVisualTargets (mediaResearchEngine.ts): an event cue is the most specific signal a
- * beat can carry, then a named place, then a named person, else "general" (no dominant target —
- * e.g. an object/topic beat, which this codebase has no reliable extractor for; see report).
+ * Point 4 (final visual intelligence hardening — secondary entities): full person names the beat
+ * mentions besides its primary person — e.g. "Eva Braun" in a beat about Hitler. Reuses
+ * extractPersonNamesFromText, the same full-name extractor resolveScenePersons already uses
+ * elsewhere in this file, instead of a new NER system. Capped to 2 names to keep the downstream
+ * scoring bounded; the primary person (however it's cased/spelled in the beat) is excluded so a
+ * beat that only names its already-known primary person yields no secondary entities.
  */
-export function classifyBeatFocus(beatText: string, primaryPerson: string | undefined): BeatFocus {
+export function extractSecondaryEntities(beatText: string, primaryPerson: string | undefined): string[] {
+  const primary = coercePersonName(primaryPerson ?? "").toLowerCase();
+  return extractPersonNamesFromText(beatText)
+    .filter((n) => n.toLowerCase() !== primary)
+    .slice(0, 2);
+}
+
+/**
+ * Point 4 (final visual intelligence hardening — secondary entities): a small, independent bonus
+ * when the candidate's own provider text supports a secondary person the beat names alongside its
+ * primary person (e.g. a beat about "Hitler and Eva Braun" — a candidate whose provider text says
+ * "Eva Braun" is genuinely relevant even without naming Hitler). Deliberately smaller than
+ * entityMatchTierScore's exact-primary-match bonus (12) so "primary + secondary" ranks above
+ * "primary only", and "secondary only" still ranks above an unrelated/general candidate — without
+ * ever letting a secondary-only match outscore a real primary match. 0 whenever the beat names no
+ * secondary person or the candidate has no provider text (missing metadata is never a penalty).
+ */
+export function secondaryEntityMatchScore(
+  secondaryEntities: string[],
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  if (!secondaryEntities.length) return 0;
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return 0;
+  const matched = secondaryEntities.some((name) => {
+    const parts = name.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+    return parts.length > 0 && parts.every((p) => hay.includes(p));
+  });
+  return matched ? 5 : 0;
+}
+
+/**
+ * P0 (final visual coverage & zero-blue-fallback hardening, points 2/3): a small, bounded set of
+ * semantically DISTINCT query strings for the same beat, built entirely from signals this file
+ * already extracts elsewhere — no new NER, no LLM call, no hardcoded per-topic query list. Each
+ * non-empty entry targets a different retrieval angle so a rescue/escalation caller can try
+ * several genuinely different searches instead of repeating (or lightly rephrasing) the same one:
+ *   A. entity + event      ("Hitler Eva Braun married")
+ *   B. entity + location   ("Hitler Eva Braun Führerbunker")
+ *   C. event + location + date ("Führerbunker married 1945")
+ *   D. historical context  ("Führerbunker 1945") — works even when no event/person is known
+ *   E. object/location context ("Führerbunker pistol") — for beats with no clear person focus
+ * Entries that can't be formed (e.g. the beat names no location) are simply omitted — this never
+ * invents context that isn't in the beat/title. Deduped and returned in priority order (most to
+ * least specific), so a caller can stop as soon as one query actually finds something.
+ */
+export function buildBeatQueryEscalationTiers(
+  beatText: string,
+  primaryPerson: string | undefined,
+  videoTitle?: string
+): string[] {
+  const person = coercePersonName(primaryPerson ?? "");
+  const secondary = extractSecondaryEntities(beatText, primaryPerson)[0];
+  const entity = [person, secondary].filter(Boolean).join(" ").trim();
+  const event = extractEventCue(beatText);
+  const location = extractLocationPhrase(beatText);
+  const object = extractObjectCue(beatText);
+  const year = extractYearFromText(beatText) ?? extractYearFromText(videoTitle);
+
+  const tiers: string[] = [];
+  if (entity && event) tiers.push(`${entity} ${event}`); // A: entity + event
+  if (entity && location) tiers.push(`${entity} ${location}`); // B: entity + location
+  if (event && location) tiers.push(`${location} ${event}${year ? ` ${year}` : ""}`); // C: event + location + date
+  if (location && year) tiers.push(`${location} ${year}`); // D: historical context
+  if (object) tiers.push(`${location ? `${location} ` : ""}${object}`.trim()); // E: object/location context
+
+  return Array.from(new Set(tiers.map((q) => q.replace(/\s+/g, " ").trim()).filter((q) => q.length > 3)));
+}
+
+/** What kind of concrete thing a beat is primarily asking the viewer to see. */
+export type BeatFocus = "event" | "location" | "object" | "person" | "topic" | "general";
+
+/**
+ * Point 3 (final visual intelligence hardening — complete beat-focus analysis): classifies the
+ * beat's dominant visual target using only signals already extracted elsewhere (extractEventCue,
+ * extractLocationPhrase, extractObjectCue, opts.primaryPerson, isHistoricalDocumentary) — no new
+ * NER/extraction. Precedence, most to least specific: an event cue is the most specific signal a
+ * beat can carry, then a named place, then a named physical object, then a named person, then
+ * "topic" (the beat matches a recognized documentary/historical topic per the existing
+ * isHistoricalDocumentary check but names no more specific target), else "general" (truly nothing
+ * to key off). videoTitle is optional purely for the topic check — every existing call site keeps
+ * working unchanged without it (falls through to "general" instead of "topic" in that case).
+ */
+export function classifyBeatFocus(
+  beatText: string,
+  primaryPerson: string | undefined,
+  videoTitle?: string
+): BeatFocus {
   if (extractEventCue(beatText)) return "event";
   if (extractLocationPhrase(beatText)) return "location";
+  if (extractObjectCue(beatText)) return "object";
   if (coercePersonName(primaryPerson ?? "")) return "person";
+  if (isHistoricalDocumentary(beatText, asVideoTitleString(videoTitle))) return "topic";
   return "general";
 }
 
@@ -15104,30 +15221,63 @@ export function beatFocusPenalty(
   entityTier: EntityMatchTier,
   eventScore: number,
   locationScore: number,
+  hasProviderText: boolean,
+  objectScore = 0
+): number {
+  if (focus === "general" || focus === "topic" || !hasProviderText) return 0;
+  const hasPositiveSignal =
+    entityTier === "exact" || entityTier === "strong" || eventScore > 0 || locationScore > 0 || objectScore > 0;
+  return hasPositiveSignal ? 0 : -6;
+}
+
+/**
+ * Point 17 (final visual intelligence hardening — generic person photo penalty): stronger than
+ * beatFocusPenalty above. That function only fires when a candidate matches NONE of the specific
+ * signals; this one fires when a candidate matches ONLY the primary person (a generic portrait)
+ * while the beat's focus calls for something more specific (an event, a place, or an object) that
+ * this candidate's provider text does not support — e.g. a plain Hitler portrait on a beat about
+ * the Führerbunker or the wedding to Eva Braun. Acceptance criteria A/C from the final visual-
+ * selection hardening task: a candidate with real event/location/object evidence must be able to
+ * outrank one that only has the person right. Neutral (0) whenever the beat's focus is person/
+ * topic/general (nothing more specific being asked for), the candidate already matches the more
+ * specific signal too, or the candidate has no provider text (missing metadata is never a
+ * penalty — only a real, evidenced "this is just a portrait" is penalized here).
+ */
+export function genericPersonPenalty(
+  focus: BeatFocus,
+  entityTier: EntityMatchTier,
+  eventScore: number,
+  locationScore: number,
+  objectScore: number,
   hasProviderText: boolean
 ): number {
-  if (focus === "general" || !hasProviderText) return 0;
-  const hasPositiveSignal = entityTier === "exact" || entityTier === "strong" || eventScore > 0 || locationScore > 0;
-  return hasPositiveSignal ? 0 : -6;
+  if (!hasProviderText) return 0;
+  if (focus !== "event" && focus !== "location" && focus !== "object") return 0;
+  const matchesSpecificSignal = eventScore > 0 || locationScore > 0 || objectScore > 0;
+  const isPersonOnlyMatch = (entityTier === "exact" || entityTier === "strong") && !matchesSpecificSignal;
+  return isPersonOnlyMatch ? -8 : 0;
 }
 
 /**
  * Limited cross-provider candidate pooling patch (point 10 — smart early exit): true when a
  * single already-fetched candidate is strong enough that a bounded multi-provider still-image
  * pool (see fetchBeatAuthenticStills) can stop collecting from further sources and adopt from
- * what it already has — an exact entity match, plus an actual event/location match when the
- * beat's own focus calls for one. Reuses exactly the same signals the pool's own ranking already
- * scores candidates on; not a new/parallel scoring system, just a stop condition built from them.
+ * what it already has — an exact entity match, plus an actual event/location/object match when
+ * the beat's own focus calls for one. Reuses exactly the same signals the pool's own ranking
+ * already scores candidates on; not a new/parallel scoring system, just a stop condition built
+ * from them.
  */
 export function candidatePoolEarlyExitReady(
   focus: BeatFocus,
   entityTier: EntityMatchTier,
   eventScore: number,
-  locationScore: number
+  locationScore: number,
+  objectScore = 0
 ): boolean {
   if (entityTier !== "exact") return false;
   if (focus === "event") return eventScore > 0;
   if (focus === "location") return locationScore > 0;
+  if (focus === "object") return objectScore > 0;
   return true;
 }
 
@@ -15340,19 +15490,25 @@ async function adoptClip(
   // Point 3/4 (final multi-candidate visual selection patch — contextual beat type + sharper
   // generic-image penalty): the beat's dominant focus is the same for every candidate in this
   // pool, so it's classified once outside the per-path closure below.
-  const beatFocus = classifyBeatFocus(beatText, opts.primaryPerson);
+  const beatFocus = classifyBeatFocus(beatText, opts.primaryPerson, opts.videoTitle);
+  const secondaryEntities = extractSecondaryEntities(beatText, opts.primaryPerson);
   const nextLevelScore = (p: string): number => {
     const pt = dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined;
     const tier = classifyEntityMatchTier(opts.primaryPerson, pt);
     const eventScore = eventMatchScore(beatText, pt);
     const locationScore = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
+    const objectScore = objectMatchScore(beatText, pt);
+    const secondaryScore = secondaryEntityMatchScore(secondaryEntities, pt);
     const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
     return (
       historicalDateAlignmentScore(pt, beatText, opts.videoTitle) +
       entityMatchTierScore(tier) +
       eventScore +
       locationScore +
-      beatFocusPenalty(beatFocus, tier, eventScore, locationScore, hasProviderText)
+      objectScore +
+      secondaryScore +
+      beatFocusPenalty(beatFocus, tier, eventScore, locationScore, hasProviderText, objectScore) +
+      genericPersonPenalty(beatFocus, tier, eventScore, locationScore, objectScore, hasProviderText)
     );
   };
   const sortedPaths = [...paths].sort((a, b) => {
@@ -15385,28 +15541,62 @@ async function adoptClip(
   // Curated-archive candidates that proceed to AssetDirector below get a second, richer
   // breakdown (including the diversity modifier) from the existing logAssetDirectorChoice.
   if (sortedPaths.length > 1) {
-    const topPath = sortedPaths[0]!;
-    const topProviderText = dedup.clipAnnotationMeta.get(topPath)?.providerText ?? undefined;
-    const topTier = classifyEntityMatchTier(opts.primaryPerson, topProviderText);
-    const topEntity = entityMatchTierScore(topTier);
-    const topEvent = eventMatchScore(beatText, topProviderText);
-    const topLocation = locationMatchScore(dedup.assetDirectorActiveLocation, topProviderText);
-    const topDate = historicalDateAlignmentScore(topProviderText, beatText, opts.videoTitle);
-    const topVisual =
-      scoreVisualRelevance(`${sourceQuery} ${path.basename(topPath)} ${beatText}`, keywords) +
-      scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery));
-    const topNarration = scoreBeatNarrationMatch(beatText, sourceQuery, topPath) * 4;
-    const topHasProviderText = Boolean(
-      topProviderText && (topProviderText.title || topProviderText.description || topProviderText.tags)
-    );
-    const topNegativeEvidence = beatFocusPenalty(beatFocus, topTier, topEvent, topLocation, topHasProviderText);
     const fmt = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+    // Point 20 (final visual intelligence hardening — score explainability): a small, local
+    // per-candidate signal breakdown, reused for both the winner and the runner-up so the log can
+    // explain WHY the winner won, not just what it scored — no new scoring system, just the same
+    // signals nextLevelScore already sums, computed once per candidate for logging.
+    const breakdown = (p: string) => {
+      const pt = dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined;
+      const tier = classifyEntityMatchTier(opts.primaryPerson, pt);
+      const entity = entityMatchTierScore(tier);
+      const secondary = secondaryEntityMatchScore(secondaryEntities, pt);
+      const event = eventMatchScore(beatText, pt);
+      const location = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
+      const object = objectMatchScore(beatText, pt);
+      const date = historicalDateAlignmentScore(pt, beatText, opts.videoTitle);
+      const visual =
+        scoreVisualRelevance(`${sourceQuery} ${path.basename(p)} ${beatText}`, keywords) +
+        scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery));
+      const narration = scoreBeatNarrationMatch(beatText, sourceQuery, p) * 4;
+      const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
+      const negativeEvidence = beatFocusPenalty(beatFocus, tier, event, location, hasProviderText, object);
+      const genericPenalty = genericPersonPenalty(beatFocus, tier, event, location, object, hasProviderText);
+      const finalScore =
+        date + entity + secondary + event + location + object + visual + narration + negativeEvidence + genericPenalty;
+      return { tier, entity, secondary, event, location, object, date, visual, narration, negativeEvidence, genericPenalty, finalScore };
+    };
+    const topPath = sortedPaths[0]!;
+    const top = breakdown(topPath);
     console.log(
-      `[Pipeline] Scene ${sceneIndex} beat ${beatIndex} winner: asset=${path.basename(topPath)} ` +
-        `pool=${sortedPaths.length} focus=${beatFocus} entity=${fmt(topEntity)}(${topTier}) ` +
-        `event=${fmt(topEvent)} location=${fmt(topLocation)} date=${fmt(topDate)} ` +
-        `visual=${fmt(topVisual)} narration=${fmt(topNarration)} negativeEvidence=${fmt(topNegativeEvidence)}`
+      `[VisualSelection] scene=${sceneIndex} beat=${beatIndex} pool=${sortedPaths.length} ` +
+        `winner=${path.basename(topPath)} focus=${beatFocus} primaryEntity=${fmt(top.entity)}(${top.tier}) ` +
+        `secondaryEntity=${fmt(top.secondary)} event=${fmt(top.event)} location=${fmt(top.location)} ` +
+        `object=${fmt(top.object)} date=${fmt(top.date)} narration=${fmt(top.narration)} visual=${fmt(top.visual)} ` +
+        `negativeEvidence=${fmt(top.negativeEvidence)} genericPenalty=${fmt(top.genericPenalty)} finalScore=${fmt(top.finalScore)}`
     );
+    if (sortedPaths.length > 2) {
+      const runnerUpPath = sortedPaths[1]!;
+      const runnerUp = breakdown(runnerUpPath);
+      const margin = top.finalScore - runnerUp.finalScore;
+      console.log(
+        `[VisualSelection] scene=${sceneIndex} beat=${beatIndex} runner-up=${path.basename(runnerUpPath)} ` +
+          `score=${fmt(runnerUp.finalScore)} vs winner score=${fmt(top.finalScore)} margin=${fmt(margin)} ` +
+          `reason=${
+            [
+              top.entity !== runnerUp.entity ? "entity" : null,
+              top.secondary !== runnerUp.secondary ? "secondaryEntity" : null,
+              top.event !== runnerUp.event ? "event" : null,
+              top.location !== runnerUp.location ? "location" : null,
+              top.object !== runnerUp.object ? "object" : null,
+              top.date !== runnerUp.date ? "date" : null,
+              top.genericPenalty !== runnerUp.genericPenalty ? "genericPenalty" : null,
+            ]
+              .filter(Boolean)
+              .join(",") || "visual/narration only"
+          }`
+      );
+    }
   }
 
   // Pull per-beat data from planning layers (storyboard + rhythm)
@@ -17048,7 +17238,7 @@ export async function fetchHistoricalBeatVideo(
   // doesn't unconditionally exhaust all 9 tiers before ranking (worst case — nothing found at all
   // — is unchanged: it already tried every tier/query before returning null).
   const pool: string[] = [];
-  const beatFocus = classifyBeatFocus(beat.text, intent.primaryPerson || undefined);
+  const beatFocus = classifyBeatFocus(beat.text, intent.primaryPerson || undefined, adoptOpts.videoTitle);
   const providerTextFor = (p: string) =>
     dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
   const strongEnoughToStopPooling = (p: string): boolean => {
@@ -17058,7 +17248,8 @@ export async function fetchHistoricalBeatVideo(
       beatFocus,
       classifyEntityMatchTier(intent.primaryPerson || undefined, pt),
       eventMatchScore(beat.text, pt),
-      locationMatchScore(dedup.assetDirectorActiveLocation, pt)
+      locationMatchScore(dedup.assetDirectorActiveLocation, pt),
+      objectMatchScore(beat.text, pt)
     );
   };
   const POOL_RAW_CANDIDATE_TARGET = 3;
@@ -17071,6 +17262,15 @@ export async function fetchHistoricalBeatVideo(
       const paths = await fetchTierPaths(tier, q);
       if (paths.length === 0) continue;
       pool.push(...paths);
+      // Point 11 (final visual intelligence hardening — per-candidate source query): record the
+      // actual query that found each candidate, informational/explainability only (see
+      // CandidateMeta.sourceQuery's doc comment in assetDirector.ts) — adoptClip's own gate
+      // evaluation below still uses beat.text as the shared sourceQuery for the whole pool, so
+      // this can never reopen the BLOCKED_STOCK_VISUAL_RE sourceQuery-scoping bug fixed earlier.
+      for (const p of paths) {
+        const existing = dedup.clipAnnotationMeta.get(p) ?? {};
+        if (!existing.sourceQuery) dedup.clipAnnotationMeta.set(p, { ...existing, sourceQuery: q });
+      }
       if (paths.some(strongEnoughToStopPooling) || pool.length >= POOL_RAW_CANDIDATE_TARGET) {
         stopPooling = true;
         break;
@@ -17098,7 +17298,22 @@ export async function fetchHistoricalBeatVideo(
   return null;
 }
 
-/** Last-resort archival video for historical scenes (no SerpAPI/stock stills). */
+/**
+ * Last-resort archival video for historical scenes (no SerpAPI/stock stills).
+ *
+ * P0 (final visual coverage & zero-blue-fallback hardening, point 21's control-flow fix): this is
+ * the LAST real-visual attempt before rescueBeatVisualWhenEmpty falls through to AI/placeholder,
+ * yet it used to build its search intent with primaryPerson/persons hardcoded empty and only a
+ * single search query (beat.searchQuery) — even though the caller already has the full beat/
+ * scene/dedup context available. That starved query set meant the very last chance to find a real
+ * clip was often searching with LESS signal than every earlier tier, not more. Now it reuses the
+ * same real context (dedup.primaryPerson, resolveScenePersons, beatMediaSearchQueries — all
+ * already used identically elsewhere in this file, e.g. fetchBeatYoutubeThenPexels) plus the new
+ * buildBeatQueryEscalationTiers (entity+event / entity+location / event+location+date /
+ * historical-context / object-context) so this last attempt tries several genuinely different
+ * retrieval angles instead of one thin one. buildMediaSearchIntent already dedupes/caps the
+ * combined query list, so this is strictly additive — no new provider, no new budget.
+ */
 async function fetchHistoricalBeatRescue(
   beat: SceneBeat,
   scene: Scene,
@@ -17112,13 +17327,17 @@ async function fetchHistoricalBeatRescue(
 ): Promise<string | null> {
   const intent = buildMediaSearchIntent({
     beatText: beat.text,
-    searchQueries: [beat.searchQuery],
+    searchQueries: [
+      beat.searchQuery,
+      ...beatMediaSearchQueries(beat, videoTitle),
+      ...buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle),
+    ],
     keywords: adoptOpts.keywords ?? beat.keywords,
-    primaryPerson: "",
-    persons: [],
+    primaryPerson: dedup.primaryPerson || "",
+    persons: resolveScenePersons(scene, videoTitle, dedup.primaryPerson),
     videoTitle,
     powerWord: beat.powerWord,
-    personTopicLock: false,
+    personTopicLock: dedup.personTopicLock ?? false,
     spaceTopic: false,
     muskTopic: adoptOpts.muskTopic ?? false,
   });
@@ -21335,12 +21554,17 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
-  // Wikimedia rescue — try plan queries + original beat queries with relaxed threshold
+  // Wikimedia rescue — try plan queries, then the P0 query-escalation tiers (entity+event,
+  // entity+location, event+location+date, historical context, object context — see
+  // buildBeatQueryEscalationTiers), then the original truncated-beat-text query as the final,
+  // most generic attempt — a failed narrower query no longer ends the rescue early since each
+  // tier is tried in turn before falling through to color/placeholder.
   try {
     const wikiQueries: string[] = [];
     if (scene.pexelsQueries?.length) wikiQueries.push(...scene.pexelsQueries.slice(0, 3));
+    wikiQueries.push(...buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle));
     wikiQueries.push(beat.text.slice(0, 80));
-    for (const q of wikiQueries) {
+    for (const q of Array.from(new Set(wikiQueries))) {
       const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { beatIndex: beat.index });
       if (wikiClips.length > 0) {
         const clip = wikiClips[0]!;
@@ -21410,6 +21634,30 @@ async function rescueBeatVisualWhenEmpty(
     } catch (err) {
       console.warn("[Retrieval] extendLastClip error:", (err as Error).message?.slice(0, 80));
     }
+  }
+
+  // P0 (final visual coverage & zero-blue-fallback hardening, point 17): fires only at the exact
+  // moment every real-visual/contextual/AI strategy above has been exhausted and the pipeline is
+  // about to fall back to a color/text placeholder — reuses the existing per-beat entries already
+  // recorded in dedup.clipRejectAudit (recordClipReject, called throughout adoptClip's gates) for
+  // the reject-reason breakdown, so this is explainability on top of an existing audit trail, not
+  // a new logging/tracking system.
+  {
+    const beatRejects = dedup.clipRejectAudit.filter(
+      (e) => e.sceneIndex === scene.index && e.beatIndex === beat.index
+    );
+    const reasonCounts: Record<string, number> = {};
+    for (const e of beatRejects) reasonCounts[e.reason] = (reasonCounts[e.reason] ?? 0) + 1;
+    const topRejects =
+      Object.entries(reasonCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([reason, count]) => `${reason}:${count}`)
+        .join(",") || "none";
+    console.warn(
+      `[VisualCoverage] s${scene.index}b${beat.index}: rejected=${beatRejects.length} topRejects=${topRejects} ` +
+        `contextualSearch=true fallback=PLACEHOLDER (all real/contextual/AI sourcing strategies exhausted)`
+    );
   }
 
   for (let attempt = 0; attempt < 4; attempt++) {

@@ -329,6 +329,7 @@ const QUERY_STOP_WORDS = new Set([
   "his", "her", "its", "their", "about", "into", "over", "after", "before", "when", "where",
   "what", "how", "why", "who", "which", "your", "you", "our", "not", "but", "all", "one",
   "rise", "fall", "story", "world", "life", "video", "documentary", "history", "historical",
+  "them", "they", "then", "than", "just", "amidst",
 ]);
 
 function tagsOverlap(a: string[], b: string[]): boolean {
@@ -386,7 +387,7 @@ export function buildBeatMatchTags(
   const videoVisualTopic = inferVideoVisualTopic(titleStr, [beatText, sceneText].join(" "));
   const topicAnchors = extractTopicAnchorTags(titleStr, [beatText, sceneText].join(" "));
   // English-only sources. beatText is Dutch narration — never use it for tags.
-  // Strategy: 1 main subject + 1 specifier (max 2 tags total).
+  // Strategy: 1 main subject + 1 specifier + 1 secondary token (max 3 tags total).
   const pexelsQueries = (beat.pexelsQueries ?? []).filter(Boolean);
   const bestQuery = pexelsQueries[0] || searchQuery.trim() || visualDescription.trim();
   const hasLiteralVisual = Boolean(visualDescription.trim() || searchQuery.trim());
@@ -401,7 +402,21 @@ export function buildBeatMatchTags(
     .filter((t) => !mainSubject.includes(t))
     .slice(0, 1);
 
-  const beatTags = normalizeMediaTags([...mainSubject, ...specifier]).slice(0, 2);
+  // Round 10B forensic audit (production render, "Why Hitler Killed Himself and His Wife"):
+  // a beat naming two people/an entity+event/an entity+location routinely carries a THIRD
+  // distinct, meaningful token (e.g. "braun" in "Hitler Eva Braun wedding") that mainSubject+
+  // specifier above structurally cannot hold — real archive assets tagged with that second
+  // entity (confirmed in production: an asset tagged "eva braun" scored #1 for a beat about
+  // "Hitler and Eva Braun exchanged vows", yet the tag-match log/score only ever saw "hitler")
+  // were then invisible to this function's own tag-intersection matching and score.log line.
+  // Pulled from the same bestQuery tokenization mainSubject already reads — no new extraction
+  // source, still deterministic, still capped, purely additive (can only add a tag-match point,
+  // never remove one).
+  const secondaryToken = allBestTokens
+    .filter((t) => !mainSubject.includes(t) && !specifier.includes(t))
+    .slice(0, 1);
+
+  const beatTags = normalizeMediaTags([...mainSubject, ...specifier, ...secondaryToken]).slice(0, 3);
 
   const visualSource = bestQuery;
   const visualTags = extractVisualSearchTags(visualSource, videoTitle);

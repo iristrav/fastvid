@@ -104,6 +104,16 @@ export type CandidateMeta = {
     /** Real, provider-authored date/year string when the source exposes one — never invented. */
     dateHint?: string;
   } | null;
+  /**
+   * Final visual intelligence hardening, point 11 (per-candidate source query): the actual query
+   * string this specific candidate was found under, when it's known to differ from the blanket
+   * sourceQuery a batched adoptClip call uses for gate evaluation (see videoPipeline.ts's
+   * candidate-pooling patches). Purely informational/explainability data for now — logged, not
+   * fed into gate logic, to avoid reopening the sourceQuery-scoping bug already found and fixed
+   * once (see the "limited candidate pooling" round's report). Optional and backward compatible;
+   * absent for the large majority of candidates that were never pooled.
+   */
+  sourceQuery?: string;
 };
 
 // ─── Editorial Memory ─────────────────────────────────────────────────────────

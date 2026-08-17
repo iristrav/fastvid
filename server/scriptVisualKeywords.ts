@@ -10,6 +10,7 @@ import {
 import {
   extractPrimaryGeoSearchTag,
   extractPrimaryVisualAnchor,
+  extractEntitySceneAnchor,
   isGeoWelcomeBeat,
   buildGeoWelcomeVisualQueries,
   isCyclingBeat,
@@ -261,12 +262,17 @@ function buildIntentFieldsFromHint(
 
 /** Rule-based visual intent when LLM output is missing or weak. */
 export function fallbackVisualIntent(sentence: string): ScriptVisualIntentEntry {
-  const hint = matchVisualFallbackHint(sentence);
+  // A beat naming both a specific person/entity (Hitler, Eva Braun…) and a specific
+  // scene (bunker, rally, surrender…) is a higher-confidence match than the generic
+  // single-keyword hint table below (e.g. a bare "Berlin" -> "berlin city skyline"),
+  // so it must win instead of being short-circuited by that table.
+  const entityScene = extractEntitySceneAnchor(sentence);
+  const hint = entityScene ? null : matchVisualFallbackHint(sentence);
   if (hint) {
     return { sentence, ...buildIntentFieldsFromHint(sentence, hint) };
   }
 
-  const anchor = extractPrimaryVisualAnchor(sentence);
+  const anchor = entityScene ?? extractPrimaryVisualAnchor(sentence);
   let primary = anchor ? sanitizeVisualKeyword(anchor.replace(/_/g, " ")) : "";
 
   if (!primary) {

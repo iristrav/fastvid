@@ -328,6 +328,23 @@ export function extractEventCue(beatText: string): string | null {
   return beatText.match(EVENT_CUE_RE)?.[0]?.toLowerCase() ?? null;
 }
 
+// Small, targeted vocabulary of concrete physical objects a documentary beat might center on —
+// same spirit and size as EVENT_CUE_RE, drawn from the final visual-selection hardening task's
+// own worked examples, not a general object-detection list.
+const OBJECT_CUE_RE =
+  /\b(gun|pistol|revolver|rifle|cyanide|poison|capsule|document|documents|letter|letters|tank|aircraft|airplane|plane|building|bunker|ship|vessel|map|uniform|weapon|grenade|medal|flag|helmet|sword|knife)\b/i;
+
+/**
+ * Point 3/18 (final visual intelligence hardening — object/topic beats): the bare object noun a
+ * beat centers on ("pistol", "bunker", "document", ...). Returns null when the beat doesn't name
+ * a recognizable physical object — callers must treat that as "no object signal to check," not
+ * evidence of anything. Checked after event/location in classifyBeatFocus's precedence, so a beat
+ * that already has a clearer event or location signal is never reclassified as object-focused.
+ */
+export function extractObjectCue(beatText: string): string | null {
+  return beatText.match(OBJECT_CUE_RE)?.[0]?.toLowerCase() ?? null;
+}
+
 /**
  * Deterministic, LLM-free extraction of multiple concrete visual targets for one beat (Point 1
  * of the visual-selection upgrade) — reuses only signals already available in this module/intent

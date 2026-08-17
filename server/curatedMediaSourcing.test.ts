@@ -94,6 +94,184 @@ describe("curatedMediaSourcing", () => {
     expect(beatTags.some((t) => t.includes("bunker") || t === "hitler")).toBe(true);
   });
 
+  // Round 10B: forensic audit of a real production render of "Why Hitler Killed Himself and
+  // His Wife" (job Video 495, Railway deployment log). Beat 0 was "Adolf Hitler and Eva Braun
+  // exchanged vows before sealing their fate..." — the archive pool's own top-scoring candidate
+  // (asset id 27020) was already tagged ["adolf hitler", "eva braun", "world war", ...], yet the
+  // production log's tag-match line only ever reported "matched: hitler" across 7 different
+  // candidates for this beat. Root cause: buildBeatMatchTags capped its output at "1 main
+  // subject + 1 specifier" (2 tokens total), which cannot hold a beat naming two people. Fixed
+  // by adding one more token (still deterministic, still from the same bestQuery tokenization,
+  // still capped) — these two tests exercise the real function end-to-end, not source strings.
+  it("buildBeatMatchTags carries a second named entity from a two-person beat (Round 10B fix)", () => {
+    const { beatTags, allTags } = buildBeatMatchTags(
+      {
+        text: "Adolf Hitler and Eva Braun exchanged vows before sealing their fate together.",
+        index: 0,
+        searchQuery: "hitler eva braun wedding",
+        pexelsQueries: ["Hitler Eva Braun wedding"],
+        keywords: [],
+      },
+      { text: "Hitler's last act: a wedding and a suicide pact" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    expect(beatTags).toContain("hitler");
+    expect(beatTags.some((t) => t === "eva" || t === "braun")).toBe(true);
+    expect(allTags.some((t) => t === "eva" || t === "braun")).toBe(true);
+  });
+
+  it("the widened beatTags now actually intersect an Eva-Braun-tagged archive asset (reproduces the production tag-match log)", () => {
+    const { beatTags } = buildBeatMatchTags(
+      {
+        text: "Adolf Hitler and Eva Braun exchanged vows before sealing their fate together.",
+        index: 0,
+        searchQuery: "hitler eva braun wedding",
+        pexelsQueries: ["Hitler Eva Braun wedding"],
+        keywords: [],
+      },
+      { text: "Hitler's last act: a wedding and a suicide pact" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    // Same asset shape (tags) as the real production candidate #27020.
+    const assetTags = ["adolf hitler", "eva braun", "world war", "hitler braun", "berghof retreat"];
+    // Mirrors curatedMediaSourcing.ts's own tryPrepare() matchedTags computation exactly.
+    const matchedTags = beatTags.filter((t) => assetTags.some((x) => x === t || x.includes(t)));
+    expect(matchedTags.length).toBeGreaterThan(1); // was exactly 1 ("hitler") before the fix
+  });
+
+  it("a single-subject beat still produces a small, bounded tag set (anti-regression)", () => {
+    const { beatTags } = buildBeatMatchTags(
+      {
+        text: "The Titanic struck an iceberg and began to sink.",
+        index: 1,
+        searchQuery: "titanic iceberg",
+        powerWord: "titanic iceberg",
+        keywords: [],
+      },
+      { text: "Maritime disaster documentary" },
+      "Titanic Documentary"
+    );
+    expect(beatTags.length).toBeLessThanOrEqual(3);
+    expect(new Set(beatTags).size).toBe(beatTags.length); // no duplicate tokens
+  });
+
+  // Round 12: forensic trace of the same production render found that the deterministic
+  // fallback chain (fallbackVisualIntent -> extractPrimaryVisualAnchor, scriptVisualKeywords.ts
+  // / visualBeatTags.ts) had two provable gaps when no LLM searchQuery/pexelsQueries are set
+  // (i.e. hydrateBeatScriptVisuals must synthesize one from beat text alone):
+  // (1) LABEL_STOP (visualBeatTags.ts) was missing "them"/"what", so an abstract beat with no
+  //     named entity fell back to raw sentence tokens and let function words like "them" and a
+  //     sentence-initial "What" (caught by the proper-noun regex) dominate the tag set.
+  // (2) fallbackVisualIntent checked the generic, genre-agnostic VISUAL_FALLBACK_HINTS table
+  //     (visualFallbackHints.ts, built for business/Netherlands-documentary content) before
+  //     the more specific entity+scene match in extractPrimaryVisualAnchor, so any beat merely
+  //     containing "Berlin" collapsed to the hint table's unconditional "berlin city skyline" —
+  //     even when the same beat also names Hitler and a bunker/siege scene. Fixed by extracting
+  //     that entity+scene match into extractEntitySceneAnchor() and giving it priority over the
+  //     hint table. Both fixes verified end-to-end via buildBeatMatchTags (not source strings).
+  it("Round 12 Test 1: a Hitler+Eva Braun wedding beat keeps both people with no LLM searchQuery override", () => {
+    const { beatTags } = buildBeatMatchTags(
+      {
+        text: "Adolf Hitler and Eva Braun exchanged vows before sealing their fate together.",
+        index: 0,
+        keywords: [],
+      },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    expect(beatTags).toContain("hitler");
+    expect(beatTags.some((t) => t === "eva" || t === "braun")).toBe(true);
+    expect(beatTags).not.toContain("suicide");
+  });
+
+  it("Round 12 Test 2: an abstract beat does not let function words (them/what) dominate the tag set", () => {
+    const { beatTags, mainSubject } = buildBeatMatchTags(
+      {
+        text: "What drove them to orchestrate their own demise amidst the ruins?",
+        index: 2,
+        keywords: [],
+      },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    expect(beatTags).not.toContain("them");
+    expect(beatTags).not.toContain("what");
+    expect(mainSubject).not.toContain("them");
+    expect(mainSubject).not.toContain("what");
+  });
+
+  it("Round 12 Test 3: a Berlin+Hitler+bunker beat keeps Hitler instead of collapsing to a generic city-skyline hint", () => {
+    const { beatTags } = buildBeatMatchTags(
+      {
+        text: "In Berlin's heart, Adolf Hitler, trapped beneath ground, gave orders.",
+        index: 1,
+        keywords: [],
+      },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    expect(beatTags).toContain("hitler");
+    expect(beatTags).not.toEqual(expect.arrayContaining(["berlin", "skyline"]));
+  });
+
+  it("Round 12 Test 4: a dated surrender beat keeps the year/country in topicAnchors or beatTags", () => {
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      {
+        text: "On May 1st, 1945, German radios crackled to life.",
+        index: 3,
+        keywords: [],
+      },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    const allFound = [...beatTags, ...topicAnchors];
+    expect(allFound.some((t) => t === "1945" || t === "german" || t === "germany")).toBe(true);
+  });
+
+  it("Round 12 Test 5 (anti-regression): a Titanic beat stays literal and never broadens into WWII terms", () => {
+    const { beatTags, topicAnchors } = buildBeatMatchTags(
+      {
+        text: "The Titanic struck an iceberg and began to sink.",
+        index: 1,
+        keywords: [],
+      },
+      { text: "" },
+      "Titanic Documentary"
+    );
+    const allFound = [...beatTags, ...topicAnchors];
+    expect(allFound).not.toEqual(
+      expect.arrayContaining(["hitler", "nazi", "war", "wwii", "bunker"])
+    );
+  });
+
+  it("Round 12 Test 6: reproduces the Round 11 production beatTags=[hitler,suicide] shape and shows the deterministic layer alone does not produce it", () => {
+    // Round 11 found this exact real production log line for beat 0 of Video 495. Round 12
+    // traced it to an LLM-authored beat.searchQuery/pexelsQueries value (script generation,
+    // out of scope this round) that overrides the deterministic anchor — reproduced here by
+    // setting that same narrow searchQuery explicitly, exactly as hydrateBeatScriptVisuals
+    // would receive it from an LLM-authored beat.
+    const withLlmOverride = buildBeatMatchTags(
+      {
+        text: "Adolf Hitler and Eva Braun exchanged vows before sealing their fate together.",
+        index: 0,
+        searchQuery: "hitler suicide",
+        keywords: [],
+      },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    expect(withLlmOverride.beatTags).toEqual(expect.arrayContaining(["hitler", "suicide"]));
+
+    // With no LLM override, the deterministic layer (fixed this round) produces a materially
+    // better result for the exact same beat text — proving the bug is not in this layer.
+    const deterministicOnly = buildBeatMatchTags(
+      { text: "Adolf Hitler and Eva Braun exchanged vows before sealing their fate together.", index: 0, keywords: [] },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    expect(deterministicOnly.beatTags.some((t) => t === "eva" || t === "braun")).toBe(true);
+  });
+
   // Phase 11: found a real bug in buildBeatMatchTags's topic-anchor scoping — when
   // beat.keywords carries "Titanic" but beat.text only refers to it indirectly ("The ship
   // struck an iceberg"), the named-entity tag from the title/keywords gets dropped instead of
