@@ -2320,7 +2320,6 @@ async function fetchBeatAuthenticStills(
   // remaining sources, so the common "first source already nails it" case costs no extra network
   // calls versus the old sequential-first-success behavior.
   const pool: string[] = [];
-  const poolQueryLabel = new Map<string, string>();
   const beatFocus = classifyBeatFocus(beat.text, historicalDoc ? undefined : personName);
   const providerTextFor = (p: string) =>
     dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
@@ -2334,11 +2333,8 @@ async function fetchBeatAuthenticStills(
       locationMatchScore(dedup.assetDirectorActiveLocation, pt)
     );
   };
-  const addToPool = (paths: string[], query: string) => {
-    for (const p of paths) {
-      if (!poolQueryLabel.has(p)) poolQueryLabel.set(p, query);
-      pool.push(p);
-    }
+  const addToPool = (paths: string[]) => {
+    pool.push(...paths);
   };
 
   if (trySerp) {
@@ -2355,7 +2351,7 @@ async function fetchBeatAuthenticStills(
         `${tag}_still`,
         { dedup, personPortrait, resultOffset: sceneIndex + beat.index + qi }
       );
-      addToPool(serpPaths, serpQ);
+      addToPool(serpPaths);
       if (serpPaths.some(strongEnoughToStopPooling)) break;
     }
   }
@@ -2370,7 +2366,7 @@ async function fetchBeatAuthenticStills(
         1,
         `${tag}_still`
       );
-      addToPool(wikiPaths, q);
+      addToPool(wikiPaths);
       if (wikiPaths.some(strongEnoughToStopPooling)) break;
     }
   }
@@ -2388,7 +2384,7 @@ async function fetchBeatAuthenticStills(
       `${tag}_still`,
       { dedup, personPortrait }
     );
-    addToPool(ovPaths, ovQ);
+    addToPool(ovPaths);
   }
 
   if (!pool.length) return null;
@@ -2397,7 +2393,13 @@ async function fetchBeatAuthenticStills(
   // per-source count=1 budgets above — not a new, larger download budget, just letting the
   // existing adoptClip ranking compare across sources instead of only within one.
   const boundedPool = [...new Set(pool)].slice(0, 5);
-  const winnerQuery = poolQueryLabel.get(boundedPool[0]!) ?? beat.searchQuery;
+  // Point: the pool spans candidates fetched under several different generated query strings
+  // (buildHistoricalArchivalQueries's own variants, e.g. "${anchor} archival footage") — passing
+  // any one of those specific strings as adoptClip's single sourceQuery for the WHOLE merged pool
+  // would score every other candidate against a query it was never actually found under (and, for
+  // this exact phrase, incorrectly trip the unrelated "archival" entry in
+  // BLOCKED_STOCK_VISUAL_RE for every candidate in the pool). beat.text is the one description
+  // that's true for the whole pool regardless of which query/source found which candidate.
   const clip = await adoptClip(
     boundedPool,
     dedup,
@@ -2405,7 +2407,7 @@ async function fetchBeatAuthenticStills(
     beat.index,
     beat.text,
     workDir,
-    winnerQuery,
+    beat.text,
     loose
   );
   if (clip && !isPipelineFallbackClip(clip)) {
@@ -17034,16 +17036,63 @@ export async function fetchHistoricalBeatVideo(
   // cancellation mid-loop) — matching strictRefillAttemptedScenes' existing semantics.
   dedup.historicalCascadeAttemptedBeats.add(cascadeKey);
 
+  // Limited cross-provider video pooling patch: instead of adopting whichever tier of
+  // HISTORICAL_SOURCE_TIER_ORDER happens to be tried first, collect candidates across a bounded
+  // number of tiers (same providers, same per-tier query/count budgets as before) into one pool,
+  // then run adoptClip's existing ranking/gates ONCE across the combined pool. A candidate that
+  // already looks strong enough — reusing the exact same entity/event/location signals the still-
+  // image pooling patch (fetchBeatAuthenticStills) uses, no new scoring system — still short-
+  // circuits collection, so the common "first tier already nails it" case costs no extra fetches
+  // versus the old sequential first-success behavior. POOL_RAW_CANDIDATE_TARGET additionally caps
+  // how many tiers get tried on a run of weak/empty misses, so a beat with no strong signal
+  // doesn't unconditionally exhaust all 9 tiers before ranking (worst case — nothing found at all
+  // — is unchanged: it already tried every tier/query before returning null).
+  const pool: string[] = [];
+  const beatFocus = classifyBeatFocus(beat.text, intent.primaryPerson || undefined);
+  const providerTextFor = (p: string) =>
+    dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+  const strongEnoughToStopPooling = (p: string): boolean => {
+    const pt = providerTextFor(p);
+    if (!pt) return false;
+    return candidatePoolEarlyExitReady(
+      beatFocus,
+      classifyEntityMatchTier(intent.primaryPerson || undefined, pt),
+      eventMatchScore(beat.text, pt),
+      locationMatchScore(dedup.assetDirectorActiveLocation, pt)
+    );
+  };
+  const POOL_RAW_CANDIDATE_TARGET = 3;
+  const POOL_MAX = 5;
+
+  let stopPooling = false;
   for (const tier of HISTORICAL_SOURCE_TIER_ORDER) {
+    if (stopPooling) break;
     for (const q of allQueries) {
       const paths = await fetchTierPaths(tier, q);
       if (paths.length === 0) continue;
-      const clip = await adoptClip(paths, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose);
-      if (isRealVideoClip(clip)) {
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical ${tier} "${q}"`);
-        return clip;
+      pool.push(...paths);
+      if (paths.some(strongEnoughToStopPooling) || pool.length >= POOL_RAW_CANDIDATE_TARGET) {
+        stopPooling = true;
+        break;
       }
     }
+  }
+
+  if (!pool.length) return null;
+  const boundedPool = [...new Set(pool)].slice(0, POOL_MAX);
+  // Point: the pool spans candidates fetched under several different generated query strings
+  // (buildHistoricalArchivalQueries's own variants, e.g. "${anchor} archival footage") — passing
+  // any one of those specific strings as adoptClip's single sourceQuery for the WHOLE merged pool
+  // would score every other candidate against a query it was never actually found under. beat.text
+  // is the one description that's true for the whole pool regardless of which query/tier found
+  // which candidate, so it's the only safe choice here — unlike the single-query case elsewhere
+  // in this file, where sourceQuery and beatText intentionally differ.
+  const clip = await adoptClip(boundedPool, dedup, sceneIndex, beat.index, beat.text, workDir, beat.text, loose);
+  if (isRealVideoClip(clip)) {
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: historical video from pool of ${boundedPool.length} (${HISTORICAL_SOURCE_TIER_ORDER.join("/")})`
+    );
+    return clip;
   }
 
   return null;
