@@ -303,7 +303,12 @@ import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getVisualSearchMemoryForEntity } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
-import { buildVideoQualityReport, computeMeritQualityScore, logVideoQualityReport } from "./videoQualityReport";
+import {
+  buildVideoQualityReport,
+  computeMeritQualityScore,
+  logVideoQualityReport,
+  assertVisualCoverageExportGate,
+} from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
 import {
@@ -3290,7 +3295,7 @@ async function resolveBeatClipFast(
         const contentKey = clipContentKey(p);
         if (dedup.usedContentKeys.has(contentKey)) continue;
         if (dedup.personTopicLock && dedup.primaryPerson &&
-          isOffTopicVisualForPersonTopic(q, p, dedup.primaryPerson)) continue;
+          isOffTopicVisualForPersonTopic(q, p, dedup.primaryPerson, dedup.clipAnnotationMeta.get(p)?.providerText?.title)) continue;
         try {
           const ok = await withTimeout(isValidVideoFile(p), 5_000, `fast validate s${sceneIndex} b${beat.index}`);
           if (!ok) continue;
@@ -6534,6 +6539,20 @@ async function fetchSerpAPIImages(
           opts.dedup?.usedImageUrls.add(urlKey);
           results.push(outPath);
           downloaded++;
+          // Problem 1/2 (production render finding): SerpAPI already returns the source page's
+          // title per result — independent, provider-authored text, not derived from our own
+          // search query — but it was discarded entirely. Registering it here (same
+          // clipAnnotationMeta mechanism adoptBestCelebrityClip already uses for the
+          // CelebrityClipCandidate providers) is what lets adoptClip's scriptImageFallback
+          // relevance floor and the entity-evidence gate actually check these images instead of
+          // adopting them on zero signal.
+          if (opts.dedup && images[i].title) {
+            const existing = opts.dedup.clipAnnotationMeta.get(outPath) ?? {};
+            opts.dedup.clipAnnotationMeta.set(outPath, {
+              ...existing,
+              providerText: { title: images[i].title },
+            });
+          }
           console.log(`[Pipeline] Scene ${sceneIndex}: SerpAPI image added: ${images[i].title || imgUrl.slice(0, 60)}`);
         }
       } catch (err) {
@@ -6734,6 +6753,19 @@ async function extendLastClip(
 }
 
 // ─── 3c. Color Fallback (last resort — unique path per beat so montage never blocks on dedup) ─
+/**
+ * Production fix (Hitler-render finding — Problem 3/11): this used to cap at 90s — a single
+ * static text card was legally allowed to dominate up to a minute and a half of continuous
+ * screen time, which is exactly what a real render showed once real visuals ran out around the
+ * 9s mark. Capped at the pipeline's own documented per-shot ceiling (archiveVisualMaxClipSec,
+ * 5-8s) instead, so a caller that needs to cover a longer gap is forced to call this repeatedly
+ * (varying color/text per slot, as appendGuaranteedSceneClips already does) rather than getting
+ * one giant placeholder.
+ */
+export function guaranteedTextOverlayDurationSec(duration: number): number {
+  return Math.min(Math.max(duration, 3), archiveVisualMaxClipSec());
+}
+
 async function generateGuaranteedBeatClip(
   sceneIndex: number,
   slotIndex: number,
@@ -6785,7 +6817,7 @@ async function generateGuaranteedBeatClip(
       const safeText = sanitizeForDrawtextStrict(beatText, 90);
       const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
       const color = colors[Math.abs(sceneIndex) % colors.length];
-      const safeDur = Math.min(Math.max(duration, 3), 90);
+      const safeDur = guaranteedTextOverlayDurationSec(duration);
       await withSceneFetchTimeout(
         () => exec(
           `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
@@ -7698,6 +7730,13 @@ async function fetchWikimediaVideos(
         providerMetrics(sourcingCache, "wikimedia").downloadCount++;
 
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 3, `Wikimedia video scene ${sceneIndex}`)) {
+          // Point 1 (production image-quality hardening): register via the generic
+          // sourcingCache/providerAssetKey mechanism (not just the CelebrityClipCandidate.title
+          // field below) so every call site — not only the ones that go through
+          // adoptBestCelebrityClip — gets this real, Commons-authored page title as providerText.
+          if (title) {
+            putCachedProviderAsset(sourcingCache, "wikimedia", title, { providerText: { title } });
+          }
           results.push({ path: outPath, query, title });
           downloaded++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Wikimedia video added: ${title}`);
@@ -8079,6 +8118,12 @@ async function fetchSepiaSearchVideos(
         }
         providerMetrics(sourcingCache, "sepiasearch").downloadCount++;
         if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `SepiaSearch scene ${sceneIndex}`)) {
+          // Point 1 (production image-quality hardening): register via the generic
+          // sourcingCache/providerAssetKey mechanism so every call site — not only the ones
+          // that go through adoptBestCelebrityClip — gets this real, uploader-authored title.
+          if (metaTitle) {
+            putCachedProviderAsset(sourcingCache, "sepiasearch", hit.uuid, { providerText: { title: metaTitle } });
+          }
           results.push({ path: outPath, query: hit.query, title: metaTitle });
           downloaded++;
           console.log(
@@ -8470,6 +8515,16 @@ export async function fetchEuropeanaVideos(
             continue;
           }
           putCachedProviderAsset(sourcingCache, "europeana", recordId, { licenseAllowed: true });
+          // Point 1 (production image-quality hardening): Europeana's own search-result title
+          // (already used above for relevance scoring/person filtering) was never registered as
+          // providerText, so adoptClip's relevance floor and the entity/person gates couldn't
+          // see it.
+          const europeanaTitle = (item.title ?? []).join(" ").trim();
+          if (europeanaTitle) {
+            putCachedProviderAsset(sourcingCache, "europeana", recordId, {
+              providerText: { title: europeanaTitle },
+            });
+          }
 
           const creatorField = recordData.object?.proxies?.find((p) => p.dcCreator)?.dcCreator;
           const sourceCreator = Array.isArray(creatorField)
@@ -8645,6 +8700,12 @@ async function fetchVimeoCCVideos(
           }
           providerMetrics(sourcingCache, "vimeo").downloadCount++;
           if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 5, `Vimeo CC scene ${sceneIndex}`)) {
+            // Point 1 (production image-quality hardening): register via the generic
+            // sourcingCache/providerAssetKey mechanism so every call site — not only the ones
+            // that go through adoptBestCelebrityClip — gets this real, uploader-authored title.
+            if (video.name) {
+              putCachedProviderAsset(sourcingCache, "vimeo", uri, { providerText: { title: video.name } });
+            }
             results.push({ path: outPath, query, title: video.name });
             downloaded++;
             console.log(`[Pipeline] Scene ${sceneIndex}: Vimeo CC video: ${video.name?.slice(0, 60)}`);
@@ -9528,6 +9589,15 @@ export async function fetchInternetArchiveClips(
         putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
           licenseAllowed: true,
         });
+        // Point 1 (production image-quality hardening): archive.org's own search-result title
+        // (doc.title) is real, provider-authored text — already used above for relevance
+        // scoring/person filtering, but never registered as providerText, so adoptClip's
+        // relevance floor and the entity/person gates couldn't see it.
+        if (doc.title) {
+          putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
+            providerText: { title: doc.title },
+          });
+        }
 
         const videoFiles = (metaData.files ?? metaData.result ?? []).filter(f =>
           ['h.264', 'MPEG4', 'MP4', 'Ogg Video', 'WebM'].includes(f.format)
@@ -11482,6 +11552,15 @@ export interface VisualDedupState {
   entityYoutubeFetchesUsed: number;
   /** Licensed Pexels/Pixabay clips used (capped when minimizeStockFootage). */
   stockBeatsUsed: number;
+  /**
+   * Production fix (Hitler-render finding, Problem 10): a whole SCENE (not just one beat)
+   * that had to fall all the way back to generateColorFallback as its final composed output —
+   * i.e. every real sourcing/rescue attempt for that scene failed. Tracked separately from
+   * clipAdoptAudit's per-beat "fallback" source because this specific last-resort path replaces
+   * the scene's entire composed video and is not itself recorded as a per-beat adoption. Read by
+   * the final export validation to fail the render explicitly instead of shipping it.
+   */
+  sceneRescueColorFallbackCount: number;
   /** Ken Burns / Serp stills allowed this scene (0 = video only). */
   stillPhotosThisScene: number;
   stillPhotosMaxThisScene: number;
@@ -11724,6 +11803,7 @@ export function createVisualDedupState(
     klingClipsUsed: 0,
     entityYoutubeFetchesUsed: 0,
     stockBeatsUsed: 0,
+    sceneRescueColorFallbackCount: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
     stillPhotosUsedGlobal: 0,
@@ -12356,13 +12436,40 @@ function isOffTopicVisualForMusk(sourceQuery: string, filePath: string): boolean
   return false;
 }
 
-function isOffTopicVisualForPersonTopic(sourceQuery: string, filePath: string, primaryPerson: string): boolean {
+export function isOffTopicVisualForPersonTopic(
+  sourceQuery: string,
+  filePath: string,
+  primaryPerson: string,
+  providerTitle?: string
+): boolean {
   const hay = `${sourceQuery} ${path.basename(filePath)}`.toLowerCase();
   if (PERSON_OFFTOPIC_VISUAL_RE.test(hay)) return true;
   const person = coercePersonName(primaryPerson);
   const parts = person.toLowerCase().split(/\s+/).filter((p) => p.length >= 3);
-  if (parts.length >= 2 && parts.every((p) => hay.includes(p))) return false;
-  if (parts.length === 1 && hay.includes(parts[0])) return false;
+  const queryMentionsPerson =
+    (parts.length >= 2 && parts.every((p) => hay.includes(p))) ||
+    (parts.length === 1 && hay.includes(parts[0]));
+  if (queryMentionsPerson) {
+    // Point 4 (final production hardening): a query built FROM primaryPerson trivially
+    // "mentions" them — that alone is not independent evidence the visual actually shows that
+    // person. When the provider itself supplied real title text, corroborate against it before
+    // trusting the query's self-reference: if the title clearly points somewhere else (matches
+    // one of the existing off-topic blocklists) and doesn't itself mention the person, don't
+    // let the query override that. No providerText available -> unchanged existing behavior.
+    if (providerTitle && providerTitle.trim()) {
+      const titleHay = providerTitle.toLowerCase();
+      const titleMentionsPerson =
+        (parts.length >= 2 && parts.every((p) => titleHay.includes(p))) ||
+        (parts.length === 1 && titleHay.includes(parts[0]));
+      if (
+        !titleMentionsPerson &&
+        (PERSON_OFFTOPIC_VISUAL_RE.test(titleHay) || MUSK_OFFTOPIC_VISUAL_RE.test(titleHay))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
   if (/\b(celebrity|interview|red carpet|paparazzi|influencer|makeup|fashion)\b/.test(hay)) return false;
   if (MUSK_OFFTOPIC_VISUAL_RE.test(hay)) return true;
   return false;
@@ -14767,6 +14874,29 @@ function scoreVisualRelevance(text: string, keywords: string[]): number {
   return score;
 }
 
+/**
+ * Problem 1/2 (production render finding — "Why Hitler Killed Himself and His Wife"):
+ * scriptImageFallback candidates (generic image search, e.g. SerpAPI) previously skipped every
+ * topical-relevance check in adoptClip. When the provider itself supplies real title text
+ * (independent, non-circular evidence — not derived from our own search query), this checks it
+ * actually shares *something* with the beat/query/video topic. Returns true (pass) whenever
+ * there's no provider title to check, or no usable keywords to check it against — it only
+ * rejects when there IS a title and it shares literally nothing with what we know about the
+ * beat, exactly the pattern behind the off-topic image that shipped in production ("An open
+ * letter to remove Richard M. Stallman...") on a Hitler beat.
+ */
+export function scriptImageFallbackPassesRelevanceFloor(
+  providerTitle: string | undefined,
+  sourceQuery: string,
+  beatText: string,
+  videoTitle?: string
+): boolean {
+  if (!providerTitle || !providerTitle.trim()) return true;
+  const relKeywords = tokenizeForRelevance(`${sourceQuery} ${beatText} ${asVideoTitleString(videoTitle)}`);
+  if (relKeywords.length === 0) return true;
+  return scoreVisualRelevance(providerTitle, relKeywords) > 0;
+}
+
 /** Map narration sentence → Pexels search from script text only. */
 function deriveBeatStockQuery(
   beatText: string,
@@ -15087,7 +15217,7 @@ async function adoptClip(
         if (
           opts.personTopic &&
           opts.primaryPerson &&
-          isOffTopicVisualForPersonTopic(sourceQuery, p, opts.primaryPerson)
+          isOffTopicVisualForPersonTopic(sourceQuery, p, opts.primaryPerson, dedup.clipAnnotationMeta.get(p)?.providerText?.title)
         ) {
           continue;
         }
@@ -15101,7 +15231,11 @@ async function adoptClip(
       const category = stockVisualCategory(sourceQuery, p);
       if (category === "blocked_model" || category === "blocked_offtopic") continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
-      if (!opts.scriptImageFallback && !clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle)) {
+      // Documentary beat gate (blocklist-only: known non-documentary / off-topic geo-urban
+      // filename patterns) now applies unconditionally, including scriptImageFallback
+      // candidates — it was previously exempted here, one of the gaps that let a completely
+      // unrelated SerpAPI image reach adoption with zero topical scrutiny.
+      if (!clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle)) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "documentary_beat_gate", sourceQuery);
         continue;
       }
@@ -15112,7 +15246,35 @@ async function adoptClip(
       const beatMatch = scoreBeatNarrationMatch(beatText, sourceQuery, p);
       const queryWords = sourceQuery.split(/\s+/).filter((w) => w.length >= 3);
       const queryInBeat = scoreVisualRelevance(beatText, queryWords) >= 1;
-      if (!opts.scriptImageFallback) {
+      // Entity evidence (Fix 1, P0/P1 patch) now applies unconditionally, including
+      // scriptImageFallback candidates — a named, REAL_ENTITY_RULES-covered entity in the beat
+      // still needs independently-authored evidence (curated-archive annotation, or provider
+      // title/description/tags) that the candidate actually shows that entity.
+      if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, dedup.clipAnnotationMeta.get(p))) {
+        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "entity_evidence", sourceQuery);
+        continue;
+      }
+      // Final hardening round — point 3: the relevance floor (originally scoped to only
+      // scriptImageFallback candidates — Problem 1/2, "Why Hitler Killed Himself and His Wife")
+      // now applies to every candidate that has real providerText, not just the generic
+      // image-search fallback path. It's still a no-op whenever providerText is absent (the
+      // overwhelming majority of candidates today), so this is additive, not a tightening of
+      // any candidate that couldn't already be checked. Reject only when the provider's own
+      // title shares literally nothing with the query/beat/video topic — the exact pattern
+      // behind the off-topic image that shipped in production ("An open letter to remove
+      // Richard M. Stallman...") on a Hitler beat.
+      {
+        const providerTitle = dedup.clipAnnotationMeta.get(p)?.providerText?.title;
+        if (!scriptImageFallbackPassesRelevanceFloor(providerTitle, sourceQuery, beatText, opts.videoTitle)) {
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual", sourceQuery);
+          continue;
+        }
+      }
+      if (opts.scriptImageFallback) {
+        /* scriptImageFallback candidates already got the relevance-floor check above; the
+           requireBeat/scriptAnchored/personTopic checks below are intentionally skipped for
+           this path (unchanged from before this hardening round). */
+      } else {
         if (requireBeat && beatMatch < 1 && !queryInBeat) continue;
         if (scriptAnchored && beatMatch < 1 && !queryInBeat && entityRules.length === 0) continue;
         if (opts.personTopic && opts.primaryPerson) {
@@ -15121,10 +15283,6 @@ async function adoptClip(
           const personHit = parts.some((pt) => hay.includes(pt));
           const eventHit = /\b(interview|celebrity|red carpet|keynote|conference|launch)\b/.test(hay);
           if (!personHit && !eventHit && beatMatch < 1) continue;
-        }
-        if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, dedup.clipAnnotationMeta.get(p))) {
-          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "entity_evidence", sourceQuery);
-          continue;
         }
       }
       if (muskTopic) {
@@ -20482,7 +20640,7 @@ async function adoptStockBeatClipFallback(
       if (
         dedup.personTopicLock &&
         dedup.primaryPerson &&
-        isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson)
+        isOffTopicVisualForPersonTopic(q, clipPath, dedup.primaryPerson, dedup.clipAnnotationMeta.get(clipPath)?.providerText?.title)
       ) {
         continue;
       }
@@ -26254,6 +26412,12 @@ async function _runVideoPipelineInner(
                         `[Compose] Scene ${scene.index} RESCUE FAILED — using black-fill:`,
                         (rescueErr as Error).message?.slice(0, 120)
                       );
+                      // Problem 10 (production render finding): this scene has now exhausted
+                      // composeSceneVideo, the rescue-compose retry, AND every per-slot
+                      // guaranteed-clip attempt — the whole scene is about to become one static
+                      // color card. Counted so the final export validation can fail the render
+                      // explicitly instead of silently shipping it as "successful".
+                      visualDedup.sceneRescueColorFallbackCount++;
                       result = await generateColorFallback(scene.index, scene.duration, workDir);
                     }
                   }
@@ -26897,6 +27061,9 @@ async function _runVideoPipelineInner(
                 (rescueComposeErr as Error).message?.slice(0, 120)
               );
               const outputPath = path.join(workDir, `scene_${scene.index}_lastresort.mp4`);
+              // Problem 10: same "whole scene became one static fallback card" outcome as the
+              // sibling rescue path above — only when there was no real rescue clip to reuse.
+              if (!rescueClips.length) visualDedup.sceneRescueColorFallbackCount++;
               const lastClip =
                 rescueClips[0] ?? (await generateGuaranteedBeatClip(scene.index, 9999, Math.max(3, scene.duration), workDir));
               const audioPath = audioPaths[i];
@@ -27267,6 +27434,15 @@ async function _runVideoPipelineInner(
     }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
+
+    // Hard final validation gate — a render must never look "completed" when its actual
+    // visual coverage is broken (missing beats plugged with the scene-level text/color
+    // placeholder rescue path, or too many beats filled by fallback instead of a real
+    // sourced clip). The diagnostic qualityReport above is persisted either way; this throws
+    // (PIPELINE_ERROR.QUALITY_GATE) so the caller's existing outer catch (server/routers.ts)
+    // marks the video "failed" with the concrete reason, exactly like the other
+    // post-render pipelineError checks (e.g. "Final video not playable") already do.
+    assertVisualCoverageExportGate(qualityReport, visualDedup.sceneRescueColorFallbackCount);
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {

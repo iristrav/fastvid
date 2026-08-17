@@ -21,6 +21,7 @@ import type { BeatGeoRegion } from "./vidrushQuality";
 import { targetClipVisionScore } from "./visualQualityGate";
 import type { VoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
+import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 
 export type { VoiceVisualMatchSummary };
 
@@ -381,5 +382,54 @@ export function assertQualityReportExportGate(report: VideoQualityReport): void 
     .join("; ");
   console.warn(
     `[Quality] Geo warning (non-blocking): ${violations.length} issue(s): ${summary}`
+  );
+}
+
+/**
+ * Problem 10 (production render finding — "Why Hitler Killed Himself and His Wife"): unlike
+ * assertQualityReportExportGate above (deliberately non-blocking, geo-only), this gate is
+ * deliberately BLOCKING. A real render was found where actual sourced footage stopped after a
+ * few seconds and a static color/text placeholder silently filled the rest of the video, while
+ * the pipeline still reported the render as a normal success. This throws (PIPELINE_ERROR.
+ * QUALITY_GATE — the existing quality-gate failure code, videos.errorMessage-storable) instead
+ * of letting that ship, whenever:
+ *   - any whole SCENE had to fall back to generateColorFallback as its entire composed output
+ *     (sceneRescueColorFallbackCount > 0 — every real/rescue attempt for that scene failed, no
+ *     ambiguity), or
+ *   - a strict MAJORITY of filled beats were sourced via the per-beat color/text fallback
+ *     (adoptAuditSummary.fallbackBeats), meaning most of what's on screen is placeholder, not
+ *     real footage.
+ * A handful of isolated fallback beats in an otherwise well-sourced video is not blocked — only
+ * the two patterns above, which is what an actually-broken render looks like.
+ */
+export function assertVisualCoverageExportGate(
+  report: VideoQualityReport,
+  sceneRescueColorFallbackCount: number
+): void {
+  const summary = report.adoptAuditSummary;
+  const beatsFilled = summary?.beatsFilled ?? 0;
+  const fallbackBeats = summary?.fallbackBeats ?? 0;
+  const majorityFallback = beatsFilled > 0 && fallbackBeats / beatsFilled > 0.5;
+  if (sceneRescueColorFallbackCount === 0 && !majorityFallback) return;
+
+  const rejectCounts = report.rejectSummary ?? {};
+  const totalRejected = Object.values(rejectCounts).reduce((a, b) => a + b, 0);
+  const topReasons = Object.entries(rejectCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(", ") || "none recorded";
+  const worstBeats = (report.topRejects ?? [])
+    .slice(0, 5)
+    .map((r) => `s${r.sceneIndex}b${r.beatIndex}:${r.reason}`)
+    .join("; ") || "none recorded";
+
+  throw pipelineError(
+    PIPELINE_ERROR.QUALITY_GATE,
+    `Render rejected — insufficient real visual coverage: ` +
+      `${sceneRescueColorFallbackCount} scene(s) fell back entirely to a static placeholder, ` +
+      `${fallbackBeats}/${beatsFilled} filled beat(s) used the color/text fallback, ` +
+      `${report.totalClips} accepted candidate(s), ${totalRejected} rejected. ` +
+      `Top reject reasons: ${topReasons}. Worst beats: ${worstBeats}.`
   );
 }
