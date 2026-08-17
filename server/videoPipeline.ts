@@ -5576,6 +5576,18 @@ export async function fetchPixabayClips(
           if (stockClipEmbeddingEnabled()) {
             scheduleStockClipEmbeddingByKey(stockKey, rawPath);
           }
+          // Fase 4: real Pixabay-authored tags, independent of our search query. Pixabay/Pexels
+          // stock clips are keyed by clipContentKey as `stock:vid:${id}` (not the hashed
+          // providerAssetKey scheme), so this stores directly under that same literal key rather
+          // than through putCachedProviderAsset — adoptClip's providerText lookup reads
+          // dedup.sourcingCache.assets by exactly that key either way.
+          if (sourcingCache && video.tags) {
+            sourcingCache.assets.set(`stock:vid:${video.id}`, {
+              provider: "pixabay",
+              providerAssetId: String(video.id),
+              providerText: { tags: video.tags },
+            });
+          }
 
           // Validate with ffprobe
           try {
@@ -7838,6 +7850,10 @@ async function fetchFlickrCCVideos(
           "flickr",
           photo.id
         );
+        // Fase 4: real Flickr-authored title, independent of our search query.
+        putCachedProviderAsset(sourcingCache, "flickr", photo.id, {
+          providerText: { title: photo.title },
+        });
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -8161,7 +8177,7 @@ async function trimArchiveStreamToClip(
  * GDELT TV News API — real celebrity mentions on CNN/FOX/MSNBC/BBC (Internet Archive TV).
  * Free, no API key; searches closed captions and returns precise broadcast clips.
  */
-async function fetchGdeltTvNewsClips(
+export async function fetchGdeltTvNewsClips(
   queries: string | string[],
   duration: number,
   workDir: string,
@@ -8171,7 +8187,8 @@ async function fetchGdeltTvNewsClips(
   personName = "",
   beatKeywords: string[] = [],
   fastMode = false,
-  sourcingCache?: SourcingCache
+  sourcingCache?: SourcingCache,
+  usedProviderKeys?: Set<string>
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
@@ -8194,34 +8211,38 @@ async function fetchGdeltTvNewsClips(
     const queryCap = fastMode ? 2 : queryList.length;
     // Fire all per-query searches concurrently — pure network fetches, results are merged
     // and globally re-sorted by score afterward, so query order doesn't matter.
+    type GdeltRawClip = { preview_url?: string; snippet?: string; show?: string; station?: string };
     const perQueryClips = await Promise.all(
       queryList.slice(0, queryCap).map(async (query) => {
         try {
-          const apiUrl =
-            `${GDELT_TV_API}?query=${encodeURIComponent(query)}&mode=ClipGallery&format=json` +
-            `&maxrecords=${fastMode ? 4 : 8}&timespan=5y`;
-          const resp = await withTimeout(
-            fetch(apiUrl, { headers: { "User-Agent": "Fastvid/1.0 (GDELT TV news)" } }),
-            fastMode ? 14_000 : 22_000,
-            `GDELT TV search scene ${sceneIndex}`
+          // Fase 3/9 (beeldkwaliteit vervolgpatch): GDELT was the one provider still doing a
+          // raw fetch outside the render-scoped query cache every other provider already uses —
+          // same cachedProviderSearch helper, so a query already searched this render (by this
+          // beat or an earlier one) neither re-hits the network nor re-parses a fresh payload.
+          const data = await cachedProviderSearch(
+            sourcingCache,
+            "gdelt_tv",
+            query,
+            async (): Promise<{ clips?: GdeltRawClip[] } | null> => {
+              const apiUrl =
+                `${GDELT_TV_API}?query=${encodeURIComponent(query)}&mode=ClipGallery&format=json` +
+                `&maxrecords=${fastMode ? 4 : 8}&timespan=5y`;
+              const resp = await withTimeout(
+                fetch(apiUrl, { headers: { "User-Agent": "Fastvid/1.0 (GDELT TV news)" } }),
+                fastMode ? 14_000 : 22_000,
+                `GDELT TV search scene ${sceneIndex}`
+              );
+              if (!resp.ok) return null;
+              const text = await resp.text();
+              if (text.includes("must contain at least one station")) return null;
+              try {
+                return JSON.parse(text) as { clips?: GdeltRawClip[] };
+              } catch {
+                return null;
+              }
+            }
           );
-          if (!resp.ok) return [];
-          const text = await resp.text();
-          if (text.includes("must contain at least one station")) return [];
-          let data: {
-            clips?: Array<{
-              preview_url?: string;
-              snippet?: string;
-              show?: string;
-              station?: string;
-            }>;
-          };
-          try {
-            data = JSON.parse(text) as typeof data;
-          } catch {
-            return [];
-          }
-          return (data.clips ?? []).map((clip) => ({ clip, query }));
+          return (data?.clips ?? []).map((clip) => ({ clip, query }));
         } catch (err) {
           console.warn(`[Pipeline] GDELT TV query "${query}" failed:`, (err as Error).message);
           return [];
@@ -8256,6 +8277,15 @@ async function fetchGdeltTvNewsClips(
       if (downloaded >= count) break;
       const parsed = parseGdeltArchivePreviewUrl(hit.preview_url);
       if (!parsed) continue;
+      // Fase 1 (beeldkwaliteit vervolgpatch): identity is the specific broadcast SEGMENT
+      // (identifier + start second), not just the archive.org identifier — two different
+      // moments of the same broadcast are genuinely different clips and must stay adoptable
+      // separately; only the exact same segment, found again via a different query/cascade,
+      // should be treated as the same asset.
+      const segmentId = `${parsed.identifier}@${Math.round(parsed.startSec)}`;
+      // Pre-download visual dedup: skip a GDELT segment we already adopted this render, before
+      // the archive.org file-URL resolution or the trim/download itself — see providerAssetKey.
+      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "gdelt_tv", segmentId)) continue;
       try {
         const videoUrl = await resolveArchiveVideoFileUrl(parsed.identifier, sceneIndex);
         if (!videoUrl) continue;
@@ -8263,7 +8293,11 @@ async function fetchGdeltTvNewsClips(
         if (segmentDur < 5) continue;
 
         const tag = fileTag ? `${fileTag}_` : "";
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}gdelt_${downloaded}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}gdelt_${downloaded}.mp4`),
+          "gdelt_tv",
+          segmentId
+        );
         providerMetrics(sourcingCache, "gdelt_tv").downloadCount++;
         const ok = await trimArchiveStreamToClip(
           videoUrl,
@@ -8706,6 +8740,10 @@ async function fetchMediaCccVideos(
           "media_ccc",
           videoRec.recording_url
         );
+        // Fase 4: real media.ccc-authored talk title, independent of our search query.
+        putCachedProviderAsset(sourcingCache, "media_ccc", videoRec.recording_url, {
+          providerText: { title: event.title },
+        });
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 120MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -8804,7 +8842,8 @@ async function fetchPersonCelebrityVideoClips(
       personName,
       beatKeywords,
       fastMode,
-      sourcingCache
+      sourcingCache,
+      usedProviderKeys
     );
     results.push(...gdeltHits);
   }
@@ -9010,6 +9049,12 @@ export async function fetchNasaVideoClips(
           "nasa",
           nasaId
         );
+        // Fase 4: real NASA-authored title, independent of our search query. Uses the raw field
+        // (not the `title` local, which falls back to nasaId when absent) so this never stores
+        // an ID pretending to be descriptive text.
+        putCachedProviderAsset(sourcingCache, "nasa", nasaId, {
+          providerText: { title: item.data?.[0]?.title },
+        });
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -9117,6 +9162,10 @@ export async function fetchNaraClips(
           "nara",
           videoUrl
         );
+        // Fase 4: real NARA-authored record title, independent of our search query.
+        putCachedProviderAsset(sourcingCache, "nara", videoUrl, {
+          providerText: { title: record?.title },
+        });
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
@@ -10141,6 +10190,12 @@ export async function fetchYouTubeCCClips(
               "youtube_cc",
               videoId
             );
+            // Fase 4: real YouTube-authored title/description, independent of our search query —
+            // adoptClip's generic providerText lookup (see above) picks this up for both
+            // AssetDirector ranking and the entity gate.
+            putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
+              providerText: { title, description: row.desc },
+            });
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
 
             const ok = await downloadYouTubeCCClip(
@@ -12418,6 +12473,16 @@ export interface ProviderAssetCacheEntry {
   height?: number;
   fileSize?: number;
   contentKey?: string;
+  /**
+   * Fase 4 (beeldkwaliteit vervolgpatch): real, provider-authored text — title/description/tags
+   * as returned by the source itself, never invented. Kept separate from `metadata` (which stays
+   * the provider's raw, differently-shaped payload for the two existing license-check
+   * consumers) so this field has one predictable shape for every provider that sets it.
+   * Consumed generically in `adoptClip` — see the providerText fallback lookup there — so a
+   * provider only needs to call putCachedProviderAsset with this field; no per-provider wiring
+   * into AssetDirector is required.
+   */
+  providerText?: { title?: string; description?: string; tags?: string };
 }
 
 /** Per-provider counters (Phase 20). Plain numbers on a render-scoped object — no I/O, no
@@ -14900,6 +14965,22 @@ async function adoptClip(
       (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
     return scoreB - scoreA;
   });
+
+  // Fase 4 (beeldkwaliteit vervolgpatch): generic providerText fallback for every provider that
+  // tags its output path (tagPathWithProviderAsset) and records real title/description/tags via
+  // putCachedProviderAsset — not just the CelebrityClipCandidate-returning providers the earlier
+  // P0/P1 patch wired directly. clipContentKey() on a provider-tagged path is exactly the same
+  // string as the providerAssetKey() the asset was cached under, so this is a plain, read-only
+  // Map lookup — no new cache, no network call, and it never overwrites metadata a more specific
+  // call site (e.g. adoptBestCelebrityClip) already set.
+  for (const p of sortedPaths) {
+    const existing = dedup.clipAnnotationMeta.get(p);
+    if (existing?.providerText) continue;
+    const cachedText = dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+    if (cachedText) {
+      dedup.clipAnnotationMeta.set(p, { ...existing, providerText: cachedText });
+    }
+  }
 
   // Pull per-beat data from planning layers (storyboard + rhythm)
   const _shot = getShotForBeat(sceneIndex, beatIndex);
