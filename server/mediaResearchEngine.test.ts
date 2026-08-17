@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
+  extractBeatVisualTargets,
+  extractEventCue,
   inferTopicKind,
   isHistoricalDocumentary,
   realFootageFirstEnabled,
@@ -202,6 +204,71 @@ describe("buildHistoricalArchivalQueries", () => {
     const queries = buildHistoricalArchivalQueries(intent, intent.beatText);
     expect(queries.some((q) => /titanic/i.test(q) && /archival|1912|rms/i.test(q))).toBe(true);
   });
+
+  // Visual-selection quality upgrade — point 2 (multi-query search) + regression: this function
+  // used to hardcode Titanic-only phrasing ("RMS ${anchor}", "${anchor} sinking", "${anchor}
+  // ship") onto every historical topic, so a Hitler beat literally produced "RMS Hitler" /
+  // "Hitler sinking" queries. It now derives phrasing from the beat's actual visual targets.
+  it("produces multiple distinct, topic-appropriate query variants for a non-Titanic historical beat (regression for the RMS/sinking/ship bug)", () => {
+    const intent = buildMediaSearchIntent({
+      beatText: "On April 30, 1945, Hitler and Eva Braun committed suicide inside the Führerbunker in Berlin.",
+      searchQueries: ["Hitler death bunker"],
+      keywords: ["hitler", "bunker", "berlin"],
+      primaryPerson: "",
+      persons: ["Hitler"],
+      powerWord: "Hitler",
+      personTopicLock: false,
+      spaceTopic: false,
+      muskTopic: false,
+    });
+    const queries = buildHistoricalArchivalQueries(intent, intent.beatText);
+    expect(queries.length).toBeGreaterThan(1);
+    expect(queries.some((q) => /rms hitler/i.test(q))).toBe(false);
+    expect(queries.some((q) => /hitler sinking/i.test(q))).toBe(false);
+    expect(queries.some((q) => /hitler ship/i.test(q))).toBe(false);
+    expect(queries.some((q) => /archival/i.test(q))).toBe(true);
+    expect(queries.some((q) => /1945/.test(q))).toBe(true);
+  });
+});
+
+describe("extractBeatVisualTargets — point 1 (multiple concrete visual targets per beat)", () => {
+  it("extracts several typed targets (person, location, event, historical_context) from one beat", () => {
+    const intent = buildMediaSearchIntent({
+      beatText: "On April 30, 1945, Hitler and Eva Braun committed suicide inside the Führerbunker in Berlin.",
+      searchQueries: ["Hitler death bunker"],
+      keywords: ["hitler"],
+      primaryPerson: "Hitler",
+      persons: ["Hitler"],
+      powerWord: "Hitler",
+      personTopicLock: false,
+      spaceTopic: false,
+      muskTopic: false,
+    });
+    const targets = extractBeatVisualTargets(intent.beatText, intent, intent.videoTitle);
+    expect(targets.length).toBeGreaterThan(1);
+    const types = new Set(targets.map((t) => t.type));
+    expect(types.has("person")).toBe(true);
+    expect(types.has("location") || types.has("event") || types.has("historical_context")).toBe(true);
+    // No duplicate target text.
+    const texts = targets.map((t) => t.text.toLowerCase());
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+
+  it("a plain beat with no person/location/event still yields at least one abstract/archival fallback target, never an empty list", () => {
+    const intent = buildMediaSearchIntent({
+      beatText: "quiet countryside",
+      searchQueries: ["quiet countryside"],
+      keywords: [],
+      primaryPerson: "",
+      persons: [],
+      powerWord: "",
+      personTopicLock: false,
+      spaceTopic: false,
+      muskTopic: false,
+    });
+    const targets = extractBeatVisualTargets(intent.beatText, intent, intent.videoTitle);
+    expect(targets.length).toBeGreaterThan(0);
+  });
 });
 
 describe("realFootageFirstEnabled", () => {
@@ -252,5 +319,17 @@ describe("buildMediaSearchIntent", () => {
     });
     expect(intent.searchQueries).toEqual(["Bitcoin", "cryptocurrency market", "blockchain"]);
     expect(intent.topicKind).toBe("general");
+  });
+});
+
+// FASTVID — NEXT-LEVEL VISUAL SELECTION & RANKING (point 4: event/action matching)
+describe("extractEventCue", () => {
+  it("finds the beat's underlying documentary event verb, reusing the same vocabulary as extractBeatVisualTargets/extractEventPhrase", () => {
+    expect(extractEventCue("Hitler and Eva Braun married shortly before their deaths.")).toMatch(/marri/);
+    expect(extractEventCue("The Titanic sank in the early hours of April 15, 1912.")).toMatch(/sank|sink/);
+  });
+
+  it("returns null when the beat doesn't center on a recognizable action — never invents a cue", () => {
+    expect(extractEventCue("A quiet countryside scene at dawn.")).toBeNull();
   });
 });

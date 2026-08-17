@@ -113,6 +113,8 @@ import {
   applyAiRelevanceRanking,
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
+  extractEventCue,
+  extractLocationPhrase,
   inferTopicKind,
   isHistoricalDocumentary,
   partitionCandidatesForIntent,
@@ -2307,6 +2309,38 @@ async function fetchBeatAuthenticStills(
   const personPortrait = Boolean(coercePersonName(personName)) && !historicalDoc;
   const trySerp = SERPAPI_KEY && (historicalDoc || !dedup.perf.fastStockMode);
 
+  // Limited cross-provider candidate pooling patch: instead of adopting the first provider's
+  // first passing candidate, collect a small bounded pool across up to 3 relevant still-image
+  // sources for this beat (SerpAPI, Wikimedia, Openverse — same providers, same per-query counts
+  // and iteration caps as before), then run adoptClip's existing ranking/gates ONCE across the
+  // combined pool so the best-matching still wins regardless of which provider supplied it —
+  // not "whichever provider happened to be tried first." A candidate that already looks strong
+  // (exact entity match, plus event/location match when the beat calls for it — reusing the
+  // exact same signals adoptClip's own sort already uses, no new scoring system) skips the
+  // remaining sources, so the common "first source already nails it" case costs no extra network
+  // calls versus the old sequential-first-success behavior.
+  const pool: string[] = [];
+  const poolQueryLabel = new Map<string, string>();
+  const beatFocus = classifyBeatFocus(beat.text, historicalDoc ? undefined : personName);
+  const providerTextFor = (p: string) =>
+    dedup.clipAnnotationMeta.get(p)?.providerText ?? dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+  const strongEnoughToStopPooling = (p: string): boolean => {
+    const pt = providerTextFor(p);
+    if (!pt) return false;
+    return candidatePoolEarlyExitReady(
+      beatFocus,
+      classifyEntityMatchTier(historicalDoc ? undefined : personName, pt),
+      eventMatchScore(beat.text, pt),
+      locationMatchScore(dedup.assetDirectorActiveLocation, pt)
+    );
+  };
+  const addToPool = (paths: string[], query: string) => {
+    for (const p of paths) {
+      if (!poolQueryLabel.has(p)) poolQueryLabel.set(p, query);
+      pool.push(p);
+    }
+  };
+
   if (trySerp) {
     for (let qi = 0; qi < Math.min(unique.length, historicalDoc ? 3 : 1); qi++) {
       const serpQ = personPortrait && coercePersonName(personName)
@@ -2321,56 +2355,30 @@ async function fetchBeatAuthenticStills(
         `${tag}_still`,
         { dedup, personPortrait, resultOffset: sceneIndex + beat.index + qi }
       );
-      const serpClip = await adoptClip(
-        serpPaths,
-        dedup,
-        sceneIndex,
-        beat.index,
-        beat.text,
-        workDir,
-        serpQ,
-        loose
-      );
-      if (serpClip && !isPipelineFallbackClip(serpClip)) {
-        if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
-        dedup.stillPhotosThisScene++;
-        console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: SerpAPI still "${serpQ}"`);
-        return serpClip;
-      }
+      addToPool(serpPaths, serpQ);
+      if (serpPaths.some(strongEnoughToStopPooling)) break;
     }
   }
 
-  for (const q of unique) {
-    const wikiPaths = await fetchWikimediaImages(
-      q,
-      clipFetchDur,
-      workDir,
-      sceneIndex,
-      1,
-      `${tag}_still`
-    );
-    const wikiClip = await adoptClip(
-      wikiPaths,
-      dedup,
-      sceneIndex,
-      beat.index,
-      beat.text,
-      workDir,
-      q,
-      loose
-    );
-    if (wikiClip && !isPipelineFallbackClip(wikiClip)) {
-      if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
-      dedup.stillPhotosThisScene++;
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: Wikimedia still "${q}"`);
-      return wikiClip;
+  if (!pool.some(strongEnoughToStopPooling)) {
+    for (const q of unique) {
+      const wikiPaths = await fetchWikimediaImages(
+        q,
+        clipFetchDur,
+        workDir,
+        sceneIndex,
+        1,
+        `${tag}_still`
+      );
+      addToPool(wikiPaths, q);
+      if (wikiPaths.some(strongEnoughToStopPooling)) break;
     }
   }
 
   const ovQ = personPortrait && coercePersonName(personName)
     ? `${personName} ${unique[0] ?? ""}`.trim()
     : (unique[0] ?? beat.searchQuery);
-  if ((historicalDoc || !dedup.perf.fastStockMode) && ovQ.length > 3) {
+  if (!pool.some(strongEnoughToStopPooling) && (historicalDoc || !dedup.perf.fastStockMode) && ovQ.length > 3) {
     const ovPaths = await fetchOpenverseImages(
       ovQ,
       clipFetchDur,
@@ -2380,21 +2388,33 @@ async function fetchBeatAuthenticStills(
       `${tag}_still`,
       { dedup, personPortrait }
     );
-    const ovClip = await adoptClip(
-      ovPaths,
-      dedup,
-      sceneIndex,
-      beat.index,
-      beat.text,
-      workDir,
-      ovQ,
-      loose
+    addToPool(ovPaths, ovQ);
+  }
+
+  if (!pool.length) return null;
+
+  // Bounded pool: cap the merged total at 5 candidates, same order of magnitude as the existing
+  // per-source count=1 budgets above — not a new, larger download budget, just letting the
+  // existing adoptClip ranking compare across sources instead of only within one.
+  const boundedPool = [...new Set(pool)].slice(0, 5);
+  const winnerQuery = poolQueryLabel.get(boundedPool[0]!) ?? beat.searchQuery;
+  const clip = await adoptClip(
+    boundedPool,
+    dedup,
+    sceneIndex,
+    beat.index,
+    beat.text,
+    workDir,
+    winnerQuery,
+    loose
+  );
+  if (clip && !isPipelineFallbackClip(clip)) {
+    if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
+    dedup.stillPhotosThisScene++;
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: authentic still from pool of ${boundedPool.length} (SerpAPI/Wikimedia/Openverse)`
     );
-    if (ovClip && !isPipelineFallbackClip(ovClip)) {
-      if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
-      dedup.stillPhotosThisScene++;
-      return ovClip;
-    }
+    return clip;
   }
 
   return null;
@@ -9523,7 +9543,12 @@ export async function fetchInternetArchiveClips(
         // full record as `{ metadata: {...}, files: [...], ... }` in the same single call —
         // no new network call added.
         type IaMetaData = {
-          metadata?: { licenseurl?: string | string[]; rights?: string | string[] };
+          metadata?: {
+            licenseurl?: string | string[];
+            rights?: string | string[];
+            date?: string | string[];
+            year?: string | string[];
+          };
           files?: Array<{ name: string; format: string; size?: string }>;
           result?: Array<{ name: string; format: string; size?: string }>;
         };
@@ -9593,9 +9618,15 @@ export async function fetchInternetArchiveClips(
         // (doc.title) is real, provider-authored text — already used above for relevance
         // scoring/person filtering, but never registered as providerText, so adoptClip's
         // relevance floor and the entity/person gates couldn't see it.
-        if (doc.title) {
+        // Point 8 (visual-selection quality upgrade): archive.org's item metadata also commonly
+        // carries a real uploader-supplied date/year (metadata.date / metadata.year) — never
+        // invented, only ever passed through when the provider itself returned one — which
+        // historicalDateAlignmentScore uses as a soft ranking signal.
+        const rawIaDate = metaData.metadata?.date ?? metaData.metadata?.year;
+        const iaDateHint = (Array.isArray(rawIaDate) ? rawIaDate[0] : rawIaDate)?.trim();
+        if (doc.title || iaDateHint) {
           putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
-            providerText: { title: doc.title },
+            providerText: { title: doc.title, dateHint: iaDateHint },
           });
         }
 
@@ -12589,7 +12620,18 @@ export interface ProviderAssetCacheEntry {
    * provider only needs to call putCachedProviderAsset with this field; no per-provider wiring
    * into AssetDirector is required.
    */
-  providerText?: { title?: string; description?: string; tags?: string };
+  providerText?: {
+    title?: string;
+    description?: string;
+    tags?: string;
+    /**
+     * Point 8 (visual-selection quality upgrade): a real, provider-authored date/year string
+     * (e.g. archive.org's metadata.date), never invented. Optional — most providers don't
+     * expose one, and its absence must never itself be treated as a rejection signal (see
+     * historicalDateAlignmentScore).
+     */
+    dateHint?: string;
+  };
 }
 
 /** Per-provider counters (Phase 20). Plain numbers on a render-scoped object — no I/O, no
@@ -14897,6 +14939,196 @@ export function scriptImageFallbackPassesRelevanceFloor(
   return scoreVisualRelevance(providerTitle, relKeywords) > 0;
 }
 
+/**
+ * Point 8 (visual-selection quality upgrade — historical consistency): extracts a plausible
+ * 4-digit year from free text. Returns null (never invents a year) when nothing matches.
+ */
+function extractYearFromText(text: string | undefined): number | null {
+  if (!text) return null;
+  const m = text.match(/\b(1[5-9][0-9]{2}|20[0-2][0-9])\b/);
+  return m ? Number(m[0]) : null;
+}
+
+/**
+ * Soft ranking bonus/penalty for historical-period alignment (Point 8). Compares a year found
+ * in the beat/video context against a year found in the candidate's own real provider evidence
+ * (dateHint first, then provider title/description — never the filename or our own search
+ * query). Returns 0 whenever either side has no extractable year: missing historical metadata
+ * is never itself a penalty, only a genuine, evidenced mismatch is. Deliberately bounded small
+ * (-3..+2) so it can only nudge, never override, the existing relevance/entity/narration-match
+ * terms it's added alongside in adoptClip's candidate sort.
+ */
+export function historicalDateAlignmentScore(
+  providerText: { title?: string; description?: string; dateHint?: string } | undefined,
+  beatText: string,
+  videoTitle?: string
+): number {
+  const targetYear = extractYearFromText(beatText) ?? extractYearFromText(asVideoTitleString(videoTitle));
+  if (targetYear == null) return 0;
+  const candidateYear =
+    extractYearFromText(providerText?.dateHint) ??
+    extractYearFromText(providerText?.title) ??
+    extractYearFromText(providerText?.description);
+  if (candidateYear == null) return 0;
+  const diff = Math.abs(candidateYear - targetYear);
+  if (diff === 0) return 2;
+  if (diff <= 2) return 1;
+  if (diff <= 10) return 0;
+  return -3;
+}
+
+/** How strongly a candidate's own provider evidence supports the beat's primary person. */
+export type EntityMatchTier = "exact" | "strong" | "general" | "unknown";
+
+/**
+ * Point 3 (next-level visual selection — hard entity matching): classifies a candidate against
+ * the beat's primary person using only real, provider-authored text (never the search query or
+ * filename). "unknown" whenever there's nothing to check — no primary person expected for this
+ * beat, or the provider gave no text at all — per the explicit rule that missing metadata must
+ * never itself be treated as a wrong candidate.
+ */
+export function classifyEntityMatchTier(
+  primaryPerson: string | undefined,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): EntityMatchTier {
+  const person = coercePersonName(primaryPerson ?? "");
+  if (!person) return "unknown";
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return "unknown";
+  const parts = person.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
+  if (!parts.length) return "unknown";
+  if (parts.length >= 2 ? parts.every((p) => hay.includes(p)) : hay.includes(parts[0])) return "exact";
+  if (parts.length >= 2 && hay.includes(parts[parts.length - 1])) return "strong";
+  return "general";
+}
+
+/**
+ * Small, bounded score per entity-match tier — an EXACT match is preferred over a GENERAL one,
+ * but the gap is deliberately modest so this nudges adoptClip's existing candidate sort instead
+ * of overriding the relevance/narration-match terms already there. "unknown" is neutral (0),
+ * not a penalty — consistent with historicalDateAlignmentScore's missing-metadata handling.
+ */
+export function entityMatchTierScore(tier: EntityMatchTier): number {
+  switch (tier) {
+    case "exact":
+      return 12;
+    case "strong":
+      return 6;
+    case "general":
+      return -6;
+    case "unknown":
+      return 0;
+  }
+}
+
+/**
+ * Point 4 (next-level visual selection — event/action matching): a small bonus when the beat
+ * centers on a recognizable action (see extractEventCue) and the candidate's own provider text
+ * mentions it. 0 (neutral) whenever the beat has no such action, or the candidate has no
+ * provider text to check — never a penalty for simply lacking metadata. A provider title that
+ * exists but doesn't mention the cue gets a small, bounded penalty (not a hard reject) since a
+ * real photo of the right event doesn't always spell the verb out in its title.
+ */
+export function eventMatchScore(
+  beatText: string,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  const cue = extractEventCue(beatText);
+  if (!cue) return 0;
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return 0;
+  return hay.includes(cue) ? 8 : -2;
+}
+
+/**
+ * Point 5 (next-level visual selection — location consistency, ranking signal not a hard gate):
+ * a small bonus when the render's current active location (already derived per-scene from
+ * narration text — see dedup.assetDirectorActiveLocation) is actually mentioned in the
+ * candidate's own provider text. Only ever a bonus, never a penalty for a candidate that simply
+ * doesn't spell the place name out — many genuinely correct historical photos won't.
+ */
+export function locationMatchScore(
+  activeLocation: string | null | undefined,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  const loc = (activeLocation ?? "").trim().toLowerCase();
+  if (!loc) return 0;
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return 0;
+  return hay.includes(loc) ? 6 : 0;
+}
+
+/** What kind of concrete thing a beat is primarily asking the viewer to see. */
+export type BeatFocus = "event" | "location" | "person" | "general";
+
+/**
+ * Point 3 (final multi-candidate visual selection patch — contextual beat type): classifies the
+ * beat's dominant visual target using only signals already extracted elsewhere (extractEventCue,
+ * extractLocationPhrase, opts.primaryPerson) — no new NER/extraction, same precedence order as
+ * extractBeatVisualTargets (mediaResearchEngine.ts): an event cue is the most specific signal a
+ * beat can carry, then a named place, then a named person, else "general" (no dominant target —
+ * e.g. an object/topic beat, which this codebase has no reliable extractor for; see report).
+ */
+export function classifyBeatFocus(beatText: string, primaryPerson: string | undefined): BeatFocus {
+  if (extractEventCue(beatText)) return "event";
+  if (extractLocationPhrase(beatText)) return "location";
+  if (coercePersonName(primaryPerson ?? "")) return "person";
+  return "general";
+}
+
+/**
+ * Point 4 (final multi-candidate visual selection patch — generic images fall harder): when a
+ * beat has a specific, identifiable focus (event/location/person — i.e. classifyBeatFocus found
+ * something concrete to look for) but a candidate's own provider evidence supports NONE of the
+ * three next-level signals (no exact/strong entity match, no event match, no location match),
+ * that candidate is genuinely generic for this beat — a clearer penalty than the flat "general"
+ * entity-tier score alone, so a beat that names something specific pushes unrelated stock imagery
+ * down harder than a vague beat would. Neutral (0) whenever the beat itself has no specific focus
+ * to fail to match, the candidate matches at least one of the three signals, OR the candidate
+ * simply has no provider text at all to judge — consistent with the established rule (Round 4,
+ * point 12, explicitly preserved by this round's point 10) that missing metadata must never
+ * itself be treated as evidence of a wrong candidate. This only fires when there IS real provider
+ * text and it fails to substantiate any of the three signals — genuinely generic-for-this-beat,
+ * not merely undocumented.
+ */
+export function beatFocusPenalty(
+  focus: BeatFocus,
+  entityTier: EntityMatchTier,
+  eventScore: number,
+  locationScore: number,
+  hasProviderText: boolean
+): number {
+  if (focus === "general" || !hasProviderText) return 0;
+  const hasPositiveSignal = entityTier === "exact" || entityTier === "strong" || eventScore > 0 || locationScore > 0;
+  return hasPositiveSignal ? 0 : -6;
+}
+
+/**
+ * Limited cross-provider candidate pooling patch (point 10 — smart early exit): true when a
+ * single already-fetched candidate is strong enough that a bounded multi-provider still-image
+ * pool (see fetchBeatAuthenticStills) can stop collecting from further sources and adopt from
+ * what it already has — an exact entity match, plus an actual event/location match when the
+ * beat's own focus calls for one. Reuses exactly the same signals the pool's own ranking already
+ * scores candidates on; not a new/parallel scoring system, just a stop condition built from them.
+ */
+export function candidatePoolEarlyExitReady(
+  focus: BeatFocus,
+  entityTier: EntityMatchTier,
+  eventScore: number,
+  locationScore: number
+): boolean {
+  if (entityTier !== "exact") return false;
+  if (focus === "event") return eventScore > 0;
+  if (focus === "location") return locationScore > 0;
+  return true;
+}
+
 /** Map narration sentence → Pexels search from script text only. */
 function deriveBeatStockQuery(
   beatText: string,
@@ -15077,6 +15309,50 @@ async function adoptClip(
     [opts.visualDescription, opts.semanticSummary].filter(Boolean).join(". ").slice(0, 320) ||
     undefined;
   const entityRules = extractBeatRealEntities(beatText, opts.sceneText ?? "", opts.videoTitle ?? "");
+
+  // Fase 4 (beeldkwaliteit vervolgpatch): generic providerText fallback for every provider that
+  // tags its output path (tagPathWithProviderAsset) and records real title/description/tags via
+  // putCachedProviderAsset — not just the CelebrityClipCandidate-returning providers the earlier
+  // P0/P1 patch wired directly. clipContentKey() on a provider-tagged path is exactly the same
+  // string as the providerAssetKey() the asset was cached under, so this is a plain, read-only
+  // Map lookup — no new cache, no network call, and it never overwrites metadata a more specific
+  // call site (e.g. adoptBestCelebrityClip) already set.
+  // Moved ahead of the candidate sort below (point 8, visual-selection quality upgrade) so the
+  // sort's historicalDateAlignmentScore term can actually see providerText for candidates that
+  // only ever get it through this generic fallback — order doesn't matter for this loop itself,
+  // it just populates a Map keyed by path.
+  for (const p of paths) {
+    const existing = dedup.clipAnnotationMeta.get(p);
+    if (existing?.providerText) continue;
+    const cachedText = dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
+    if (cachedText) {
+      dedup.clipAnnotationMeta.set(p, { ...existing, providerText: cachedText });
+    }
+  }
+
+  // Points 3/4/5 (next-level visual selection): entity-match tier, event/action match, and
+  // location match all read the same real providerText Map lookup adoptClip's generic fallback
+  // above already populates — computed once per candidate path here rather than inline per
+  // comparison, to avoid recomputing the same providerText lookup/tier classification twice
+  // per sort comparator call.
+  // Point 3/4 (final multi-candidate visual selection patch — contextual beat type + sharper
+  // generic-image penalty): the beat's dominant focus is the same for every candidate in this
+  // pool, so it's classified once outside the per-path closure below.
+  const beatFocus = classifyBeatFocus(beatText, opts.primaryPerson);
+  const nextLevelScore = (p: string): number => {
+    const pt = dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined;
+    const tier = classifyEntityMatchTier(opts.primaryPerson, pt);
+    const eventScore = eventMatchScore(beatText, pt);
+    const locationScore = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
+    const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
+    return (
+      historicalDateAlignmentScore(pt, beatText, opts.videoTitle) +
+      entityMatchTierScore(tier) +
+      eventScore +
+      locationScore +
+      beatFocusPenalty(beatFocus, tier, eventScore, locationScore, hasProviderText)
+    );
+  };
   const sortedPaths = [...paths].sort((a, b) => {
     const stillA = isStillPhotoClip(a) ? 1 : 0;
     const stillB = isStillPhotoClip(b) ? 1 : 0;
@@ -15086,30 +15362,49 @@ async function adoptClip(
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
       scoreBeatNarrationMatch(beatText, sourceQuery, b) * 4 +
       realEntityScore(entityRules, sourceQuery, b) +
+      nextLevelScore(b) +
       (muskTopic ? muskBrandScore(sourceQuery, b) : 0);
     const scoreA =
       scoreVisualRelevance(`${sourceQuery} ${path.basename(a)} ${beatText}`, keywords) +
       scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
       scoreBeatNarrationMatch(beatText, sourceQuery, a) * 4 +
       realEntityScore(entityRules, sourceQuery, a) +
+      nextLevelScore(a) +
       (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
     return scoreB - scoreA;
   });
 
-  // Fase 4 (beeldkwaliteit vervolgpatch): generic providerText fallback for every provider that
-  // tags its output path (tagPathWithProviderAsset) and records real title/description/tags via
-  // putCachedProviderAsset — not just the CelebrityClipCandidate-returning providers the earlier
-  // P0/P1 patch wired directly. clipContentKey() on a provider-tagged path is exactly the same
-  // string as the providerAssetKey() the asset was cached under, so this is a plain, read-only
-  // Map lookup — no new cache, no network call, and it never overwrites metadata a more specific
-  // call site (e.g. adoptBestCelebrityClip) already set.
-  for (const p of sortedPaths) {
-    const existing = dedup.clipAnnotationMeta.get(p);
-    if (existing?.providerText) continue;
-    const cachedText = dedup.sourcingCache.assets.get(clipContentKey(p))?.providerText;
-    if (cachedText) {
-      dedup.clipAnnotationMeta.set(p, { ...existing, providerText: cachedText });
-    }
+  // Point 9 (final multi-candidate visual selection patch — score explainability): log the
+  // winning pre-AssetDirector candidate's full signal breakdown — entity/event/location/date
+  // from the next-level signals (points 3/4/5, historicalDateAlignmentScore), visual/narration
+  // from this same sort's pre-existing terms, and negativeEvidence from the new focus-aware
+  // penalty (point 4) — in one line, reusing the file's established
+  // `[Pipeline] Scene X beat Y: ...` log convention instead of a new logging system.
+  // Curated-archive candidates that proceed to AssetDirector below get a second, richer
+  // breakdown (including the diversity modifier) from the existing logAssetDirectorChoice.
+  if (sortedPaths.length > 1) {
+    const topPath = sortedPaths[0]!;
+    const topProviderText = dedup.clipAnnotationMeta.get(topPath)?.providerText ?? undefined;
+    const topTier = classifyEntityMatchTier(opts.primaryPerson, topProviderText);
+    const topEntity = entityMatchTierScore(topTier);
+    const topEvent = eventMatchScore(beatText, topProviderText);
+    const topLocation = locationMatchScore(dedup.assetDirectorActiveLocation, topProviderText);
+    const topDate = historicalDateAlignmentScore(topProviderText, beatText, opts.videoTitle);
+    const topVisual =
+      scoreVisualRelevance(`${sourceQuery} ${path.basename(topPath)} ${beatText}`, keywords) +
+      scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery));
+    const topNarration = scoreBeatNarrationMatch(beatText, sourceQuery, topPath) * 4;
+    const topHasProviderText = Boolean(
+      topProviderText && (topProviderText.title || topProviderText.description || topProviderText.tags)
+    );
+    const topNegativeEvidence = beatFocusPenalty(beatFocus, topTier, topEvent, topLocation, topHasProviderText);
+    const fmt = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beatIndex} winner: asset=${path.basename(topPath)} ` +
+        `pool=${sortedPaths.length} focus=${beatFocus} entity=${fmt(topEntity)}(${topTier}) ` +
+        `event=${fmt(topEvent)} location=${fmt(topLocation)} date=${fmt(topDate)} ` +
+        `visual=${fmt(topVisual)} narration=${fmt(topNarration)} negativeEvidence=${fmt(topNegativeEvidence)}`
+    );
   }
 
   // Pull per-beat data from planning layers (storyboard + rhythm)

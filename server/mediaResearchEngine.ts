@@ -5,7 +5,7 @@
 import path from "path";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
-import { asVideoTitleString, coerceVisionString, coercePersonName, queryStringsMinLen } from "./stringCoercion";
+import { asVideoTitleString, coerceVisionString, coercePersonName, queryStringsMinLen, uniqueQueryStrings } from "./stringCoercion";
 
 export type MediaTopicKind = "person" | "historical" | "space" | "news" | "general";
 
@@ -275,27 +275,158 @@ export function prefersRealFootageOnly(intent: MediaSearchIntent): boolean {
   return realFootageFirstEnabled() || prefersArchivalVideo(intent);
 }
 
-/** Archival YouTube/Wiki/Archive search phrases for historical beats. */
+/** What kind of thing a visual target names — drives query phrasing and provider preference. */
+export type VisualTargetType =
+  | "person"
+  | "event"
+  | "location"
+  | "object"
+  | "historical_context"
+  | "archival"
+  | "abstract";
+
+export interface VisualTarget {
+  text: string;
+  type: VisualTargetType;
+}
+
+// Small, targeted vocabulary of documentary/historical event verbs — not general NER, just
+// enough to tell "Hitler died in the bunker" apart from a plain description so the query
+// builder below can produce an event-flavored variant in addition to an entity-only one.
+const EVENT_CUE_RE =
+  /\b(die[sd]?|death|killed|suicide|assassinat\w*|invad\w*|attack\w*|bomb\w*|surrender\w*|escap\w*|arrest\w*|execut\w*|declar\w*|sign\w*|launch\w*|crash\w*|sank|sink\w*|explod\w*|liberat\w*|captur\w*|fled|flee\w*|born|marri\w*|coronation|revolt\w*|uprising|battle\w*|siege|trial)\b/i;
+
+/**
+ * Point 3 (final multi-candidate visual selection patch — contextual beat type): exported
+ * (visibility-only, same regex, same behavior) so videoPipeline.ts's classifyBeatFocus can
+ * detect whether a beat names a concrete place without a second, parallel location-phrase
+ * pattern.
+ */
+export function extractLocationPhrase(text: string | undefined): string | null {
+  if (!text) return null;
+  const m = text.match(
+    /\b(?:in|at|near|over|across|through|inside)\s+((?:[A-Z][a-zA-Z'-]+)(?:\s+[A-Z][a-zA-Z'-]+){0,2})\b/
+  );
+  return m?.[1]?.trim() || null;
+}
+
+function extractEventPhrase(beatText: string, anchor: string): string | null {
+  const m = beatText.match(EVENT_CUE_RE);
+  if (!m) return null;
+  return anchor ? `${anchor} ${m[0]}` : m[0];
+}
+
+/**
+ * Point 4 (next-level visual selection — event/action matching): the bare event/action verb a
+ * beat is centered on ("died", "married", "launched", ...), reusing the same small documentary
+ * event vocabulary as extractBeatVisualTargets/extractEventPhrase above rather than a second,
+ * parallel word list. Returns null when the beat doesn't center on a recognizable action — that
+ * is the common case, and callers must treat it as "no event signal to check", not evidence of
+ * anything.
+ */
+export function extractEventCue(beatText: string): string | null {
+  return beatText.match(EVENT_CUE_RE)?.[0]?.toLowerCase() ?? null;
+}
+
+/**
+ * Deterministic, LLM-free extraction of multiple concrete visual targets for one beat (Point 1
+ * of the visual-selection upgrade) — reuses only signals already available in this module/intent
+ * (persons, beat text, video title, year). Not a general NER system; a small, targeted set of
+ * patterns feeding the query-variety builder below, in the spirit of the existing
+ * inferTopicKind/isHistoricalDocumentary helpers rather than a new architecture.
+ */
+export function extractBeatVisualTargets(
+  beatText: string,
+  intent: Pick<MediaSearchIntent, "persons" | "primaryPerson" | "powerWord" | "searchQueries">,
+  videoTitle?: string
+): VisualTarget[] {
+  const targets: VisualTarget[] = [];
+  const seen = new Set<string>();
+  const add = (text: string | undefined | null, type: VisualTargetType) => {
+    const t = text?.trim();
+    if (!t || t.length < 3) return;
+    const key = t.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push({ text: t, type });
+  };
+
+  for (const p of [intent.primaryPerson, ...(intent.persons ?? [])]) {
+    add(coercePersonName(p) || undefined, "person");
+  }
+
+  const location = extractLocationPhrase(beatText) || extractLocationPhrase(asVideoTitleString(videoTitle));
+  add(location, "location");
+
+  const anchor = intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || location || targets[0]?.text || "";
+  add(extractEventPhrase(beatText, anchor), "event");
+
+  const yearMatch = beatText.match(/\b(1[0-9]{3}|20[0-2][0-9])\b/);
+  if (yearMatch) add(`${anchor} ${yearMatch[0]}`.trim(), "historical_context");
+
+  if (anchor) add(anchor, "archival");
+
+  if (!targets.length && intent.searchQueries[0]) add(intent.searchQueries[0], "abstract");
+
+  return targets;
+}
+
+/**
+ * Archival YouTube/Wiki/Archive search phrases for historical beats — one query variant per
+ * concrete visual target (person/location/event/historical_context/archival) instead of a
+ * single fixed anchor phrase. Previously this templated ship-sinking phrasing onto every
+ * historical topic regardless of subject ("RMS ${anchor}", "${anchor} sinking", "${anchor}
+ * ship") — harmless for a Titanic beat, nonsense for anything else (a Hitler beat produced
+ * literal "RMS Hitler" / "Hitler sinking" queries).
+ */
 export function buildHistoricalArchivalQueries(
   intent: MediaSearchIntent,
   beatText: string
 ): string[] {
+  const targets = extractBeatVisualTargets(beatText, intent, intent.videoTitle);
+  const anchor = intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || targets[0]?.text || "";
+  if (!anchor && !targets.length) return intent.searchQueries.slice(0, 6);
+
+  const out: string[] = [];
+  // Always generate a broad, generic anchor-based set first — this guarantees at least the
+  // same query BREADTH the old fixed 7-phrase list did (regression found via F3-39: a beat
+  // whose extracted targets collapse to just one or two entries used to starve the provider
+  // query-cache of fresh candidates across repeated top-up attempts, since a render-scoped
+  // cachedProviderSearch only returns a fresh result for a genuinely new query string — fewer
+  // distinct queries meant later attempts kept re-hitting the same cached (and already-adopted,
+  // hence duplicate-rejected) result instead of finding new ones).
   const yearMatch = beatText.match(/\b(18|19|20)\d{2}\b/);
   const year = yearMatch?.[0] ?? "";
-  const anchor = intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || "";
-  if (!anchor) return intent.searchQueries.slice(0, 6);
-
-  const out = [
-    `RMS ${anchor}`,
-    `${anchor} archival footage`,
-    `${anchor} historical documentary`,
-    `${anchor} original footage`,
-    `${anchor} ${year}`.trim(),
-    `${anchor} sinking`,
-    `${anchor} ship`,
-    ...intent.searchQueries,
-  ];
-  return queryStringsMinLen(out, 3).slice(0, 8);
+  if (anchor) {
+    out.push(
+      `${anchor} archival footage`,
+      `${anchor} historical documentary`,
+      `${anchor} original footage`,
+      `${anchor} historical footage`,
+      year ? `${anchor} ${year}` : anchor
+    );
+  }
+  // Layered on top: one extra variant per distinct visual target actually found (Point 1/2 —
+  // multiple concrete visual targets, not just the single anchor string), when it adds real
+  // phrasing variety beyond the generic set above.
+  for (const target of targets) {
+    switch (target.type) {
+      case "person":
+      case "location":
+        out.push(`${target.text} archival footage`);
+        break;
+      case "event":
+        out.push(target.text);
+        break;
+      case "historical_context":
+        out.push(`${target.text} historical footage`);
+        break;
+      default:
+        break;
+    }
+  }
+  out.push(...intent.searchQueries);
+  return uniqueQueryStrings(out, 3).slice(0, 8);
 }
 
 /** Split ranked pool: authentic video → stills → licensed stock (last). */

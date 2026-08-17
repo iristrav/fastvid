@@ -101,6 +101,8 @@ export type CandidateMeta = {
     title?: string;
     description?: string;
     tags?: string;
+    /** Real, provider-authored date/year string when the source exposes one — never invented. */
+    dateHint?: string;
   } | null;
 };
 
