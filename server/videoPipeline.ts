@@ -7001,12 +7001,14 @@ async function appendGuaranteedSceneClips(
   clips: string[],
   beatDurations: number[],
   minClips: number,
-  dedup?: VisualDedupState
+  dedup?: VisualDedupState,
+  existingBeatIndices?: number[]
 ): Promise<void> {
   const holdSec = Math.max(
     archiveVisualMinClipSec(),
     Math.min(archiveVisualMaxClipSec(), scene.duration / Math.max(1, minClips))
   );
+  const seedCount = clips.length;
   let slot = clips.length;
   while (clips.length < minClips) {
     try {
@@ -7020,8 +7022,20 @@ async function appendGuaranteedSceneClips(
         // assertVisualCoverageExportGate/canAddGuaranteedFallbackClip can see it. This
         // function's 5 callers all previously appended guaranteed clips straight into their
         // local `clips` array with no bookkeeping at all — additive, no change to selection.
+        //
+        // Review finding: `slot` is this array's own position counter (clips.length at start,
+        // incrementing per guaranteed clip appended) — NOT a real narrative beat index. Callers
+        // can now pass in a `clips` array pre-seeded with already-adopted real clips (see
+        // refillSceneStrictVoiceMatch's "already attempted" branch), so `slot` can start above 0
+        // and land on a number that coincides with a genuine beatIndex already used by one of
+        // those real clips for this same scene. Recording the audit entry under that raw `slot`
+        // could then overwrite the real clip's coverage classification with "fallback" even
+        // though the real clip is still sitting untouched in `clips`. Offsetting into a range no
+        // real narrative beat index ever reaches (matching the sentinel-slot pattern already used
+        // by other guaranteed-fill call sites — 999/1001/8888/9999) keeps this purely-synthetic
+        // audit entry from ever colliding with a real beat's entry.
         if (dedup) {
-          recordClipAdopt(dedup.clipAdoptAudit, scene.index, slot, scene.text, clip, "fallback");
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, 2000 + slot, scene.text, clip, "fallback");
         }
       }
     } catch (err) {
@@ -7037,6 +7051,40 @@ async function appendGuaranteedSceneClips(
     }
     slot++;
     if (slot > minClips + 8) break;
+  }
+
+  // Bug 1 fix (final hardening round): when the caller seeded `clips` with real clips that keep
+  // their own narrative beatIndex (parallel `existingBeatIndices` — see
+  // refillSceneStrictVoiceMatch's "already attempted" branch), those real beats can be scattered
+  // anywhere in [0, minClips) instead of filling it contiguously from 0 — e.g. beat 1 and beat 3
+  // real, beats 0 and 2 missing. The loop above only ever appends new guaranteed clips at the
+  // END of `clips`, so the array would end up as [real-b1, real-b3, fallback, fallback] and the
+  // montage would play both real clips before either fallback, instead of the narratively
+  // correct [fallback-b0, real-b1, fallback-b2, real-b3]. Reassign each newly-appended guaranteed
+  // clip to the next actually-missing beat index and re-sort the whole array back into narrative
+  // beat order. Real clips are only ever repositioned here, never dropped or overwritten.
+  if (existingBeatIndices && existingBeatIndices.length === seedCount && clips.length > seedCount) {
+    const filled = new Set(existingBeatIndices);
+    const missing: number[] = [];
+    for (let beatIdx = 0; missing.length < clips.length - seedCount && beatIdx < minClips + 8; beatIdx++) {
+      if (!filled.has(beatIdx)) missing.push(beatIdx);
+    }
+    const merged = existingBeatIndices
+      .map((beatIndex, i) => ({ beatIndex, clip: clips[i], dur: beatDurations[i] }))
+      .concat(
+        clips.slice(seedCount).map((clip, i) => ({
+          beatIndex: missing[i] ?? minClips + i,
+          clip,
+          dur: beatDurations[seedCount + i],
+        }))
+      )
+      .sort((a, b) => a.beatIndex - b.beatIndex);
+    clips.length = 0;
+    beatDurations.length = 0;
+    for (const entry of merged) {
+      clips.push(entry.clip);
+      beatDurations.push(entry.dur);
+    }
   }
 }
 
@@ -15883,6 +15931,16 @@ async function adoptClip(
       {
         const providerTitle = dedup.clipAnnotationMeta.get(p)?.providerText?.title;
         if (!scriptImageFallbackPassesRelevanceFloor(providerTitle, sourceQuery, beatText, opts.videoTitle)) {
+          // Production finding: this reject reason had no accompanying log line anywhere, so an
+          // off_topic_visual reject in a coverage-gate summary could never be reconstructed from
+          // logs (unlike vision_gate, which logs via evaluateClipVisionGate). Minimal targeted
+          // logging — same shape as the other reject-reason warnings in this loop — using data
+          // already in scope (no new lookups).
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(p)}" ` +
+              `off_topic_visual provider=${contentKey.split(":")[0] || "unknown"} query="${sourceQuery.slice(0, 60)}" ` +
+              `title="${(providerTitle ?? "").slice(0, 60)}"`
+          );
           recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual", sourceQuery);
           continue;
         }
@@ -22792,15 +22850,50 @@ async function refillSceneStrictVoiceMatch(
   // attempt; later callers fall through to a cheap guaranteed-clip fill instead.
   if (dedup.strictRefillAttemptedScenes.has(scene.index)) {
     console.warn(`[Pipeline] Scene ${scene.index}: strict refill already attempted this render — guaranteed fill instead`);
+    const minNeededHere = minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength);
+    // Production finding: this branch used to start `clips` empty and fill it purely with
+    // guaranteed placeholders — discarding any real clip an EARLIER recovery layer (e.g.
+    // compose-time rescue) had already adopted for this same scene (recorded in
+    // dedup.clipAdoptAudit) but wasn't carried into this fresh array. A real Internet Archive
+    // clip was seen adopted for a beat, then silently replaced by a guaranteed placeholder in
+    // the final montage moments later via exactly this path. Seed `clips` with whatever real
+    // (non-fallback) clips are already adopted for this scene and still exist on disk, so
+    // appendGuaranteedSceneClips only tops up the remaining gap instead of replacing everything.
+    const seedHoldSec = Math.max(
+      archiveVisualMinClipSec(),
+      Math.min(archiveVisualMaxClipSec(), scene.duration / Math.max(1, minNeededHere))
+    );
     const clips: string[] = [];
     const beatDurations: number[] = [];
+    const clipBeatIndices: number[] = [];
+    const seenReal = new Set<string>();
+    // Sorted by beatIndex (not audit-insertion order, which is chronological adoption order and
+    // can easily differ from narrative beat order when beats are filled out of sequence) so the
+    // seeded real clips play back in the same beat order the scene's narration expects, instead
+    // of whatever order their recovery layers happened to adopt them in.
+    const realEntriesForScene = dedup.clipAdoptAudit
+      .filter((entry) => entry.sceneIndex === scene.index && entry.source !== "fallback" && entry.source !== "rescue_placeholder")
+      .sort((a, b) => a.beatIndex - b.beatIndex);
+    for (const entry of realEntriesForScene) {
+      const candidate = path.join(workDir, entry.basename);
+      if (seenReal.has(candidate) || !fs.existsSync(candidate)) continue;
+      seenReal.add(candidate);
+      clips.push(candidate);
+      beatDurations.push(seedHoldSec);
+      clipBeatIndices.push(entry.beatIndex);
+    }
+    // Bug 1 fix: pass the seeded clips' real narrative beatIndex through so
+    // appendGuaranteedSceneClips can fill exactly the missing beats in their correct positions
+    // instead of appending every guaranteed clip after all the real ones regardless of order.
     await appendGuaranteedSceneClips(
       scene, workDir, clips, beatDurations,
-      minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength),
-      dedup
+      minNeededHere,
+      dedup,
+      clipBeatIndices
     );
-    // No beats were filled by this call (guaranteed-clip fallback only), but a no-op if this
-    // scene has nothing recorded — safe to call unconditionally on every exit of this function.
+    // No new beats were filled by this call (guaranteed-clip fallback only, plus whatever real
+    // clips were seeded above), but a no-op if this scene has nothing recorded — safe to call
+    // unconditionally on every exit of this function.
     sweepUnadoptedSceneCandidates(dedup, scene.index);
     return { clips, beatDurations };
   }

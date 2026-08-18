@@ -67,32 +67,56 @@ export function recordClipAdopt(
 /** Summarize adopt audit for qualityReport — sourcing mix per beat. */
 export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary {
   const bySource: Record<string, number> = {};
-  const beatKeys = new Set<string>();
+  for (const entry of audit) {
+    bySource[entry.source] = (bySource[entry.source] ?? 0) + 1;
+  }
+
+  // Production finding: recordClipAdopt can be called more than once for the SAME
+  // sceneIndex+beatIndex — independent recovery layers (compose-time rescue, strict-refill
+  // "already attempted" guaranteed-fill, emergency-finish, Path A/B rescue loops, ...) can each
+  // re-attempt the same beat and each record their own adopt entry. Counting every entry toward
+  // fallbackBeats/stockBeats/etc. double-counted those re-attempts as separate beats — a real
+  // render logged "35/14 filled beat(s) used the color/text fallback", which is impossible if
+  // beatsFilled (14) is genuinely the number of unique beats. Each unique beat now contributes
+  // its FINAL recorded source exactly once — later entries for the same beat are presumed to
+  // reflect that beat's more current state (the same assumption the render pipeline itself makes
+  // when a later recovery layer re-adopts a beat).
+  // Final review round — Bug 2: several guaranteed-fill call sites record scene-level "padding"
+  // adopt entries under a sentinel beatIndex (999, 1001, 8888, 9999, and the 2000+slot range used
+  // by appendGuaranteedSceneClips) specifically so they can never collide with a real narrative
+  // beatIndex. Those sentinel entries don't correspond to one of the scene's actual narrative
+  // beats — counting them here would inflate beatsFilled past the true beat count (e.g. 14 real
+  // narrative beats + 6 sentinel entries must still report beatsFilled = 14, not 20).
+  const isSentinelBeatIndex = (beatIndex: number): boolean =>
+    beatIndex >= 2000 || beatIndex === 999 || beatIndex === 1001 || beatIndex === 8888 || beatIndex === 9999;
+
+  const finalSourceByBeat = new Map<string, string>();
+  for (const entry of audit) {
+    if (isSentinelBeatIndex(entry.beatIndex)) continue;
+    finalSourceByBeat.set(`${entry.sceneIndex}:${entry.beatIndex}`, entry.source);
+  }
+
   let stockBeats = 0;
   let wikiBeats = 0;
   let archiveBeats = 0;
   let klingBeats = 0;
   let fallbackBeats = 0;
 
-  for (const entry of audit) {
-    bySource[entry.source] = (bySource[entry.source] ?? 0) + 1;
-    beatKeys.add(`${entry.sceneIndex}:${entry.beatIndex}`);
-    if (entry.source === "pexels" || entry.source === "pixabay" || entry.source === "stock") {
+  for (const source of finalSourceByBeat.values()) {
+    if (source === "pexels" || source === "pixabay" || source === "stock" || source === "rescue_stock") {
       stockBeats += 1;
-    } else if (entry.source === "wikimedia" || entry.source === "wikimedia_video") {
+    } else if (source === "wikimedia" || source === "wikimedia_video") {
       wikiBeats += 1;
-    } else if (entry.source === "archive" || entry.source === "archive_fetch" || entry.source.startsWith("rescue_similar") || entry.source === "rescue_archive") {
+    } else if (source === "archive" || source === "archive_fetch" || source.startsWith("rescue_similar") || source === "rescue_archive") {
       archiveBeats += 1;
-    } else if (entry.source === "kling" || entry.source === "rescue_ai") {
+    } else if (source === "kling" || source === "rescue_ai") {
       klingBeats += 1;
-    } else if (entry.source === "fallback" || entry.source === "rescue_placeholder") {
+    } else if (source === "fallback" || source === "rescue_placeholder") {
       fallbackBeats += 1;
-    } else if (entry.source === "rescue_stock") {
-      stockBeats += 1;
     }
   }
 
-  const beatsFilled = beatKeys.size;
+  const beatsFilled = finalSourceByBeat.size;
   const hints: string[] = [];
   if (beatsFilled > 0 && wikiBeats === 0 && archiveBeats === 0) {
     hints.push("Alle beats via stock/Kling — upload meer relevant archief (vision + semantic match).");

@@ -90,6 +90,128 @@ describe("Vision Gate root-cause fix — Test B/D: cache identity threaded throu
   });
 });
 
+describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip protected from later guaranteed-fill overwrite", () => {
+  const src = extractFunctionSource("refillSceneStrictVoiceMatch");
+
+  it("the already-attempted branch seeds `clips` from real (non-fallback) adopt-audit entries for this scene before topping up with guaranteed fill", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    expect(idx).toBeGreaterThan(-1);
+    const scoped = src.slice(idx, idx + 3000);
+    expect(scoped).toContain('entry.source !== "fallback" && entry.source !== "rescue_placeholder"');
+    expect(scoped).toContain("fs.existsSync(candidate)");
+    expect(scoped).toContain("appendGuaranteedSceneClips(");
+  });
+
+  it("still calls appendGuaranteedSceneClips to top up any remaining gap (doesn't remove the guaranteed-fill safety net)", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    const scoped = src.slice(idx, idx + 3000);
+    const appendIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
+    expect(appendIdx).toBeGreaterThan(-1);
+  });
+
+  // Review finding (final review round): seeding `clips` with real entries means
+  // appendGuaranteedSceneClips's `slot` counter (used as clips.length at entry) can start above
+  // 0 for the first time from this call site — and that same `slot` value is also used as the
+  // recordClipAdopt beatIndex a few lines later in appendGuaranteedSceneClips, where it can
+  // collide with a genuine narrative beatIndex already used by one of the seeded real clips,
+  // silently reclassifying that beat as "fallback" in the coverage audit even though the real
+  // clip is still untouched in the actual `clips` array.
+  it("seeded real entries are ordered by beatIndex, not by chronological adoption order, so the montage plays back in narrative beat order", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    const scoped = src.slice(idx, idx + 3000);
+    expect(scoped).toContain(".sort((a, b) => a.beatIndex - b.beatIndex)");
+  });
+});
+
+describe("Vision Gate root-cause fix round 2 — appendGuaranteedSceneClips: synthetic audit beatIndex can never collide with a real narrative beat", () => {
+  const src = extractFunctionSource("appendGuaranteedSceneClips");
+
+  it("offsets the recordClipAdopt beatIndex away from the raw array-position `slot`, matching the sentinel-slot pattern used by other guaranteed-fill call sites (999/1001/8888/9999)", () => {
+    const idx = src.indexOf("recordClipAdopt(dedup.clipAdoptAudit, scene.index,");
+    expect(idx).toBeGreaterThan(-1);
+    const scoped = src.slice(idx, idx + 120);
+    expect(scoped).not.toContain("scene.index, slot,");
+    expect(scoped).toMatch(/scene\.index,\s*\d+\s*\+\s*slot/);
+  });
+});
+
+describe("Vision Gate final hardening — Bug 1: appendGuaranteedSceneClips fills gaps in narrative beat order, not by blind append", () => {
+  const src = extractFunctionSource("appendGuaranteedSceneClips");
+
+  it("accepts an optional existingBeatIndices array so callers can identify which narrative beat each pre-seeded real clip belongs to", () => {
+    expect(src).toContain("existingBeatIndices?: number[]");
+  });
+
+  it("computes the actually-missing narrative beat indices instead of assuming the seeded real clips fill [0, seedCount) contiguously", () => {
+    expect(src).toContain("filled.has(beatIdx)");
+    expect(src).toContain("missing.push(beatIdx)");
+  });
+
+  it("reassigns newly-generated guaranteed clips to the missing beat indices and re-sorts the merged array back into narrative beat order, instead of leaving real clips bunched before trailing fallbacks", () => {
+    expect(src).toContain("missing[i] ?? minClips + i");
+    const sortIdx = src.indexOf(".sort((a, b) => a.beatIndex - b.beatIndex)");
+    expect(sortIdx).toBeGreaterThan(-1);
+  });
+
+  it("never drops or shrinks the pre-seeded real clips during the reorder — every existingBeatIndices entry is carried into the merge", () => {
+    const idx = src.indexOf("existingBeatIndices.length === seedCount");
+    expect(idx).toBeGreaterThan(-1);
+    const scoped = src.slice(idx, idx + 800);
+    expect(scoped).toContain("existingBeatIndices\n      .map((beatIndex, i) => ({ beatIndex, clip: clips[i], dur: beatDurations[i] }))");
+  });
+});
+
+describe("Vision Gate final hardening — Test A: refillSceneStrictVoiceMatch threads real beatIndex gaps through to appendGuaranteedSceneClips", () => {
+  const src = extractFunctionSource("refillSceneStrictVoiceMatch");
+
+  it("collects a parallel clipBeatIndices array alongside the seeded real clips (beat 0 and 2 missing, beat 1 and 3 real -> indices [1, 3], not [0, 1])", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    const scoped = src.slice(idx, idx + 3000);
+    expect(scoped).toContain("const clipBeatIndices: number[] = [];");
+    expect(scoped).toContain("clipBeatIndices.push(entry.beatIndex);");
+  });
+
+  it("passes clipBeatIndices as the 7th argument to appendGuaranteedSceneClips so gap-filling knows the real beats' true positions", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    const scoped = src.slice(idx, idx + 3000);
+    const appendIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
+    expect(appendIdx).toBeGreaterThan(-1);
+    const callSite = scoped.slice(appendIdx, appendIdx + 200);
+    expect(callSite).toContain("clipBeatIndices");
+  });
+});
+
+describe("Vision Gate final hardening — Test C: a real adopted clip is never replaced by a guaranteed placeholder on a repeated refillSceneStrictVoiceMatch call", () => {
+  const src = extractFunctionSource("refillSceneStrictVoiceMatch");
+
+  it("seeds `clips` from real adopt-audit entries BEFORE calling appendGuaranteedSceneClips, so the real clip is already present when gap-filling runs (not replaced by it)", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    const scoped = src.slice(idx, idx + 3000);
+    const seedLoopIdx = scoped.indexOf("for (const entry of realEntriesForScene)");
+    const appendCallIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
+    expect(seedLoopIdx).toBeGreaterThan(-1);
+    expect(appendCallIdx).toBeGreaterThan(-1);
+    expect(seedLoopIdx).toBeLessThan(appendCallIdx);
+  });
+
+  it("only seeds entries whose source is a real adoption, excluding fallback/rescue_placeholder — a previously-placeholder-filled beat is correctly left for gap-filling, not falsely protected", () => {
+    const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
+    const scoped = src.slice(idx, idx + 3000);
+    expect(scoped).toContain('entry.source !== "fallback" && entry.source !== "rescue_placeholder"');
+  });
+});
+
+describe("Vision Gate root-cause fix round 2 — Test 9: off_topic_visual rejects are now individually logged", () => {
+  it("logs scene, beat, provider, query, and title before recording an off_topic_visual reject", () => {
+    const idx = fullSource.indexOf('"off_topic_visual"');
+    expect(idx).toBeGreaterThan(-1);
+    const before = fullSource.slice(Math.max(0, idx - 500), idx);
+    expect(before).toContain("off_topic_visual provider=");
+    expect(before).toContain("query=");
+    expect(before).toContain("title=");
+  });
+});
+
 describe("Vision Gate root-cause fix — Test C: cache hit no longer double-counted as a fresh reject", () => {
   it("beatClipPassesVisionGate only records a vision_gate reject when the verdict was NOT from cache", () => {
     const src = extractFunctionSource("beatClipPassesVisionGate");
