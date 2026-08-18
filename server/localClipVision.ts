@@ -229,6 +229,23 @@ export type BeatVisionQueryContext = {
   semanticEvents?: string[];
 };
 
+/** Truncate to at most maxLen chars without cutting mid-word — production finding: plain
+ *  .slice(0, N) on a long visualDescription/narration could chop a word in half (e.g.
+ *  "Führerbunker" -> "hrerbunker"), and that fragment then went straight into the CLIP text
+ *  query. Backs off to the last whitespace boundary at or before maxLen when the cut point
+ *  falls inside a word; a string with no whitespace before maxLen (single long token) still
+ *  falls back to a hard slice rather than returning nothing. */
+function truncateAtWordBoundary(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  const cut = str.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(" ");
+  // Only back off to the space when it doesn't throw away most of the budget — otherwise a
+  // single early space in an otherwise long token would truncate far more aggressively than
+  // maxLen intends.
+  if (lastSpace > maxLen * 0.6) return cut.slice(0, lastSpace).trimEnd();
+  return cut.trimEnd();
+}
+
 function uniqueQueryParts(items: string[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -245,10 +262,10 @@ function uniqueQueryParts(items: string[]): string[] {
 export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
   const parts: string[] = [];
   const visual = coerceVisionString(ctx.visualDescription)?.replace(/\[visual:[^\]]+\]/gi, " ").trim();
-  if (visual && visual.length >= 8) parts.push(visual.slice(0, 180));
+  if (visual && visual.length >= 8) parts.push(truncateAtWordBoundary(visual, 180));
 
   const summary = coerceVisionString(ctx.semanticSummary)?.trim();
-  if (summary && summary !== visual) parts.push(summary.slice(0, 160));
+  if (summary && summary !== visual) parts.push(truncateAtWordBoundary(summary, 160));
 
   const entityBits = uniqueQueryParts([
     ...(ctx.semanticPersons ?? []).slice(0, 2),
@@ -261,20 +278,20 @@ export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
 
   const shot = coerceVisionString(ctx.searchQuery)?.trim();
   if (shot && shot.length >= 4 && !parts.some((p) => p.includes(shot.slice(0, 20)))) {
-    parts.push(shot.slice(0, 100));
+    parts.push(truncateAtWordBoundary(shot, 100));
   }
   const powerWord = coerceVisionString(ctx.powerWord);
   if (powerWord?.trim() && powerWord.length >= 3) {
-    parts.push(powerWord.trim().slice(0, 40));
+    parts.push(truncateAtWordBoundary(powerWord.trim(), 40));
   }
 
   const hasRichVisualIntent = parts.length > 0;
   const narration = coerceVisionString(ctx.beatText)?.replace(/\[visual:[^\]]+\]/gi, " ").trim() ?? "";
   if (narration) {
-    parts.push(hasRichVisualIntent ? narration.slice(0, 80) : narration.slice(0, 180));
+    parts.push(truncateAtWordBoundary(narration, hasRichVisualIntent ? 80 : 180));
   }
   const videoTitle = coerceVisionString(ctx.videoTitle);
-  if (videoTitle?.trim() && !hasRichVisualIntent) parts.push(videoTitle.trim().slice(0, 60));
+  if (videoTitle?.trim() && !hasRichVisualIntent) parts.push(truncateAtWordBoundary(videoTitle.trim(), 60));
 
   return parts.filter(Boolean).join(". ");
 }

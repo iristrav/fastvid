@@ -138,7 +138,7 @@ import {
   resolveBeatScriptVisualAnchor,
   resolveBeatVisualIntent,
 } from "./scriptVisualKeywords";
-import { clipPassesVisionGate, clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, type VisionGateResult } from "./visualQualityGate";
+import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
   clipEmbeddingIndexEnabled,
@@ -6267,8 +6267,22 @@ async function fetchOpenverseImages(
         if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
 
         const tag = fileTag ? `${fileTag}_` : "";
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${i}.mp4`);
+        // Production finding: this filename used to be keyed on the loop-local index `i` alone
+        // (openverse_0, openverse_1, ...), which restarts at 0 on every call to this function.
+        // The caller invokes fetchOpenverseImages once per search query for the same beat/scene
+        // (same sceneIndex+fileTag) — so two genuinely different images from two different
+        // queries could both land on `i=0` and collide on the exact same output path, silently
+        // overwriting each other on disk. Worse, the VisionGate cache falls back to this
+        // basename as the candidate's identity when no contentKey is available, so the second
+        // (different) image inherited the first image's already-computed pass/fail verdict
+        // without ever being evaluated. Keying on the asset's own id (or the image URL when an
+        // id is unexpectedly missing) instead of the loop position makes the path — and thus the
+        // vision-gate identity — asset-specific: the same asset revisited reuses its own path
+        // (intentional, matches the existing usedImageUrls dedup), a different asset never can.
+        const assetTag =
+          ((images[i]?.id?.trim() || imgUrl).replace(/[^a-zA-Z0-9]/g, "").slice(0, 24)) || String(i);
+        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.jpg`);
+        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.mp4`);
 
         // Download image
         const imgResp = await withTimeout(
@@ -15904,27 +15918,32 @@ async function adoptClip(
       let fileSize = 0;
       try { fileSize = fs.statSync(p).size; } catch { continue; }
       if (fileSize < 180_000) continue;
-      if (
-        !(await clipPassesVisionGate(
-          p,
-          beatText,
-          opts.videoTitle,
-          workDir,
-          sceneIndex,
-          beatIndex,
-          dedup.perf.fastStockMode,
-          undefined,
-          gateVisualDesc,
-          undefined,
-          null,
-          // Phase 16: give the vision gate this clip's real asset identity (already computed at
-          // the top of this loop) so its score cache can neither collide across two different
-          // files that happen to share a basename, nor miss when the same physical asset
-          // arrives under a different cascade's filename.
-          contentKey
-        ))
-      ) {
-        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
+      // Calls evaluateClipVisionGate directly (rather than the boolean-only clipPassesVisionGate
+      // wrapper) so a cache hit can be told apart from a fresh evaluation below — a cache hit is
+      // the SAME earlier CLIP judgment being returned again, not a new verdict on this candidate.
+      const visionResult = await evaluateClipVisionGate(
+        p,
+        beatText,
+        opts.videoTitle,
+        workDir,
+        sceneIndex,
+        beatIndex,
+        dedup.perf.fastStockMode,
+        undefined,
+        gateVisualDesc,
+        undefined,
+        null,
+        undefined,
+        // Phase 16: give the vision gate this clip's real asset identity (already computed at
+        // the top of this loop) so its score cache can neither collide across two different
+        // files that happen to share a basename, nor miss when the same physical asset
+        // arrives under a different cascade's filename.
+        contentKey
+      );
+      if (!visionResult.pass) {
+        if (!visionResult.fromCache) {
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
+        }
         continue;
       }
       // contentKey was computed and checked at the top of this iteration (see the comment
@@ -19716,6 +19735,10 @@ async function beatClipPassesVisionGate(
       ? stockClipQualityFloor(dedup.videoLength)
       : effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength)));
   const visualDesc = beatGateVisualDescription(beat, semanticProfile);
+  // contentKey gives the vision-gate cache an asset-derived identity instead of falling back to
+  // path.basename(clipPath) — this call funnels every rescue/adoption route (Openverse,
+  // Wikimedia, Pexels, Pixabay, Internet Archive, YouTube CC, curated archive) through one
+  // evaluateClipVisionGate call, so this one contentKey fix covers all of them at once.
   const result = await evaluateClipVisionGate(
     clipPath,
     beat.text,
@@ -19728,9 +19751,13 @@ async function beatClipPassesVisionGate(
     visualDesc,
     dedup.segmentGeoLock,
     queryEmb,
-    isFastShortVideoLength(dedup.videoLength)
+    isFastShortVideoLength(dedup.videoLength),
+    clipContentKey(clipPath)
   );
-  if (!result.pass) {
+  // A cache hit is the SAME earlier CLIP judgment being returned again, not a fresh evaluation
+  // of this candidate — recording it as another "vision_gate" reject would count one real
+  // verdict as if N different candidates had each been looked at and rejected.
+  if (!result.pass && !result.fromCache) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
   }
   return result;
@@ -20120,7 +20147,7 @@ async function adoptBestSimilarBeatClip(
 
     const vision =
       preScore != null && preScore >= targetClipVisionScore()
-        ? ({ pass: true, worstScore10: preScore, skipped: true } satisfies VisionGateResult)
+        ? ({ pass: true, worstScore10: preScore, skipped: true, fromCache: false } satisfies VisionGateResult)
         : await beatClipPassesVisionGate(
             clip,
             beat,
@@ -20409,7 +20436,7 @@ export async function adoptArchiveBeatClip(
       );
       const trustedPreVision: VisionGateResult | null =
         picked.clipVisionScore10 != null && picked.clipVisionScore10 >= minVision
-          ? { pass: true, worstScore10: picked.clipVisionScore10, skipped: false }
+          ? { pass: true, worstScore10: picked.clipVisionScore10, skipped: false, fromCache: false }
           : null;
       const vision =
         trustedPreVision ??

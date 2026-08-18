@@ -1,6 +1,9 @@
+import { readFileSync } from "fs";
+import path from "path";
 import { describe, expect, it } from "vitest";
 import {
   clipVisionGateEnabled,
+  evaluateClipVisionGate,
   shouldVisionCheckClip,
   minClipQualityScore,
   clipVisionFrameCoverage,
@@ -90,5 +93,93 @@ describe("localClipVision helpers", () => {
     process.env.STRICT_VOICE_VISUAL_MATCH = "true";
     expect(effectiveMinClipQualityScore(true, true)).toBe(minClipQualityScore());
     process.env.STRICT_VOICE_VISUAL_MATCH = prev;
+  });
+
+  // Production finding (Vision Gate root-cause fix, test F): buildBeatVisionQueryText used to
+  // .slice() each field to a hard character cap before joining with ". " — a long
+  // visualDescription could get chopped mid-word (observed in production as "Führerbunker"
+  // becoming the fragment "hrerbunker"). truncateAtWordBoundary backs a cut off to the last
+  // whitespace instead of slicing blindly.
+  it("buildBeatVisionQueryText never cuts a word in half when a field exceeds its cap", () => {
+    // "Führerbunker" starts at character 170 of this 200-char filler — well past the 180-char
+    // visualDescription cap, so a blind .slice(0, 180) would land mid-word inside it.
+    const filler = "battle scene ".repeat(13); // 169 chars
+    const visualDescription = `${filler}Führerbunker collapse under artillery fire in the final days`;
+    const q = buildBeatVisionQueryText({ beatText: "narration", visualDescription });
+    // No word in the query should be a truncated fragment of "Führerbunker" — either the whole
+    // word appears, or none of it does (cut before the word started).
+    expect(q).not.toMatch(/\bhrerbunker\b/i);
+    expect(q).not.toMatch(/\bFü?hrerbunke?\b/i);
+  });
+
+  it("buildBeatVisionQueryText truncates a normal long sentence at a word boundary, not mid-word", () => {
+    const longNarration =
+      "The soldiers marched through the ruined city streets past collapsed buildings and " +
+      "burning vehicles while civilians fled toward the underground shelters for safety";
+    const q = buildBeatVisionQueryText({ beatText: longNarration });
+    // Every token in the produced query must be a real prefix of a token from the source text
+    // (i.e. never a word chopped part-way through) — reconstruct the source word set and check.
+    const sourceWords = new Set(longNarration.toLowerCase().split(/\s+/));
+    const producedWords = q.toLowerCase().replace(/[.]/g, "").split(/\s+/).filter(Boolean);
+    for (const w of producedWords) {
+      expect(sourceWords.has(w)).toBe(true);
+    }
+  });
+
+  // Test E (partial — the cheap, deterministic slice of evaluateClipVisionGate's cache-hit
+  // tracking that doesn't require the real CLIP model): the gate-disabled early-out is not a
+  // cache hit — it must report fromCache:false so a caller never mistakes "gate is off" for
+  // "this exact candidate was already judged."
+  it("evaluateClipVisionGate reports fromCache:false when the gate is disabled", async () => {
+    const prev = process.env.ENABLE_LOCAL_VISION;
+    process.env.ENABLE_LOCAL_VISION = "false";
+    try {
+      const result = await evaluateClipVisionGate(
+        "/tmp/scene_0_b0_pexels_ocean.mp4",
+        "beat text",
+        "video title",
+        "/tmp",
+        0,
+        0,
+        false
+      );
+      expect(result.skipped).toBe(true);
+      expect(result.fromCache).toBe(false);
+    } finally {
+      process.env.ENABLE_LOCAL_VISION = prev;
+    }
+  });
+});
+
+describe("Vision Gate root-cause fix — source-level checks (visualQualityGate.ts)", () => {
+  const src = readFileSync(path.join(__dirname, "visualQualityGate.ts"), "utf8");
+
+  it("VisionGateResult carries fromCache so callers can tell a cache hit from a fresh verdict", () => {
+    expect(src).toMatch(/VisionGateResult\s*=\s*\{[\s\S]{0,600}fromCache:\s*boolean/);
+  });
+
+  it("the cache-hit return path sets fromCache: true", () => {
+    const idx = src.indexOf("visionGateCache.has(cacheKey)");
+    expect(idx).toBeGreaterThan(-1);
+    const scoped = src.slice(idx, idx + 300);
+    expect(scoped).toContain("fromCache: true");
+  });
+
+  it("scoreClipAcrossFrames tracks raw worstSimilarity alongside the rounded worstScore", () => {
+    expect(src).toContain("worstSimilarity: number | null;");
+    // Every return branch must be updated — count should match the number of `worstScore:`
+    // occurrences (each return sets both together) rather than lag behind them.
+    const worstScoreReturns = (src.match(/worstScore:\s/g) ?? []).length;
+    const worstSimilarityReturns = (src.match(/worstSimilarity:\s/g) ?? []).length;
+    expect(worstSimilarityReturns).toBeGreaterThanOrEqual(worstScoreReturns);
+  });
+
+  it("the reject log uses the same raw-similarity math for the shown score as the pass/fail decision, not a misleadingly-rounded one", () => {
+    const idx = src.indexOf("[LocalVision] Scene");
+    expect(idx).toBeGreaterThan(-1);
+    const scoped = src.slice(idx - 400, idx + 300);
+    expect(scoped).toContain("similarity=");
+    expect(scoped).toContain("threshold=");
+    expect(scoped).toContain("result.worstSimilarity * 40");
   });
 });
