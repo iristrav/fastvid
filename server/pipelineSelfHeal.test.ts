@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildEmergencyGeoStockQueries,
   enforceQualityExportGate,
@@ -105,5 +105,37 @@ describe("pipelineSelfHeal", () => {
     };
     expect(() => enforceQualityExportGate(99, report, "10-15", finalOk)).not.toThrow();
     expect(report.score).toBeGreaterThanOrEqual(45);
+  });
+
+  it("logs rawScore/healedScore/fallbackRatio/realClipRatio when self-healing, not just the healed number (production finding: 42 was reported as if it were really 70)", () => {
+    const report = buildVideoQualityReport(
+      ["/tmp/scene_0_b0_curated_a1.mp4"],
+      "Why Did Hitler Kill Himself?",
+      { archiveOnly: true, fastShort: true }
+    );
+    report.score = 42;
+    const finalOk = {
+      ok: true,
+      durationSec: 58,
+      hasAudio: true,
+      hasVideo: true,
+      sizeBytes: 4_000_000,
+      spotOk: true,
+      reasons: [],
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      enforceQualityExportGate(331, report, "1", finalOk);
+      const healedLine = warnSpy.mock.calls
+        .map((args) => args.join(" "))
+        .find((line) => line.includes("rawScore=42"));
+      expect(healedLine).toBeDefined();
+      expect(healedLine).toMatch(/healedScore=\d+\/100/);
+      expect(healedLine).toContain("fallbackRatio=");
+      expect(healedLine).toContain("realClipRatio=");
+      expect(healedLine).toContain("not actual visual quality");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

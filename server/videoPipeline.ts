@@ -646,6 +646,12 @@ type RenderCtx = {
    *  guaranteed-clip fallback so it can try a broad archive search for the video's own topic
    *  instead of ever showing a flat color card. */
   videoTopic: { videoTitle: string; primaryPerson: string } | null;
+  /** Mirror of visualDedup.videoVisualContext (people/period/locations/synopsis), set once when
+   *  built. Read by generateGuaranteedBeatClip's real-search escalation ladder so a last-resort
+   *  fallback isn't limited to the bare title/person string — same content-type-agnostic context
+   *  every beat's own retrieval already uses (visualSearchPlan rescue), just also reachable from
+   *  the guaranteed-clip helper, which has no VisualDedupState parameter to carry it directly. */
+  videoVisualContext: VideoVisualContext | null;
   /** Set by generateVoiceover() whenever it had to fall back to silent audio for a narration
    *  chunk. Read once qualityReport exists (after Stage 4) so a video can never complete with
    *  missing narration purely as a server-log line — it's registered in the persisted quality
@@ -670,6 +676,7 @@ function getRenderCtx(): RenderCtx {
       renderBudget: null,
       budgetTracker: null,
       videoTopic: null,
+      videoVisualContext: null,
       voiceoverSilentFallbackNotes: [],
       elevenLabsQuotaExhausted: false,
     }
@@ -680,6 +687,7 @@ function getRenderCtx(): RenderCtx {
 function get_activeWatchdog(): RenderWatchdog | null     { return getRenderCtx().watchdog; }
 function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx().renderBudget; }
 function get_activeVideoTopic() { return getRenderCtx().videoTopic; }
+function get_activeVideoVisualContext(): VideoVisualContext | null { return getRenderCtx().videoVisualContext; }
 function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
 // Setters mutate only the current render's context object (safe — no shared state)
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
@@ -1025,6 +1033,23 @@ const YOUTUBE_COOLDOWN_MS = 3 * 60_000;
 let youtubeFailureStreak = 0;
 let youtubeCooldownUntilMs = 0;
 
+// Production finding (Railway logs, multiple renders): a 429 from the YouTube Data API v3
+// search endpoint is Google's explicit "back off" signal — distinct from a transient network
+// blip or a one-off 5xx. Treating it identically to any other failure meant the generic
+// 8-failure/3-minute breaker above kept re-tripping and re-opening every ~3 minutes for the
+// rest of a 40-70+ minute render, with every single retry failing identically (the same
+// queries, same 429, over and over for 45+ minutes straight in the observed logs) — wasted
+// budget on a source that was not coming back this render, while other real providers
+// (Wikimedia/Pexels/Pixabay/Internet Archive/curated archive) were never blocked by this (they
+// have their own independent breakers/timeouts) and kept running regardless. This adds a
+// longer, escalating cooldown specifically for repeated 429s, and honors the server's own
+// Retry-After header when present — it does not change what happens to any other provider, and
+// does not touch selection/scoring.
+const YOUTUBE_RATE_LIMIT_COOLDOWN_MS = 15 * 60_000;
+const YOUTUBE_RATE_LIMIT_ESCALATED_COOLDOWN_MS = 45 * 60_000;
+const YOUTUBE_RATE_LIMIT_MAX_RETRY_AFTER_MS = 60 * 60_000;
+let youtubeRateLimitStreak = 0;
+
 function isYoutubeInCooldown(): boolean {
   return Date.now() < youtubeCooldownUntilMs;
 }
@@ -1032,6 +1057,7 @@ function isYoutubeInCooldown(): boolean {
 function markYoutubeSearchResult(success: boolean): void {
   if (success) {
     youtubeFailureStreak = 0;
+    youtubeRateLimitStreak = 0;
     return;
   }
   youtubeFailureStreak++;
@@ -1043,6 +1069,33 @@ function markYoutubeSearchResult(success: boolean): void {
         `skipping for ${Math.round(YOUTUBE_COOLDOWN_MS / 60_000)}min`
     );
   }
+}
+
+/** Called specifically for an HTTP 429 — a rate-limit/quota signal, not a generic failure. */
+function markYoutubeRateLimited(retryAfterMs?: number): void {
+  youtubeRateLimitStreak++;
+  const base =
+    youtubeRateLimitStreak >= 2 ? YOUTUBE_RATE_LIMIT_ESCALATED_COOLDOWN_MS : YOUTUBE_RATE_LIMIT_COOLDOWN_MS;
+  const cooldownMs =
+    retryAfterMs != null && retryAfterMs > 0
+      ? Math.min(Math.max(retryAfterMs, base), YOUTUBE_RATE_LIMIT_MAX_RETRY_AFTER_MS)
+      : base;
+  youtubeCooldownUntilMs = Math.max(youtubeCooldownUntilMs, Date.now() + cooldownMs);
+  console.warn(
+    `[Pipeline] YouTube: rate limited (429, streak ${youtubeRateLimitStreak})` +
+      (retryAfterMs != null ? ` Retry-After honored` : "") +
+      ` — skipping YouTube CC for ${Math.round(cooldownMs / 60_000)}min (other providers unaffected)`
+  );
+}
+
+/** Parse a Retry-After header (seconds, or an HTTP-date) into milliseconds. */
+function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
 }
 
 const SERPAPI_FAILURE_STREAK_TRIP = 8;
@@ -6375,7 +6428,11 @@ async function fetchYouTubeThumbnails(
       `YouTube search scene ${sceneIndex}`
     ));
     if (!searchResp.ok) {
-      markYoutubeSearchResult(false);
+      if (searchResp.status === 429) {
+        markYoutubeRateLimited(parseRetryAfterMs(searchResp.headers?.get?.("retry-after")));
+      } else {
+        markYoutubeSearchResult(false);
+      }
       console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
       return [];
     }
@@ -6807,19 +6864,44 @@ async function generateGuaranteedBeatClip(
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
 
-  // Before ever falling back to a flat color card, try a broad/relaxed archive search for the
-  // video's own overall subject (e.g. "Adolf Hitler") — any reasonably-scoring clip about the
-  // actual topic beats a plain color screen, even when it's not a precise match for this one
-  // beat's sentence. This is a synthetic, minimal beat/scene (no real dedup tracking) — an
-  // occasional repeat of a topical clip here is far better than a guaranteed color card.
+  // Escalation ladder — before EVER falling back to text-overlay/color, try a series of
+  // widening real-search queries: beat-specific entity/event/location first (most relevant),
+  // then the overall video topic, then the richer VideoVisualContext (people/locations/period),
+  // then one more real provider (Wikimedia). Content-type-agnostic by construction: none of
+  // these tiers branch on isHistorical/primaryPerson — buildBeatQueryEscalationTiers already
+  // extracts event/location/object cues generically (proven in production by the beat-level
+  // Wikimedia rescue ladder above, which uses the same helper for every beat regardless of
+  // topic), and the topic/context tiers use whatever videoTitle/videoVisualContext the render
+  // already built for itself. This function has no VisualDedupState parameter (it's called from
+  // compose-time rescue paths that only have scene/slot/duration/workDir), so the render-scoped
+  // topic/context accessors (get_activeVideoTopic/get_activeVideoVisualContext, AsyncLocalStorage
+  // — same pattern already used for videoTopic) carry the context here instead of threading a
+  // new parameter through every one of this function's callers.
   const topic = get_activeVideoTopic();
+  const videoCtx = get_activeVideoVisualContext();
   const topicQuery = topic?.primaryPerson || topic?.videoTitle;
-  if (topicQuery) {
+
+  const tiers: string[] = [];
+  if (beatText && beatText.trim().length > 3) {
+    tiers.push(...buildBeatQueryEscalationTiers(beatText, topic?.primaryPerson, topic?.videoTitle));
+  }
+  if (topicQuery) tiers.push(topicQuery);
+  if (videoCtx) {
+    const ctxParts = [topic?.videoTitle, videoCtx.people[0], videoCtx.locations[0], videoCtx.period].filter(
+      (s): s is string => Boolean(s && s.trim().length > 0)
+    );
+    if (ctxParts.length > 1) tiers.push(ctxParts.join(" "));
+  }
+  const searchTiers = Array.from(
+    new Set(tiers.map((q) => q.replace(/\s+/g, " ").trim()).filter((q) => q.length > 3))
+  ).slice(0, 4);
+
+  for (const query of searchTiers) {
     try {
       const topicalClip = await withSceneFetchTimeout(
         () => fetchCuratedArchiveBeatClip(
-          { keywords: [topicQuery], text: topicQuery, index: slotIndex },
-          { text: topicQuery },
+          { keywords: [query], text: query, index: slotIndex },
+          { text: query },
           workDir,
           sceneIndex,
           duration,
@@ -6831,15 +6913,36 @@ async function generateGuaranteedBeatClip(
           undefined,
           { relaxed: true }
         ),
-        25_000,
-        `Guaranteed beat topical fallback s${sceneIndex}slot${slotIndex}`
+        10_000,
+        `Guaranteed beat topical fallback s${sceneIndex}slot${slotIndex} "${query.slice(0, 40)}"`
       );
       if (topicalClip && (await isValidVideoFile(topicalClip))) {
-        console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: topical archive fallback OK (${topicQuery})`);
+        console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: topical archive fallback OK (${query})`);
         return topicalClip;
       }
     } catch {
-      /* archive search failed/timed out — fall through to text-overlay/color below */
+      /* archive search failed/timed out for this tier — escalate to the next tier */
+    }
+  }
+
+  // One more real provider before giving up on real footage entirely (isolated failure — a
+  // Wikimedia cooldown/outage is handled internally by fetchWikimediaImages and never blocks
+  // the text-overlay/color fallback below).
+  const wikiQuery = searchTiers[0] ?? topicQuery;
+  if (wikiQuery) {
+    try {
+      const wikiClips = await withSceneFetchTimeout(
+        () => fetchWikimediaImages(wikiQuery, duration, workDir, sceneIndex, 1, "guaranteed_wiki"),
+        10_000,
+        `Guaranteed beat wikimedia fallback s${sceneIndex}slot${slotIndex}`
+      );
+      const wikiClip = wikiClips?.[0];
+      if (wikiClip && (await isValidVideoFile(wikiClip))) {
+        console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: Wikimedia topical fallback OK (${wikiQuery})`);
+        return wikiClip;
+      }
+    } catch {
+      /* Wikimedia failed/timed out — fall through to text-overlay/color below */
     }
   }
 
@@ -6883,7 +6986,8 @@ async function appendGuaranteedSceneClips(
   workDir: string,
   clips: string[],
   beatDurations: number[],
-  minClips: number
+  minClips: number,
+  dedup?: VisualDedupState
 ): Promise<void> {
   const holdSec = Math.max(
     archiveVisualMinClipSec(),
@@ -6897,6 +7001,14 @@ async function appendGuaranteedSceneClips(
       if (!clips.some((c) => clipContentKey(c) === key)) {
         clips.push(clip);
         beatDurations.push(holdSec);
+        // Audit-gap fix (same class as Round 17 + follow-up fixes): every other
+        // generateGuaranteedBeatClip call site records its adoption so
+        // assertVisualCoverageExportGate/canAddGuaranteedFallbackClip can see it. This
+        // function's 5 callers all previously appended guaranteed clips straight into their
+        // local `clips` array with no bookkeeping at all — additive, no change to selection.
+        if (dedup) {
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, slot, scene.text, clip, "fallback");
+        }
       }
     } catch (err) {
       // Even the guaranteed clip's own color-fallback can exhaust every retry under severe
@@ -10130,7 +10242,11 @@ export async function searchYoutubeVideoCandidates(
         `${label} search scene ${sceneIndex}`
       ));
       if (!searchResp.ok) {
-        markYoutubeSearchResult(false);
+        if (searchResp.status === 429) {
+          markYoutubeRateLimited(parseRetryAfterMs(searchResp.headers?.get?.("retry-after")));
+        } else {
+          markYoutubeSearchResult(false);
+        }
         console.warn(`[Pipeline] Scene ${sceneIndex}: ${label} API error ${searchResp.status} for "${query}"`);
         return null;
       }
@@ -16281,7 +16397,8 @@ export async function recoverSceneClipsIfEmpty(
           workDir,
           clips,
           beatDurations,
-          minClipsForBalancedVoice(scene.duration + 0.15)
+          minClipsForBalancedVoice(scene.duration + 0.15),
+          dedup
         );
       } else {
         console.warn(
@@ -22183,7 +22300,13 @@ async function fillBeatVisual(
       }
       if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
       const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir, beat.text);
-      if (guaranteed && (await pushClip(guaranteed, holdSec))) return true;
+      if (guaranteed && (await pushClip(guaranteed, holdSec))) {
+        // Audit-gap fix (same class as Round 17 + follow-up fixes): this emergency-finish
+        // guaranteed clip was pushed via pushClip but never recorded, making it invisible to
+        // assertVisualCoverageExportGate/canAddGuaranteedFallbackClip. Additive only.
+        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, guaranteed, "fallback");
+        return true;
+      }
       return false;
     }
 
@@ -22646,7 +22769,8 @@ async function refillSceneStrictVoiceMatch(
     const beatDurations: number[] = [];
     await appendGuaranteedSceneClips(
       scene, workDir, clips, beatDurations,
-      minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength)
+      minClipsForBalancedVoice(scene.duration + 0.15, dedup.videoLength),
+      dedup
     );
     // No beats were filled by this call (guaranteed-clip fallback only), but a no-op if this
     // scene has nothing recorded — safe to call unconditionally on every exit of this function.
@@ -24799,8 +24923,14 @@ export async function composeSceneVideoInner(
       console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
       const clip = await generateGuaranteedBeatClip(scene.index, 1001, Math.max(3, duration), workDir);
       const ok = await requireValidClip(clip, scene.index, duration, workDir);
-      if (ok) safeClips.push(ok);
-      else safeClips.push(clip);
+      const adopted = ok ?? clip;
+      safeClips.push(adopted);
+      // Audit-gap fix, fourth site in this function (same class as Round 17 + the two
+      // follow-up fixes above): this "every previously-valid clip failed ffprobe re-validation"
+      // rescue also used a successfully generated guaranteed clip without recording it.
+      if (composeOptions?.dedup) {
+        recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, 1001, scene.text, adopted, "fallback");
+      }
     } else {
       const fastShort = isFastShortVideoLength(composeOptions?.dedup?.videoLength);
       if (fastShort && composeOptions?.dedup && !isComposeNetworkBlocked(composeOptions.dedup)) {
@@ -24859,6 +24989,28 @@ export async function composeSceneVideoInner(
     console.warn(
       `[Pipeline] Scene ${scene.index}: compose kept ${validClips.length}/${existingClips.length} fetched clips`
     );
+  }
+
+  // Final visual manifest — one compact line per clip that is about to enter the ffmpeg
+  // montage for this scene, so a Railway render's exact composition is reconstructable after
+  // the fact without re-deriving it from dozens of scattered search/adoption log lines. Looks
+  // up each clip's source/fallback status in the same clipAdoptAudit the audit-gap fixes above
+  // now populate completely; a clip with no matching entry (e.g. pre-existing input clips
+  // adopted upstream before this scene's compose stage, whose own adopt call already logged
+  // them elsewhere) is reported as source=unknown rather than guessed at.
+  if (composeOptions?.dedup) {
+    const audit = composeOptions.dedup.clipAdoptAudit;
+    for (const clipPath of safeClips) {
+      const basename = path.basename(clipPath);
+      const entry =
+        audit.find((e) => e.sceneIndex === scene.index && e.basename === basename) ??
+        audit.find((e) => e.basename === basename);
+      const source = entry?.source ?? "unknown";
+      const fallback = entry ? entry.source === "fallback" || entry.source === "rescue_placeholder" : isPipelineFallbackClip(clipPath);
+      console.log(
+        `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${entry?.beatIndex ?? "?"} source=${source} fallback=${fallback} clip=${basename}`
+      );
+    }
   }
 
   let composeBeatDurations =
@@ -26108,6 +26260,7 @@ export async function runVideoPipeline(
     renderBudget: null,
     budgetTracker: null,
     videoTopic: null,
+    videoVisualContext: null,
     voiceoverSilentFallbackNotes: [],
     elevenLabsQuotaExhausted: false,
   };
@@ -26518,6 +26671,7 @@ async function _runVideoPipelineInner(
         videoTitle ?? "",
         scenes.map((s) => s.text).filter(Boolean).slice(0, 3).join(" ")
       ).catch(() => undefined);
+      getRenderCtx().videoVisualContext = visualDedup.videoVisualContext ?? null;
     }
     if (ttsWordAlignmentEnabled()) {
       const storedTts = loadStoredTtsAlignment(workDir);
@@ -26867,7 +27021,8 @@ async function _runVideoPipelineInner(
                     const beatDurations: number[] = [];
                     await appendGuaranteedSceneClips(
                       scene, workDir, clips, beatDurations,
-                      minClipsForBalancedVoice(scene.duration + 0.15)
+                      minClipsForBalancedVoice(scene.duration + 0.15),
+                      visualDedup
                     );
                     svr = { clips, beatDurations };
                   }
@@ -26983,7 +27138,14 @@ async function _runVideoPipelineInner(
                       const hold = Math.max(3, scene.duration / minNeeded);
                       for (let si = 0; si < minNeeded; si++) {
                         try {
-                          rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                          const rescueClip = await generateGuaranteedBeatClip(scene.index, si, hold, workDir);
+                          rescueClips.push(rescueClip);
+                          // Audit-gap fix (same class as Round 17 + follow-up fixes): these
+                          // rescue-compose-retry clips flow into composeSceneVideo's `clips`
+                          // input and reach validClips via the normal path (their "_guaranteed"
+                          // filename isn't caught by isPipelineFallbackClip's "_fallback" check),
+                          // so they were never recorded anywhere. Additive only.
+                          recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, si, scene.text, rescueClip, "fallback");
                         } catch (guaranteedErr) {
                           // A single failure here is often transient (fork pressure, a one-off
                           // ffmpeg spawn error) rather than permanent — retry the same slot once
@@ -26994,7 +27156,9 @@ async function _runVideoPipelineInner(
                             (guaranteedErr as Error).message?.slice(0, 150)
                           );
                           try {
-                            rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                            const retryClip = await generateGuaranteedBeatClip(scene.index, si, hold, workDir);
+                            rescueClips.push(retryClip);
+                            recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, si, scene.text, retryClip, "fallback");
                           } catch (retryErr) {
                             // Even this can exhaust every color-fallback retry under severe fork
                             // pressure. This whole chain runs inside a Promise.all over every scene
@@ -27408,7 +27572,7 @@ async function _runVideoPipelineInner(
             }
           }
           if (clips.length < minNeeded) {
-            await appendGuaranteedSceneClips(scene, workDir, clips, beatDurations, minNeeded);
+            await appendGuaranteedSceneClips(scene, workDir, clips, beatDurations, minNeeded, visualDedup);
           }
           if (clips.length > 0) {
             sceneVisualResults[si] = { clips, beatDurations };
@@ -27434,7 +27598,8 @@ async function _runVideoPipelineInner(
             workDir,
             clips,
             beatDurations,
-            minClipsForBalancedVoice(scene.duration + 0.15)
+            minClipsForBalancedVoice(scene.duration + 0.15),
+            visualDedup
           );
           sceneVisualResults[si] = { clips, beatDurations };
         }
@@ -27651,7 +27816,12 @@ async function _runVideoPipelineInner(
                     const minNeeded = Math.max(1, minClipsForBalancedVoice(scene.duration + 0.15, videoLength));
                     const hold = Math.max(3, scene.duration / minNeeded);
                     for (let si = 0; si < minNeeded; si++) {
-                      rescueClips.push(await generateGuaranteedBeatClip(scene.index, si, hold, workDir));
+                      const rescueClip = await generateGuaranteedBeatClip(scene.index, si, hold, workDir);
+                      rescueClips.push(rescueClip);
+                      // Audit-gap fix (same class as Round 17 + follow-up fixes, Path B mirror
+                      // of the Path A fix above): these Stage4 rescue-compose-retry clips reach
+                      // validClips via composeSceneVideo's normal path with no bookkeeping.
+                      recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, si, scene.text, rescueClip, "fallback");
                     }
                   }
                   composeMeta.montageDurations = [];
@@ -27679,9 +27849,16 @@ async function _runVideoPipelineInner(
               const outputPath = path.join(workDir, `scene_${scene.index}_lastresort.mp4`);
               // Problem 10: same "whole scene became one static fallback card" outcome as the
               // sibling rescue path above — only when there was no real rescue clip to reuse.
-              if (!rescueClips.length) visualDedup.sceneRescueColorFallbackCount++;
+              const hadRescueClips = rescueClips.length > 0;
+              if (!hadRescueClips) visualDedup.sceneRescueColorFallbackCount++;
               const lastClip =
                 rescueClips[0] ?? (await generateGuaranteedBeatClip(scene.index, 9999, Math.max(3, scene.duration), workDir));
+              // Audit-gap fix: only record here when this call actually generated a NEW clip
+              // (rescueClips was empty) — when rescueClips[0] is reused, it was already recorded
+              // at the point it was generated above, and recording it again would double-count.
+              if (!hadRescueClips) {
+                recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, lastClip, "fallback");
+              }
               const audioPath = audioPaths[i];
               const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
               let safeAudioPath = audioPath;

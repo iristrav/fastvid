@@ -199,8 +199,21 @@ export function enforceQualityExportGate(
     }
     const before = report.score;
     healQualityReportForExport(report, videoLength, finalVideo);
+    // Transparency (production finding): the self-heal is an intentional, documented "never
+    // block export" export-availability decision, not a real quality fix — the underlying
+    // visual coverage is exactly what it was before this line ran. Logging only the healed
+    // number ("score=70/100") without its raw basis let a genuinely poor render (heavy
+    // fallback/placeholder usage) read as if it had actually scored well. rawScore is the
+    // pre-heal number; fallbackRatio/realClipRatio are the same signals healQualityReportForExport
+    // itself already used to decide how far to heal, surfaced here rather than hidden.
+    const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
+    const beatsFilled = report.adoptAuditSummary?.beatsFilled ?? 0;
+    const fallbackRatio = beatsFilled > 0 ? fallbackBeats / beatsFilled : 0;
+    const realClipRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
     console.warn(
-      `[Quality] Video ${videoId}: score self-healed ${before}→${report.score}/100 (min ${minScore}) — continuing export`
+      `[Quality] Video ${videoId}: rawScore=${before} healedScore=${report.score}/100 (min ${minScore}) ` +
+        `fallbackRatio=${fallbackRatio.toFixed(2)} realClipRatio=${realClipRatio.toFixed(2)} — continuing export ` +
+        `(healed score reflects export-availability policy, not actual visual quality)`
     );
   }
 
