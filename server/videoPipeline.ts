@@ -299,8 +299,10 @@ import {
   findBestArchiveScoreForBeat,
   resolvePerBeatGapStrategy,
   orderCandidatesForBeatGap,
+  pickBestFunnelCandidate,
   type FunnelCandidate,
   type RetrievalFunnelResult,
+  type ScoredFunnelCandidate,
 } from "./retrievalFunnel";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getVisualSearchMemoryForEntity } from "./visualSearchMemory";
@@ -23494,6 +23496,7 @@ async function fetchSceneVisualsInner(
               extraQueries: await primeQueriesWithSearchMemory(videoTitle, scene.pexelsQueries?.slice(0, 2)),
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+              europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
               videoTitle: videoTitle || undefined,
             }), 60_000, `buildRetrievalFunnel s${scene.index}`);
         console.log(`[Hang] AFTER funnel await s${scene.index} candidates=${funnelResult?.candidates?.length ?? 0}`);
@@ -23659,38 +23662,102 @@ async function fetchSceneVisualsInner(
           funnelCandidates = funnelCandidates.slice(0, 3);
         }
 
+        // FASE 1 — Visual Discovery Engine: score every downloaded candidate with the
+        // existing VisionGate instead of stopping at the first one that downloads
+        // successfully, then let pickBestFunnelCandidate() (bronbias-aware) choose the
+        // winner. VisionGate itself (pass/fail criteria, threshold, cache) is untouched —
+        // it is simply called on more than one candidate per beat now. Capped at 3
+        // candidates actually downloaded+scored (independent of funnelCandidates' own,
+        // unchanged, upstream size) to keep the added VisionGate cost per beat bounded.
+        const MAX_FUNNEL_CANDIDATES_TO_SCORE = 3;
+        const toScore = funnelCandidates.slice(0, MAX_FUNNEL_CANDIDATES_TO_SCORE);
+        const discoveredCount = funnelCandidates.length;
+        let downloadedCount = 0;
+        const scored: ScoredFunnelCandidate[] = [];
+        for (const candidate of toScore) {
+          const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
+          if (!clipPath) continue;
+          downloadedCount++;
+          const visionResult = await evaluateClipVisionGate(
+            clipPath,
+            beat.text,
+            videoTitle,
+            workDir,
+            scene.index,
+            beat.index,
+            dedup.perf.fastStockMode,
+            undefined,
+            beat.visualDescription,
+            dedup.segmentGeoLock,
+            funnelBeatEmb,
+            isFastShortVideoLength(dedup.videoLength),
+            clipContentKey(clipPath)
+          );
+          if (!visionResult.pass && !visionResult.fromCache) {
+            recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", candidate.title);
+          }
+          scored.push({ candidate, clipPath, visionResult });
+        }
+
+        const winner = pickBestFunnelCandidate(scored);
         let funnelClip: string | null = null;
         let winningExternalCandidate: FunnelCandidate | null = null;
-        for (const candidate of funnelCandidates) {
-          const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
-          if (clipPath) {
-            funnelClip = clipPath;
-            if (candidate.source !== "archive") winningExternalCandidate = candidate;
-            // Register embedding similarity so AssetDirector can use it in ranking
-            if (candidate.embeddingSimilarity != null) {
-              const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
-              dedup.clipAnnotationMeta.set(clipPath, { ...existing, embeddingSimilarity: candidate.embeddingSimilarity });
-            }
-            // Compute segment similarities while beat embedding is in scope (archive only)
-            if (
-              archiveV4ScoringEnabled() &&
-              funnelBeatEmb &&
-              candidate.source === "archive" &&
-              candidate.archivePick?.asset
-            ) {
-              const asset = candidate.archivePick.asset;
-              if (asset.annotationJson?.timeline?.length) {
-                const embeddingDir = `${LOCAL_UPLOADS_DIR}/archive-clip-embeddings`;
-                const segSims = computeSegmentSimilarities(asset.id, asset.annotationJson, funnelBeatEmb, embeddingDir);
-                if (segSims.length > 0) {
-                  const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
-                  dedup.clipAnnotationMeta.set(clipPath, { ...existing, segmentSimilarities: segSims });
-                }
+        if (winner) {
+          const { candidate, clipPath } = winner;
+          funnelClip = clipPath;
+          if (candidate.source !== "archive") winningExternalCandidate = candidate;
+          // Register embedding similarity so AssetDirector can use it in ranking
+          if (candidate.embeddingSimilarity != null) {
+            const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
+            dedup.clipAnnotationMeta.set(clipPath, { ...existing, embeddingSimilarity: candidate.embeddingSimilarity });
+          }
+          // Compute segment similarities while beat embedding is in scope (archive only)
+          if (
+            archiveV4ScoringEnabled() &&
+            funnelBeatEmb &&
+            candidate.source === "archive" &&
+            candidate.archivePick?.asset
+          ) {
+            const asset = candidate.archivePick.asset;
+            if (asset.annotationJson?.timeline?.length) {
+              const embeddingDir = `${LOCAL_UPLOADS_DIR}/archive-clip-embeddings`;
+              const segSims = computeSegmentSimilarities(asset.id, asset.annotationJson, funnelBeatEmb, embeddingDir);
+              if (segSims.length > 0) {
+                const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
+                dedup.clipAnnotationMeta.set(clipPath, { ...existing, segmentSimilarities: segSims });
               }
             }
-            break;
           }
         }
+
+        // [VisualDiscovery] audit line — counts + per-source scores + winner, one line per beat.
+        // FASE 2 / STAP 13: also report runner-up score, whether a stock source won, and whether
+        // this beat's winner is queued for archive-ingestion (best-effort, background — see below;
+        // "archiving" here means "attempted", not "confirmed written", since ingest runs async).
+        const passingScored = scored.filter(s => s.visionResult.pass);
+        const runnerUp = winner
+          ? passingScored
+              .filter(s => s !== winner)
+              .reduce<ScoredFunnelCandidate | null>(
+                (best, s) =>
+                  !best || (s.visionResult.worstScore10 ?? 0) > (best.visionResult.worstScore10 ?? 0)
+                    ? s
+                    : best,
+                null
+              )
+          : null;
+        const stockWon = winner
+          ? winner.candidate.source === "pexels" || winner.candidate.source === "pixabay"
+          : false;
+        const willArchive = !!(funnelClip && winningExternalCandidate && externalAssetIngestionEnabled());
+        console.log(
+          `[VisualDiscovery] s${scene.index}b${beat.index} discovered=${discoveredCount} ` +
+          `downloaded=${downloadedCount} scored=${scored.length} ` +
+          `scores={${scored.map(s => `${s.candidate.source}:${(s.visionResult.worstScore10 ?? 0).toFixed(1)}`).join(",")}} ` +
+          `winner=${winner ? `${winner.candidate.source}(score=${(winner.visionResult.worstScore10 ?? 0).toFixed(1)})` : "none(fallback)"} ` +
+          `runnerUp=${runnerUp ? `${runnerUp.candidate.source}(score=${(runnerUp.visionResult.worstScore10 ?? 0).toFixed(1)})` : "none"} ` +
+          `stockWon=${stockWon} archiving=${willArchive}`
+        );
 
         // Self-learning: ingest winning external clip into archive (best-effort, background)
         if (funnelClip && winningExternalCandidate && externalAssetIngestionEnabled()) {
@@ -23706,15 +23773,29 @@ async function fetchSceneVisualsInner(
                 mediaType: wec.mediaType,
                 mimeType: wec.mediaType === "video" ? "video/mp4" : "image/jpeg",
                 durationSec: wec.poolCandidate?.durationSec ?? undefined,
-                licenseNote: wec.source === "pexels" ? "Pexels license" :
-                             wec.source === "pixabay" ? "Pixabay license" :
-                             wec.source === "wikimedia" ? "CC BY-SA / CC0" : undefined,
+                // FASE 1 fix: prefer the provider's own per-asset license label
+                // (wec.poolCandidate.license — e.g. Wikimedia's real "CC BY-SA 4.0") over the
+                // generic per-source literal, which is now only a fallback for sources that
+                // don't expose one (Pexels/Pixabay, which really are always "<name> license").
+                licenseNote: wec.poolCandidate?.license ??
+                             (wec.source === "pexels" ? "Pexels license" :
+                              wec.source === "pixabay" ? "Pixabay license" :
+                              wec.source === "wikimedia" ? "CC BY-SA / CC0" :
+                              // FASE 2: fallback only — poolCandidate.license already carries the
+                              // real per-item rights string for these two sources in the normal case.
+                              wec.source === "internet_archive" ? "Internet Archive — see licenseUrl" :
+                              wec.source === "europeana" ? "Europeana — see licenseUrl" : undefined),
                 // F3-26: structured provenance — poolCandidate already carries the real remote
                 // URL/license/dimensions for every external source (see scenePool.ts), so this
                 // is a pure enrichment of data that was already being fetched, not a new call.
                 sourceUrl: wec.poolCandidate?.remoteUrl,
                 sourcePlatform: wec.source,
-                licenseUrl: wec.poolCandidate?.license ?? undefined,
+                sourceCreator: wec.poolCandidate?.sourceCreator ?? undefined,
+                // FASE 1 fix: this used to reuse poolCandidate.license (a label like
+                // "pexels-free", not a URL) here. licenseUrl is now its own field on
+                // PoolCandidate, populated from real per-asset rights URLs where the provider
+                // exposes one (currently Wikimedia's extmetadata.LicenseUrl).
+                licenseUrl: wec.poolCandidate?.licenseUrl ?? undefined,
                 originalQuery: beatQuery,
                 matchedQuery: wec.poolCandidate?.title || beatQuery,
                 topics: beat.keywords ?? [],
@@ -26507,6 +26588,7 @@ async function _runVideoPipelineInner(
             extraQueries: [...(primedMemoryQueries ?? []), ...(scene.pexelsQueries?.slice(0, 2) ?? [])],
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+            europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
             videoTitle: topicContext || undefined,
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));

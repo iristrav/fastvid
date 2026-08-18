@@ -42,7 +42,8 @@ export type FunnelCandidateSource =
   | "pexels"
   | "pixabay"
   | "wikimedia"
-  | "internet_archive";
+  | "internet_archive"
+  | "europeana";
 
 export type FunnelStrategy =
   | "archive_dominant"   // coverage > ARCHIVE_DOMINANT_THRESHOLD
@@ -114,6 +115,19 @@ const INTERNET_DOMINANT_THRESHOLD = 0.45;
 /** When the archive has NO embedding index at all, fall back to normalised keyword
  *  score.  The keyword scorer returns raw integer points — 100 pts ~ good match. */
 const KEYWORD_SCORE_MAX = 100;
+
+/** FASE 2 / STAP 7 source priority (own archive is handled separately, always highest):
+ *  historical/open sources (Internet Archive, Europeana, Wikimedia) get a small pre-CLIP
+ *  ranking bonus over stock (Pexels/Pixabay), so they're more likely to land in the small
+ *  top-N slice that actually gets downloaded and scored — without touching VisionGate or
+ *  the final pickBestFunnelCandidate() margin logic, which still decides the real winner. */
+const EXTERNAL_SOURCE_TIER_BONUS: Partial<Record<FunnelCandidateSource, number>> = {
+  internet_archive: 0.15,
+  europeana: 0.12,
+  wikimedia: 0.10,
+  pexels: 0,
+  pixabay: 0,
+};
 
 // ─── Per-beat gap strategy (self-learning retrieval) ─────────────────────────
 
@@ -327,7 +341,7 @@ function archiveCandidateId(pick: CuratedCandidatePick): string {
   return `archive:${pick.asset.id}`;
 }
 
-function mergeCandidates(
+export function mergeCandidates(
   archivePicks: CuratedCandidatePick[],
   archiveEmbSims: (number | null)[],
   externalPool: PoolCandidate[],
@@ -375,7 +389,14 @@ function mergeCandidates(
     if (seen.has(id)) continue;
     seen.add(id);
 
-    const rankingScore = internetWeight * 0.7; // base internet weight (no embedding yet)
+    // FASE 2 / STAP 7: pre-CLIP source priority. All external candidates previously got the
+    // exact same flat score (internetWeight * 0.7) regardless of provider, so historical/open
+    // sources (Wikimedia, Internet Archive, Europeana) had no better a chance than Pexels/
+    // Pixabay of landing in the small top-N slice that actually gets downloaded and CLIP-scored
+    // (see videoPipeline.ts's MAX_FUNNEL_CANDIDATES_TO_SCORE cap). This bonus only affects which
+    // candidates make that shortlist — the actual winner is still decided by
+    // pickBestFunnelCandidate() on real VisionGate scores, unchanged.
+    const rankingScore = internetWeight * (0.7 + (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0));
     merged.push({
       id,
       source: c.source as FunnelCandidateSource,
@@ -417,8 +438,11 @@ export async function buildRetrievalFunnel(
     extraQueries,
     pexelsApiKey,
     pixabayApiKey,
+    europeanaApiKey,
     skipPexels,
     skipPixabay,
+    skipInternetArchive,
+    skipEuropeana,
     maxPerSource = MAX_CANDIDATES_PER_SOURCE,
     maxTotal = MAX_POOL_SIZE,
     videoTitle,
@@ -430,7 +454,8 @@ export async function buildRetrievalFunnel(
     searchArchiveCandidates(primaryQuery, sceneText, videoTitle, maxArchiveCandidates),
     buildSceneCandidatePool({
       sceneIndex, sceneText, primaryQuery, extraQueries,
-      pexelsApiKey, pixabayApiKey, skipPexels, skipPixabay,
+      pexelsApiKey, pixabayApiKey, europeanaApiKey,
+      skipPexels, skipPixabay, skipInternetArchive, skipEuropeana,
       maxPerSource, maxTotal,
     }).then(r => r.candidates),
   ]);
@@ -496,4 +521,64 @@ export async function buildRetrievalFunnel(
       embeddingScoredCount: allEmbSims.filter(s => s !== null).length,
     },
   };
+}
+
+// ─── FASE 1: score-all-then-pick-best candidate selection ──────────────────────
+
+/** Minimal shape of a vision-gate verdict this module needs — matches
+ *  `VisionGateResult` from visualQualityGate.ts without importing it, so this
+ *  module stays free of a videoPipeline-adjacent dependency chain. */
+export type FunnelCandidateVisionResult = {
+  pass: boolean;
+  worstScore10: number | null;
+};
+
+export type ScoredFunnelCandidate = {
+  candidate: FunnelCandidate;
+  clipPath: string;
+  visionResult: FunnelCandidateVisionResult;
+};
+
+/**
+ * FASE 1 — Visual Discovery Engine: Pexels/Pixabay must not win a marginal
+ * CLIP-score edge over a demonstrably comparable non-stock candidate (own
+ * archive, Wikimedia, or any future non-stock source). A stock candidate only
+ * wins the comparison when its score clears the best non-stock passer's score
+ * by at least STOCK_TIER_WIN_MARGIN points on the existing 0-10 VisionGate
+ * scale — this does not touch VisionGate's own pass/fail threshold
+ * (minClipQualityScore), it only governs which PASSING candidate is picked
+ * when more than one is available.
+ *
+ * Examples (from the FASE 1 spec, used verbatim as test cases):
+ *   Archive=7.2, Wikimedia=8.8, InternetArchive=9.1, Pexels=6.9 → best non-stock (9.1) wins.
+ *   Archive=8.9, Wikimedia=8.7, Pexels=9.0 → best non-stock (8.9) wins; Pexels' +0.1 edge
+ *     is not "demonstrably better," so it does not win despite the higher raw score.
+ */
+export const STOCK_TIER_WIN_MARGIN = 1.0;
+
+const STOCK_SOURCES = new Set<FunnelCandidateSource>(["pexels", "pixabay"]);
+
+export function pickBestFunnelCandidate(
+  scored: ScoredFunnelCandidate[]
+): ScoredFunnelCandidate | null {
+  const passers = scored.filter(s => s.visionResult.pass);
+  if (passers.length === 0) return null;
+
+  const scoreOf = (s: ScoredFunnelCandidate): number => s.visionResult.worstScore10 ?? 0;
+  const best = (list: ScoredFunnelCandidate[]): ScoredFunnelCandidate =>
+    list.reduce((a, b) => (scoreOf(b) > scoreOf(a) ? b : a));
+
+  const nonStock = passers.filter(s => !STOCK_SOURCES.has(s.candidate.source));
+  const stock = passers.filter(s => STOCK_SOURCES.has(s.candidate.source));
+
+  if (nonStock.length === 0) return best(stock);
+
+  const bestNonStock = best(nonStock);
+  if (stock.length === 0) return bestNonStock;
+
+  const bestStock = best(stock);
+  if (scoreOf(bestStock) >= scoreOf(bestNonStock) + STOCK_TIER_WIN_MARGIN) {
+    return bestStock;
+  }
+  return bestNonStock;
 }

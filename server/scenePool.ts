@@ -30,7 +30,13 @@ export const MAX_POOL_SIZE = 100;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type PoolCandidateSource = "pexels" | "pixabay" | "wikimedia" | "archive";
+export type PoolCandidateSource =
+  | "pexels"
+  | "pixabay"
+  | "wikimedia"
+  | "archive"
+  | "internet_archive"
+  | "europeana";
 
 /** Metadata-only representation of one retrieval candidate.
  *  No binary data, no local paths, no presigned URLs that may expire (except
@@ -62,6 +68,11 @@ export type PoolCandidate = {
   width: number | null;
   /** Video/image height in pixels; null when unknown. */
   height: number | null;
+  /** Creator/uploader/photographer name, when the provider exposes one. */
+  sourceCreator: string | null;
+  /** A real license deed/rights URL, when the provider exposes one (distinct from
+   *  `license`, which is a label like "pexels-free" or "CC BY-SA 4.0", not a URL). */
+  licenseUrl: string | null;
 
   // ── Ranking score slots (filled by P2 / V2 — null until then) ───────────────
   clipSimilarity: number | null;
@@ -102,10 +113,16 @@ export type BuildPoolRequest = {
   extraQueries?: string[];
   pexelsApiKey?: string;
   pixabayApiKey?: string;
+  /** FASE 2: Europeana requires a key, like Pexels/Pixabay — Internet Archive/Wikimedia don't. */
+  europeanaApiKey?: string;
   /** If true, skip Pexels (no API key or not applicable). */
   skipPexels?: boolean;
   /** If true, skip Pixabay. */
   skipPixabay?: boolean;
+  /** If true, skip Internet Archive. */
+  skipInternetArchive?: boolean;
+  /** If true, skip Europeana (also skipped automatically when europeanaApiKey is absent). */
+  skipEuropeana?: boolean;
   maxPerSource?: number;
   maxTotal?: number;
 };
@@ -156,6 +173,7 @@ async function searchPexelsCandidates(
         duration: number;
         image?: string;
         url?: string;
+        user?: { name?: string };
         video_files: Array<{ width: number; height: number; link: string }>;
       };
       const data = (await resp.json()) as { videos?: PexelsVideo[] };
@@ -182,6 +200,8 @@ async function searchPexelsCandidates(
           license: "pexels-free",
           width: bestFile.width,
           height: bestFile.height,
+          sourceCreator: v.user?.name?.trim() || null,
+          licenseUrl: null,
           clipSimilarity: null,
           embeddingSimilarity: null,
           rankingScore: null,
@@ -221,6 +241,7 @@ async function searchPixabayCandidates(
         id: number;
         duration: number;
         tags?: string;
+        user?: string;
         videos: {
           large?: { url: string; width: number; height: number };
           medium?: { url: string; width: number; height: number };
@@ -249,6 +270,8 @@ async function searchPixabayCandidates(
           license: "pixabay-free",
           width: file.width,
           height: file.height,
+          sourceCreator: v.user?.trim() || null,
+          licenseUrl: null,
           clipSimilarity: null,
           embeddingSimilarity: null,
           rankingScore: null,
@@ -304,7 +327,12 @@ async function searchWikimediaCandidates(
               url: string;
               mime: string;
               size: number;
-              extmetadata?: { LicenseShortName?: { value: string }; ImageDescription?: { value: string } };
+              extmetadata?: {
+                LicenseShortName?: { value: string };
+                ImageDescription?: { value: string };
+                LicenseUrl?: { value: string };
+                Artist?: { value: string };
+              };
             }>;
           };
           const infoData = (await infoResp.json()) as {
@@ -317,6 +345,10 @@ async function searchWikimediaCandidates(
           if (info.size < 10_000) continue;
           seenTitles.add(title);
           const license = info.extmetadata?.LicenseShortName?.value ?? null;
+          const licenseUrl = info.extmetadata?.LicenseUrl?.value ?? null;
+          const sourceCreator = info.extmetadata?.Artist?.value
+            ? info.extmetadata.Artist.value.replace(/<[^>]+>/g, "").trim().slice(0, 256) || null
+            : null;
           const desc = info.extmetadata?.ImageDescription?.value
             ? info.extmetadata.ImageDescription.value.replace(/<[^>]+>/g, "").slice(0, 200)
             : null;
@@ -338,6 +370,8 @@ async function searchWikimediaCandidates(
             license,
             width: null,
             height: null,
+            sourceCreator,
+            licenseUrl,
             clipSimilarity: null,
             embeddingSimilarity: null,
             rankingScore: null,
@@ -346,6 +380,215 @@ async function searchWikimediaCandidates(
           });
         } catch {
           /* skip this title */
+        }
+      }
+    } catch {
+      /* skip this query */
+    }
+  }
+  return { candidates, apiCalls };
+}
+
+// ─── Provider: Internet Archive (FASE 2 — Priority A historical source) ───────
+
+// Duplicated (not imported) from videoPipeline.ts's isAllowedInternetArchiveLicense: pure,
+// dependency-free logic, and scenePool.ts deliberately avoids importing from videoPipeline.ts
+// to avoid a circular dependency (videoPipeline.ts already imports from scenePool.ts). Keep
+// this in sync with the original if its license rules ever change.
+export function isAllowedInternetArchiveLicensePool(
+  licenseUrl: string | undefined | null,
+  rights?: string | undefined | null
+): boolean {
+  const u = licenseUrl?.trim().toLowerCase();
+  if (u) {
+    if (u.includes("publicdomain")) return true;
+    if (u.includes("creativecommons.org/licenses/")) {
+      if (u.includes("-nc") || u.includes("-nd")) return false;
+      if (u.includes("/by/") || u.includes("/by-sa/")) return true;
+    }
+    return false;
+  }
+  const r = rights?.trim().toLowerCase();
+  if (!r) return false;
+  if (r.includes("-nc") || r.includes("-nd") || /non.?commercial|no derivative/.test(r)) return false;
+  return /public domain|no known copyright|no copyright restrictions/.test(r);
+}
+
+async function searchInternetArchiveCandidates(
+  queries: string[],
+  max: number
+): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
+  const candidates: PoolCandidate[] = [];
+  let apiCalls = 0;
+  const seenIds = new Set<string>();
+  const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    const searchUrl =
+      `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies` +
+      `&fl[]=identifier,title&rows=10&output=json`;
+    try {
+      const searchResp = await withTimeoutFetch(searchUrl, UA, 8_000, `Internet Archive pool search "${query}"`);
+      apiCalls++;
+      if (!searchResp.ok) continue;
+      const searchData = (await searchResp.json()) as {
+        response?: { docs?: Array<{ identifier: string; title: string }> };
+      };
+      const docs = searchData.response?.docs ?? [];
+
+      for (const doc of docs) {
+        if (candidates.length >= max) break;
+        if (seenIds.has(doc.identifier)) continue;
+        try {
+          const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
+          const metaResp = await withTimeoutFetch(metaUrl, UA, 8_000, `Internet Archive pool metadata "${doc.identifier}"`);
+          apiCalls++;
+          if (!metaResp.ok) continue;
+          type IaMetaData = {
+            metadata?: {
+              licenseurl?: string | string[];
+              rights?: string | string[];
+            };
+            files?: Array<{ name: string; format: string; size?: string }>;
+          };
+          const metaData = (await metaResp.json()) as IaMetaData;
+          const rawLicenseUrl = metaData.metadata?.licenseurl;
+          const licenseUrlRaw = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
+          const rawRights = metaData.metadata?.rights;
+          const rights = (Array.isArray(rawRights) ? rawRights[0] : rawRights)?.trim();
+          if (!isAllowedInternetArchiveLicensePool(licenseUrlRaw, rights)) continue;
+
+          const videoFiles = (metaData.files ?? []).filter(f =>
+            ["h.264", "MPEG4", "MP4", "Ogg Video", "WebM"].includes(f.format)
+          );
+          if (!videoFiles.length) continue;
+          const videoFile = videoFiles.sort(
+            (a, b) => parseInt(a.size || "999999999") - parseInt(b.size || "999999999")
+          )[0];
+          const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
+          const knownSize = parseInt(videoFile.size || "0");
+          if (knownSize > MAX_ARCHIVE_SIZE) continue;
+
+          seenIds.add(doc.identifier);
+          candidates.push({
+            id: `internet_archive:${doc.identifier}`,
+            assetId: doc.identifier,
+            source: "internet_archive",
+            remoteUrl: `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`,
+            // Stable, documented archive.org thumbnail convention — no extra API call needed.
+            thumbnailUrl: `https://archive.org/services/img/${doc.identifier}`,
+            title: doc.title,
+            description: null,
+            tags: [query],
+            mediaType: "video",
+            durationSec: null,
+            license: licenseUrlRaw ?? rights ?? null,
+            width: null,
+            height: null,
+            sourceCreator: null,
+            licenseUrl: licenseUrlRaw ?? null,
+            clipSimilarity: null,
+            embeddingSimilarity: null,
+            rankingScore: null,
+            visionScore: null,
+            selectionScore: null,
+          });
+        } catch {
+          /* skip this item */
+        }
+      }
+    } catch {
+      /* skip this query */
+    }
+  }
+  return { candidates, apiCalls };
+}
+
+// ─── Provider: Europeana (FASE 2 — Priority A historical source) ──────────────
+
+async function searchEuropeanaCandidates(
+  queries: string[],
+  apiKey: string,
+  max: number
+): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
+  const candidates: PoolCandidate[] = [];
+  let apiCalls = 0;
+  const seenIds = new Set<string>();
+  const authHeader = { Authorization: `ApiKey ${apiKey}`, "User-Agent": "Fastvid/1.0" };
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
+    searchUrl.searchParams.set("query", query);
+    searchUrl.searchParams.set("qf", "TYPE:VIDEO");
+    searchUrl.searchParams.set("reusability", "open");
+    searchUrl.searchParams.set("rows", "6");
+    try {
+      const searchResp = await withTimeoutFetch(searchUrl.toString(), authHeader, 10_000, `Europeana pool search "${query}"`);
+      apiCalls++;
+      if (!searchResp.ok) continue;
+      type EuropeanaItem = { id?: string; title?: string[]; edmPreview?: string };
+      const searchData = (await searchResp.json()) as { items?: EuropeanaItem[] };
+      const items = searchData.items ?? [];
+
+      for (const item of items) {
+        if (candidates.length >= max) break;
+        const recordId = item.id;
+        if (!recordId || seenIds.has(recordId)) continue;
+        try {
+          const recordUrl = `https://api.europeana.eu/record/v2${recordId}.json?profile=rich`;
+          const recordResp = await withTimeoutFetch(recordUrl, authHeader, 8_000, `Europeana pool record "${recordId}"`);
+          apiCalls++;
+          if (!recordResp.ok) continue;
+          type EuropeanaRecord = {
+            object?: {
+              aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string; edmRights?: string | string[] }>;
+              proxies?: Array<{ dcCreator?: string[] | Record<string, string[]> }>;
+            };
+          };
+          const recordData = (await recordResp.json()) as EuropeanaRecord;
+          const aggregations = recordData.object?.aggregations ?? [];
+          const mediaAgg = aggregations.find(a => a.edmIsShownBy) ?? aggregations.find(a => a.edmIsShownAt);
+          const mediaUrl = mediaAgg?.edmIsShownBy ?? mediaAgg?.edmIsShownAt;
+          if (!mediaUrl || !/\.(mp4|webm|mov|m4v)/i.test(mediaUrl)) continue;
+
+          const rawRights = mediaAgg?.edmRights;
+          const rightsUrl = Array.isArray(rawRights) ? rawRights[0] : rawRights;
+          if (!rightsUrl?.trim()) continue;
+
+          const creatorField = recordData.object?.proxies?.find(p => p.dcCreator)?.dcCreator;
+          const sourceCreator = Array.isArray(creatorField)
+            ? (creatorField[0] ?? null)
+            : creatorField
+            ? (Object.values(creatorField)[0]?.[0] ?? null)
+            : null;
+
+          seenIds.add(recordId);
+          candidates.push({
+            id: `europeana:${recordId}`,
+            assetId: recordId,
+            source: "europeana",
+            remoteUrl: mediaUrl,
+            thumbnailUrl: item.edmPreview ?? null,
+            title: (item.title ?? []).join(" ").trim() || query,
+            description: null,
+            tags: [query],
+            mediaType: "video",
+            durationSec: null,
+            license: rightsUrl.trim(),
+            width: null,
+            height: null,
+            sourceCreator,
+            licenseUrl: rightsUrl.trim(),
+            clipSimilarity: null,
+            embeddingSimilarity: null,
+            rankingScore: null,
+            visionScore: null,
+            selectionScore: null,
+          });
+        } catch {
+          /* skip this item */
         }
       }
     } catch {
@@ -372,6 +615,8 @@ function toCachedCandidate(c: PoolCandidate): CachedCandidate {
       width: c.width,
       height: c.height,
       description: c.description,
+      sourceCreator: c.sourceCreator,
+      licenseUrl: c.licenseUrl,
     },
   };
 }
@@ -392,6 +637,8 @@ function fromCachedCandidate(c: CachedCandidate, source: PoolCandidateSource): P
     license: (meta.license as string | null) ?? null,
     width: (meta.width as number | null) ?? null,
     height: (meta.height as number | null) ?? null,
+    sourceCreator: (meta.sourceCreator as string | null) ?? null,
+    licenseUrl: (meta.licenseUrl as string | null) ?? null,
     clipSimilarity: null,
     embeddingSimilarity: null,
     rankingScore: null,
@@ -431,8 +678,11 @@ export async function buildSceneCandidatePool(
     extraQueries = [],
     pexelsApiKey,
     pixabayApiKey,
+    europeanaApiKey,
     skipPexels = false,
     skipPixabay = false,
+    skipInternetArchive = false,
+    skipEuropeana = false,
     maxPerSource = MAX_CANDIDATES_PER_SOURCE,
     maxTotal = MAX_POOL_SIZE,
   } = req;
@@ -505,6 +755,24 @@ export async function buildSceneCandidatePool(
       source: "wikimedia",
     }))
   );
+  // FASE 2 — Priority A historical/open sources: no API key required for Internet Archive
+  // (like Wikimedia); Europeana needs a key, same shape as Pexels/Pixabay above.
+  if (!skipInternetArchive) {
+    tasks.push(
+      searchInternetArchiveCandidates(queries, maxPerSource).then(r => ({
+        ...r,
+        source: "internet_archive",
+      }))
+    );
+  }
+  if (!skipEuropeana && europeanaApiKey) {
+    tasks.push(
+      searchEuropeanaCandidates(queries, europeanaApiKey, maxPerSource).then(r => ({
+        ...r,
+        source: "europeana",
+      }))
+    );
+  }
 
   const results = await Promise.allSettled(tasks);
 
