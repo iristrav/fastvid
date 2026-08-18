@@ -272,6 +272,164 @@ describe("curatedMediaSourcing", () => {
     expect(deterministicOnly.beatTags.some((t) => t === "eva" || t === "braun")).toBe(true);
   });
 
+  // Round 13: investigated whether an LLM-authored beat.searchQuery overriding the
+  // deterministic beatTags (confirmed above — hydrateBeatScriptVisuals lets an existing
+  // beat.searchQuery win outright) actually makes final candidate SELECTION worse, not just
+  // beatTags/allTags. Traced scoreCuratedAsset (curatedMediaSourcing.ts) and found it already
+  // has two mechanisms that are independent of beatTags/the LLM query: (1) the "person-name
+  // guarantee" (scoreCuratedAsset:860-871) scans the raw, un-overridden beatText against every
+  // asset tag directly; (2) curatedSceneContextScore derives scene/entity tags from raw beatText
+  // too. Both feed into scoreCuratedAsset's beatText parameter, which archive retrieval
+  // (searchCuratedCandidatesForBeat -> listCuratedArchiveCandidates) always passes as the real,
+  // unmodified beat text regardless of what beatTags/the search query say. These two tests prove
+  // — with the exact production fixture shape from Round 10B (asset #27020's real tags) plus a
+  // Führerbunker fixture — that this existing, previously-undocumented safety net is already
+  // sufficient to keep the correct candidate winning even under a bad LLM query override, so no
+  // query-merging or priority-selection change was made this round (see R13 report section B).
+  it("Round 13 Test 1/5: an Eva-Braun-tagged candidate still outscores a generic 1930s-rally candidate under an LLM query override", () => {
+    const evaBraunAsset = {
+      id: 27020,
+      archiveId: 9,
+      title: "Hitler and Eva Braun at the Berghof",
+      tags: ["adolf hitler", "eva braun", "world war", "hitler braun", "berghof retreat"],
+      mediaType: "video" as const,
+      mimeType: "video/mp4",
+      storageUrl: "/local-storage/a.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1000,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const genericRallyAsset = {
+      ...evaBraunAsset,
+      id: 5001,
+      title: "Hitler and German Leaders at Political Rally in 1930s",
+      tags: ["hitler", "nazi", "rally", "1930s", "nuremberg"],
+    };
+    const beatText = "Adolf Hitler and Eva Braun exchanged vows before sealing their fate together.";
+    const withLlmOverride = buildBeatMatchTags(
+      { text: beatText, index: 0, keywords: [], searchQuery: "hitler suicide" },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    const evaBraunScore = scoreCuratedAsset(
+      evaBraunAsset,
+      [],
+      withLlmOverride.beatTags,
+      withLlmOverride.topicAnchors,
+      beatText,
+      "wwii"
+    );
+    const rallyScore = scoreCuratedAsset(
+      genericRallyAsset,
+      [],
+      withLlmOverride.beatTags,
+      withLlmOverride.topicAnchors,
+      beatText,
+      "wwii"
+    );
+    expect(evaBraunScore).toBeGreaterThan(rallyScore);
+  });
+
+  it("Round 13 Test 2: a Fuhrerbunker candidate still outscores a generic Berlin-skyline candidate under an LLM query override", () => {
+    const bunkerAsset = {
+      id: 8001,
+      archiveId: 9,
+      title: "Hitler in the Fuhrerbunker",
+      tags: ["hitler", "fuhrerbunker", "bunker", "underground", "berlin"],
+      mediaType: "video" as const,
+      mimeType: "video/mp4",
+      storageUrl: "/local-storage/b.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1000,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const skylineAsset = {
+      ...bunkerAsset,
+      id: 8002,
+      title: "Berlin city skyline",
+      tags: ["berlin", "skyline", "city", "aerial"],
+    };
+    const beatText = "In Berlin's heart, Adolf Hitler, trapped beneath ground, gave orders.";
+    const withLlmOverride = buildBeatMatchTags(
+      { text: beatText, index: 1, keywords: [], searchQuery: "berlin" },
+      { text: "" },
+      "Why Hitler Killed Himself and His Wife"
+    );
+    const bunkerScore = scoreCuratedAsset(
+      bunkerAsset,
+      [],
+      withLlmOverride.beatTags,
+      withLlmOverride.topicAnchors,
+      beatText,
+      "wwii"
+    );
+    const skylineScore = scoreCuratedAsset(
+      skylineAsset,
+      [],
+      withLlmOverride.beatTags,
+      withLlmOverride.topicAnchors,
+      beatText,
+      "wwii"
+    );
+    expect(bunkerScore).toBeGreaterThan(skylineScore);
+  });
+
+  // Round 13 Test 6 (documented limitation, not a fix — see R13 report section B for why a
+  // scoring-weight change was judged too risky to make blind this round): when a temporally
+  // correct candidate does NOT happen to share any tag with a temporally wrong candidate that
+  // does carry the beat's named entity, scoreCuratedAsset's flat "person-name guarantee" (+200,
+  // independent of era/event tags) can let the wrong-era candidate win by a wide margin. This is
+  // a known, real gap — reproduced here — left unfixed because scoreCuratedAsset's weights are
+  // depended on by the Eva-Braun/Fuhrerbunker resilience proven in the two tests above and by
+  // every prior round's tuned test suite; rebalancing it blind risks regressing those.
+  it("Round 13 Test 6 (documents a known limitation, not fixed): a wrong-era candidate can still outscore a right-era one lacking a shared entity tag", () => {
+    const surrenderAsset = {
+      id: 6001,
+      archiveId: 9,
+      title: "German surrender May 1945",
+      tags: ["german surrender", "1945", "capitulation", "surrender document"],
+      mediaType: "video" as const,
+      mimeType: "video/mp4",
+      storageUrl: "/local-storage/s.mp4",
+      isActive: 1,
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      fileSizeBytes: 1000,
+      width: 1920,
+      height: 1080,
+      durationSec: 6,
+      sourceUrl: null,
+      sourceLabel: null,
+    };
+    const rallyAsset = {
+      ...surrenderAsset,
+      id: 6002,
+      title: "Nazi rally 1930s",
+      tags: ["hitler", "nazi", "rally", "1930s", "nuremberg"],
+    };
+    const beatText = "The collapse of Hitler's empire wasn't just a political defeat.";
+    const tags = buildBeatMatchTags({ text: beatText, index: 1, keywords: [] }, { text: "" }, "Why Hitler Killed Himself and His Wife");
+    const surrenderScore = scoreCuratedAsset(surrenderAsset, [], tags.beatTags, tags.topicAnchors, beatText, "wwii");
+    const rallyScore = scoreCuratedAsset(rallyAsset, [], tags.beatTags, tags.topicAnchors, beatText, "wwii");
+    // Documents current (undesirable) behavior — NOT the desired outcome. See report.
+    expect(rallyScore).toBeGreaterThan(surrenderScore);
+  });
+
   // Phase 11: found a real bug in buildBeatMatchTags's topic-anchor scoping — when
   // beat.keywords carries "Titanic" but beat.text only refers to it indirectly ("The ship
   // struck an iceberg"), the named-entity tag from the title/keywords gets dropped instead of

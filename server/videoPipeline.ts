@@ -24709,6 +24709,17 @@ export async function composeSceneVideoInner(
         const clip = await generateGuaranteedBeatClip(scene.index, i, holdSec, workDir);
         if (await montageClipPassesComposeGate(clip, scene.index, i)) {
           validClips.push(clip);
+          // Round 17: this proactive guaranteed-fill path (composeSceneVideo finding zero usable
+          // clips from upstream search) previously never called recordClipAdopt, so it was
+          // invisible to both assertVisualCoverageExportGate's fallbackBeats/beatsFilled ratio
+          // and to canAddGuaranteedFallbackClip's own per-video fallback cap (countFallbackAdopts
+          // reads the same audit array) — a scene could fall back to guaranteed/placeholder clips
+          // here with neither signal ever detecting it. Recording with the same "fallback" source
+          // label the beat-level rescue ladder already uses (ensureBeatVisualFilled) makes this
+          // path visible to both, additively, without changing which clip is selected or used.
+          if (composeOptions?.dedup) {
+            recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, i, scene.text, clip, "fallback");
+          }
         }
       }
     } else {
@@ -24758,6 +24769,10 @@ export async function composeSceneVideoInner(
   if (validClips.length === 0 && canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
     const clip = await generateGuaranteedBeatClip(scene.index, 999, Math.max(3, duration), workDir);
     validClips.push(clip);
+    // Round 17: same audit gap as the guaranteed-fill loop above — see its comment.
+    if (composeOptions?.dedup) {
+      recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, 999, scene.text, clip, "fallback");
+    }
   }
 
   let safeClips = validClips;
@@ -25577,6 +25592,15 @@ export async function composeSceneVideoInner(
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
     const clip = await generateGuaranteedBeatClip(scene.index, 8888, Math.max(3, duration), workDir);
+    // Round 17 audit-gap fix, third site: same class of gap as the two guaranteed-fill blocks
+    // above (composeSceneVideoInner) — this compose-empty rescue path also used a successfully
+    // generated guaranteed clip without ever recording it, making it invisible to both
+    // assertVisualCoverageExportGate's fallbackBeats/beatsFilled ratio and
+    // canAddGuaranteedFallbackClip's per-video fallback cap. Additive bookkeeping only, same
+    // "fallback" source label, no change to which clip is used or how it's rendered.
+    if (composeOptions?.dedup) {
+      recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, 8888, scene.text, clip, "fallback");
+    }
     try {
       await withSceneFetchTimeout(
         () => exec(

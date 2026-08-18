@@ -1083,11 +1083,23 @@ export function isCuratedOffTopicAsset(
 ): boolean {
   if (!metadataVisualBlocksEnabled()) return false;
   const beatHay = beatTags.join(" ");
-  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatHay)) return true;
+  // Round 13: this check used to fire off beatTags alone, so a beat whose (possibly
+  // LLM-truncated) beatTags lack an explicit WWII keyword — e.g. beatTags=["berlin"] for "In
+  // Berlin's heart, Adolf Hitler, trapped beneath ground, gave orders." — incorrectly flagged a
+  // genuinely on-topic WWII archive asset as off-topic and applied a -250 penalty, even though
+  // the whole video is already classified videoVisualTopic==="wwii" (used correctly a few lines
+  // below in this same function). Guard with that existing, reliable, LLM-independent signal.
+  if (isWwiiWarArchiveAsset(asset) && !beatMentionsWwiiContent(beatHay) && videoVisualTopic !== "wwii") {
+    return true;
+  }
+  // Round 13: isGeographyIncompatibleArchiveAsset's own first check is isWwiiWarArchiveAsset
+  // (see that function, a few lines below) — so this block is the same beatTags-only WWII-vs-
+  // video-topic gap as the one just above, reached via a different classifier. Same guard.
   if (
     isGeographyIncompatibleArchiveAsset(asset) &&
     !beatMentionsWwiiContent(beatHay) &&
-    !/\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive)\b/i.test(beatHay)
+    !/\b(18\d{2}|19\d{2}|20[01]\d|histor(y|ical)|archief|archive)\b/i.test(beatHay) &&
+    videoVisualTopic !== "wwii"
   ) {
     return true;
   }
