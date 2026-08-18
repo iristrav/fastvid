@@ -300,6 +300,9 @@ import {
   resolvePerBeatGapStrategy,
   orderCandidatesForBeatGap,
   pickBestFunnelCandidate,
+  buildDownloadShortlist,
+  MAX_FUNNEL_CANDIDATES_TO_SCORE,
+  FUNNEL_CANDIDATE_POOL_LIMIT,
   type FunnelCandidate,
   type RetrievalFunnelResult,
   type ScoredFunnelCandidate,
@@ -373,6 +376,8 @@ const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
 const FLICKR_API_KEY = process.env.FLICKR_API_KEY || "";
 /** Optional: EU broadcast heritage video (https://www.europeana.eu/en/apis) */
 const EUROPEANA_API_KEY = process.env.EUROPEANA_API_KEY || "";
+/** Optional: US National Archives Catalog API (https://catalog.archives.gov/api/v2) — FASE 3, funnel-side */
+const NARA_API_KEY = process.env.NARA_API_KEY?.trim() || "";
 /** Optional: Vimeo Creative Commons video search (https://developer.vimeo.com/) */
 const VIMEO_ACCESS_TOKEN = process.env.VIMEO_ACCESS_TOKEN || "";
 /** GDELT TV News → Internet Archive television captions (free, no key) */
@@ -23497,6 +23502,8 @@ async function fetchSceneVisualsInner(
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
               europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
+              naraApiKey: NARA_API_KEY || undefined,
+              skipOpenverse: !openverseStillsEnabled(),
               videoTitle: videoTitle || undefined,
             }), 60_000, `buildRetrievalFunnel s${scene.index}`);
         console.log(`[Hang] AFTER funnel await s${scene.index} candidates=${funnelResult?.candidates?.length ?? 0}`);
@@ -23635,10 +23642,13 @@ async function fetchSceneVisualsInner(
           } else {
             dedup.consecutiveArchiveBeats = 0;
           }
-          funnelCandidates = funnelCandidates.slice(0, poolThumbnailRankingEnabled() ? 8 : 4);
+          // FASE 4: widened from 4 to FUNNEL_CANDIDATE_POOL_LIMIT — this is a metadata-only
+          // visibility cap (no extra API calls), so a strong candidate ranked 5th+ can still
+          // reach buildDownloadShortlist() below instead of being cut before it's ever seen.
+          funnelCandidates = funnelCandidates.slice(0, poolThumbnailRankingEnabled() ? 8 : FUNNEL_CANDIDATE_POOL_LIMIT);
         } else {
           // Original coverage-weighted ranking (no per-beat gap detection)
-          funnelCandidates = funnelResult.candidates.slice(0, poolThumbnailRankingEnabled() ? 8 : 3);
+          funnelCandidates = funnelResult.candidates.slice(0, poolThumbnailRankingEnabled() ? 8 : FUNNEL_CANDIDATE_POOL_LIMIT);
         }
 
         if (poolThumbnailRankingEnabled() && funnelCandidates.some(c => c.thumbnailUrl)) {
@@ -23666,12 +23676,17 @@ async function fetchSceneVisualsInner(
         // existing VisionGate instead of stopping at the first one that downloads
         // successfully, then let pickBestFunnelCandidate() (bronbias-aware) choose the
         // winner. VisionGate itself (pass/fail criteria, threshold, cache) is untouched —
-        // it is simply called on more than one candidate per beat now. Capped at 3
-        // candidates actually downloaded+scored (independent of funnelCandidates' own,
-        // unchanged, upstream size) to keep the added VisionGate cost per beat bounded.
-        const MAX_FUNNEL_CANDIDATES_TO_SCORE = 3;
-        const toScore = funnelCandidates.slice(0, MAX_FUNNEL_CANDIDATES_TO_SCORE);
+        // it is simply called on more than one candidate per beat now.
+        // FASE 4: the flat top-N slice is replaced by buildDownloadShortlist(), which applies
+        // source diversity (no single source, especially stock, can monopolize the download
+        // budget) while still letting relevance (rankingScore) decide who fills the
+        // available slots — see retrievalFunnel.ts for the full rationale. Budget raised from
+        // 3 to MAX_FUNNEL_CANDIDATES_TO_SCORE (=6) since candidates now compete for slots
+        // across up to 15 visible metadata candidates (FUNNEL_CANDIDATE_POOL_LIMIT) instead
+        // of just the first 3-4.
+        const toScore = buildDownloadShortlist(funnelCandidates, MAX_FUNNEL_CANDIDATES_TO_SCORE);
         const discoveredCount = funnelCandidates.length;
+        const shortlistCount = toScore.length;
         let downloadedCount = 0;
         const scored: ScoredFunnelCandidate[] = [];
         for (const candidate of toScore) {
@@ -23750,9 +23765,17 @@ async function fetchSceneVisualsInner(
           ? winner.candidate.source === "pexels" || winner.candidate.source === "pixabay"
           : false;
         const willArchive = !!(funnelClip && winningExternalCandidate && externalAssetIngestionEnabled());
+        // FASE 4: sourceDistribution reports which sources actually made the download
+        // shortlist (toScore), not the full discovered pool — this is what shows whether
+        // buildDownloadShortlist()'s diversity caps are doing their job in practice.
+        const sourceDistribution = toScore.reduce<Record<string, number>>((acc, c) => {
+          acc[c.source] = (acc[c.source] ?? 0) + 1;
+          return acc;
+        }, {});
         console.log(
           `[VisualDiscovery] s${scene.index}b${beat.index} discovered=${discoveredCount} ` +
-          `downloaded=${downloadedCount} scored=${scored.length} ` +
+          `shortlist=${shortlistCount} downloaded=${downloadedCount} scored=${scored.length} ` +
+          `sources={${Object.entries(sourceDistribution).map(([s, n]) => `${s}:${n}`).join(",")}} ` +
           `scores={${scored.map(s => `${s.candidate.source}:${(s.visionResult.worstScore10 ?? 0).toFixed(1)}`).join(",")}} ` +
           `winner=${winner ? `${winner.candidate.source}(score=${(winner.visionResult.worstScore10 ?? 0).toFixed(1)})` : "none(fallback)"} ` +
           `runnerUp=${runnerUp ? `${runnerUp.candidate.source}(score=${(runnerUp.visionResult.worstScore10 ?? 0).toFixed(1)})` : "none"} ` +
@@ -23781,10 +23804,14 @@ async function fetchSceneVisualsInner(
                              (wec.source === "pexels" ? "Pexels license" :
                               wec.source === "pixabay" ? "Pixabay license" :
                               wec.source === "wikimedia" ? "CC BY-SA / CC0" :
-                              // FASE 2: fallback only — poolCandidate.license already carries the
-                              // real per-item rights string for these two sources in the normal case.
+                              // FASE 2/3: fallback only — poolCandidate.license already carries the
+                              // real per-item rights string for these sources in the normal case.
                               wec.source === "internet_archive" ? "Internet Archive — see licenseUrl" :
-                              wec.source === "europeana" ? "Europeana — see licenseUrl" : undefined),
+                              wec.source === "europeana" ? "Europeana — see licenseUrl" :
+                              wec.source === "openverse" ? "Openverse — see licenseUrl" :
+                              wec.source === "nasa" ? "Public Domain (NASA / U.S. Government Work)" :
+                              wec.source === "nara" ? "Public Domain (NARA / U.S. Government Work)" :
+                              wec.source === "loc" ? "Library of Congress — see licenseUrl" : undefined),
                 // F3-26: structured provenance — poolCandidate already carries the real remote
                 // URL/license/dimensions for every external source (see scenePool.ts), so this
                 // is a pure enrichment of data that was already being fetched, not a new call.
@@ -26589,6 +26616,8 @@ async function _runVideoPipelineInner(
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
             europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
+            naraApiKey: NARA_API_KEY || undefined,
+            skipOpenverse: !openverseStillsEnabled(),
             videoTitle: topicContext || undefined,
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));

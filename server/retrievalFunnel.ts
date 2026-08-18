@@ -43,7 +43,11 @@ export type FunnelCandidateSource =
   | "pixabay"
   | "wikimedia"
   | "internet_archive"
-  | "europeana";
+  | "europeana"
+  | "openverse"
+  | "nasa"
+  | "nara"
+  | "loc";
 
 export type FunnelStrategy =
   | "archive_dominant"   // coverage > ARCHIVE_DOMINANT_THRESHOLD
@@ -116,13 +120,20 @@ const INTERNET_DOMINANT_THRESHOLD = 0.45;
  *  score.  The keyword scorer returns raw integer points — 100 pts ~ good match. */
 const KEYWORD_SCORE_MAX = 100;
 
-/** FASE 2 / STAP 7 source priority (own archive is handled separately, always highest):
- *  historical/open sources (Internet Archive, Europeana, Wikimedia) get a small pre-CLIP
- *  ranking bonus over stock (Pexels/Pixabay), so they're more likely to land in the small
- *  top-N slice that actually gets downloaded and scored — without touching VisionGate or
- *  the final pickBestFunnelCandidate() margin logic, which still decides the real winner. */
+/** FASE 2/3 source priority (own archive is handled separately, always highest):
+ *  historical/open sources get a small pre-CLIP ranking bonus over stock (Pexels/Pixabay), so
+ *  they're more likely to land in the small top-N slice that actually gets downloaded and
+ *  scored — without touching VisionGate or the final pickBestFunnelCandidate() margin logic,
+ *  which still decides the real winner. FASE 3 inserts NARA/Library of Congress/NASA/Openverse
+ *  between Internet Archive and Europeana, per the requested priority order (Internet Archive
+ *  > NARA > Library of Congress > NASA > Openverse > Europeana > Wikimedia > stock); the FASE 2
+ *  values for internet_archive/europeana/wikimedia/pexels/pixabay are left unchanged. */
 const EXTERNAL_SOURCE_TIER_BONUS: Partial<Record<FunnelCandidateSource, number>> = {
   internet_archive: 0.15,
+  nara: 0.145,
+  loc: 0.14,
+  nasa: 0.135,
+  openverse: 0.125,
   europeana: 0.12,
   wikimedia: 0.10,
   pexels: 0,
@@ -439,10 +450,15 @@ export async function buildRetrievalFunnel(
     pexelsApiKey,
     pixabayApiKey,
     europeanaApiKey,
+    naraApiKey,
     skipPexels,
     skipPixabay,
     skipInternetArchive,
     skipEuropeana,
+    skipOpenverse,
+    skipNasa,
+    skipNara,
+    skipLoc,
     maxPerSource = MAX_CANDIDATES_PER_SOURCE,
     maxTotal = MAX_POOL_SIZE,
     videoTitle,
@@ -454,8 +470,9 @@ export async function buildRetrievalFunnel(
     searchArchiveCandidates(primaryQuery, sceneText, videoTitle, maxArchiveCandidates),
     buildSceneCandidatePool({
       sceneIndex, sceneText, primaryQuery, extraQueries,
-      pexelsApiKey, pixabayApiKey, europeanaApiKey,
+      pexelsApiKey, pixabayApiKey, europeanaApiKey, naraApiKey,
       skipPexels, skipPixabay, skipInternetArchive, skipEuropeana,
+      skipOpenverse, skipNasa, skipNara, skipLoc,
       maxPerSource, maxTotal,
     }).then(r => r.candidates),
   ]);
@@ -557,6 +574,78 @@ export type ScoredFunnelCandidate = {
 export const STOCK_TIER_WIN_MARGIN = 1.0;
 
 const STOCK_SOURCES = new Set<FunnelCandidateSource>(["pexels", "pixabay"]);
+
+/** FASE 4 — Candidate Expansion + Global Best-of-N: how many candidates are actually
+ *  downloaded and VisionGate-scored per beat. Was a flat top-3 slice (FASE 1); raised to 6
+ *  now that buildDownloadShortlist() below applies source diversity instead of just taking
+ *  the top N by rank — a modest, bounded increase, not "download everything". */
+export const MAX_FUNNEL_CANDIDATES_TO_SCORE = 6;
+
+/** FASE 4: how many metadata-only candidates survive from the merged funnel pool into
+ *  shortlist selection for a beat (before any download happens). This was hard-capped at 3-4
+ *  in FASE 1-3 — low enough that a genuinely better candidate ranked 5th or lower could never
+ *  even be considered for download, regardless of buildDownloadShortlist()'s diversity logic.
+ *  Raised to 15: purely a metadata-visibility limit (candidates here are already fetched —
+ *  discovery already ran for the whole pool — so widening this costs zero extra network/API
+ *  calls), independent of and upstream from MAX_FUNNEL_CANDIDATES_TO_SCORE, which remains the
+ *  actual download/VisionGate budget. */
+export const FUNNEL_CANDIDATE_POOL_LIMIT = 15;
+
+/** Per-source caps used by buildDownloadShortlist(). Non-stock (historical/open) sources may
+ *  contribute up to 2 candidates each to the download shortlist; stock (Pexels/Pixabay) is
+ *  capped at 1 each, so a single source — especially stock — can never monopolize the
+ *  shortlist. These are diversity caps on WHICH CANDIDATES GET DOWNLOADED, not a ranking
+ *  change: relevance (rankingScore) still decides who fills the available slots, and the
+ *  final winner is still decided purely by VisionGate scores via pickBestFunnelCandidate(). */
+const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;
+const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
+
+/**
+ * FASE 4 — Candidate Expansion: replaces the old flat "take the top N by rank" download
+ * selection with a source-diversity-aware shortlist, so a strong candidate from a
+ * less-dominant source (e.g. ranked 4th overall but the best NARA result) still gets a
+ * chance to be downloaded and scored instead of being crowded out by several candidates
+ * from one source landing in positions 1-3.
+ *
+ * Walks `candidates` re-sorted by rankingScore descending (relevance first, per the FASE 4
+ * spec) and fills the shortlist up to `budget`, skipping a candidate once its source has
+ * already contributed its cap (2 for historical/open sources, 1 for stock — Pexels/Pixabay
+ * each capped separately). The cap is never relaxed: `budget` is a ceiling on how many
+ * candidates get downloaded+VisionGate-scored, not a fill target — if the diverse, capped
+ * pool has fewer eligible candidates than `budget` (e.g. a beat where only Pexels returned
+ * results), the shortlist is simply smaller than `budget`. This is deliberate: forcing extra
+ * near-duplicate downloads from one already-represented source just to hit a target count
+ * would contradict both "one source may never monopolize the shortlist" (STAP 3) and "no
+ * unnecessary downloads" (STAP 16) at once. A pool with truly nothing usable still falls
+ * through to the existing, untouched guaranteed-fill/rescue ladder (STAP 17) — this function
+ * has no fallback logic of its own.
+ *
+ * Does not touch ranking (rankingScore, EXTERNAL_SOURCE_TIER_BONUS) or the final winner
+ * decision (pickBestFunnelCandidate) — this only decides which candidates are worth the
+ * download+VisionGate cost.
+ */
+export function buildDownloadShortlist(
+  candidates: FunnelCandidate[],
+  budget: number
+): FunnelCandidate[] {
+  if (budget <= 0 || candidates.length === 0) return [];
+  const sorted = [...candidates].sort((a, b) => b.rankingScore - a.rankingScore);
+
+  const capFor = (source: FunnelCandidateSource): number =>
+    STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
+
+  const shortlist: FunnelCandidate[] = [];
+  const perSourceCount = new Map<FunnelCandidateSource, number>();
+  for (const c of sorted) {
+    if (shortlist.length >= budget) break;
+    const used = perSourceCount.get(c.source) ?? 0;
+    if (used >= capFor(c.source)) continue;
+    shortlist.push(c);
+    perSourceCount.set(c.source, used + 1);
+  }
+
+  return shortlist;
+}
 
 export function pickBestFunnelCandidate(
   scored: ScoredFunnelCandidate[]

@@ -36,7 +36,11 @@ export type PoolCandidateSource =
   | "wikimedia"
   | "archive"
   | "internet_archive"
-  | "europeana";
+  | "europeana"
+  | "openverse"
+  | "nasa"
+  | "nara"
+  | "loc";
 
 /** Metadata-only representation of one retrieval candidate.
  *  No binary data, no local paths, no presigned URLs that may expire (except
@@ -115,6 +119,8 @@ export type BuildPoolRequest = {
   pixabayApiKey?: string;
   /** FASE 2: Europeana requires a key, like Pexels/Pixabay — Internet Archive/Wikimedia don't. */
   europeanaApiKey?: string;
+  /** FASE 3: NARA requires a key, same shape as europeanaApiKey — Openverse/NASA/LOC don't. */
+  naraApiKey?: string;
   /** If true, skip Pexels (no API key or not applicable). */
   skipPexels?: boolean;
   /** If true, skip Pixabay. */
@@ -123,6 +129,14 @@ export type BuildPoolRequest = {
   skipInternetArchive?: boolean;
   /** If true, skip Europeana (also skipped automatically when europeanaApiKey is absent). */
   skipEuropeana?: boolean;
+  /** If true, skip Openverse. */
+  skipOpenverse?: boolean;
+  /** If true, skip NASA. */
+  skipNasa?: boolean;
+  /** If true, skip NARA (also skipped automatically when naraApiKey is absent). */
+  skipNara?: boolean;
+  /** If true, skip Library of Congress. */
+  skipLoc?: boolean;
   maxPerSource?: number;
   maxTotal?: number;
 };
@@ -598,6 +612,329 @@ async function searchEuropeanaCandidates(
   return { candidates, apiCalls };
 }
 
+// ─── Provider: Openverse (FASE 3 — Priority A open-licensed images) ───────────
+// Metadata-only mirror of searchWebWideVideoClips's Openverse call (videoPipeline.ts) — same
+// endpoint, same license_type filter, same license-safety gate. Images only: Openverse's
+// catalog covers images + audio, not video (matches existing precedent in this codebase —
+// fetchOpenverseImages/searchWebWideVideoClips both only ever call /v1/images/, never a video
+// endpoint — so this pool adapter does the same rather than inventing a video search that
+// doesn't exist on the provider side).
+export async function searchOpenverseCandidates(
+  queries: string[],
+  max: number
+): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
+  const candidates: PoolCandidate[] = [];
+  let apiCalls = 0;
+  const seenIds = new Set<string>();
+  const UA = { "User-Agent": "Fastvid/1.0 (video generation; contact@fastvid.ai)" };
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    const searchUrl = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&license_type=commercial,modification&page_size=${max}&format=json`;
+    try {
+      const searchResp = await withTimeoutFetch(searchUrl, UA, 8_000, `Openverse pool search "${query}"`);
+      apiCalls++;
+      if (!searchResp.ok) continue;
+      type OpenverseItem = {
+        id: string; url: string; title?: string; license?: string; license_url?: string;
+        creator?: string; foreign_landing_url?: string;
+      };
+      const payload = (await searchResp.json()) as { results?: OpenverseItem[] };
+      const items = payload.results ?? [];
+
+      for (const item of items) {
+        if (candidates.length >= max) break;
+        // License-safety gate: reject anything without an explicit license tag — belt-and-
+        // braces even though license_type= should already guarantee one (same gate already
+        // used by the existing searchWebWideVideoClips in videoPipeline.ts).
+        if (!item.id || !item.url || !item.license?.trim()) continue;
+        if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(item.url)) continue;
+        if (seenIds.has(item.id)) continue;
+        seenIds.add(item.id);
+        candidates.push({
+          id: `openverse:${item.id}`,
+          assetId: item.id,
+          source: "openverse",
+          remoteUrl: item.url,
+          thumbnailUrl: item.url,
+          title: item.title || query,
+          description: null,
+          tags: [query],
+          mediaType: "image",
+          durationSec: null,
+          license: item.license.trim(),
+          width: null,
+          height: null,
+          sourceCreator: item.creator || null,
+          licenseUrl: item.license_url || null,
+          clipSimilarity: null,
+          embeddingSimilarity: null,
+          rankingScore: null,
+          visionScore: null,
+          selectionScore: null,
+        });
+      }
+    } catch {
+      /* skip this query */
+    }
+  }
+  return { candidates, apiCalls };
+}
+
+// ─── Provider: NASA Images & Video Library (FASE 3 — Priority A historical/open source) ───
+// Metadata-only mirror of fetchNasaVideoClips's search→asset-manifest steps (videoPipeline.ts)
+// — same two endpoints, same mp4-selection logic — without the download/trim. NASA media is
+// U.S. government work, inherently public domain under 17 U.S.C. §105; there is no per-item
+// rights field to check (matches the existing eager fetcher, which also never checks one).
+// Deliberately does NOT touch the existing NASA circuit-breaker state
+// (isNasaInCooldown/markNasaSearchResult in videoPipeline.ts) — this is a separate, independent
+// search path; sharing that state would let this pool search trip or be blocked by a cooldown
+// meant for the unrelated eager-fetch fallback cascade.
+export async function searchNasaCandidates(
+  queries: string[],
+  max: number
+): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
+  const candidates: PoolCandidate[] = [];
+  let apiCalls = 0;
+  const seenIds = new Set<string>();
+  const UA = { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" };
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
+    try {
+      const searchResp = await withTimeoutFetch(searchUrl, UA, 10_000, `NASA pool search "${query}"`);
+      apiCalls++;
+      if (!searchResp.ok) continue;
+      type NasaItem = { data?: Array<{ nasa_id?: string; title?: string }> };
+      const searchData = (await searchResp.json()) as { collection?: { items?: NasaItem[] } };
+      const items = searchData.collection?.items ?? [];
+
+      for (const item of items) {
+        if (candidates.length >= max) break;
+        const nasaId = item.data?.[0]?.nasa_id;
+        const title = item.data?.[0]?.title;
+        if (!nasaId || seenIds.has(nasaId)) continue;
+        try {
+          const assetUrl = `https://images-api.nasa.gov/asset/${nasaId}`;
+          const assetResp = await withTimeoutFetch(assetUrl, UA, 8_000, `NASA pool asset "${nasaId}"`);
+          apiCalls++;
+          if (!assetResp.ok) continue;
+          const assetData = (await assetResp.json()) as {
+            collection?: { items?: Array<{ href?: string }> };
+          };
+          const assetUrls = (assetData.collection?.items ?? [])
+            .map(i => i.href)
+            .filter((u): u is string => typeof u === "string" && u.length > 0);
+          const mp4Url = assetUrls.find(u => /\.mp4$/i.test(u) && !/~mobile|~thumb|~preview|~small/i.test(u))
+            ?? assetUrls.find(u => /\.mp4$/i.test(u));
+          if (!mp4Url) continue;
+
+          seenIds.add(nasaId);
+          candidates.push({
+            id: `nasa:${nasaId}`,
+            assetId: nasaId,
+            source: "nasa",
+            remoteUrl: mp4Url,
+            thumbnailUrl: null,
+            title: title ?? nasaId,
+            description: null,
+            tags: [query],
+            mediaType: "video",
+            durationSec: null,
+            license: "Public Domain (NASA / U.S. Government Work)",
+            width: null,
+            height: null,
+            sourceCreator: null,
+            licenseUrl: "https://www.nasa.gov/multimedia/guidelines/index.html",
+            clipSimilarity: null,
+            embeddingSimilarity: null,
+            rankingScore: null,
+            visionScore: null,
+            selectionScore: null,
+          });
+        } catch {
+          /* skip this item */
+        }
+      }
+    } catch {
+      /* skip this query */
+    }
+  }
+  return { candidates, apiCalls };
+}
+
+// ─── Provider: NARA (US National Archives, FASE 3 — Priority A historical source) ─────────
+// Metadata-only mirror of fetchNaraClips's search step (videoPipeline.ts) — same endpoint,
+// same digitalObjects parsing — without the download/trim. Requires a free NARA_API_KEY
+// (register at https://catalog.archives.gov/api/v2), passed in from the caller (like
+// europeanaApiKey) rather than read from process.env here, keeping scenePool.ts free of direct
+// env access — same pattern already used for Pexels/Pixabay/Europeana. NARA holdings are U.S.
+// federal records — public domain under 17 U.S.C. §105, same legal basis as NASA above; no
+// per-item rights field exists to check (matches the existing eager fetcher).
+export async function searchNaraCandidates(
+  queries: string[],
+  apiKey: string,
+  max: number
+): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
+  const candidates: PoolCandidate[] = [];
+  let apiCalls = 0;
+  const seenUrls = new Set<string>();
+  const headers = { "x-api-key": apiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" };
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${max * 3}`;
+    try {
+      const searchResp = await withTimeoutFetch(searchUrl, headers, 10_000, `NARA pool search "${query}"`);
+      apiCalls++;
+      if (!searchResp.ok) continue;
+      type NaraHit = { _source?: { record?: {
+        title?: string;
+        digitalObjects?: Array<{ objectUrl?: string; objectType?: string }>;
+      } } };
+      const searchData = (await searchResp.json()) as { body?: { hits?: { hits?: NaraHit[] } } };
+      const hits = searchData.body?.hits?.hits ?? [];
+
+      for (const hit of hits) {
+        if (candidates.length >= max) break;
+        const record = hit._source?.record;
+        const videoObject = record?.digitalObjects?.find(
+          o => /\.(mp4|mov|m4v)$/i.test(o.objectUrl ?? "") || /video/i.test(o.objectType ?? "")
+        );
+        const videoUrl = videoObject?.objectUrl;
+        // NARA's typed search response never carries a discrete naId field (same limitation
+        // documented next to fetchNaraClips), so the objectUrl itself is the identity.
+        if (!videoUrl || seenUrls.has(videoUrl)) continue;
+        seenUrls.add(videoUrl);
+        candidates.push({
+          id: `nara:${videoUrl}`,
+          assetId: videoUrl,
+          source: "nara",
+          remoteUrl: videoUrl,
+          thumbnailUrl: null,
+          title: record?.title || query,
+          description: null,
+          tags: [query],
+          mediaType: "video",
+          durationSec: null,
+          license: "Public Domain (NARA / U.S. Government Work)",
+          width: null,
+          height: null,
+          sourceCreator: null,
+          licenseUrl: "https://www.archives.gov/global-pages/using-nara-materials",
+          clipSimilarity: null,
+          embeddingSimilarity: null,
+          rankingScore: null,
+          visionScore: null,
+          selectionScore: null,
+        });
+      }
+    } catch {
+      /* skip this query */
+    }
+  }
+  return { candidates, apiCalls };
+}
+
+// ─── Provider: Library of Congress (FASE 3 — Priority A historical/open source) ───────────
+// NEW — no existing fetcher in this codebase to mirror (unlike NASA/NARA/Openverse above).
+// Built directly against the public loc.gov JSON API (https://www.loc.gov/apis/json-and-yaml/),
+// no API key required — same two-step search→item-detail shape already established for
+// Internet Archive (FASE 2: advancedsearch.php → /metadata/{id}).
+// CAVEAT (see FASE 3 report): this sandbox has no outbound network access to loc.gov, so this
+// implementation could not be smoke-tested against a live response — field names follow the
+// public API documentation, not a verified live payload. The license gate below is
+// deliberately conservative (reject unless an explicit public-domain / no-known-restrictions
+// signal is present) so a wrong or missing field degrades to "0 candidates from this source"
+// rather than ever admitting an item with unclear rights.
+export function isAllowedLocRights(rightsText: string | undefined | null): boolean {
+  const r = rightsText?.trim().toLowerCase();
+  if (!r) return false;
+  return /no known restrictions|public domain|not protected by copyright/.test(r);
+}
+
+export async function searchLibraryOfCongressCandidates(
+  queries: string[],
+  max: number
+): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
+  const candidates: PoolCandidate[] = [];
+  let apiCalls = 0;
+  const seenIds = new Set<string>();
+  const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    const searchUrl = `https://www.loc.gov/search/?q=${encodeURIComponent(query)}&fo=json&c=${max}`;
+    try {
+      const searchResp = await withTimeoutFetch(searchUrl, UA, 10_000, `Library of Congress pool search "${query}"`);
+      apiCalls++;
+      if (!searchResp.ok) continue;
+      type LocResult = {
+        id?: string; title?: string; url?: string;
+        image_url?: string[] | string; access_restricted?: boolean;
+      };
+      const searchData = (await searchResp.json()) as { results?: LocResult[] };
+      const results = searchData.results ?? [];
+
+      for (const result of results) {
+        if (candidates.length >= max) break;
+        const itemUrl = result.url || result.id;
+        if (!itemUrl || result.access_restricted || seenIds.has(itemUrl)) continue;
+        try {
+          const itemJsonUrl = `${itemUrl.replace(/\/$/, "")}/?fo=json`;
+          const itemResp = await withTimeoutFetch(itemJsonUrl, UA, 8_000, `Library of Congress pool item "${itemUrl}"`);
+          apiCalls++;
+          if (!itemResp.ok) continue;
+          type LocItem = {
+            item?: { rights_advisory?: string[]; rights?: string | string[] };
+            resources?: Array<{ files?: Array<Array<{ mimetype?: string; url?: string }>> }>;
+          };
+          const itemData = (await itemResp.json()) as LocItem;
+          const rawRights = itemData.item?.rights ?? itemData.item?.rights_advisory;
+          const rightsText = Array.isArray(rawRights) ? rawRights.join(" ") : rawRights;
+          if (!isAllowedLocRights(rightsText)) continue;
+
+          const files = (itemData.resources ?? []).flatMap(r => r.files ?? []).flat();
+          const videoFile = files.find(f => f.mimetype?.includes("video") && f.url);
+          const imageFile = files.find(f => f.mimetype?.includes("image") && f.url);
+          const mediaFile = videoFile ?? imageFile;
+          if (!mediaFile?.url) continue;
+
+          seenIds.add(itemUrl);
+          candidates.push({
+            id: `loc:${itemUrl}`,
+            assetId: itemUrl,
+            source: "loc",
+            remoteUrl: mediaFile.url,
+            thumbnailUrl: Array.isArray(result.image_url) ? (result.image_url[0] ?? null) : (result.image_url ?? null),
+            title: result.title || query,
+            description: null,
+            tags: [query],
+            mediaType: videoFile ? "video" : "image",
+            durationSec: null,
+            license: rightsText?.trim() || null,
+            width: null,
+            height: null,
+            sourceCreator: null,
+            licenseUrl: itemUrl,
+            clipSimilarity: null,
+            embeddingSimilarity: null,
+            rankingScore: null,
+            visionScore: null,
+            selectionScore: null,
+          });
+        } catch {
+          /* skip this item */
+        }
+      }
+    } catch {
+      /* skip this query */
+    }
+  }
+  return { candidates, apiCalls };
+}
+
 // ─── CachedCandidate ↔ PoolCandidate bridge ──────────────────────────────────
 
 function toCachedCandidate(c: PoolCandidate): CachedCandidate {
@@ -679,10 +1016,15 @@ export async function buildSceneCandidatePool(
     pexelsApiKey,
     pixabayApiKey,
     europeanaApiKey,
+    naraApiKey,
     skipPexels = false,
     skipPixabay = false,
     skipInternetArchive = false,
     skipEuropeana = false,
+    skipOpenverse = false,
+    skipNasa = false,
+    skipNara = false,
+    skipLoc = false,
     maxPerSource = MAX_CANDIDATES_PER_SOURCE,
     maxTotal = MAX_POOL_SIZE,
   } = req;
@@ -770,6 +1112,40 @@ export async function buildSceneCandidatePool(
       searchEuropeanaCandidates(queries, europeanaApiKey, maxPerSource).then(r => ({
         ...r,
         source: "europeana",
+      }))
+    );
+  }
+  // FASE 3 — Priority A historical/open sources: Openverse/NASA/Library of Congress need no
+  // API key (same shape as Internet Archive above); NARA needs a key, same shape as Europeana.
+  if (!skipOpenverse) {
+    tasks.push(
+      searchOpenverseCandidates(queries, maxPerSource).then(r => ({
+        ...r,
+        source: "openverse",
+      }))
+    );
+  }
+  if (!skipNasa) {
+    tasks.push(
+      searchNasaCandidates(queries, maxPerSource).then(r => ({
+        ...r,
+        source: "nasa",
+      }))
+    );
+  }
+  if (!skipNara && naraApiKey) {
+    tasks.push(
+      searchNaraCandidates(queries, naraApiKey, maxPerSource).then(r => ({
+        ...r,
+        source: "nara",
+      }))
+    );
+  }
+  if (!skipLoc) {
+    tasks.push(
+      searchLibraryOfCongressCandidates(queries, maxPerSource).then(r => ({
+        ...r,
+        source: "loc",
       }))
     );
   }
