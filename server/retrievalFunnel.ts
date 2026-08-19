@@ -626,10 +626,26 @@ const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
  */
 export function buildDownloadShortlist(
   candidates: FunnelCandidate[],
-  budget: number
+  budget: number,
+  usedCandidateIds?: ReadonlySet<string>
 ): FunnelCandidate[] {
   if (budget <= 0 || candidates.length === 0) return [];
-  const sorted = [...candidates].sort((a, b) => b.rankingScore - a.rankingScore);
+  // FIX 2 — per-beat shortlist exclusion. The funnel result is built once per SCENE but
+  // consumed once per BEAT, and everything below is deterministic on rankingScore, so every
+  // beat of a scene used to receive the identical shortlist and download the identical
+  // assets. Render 515: 47-49 candidates per scene collapsed to 3 unique assets across 13
+  // beats. Dropping candidates an earlier beat already selected lets the same ranking reach
+  // further down the list on the next beat.
+  //
+  // This is not a ranking change: no score is altered, no penalty is applied, no shuffling
+  // happens. The identical sort and the identical per-source caps run afterwards — only the
+  // input set is smaller. When every candidate has already been used the full list comes
+  // back, so reuse stays possible and a beat is never starved into fallback.
+  const unused = usedCandidateIds?.size
+    ? candidates.filter((c) => !usedCandidateIds.has(c.id))
+    : candidates;
+  const pool = unused.length > 0 ? unused : candidates;
+  const sorted = [...pool].sort((a, b) => b.rankingScore - a.rankingScore);
 
   const capFor = (source: FunnelCandidateSource): number =>
     STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
@@ -648,10 +664,28 @@ export function buildDownloadShortlist(
 }
 
 export function pickBestFunnelCandidate(
-  scored: ScoredFunnelCandidate[]
+  scored: ScoredFunnelCandidate[],
+  usedCandidateIds?: ReadonlySet<string>
 ): ScoredFunnelCandidate | null {
-  const passers = scored.filter(s => s.visionResult.pass);
-  if (passers.length === 0) return null;
+  const allPassers = scored.filter(s => s.visionResult.pass);
+  if (allPassers.length === 0) return null;
+
+  // FIX 1 — cross-beat asset memory. The funnel path never consulted any used-asset
+  // registry, so the highest-scoring candidate won every beat of a scene: render 515 picked
+  // the same asset for 11 of 13 beats while a runner-up was available on every one of them.
+  //
+  // Preferring the passers that have not been used yet, and running the UNCHANGED
+  // stock/non-stock selection below on exactly that subset, keeps the ranking intact — the
+  // best remaining candidate still wins, on its own VisionGate score, with the same
+  // STOCK_TIER_WIN_MARGIN applied. Nothing is scored down and nothing is skipped at random.
+  //
+  // Exhaustion rule: when every passer has already been used, the full passer set is
+  // restored and the winner is picked from it as before. Reuse is the last resort, never the
+  // default, and a beat is never lost to null because of this.
+  const unusedPassers = usedCandidateIds?.size
+    ? allPassers.filter(s => !usedCandidateIds.has(s.candidate.id))
+    : allPassers;
+  const passers = unusedPassers.length > 0 ? unusedPassers : allPassers;
 
   const scoreOf = (s: ScoredFunnelCandidate): number => s.visionResult.worstScore10 ?? 0;
   const best = (list: ScoredFunnelCandidate[]): ScoredFunnelCandidate =>

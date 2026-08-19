@@ -305,8 +305,11 @@ describe("FASE 7.3 Test 9 — no other rejection gate was touched", () => {
 
   it("the funnel's binary VisionGate filter is unchanged (still out of FASE 7.3's scope)", () => {
     const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
-    expect(funnelSrc).toContain("const passers = scored.filter(s => s.visionResult.pass);");
-    expect(funnelSrc).toContain("if (passers.length === 0) return null;");
+    // RONDE 1 renamed the local to allPassers (cross-beat reuse). What this test guards is
+    // unchanged: the funnel still considers only VisionGate passers and still returns null
+    // when there are none — FASE 7.3 did not and does not touch that.
+    expect(funnelSrc).toContain("const allPassers = scored.filter(s => s.visionResult.pass);");
+    expect(funnelSrc).toContain("if (allPassers.length === 0) return null;");
   });
 });
 

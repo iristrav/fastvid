@@ -142,7 +142,8 @@ describe("observability", () => {
 describe("nothing under test was disturbed", () => {
   it("FASE 7.2: the funnel still passes no queryEmb to VisionGate", () => {
     const start = pipelineSrc.indexOf("let funnelBeatEmb: number[] | null = null;");
-    const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored);", start);
+    // RONDE 1 added the used-id argument; anchor on the stable prefix.
+    const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored", start);
     const block = pipelineSrc.slice(start, end);
     expect(block).toContain("[FunnelVisionGate]");
     expect(block).toContain("queryEmbeddingSource=resolved-by-vision-gate");
@@ -181,6 +182,7 @@ describe("nothing under test was disturbed", () => {
     expect(localSrc).toContain("return minScore10 / 40;");
     expect(localSrc).toContain("return Math.max(0, Math.min(10, Math.round(sim * 40)));");
     const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
-    expect(funnelSrc).toContain("const passers = scored.filter(s => s.visionResult.pass);");
+    // Local renamed to allPassers by RONDE 1; the passers-only rule itself is unchanged.
+    expect(funnelSrc).toContain("const allPassers = scored.filter(s => s.visionResult.pass);");
   });
 });

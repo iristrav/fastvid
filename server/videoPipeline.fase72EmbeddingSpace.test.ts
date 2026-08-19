@@ -37,7 +37,8 @@ const gateSrc = readFileSync(path.join(__dirname, "visualQualityGate.ts"), "utf8
 function funnelBlock(): string {
   const start = pipelineSrc.indexOf("let funnelBeatEmb: number[] | null = null;");
   expect(start).toBeGreaterThan(-1);
-  const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored);", start);
+  // RONDE 1 added the used-id argument to this call; anchor on the stable prefix.
+  const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored", start);
   expect(end).toBeGreaterThan(start);
   return pipelineSrc.slice(start, end);
 }

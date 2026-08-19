@@ -11789,6 +11789,12 @@ export interface VisualDedupState {
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
   usedContentKeys: Set<string>;
+  /** FIX 1/2 — funnel candidate ids (`${source}:${assetId}`) already selected as a beat's
+   *  winner in this render. Keyed on the candidate's own stable provider identity rather
+   *  than clipContentKey, because a funnel clip's filename embeds `scene_N_bM_`, so
+   *  clipContentKey() yields a per-beat-unique `file:` key that can never match across
+   *  beats. Read by buildDownloadShortlist() and pickBestFunnelCandidate(). */
+  usedFunnelCandidateIds: Set<string>;
   usedCategories: Map<string, number>;
   globalBeatIndex: number;
   muskHeroFetchUsed: boolean;
@@ -12047,6 +12053,7 @@ export function createVisualDedupState(
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
     usedContentKeys: new Set(),
+    usedFunnelCandidateIds: new Set(),
     usedCategories: new Map(),
     globalBeatIndex: 0,
     muskHeroFetchUsed: false,
@@ -23719,7 +23726,14 @@ async function fetchSceneVisualsInner(
         // 3 to MAX_FUNNEL_CANDIDATES_TO_SCORE (=6) since candidates now compete for slots
         // across up to 15 visible metadata candidates (FUNNEL_CANDIDATE_POOL_LIMIT) instead
         // of just the first 3-4.
-        const toScore = buildDownloadShortlist(funnelCandidates, MAX_FUNNEL_CANDIDATES_TO_SCORE);
+        // FIX 2: exclude assets an earlier beat already won, so the identical per-scene
+        // candidate list produces a different shortlist per beat. Falls back to the full
+        // list inside buildDownloadShortlist() once everything has been used.
+        const toScore = buildDownloadShortlist(
+          funnelCandidates,
+          MAX_FUNNEL_CANDIDATES_TO_SCORE,
+          dedup.usedFunnelCandidateIds
+        );
         const discoveredCount = funnelCandidates.length;
         const shortlistCount = toScore.length;
         let downloadedCount = 0;
@@ -23764,11 +23778,18 @@ async function fetchSceneVisualsInner(
           scored.push({ candidate, clipPath, visionResult });
         }
 
-        const winner = pickBestFunnelCandidate(scored);
+        // FIX 1: prefer a passer this render has not adopted yet. Ranking and VisionGate are
+        // untouched — the best REMAINING candidate still wins on its own score. When every
+        // passer is used the full set is restored inside pickBestFunnelCandidate(), so reuse
+        // is the last resort and a beat is never dropped to fallback because of this.
+        const winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
         let funnelClip: string | null = null;
         let winningExternalCandidate: FunnelCandidate | null = null;
         if (winner) {
           const { candidate, clipPath } = winner;
+          // Registered under the candidate's own provider identity: this beat's winner is
+          // what later beats of this render try to avoid repeating.
+          dedup.usedFunnelCandidateIds.add(candidate.id);
           funnelClip = clipPath;
           if (candidate.source !== "archive") winningExternalCandidate = candidate;
           // Register embedding similarity so AssetDirector can use it in ranking
