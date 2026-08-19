@@ -1066,6 +1066,33 @@ export function retrievalFunnelEnabled(): boolean {
   return process.env.ENABLE_RETRIEVAL_FUNNEL !== "false";
 }
 
+/** How long a scene may wait for its retrieval funnel to deliver, before falling back to
+ *  per-beat retrieval. This is purely a delivery deadline: it decides whether the funnel's
+ *  candidates are available in time, and has no bearing on how any candidate is scored,
+ *  ranked or gated once they are.
+ *
+ *  Default is 60_000 — the value this await has always used — so production behaviour is
+ *  unchanged unless FASTVID_FUNNEL_TIMEOUT_MS is explicitly set.
+ *
+ *  It exists as a knob because the funnel branch turned out to be reachable only by winning
+ *  a race: in render 512 the funnel delivered with 1243ms to spare (`prefetch waited
+ *  58757ms` against the 60s deadline), while in render 513 slower providers pushed it from
+ *  91s to 140s and all three scenes timed out — which silently skipped the entire funnel
+ *  scoring branch, and with it the code under test. Raising this for one controlled render
+ *  lets that branch actually execute; it does not make the funnel produce anything it
+ *  wouldn't otherwise produce, only wait long enough to receive it.
+ *
+ *  Bounded to [60_000, 600_000]: never below the production default (so a stray value can't
+ *  tighten live behaviour) and never beyond the render's own wall-clock budget. */
+export function funnelAwaitTimeoutMs(): number {
+  const raw = process.env.FASTVID_FUNNEL_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 60_000 && n <= 600_000) return n;
+  }
+  return 60_000;
+}
+
 /** Archive-first per-beat gap detection (self-learning retrieval).
  *  When enabled, the archive is always consulted first per beat.  The embedding
  *  confidence score determines how many external sources are queried:
