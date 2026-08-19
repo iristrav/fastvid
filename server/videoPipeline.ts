@@ -23703,6 +23703,21 @@ async function fetchSceneVisualsInner(
         const shortlistCount = toScore.length;
         let downloadedCount = 0;
         const scored: ScoredFunnelCandidate[] = [];
+        // FASE 7.2 — embedding-space separation. funnelBeatEmb is an OpenAI
+        // text-embedding-3-small vector (1536 dim, see createTextEmbedding above). It is the
+        // right vector for the archive/text ranking below (findBestArchiveScoreForBeat,
+        // computeSegmentSimilarities) and stays in use there, unchanged. It is the WRONG
+        // vector for VisionGate, which compares against CLIP ViT-B/32 *image* embeddings
+        // (512 dim): cosineSimilarity() bails out with `a.length !== b.length -> return 0`,
+        // so every funnel candidate scored an exact 0.0000 and could never win — proven in
+        // render 512 (38 rejects, all rawSimilarity=0.0000 exact, while the non-funnel path
+        // in the same render produced real 0.18-0.24 scores). Passing no queryEmb here lets
+        // VisionGate resolve its own CLIP text embedding via resolveBeatQueryEmbedding(),
+        // which is the already-proven-correct behaviour on every non-funnel path.
+        console.log(
+          `[FunnelVisionGate] s${scene.index}b${beat.index} queryEmbeddingSource=resolved-by-vision-gate` +
+          (funnelBeatEmb ? ` textEmbDim=${funnelBeatEmb.length}(archive-ranking-only)` : ` textEmb=none`)
+        );
         for (const candidate of toScore) {
           const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
           if (!clipPath) continue;
@@ -23718,7 +23733,7 @@ async function fetchSceneVisualsInner(
             undefined,
             beat.visualDescription,
             dedup.segmentGeoLock,
-            funnelBeatEmb,
+            undefined,
             isFastShortVideoLength(dedup.videoLength),
             clipContentKey(clipPath)
           );
