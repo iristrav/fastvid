@@ -110,6 +110,7 @@ import {
   type MarkdownNarrationBlock,
 } from "./scriptWriter";
 import {
+  anchorQueriesToHistoricalContext,
   applyAiRelevanceRanking,
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
@@ -10681,20 +10682,91 @@ async function transformClipForFairUse(
   return inputPath;
 }
 
+// P1-A (render 517): title-case FRAMING words that are never part of a real person's name.
+// extractPrimaryPersonFromText used to accept the first capitalized run of a documentary title
+// verbatim — "Why Hitler Lost the War" produced the literal person lock "Why Hitler", which
+// polluted every person-anchored query AND suppressed the historical-documentary handling
+// (personTopicLock disables historicalDoc at every branch that checks it). Deliberately free of
+// ambiguous real first names (Will, Mark, Grant, Art, Jack, ...) so genuine names never lose tokens.
+const TITLE_NON_NAME_WORDS = new Set([
+  "why", "how", "what", "when", "where", "which", "whose",
+  "the", "a", "an", "this", "that", "these", "those",
+  "is", "was", "are", "were", "did", "does", "do",
+  "inside", "behind", "before", "after", "during", "about", "against",
+  "from", "into", "every", "his", "her", "their", "its", "our", "your", "my",
+  "and", "but", "not", "no",
+  "story", "stories", "truth", "secret", "secrets", "untold", "history", "historical",
+  "real", "really", "rise", "fall", "lost", "won", "became", "revealed", "explained",
+  "documentary", "facts", "biography", "final", "last", "first", "days", "war", "world",
+  "life", "death", "end", "complete", "ultimate", "full", "deep", "dive",
+  // Common documentary-title verbs ("How Napoleon Conquered Europe") — none are name tokens.
+  "conquered", "invaded", "escaped", "survived", "killed", "died", "destroyed", "defeated",
+  "betrayed", "ruled", "built", "created", "changed", "started", "ended", "failed", "saved",
+  "murdered",
+]);
+
+/**
+ * P1-A: strip leading/trailing title framing words from a capitalized run; a run that still
+ * contains a framing word mid-name is no name at all. Returns the surviving tokens.
+ */
+function cleanPersonNameCandidate(candidate: string): string[] {
+  const tokens = candidate.trim().split(/\s+/).filter(Boolean);
+  while (tokens.length && TITLE_NON_NAME_WORDS.has(tokens[0].toLowerCase())) tokens.shift();
+  while (tokens.length && TITLE_NON_NAME_WORDS.has(tokens[tokens.length - 1].toLowerCase())) tokens.pop();
+  if (tokens.some((t) => TITLE_NON_NAME_WORDS.has(t.toLowerCase()))) return [];
+  return tokens;
+}
+
 /** Extract a person name from prompts/titles like "Rumors about Kylie Jenner". */
-function extractPrimaryPersonFromText(text?: string): string {
+export function extractPrimaryPersonFromText(text?: string): string {
   if (!text?.trim()) return "";
   const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
   const aboutMatch = cleaned.match(/\babout\s+([A-Za-z][\w'-]+(?:\s+[A-Za-z][\w'-]+){0,2})/i);
-  if (aboutMatch?.[1]) return aboutMatch[1].trim();
+  if (aboutMatch?.[1]) {
+    const aboutTokens = cleanPersonNameCandidate(aboutMatch[1]);
+    if (aboutTokens.length > 0) return aboutTokens.join(" ");
+  }
   const kylieMatch = cleaned.match(/\b(kylie\s+jenner)\b/i);
   if (kylieMatch?.[1]) return "Kylie Jenner";
   const nameMatches = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b/g) ?? [];
   const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
   for (const candidate of nameMatches) {
-    if (!skip.has(candidate.toLowerCase())) return candidate.trim();
+    if (skip.has(candidate.toLowerCase())) continue;
+    // A full name only when ≥2 clean tokens survive — a single leftover token ("Hitler" from
+    // "Why Hitler Lost") is a surname anchor, not a name; see extractPersonSurnameAnchor.
+    const tokens = cleanPersonNameCandidate(candidate);
+    if (tokens.length >= 2) return tokens.join(" ");
   }
   return "";
+}
+
+/**
+ * P1-A: when a title's capitalized run reduces to exactly ONE surviving token after framing-word
+ * cleanup ("Why Hitler Lost" → "Hitler"), that token is a surname ANCHOR — not a usable name by
+ * itself. The pipeline resolves it against the full names the script itself states
+ * (extractPersonNamesFromText + resolvePersonFromSurnameAnchor), so "Why Hitler …" locks to the
+ * script's own "Adolf Hitler" instead of a fabricated two-word title fragment.
+ */
+export function extractPersonSurnameAnchor(text?: string): string {
+  if (!text?.trim()) return "";
+  const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
+  const runs = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g) ?? [];
+  for (const run of runs) {
+    const tokens = cleanPersonNameCandidate(run);
+    if (tokens.length === 1 && tokens[0].length >= 3) return tokens[0];
+  }
+  return "";
+}
+
+/**
+ * P1-A: pick the script-stated full name whose LAST token (surname position) matches the title's
+ * surname anchor. The surname-position requirement keeps non-person capitalized runs out — a
+ * "Chernobyl" anchor never matches "Chernobyl Exclusion Zone", so no lock gets fabricated.
+ */
+export function resolvePersonFromSurnameAnchor(anchor: string, names: string[]): string {
+  const a = anchor.trim().toLowerCase();
+  if (!a) return "";
+  return names.find((n) => n.toLowerCase().split(/\s+/).pop() === a) ?? "";
 }
 
 function extractPrimaryPersonFromTitle(title?: string): string {
@@ -23555,13 +23627,27 @@ async function fetchSceneVisualsInner(
         const funnelAwaitT0 = Date.now();
         console.log(`[FunnelTimeout] scene=${scene.index} timeoutMs=${funnelTimeoutMs}`);
         console.log(`[Hang] BEFORE funnel await s${scene.index} prefetch=${!!prefetchFunnel}`);
+        // P1-B: anchor era-less stock phrasing to the year/person/location the script states.
+        const inlineFunnelQueries = anchorQueriesToHistoricalContext({
+          primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+          extraQueries: await primeQueriesWithSearchMemory(videoTitle, scene.pexelsQueries?.slice(0, 2)),
+          sceneText: scene.text,
+          videoTitle,
+          primaryPerson: dedup.primaryPerson || personName,
+        });
+        if (inlineFunnelQueries.anchored) {
+          console.log(
+            `[HistoricalAnchor] scene=${scene.index} primary="${inlineFunnelQueries.primaryQuery}" ` +
+            `year=${inlineFunnelQueries.year || "n/a"} extras=${inlineFunnelQueries.extraQueries.length}`
+          );
+        }
         funnelResult = prefetchFunnel
           ? await withTimeout(prefetchFunnel, funnelTimeoutMs, `prefetchFunnel s${scene.index}`)
           : await withTimeout(buildRetrievalFunnel({
               sceneIndex: scene.index,
               sceneText: scene.text,
-              primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-              extraQueries: await primeQueriesWithSearchMemory(videoTitle, scene.pexelsQueries?.slice(0, 2)),
+              primaryQuery: inlineFunnelQueries.primaryQuery,
+              extraQueries: inlineFunnelQueries.extraQueries,
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
               europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
@@ -23587,13 +23673,21 @@ async function fetchSceneVisualsInner(
         // P1/P4 path: external-only pool
         const prefetchPromise = prefetchPools?.get(scene.index);
         console.log(`[Hang] BEFORE pool await s${scene.index} prefetch=${!!prefetchPromise}`);
+        // P1-B: same historical anchoring as the funnel path above.
+        const inlinePoolQueries = anchorQueriesToHistoricalContext({
+          primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+          extraQueries: scene.pexelsQueries?.slice(0, 2),
+          sceneText: scene.text,
+          videoTitle,
+          primaryPerson: dedup.primaryPerson || personName,
+        });
         scenePool = prefetchPromise
           ? await withTimeout(prefetchPromise, 60_000, `prefetchPool s${scene.index}`)
           : await withTimeout(buildSceneCandidatePool({
               sceneIndex: scene.index,
               sceneText: scene.text,
-              primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-              extraQueries: scene.pexelsQueries?.slice(0, 2),
+              primaryQuery: inlinePoolQueries.primaryQuery,
+              extraQueries: inlinePoolQueries.extraQueries,
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
             }), 60_000, `buildSceneCandidatePool s${scene.index}`);
@@ -26694,11 +26788,20 @@ async function _runVideoPipelineInner(
     || "AI Generated Video";
   const topicContext = asVideoTitleString(buildTopicContext(userPrompt ?? videoRow?.prompt, videoTitle));
   const muskLocked = isMuskTeslaTopic(topicContext, script);
+  // P1-A: a title like "Why Hitler Lost the War" yields no full name (the old code fabricated
+  // "Why Hitler" here), but it does yield the surname anchor "Hitler" — resolved against the
+  // full names the script itself states, so the lock becomes the script's real "Adolf Hitler".
+  const scriptPersonNames = extractPersonNamesFromText(script);
+  const surnameAnchor =
+    extractPersonSurnameAnchor(userPrompt ?? videoRow?.prompt ?? "") ||
+    extractPersonSurnameAnchor(videoTitle) ||
+    extractPersonSurnameAnchor(topicContext);
   const primaryPerson =
     extractPrimaryPersonFromText(userPrompt ?? videoRow?.prompt ?? "") ||
     extractPrimaryPersonFromText(videoTitle) ||
     extractPrimaryPersonFromText(topicContext) ||
-    extractPersonNamesFromText(script)[0] ||
+    resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames) ||
+    scriptPersonNames[0] ||
     "";
   const personLocked = Boolean(primaryPerson) || isPersonCelebrityTopic(topicContext);
   getRenderCtx().videoTopic = { videoTitle, primaryPerson };
@@ -26742,11 +26845,27 @@ async function _runVideoPipelineInner(
         const primedMemoryQueries = await primeQueriesWithSearchMemory(topicContext || videoTitle, undefined);
         prefetchFunnels = new Map();
         for (const scene of scenes) {
+          // P1-B (render 517): the scene's stock phrasing carried no period at all ("berlin
+          // city skyline" for a 1945 documentary) — anchor it to the year/person/location the
+          // script itself states before any provider is queried. No-op for non-historical topics.
+          const anchoredQueries = anchorQueriesToHistoricalContext({
+            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+            extraQueries: [...(primedMemoryQueries ?? []), ...(scene.pexelsQueries?.slice(0, 2) ?? [])],
+            sceneText: scene.text,
+            videoTitle: topicContext || videoTitle,
+            primaryPerson,
+          });
+          if (anchoredQueries.anchored) {
+            console.log(
+              `[HistoricalAnchor] scene=${scene.index} primary="${anchoredQueries.primaryQuery}" ` +
+              `year=${anchoredQueries.year || "n/a"} extras=${anchoredQueries.extraQueries.length}`
+            );
+          }
           const funnelPromise = buildRetrievalFunnel({
             sceneIndex: scene.index,
             sceneText: scene.text,
-            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-            extraQueries: [...(primedMemoryQueries ?? []), ...(scene.pexelsQueries?.slice(0, 2) ?? [])],
+            primaryQuery: anchoredQueries.primaryQuery,
+            extraQueries: anchoredQueries.extraQueries,
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
             europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
@@ -26763,11 +26882,19 @@ async function _runVideoPipelineInner(
       } else {
         prefetchPools = new Map();
         for (const scene of scenes) {
+          // P1-B: same historical anchoring as the funnel prefetch above.
+          const anchoredPoolQueries = anchorQueriesToHistoricalContext({
+            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
+            extraQueries: scene.pexelsQueries?.slice(0, 2),
+            sceneText: scene.text,
+            videoTitle: topicContext || videoTitle,
+            primaryPerson,
+          });
           const poolPromise = buildSceneCandidatePool({
             sceneIndex: scene.index,
             sceneText: scene.text,
-            primaryQuery: scene.pexelsQuery || scene.visualCue || scene.text.slice(0, 80),
-            extraQueries: scene.pexelsQueries?.slice(0, 2),
+            primaryQuery: anchoredPoolQueries.primaryQuery,
+            extraQueries: anchoredPoolQueries.extraQueries,
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
           }).catch(err => {

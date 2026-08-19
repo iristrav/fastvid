@@ -5,7 +5,7 @@
 import path from "path";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
-import { asVideoTitleString, coerceVisionString, coercePersonName, queryStringsMinLen, uniqueQueryStrings } from "./stringCoercion";
+import { asVideoTitleString, coerceVisionString, coercePersonName, queryStringsMinLen, toQueryString, uniqueQueryStrings } from "./stringCoercion";
 
 export type MediaTopicKind = "person" | "historical" | "space" | "news" | "general";
 
@@ -444,6 +444,70 @@ export function buildHistoricalArchivalQueries(
   }
   out.push(...intent.searchQueries);
   return uniqueQueryStrings(out, 3).slice(0, 8);
+}
+
+/** Result of anchorQueriesToHistoricalContext — `anchored` false means untouched inputs. */
+export interface HistoricalAnchoredQueries {
+  primaryQuery: string;
+  extraQueries: string[];
+  anchored: boolean;
+  /** The year the anchoring used ("" when the intent stated no year — none is ever invented). */
+  year: string;
+}
+
+const QUERY_YEAR_RE = /\b(1[0-9]{3}|20[0-2][0-9])\b/;
+
+/**
+ * P1-B (render 517): the funnel/scene-pool queries came straight from the scene's stock-style
+ * phrasing and carried no period at all — "berlin city skyline", "russia city street" — so for
+ * historical documentaries the pool filled with present-day footage of the right place in the
+ * wrong century. This anchors those queries to the historical context the script itself states:
+ * the first concrete year in the scene text (or title), the primary person when THIS scene
+ * mentions them, and the scene's location phrase. Strictly deterministic and strictly sourced
+ * from the existing beat intent — no LLM call, no invented dates, no hardcoded topics (the
+ * activation gate is the existing isHistoricalDocumentary detector). The original queries are
+ * always kept in the list after the anchored variants, so a too-narrow anchored phrasing can
+ * only ADD era-correct candidates, never shrink the pool below what it was.
+ */
+export function anchorQueriesToHistoricalContext(params: {
+  primaryQuery: string;
+  extraQueries?: string[];
+  sceneText: string;
+  videoTitle?: string;
+  primaryPerson?: string;
+}): HistoricalAnchoredQueries {
+  const primaryQuery = toQueryString(params.primaryQuery);
+  const extraQueries = queryStringsMinLen(params.extraQueries ?? [], 3);
+  const unchanged: HistoricalAnchoredQueries = { primaryQuery, extraQueries, anchored: false, year: "" };
+  const title = asVideoTitleString(params.videoTitle);
+  const sceneText = params.sceneText ?? "";
+  if (!primaryQuery || !isHistoricalDocumentary(title, sceneText)) return unchanged;
+
+  // Period anchor: only a year the script/title literally states. Scene text wins over title
+  // (a scene about 1923 in a video titled "… 1945" should search 1923, not 1945).
+  const year = sceneText.match(QUERY_YEAR_RE)?.[0] ?? title.match(QUERY_YEAR_RE)?.[0] ?? "";
+  // Person anchor only when THIS scene's own text mentions them — the title mentioning the
+  // person is true for every scene of the video and would inject the name into beats that are
+  // not about them (the "query must come from the existing beat intent" rule).
+  const person = coercePersonName(params.primaryPerson);
+  const personInScene = person.length > 0 && mentionsPerson(sceneText, person);
+  if (!year && !personInScene) return unchanged;
+
+  const withYear = (q: string) => (year && !QUERY_YEAR_RE.test(q) ? `${q} ${year}` : q);
+  const anchoredPrimary = withYear(primaryQuery);
+  const location = extractLocationPhrase(sceneText) || extractLocationPhrase(title);
+
+  const anchoredExtras: string[] = [];
+  if (personInScene) {
+    anchoredExtras.push(withYear(location ? `${person} ${location}` : person));
+  }
+  if (location && year) anchoredExtras.push(`${location} ${year}`);
+  for (const q of extraQueries.slice(0, 2)) anchoredExtras.push(withYear(q));
+
+  const merged = uniqueQueryStrings([...anchoredExtras, primaryQuery, ...extraQueries], 3)
+    .filter((q) => q !== anchoredPrimary)
+    .slice(0, 6);
+  return { primaryQuery: anchoredPrimary, extraQueries: merged, anchored: true, year };
 }
 
 /** Split ranked pool: authentic video → stills → licensed stock (last). */
