@@ -8318,6 +8318,31 @@ async function fetchSepiaSearchVideos(
           scoreVisualRelevance(metaHay.toLowerCase(), beatKeywords) +
           (textMentionsPersonName(metaHay, personName) ? 3 : 0);
         if (beatKeywords.length > 0 && metaScore < 2 && personName) continue;
+        // RONDE 5 / FIX 9 — the keyword floor above only ever applied WHEN a person anchor
+        // existed; without one, a single-word overlap was enough to adopt anything. Render
+        // 517: the historical rescue path (personName empty on that route) adopted
+        // "[SFM Ponies] Little Pip explosive escape" on the word "escape" and
+        // "Suicide Commando" (a band) on the word "suicide", and the first one filled two
+        // whole scenes. The floor below closes that: with no person anchor, the candidate's
+        // PROVIDER-AUTHORED text (title + description + tags — deliberately excluding
+        // hit.query, which is our own search string and would make the check circular, per
+        // the scriptImageFallback precedent above scoreVisualRelevance) must share at least
+        // 2 beat keywords. Real matches ("Hitler bunker Berlin 1945 newsreel") clear this
+        // trivially; one-word keyword collisions no longer do. No threshold, ranking or
+        // VisionGate change — this only refuses to download obviously off-topic candidates.
+        if (!personName && beatKeywords.length > 0) {
+          const providerScore = scoreVisualRelevance(
+            `${metaTitle} ${meta.description ?? ""} ${tagNames}`.toLowerCase(),
+            beatKeywords
+          );
+          if (providerScore < 2) {
+            console.log(
+              `[Pipeline] Scene ${sceneIndex}: SepiaSearch candidate rejected (no person anchor, ` +
+              `providerScore=${providerScore}<2): ${metaTitle.slice(0, 70)}`
+            );
+            continue;
+          }
+        }
 
         const files = meta.streamingPlaylists?.[0]?.files ?? [];
         const mp4 = files
@@ -23753,25 +23778,48 @@ async function fetchSceneVisualsInner(
           `[FunnelVisionGate] s${scene.index}b${beat.index} queryEmbeddingSource=resolved-by-vision-gate` +
           (funnelBeatEmb ? ` textEmbDim=${funnelBeatEmb.length}(archive-ranking-only)` : ` textEmb=none`)
         );
-        for (const candidate of toScore) {
-          const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
-          if (!clipPath) {
-            // FIX 3 — register failed downloads too. Only the beat WINNER used to be recorded,
-            // so a candidate whose download fails stayed in every later beat's shortlist and
-            // was re-fetched on each one. Render 515: two Wikimedia assets that answered HTTP
-            // 429 were retried 4x each across the scene's beats, burning shortlist slots that
-            // downloadable candidates could have used.
-            //
-            // Registered under the same candidate id FIX 1 + FIX 2 use, so a failure simply
-            // means "this beat and later beats look further down the same ranking". No retry,
-            // no backoff, no provider change: the candidate is skipped, not punished, and the
-            // exhaustion rule in buildDownloadShortlist()/pickBestFunnelCandidate() still
-            // restores the full list once everything has been used, so this can never be the
-            // sole cause of a fallback while other candidates remain.
-            dedup.usedFunnelCandidateIds.add(candidate.id);
-            continue;
+        // RONDE 5 / FIX 6 — the shortlist downloads run in bounded parallel batches instead
+        // of one at a time. Render 517: the sequential form cost 2-4s per download + ~0.5s
+        // VisionGate × up to 6 candidates = 12-25s per beat, while the beat-fill budget is
+        // 12s (turbo) to 20s — so beats were killed mid-loop with all their (passing!)
+        // candidates already downloaded but no winner ever picked (0 funnel winners reached
+        // compose; beat s1b3 had six VisionGate-passed candidates die this way). Batching the
+        // downloads 3 at a time drops the download phase to ~1 batch-round per 3 candidates;
+        // VisionGate stays sequential (CPU-bound CLIP work — parallelizing it buys little and
+        // competes with ffmpeg for the same cores). Results are applied in shortlist order,
+        // so `scored` keeps exactly the order the sequential loop produced.
+        const FUNNEL_DOWNLOAD_CONCURRENCY = 3;
+        const downloadedClips: Array<{ candidate: FunnelCandidate; clipPath: string }> = [];
+        for (let dlIdx = 0; dlIdx < toScore.length; dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY) {
+          const batch = toScore.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY);
+          const batchResults = await Promise.all(
+            batch.map(async (candidate) => ({
+              candidate,
+              clipPath: await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec),
+            }))
+          );
+          for (const { candidate, clipPath } of batchResults) {
+            if (!clipPath) {
+              // FIX 3 — register failed downloads too. Only the beat WINNER used to be recorded,
+              // so a candidate whose download fails stayed in every later beat's shortlist and
+              // was re-fetched on each one. Render 515: two Wikimedia assets that answered HTTP
+              // 429 were retried 4x each across the scene's beats, burning shortlist slots that
+              // downloadable candidates could have used.
+              //
+              // Registered under the same candidate id FIX 1 + FIX 2 use, so a failure simply
+              // means "this beat and later beats look further down the same ranking". No retry,
+              // no backoff, no provider change: the candidate is skipped, not punished, and the
+              // exhaustion rule in buildDownloadShortlist()/pickBestFunnelCandidate() still
+              // restores the full list once everything has been used, so this can never be the
+              // sole cause of a fallback while other candidates remain.
+              dedup.usedFunnelCandidateIds.add(candidate.id);
+              continue;
+            }
+            downloadedCount++;
+            downloadedClips.push({ candidate, clipPath });
           }
-          downloadedCount++;
+        }
+        for (const { candidate, clipPath } of downloadedClips) {
           const visionResult = await evaluateClipVisionGate(
             clipPath,
             beat.text,
@@ -27641,6 +27689,22 @@ async function _runVideoPipelineInner(
     // that already works well.
     const chunks = groupScenesIntoChunks(scenes, 60);
     console.log(`[Pipeline] Sequential stage: ${scenes.length} scenes in ${chunks.length} chunk(s) of ~60s`);
+
+    // RONDE 5 / FIX 7 — the visual-sourcing degradation ladder (visualSourcingTurbo 3min →
+    // isPipelineRushMode 5min → isPipelineEmergencyFinish 7min, all reading
+    // dedup.pipelineStartedMs) now measures VISUAL time, from the moment the scene loop
+    // below actually starts. It used to measure from videoRow.generationStartedAt, which
+    // meant (a) script + TTS + archive-pool warm + CLIP prewarm all counted against the
+    // sourcing budgets, and (b) a stall-recovery RETRY inherited the first attempt's clock
+    // wholesale — render 517 attempt 2 started with 12s beat budgets 34 seconds in and lost
+    // every one of its six VisionGate-passed candidates to them. The hard wall-clock guard is
+    // unaffected: assertPipelineWithinBudget stopped throwing on elapsed time in F3-47 and
+    // only surfaces real cancellations, which still use pipelineWallStartMs.
+    visualDedup.pipelineStartedMs = Date.now();
+    console.log(
+      `[Pipeline] video=${videoId} sourcing-ladder clock started at visual stage ` +
+      `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
+    );
 
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;

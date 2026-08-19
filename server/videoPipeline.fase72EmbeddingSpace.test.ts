@@ -179,8 +179,9 @@ describe("FASE 7.2 — observability", () => {
     expect(block).toContain("[FunnelVisionGate]");
     expect(block).toContain("queryEmbeddingSource=resolved-by-vision-gate");
     // Must sit OUTSIDE the per-candidate loop so it cannot become per-frame noise.
+    // RONDE 5 batched the downloads; the per-candidate work now starts at the batch loop.
     const logIdx = block.indexOf("[FunnelVisionGate]");
-    const loopIdx = block.indexOf("for (const candidate of toScore)");
+    const loopIdx = block.indexOf("for (let dlIdx = 0; dlIdx < toScore.length;");
     expect(logIdx).toBeGreaterThan(-1);
     expect(loopIdx).toBeGreaterThan(-1);
     expect(logIdx).toBeLessThan(loopIdx);

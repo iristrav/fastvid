@@ -270,9 +270,11 @@ describe("FIX 3 — Test 5: registration alone never causes a fallback", () => {
 describe("FIX 3 — wiring at the single call site", () => {
   it("the failed-download branch registers before it continues", () => {
     // The loop body lives inline in a very large function; there is no exported unit to call.
-    const idx = pipelineSrc.indexOf("const clipPath = await downloadFunnelCandidate(");
+    // RONDE 5 batched the downloads (FIX 6); the failure branch now lives in the batch-apply
+    // loop. Anchor on the batch loop start — the registration+continue shape is unchanged.
+    const idx = pipelineSrc.indexOf("for (let dlIdx = 0; dlIdx < toScore.length;");
     expect(idx).toBeGreaterThan(-1);
-    const branch = codeOnly(pipelineSrc.slice(idx, idx + 2200));
+    const branch = codeOnly(pipelineSrc.slice(idx, idx + 3200));
     expect(branch).toMatch(
       /if \(!clipPath\) \{[\s\S]{0,200}dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);[\s\S]{0,80}continue;[\s\S]{0,20}\}/
     );
@@ -287,8 +289,8 @@ describe("FIX 3 — wiring at the single call site", () => {
   });
 
   it("downloadedCount still counts only real downloads", () => {
-    const idx = pipelineSrc.indexOf("const clipPath = await downloadFunnelCandidate(");
-    const branch = pipelineSrc.slice(idx, idx + 2400);
+    const idx = pipelineSrc.indexOf("for (let dlIdx = 0; dlIdx < toScore.length;");
+    const branch = pipelineSrc.slice(idx, idx + 3400);
     const addIdx = branch.indexOf("dedup.usedFunnelCandidateIds.add(candidate.id);");
     const countIdx = branch.indexOf("downloadedCount++;");
     expect(addIdx).toBeGreaterThan(-1);

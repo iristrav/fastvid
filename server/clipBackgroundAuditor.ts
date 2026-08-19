@@ -278,6 +278,15 @@ export function scheduleAuditForAsset(assetId: number): void {
   if (!clipAuditorEnabled()) return;
   void (async () => {
     try {
+      // RONDE 5 / FIX 8 — same yield-to-renders rule its two siblings already follow
+      // (runClipAuditorBatch and archiveClipIndexBackfill both stop when a render job is
+      // active). This was the one path without it: every indexArchiveClipEmbedding() call —
+      // including the render's own CLIP prewarm and mid-render web-clip ingestion — schedules
+      // an audit here, and each audit spawns ffmpeg frame extraction + CLIP scoring on the
+      // same box the render needs. Skipping is safe: the periodic auditor batch re-scans ALL
+      // assets every cycle, so an asset skipped now is simply audited on the next quiet batch.
+      const { workerLocalActiveJobs } = await import("./videoQueue");
+      if (workerLocalActiveJobs() > 0) return;
       const asset = await getMediaArchiveAssetById(assetId);
       if (!asset || asset.mediaType !== "video") return;
       const local = resolveArchiveAssetLocalPath(asset);
