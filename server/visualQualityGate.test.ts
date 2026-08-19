@@ -177,9 +177,21 @@ describe("Vision Gate root-cause fix — source-level checks (visualQualityGate.
   it("the reject log uses the same raw-similarity math for the shown score as the pass/fail decision, not a misleadingly-rounded one", () => {
     const idx = src.indexOf("[LocalVision] Scene");
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx - 400, idx + 300);
+    // Window widened for FASE 7: the reject log now also computes rawSimilarity/
+    // clampedSimilarity ahead of the console.warn call, pushing the pre-existing scoreStr
+    // computation (which still does the same result.worstSimilarity * 40 math, unchanged)
+    // further before the "[LocalVision] Scene" text than the original 400-char window covered.
+    const scoped = src.slice(idx - 850, idx + 300);
     expect(scoped).toContain("similarity=");
     expect(scoped).toContain("threshold=");
     expect(scoped).toContain("result.worstSimilarity * 40");
+  });
+
+  it("FASE 7: the reject log also surfaces the unclamped raw similarity alongside the existing clamped one", () => {
+    const idx = src.indexOf("[LocalVision] Scene");
+    const scoped = src.slice(idx - 850, idx + 400);
+    expect(scoped).toContain("rawSimilarity=");
+    expect(scoped).toContain("clampedSimilarity=");
+    expect(scoped).toContain("worstRawSimilarity");
   });
 });

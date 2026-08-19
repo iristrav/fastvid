@@ -3774,8 +3774,22 @@ async function fetchWithTimeout(url: string, timeoutMs: number, label: string, o
   const delayMs = Math.max(1, Math.round(timeoutMs));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), delayMs);
+  // FASE 7 ENOENT fix: previously this fetch only listened to its own local timer, never to
+  // the enclosing withSceneFetchTimeout scope's AbortController. When that scope timed out (a
+  // normal, routine per-beat/per-scene safety valve), the wrapping promise rejected and the
+  // caller moved on — but this fetch, and the write-to-disk that follows it in
+  // downloadToFileStreaming, kept running fully detached, with nothing left to cancel it. It
+  // would eventually finish on its own — sometimes after the render had already returned its
+  // URL and deleted workDir in its `finally` cleanup — and its fs.createWriteStream() call
+  // would then fail with ENOENT because the directory it was about to write into no longer
+  // existed. Threading the scope's existing AbortSignal in here (the same mechanism
+  // hardAbortScope() already uses to kill orphaned child processes) makes an aborted scope
+  // actually stop this fetch/download instead of orphaning it — no new cancellation
+  // mechanism, just reusing the one that already exists for child processes.
+  const scopeSignal = sceneFetchScopeStorage.getStore()?.controller.signal;
+  const signal = scopeSignal ? AbortSignal.any([controller.signal, scopeSignal]) : controller.signal;
   try {
-    const resp = await fetch(url, { ...options, signal: controller.signal });
+    const resp = await fetch(url, { ...options, signal });
     return resp;
   } catch (err: unknown) {
     if ((err as Error).name === 'AbortError') {

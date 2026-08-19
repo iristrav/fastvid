@@ -607,9 +607,16 @@ export async function embedTextQuery(query: string): Promise<number[] | null> {
   }
 }
 
-export function scoreEmbeddingSimilarity(a: number[], b: number[]): number {
+/** Pure CLIP cosine similarity, unclamped — negative values are preserved. Diagnostic use
+ *  only (e.g. reject-log observability); the pass/fail decision still uses the clamped value
+ *  from scoreEmbeddingSimilarity below, unchanged. */
+export function cosineSimilarityRaw(a: number[], b: number[]): number {
   if (!a.length || !b.length) return 0;
-  return Math.max(0, cosineSimilarityVectors(a, b));
+  return cosineSimilarityVectors(a, b);
+}
+
+export function scoreEmbeddingSimilarity(a: number[], b: number[]): number {
+  return Math.max(0, cosineSimilarityRaw(a, b));
 }
 
 export async function probeImageMeanLuma(jpegPath: string): Promise<number | null> {
@@ -740,6 +747,9 @@ export async function extractFrameAtFraction(
 
 export type LocalFrameScore = {
   similarity: number;
+  /** Pure unclamped cosine similarity behind `similarity`, before the Math.max(0, ...) floor
+   *  and before lexicalBoost — diagnostic only, does not affect scoring. */
+  rawSimilarity: number;
   score: number;
   luma: number | null;
   wellFramed: boolean;
@@ -753,10 +763,12 @@ export async function scoreImagePathAgainstQuery(
   const emb = await embedImageFromPath(imagePath);
   if (!emb) return null;
   const luma = await probeImageMeanLuma(imagePath);
-  const sim = scoreEmbeddingSimilarity(queryEmbedding, emb) + lexicalBoost;
+  const rawSim = cosineSimilarityRaw(queryEmbedding, emb);
+  const sim = Math.max(0, rawSim) + lexicalBoost;
   const wellFramed = luma === null || luma >= 18;
   return {
     similarity: sim,
+    rawSimilarity: rawSim,
     score: clipSimToScore(sim),
     luma,
     wellFramed,
@@ -770,6 +782,8 @@ export type LocalClipScoreResult = {
   wellFramed: boolean;
   wrongSubject: boolean;
   worstSimilarity: number;
+  /** Unclamped cosine behind worstSimilarity — diagnostic only. */
+  worstRawSimilarity: number;
   framesScored: number;
 };
 
@@ -778,6 +792,8 @@ export type StoredEmbeddingScore = {
   similarityPass: boolean;
   modernMismatch: boolean;
   worstSimilarity: number;
+  /** Unclamped cosine behind worstSimilarity — diagnostic only. */
+  worstRawSimilarity: number;
   score: number;
 };
 
@@ -797,9 +813,11 @@ export async function scoreEmbeddingsAgainstBeat(
   const lexBoost = filenameLexicalBoost(clipPath, beatText, videoTitle);
   const minSim = minLocalClipSimilarity(minScore10);
   const frameScores: LocalFrameScore[] = imageEmbeddings.map((emb) => {
-    const sim = scoreEmbeddingSimilarity(beatEmb, emb) + lexBoost;
+    const rawSim = cosineSimilarityRaw(beatEmb, emb);
+    const sim = Math.max(0, rawSim) + lexBoost;
     return {
       similarity: sim,
+      rawSimilarity: rawSim,
       score: clipSimToScore(sim),
       luma: null,
       wellFramed: true,
@@ -827,6 +845,7 @@ export async function scoreEmbeddingsAgainstBeat(
     similarityPass,
     modernMismatch,
     worstSimilarity: worst.similarity,
+    worstRawSimilarity: worst.rawSimilarity,
     score: clipSimToScore(avgSim),
   };
 }
@@ -852,9 +871,11 @@ export async function scoreFramePathsAgainstBeat(
       framePaths.map(async (fp) => {
         const [emb, luma] = await Promise.all([embedImageFromPath(fp), probeImageMeanLuma(fp)]);
         if (!emb) return null;
-        const sim = scoreEmbeddingSimilarity(beatEmb, emb) + lexBoost;
+        const rawSim = cosineSimilarityRaw(beatEmb, emb);
+        const sim = Math.max(0, rawSim) + lexBoost;
         return {
           similarity: sim,
+          rawSimilarity: rawSim,
           score: clipSimToScore(sim),
           luma,
           wellFramed: luma === null || luma >= 18,
@@ -868,8 +889,9 @@ export async function scoreFramePathsAgainstBeat(
   for (const s of frameScores) {
     delete (s as { _emb?: number[] })._emb;
   }
-  const scoredFrames: LocalFrameScore[] = frameScores.map(({ similarity, score, luma, wellFramed }) => ({
+  const scoredFrames: LocalFrameScore[] = frameScores.map(({ similarity, rawSimilarity, score, luma, wellFramed }) => ({
     similarity,
+    rawSimilarity,
     score,
     luma,
     wellFramed,
@@ -877,9 +899,11 @@ export async function scoreFramePathsAgainstBeat(
 
   if (storedEmbeddings?.length) {
     for (const stored of storedEmbeddings) {
-      const sim = scoreEmbeddingSimilarity(beatEmb, stored) + lexBoost;
+      const rawSim = cosineSimilarityRaw(beatEmb, stored);
+      const sim = Math.max(0, rawSim) + lexBoost;
       scoredFrames.push({
         similarity: sim,
+        rawSimilarity: rawSim,
         score: clipSimToScore(sim),
         luma: null,
         wellFramed: true,
@@ -918,6 +942,7 @@ export async function scoreFramePathsAgainstBeat(
     wellFramed: allWellFramed,
     wrongSubject,
     worstSimilarity: worst.similarity,
+    worstRawSimilarity: worst.rawSimilarity,
     framesScored: scoredFrames.length,
   };
 }

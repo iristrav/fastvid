@@ -371,10 +371,14 @@ async function scoreClipAcrossFrames(
 ): Promise<{
   pass: boolean;
   worstScore: number | null;
-  /** Raw, unrounded cosine similarity behind worstScore — kept alongside the rounded 0-10
-   *  display score so a reject log can show the same number the pass/fail decision actually
-   *  used, instead of a rounded score that can read as "met the bar" right next to a fail. */
+  /** Unrounded cosine similarity behind worstScore, clamped to >=0 — kept alongside the
+   *  rounded 0-10 display score so a reject log can show the same number the pass/fail
+   *  decision actually used, instead of a rounded score that can read as "met the bar" right
+   *  next to a fail. This is the CLAMPED value; see worstRawSimilarity for the unclamped one. */
   worstSimilarity: number | null;
+  /** Unclamped cosine behind worstSimilarity — can be negative. Diagnostic only: never used
+   *  in the pass/fail decision, only surfaced for observability (FASE 7). */
+  worstRawSimilarity: number | null;
   framesScored: number;
   /** Which qualitative check(s) failed — score can pass while these still reject the clip. */
   failFlags?: { matchesNarration: boolean; showsSubject: boolean; wrongSubject: boolean; wellFramed: boolean };
@@ -411,7 +415,7 @@ async function scoreClipAcrossFrames(
       );
       if (quick?.definiteFail) {
         const worstScore10 = simToScore10(quick.worstSimilarity);
-        return { pass: false, worstScore: worstScore10, worstSimilarity: quick.worstSimilarity, framesScored: 1 };
+        return { pass: false, worstScore: worstScore10, worstSimilarity: quick.worstSimilarity, worstRawSimilarity: quick.worstRawSimilarity, framesScored: 1 };
       }
       const quickScore10 = simToScore10(quick?.worstSimilarity ?? 0);
       if (quick && quickScore10 >= minScore && !quick.modernMismatch) {
@@ -420,10 +424,10 @@ async function scoreClipAcrossFrames(
           fastMode ? 7_000 : 12_000,
           () => lumaRejectAtFraction(clipPath, workDir, sceneIndex, beatIndex, CASCADE_PRIMARY_FRAME_FRAC, fastMode)
         );
-        if (!luma) return { pass: true, worstScore: quickScore10, worstSimilarity: quick.worstSimilarity, framesScored: 1 };
+        if (!luma) return { pass: true, worstScore: quickScore10, worstSimilarity: quick.worstSimilarity, worstRawSimilarity: quick.worstRawSimilarity, framesScored: 1 };
       }
       if (quick && quickScore10 < cascadeVisionExpandBelow(minScore)) {
-        return { pass: false, worstScore: quickScore10, worstSimilarity: quick.worstSimilarity, framesScored: 1 };
+        return { pass: false, worstScore: quickScore10, worstSimilarity: quick.worstSimilarity, worstRawSimilarity: quick.worstRawSimilarity, framesScored: 1 };
       }
     }
 
@@ -434,12 +438,12 @@ async function scoreClipAcrossFrames(
     );
     if (storedOnly?.definiteFail) {
       const worstScore10 = Math.max(0, Math.min(10, Math.round(storedOnly.worstSimilarity * 40)));
-      return { pass: false, worstScore: worstScore10, worstSimilarity: storedOnly.worstSimilarity, framesScored: storedEmbeddings.length };
+      return { pass: false, worstScore: worstScore10, worstSimilarity: storedOnly.worstSimilarity, worstRawSimilarity: storedOnly.worstRawSimilarity, framesScored: storedEmbeddings.length };
     }
     if (storedOnly?.similarityPass) {
       const worstScore10 = simToScore10(storedOnly.worstSimilarity);
       if (fastMode && storedOnly.score >= minScore && worstScore10 >= minScore && !storedOnly.modernMismatch) {
-        return { pass: true, worstScore: worstScore10, worstSimilarity: storedOnly.worstSimilarity, framesScored: storedEmbeddings.length };
+        return { pass: true, worstScore: worstScore10, worstSimilarity: storedOnly.worstSimilarity, worstRawSimilarity: storedOnly.worstRawSimilarity, framesScored: storedEmbeddings.length };
       }
       const darkReject = await stepWithTimeout(
         `lumaRejectAtFraction(storedOnly) ${tag}`,
@@ -447,7 +451,7 @@ async function scoreClipAcrossFrames(
         () => lumaRejectAtFraction(clipPath, workDir, sceneIndex, beatIndex, CASCADE_PRIMARY_FRAME_FRAC, fastMode)
       );
       const pass = !darkReject && storedOnly.score >= minScore && worstScore10 >= minScore;
-      return { pass, worstScore: worstScore10, worstSimilarity: storedOnly.worstSimilarity, framesScored: storedEmbeddings.length };
+      return { pass, worstScore: worstScore10, worstSimilarity: storedOnly.worstSimilarity, worstRawSimilarity: storedOnly.worstRawSimilarity, framesScored: storedEmbeddings.length };
     }
   }
 
@@ -476,12 +480,13 @@ async function scoreClipAcrossFrames(
           primaryScore10 >= minScore &&
           primaryResult.score >= minScore;
 
-        if (primaryPass) return { pass: true, worstScore: primaryScore10, worstSimilarity: primaryResult.worstSimilarity, framesScored: 1 };
+        if (primaryPass) return { pass: true, worstScore: primaryScore10, worstSimilarity: primaryResult.worstSimilarity, worstRawSimilarity: primaryResult.worstRawSimilarity, framesScored: 1 };
         if (primaryScore10 < cascadeVisionExpandBelow(minScore) || primaryResult.wrongSubject) {
           return {
             pass: false,
             worstScore: primaryScore10,
             worstSimilarity: primaryResult.worstSimilarity,
+            worstRawSimilarity: primaryResult.worstRawSimilarity,
             framesScored: 1,
             failFlags: {
               matchesNarration: primaryResult.matchesNarration,
@@ -501,7 +506,7 @@ async function scoreClipAcrossFrames(
     () => extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo)
   );
   if (framePaths.length === 0) {
-    return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, worstSimilarity: null, framesScored: 0 };
+    return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, worstSimilarity: null, worstRawSimilarity: null, framesScored: 0 };
   }
 
   const result = await stepWithTimeout(
@@ -512,7 +517,7 @@ async function scoreClipAcrossFrames(
   cleanupFramePaths(framePaths);
 
   if (!result) {
-    return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, worstSimilarity: null, framesScored: 0 };
+    return { pass: !strictVisionInconclusiveFails(fastMode), worstScore: null, worstSimilarity: null, worstRawSimilarity: null, framesScored: 0 };
   }
 
   const worstScore10 = Math.max(0, Math.min(10, Math.round(result.worstSimilarity * 40)));
@@ -529,6 +534,7 @@ async function scoreClipAcrossFrames(
     pass,
     worstScore: worstScore10,
     worstSimilarity: result.worstSimilarity,
+    worstRawSimilarity: result.worstRawSimilarity,
     framesScored: result.framesScored,
     failFlags: pass
       ? undefined
@@ -601,12 +607,12 @@ export async function evaluateClipVisionGate(
       clipPath, beatText, visualDescription, videoTitle, workDir,
       sceneIndex, beatIndex, minScore, fastMode, queryEmb, shortVideo
     ),
-    new Promise<{ pass: boolean; worstScore: null; worstSimilarity: null; framesScored: number; failFlags: undefined }>((_, reject) =>
+    new Promise<{ pass: boolean; worstScore: null; worstSimilarity: null; worstRawSimilarity: null; framesScored: number; failFlags: undefined }>((_, reject) =>
       setTimeout(() => reject(new Error(`[VisionGate] TIMEOUT scoreClipAcrossFrames after 30s s${sceneIndex}b${beatIndex}`)), 30_000)
     ),
   ]).catch((err: Error) => {
     console.warn(err.message);
-    return { pass: true, worstScore: null, worstSimilarity: null, framesScored: 0, failFlags: undefined };
+    return { pass: true, worstScore: null, worstSimilarity: null, worstRawSimilarity: null, framesScored: 0, failFlags: undefined };
   });
   console.log(`[VisionGate] AFTER scoreClipAcrossFrames s${sceneIndex}b${beatIndex} pass=${result.pass} in ${Date.now() - scoreT0}ms`);
 
@@ -626,9 +632,17 @@ export async function evaluateClipVisionGate(
     // changing what passes or fails.
     const simStr = result.worstSimilarity != null ? result.worstSimilarity.toFixed(4) : "?";
     const scoreStr = result.worstSimilarity != null ? (result.worstSimilarity * 40).toFixed(2) : (result.worstScore ?? "?");
+    // FASE 7: scoreEmbeddingSimilarity() clamps a negative raw cosine to 0 before the pass/fail
+    // decision ever sees it, so "similarity=0.0000" alone can't distinguish "just barely
+    // below the floor" from "strongly mismatched". rawSimilarity/clampedSimilarity make that
+    // distinction visible without changing what passes or fails — clampedSimilarity is always
+    // exactly the pre-existing similarity= value above, kept for backward compatibility.
+    const rawStr = result.worstRawSimilarity != null ? result.worstRawSimilarity.toFixed(4) : "?";
+    const clampedStr = result.worstSimilarity != null ? Math.max(0, result.worstSimilarity).toFixed(4) : "?";
     console.warn(
       `[LocalVision] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(clipPath)}" ` +
-        `(${result.framesScored} frames, similarity=${simStr} score=${scoreStr} threshold=${minScore.toFixed(2)} pass=false)${failFlagsStr}`
+        `(${result.framesScored} frames, similarity=${simStr} rawSimilarity=${rawStr} clampedSimilarity=${clampedStr} ` +
+        `score=${scoreStr} threshold=${minScore.toFixed(2)} pass=false)${failFlagsStr}`
     );
   }
   rememberVisionGateResult(cacheKey, result.pass);
