@@ -3496,7 +3496,19 @@ export async function downloadAndTrimPoolCandidate(
         throw err;
       }
       console.log(`[Hang] downloadAndTrim AFTER fetch s${sceneIndex}b${beatIndex} ok=${resp.ok} elapsed=${Date.now()-_f0}ms`);
-      if (!resp.ok || !resp.body) return null;
+      if (!resp.ok || !resp.body) {
+        // Observability only — same return, same condition. This rejection used to be
+        // completely silent: it returns null rather than throwing, so downloadFunnelCandidate's
+        // catch never fires and no `[Funnel] downloadFunnelCandidate failed` line is emitted.
+        // Render 514 lost all 8 Wikimedia candidates here (8x ok=false, 13x ok=true, all
+        // pexels) with zero trace, which is why every beat ended up with a single candidate
+        // and the same winner. The HTTP status is what distinguishes the possible causes
+        // (403 UA policy, 404 URL shape, 429, 5xx) — nothing acts on it yet.
+        console.warn(
+          `[FunnelDownload] rejected source=${candidate.source} assetId=${candidate.id ?? "unknown"} status=${resp.status} url=${candidate.remoteUrl}`
+        );
+        return null;
+      }
       // Streams straight to rawPath instead of Buffer.from(await resp.arrayBuffer()), so the
       // download is never fully buffered in memory. On a timeout/stream error the partial file
       // is removed before the error propagates, matching the existing F3-10/F3-13/F3-14/F3-16
