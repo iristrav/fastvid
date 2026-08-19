@@ -154,9 +154,14 @@ describe("FASE 7.2 Test 5 — non-funnel VisionGate paths are unchanged", () => 
     // The similarity floor and the 0-10 conversion are byte-for-byte the pre-FASE-7.2 forms.
     expect(localSrc).toContain("return minScore10 / 40;");
     expect(localSrc).toContain("return Math.max(0, Math.min(10, Math.round(sim * 40)));");
-    // The anti-anachronism gate is explicitly NOT recalibrated in this phase.
-    expect(localSrc).toContain("if (negSim >= beatSim - 0.01) return true;");
-    expect(localSrc).toContain("if (negSim >= 0.18 && beatSim < 0.24) return true;");
+    // The anti-anachronism gate was explicitly NOT recalibrated in FASE 7.2 — that was
+    // deferred to FASE 7.3, which then rewrote its evidence rules (render 512 proved the
+    // original conditions killed 14 of 14 above-floor candidates). What this test guards is
+    // unchanged: the gate is still a term in the pass/fail expressions rather than something
+    // FASE 7.2 rewired, and its two original conditions still exist verbatim — now only as
+    // the `legacyWouldReject` observability signal, never in the decision.
+    expect(localSrc).toContain("if (negSim >= beatSim - 0.01 || (negSim >= 0.18 && beatSim < 0.24)) legacyWouldReject = true;");
+    expect(localSrc).toContain("const similarityPass = worst.similarity >= minSim && !modernMismatch;");
     // scoreEmbeddingSimilarity keeps its clamp.
     expect(localSrc).toMatch(/scoreEmbeddingSimilarity\([^)]*\)[^{]*\{\s*return Math\.max\(0, cosineSimilarityRaw/);
   });

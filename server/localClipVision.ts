@@ -176,27 +176,189 @@ async function getModernMismatchEmbeddings(): Promise<number[][]> {
   return out;
 }
 
-async function modernContentMismatchAgainstEmbeddings(
+// ─── FASE 7.3 — evidence-safe anti-anachronism gate ──────────────────────────
+//
+// modernContentMismatch is a HARD veto: it feeds definiteFail/wrongSubject/matchesNarration
+// as an OR term, so a single true kills a candidate outright regardless of how well it
+// actually scored. Production render 512 proved the original conditions could not carry that
+// weight: 14 of 14 candidates that cleared the similarity floor (scores 7.40–9.43 against a
+// 7.00 floor) were destroyed by this gate, with no corroborating metadata, title or date
+// evidence that any of them was actually modern.
+//
+// The two original conditions were:
+//   (1) negSim >= beatSim - 0.01
+//   (2) negSim >= 0.18 && beatSim < 0.24
+//
+// Both measure noise rather than modernity. CLIP text↔image cosine similarity has a high,
+// content-independent baseline (~0.15–0.25 for almost any text against almost any image), so
+// (1) fires whenever a generic probe lands in that same band — including when the probe is
+// *worse* than the beat's own query. (2) is worse still: beatSim < 0.24 is score < 9.6/10, so
+// with the gate armed it silently raised the effective pass bar from the configured 7.00 to
+// ~9.6 for every candidate a probe happened to reach 0.18 against.
+//
+// The rule now is: uncertainty is never a reject. Modern evidence must be decisive
+// (MODERN_EVIDENCE_MARGIN above the beat's own query — not a near-tie), absolute
+// (MODERN_EVIDENCE_MIN_SIM, above the whole noise band), corroborated across independent
+// probes (MODERN_EVIDENCE_MIN_PROBES) and corroborated across frames
+// (MODERN_EVIDENCE_MIN_FRAMES). Anything less leaves the candidate to the normal
+// similarity/ranking flow, where its real score decides.
+
+/** Absolute similarity a probe must reach before it counts as modern evidence at all.
+ *  Set above the entire similarity band observed for genuine historical candidates in render
+ *  512 (max 0.2358), so a value inside that band can no longer flag anything. */
+const MODERN_EVIDENCE_MIN_SIM = 0.26;
+/** How decisively a probe must beat the beat's own query. Replaces the original `- 0.01`,
+ *  which fired on near-ties and even when the probe scored below the beat query. */
+const MODERN_EVIDENCE_MARGIN = 0.05;
+/** Independent probes that must agree on the same frame. One probe is never enough. */
+const MODERN_EVIDENCE_MIN_PROBES = 2;
+/** Frames that must independently agree. One frame is never enough — with at most
+ *  MODERN_EVIDENCE_MAX_FRAMES sampled, two flagged frames is also always a majority. */
+const MODERN_EVIDENCE_MIN_FRAMES = 2;
+/** Upper bound on frames compared (pure cosine math over already-computed embeddings). */
+const MODERN_EVIDENCE_MAX_FRAMES = 3;
+
+export type ModernMismatchReason =
+  | "not-historical-topic"
+  | "no-probes"
+  | "no-frames"
+  | "strong-modern-evidence"
+  | "insufficient-evidence";
+
+export type ModernMismatchVerdict = {
+  /** The hard veto. True only on strong, corroborated evidence. */
+  mismatch: boolean;
+  reason: ModernMismatchReason;
+  /** beatSim of the frame that produced topNegSim. */
+  beatSim: number;
+  topNegSim: number;
+  topProbe: string | null;
+  framesEvaluated: number;
+  framesFlagged: number;
+  probesEvaluated: number;
+  /** Diagnostic only: would the pre-FASE-7.3 conditions have rejected this candidate?
+   *  Never consulted in the decision — it exists so a production log makes the behaviour
+   *  change measurable per candidate. */
+  legacyWouldReject: boolean;
+};
+
+/** One sampled frame's similarities: against the beat query, and against each modern probe. */
+export type ModernMismatchFrameEvidence = { beatSim: number; negSims: number[] };
+
+/**
+ * Pure decision half of the gate — no embeddings, no model, no I/O. Split out from
+ * evaluateModernContentMismatch so the evidence rules are directly testable with the real
+ * numbers observed in production.
+ */
+export function decideModernContentMismatch(
+  frames: ModernMismatchFrameEvidence[],
+  probeLabels: string[] = MODERN_MISMATCH_QUERIES
+): ModernMismatchVerdict {
+  const empty = {
+    mismatch: false,
+    beatSim: 0,
+    topNegSim: 0,
+    topProbe: null as string | null,
+    framesEvaluated: 0,
+    framesFlagged: 0,
+    probesEvaluated: 0,
+    legacyWouldReject: false,
+  };
+  if (frames.length === 0) return { ...empty, reason: "no-frames" };
+  const probesEvaluated = frames[0]!.negSims.length;
+  if (probesEvaluated === 0) return { ...empty, reason: "no-probes" };
+
+  let framesFlagged = 0;
+  let topNegSim = -Infinity;
+  let topProbe: string | null = null;
+  let topBeatSim = 0;
+  let legacyWouldReject = false;
+
+  for (const { beatSim, negSims } of frames) {
+    let probesFlagged = 0;
+    for (let i = 0; i < negSims.length; i++) {
+      const negSim = negSims[i]!;
+      if (negSim > topNegSim) {
+        topNegSim = negSim;
+        topProbe = probeLabels[i] ?? null;
+        topBeatSim = beatSim;
+      }
+      // Pre-FASE-7.3 behaviour, evaluated for observability only.
+      if (negSim >= beatSim - 0.01 || (negSim >= 0.18 && beatSim < 0.24)) legacyWouldReject = true;
+      // A probe is real evidence only when it clears the absolute floor AND decisively beats
+      // the beat's own query. Either alone is inside the CLIP noise band.
+      if (negSim >= MODERN_EVIDENCE_MIN_SIM && negSim >= beatSim + MODERN_EVIDENCE_MARGIN) {
+        probesFlagged++;
+      }
+    }
+    if (probesFlagged >= MODERN_EVIDENCE_MIN_PROBES) framesFlagged++;
+  }
+
+  const framesEvaluated = frames.length;
+  const mismatch =
+    framesEvaluated >= MODERN_EVIDENCE_MIN_FRAMES && framesFlagged >= MODERN_EVIDENCE_MIN_FRAMES;
+
+  return {
+    mismatch,
+    reason: mismatch ? "strong-modern-evidence" : "insufficient-evidence",
+    beatSim: topBeatSim,
+    topNegSim: topNegSim === -Infinity ? 0 : topNegSim,
+    topProbe,
+    framesEvaluated,
+    framesFlagged,
+    probesEvaluated,
+    legacyWouldReject,
+  };
+}
+
+async function evaluateModernContentMismatch(
   imageEmbeddings: number[][],
   beatQueryEmb: number[],
   beatText: string,
-  videoTitle?: string
-): Promise<boolean> {
-  if (!topicNeedsHistoricalFootage(beatText, videoTitle)) return false;
+  videoTitle: string | undefined,
+  clipPath: string
+): Promise<ModernMismatchVerdict> {
+  const notArmed: ModernMismatchVerdict = {
+    mismatch: false,
+    reason: "not-historical-topic",
+    beatSim: 0,
+    topNegSim: 0,
+    topProbe: null,
+    framesEvaluated: 0,
+    framesFlagged: 0,
+    probesEvaluated: 0,
+    legacyWouldReject: false,
+  };
+  if (!topicNeedsHistoricalFootage(beatText, videoTitle)) return notArmed;
   const negEmbs = await getModernMismatchEmbeddings();
-  if (negEmbs.length === 0) return false;
-  const samples = imageEmbeddings.slice(0, Math.min(2, imageEmbeddings.length));
-  for (const imgEmb of samples) {
-    const beatSim = scoreEmbeddingSimilarity(beatQueryEmb, imgEmb);
-    for (const negEmb of negEmbs) {
-      const negSim = scoreEmbeddingSimilarity(negEmb, imgEmb);
-      if (negSim >= beatSim - 0.01) return true;
-      if (negSim >= 0.18 && beatSim < 0.24) return true;
-    }
+  if (negEmbs.length === 0) return { ...notArmed, reason: "no-probes" };
+
+  const samples = imageEmbeddings.slice(0, Math.min(MODERN_EVIDENCE_MAX_FRAMES, imageEmbeddings.length));
+  const frames: ModernMismatchFrameEvidence[] = samples.map((imgEmb) => ({
+    beatSim: scoreEmbeddingSimilarity(beatQueryEmb, imgEmb),
+    negSims: negEmbs.map((negEmb) => scoreEmbeddingSimilarity(negEmb, imgEmb)),
+  }));
+
+  const verdict = decideModernContentMismatch(frames);
+
+  // Logged once per gate evaluation, never per frame, and only for the candidates where this
+  // gate actually mattered: a reject now, or a reject under the old conditions. Everything
+  // else — the overwhelming majority, where no probe came close — stays silent.
+  if (verdict.mismatch || verdict.legacyWouldReject) {
+    console.log(
+      `[ModernMismatch] ${path.basename(clipPath)} decision=${verdict.mismatch ? "REJECT" : "ALLOW"} ` +
+        `reason=${verdict.reason} beatSim=${verdict.beatSim.toFixed(4)} ` +
+        `topNegSim=${verdict.topNegSim.toFixed(4)} probe="${(verdict.topProbe ?? "none").slice(0, 48)}" ` +
+        `frames=${verdict.framesFlagged}/${verdict.framesEvaluated} probes=${verdict.probesEvaluated} ` +
+        `legacyWouldReject=${verdict.legacyWouldReject}`
+    );
   }
-  return false;
+  return verdict;
 }
 
+/** Frame-path convenience wrapper. Unused today (both live call sites already hold image
+ *  embeddings); kept as-is from before FASE 7.3 rather than deleted, so this phase's diff
+ *  stays limited to the evidence rules. */
 async function modernContentMismatchAgainstBeat(
   framePaths: string[],
   beatQueryEmb: number[],
@@ -204,11 +366,18 @@ async function modernContentMismatchAgainstBeat(
   videoTitle?: string
 ): Promise<boolean> {
   const imageEmbeddings: number[][] = [];
-  for (const fp of framePaths.slice(0, Math.min(2, framePaths.length))) {
+  for (const fp of framePaths.slice(0, Math.min(MODERN_EVIDENCE_MAX_FRAMES, framePaths.length))) {
     const emb = await embedImageFromPath(fp);
     if (emb) imageEmbeddings.push(emb);
   }
-  return modernContentMismatchAgainstEmbeddings(imageEmbeddings, beatQueryEmb, beatText, videoTitle);
+  const verdict = await evaluateModernContentMismatch(
+    imageEmbeddings,
+    beatQueryEmb,
+    beatText,
+    videoTitle,
+    framePaths[0] ?? "unknown"
+  );
+  return verdict.mismatch;
 }
 
 const TEXT_EMBED_CACHE_MAX = 320;
@@ -830,12 +999,9 @@ export async function scoreEmbeddingsAgainstBeat(
   }
   const avgSim =
     frameScores.reduce((sum, s) => sum + s.similarity, 0) / frameScores.length;
-  const modernMismatch = await modernContentMismatchAgainstEmbeddings(
-    imageEmbeddings,
-    beatEmb,
-    beatText,
-    videoTitle
-  );
+  const modernMismatch = (
+    await evaluateModernContentMismatch(imageEmbeddings, beatEmb, beatText, videoTitle, clipPath)
+  ).mismatch;
   const similarityPass = worst.similarity >= minSim && !modernMismatch;
   const definiteFail =
     worst.similarity < minSim - 0.04 || modernMismatch;
@@ -924,12 +1090,15 @@ export async function scoreFramePathsAgainstBeat(
   const allWellFramed = scoredFrames.every((s) => s.wellFramed);
   const darkReject = scoredFrames.some((s) => s.luma !== null && s.luma < 12);
 
-  const modernMismatch = await modernContentMismatchAgainstEmbeddings(
-    imageEmbeddings.length > 0 ? imageEmbeddings : storedEmbeddings?.slice(0, 2) ?? [],
-    beatEmb,
-    beatText,
-    videoTitle
-  );
+  const modernMismatch = (
+    await evaluateModernContentMismatch(
+      imageEmbeddings.length > 0 ? imageEmbeddings : storedEmbeddings?.slice(0, 3) ?? [],
+      beatEmb,
+      beatText,
+      videoTitle,
+      clipPath
+    )
+  ).mismatch;
 
   const matchesNarration = worst.similarity >= minSim && !darkReject && !modernMismatch;
   const showsSubject = worst.similarity >= minSim;
