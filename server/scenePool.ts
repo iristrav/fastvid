@@ -28,6 +28,22 @@ import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
 export const MAX_CANDIDATES_PER_SOURCE = 25;
 export const MAX_POOL_SIZE = 100;
 
+/** RONDE 3 / FIX A — how many per-item detail requests a single provider may have in flight.
+ *
+ *  Wikimedia, Internet Archive, Europeana, NASA and Library of Congress all need a second
+ *  request per search hit (imageinfo / metadata / record / asset / item JSON) before a
+ *  candidate can be built. Those were issued strictly one at a time, so a provider's latency
+ *  was the SUM of its detail calls. Render 516, from the [ScenePool] line: Library of
+ *  Congress made 51 sequential calls and took 150975ms — ~2.96s each — which by itself was
+ *  the entire funnel's 151s latency while the other eight providers had long finished.
+ *
+ *  Batching those same calls 5 at a time is a scheduling change only: identical URLs,
+ *  identical headers, identical per-request timeouts, identical parsing, identical filters,
+ *  identical candidate objects, identical order (each batch is applied in input order before
+ *  the next one starts). It cannot produce more candidates than before — the per-item
+ *  `candidates.length >= max` check still runs on every item, in order. */
+const DETAIL_FETCH_CONCURRENCY = 5;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type PoolCandidateSource =
@@ -324,34 +340,52 @@ async function searchWikimediaCandidates(
         query?: { search?: Array<{ title: string }> };
       };
       const titles = searchData.query?.search?.map(r => r.title) ?? [];
+      type WikiInfoPage = {
+        imageinfo?: Array<{
+          url: string;
+          mime: string;
+          size: number;
+          extmetadata?: {
+            LicenseShortName?: { value: string };
+            ImageDescription?: { value: string };
+            LicenseUrl?: { value: string };
+            Artist?: { value: string };
+          };
+        }>;
+      };
+      type WikiInfoData = { query?: { pages?: Record<string, WikiInfoPage> } };
 
-      for (const title of titles) {
+      // FIX A: same imageinfo requests, DETAIL_FETCH_CONCURRENCY at a time. Applied below in
+      // input order, so candidate order and the max-cap behaviour are the sequential ones.
+      for (let i = 0; i < titles.length; i += DETAIL_FETCH_CONCURRENCY) {
         if (candidates.length >= max) break;
-        if (seenTitles.has(title)) continue;
-        const infoUrl =
-          `https://commons.wikimedia.org/w/api.php?action=query` +
-          `&titles=${encodeURIComponent(title)}&prop=imageinfo` +
-          `&iiprop=url|mime|size|extmetadata&format=json&origin=*`;
-        try {
-          const infoResp = await withTimeoutFetch(infoUrl, UA, 5_000, `Wikimedia pool info "${title}"`);
-          apiCalls++;
-          if (!infoResp.ok) continue;
-          type WikiInfoPage = {
-            imageinfo?: Array<{
-              url: string;
-              mime: string;
-              size: number;
-              extmetadata?: {
-                LicenseShortName?: { value: string };
-                ImageDescription?: { value: string };
-                LicenseUrl?: { value: string };
-                Artist?: { value: string };
-              };
-            }>;
-          };
-          const infoData = (await infoResp.json()) as {
-            query?: { pages?: Record<string, WikiInfoPage> };
-          };
+        const batch = titles
+          .slice(i, i + DETAIL_FETCH_CONCURRENCY)
+          .filter((title) => !seenTitles.has(title));
+
+        const fetched = await Promise.all(
+          batch.map(async (title) => {
+            let called = false;
+            try {
+              const infoUrl =
+                `https://commons.wikimedia.org/w/api.php?action=query` +
+                `&titles=${encodeURIComponent(title)}&prop=imageinfo` +
+                `&iiprop=url|mime|size|extmetadata&format=json&origin=*`;
+              const infoResp = await withTimeoutFetch(infoUrl, UA, 5_000, `Wikimedia pool info "${title}"`);
+              called = true;
+              if (!infoResp.ok) return { title, called, data: null as WikiInfoData | null };
+              return { title, called, data: (await infoResp.json()) as WikiInfoData };
+            } catch {
+              return { title, called, data: null as WikiInfoData | null };
+            }
+          })
+        );
+
+        for (const { title, called, data: infoData } of fetched) {
+          if (candidates.length >= max) break;
+          if (called) apiCalls++;
+          if (!infoData || seenTitles.has(title)) continue;
+          try {
           const page = Object.values(infoData.query?.pages ?? {})[0];
           const info = page?.imageinfo?.[0];
           if (!info?.url) continue;
@@ -392,8 +426,9 @@ async function searchWikimediaCandidates(
             visionScore: null,
             selectionScore: null,
           });
-        } catch {
-          /* skip this title */
+          } catch {
+            /* skip this title */
+          }
         }
       }
     } catch {
@@ -450,23 +485,42 @@ async function searchInternetArchiveCandidates(
         response?: { docs?: Array<{ identifier: string; title: string }> };
       };
       const docs = searchData.response?.docs ?? [];
+      type IaMetaData = {
+        metadata?: {
+          licenseurl?: string | string[];
+          rights?: string | string[];
+        };
+        files?: Array<{ name: string; format: string; size?: string }>;
+      };
 
-      for (const doc of docs) {
+      // FIX A: same metadata requests, DETAIL_FETCH_CONCURRENCY at a time. Applied below in
+      // input order, so candidate order and the max-cap behaviour are the sequential ones.
+      for (let i = 0; i < docs.length; i += DETAIL_FETCH_CONCURRENCY) {
         if (candidates.length >= max) break;
-        if (seenIds.has(doc.identifier)) continue;
-        try {
-          const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
-          const metaResp = await withTimeoutFetch(metaUrl, UA, 8_000, `Internet Archive pool metadata "${doc.identifier}"`);
-          apiCalls++;
-          if (!metaResp.ok) continue;
-          type IaMetaData = {
-            metadata?: {
-              licenseurl?: string | string[];
-              rights?: string | string[];
-            };
-            files?: Array<{ name: string; format: string; size?: string }>;
-          };
-          const metaData = (await metaResp.json()) as IaMetaData;
+        const batch = docs
+          .slice(i, i + DETAIL_FETCH_CONCURRENCY)
+          .filter((doc) => !seenIds.has(doc.identifier));
+
+        const fetched = await Promise.all(
+          batch.map(async (doc) => {
+            let called = false;
+            try {
+              const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
+              const metaResp = await withTimeoutFetch(metaUrl, UA, 8_000, `Internet Archive pool metadata "${doc.identifier}"`);
+              called = true;
+              if (!metaResp.ok) return { doc, called, data: null as IaMetaData | null };
+              return { doc, called, data: (await metaResp.json()) as IaMetaData };
+            } catch {
+              return { doc, called, data: null as IaMetaData | null };
+            }
+          })
+        );
+
+        for (const { doc, called, data: metaData } of fetched) {
+          if (candidates.length >= max) break;
+          if (called) apiCalls++;
+          if (!metaData || seenIds.has(doc.identifier)) continue;
+          try {
           const rawLicenseUrl = metaData.metadata?.licenseurl;
           const licenseUrlRaw = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
           const rawRights = metaData.metadata?.rights;
@@ -508,8 +562,9 @@ async function searchInternetArchiveCandidates(
             visionScore: null,
             selectionScore: null,
           });
-        } catch {
-          /* skip this item */
+          } catch {
+            /* skip this item */
+          }
         }
       }
     } catch {
@@ -545,23 +600,42 @@ async function searchEuropeanaCandidates(
       type EuropeanaItem = { id?: string; title?: string[]; edmPreview?: string };
       const searchData = (await searchResp.json()) as { items?: EuropeanaItem[] };
       const items = searchData.items ?? [];
+      type EuropeanaRecord = {
+        object?: {
+          aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string; edmRights?: string | string[] }>;
+          proxies?: Array<{ dcCreator?: string[] | Record<string, string[]> }>;
+        };
+      };
 
-      for (const item of items) {
+      // FIX A: same record requests, DETAIL_FETCH_CONCURRENCY at a time. Applied below in
+      // input order, so candidate order and the max-cap behaviour are the sequential ones.
+      for (let i = 0; i < items.length; i += DETAIL_FETCH_CONCURRENCY) {
         if (candidates.length >= max) break;
-        const recordId = item.id;
-        if (!recordId || seenIds.has(recordId)) continue;
-        try {
-          const recordUrl = `https://api.europeana.eu/record/v2${recordId}.json?profile=rich`;
-          const recordResp = await withTimeoutFetch(recordUrl, authHeader, 8_000, `Europeana pool record "${recordId}"`);
-          apiCalls++;
-          if (!recordResp.ok) continue;
-          type EuropeanaRecord = {
-            object?: {
-              aggregations?: Array<{ edmIsShownBy?: string; edmIsShownAt?: string; edmRights?: string | string[] }>;
-              proxies?: Array<{ dcCreator?: string[] | Record<string, string[]> }>;
-            };
-          };
-          const recordData = (await recordResp.json()) as EuropeanaRecord;
+        const batch = items
+          .slice(i, i + DETAIL_FETCH_CONCURRENCY)
+          .map((item) => ({ item, recordId: item.id }))
+          .filter((e) => !!e.recordId && !seenIds.has(e.recordId));
+
+        const fetched = await Promise.all(
+          batch.map(async ({ item, recordId }) => {
+            let called = false;
+            try {
+              const recordUrl = `https://api.europeana.eu/record/v2${recordId}.json?profile=rich`;
+              const recordResp = await withTimeoutFetch(recordUrl, authHeader, 8_000, `Europeana pool record "${recordId}"`);
+              called = true;
+              if (!recordResp.ok) return { item, recordId: recordId!, called, data: null as EuropeanaRecord | null };
+              return { item, recordId: recordId!, called, data: (await recordResp.json()) as EuropeanaRecord };
+            } catch {
+              return { item, recordId: recordId!, called, data: null as EuropeanaRecord | null };
+            }
+          })
+        );
+
+        for (const { item, recordId, called, data: recordData } of fetched) {
+          if (candidates.length >= max) break;
+          if (called) apiCalls++;
+          if (!recordData || seenIds.has(recordId)) continue;
+          try {
           const aggregations = recordData.object?.aggregations ?? [];
           const mediaAgg = aggregations.find(a => a.edmIsShownBy) ?? aggregations.find(a => a.edmIsShownAt);
           const mediaUrl = mediaAgg?.edmIsShownBy ?? mediaAgg?.edmIsShownAt;
@@ -601,8 +675,9 @@ async function searchEuropeanaCandidates(
             visionScore: null,
             selectionScore: null,
           });
-        } catch {
-          /* skip this item */
+          } catch {
+            /* skip this item */
+          }
         }
       }
     } catch {
@@ -709,20 +784,37 @@ export async function searchNasaCandidates(
       type NasaItem = { data?: Array<{ nasa_id?: string; title?: string }> };
       const searchData = (await searchResp.json()) as { collection?: { items?: NasaItem[] } };
       const items = searchData.collection?.items ?? [];
+      type NasaAssetData = { collection?: { items?: Array<{ href?: string }> } };
 
-      for (const item of items) {
+      // FIX A: same asset requests, DETAIL_FETCH_CONCURRENCY at a time. Applied below in
+      // input order, so candidate order and the max-cap behaviour are the sequential ones.
+      for (let i = 0; i < items.length; i += DETAIL_FETCH_CONCURRENCY) {
         if (candidates.length >= max) break;
-        const nasaId = item.data?.[0]?.nasa_id;
-        const title = item.data?.[0]?.title;
-        if (!nasaId || seenIds.has(nasaId)) continue;
-        try {
-          const assetUrl = `https://images-api.nasa.gov/asset/${nasaId}`;
-          const assetResp = await withTimeoutFetch(assetUrl, UA, 8_000, `NASA pool asset "${nasaId}"`);
-          apiCalls++;
-          if (!assetResp.ok) continue;
-          const assetData = (await assetResp.json()) as {
-            collection?: { items?: Array<{ href?: string }> };
-          };
+        const batch = items
+          .slice(i, i + DETAIL_FETCH_CONCURRENCY)
+          .map((item) => ({ nasaId: item.data?.[0]?.nasa_id, title: item.data?.[0]?.title }))
+          .filter((e) => !!e.nasaId && !seenIds.has(e.nasaId));
+
+        const fetched = await Promise.all(
+          batch.map(async ({ nasaId, title }) => {
+            let called = false;
+            try {
+              const assetUrl = `https://images-api.nasa.gov/asset/${nasaId}`;
+              const assetResp = await withTimeoutFetch(assetUrl, UA, 8_000, `NASA pool asset "${nasaId}"`);
+              called = true;
+              if (!assetResp.ok) return { nasaId: nasaId!, title, called, data: null as NasaAssetData | null };
+              return { nasaId: nasaId!, title, called, data: (await assetResp.json()) as NasaAssetData };
+            } catch {
+              return { nasaId: nasaId!, title, called, data: null as NasaAssetData | null };
+            }
+          })
+        );
+
+        for (const { nasaId, title, called, data: assetData } of fetched) {
+          if (candidates.length >= max) break;
+          if (called) apiCalls++;
+          if (!assetData || seenIds.has(nasaId)) continue;
+          try {
           const assetUrls = (assetData.collection?.items ?? [])
             .map(i => i.href)
             .filter((u): u is string => typeof u === "string" && u.length > 0);
@@ -753,8 +845,9 @@ export async function searchNasaCandidates(
             visionScore: null,
             selectionScore: null,
           });
-        } catch {
-          /* skip this item */
+          } catch {
+            /* skip this item */
+          }
         }
       }
     } catch {
@@ -876,21 +969,41 @@ export async function searchLibraryOfCongressCandidates(
       };
       const searchData = (await searchResp.json()) as { results?: LocResult[] };
       const results = searchData.results ?? [];
+      type LocItem = {
+        item?: { rights_advisory?: string[]; rights?: string | string[] };
+        resources?: Array<{ files?: Array<Array<{ mimetype?: string; url?: string }>> }>;
+      };
 
-      for (const result of results) {
+      // FIX A: same item requests, DETAIL_FETCH_CONCURRENCY at a time instead of one at a
+      // time. Each batch is applied below in input order before the next batch starts, so
+      // both the candidate order and the max-cap behaviour are the sequential ones.
+      for (let i = 0; i < results.length; i += DETAIL_FETCH_CONCURRENCY) {
         if (candidates.length >= max) break;
-        const itemUrl = result.url || result.id;
-        if (!itemUrl || result.access_restricted || seenIds.has(itemUrl)) continue;
-        try {
-          const itemJsonUrl = `${itemUrl.replace(/\/$/, "")}/?fo=json`;
-          const itemResp = await withTimeoutFetch(itemJsonUrl, UA, 8_000, `Library of Congress pool item "${itemUrl}"`);
-          apiCalls++;
-          if (!itemResp.ok) continue;
-          type LocItem = {
-            item?: { rights_advisory?: string[]; rights?: string | string[] };
-            resources?: Array<{ files?: Array<Array<{ mimetype?: string; url?: string }>> }>;
-          };
-          const itemData = (await itemResp.json()) as LocItem;
+        const batch = results
+          .slice(i, i + DETAIL_FETCH_CONCURRENCY)
+          .map((result) => ({ result, itemUrl: result.url || result.id }))
+          .filter((e) => !!e.itemUrl && !e.result.access_restricted && !seenIds.has(e.itemUrl));
+
+        const fetched = await Promise.all(
+          batch.map(async ({ result, itemUrl }) => {
+            let called = false;
+            try {
+              const itemJsonUrl = `${itemUrl!.replace(/\/$/, "")}/?fo=json`;
+              const itemResp = await withTimeoutFetch(itemJsonUrl, UA, 8_000, `Library of Congress pool item "${itemUrl}"`);
+              called = true;
+              if (!itemResp.ok) return { result, itemUrl: itemUrl!, called, data: null as LocItem | null };
+              return { result, itemUrl: itemUrl!, called, data: (await itemResp.json()) as LocItem };
+            } catch {
+              return { result, itemUrl: itemUrl!, called, data: null as LocItem | null };
+            }
+          })
+        );
+
+        for (const { result, itemUrl, called, data: itemData } of fetched) {
+          if (candidates.length >= max) break;
+          if (called) apiCalls++;
+          if (!itemData || seenIds.has(itemUrl)) continue;
+          try {
           const rawRights = itemData.item?.rights ?? itemData.item?.rights_advisory;
           const rightsText = Array.isArray(rawRights) ? rawRights.join(" ") : rawRights;
           if (!isAllowedLocRights(rightsText)) continue;
@@ -924,8 +1037,9 @@ export async function searchLibraryOfCongressCandidates(
             visionScore: null,
             selectionScore: null,
           });
-        } catch {
-          /* skip this item */
+          } catch {
+            /* skip this item */
+          }
         }
       }
     } catch {
@@ -1032,6 +1146,8 @@ export async function buildSceneCandidatePool(
   const queries = Array.from(new Set([primaryQuery, ...extraQueries].filter(Boolean)));
   const t0 = Date.now();
   const apiCallsPerProvider: Record<string, number> = {};
+  /** FIX C: wall-clock ms per provider task (search + detail fetches). Observability only. */
+  const msPerProvider: Record<string, number> = {};
 
   // ── 1. Scene candidate cache check ──────────────────────────────────────────
   // Cache is keyed on the primary query — check each source that would be used.
@@ -1073,13 +1189,19 @@ export async function buildSceneCandidatePool(
   }
 
   // ── 2. Live retrieval — parallel across providers ─────────────────────────
-  const tasks: Promise<{ candidates: PoolCandidate[]; apiCalls: number; source: string }>[] = [];
+  // FIX C: every task below is created synchronously in this tick, so one timestamp is the
+  // common start for all of them and `Date.now() - liveT0` inside each .then() is that
+  // provider's own wall-clock duration — search plus detail fetches. Purely observational:
+  // no extra await, no extra request, no change to which providers are queried.
+  const liveT0 = Date.now();
+  const tasks: Promise<{ candidates: PoolCandidate[]; apiCalls: number; source: string; ms: number }>[] = [];
 
   if (!skipPexels && pexelsApiKey) {
     tasks.push(
       searchPexelsCandidates(queries, pexelsApiKey, maxPerSource).then(r => ({
         ...r,
         source: "pexels",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1088,14 +1210,16 @@ export async function buildSceneCandidatePool(
       searchPixabayCandidates(queries, pixabayApiKey, maxPerSource).then(r => ({
         ...r,
         source: "pixabay",
+        ms: Date.now() - liveT0,
       }))
     );
   }
   tasks.push(
     searchWikimediaCandidates(queries, maxPerSource).then(r => ({
-      ...r,
-      source: "wikimedia",
-    }))
+        ...r,
+        source: "wikimedia",
+        ms: Date.now() - liveT0,
+      }))
   );
   // FASE 2 — Priority A historical/open sources: no API key required for Internet Archive
   // (like Wikimedia); Europeana needs a key, same shape as Pexels/Pixabay above.
@@ -1104,6 +1228,7 @@ export async function buildSceneCandidatePool(
       searchInternetArchiveCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "internet_archive",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1112,6 +1237,7 @@ export async function buildSceneCandidatePool(
       searchEuropeanaCandidates(queries, europeanaApiKey, maxPerSource).then(r => ({
         ...r,
         source: "europeana",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1122,6 +1248,7 @@ export async function buildSceneCandidatePool(
       searchOpenverseCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "openverse",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1130,6 +1257,7 @@ export async function buildSceneCandidatePool(
       searchNasaCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "nasa",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1138,6 +1266,7 @@ export async function buildSceneCandidatePool(
       searchNaraCandidates(queries, naraApiKey, maxPerSource).then(r => ({
         ...r,
         source: "nara",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1146,6 +1275,7 @@ export async function buildSceneCandidatePool(
       searchLibraryOfCongressCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "loc",
+        ms: Date.now() - liveT0,
       }))
     );
   }
@@ -1155,8 +1285,9 @@ export async function buildSceneCandidatePool(
   const rawCandidates: PoolCandidate[] = [];
   for (const result of results) {
     if (result.status === "rejected") continue;
-    const { candidates, apiCalls, source } = result.value;
+    const { candidates, apiCalls, source, ms } = result.value;
     apiCallsPerProvider[source] = apiCalls;
+    msPerProvider[source] = ms;
     rawCandidates.push(...candidates);
 
     // Populate scene candidate cache per source (best-effort).
@@ -1179,7 +1310,10 @@ export async function buildSceneCandidatePool(
   console.log(
     `[ScenePool] Scene ${sceneIndex}: ${limited.length} candidates ` +
     `(${candidatesBeforeDedup} raw → ${candidatesAfterDedup} deduped → ${limited.length} capped) ` +
-    `in ${latencyMs}ms | calls: ${Object.entries(apiCallsPerProvider).map(([k, v]) => `${k}=${v}`).join(", ")}`
+    `in ${latencyMs}ms | calls: ${Object.entries(apiCallsPerProvider).map(([k, v]) => `${k}=${v}`).join(", ")}` +
+    // FIX C: which provider actually consumed the scene's retrieval window. Sorted slowest
+    // first so the bottleneck is the first thing on the line.
+    ` | ms: ${Object.entries(msPerProvider).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(", ")}`
   );
 
   return {
