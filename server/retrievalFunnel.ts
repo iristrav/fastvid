@@ -221,12 +221,31 @@ export function findBestArchiveScoreForBeat(
 
 /**
  * Orders funnel candidates for archive-first per-beat retrieval.
- * Archive candidates always come first; external candidates are appended
- * according to the gap strategy:
- *   archive_only  → external candidates removed
- *   one_external  → only the top-ranked external candidate kept
- *   all_external  → all external candidates kept (ranked by rankingScore)
- *   aggressive    → same as all_external but archive candidates are moved last
+ *
+ * FIX 4 — archive-first is an ORDERING PREFERENCE, not candidate elimination.
+ *
+ * `archive_only` used to return the archive candidates alone and `one_external` used to keep
+ * exactly one external (`externalCands.slice(0, 1)`). That discarded candidates before the
+ * funnel could judge them: this function runs BEFORE the FUNNEL_CANDIDATE_POOL_LIMIT slice,
+ * BEFORE buildDownloadShortlist() and BEFORE VisionGate, so a dropped candidate was never
+ * ranked, never downloaded and never scored. Render 515 retrieved 47 external candidates for
+ * a scene with 2 archive candidates and could act on at most 3 of the 49 — which is also why
+ * the per-beat exclusion (FIX 2) had almost nothing left to choose from and 13 beats shared
+ * 3 assets.
+ *
+ * Every strategy now returns the FULL candidate set; only the order differs:
+ *   archive_only  → archive first, then all externals (was: externals removed)
+ *   one_external  → archive first, then all externals (was: only the top external kept)
+ *   all_external  → archive first, then all externals    [unchanged]
+ *   aggressive    → externals first, then archive        [unchanged]
+ *
+ * The strategy therefore still expresses how strongly the archive is favoured — a stronger
+ * archive signal keeps the archive at the head of the list, which is what decides who fills
+ * the shortlist's limited slots first. What it no longer does is delete the alternatives.
+ * No score is recomputed, no penalty is applied, no candidate is reordered within its own
+ * group: externals keep their existing rankingScore sort, and everything downstream
+ * (per-source caps, MAX_FUNNEL_CANDIDATES_TO_SCORE, VisionGate, pickBestFunnelCandidate's
+ * stock/non-stock margin) is untouched.
  */
 export function orderCandidatesForBeatGap(
   candidates: FunnelCandidate[],
@@ -239,10 +258,9 @@ export function orderCandidatesForBeatGap(
 
   switch (strategy) {
     case "archive_only":
-      return archiveCands;
     case "one_external":
-      return [...archiveCands, ...externalCands.slice(0, 1)];
     case "all_external":
+      // Archive leads; externals stay available behind it, in ranking order.
       return [...archiveCands, ...externalCands];
     case "aggressive":
       // Archive still available as fallback but external leads

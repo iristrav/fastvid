@@ -23755,7 +23755,22 @@ async function fetchSceneVisualsInner(
         );
         for (const candidate of toScore) {
           const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
-          if (!clipPath) continue;
+          if (!clipPath) {
+            // FIX 3 — register failed downloads too. Only the beat WINNER used to be recorded,
+            // so a candidate whose download fails stayed in every later beat's shortlist and
+            // was re-fetched on each one. Render 515: two Wikimedia assets that answered HTTP
+            // 429 were retried 4x each across the scene's beats, burning shortlist slots that
+            // downloadable candidates could have used.
+            //
+            // Registered under the same candidate id FIX 1 + FIX 2 use, so a failure simply
+            // means "this beat and later beats look further down the same ranking". No retry,
+            // no backoff, no provider change: the candidate is skipped, not punished, and the
+            // exhaustion rule in buildDownloadShortlist()/pickBestFunnelCandidate() still
+            // restores the full list once everything has been used, so this can never be the
+            // sole cause of a fallback while other candidates remain.
+            dedup.usedFunnelCandidateIds.add(candidate.id);
+            continue;
+          }
           downloadedCount++;
           const visionResult = await evaluateClipVisionGate(
             clipPath,
