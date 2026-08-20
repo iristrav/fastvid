@@ -10049,13 +10049,19 @@ export async function downloadYouTubeCCClip(
     const cloudTmpPath = outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
     try {
       const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
+      // RONDE 10b: the ytdlp-service requires `Authorization: Bearer <SERVICE_TOKEN>` and returns
+      // 401 without it. The token is provided via YOUTUBE_CC_DL_TOKEN so the two services share a
+      // secret; when unset the header is simply omitted (backward compatible with a token-less
+      // service). This was the missing piece that made the cloud route unusable once deployed.
+      const cloudDlToken = process.env.YOUTUBE_CC_DL_TOKEN?.trim();
+      const cloudHeaders = cloudDlToken ? { Authorization: `Bearer ${cloudDlToken}` } : {};
       // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
       const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
         cloudTmpPath,
         90_000,
         `YouTube CC cloud download scene ${sceneIndex}`,
-        {},
+        { headers: cloudHeaders },
         80 * 1024 * 1024
       );
       if (!dlResp.ok) {

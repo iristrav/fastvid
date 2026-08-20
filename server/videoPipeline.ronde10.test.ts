@@ -93,6 +93,16 @@ describe("RONDE 10 — the RapidAPI search helper is safe and shape-compatible",
   });
 });
 
+describe("RONDE 10b — the cloud ytdlp-service download sends the bearer token", () => {
+  it("passes Authorization: Bearer from YOUTUBE_CC_DL_TOKEN when set, omits it otherwise", () => {
+    const idx = pipelineSrc.indexOf("const cloudDlToken = process.env.YOUTUBE_CC_DL_TOKEN?.trim();");
+    expect(idx).toBeGreaterThan(-1);
+    const block = pipelineSrc.slice(idx, idx + 600);
+    expect(block).toContain("const cloudHeaders = cloudDlToken ? { Authorization: `Bearer ${cloudDlToken}` } : {};");
+    expect(block).toContain("{ headers: cloudHeaders }");
+  });
+});
+
 describe("RONDE 10 — fair-use excerpts stay short (pre-existing cap, unchanged)", () => {
   it("the fair-use clip cap still exists and is bounded to <= 8s", () => {
     expect(pipelineSrc).toContain("function youtubeFairUseMaxClipSec()");
