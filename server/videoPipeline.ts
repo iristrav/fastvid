@@ -9810,9 +9810,12 @@ export async function fetchInternetArchiveClips(
         let metaData = cachedAsset?.metadata as IaMetaData | undefined;
         if (!metaData) {
           const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
+          // RONDE 8 (render 518): archive.org's metadata endpoint is routinely slower than 8s —
+          // 9 relevant WW2 items (CSPAN 1944, EUROPA The Last Battle, Churchill docs) died on
+          // this exact timeout in one render. 15s is still bounded by the per-beat budget above.
           const metaResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
             metaUrl,
-            8_000,
+            15_000,
             `Internet Archive metadata scene ${sceneIndex}`,
             { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
           ));
@@ -9886,10 +9889,6 @@ export async function fetchInternetArchiveClips(
 
         const MAX_ARCHIVE_SIZE = 50 * 1024 * 1024;
         const knownSize = parseInt(videoFile.size || '0');
-        if (knownSize > MAX_ARCHIVE_SIZE) {
-          console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata), skipping download`);
-          continue;
-        }
 
         const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`;
         const tag = fileTag ? `${fileTag}_` : "";
@@ -9900,12 +9899,30 @@ export async function fetchInternetArchiveClips(
         );
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
+        if (knownSize > MAX_ARCHIVE_SIZE) {
+          // RONDE 8 (render 518): archive.org's WW2/history items are routinely FULL FILMS of
+          // 100-700MB whose smallest derivative still exceeds the size cap — they used to be
+          // skipped outright, which is why the archive's huge historical holdings never reached
+          // a video. Fetch only a short segment via ffmpeg's HTTP range seeking instead; any
+          // failure falls back to the exact old behavior (skip this item).
+          const segmentSec = Math.max(20, Math.ceil(duration) + 8);
+          if (!(await fetchArchiveSegmentViaFfmpeg(videoUrl, tmpPath, segmentSec, sceneIndex))) {
+            console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata) and segment fetch failed, skipping`);
+            continue;
+          }
+          console.log(
+            `[Pipeline] Scene ${sceneIndex}: Archive segment fetched from large item ` +
+            `(${(knownSize / 1024 / 1024).toFixed(1)}MB full file): ${doc.title ?? doc.identifier}`
+          );
+        } else {
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing MAX_ARCHIVE_SIZE post-hoc ceiling below exactly.
+        // RONDE 8: 18s on Railway killed most real archive reel downloads — 45s everywhere;
+        // the per-beat budget above remains the real ceiling.
         const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
           videoUrl,
           tmpPath,
-          IS_RAILWAY ? 18_000 : 45_000,
+          45_000,
           `Internet Archive download scene ${sceneIndex}`,
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } },
           MAX_ARCHIVE_SIZE
@@ -9916,6 +9933,7 @@ export async function fetchInternetArchiveClips(
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(bytesWritten / 1024 / 1024).toFixed(1)}MB), skipping`);
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
           continue;
+        }
         }
 
         providerMetrics(sourcingCache, "internet_archive").downloadCount++;
@@ -9935,6 +9953,61 @@ export async function fetchInternetArchiveClips(
     }
   }
   return results;
+}
+
+/**
+ * RONDE 8: fetch a short segment of a LARGE archive.org video without downloading the file.
+ * ffmpeg's HTTP demuxer seeks via range requests, so `-ss 90 -t N -c copy` reads only the bytes
+ * of that window — this is what unlocks archive.org's full-length historical films (routinely
+ * 100-700MB) that the MAX_ARCHIVE_SIZE cap otherwise skips entirely. Starts 90s in to skip
+ * title cards/leader footage. Returns false on ANY failure so the caller can fall back to the
+ * old skip behavior; never throws.
+ */
+async function fetchArchiveSegmentViaFfmpeg(
+  videoUrl: string,
+  outPath: string,
+  segmentSec: number,
+  sceneIndex: number
+): Promise<boolean> {
+  try {
+    const { spawn: spawnChild } = await import("child_process");
+    await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
+      const args = [
+        "-y",
+        "-ss", "90",
+        "-i", videoUrl,
+        "-t", String(segmentSec),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        outPath,
+      ];
+      const child = spawnChild(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (d: Buffer) => { stderr += d.toString().slice(-400); });
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+        reject(pipelineError(PIPELINE_ERROR.TIMEOUT, `Archive segment fetch timeout scene ${sceneIndex}`));
+      }, 30_000);
+      child.on("close", (code: number | null) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(pipelineError(PIPELINE_ERROR.FFMPEG, `ffmpeg exit ${code}: ${stderr.slice(-160)}`));
+      });
+      child.on("error", (err: Error) => { clearTimeout(timer); reject(err); });
+    }));
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 50_000 && (await isValidVideoFile(outPath))) {
+      return true;
+    }
+    try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+    return false;
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: archive segment fetch failed:`,
+      (err as Error).message?.slice(0, 120)
+    );
+    try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+    return false;
+  }
 }
 
 // ─── 3c3a. Download a YouTube CC clip (RapidAPI first, cloud service fallback) ─
@@ -11935,6 +12008,13 @@ export interface VisualDedupState {
   /** Licensed Pexels/Pixabay clips used (capped when minimizeStockFootage). */
   stockBeatsUsed: number;
   /**
+   * RONDE 8 (render 518): scenes whose montage came up shorter than the voice and were padded
+   * with a gray filler. The export gate previously scored such a render 100/100 ("0 fallback
+   * beats") because a gray PAD is not a fallback CLIP — this makes the gap visible in the
+   * persisted quality report instead of only as a mid-render warn line.
+   */
+  grayPadScenes: number[];
+  /**
    * Production fix (Hitler-render finding, Problem 10): a whole SCENE (not just one beat)
    * that had to fall all the way back to generateColorFallback as its final composed output —
    * i.e. every real sourcing/rescue attempt for that scene failed. Tracked separately from
@@ -12186,6 +12266,7 @@ export function createVisualDedupState(
     klingClipsUsed: 0,
     entityYoutubeFetchesUsed: 0,
     stockBeatsUsed: 0,
+    grayPadScenes: [],
     sceneRescueColorFallbackCount: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
@@ -25775,6 +25856,11 @@ export async function composeSceneVideoInner(
     );
   }
   if (estBeforeCompose < outDur - 0.08 && !strictNoVisualRepeat()) {
+    // RONDE 8: register the gray pad on the render's dedup state so the export gate can report
+    // it — a gray PAD is not a fallback CLIP, so it was invisible to every quality metric.
+    if (composeOptions?.dedup && !composeOptions.dedup.grayPadScenes.includes(scene.index)) {
+      composeOptions.dedup.grayPadScenes.push(scene.index);
+    }
     console.warn(
       `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
     );
@@ -28742,6 +28828,17 @@ async function _runVideoPipelineInner(
       fastShort: isFastShortVideoLength(videoLength),
       sceneCriticalFailed,
     });
+    // RONDE 8 (render 518): a scene padded with gray filler scored 100/100 because the pad is
+    // not a fallback clip. Same registration pattern as the silent-voiceover notes below.
+    if (visualDedup.grayPadScenes.length > 0) {
+      const padScenes = [...visualDedup.grayPadScenes].sort((a, b) => a - b);
+      qualityReport.warnings.push(
+        `gray pad: scene(s) ${padScenes.join(", ")} rendered with a gray filler because the montage was shorter than the voice`
+      );
+      console.warn(
+        `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with gray pad (${padScenes.join(", ")}) — visual coverage incomplete`
+      );
+    }
     const silentVoiceoverNotes = getRenderCtx().voiceoverSilentFallbackNotes;
     if (silentVoiceoverNotes.length > 0) {
       // Registers the silent-fallback occurrence(s) in the persisted quality report — this

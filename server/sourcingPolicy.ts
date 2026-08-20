@@ -362,7 +362,9 @@ export function pipelineRushModeMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 90_000 && n <= 540_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 5 * 60_000;
+  // RONDE 8: keeps its position ABOVE the widened 5min turbo threshold (ladder order
+  // turbo < rush < emergency must hold — each rung is compared against the same clock).
+  if (isFastShortVideoLength(videoLength)) return 7 * 60_000;
   return 3 * 60_000;
 }
 
@@ -373,7 +375,9 @@ export function pipelineEmergencyFinishMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 300_000 && n <= 900_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 7 * 60_000;
+  // RONDE 8: shifted up with the turbo/rush rungs (5/7/9). Still far under the 22min
+  // wall-clock hard cap for 1-min videos, and the clock starts at the visual stage (FIX 7).
+  if (isFastShortVideoLength(videoLength)) return 9 * 60_000;
   return 7 * 60_000;
 }
 
@@ -675,7 +679,11 @@ export function visualSourcingTurboMs(videoLength?: string | null): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 8_000 && n <= 300_000) return n;
   }
-  if (isFastShortVideoLength(videoLength)) return 3 * 60_000;
+  // RONDE 8 (render 518): 3min was too tight — the visual stage for a 3-scene 1-min video
+  // took ~5min (scenes fill partly sequentially; IA search+metadata dominates), so the LAST
+  // scene always landed in 12s turbo budgets and dropped its beats. The wall-clock hard cap
+  // for 1-min videos is 22min, so 5min turbo still leaves ample headroom.
+  if (isFastShortVideoLength(videoLength)) return 5 * 60_000;
   return 12_000;
 }
 

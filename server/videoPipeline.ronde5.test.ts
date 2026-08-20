@@ -129,11 +129,16 @@ describe("FIX 7 — sourcing-ladder clock starts when the visual stage starts", 
     expect(calls.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("the ladder thresholds themselves did not move", () => {
+  it("the fast-short ladder rungs exist and keep their order (values widened by RONDE 8)", () => {
+    // FIX 7 itself moved only the CLOCK, not the thresholds — at the time they were 3/5/7 min.
+    // RONDE 8 then deliberately widened the fast-short rungs to 5/7/9 (render 518: a 3-scene
+    // 1-min video needs ~5min of visual stage, so the last scene always hit turbo budgets).
+    // What this test still guards from FIX 7's contract: all three rungs exist for the
+    // fast-short path and their ladder ordering is intact.
     const policySrc = readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 3 * 60_000;"); // turbo
-    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 5 * 60_000;"); // rush
-    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 7 * 60_000;"); // emergency
+    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 5 * 60_000;"); // turbo
+    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 7 * 60_000;"); // rush
+    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 9 * 60_000;"); // emergency
   });
 });
 
