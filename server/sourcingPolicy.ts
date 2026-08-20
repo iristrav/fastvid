@@ -986,9 +986,24 @@ export function minQualityExportScore(videoLength?: string | null): number {
   return 45;
 }
 
+/**
+ * Case/whitespace-tolerant env boolean parsing. A Railway variable set to "TRUE" or " true "
+ * must read the same as "true"; otherwise a stray capital silently disables a whole source.
+ * RONDE 18: ENABLE_YOUTUBE_SOURCING="TRUE" fails a bare `=== "true"` and turns YouTube fully off,
+ * even though the operator clearly meant to enable it.
+ */
+export function envFlagIsOn(name: string): boolean {
+  return (process.env[name] ?? "").trim().toLowerCase() === "true";
+}
+
+/** Opt-out flag: on unless explicitly set to "false" (case/whitespace-tolerant). */
+export function envFlagIsNotOff(name: string): boolean {
+  return (process.env[name] ?? "").trim().toLowerCase() !== "false";
+}
+
 /** YouTube Creative Commons clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
 export function youtubeSourcingEnabled(): boolean {
-  return process.env.ENABLE_YOUTUBE_SOURCING === "true";
+  return envFlagIsOn("ENABLE_YOUTUBE_SOURCING");
 }
 
 /** Archive clip pick driven by asset.tags + title (default on). Set ENABLE_ARCHIVE_TAG_MATCH=false for semantic-only. */

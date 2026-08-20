@@ -27,7 +27,8 @@ describe("RONDE 10 — the fallback is strictly opt-in and key-gated", () => {
   );
 
   it("requires both the explicit flag AND a RapidAPI key", () => {
-    expect(fn).toContain('process.env.ENABLE_YOUTUBE_RAPID_SEARCH === "true"');
+    // RONDE 18 follow-up: the literal `=== "true"` moved into the case-tolerant envFlagIsOn helper.
+    expect(fn).toContain('envFlagIsOn("ENABLE_YOUTUBE_RAPID_SEARCH")');
     expect(fn).toContain("Boolean(RAPIDAPI_KEY)");
   });
 

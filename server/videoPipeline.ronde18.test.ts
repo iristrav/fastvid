@@ -28,7 +28,8 @@ const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 describe("RONDE 18A — YouTube-only sourcing is strictly opt-in", () => {
   it("youtubeOnlySourcingEnabled requires YOUTUBE_ONLY_SOURCING === 'true' (default OFF)", () => {
     const fn = src.match(/function youtubeOnlySourcingEnabled\(\)[^}]*}/)?.[0] ?? "";
-    expect(fn).toContain('process.env.YOUTUBE_ONLY_SOURCING === "true"');
+    // Strictly opt-in via the case-tolerant envFlagIsOn helper (RONDE 18 follow-up).
+    expect(fn).toContain('envFlagIsOn("YOUTUBE_ONLY_SOURCING")');
     // The old trap — defaulting ON via `!== "false"` — must be gone.
     expect(fn).not.toContain('!== "false"');
   });
