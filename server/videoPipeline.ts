@@ -23914,6 +23914,9 @@ async function fetchSceneVisualsInner(
               naraApiKey: NARA_API_KEY || undefined,
               skipOpenverse: !openverseStillsEnabled(),
               videoTitle: videoTitle || undefined,
+              // Hold back archive assets used in recent same-topic videos so a filled
+              // archive keeps looking for fresh footage instead of shipping the same clips.
+              crossVideoExcludeIds: dedup.crossVideoExcludeIds,
             }), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
         console.log(
           `[FunnelTimeout] scene=${scene.index} completed elapsedMs=${Date.now() - funnelAwaitT0} ` +
@@ -27142,6 +27145,13 @@ async function _runVideoPipelineInner(
     // When only ENABLE_SCENE_CANDIDATE_POOL=true, builds external-only pools.
     let prefetchPools: Map<number, Promise<import("./scenePool").SceneCandidatePool>> | undefined;
     let prefetchFunnels: Map<number, Promise<RetrievalFunnelResult>> | undefined;
+    // Cross-video variety exclude set, computed HERE (before visualDedup exists) so the
+    // prefetched funnels — built during TTS — already hold back archive assets reused in
+    // recent same-topic videos. The same value is copied onto visualDedup.crossVideoExcludeIds
+    // below so the inline (non-prefetch) funnel path and the beat-level dedup use it too.
+    const crossVideoExcludeIdsForRun = archiveCrossVideoVarietyEnabled(videoLength)
+      ? getCrossVideoExcludeAssetIds(topicContext, videoId)
+      : new Set<number>();
     if (sceneCandidatePoolEnabled() && !curatedArchiveOnlyVisuals()) {
       if (retrievalFunnelEnabled()) {
         // F3-27 self-learning: proven queries for this video's entity/topic (if any) are
@@ -27176,6 +27186,8 @@ async function _runVideoPipelineInner(
             naraApiKey: NARA_API_KEY || undefined,
             skipOpenverse: !openverseStillsEnabled(),
             videoTitle: topicContext || undefined,
+            // Hold back archive assets reused in recent same-topic videos (computed above).
+            crossVideoExcludeIds: crossVideoExcludeIdsForRun,
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
@@ -27490,7 +27502,9 @@ async function _runVideoPipelineInner(
     visualDedup.visualBeatsCompleted = 0;
     visualDedup.varietySeed = ((videoId * 2654435761) ^ hashVarietySeed(topicContext)) >>> 0;
     if (archiveCrossVideoVarietyEnabled(videoLength)) {
-      visualDedup.crossVideoExcludeIds = getCrossVideoExcludeAssetIds(topicContext, videoId);
+      // Reuse the set computed before prefetch so the funnels (prefetch + inline) and the
+      // beat-level dedup all exclude the same recently-used assets.
+      visualDedup.crossVideoExcludeIds = crossVideoExcludeIdsForRun;
       console.log(
         `[Pipeline] Cross-video variety: excluding ${visualDedup.crossVideoExcludeIds.size} asset(s) from recent same-topic videos`
       );

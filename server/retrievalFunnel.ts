@@ -20,6 +20,7 @@
 import {
   listCuratedArchiveCandidates,
   buildBeatMatchTags,
+  applyCrossVideoVarietyDegrade,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -450,6 +451,14 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
   videoTitle?: string;
   /** Max archive candidates to retrieve (default: MAX_CANDIDATES_PER_SOURCE). */
   maxArchiveCandidates?: number;
+  /**
+   * Asset IDs used in recent same-topic videos (from getCrossVideoExcludeAssetIds).
+   * When set, these archive picks are held back so a filled archive doesn't keep
+   * shipping the same footage — the funnel then leans on external providers for fresh
+   * material. Degrades gracefully (applyCrossVideoVarietyDegrade): if holding them back
+   * would starve the archive pool, they are kept as a last resort. Defaults to none.
+   */
+  crossVideoExcludeIds?: Set<number>;
 };
 
 /**
@@ -502,7 +511,17 @@ export async function buildRetrievalFunnel(
     ? externalPool.value
     : [];
 
-  const archivePicks = archiveSearchResult.candidates;
+  // Cross-video variety: hold back archive assets used in recent same-topic videos so a
+  // filled archive doesn't keep shipping identical footage. This is the funnel-path wiring
+  // of the same applyCrossVideoVarietyDegrade the older archive scan already used — until now
+  // the funnel searched the archive with empty exclude sets, so the variety machinery never
+  // ran on the path production actually takes. Applied BEFORE coverage scoring so coverage
+  // honestly reflects the FRESH archive material: when only recently-used assets match, the
+  // coverage drops, the strategy shifts toward internet_dominant, and the pipeline actively
+  // pulls new external footage instead of reusing. Degrades gracefully — never starves a beat.
+  const archivePicks = req.crossVideoExcludeIds && req.crossVideoExcludeIds.size > 0
+    ? applyCrossVideoVarietyDegrade(archiveSearchResult.candidates, req.crossVideoExcludeIds)
+    : archiveSearchResult.candidates;
   const beatDoc = archiveSearchResult.beatDocument;
 
   // ── 2. Coverage scoring ────────────────────────────────────────────────────
