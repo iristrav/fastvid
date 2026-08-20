@@ -1750,6 +1750,21 @@ function youtubeFairUseEnabled(): boolean {
   return process.env.ENABLE_YOUTUBE_FAIR_USE !== "false";
 }
 
+/**
+ * RONDE 10: quota-free RapidAPI search fallback. The official YouTube Data API search costs 100
+ * quota units per call (~100/day), so it 429s after a few renders — that is the sole reason
+ * YouTube contributed nothing in renders 512-518. This opt-in fallback uses the existing
+ * RAPIDAPI_KEY (a scraped, quota-free search) ONLY when the official search is unavailable, and
+ * ONLY for the fair-use path — RapidAPI search cannot confirm a Creative Commons license, so the
+ * strict-CC path is never routed through it. Off by default; requires RAPIDAPI_KEY.
+ */
+function youtubeRapidSearchFallbackEnabled(): boolean {
+  return process.env.ENABLE_YOUTUBE_RAPID_SEARCH === "true" && Boolean(RAPIDAPI_KEY);
+}
+
+const RAPIDAPI_YT_SEARCH_HOST =
+  process.env.RAPIDAPI_YT_SEARCH_HOST || "yt-api.p.rapidapi.com";
+
 /** Max seconds per standard-YouTube (fair-use) clip — short transformative excerpt only. */
 function youtubeFairUseMaxClipSec(): number {
   const raw = process.env.FAIR_USE_YT_MAX_SEC?.trim();
@@ -10389,6 +10404,60 @@ type YoutubeSearchRow = {
   rel: number;
 };
 
+/**
+ * RONDE 10: quota-free YouTube search via RapidAPI (yt-api). Returns rows in the SAME shape the
+ * official-API producer returns, so all downstream relevance/person filtering and download code
+ * is unchanged. Defensive parsing — the scraped payload shape is not contractually stable — and
+ * fails open to [] on anything unexpected. Never used for the strict-CC path (caller-enforced).
+ */
+async function searchYoutubeViaRapidApi(
+  query: string,
+  sceneIndex: number,
+  maxResults: number
+): Promise<{ items?: YoutubeSearchRow["item"][] } | null> {
+  try {
+    const url = `https://${RAPIDAPI_YT_SEARCH_HOST}/search?query=${encodeURIComponent(query)}&type=video`;
+    const resp = await providerLimiter("youtube").run(() => fetchWithTimeout(
+      url,
+      12_000,
+      `YouTube RapidAPI search scene ${sceneIndex}`,
+      { headers: { "x-rapidapi-host": RAPIDAPI_YT_SEARCH_HOST, "x-rapidapi-key": RAPIDAPI_KEY } }
+    ));
+    if (!resp.ok) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube RapidAPI search HTTP ${resp.status} for "${query}"`);
+      return null;
+    }
+    const data = (await resp.json()) as {
+      data?: Array<{
+        type?: string;
+        videoId?: string;
+        title?: string;
+        description?: string;
+        thumbnail?: Array<{ url?: string }>;
+      }>;
+    };
+    const rows = (data.data ?? [])
+      .filter((r) => r?.type === "video" && typeof r.videoId === "string" && r.videoId.length > 0)
+      .slice(0, maxResults)
+      .map((r) => ({
+        id: { videoId: r.videoId },
+        snippet: {
+          title: r.title ?? "",
+          description: r.description ?? "",
+          thumbnails: {
+            high: { url: r.thumbnail?.[r.thumbnail.length - 1]?.url },
+            medium: { url: r.thumbnail?.[0]?.url },
+          },
+        },
+      }));
+    console.log(`[Pipeline] Scene ${sceneIndex}: YouTube RapidAPI search returned ${rows.length} video(s) for "${query}" (quota-free fallback)`);
+    return { items: rows };
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube RapidAPI search failed:`, (err as Error).message?.slice(0, 120));
+    return null;
+  }
+}
+
 // F3-45: temporarily exported (visibility only, no logic changed) so
 // server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
 // once that temporary diagnostic script is deleted.
@@ -10448,10 +10517,22 @@ export async function searchYoutubeVideoCandidates(
       return (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
     }
   );
-  if (!searchData) return [];
-  providerMetrics(sourcingCache, "youtube_cc").resultCount += searchData.items?.length ?? 0;
+  // RONDE 10: the official search 429s on quota after a few renders. When it yields nothing AND
+  // this is the fair-use path (never strict-CC — RapidAPI can't confirm a CC license), fall back
+  // to the quota-free RapidAPI search. Opt-in (ENABLE_YOUTUBE_RAPID_SEARCH=true + RAPIDAPI_KEY).
+  let effectiveSearchData = searchData;
+  if (
+    (!effectiveSearchData || (effectiveSearchData.items?.length ?? 0) === 0) &&
+    license === "any" &&
+    youtubeRapidSearchFallbackEnabled()
+  ) {
+    effectiveSearchData = await searchYoutubeViaRapidApi(query, sceneIndex, maxResults);
+  }
+  if (!effectiveSearchData) return [];
+  const searchDataResolved = effectiveSearchData;
+  providerMetrics(sourcingCache, "youtube_cc").resultCount += searchDataResolved.items?.length ?? 0;
 
-  return (searchData.items ?? [])
+  return (searchDataResolved.items ?? [])
     .map((item) => {
       const title = item.snippet?.title ?? "";
       const desc = item.snippet?.description ?? "";
