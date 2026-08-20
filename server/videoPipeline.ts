@@ -9795,32 +9795,44 @@ export async function fetchInternetArchiveClips(
       .slice(0, (count - fetched) * 3);
     if (!docs.length) continue;
 
-    for (const doc of docs) {
+    // F3-34 metadata shape (hoisted for the concurrent resolve below).
+    type IaMetaData = {
+      metadata?: {
+        licenseurl?: string | string[];
+        rights?: string | string[];
+        date?: string | string[];
+        year?: string | string[];
+      };
+      files?: Array<{ name: string; format: string; size?: string }>;
+      result?: Array<{ name: string; format: string; size?: string }>;
+    };
+
+    // RONDE 15: the per-doc metadata call (the slow part — archive.org's /metadata endpoint
+    // routinely hits the 8s timeout) used to run ONE AT A TIME inside `for (const doc of docs)`,
+    // so ~12 docs × up to 8s serialised to ~90s/scene and almost nothing was left to download
+    // (production logs: internet_archive results=192 but downloads=1, plus 150+ "metadata scene"
+    // timeouts). The providerLimiter already permits 4 concurrent IA requests, but the sequential
+    // loop only ever used one. Resolve metadata for a batch CONCURRENTLY (capped by the same
+    // limiter, so archive.org is not hit harder), then run the UNCHANGED license/size/download/
+    // trim decision over the resolved batch IN ORDER. Same candidates, same order, same dedup
+    // (filtered before the metadata call, exactly as before), same counters — just no longer
+    // serialised behind the slow metadata calls.
+    const IA_METADATA_BATCH = 4;
+    for (let batchStart = 0; batchStart < docs.length; batchStart += IA_METADATA_BATCH) {
       if (fetched >= count) break;
       if (cancelled()) break;
-      // Pre-download visual dedup: skip an archive.org identifier we already adopted this
-      // render, before the metadata call, license check, or download — see providerAssetKey.
-      if (providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "internet_archive", doc.identifier)) continue;
-      try {
-        // F3-34: fetch the full item record (metadata + files) instead of just the /files
-        // sub-resource, so the uploader-provided rights fields (metadata.licenseurl /
-        // metadata.rights — documented at https://help.archive.org/help/rights/ and
-        // https://archive.org/developers/md-record.html) are available before any download
-        // decision is made. Internet Archive's "partial fetch" convention
-        // (archive.org/metadata/{id}/{field}) is what made the old URL return only
-        // `{ result: [...] }` for the files field; dropping the "/files" suffix returns the
-        // full record as `{ metadata: {...}, files: [...], ... }` in the same single call —
-        // no new network call added.
-        type IaMetaData = {
-          metadata?: {
-            licenseurl?: string | string[];
-            rights?: string | string[];
-            date?: string | string[];
-            year?: string | string[];
-          };
-          files?: Array<{ name: string; format: string; size?: string }>;
-          result?: Array<{ name: string; format: string; size?: string }>;
-        };
+      const batchDocs = docs
+        .slice(batchStart, batchStart + IA_METADATA_BATCH)
+        // Pre-download visual dedup: skip an archive.org identifier we already adopted this
+        // render, before the metadata call, license check, or download — see providerAssetKey.
+        .filter((doc) => !providerAssetAlreadyUsed(usedProviderKeys, sourcingCache, "internet_archive", doc.identifier));
+
+      const resolvedBatch = await Promise.all(batchDocs.map(async (doc): Promise<{ doc: typeof doc; metaData: IaMetaData | null }> => {
+        // Cancellation short-circuit (F3-01): a doc whose callback has not started yet — queued
+        // behind the limiter, or a later batch — bails before spending a metadata call. Cancellation
+        // now stops the search at batch granularity (≤ IA_METADATA_BATCH in-flight) instead of the
+        // old per-doc granularity, which still prevents the 88-attempt churn that fix targeted.
+        if (cancelled()) return { doc, metaData: null };
         // Phase 6 provider asset cache: two cascades can legitimately surface the same
         // archive.org identifier via two different queries (the query cache above only
         // deduplicates identical queries). The metadata call is per-identifier, so it is cached
@@ -9829,17 +9841,16 @@ export async function fetchInternetArchiveClips(
         const cachedAsset = getCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier);
         if (cachedAsset && cachedAsset.licenseAllowed === false) {
           providerMetrics(sourcingCache, "internet_archive").licenseRejectedCacheHits++;
-          continue;
+          return { doc, metaData: null };
         }
         let metaData = cachedAsset?.metadata as IaMetaData | undefined;
         if (!metaData) {
+          // F3-34: fetch the full item record (metadata + files) — dropping the "/files" suffix
+          // returns `{ metadata, files, ... }` in one call so the uploader-provided rights fields
+          // are available before any download decision.
           const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
-          // RONDE 11 (render 521): RONDE 8 raised this from 8s to 15s to save slow WW2 items, but
-          // that BACKFIRED — 36 metadata calls each hung the full 15s, pushing the visual stage
-          // from ~24s to 47-65s/scene and a 1-min render to 12m44s, leaving every scene gray. A
-          // slow archive.org metadata endpoint is the common case, not a rare one; 8s cuts losers
-          // fast so the pipeline keeps moving. The genuinely-relevant items that need >8s are the
-          // exception, and losing them beats stalling every render.
+          // RONDE 11: 8s (not 15s) — a slow archive.org metadata endpoint is the common case, and
+          // cutting losers fast keeps the pipeline moving. RONDE 15 spends this 8s budget 4-wide.
           const metaResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
             metaUrl,
             8_000,
@@ -9848,7 +9859,7 @@ export async function fetchInternetArchiveClips(
           ));
           if (!metaResp.ok) {
             markInternetArchiveSearchResult(false);
-            continue;
+            return { doc, metaData: null };
           }
           markInternetArchiveSearchResult(true);
           metaData = await metaResp.json() as IaMetaData;
@@ -9862,6 +9873,14 @@ export async function fetchInternetArchiveClips(
           providerMetrics(sourcingCache, "internet_archive").metadataCacheHits++;
           providerMetrics(sourcingCache, "internet_archive").licenseCacheHits++;
         }
+        return { doc, metaData: metaData ?? null };
+      }));
+
+      for (const { doc, metaData } of resolvedBatch) {
+      if (fetched >= count) break;
+      if (cancelled()) break;
+      if (!metaData) continue;
+      try {
 
         // F3-34/F3-39 license gate: reject before any download unless the item's own metadata
         // carries an explicit, permissive-enough licenseurl OR (when licenseurl is absent) an
@@ -9972,6 +9991,7 @@ export async function fetchInternetArchiveClips(
         try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       } catch (err) {
         console.warn(`[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} failed:`, (err as Error).message);
+      }
       }
     }
     } catch (err) {

@@ -68,10 +68,18 @@ describe("fetchInternetArchiveClips cancellation short-circuit (production fix)"
     expect(mockedFetch).toHaveBeenCalled();
   });
 
-  it("stops immediately once cancellation arises mid-loop, after the first candidate has already started — no further metadata/download calls for later candidates", async () => {
+  it("stops at batch granularity once cancellation arises mid-loop — the NEXT batch's candidates are never reached", async () => {
+    // RONDE 15: Internet Archive metadata is now resolved a batch (IA_METADATA_BATCH=4) at a time
+    // concurrently instead of one doc at a time, so cancellation short-circuits at batch
+    // granularity, not per-doc: the ≤4 metadata calls already in flight for the current batch may
+    // complete, but the loop breaks before the next batch — which is what still prevents the
+    // 88-attempt/18-minute churn the original cancellation fix targeted. Here 5 docs span two
+    // batches (4 + 1); cancellation fires during the first batch, so the 5th doc (the second
+    // batch) is never fetched.
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-ia-midloop-cancel-test-"));
+    const metadataUrlsFetched: string[] = [];
     mockedFetch
-      // Call 1: the query search — returns two candidate docs.
+      // Call 1: the query search — returns five candidate docs (two batches: docA-D, then docE).
       .mockImplementationOnce(async () => ({
         ok: true,
         json: async () => ({
@@ -79,14 +87,17 @@ describe("fetchInternetArchiveClips cancellation short-circuit (production fix)"
             docs: [
               { identifier: "docA", title: "a" },
               { identifier: "docB", title: "b" },
+              { identifier: "docC", title: "c" },
+              { identifier: "docD", title: "d" },
+              { identifier: "docE", title: "e" },
             ],
           },
         }),
       } as never))
-      // Call 2: docA's metadata fetch — cancellation arrives here, mid-loop, exactly like a
-      // stall-requeue/explicit cancel firing while the production render was already partway
-      // through this scene's Internet Archive search.
-      .mockImplementationOnce(async () => {
+      // Every subsequent call is a metadata fetch. The first one fires cancellation, exactly like
+      // a stall-requeue/explicit cancel firing partway through this scene's Internet Archive search.
+      .mockImplementation(async (url: string) => {
+        metadataUrlsFetched.push(String(url));
         requestVideoGenerationCancel(videoId);
         return { ok: false } as never;
       });
@@ -96,9 +107,10 @@ describe("fetchInternetArchiveClips cancellation short-circuit (production fix)"
     );
 
     expect(results).toEqual([]);
-    // Exactly 2 calls: the query search + docA's metadata fetch. docB must never be reached —
-    // proves the per-doc loop's cancellation check (not just the function-entry check) is what
-    // stops the loop.
-    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    // docE is in the SECOND batch — cancellation during the first batch must stop the loop before
+    // it. The first batch's ≤4 concurrent metadata calls may complete, but nothing from batch 2.
+    expect(metadataUrlsFetched.some((u) => u.includes("docE"))).toBe(false);
+    // And the whole thing is bounded: 1 search + at most the first batch's 4 metadata calls.
+    expect(mockedFetch.mock.calls.length).toBeLessThanOrEqual(5);
   });
 });
