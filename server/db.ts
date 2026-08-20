@@ -1129,6 +1129,7 @@ import {
   InsertMediaArchiveAsset,
   MediaArchiveAsset,
   mediaArchiveAssets,
+  visualSearchMemory,
   mediaArchives,
   backfillCursors,
 } from "../drizzle/schema";
@@ -1563,6 +1564,17 @@ export async function deleteMediaArchiveAssets(ids: number[]) {
   const chunkSize = 500;
   for (let i = 0; i < uniqueIds.length; i += chunkSize) {
     const chunk = uniqueIds.slice(i, i + chunkSize);
+    // RONDE 12 (admin "Delete failed"): two tables carry a foreign key to media_archive_assets —
+    // media_archive_asset_embeddings.assetId and visual_search_memory.assetId — so MySQL rejects
+    // the asset DELETE while any child row still points at it (the exact error seen in the admin).
+    // Remove the dependent rows first, then the asset. visual_search_memory.assetId is nullable,
+    // so it is cleared (set null) rather than deleting the learned query/source memory; the
+    // embedding rows are asset-specific and are deleted outright.
+    await db.delete(mediaArchiveAssetEmbeddings).where(inArray(mediaArchiveAssetEmbeddings.assetId, chunk));
+    await db
+      .update(visualSearchMemory)
+      .set({ assetId: null })
+      .where(inArray(visualSearchMemory.assetId, chunk));
     await db.delete(mediaArchiveAssets).where(inArray(mediaArchiveAssets.id, chunk));
   }
   return uniqueIds.length;
