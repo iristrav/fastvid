@@ -252,7 +252,9 @@ describe("FASE 7.3 Test 7 — FASE 7.1 streaming / AbortSignal fix intact", () =
 
   it("downloadToFileStreaming still streams instead of buffering", () => {
     const idx = pipelineSrc.indexOf("export async function downloadToFileStreaming(");
-    const scoped = pipelineSrc.slice(idx, idx + 3500);
+    // RONDE 21 widened this window: the function grew when the body-read stall guard was added,
+    // pushing createWriteStream past the old fixed 3500-char slice. The assertion is unchanged.
+    const scoped = pipelineSrc.slice(idx, idx + 6000);
     expect(scoped).not.toContain("arrayBuffer()");
     expect(scoped).toContain("fs.createWriteStream(destPath)");
   });

@@ -157,7 +157,7 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -4021,17 +4021,58 @@ export async function downloadToFileStreaming(
   // methods it actually exposes at runtime (same reasoning as the pre-existing .on("data", ...)
   // usage just below).
   const nodeBody = body as unknown as { destroyed: boolean; destroy: (error?: Error) => void };
+  // RONDE 21: guard the BODY read against a stalled transfer.
+  //
+  // Nothing covered this before. fetchWithTimeout's AbortController is already disarmed by the
+  // time we get here (its timer is cleared the moment fetch() resolves, i.e. when the HEADERS
+  // arrive), and Node streams have no inactivity timeout of their own. A server that sends
+  // headers and then stops sending bytes — socket still open, routine for overloaded archive
+  // hosts — left `await pipeline(...)` below waiting forever. Render 527 died exactly this way:
+  // one stalled download, and because every layer above it is a plain `await`, the entire render
+  // parked behind it with zero activity until the watchdog gave up 22 minutes later.
+  //
+  // The timer is reset on every chunk, so this only fires when the transfer has genuinely stopped
+  // delivering — a slow-but-progressing download is never interrupted. Destroying the stream makes
+  // pipeline() reject, which callers already handle as an ordinary failed download, so the sourcing
+  // cascade simply moves on to the next candidate instead of hanging.
+  const stallMs = downloadStallTimeoutMs();
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearStallTimer = (): void => {
+    if (stallTimer) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+  };
+  const armStallTimer = (): void => {
+    clearStallTimer();
+    stallTimer = setTimeout(() => {
+      if (!nodeBody.destroyed) {
+        nodeBody.destroy(
+          pipelineError(
+            PIPELINE_ERROR.TIMEOUT,
+            `Timeout: ${label} stalled — no data for ${Math.round(stallMs / 1000)}s after ${bytesWritten} byte(s)`
+          )
+        );
+      }
+    }, stallMs);
+    stallTimer.unref?.();
+  };
   body.on("data", (chunk: Buffer) => {
     bytesWritten += chunk.length;
+    armStallTimer();
     if (maxBytes !== undefined && bytesWritten > maxBytes && !nodeBody.destroyed) {
       nodeBody.destroy(new Error(`${label}: response exceeded maximum size of ${maxBytes} bytes`));
     }
   });
+  // Arm before the transfer starts so a body that never delivers a single byte is caught too.
+  armStallTimer();
   try {
     await pipeline(body, fs.createWriteStream(destPath));
   } catch (err) {
     try { fs.unlinkSync(destPath); } catch { /* ignore */ }
     throw err;
+  } finally {
+    clearStallTimer();
   }
   return { response, bytesWritten };
 }

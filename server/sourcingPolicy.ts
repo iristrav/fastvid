@@ -713,6 +713,30 @@ export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
  * Deliberately generous — this is a safety valve, not a pacing knob: it must not cut short a
  * rescue that is genuinely still finding footage, only stop an unbounded one.
  */
+/**
+ * RONDE 21: stall (idle) timeout for a download's BODY read.
+ *
+ * fetchWithTimeout arms an AbortController, awaits fetch(), then clears its timer in `finally`.
+ * fetch() resolves as soon as the response HEADERS arrive — so by the time the caller streams the
+ * actual bytes, that timer is already disarmed and nothing covers the transfer. Node streams have
+ * no default inactivity timeout either, so a server that sends headers and then goes quiet (socket
+ * open, zero bytes — routine for overloaded archive hosts) parks `await pipeline(...)` forever.
+ * That is exactly how render 527 hung: one stalled body read, the whole render stopped behind it.
+ *
+ * This is deliberately an IDLE timeout, not a total-duration one: it measures the gap between
+ * chunks, so a large file that is slowly but steadily arriving is never interrupted, while a
+ * transfer that has genuinely stopped delivering is cut loose. Making it a total cap instead would
+ * break legitimate slow downloads — the failure mode we are fixing is "no progress", not "slow".
+ */
+export function downloadStallTimeoutMs(): number {
+  const raw = process.env.DOWNLOAD_STALL_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5_000 && n <= 300_000) return n;
+  }
+  return 30_000;
+}
+
 export function composeRescueWallClockMs(videoLength?: string | null): number {
   const raw = process.env.COMPOSE_RESCUE_WALL_CLOCK_MS?.trim();
   if (raw) {
