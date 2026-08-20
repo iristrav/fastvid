@@ -732,13 +732,22 @@ function sceneFetchAborted(): boolean {
   return sceneFetchScopeStorage.getStore()?.controller.signal.aborted ?? false;
 }
 
+// RONDE 19: render 526 burned its entire 180s/scene budget re-hammering providers that were
+// timing out — GDELT 74×, SepiaSearch 44×, Pexels 40×, Pixabay/Internet Archive 19× each — because
+// every visual/search breaker only tripped after 8 consecutive failures. Trip them after 3 so a
+// down provider is parked in ~3 failed calls instead of ~8, and the scene budget flows to the
+// sources that ARE responding (SerpAPI, YouTube CC). Voice (TTS) breakers keep their own 8 — they
+// fire far fewer calls and a premature voice fail-over is more disruptive than a skipped image
+// source. One shared constant so this stays in lockstep across every visual/search provider.
+const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;
+
 // Circuit breaker for commons.wikimedia.org: process-wide (not per-render), same idea as
 // llm.ts's groqCooldownUntilMs. Live logs showed a full render (100+ beats over an hour-plus)
 // with a 0% Wikimedia success rate — every single search either timed out or the fetch itself
 // failed (network-level error, empty reason) — while still paying the full per-query timeout on
 // every single beat that tried it. Once Wikimedia looks down, stop paying that cost: skip it
 // outright for a cooldown window instead of re-discovering "still down" one slow beat at a time.
-const WIKIMEDIA_FAILURE_STREAK_TRIP = 8;
+const WIKIMEDIA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const WIKIMEDIA_COOLDOWN_MS = 3 * 60_000;
 let wikimediaFailureStreak = 0;
 let wikimediaCooldownUntilMs = 0;
@@ -767,7 +776,7 @@ function markWikimediaSearchResult(success: boolean): void {
 // identical 100%-failure pattern (30 failures, 0 successes) in the same log windows as
 // Wikimedia — timeouts and outright fetch errors, all paying their own 6-10s search cost
 // before giving up on each beat.
-const INTERNET_ARCHIVE_FAILURE_STREAK_TRIP = 8;
+const INTERNET_ARCHIVE_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const INTERNET_ARCHIVE_COOLDOWN_MS = 3 * 60_000;
 let internetArchiveFailureStreak = 0;
 let internetArchiveCooldownUntilMs = 0;
@@ -797,7 +806,7 @@ function markInternetArchiveSearchResult(success: boolean): void {
 // outage or rate-limit had no skip mechanism, so every beat that reached the stock-fallback tier
 // paid the full 10s search timeout (plus up to 3x45s/20s of download retries) for the whole
 // render, with real production logs showing repeated Pexels search failures/timeouts in a row.
-const PEXELS_FAILURE_STREAK_TRIP = 8;
+const PEXELS_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const PEXELS_COOLDOWN_MS = 3 * 60_000;
 let pexelsFailureStreak = 0;
 let pexelsCooldownUntilMs = 0;
@@ -822,7 +831,7 @@ function markPexelsSearchResult(success: boolean): void {
   }
 }
 
-const PIXABAY_FAILURE_STREAK_TRIP = 8;
+const PIXABAY_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const PIXABAY_COOLDOWN_MS = 3 * 60_000;
 let pixabayFailureStreak = 0;
 let pixabayCooldownUntilMs = 0;
@@ -852,7 +861,7 @@ function markPixabaySearchResult(success: boolean): void {
 // than Wikimedia/Internet Archive), but it's the exact same shape of dependency — an
 // unauthenticated-adjacent external search API with no existing protection against a sustained
 // outage burning the same per-query timeout on every beat that reaches it.
-const EUROPEANA_FAILURE_STREAK_TRIP = 8;
+const EUROPEANA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const EUROPEANA_COOLDOWN_MS = 3 * 60_000;
 let europeanaFailureStreak = 0;
 let europeanaCooldownUntilMs = 0;
@@ -884,7 +893,7 @@ function markEuropeanaSearchResult(success: boolean): void {
 // with no existing skip mechanism, so a sustained outage on any of these paid the full per-query
 // timeout on every beat that reached it instead of being skipped after a few consecutive
 // failures, same as Europeana's "not observed failing yet, but the same exposure" reasoning.
-const NARA_FAILURE_STREAK_TRIP = 8;
+const NARA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const NARA_COOLDOWN_MS = 3 * 60_000;
 let naraFailureStreak = 0;
 let naraCooldownUntilMs = 0;
@@ -909,7 +918,7 @@ function markNaraSearchResult(success: boolean): void {
   }
 }
 
-const FLICKR_FAILURE_STREAK_TRIP = 8;
+const FLICKR_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const FLICKR_COOLDOWN_MS = 3 * 60_000;
 let flickrFailureStreak = 0;
 let flickrCooldownUntilMs = 0;
@@ -934,7 +943,7 @@ function markFlickrSearchResult(success: boolean): void {
   }
 }
 
-const SEPIASEARCH_FAILURE_STREAK_TRIP = 8;
+const SEPIASEARCH_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const SEPIASEARCH_COOLDOWN_MS = 3 * 60_000;
 let sepiaSearchFailureStreak = 0;
 let sepiaSearchCooldownUntilMs = 0;
@@ -959,7 +968,37 @@ function markSepiaSearchResult(success: boolean): void {
   }
 }
 
-const VIMEO_FAILURE_STREAK_TRIP = 8;
+// RONDE 19: GDELT was the one external source with NO breaker at all. In render 526 it fired 4
+// station queries per beat (CNN/FOX/MSNBC/BBC), each with a 22s timeout, and re-tried on every
+// beat of a stuck scene — 74 GDELT timeouts in a single 9-minute render, most of the wasted
+// budget. Same process-wide streak breaker as every other source: once GDELT's TV endpoint stops
+// responding, park it for a cooldown window instead of re-paying 4×22s per beat.
+const GDELT_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
+const GDELT_COOLDOWN_MS = 3 * 60_000;
+let gdeltFailureStreak = 0;
+let gdeltCooldownUntilMs = 0;
+
+function isGdeltInCooldown(): boolean {
+  return Date.now() < gdeltCooldownUntilMs;
+}
+
+function markGdeltSearchResult(success: boolean): void {
+  if (success) {
+    gdeltFailureStreak = 0;
+    return;
+  }
+  gdeltFailureStreak++;
+  if (gdeltFailureStreak >= GDELT_FAILURE_STREAK_TRIP) {
+    gdeltCooldownUntilMs = Date.now() + GDELT_COOLDOWN_MS;
+    gdeltFailureStreak = 0;
+    console.warn(
+      `[Pipeline] GDELT: ${GDELT_FAILURE_STREAK_TRIP} consecutive search failures — ` +
+        `skipping for ${Math.round(GDELT_COOLDOWN_MS / 60_000)}min`
+    );
+  }
+}
+
+const VIMEO_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const VIMEO_COOLDOWN_MS = 3 * 60_000;
 let vimeoFailureStreak = 0;
 let vimeoCooldownUntilMs = 0;
@@ -984,7 +1023,7 @@ function markVimeoSearchResult(success: boolean): void {
   }
 }
 
-const MEDIA_CCC_FAILURE_STREAK_TRIP = 8;
+const MEDIA_CCC_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const MEDIA_CCC_COOLDOWN_MS = 3 * 60_000;
 let mediaCccFailureStreak = 0;
 let mediaCccCooldownUntilMs = 0;
@@ -1009,7 +1048,7 @@ function markMediaCccSearchResult(success: boolean): void {
   }
 }
 
-const NASA_FAILURE_STREAK_TRIP = 8;
+const NASA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const NASA_COOLDOWN_MS = 3 * 60_000;
 let nasaFailureStreak = 0;
 let nasaCooldownUntilMs = 0;
@@ -1036,7 +1075,7 @@ function markNasaSearchResult(success: boolean): void {
 
 // Same breaker, applied to the two remaining external search providers that had no protection
 // against a sustained outage: YouTube (search/CC-clips/thumbnails) and SerpAPI (image search).
-const YOUTUBE_FAILURE_STREAK_TRIP = 8;
+const YOUTUBE_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const YOUTUBE_COOLDOWN_MS = 3 * 60_000;
 let youtubeFailureStreak = 0;
 let youtubeCooldownUntilMs = 0;
@@ -1106,7 +1145,7 @@ function parseRetryAfterMs(value: string | null | undefined): number | undefined
   return undefined;
 }
 
-const SERPAPI_FAILURE_STREAK_TRIP = 8;
+const SERPAPI_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const SERPAPI_COOLDOWN_MS = 3 * 60_000;
 let serpApiFailureStreak = 0;
 let serpApiCooldownUntilMs = 0;
@@ -1211,6 +1250,33 @@ function markGoogleTtsResult(success: boolean): void {
         `skipping for ${Math.round(GOOGLE_TTS_COOLDOWN_MS / 60_000)}min`
     );
   }
+}
+
+/**
+ * RONDE 19 test seam: clear every provider circuit-breaker's process-wide streak/cooldown state.
+ * These breakers are module-level singletons, so a test that deliberately fails providers to
+ * exercise one behavior can leave a provider parked in cooldown for an unrelated later assertion.
+ * With the trip lowered to 3, that cross-talk now bites a single multi-beat test. Not used by any
+ * production path — only tests that need to isolate a fresh cascade from earlier failures call it.
+ */
+export function __resetProviderCircuitBreakersForTest(): void {
+  wikimediaFailureStreak = 0; wikimediaCooldownUntilMs = 0;
+  internetArchiveFailureStreak = 0; internetArchiveCooldownUntilMs = 0;
+  pexelsFailureStreak = 0; pexelsCooldownUntilMs = 0;
+  pixabayFailureStreak = 0; pixabayCooldownUntilMs = 0;
+  europeanaFailureStreak = 0; europeanaCooldownUntilMs = 0;
+  naraFailureStreak = 0; naraCooldownUntilMs = 0;
+  flickrFailureStreak = 0; flickrCooldownUntilMs = 0;
+  sepiaSearchFailureStreak = 0; sepiaSearchCooldownUntilMs = 0;
+  gdeltFailureStreak = 0; gdeltCooldownUntilMs = 0;
+  vimeoFailureStreak = 0; vimeoCooldownUntilMs = 0;
+  mediaCccFailureStreak = 0; mediaCccCooldownUntilMs = 0;
+  nasaFailureStreak = 0; nasaCooldownUntilMs = 0;
+  youtubeFailureStreak = 0; youtubeCooldownUntilMs = 0; youtubeRateLimitStreak = 0;
+  serpApiFailureStreak = 0; serpApiCooldownUntilMs = 0;
+  elevenLabsFailureStreak = 0; elevenLabsCooldownUntilMs = 0;
+  fishAudioFailureStreak = 0; fishAudioCooldownUntilMs = 0;
+  googleTtsFailureStreak = 0; googleTtsCooldownUntilMs = 0;
 }
 
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
@@ -8537,6 +8603,9 @@ export async function fetchGdeltTvNewsClips(
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
+  // RONDE 19: honor the GDELT breaker — once its TV endpoint has timed out repeatedly, skip the
+  // whole tier instead of re-paying 4×22s station queries on every beat of a stuck scene.
+  if (isGdeltInCooldown()) return [];
 
   const results: CelebrityClipCandidate[] = [];
   const seenPreviews = new Set<string>();
@@ -8557,6 +8626,10 @@ export async function fetchGdeltTvNewsClips(
     // Fire all per-query searches concurrently — pure network fetches, results are merged
     // and globally re-sorted by score afterward, so query order doesn't matter.
     type GdeltRawClip = { preview_url?: string; snippet?: string; show?: string; station?: string };
+    // RONDE 19: track whether GDELT's endpoint actually responded this call so the breaker can trip
+    // on a run of pure timeouts. A query that responds (even with zero clips) counts as reachable.
+    let gdeltAnyResponse = false;
+    let gdeltAnyError = false;
     const perQueryClips = await Promise.all(
       queryList.slice(0, queryCap).map(async (query) => {
         try {
@@ -8587,13 +8660,20 @@ export async function fetchGdeltTvNewsClips(
               }
             }
           );
+          gdeltAnyResponse = true;
           return (data?.clips ?? []).map((clip) => ({ clip, query }));
         } catch (err) {
+          gdeltAnyError = true;
           console.warn(`[Pipeline] GDELT TV query "${query}" failed:`, (err as Error).message);
           return [];
         }
       })
     );
+    // Trip/reset the breaker: reachable (any response) resets the streak; an all-timeout batch
+    // increments it toward the cooldown. A batch that neither responded nor errored (e.g. all
+    // cache hits) leaves the streak untouched.
+    if (gdeltAnyResponse) markGdeltSearchResult(true);
+    else if (gdeltAnyError) markGdeltSearchResult(false);
 
     const flatClips = perQueryClips.flat();
     providerMetrics(sourcingCache, "gdelt_tv").resultCount += flatClips.length;

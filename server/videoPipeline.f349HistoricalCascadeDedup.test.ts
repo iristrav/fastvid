@@ -87,8 +87,10 @@ describe("F3-49 historical archival cascade — beat-level dedup guard", () => {
   it("does not re-run the cascade for the same beat, but still runs it for a different beat", async () => {
     // Two real (mocked-miss) cascades in this test — each tier's real timeout/retry plumbing
     // adds up past the 5s default, even though every HTTP call itself resolves instantly.
-    const { fetchHistoricalBeatVideo, createVisualDedupState, getPipelinePerfProfile } =
-      await import("./videoPipeline");
+    const {
+      fetchHistoricalBeatVideo, createVisualDedupState, getPipelinePerfProfile,
+      __resetProviderCircuitBreakersForTest,
+    } = await import("./videoPipeline");
     const { buildMediaSearchIntent } = await import("./mediaResearchEngine");
 
     const dedup = createVisualDedupState(getPipelinePerfProfile("8-10"));
@@ -126,6 +128,12 @@ describe("F3-49 historical archival cascade — beat-level dedup guard", () => {
     expect(fetchCallCount).toBe(callsAfterFirst); // no new external calls at all
 
     // 3) A DIFFERENT beat in the same scene still gets a completely normal first attempt.
+    // RONDE 19: the provider circuit-breakers now trip after 3 consecutive failures (was 8), so
+    // beat A's deliberate all-miss cascade parks several providers in cooldown. That is correct
+    // production behavior, but here it would mask the thing THIS test checks — that the beat-level
+    // dedup guard is beat-scoped, not global. Clear the breakers so beat B exercises a fresh
+    // cascade rather than being short-circuited by an unrelated mechanism.
+    __resetProviderCircuitBreakersForTest();
     const third = await fetchHistoricalBeatVideo(
       beatB, scene, dir, scene.index, 4, dedup, intentFor(beatB), {}, "test"
     );
