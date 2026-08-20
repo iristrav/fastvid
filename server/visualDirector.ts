@@ -14,6 +14,17 @@ import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 export const VISUAL_DIRECTOR_MIN_SEC = 3.5;
 export const VISUAL_DIRECTOR_MAX_SEC = 5;
 
+/**
+ * RONDE 17: the video's overall subject, threaded into the director prompt so search queries
+ * resolve pronouns and anchor to real named entities (person/place/org/event/year) instead of
+ * generic B-roll. Optional and backward-compatible — undefined reproduces the old per-sentence
+ * behaviour exactly.
+ */
+export type DirectorVideoContext = {
+  title?: string;
+  topic?: string;
+};
+
 export type VisualDirectorScene = {
   /** Index of the source narration sentence in script order. */
   source_sentence_index: number;
@@ -303,14 +314,34 @@ export function estimateDirectorSceneHoldSec(
   );
 }
 
-function buildDirectorBatchPrompt(sentences: string[], offset: number): string {
+function buildDirectorBatchPrompt(
+  sentences: string[],
+  offset: number,
+  videoContext?: DirectorVideoContext
+): string {
   const lines = sentences
     .map((s, i) => `${offset + i}: ${s.replace(/\s+/g, " ").trim()}`)
     .join("\n");
 
+  // RONDE 17: when we know the documentary's overall subject, give the director that context so it
+  // resolves pronouns ("he", "the city", "that year") to the real named entity and bakes the
+  // person/place/organization/event/year INTO the search query — the difference between generic
+  // stock ("man speaking podium") and footage that actually matches ("Winston Churchill 1940
+  // speech"). Empty context reproduces the old behaviour exactly.
+  const topicLine = [videoContext?.title?.trim(), videoContext?.topic?.trim()]
+    .filter((v): v is string => Boolean(v && v.length > 1))
+    .join(" — ")
+    .slice(0, 300);
+  const contextBlock = topicLine
+    ? `DOCUMENTARY SUBJECT: ${topicLine}
+Use this subject to resolve every pronoun and vague reference in the sentences below to the specific person/place/organization/event it means, and to decide which named entities belong in each search_query.
+
+`
+    : "";
+
   return `${DOCUMENTARY_EDITOR_VIEWER_QUESTION}
 
-Describe ONE concrete visual scene per sentence (subject + action + setting). Search footage from that scene only — never from the spoken words.
+${contextBlock}Describe ONE concrete visual scene per sentence (subject + action + setting). Search footage from that scene only — never from the spoken words.
 
 You are a professional documentary VISUAL DIRECTOR. Before any footage search, plan what the camera shows for each voice-over line.
 
@@ -326,9 +357,12 @@ Each scene MUST include:
 
 Rules:
 - MAX 1 visual idea per scene
-- Split multi-concept sentences into separate scenes with different visual_description + search_query
+- BE SPECIFIC, not generic: when the sentence or the documentary subject names a real PERSON, PLACE, ORGANIZATION, EVENT or YEAR, put it IN the search_query. Prefer "German soldiers Berlin 1945" over "soldiers marching"; "Elon Musk Tesla factory" over "man in factory"; "Amsterdam canal houses" over "old buildings".
+- Resolve pronouns and vague references ("he", "she", "they", "the leader", "the city", "that year") to the concrete named entity from the documentary subject — never emit a query built on a bare pronoun.
+- Only invent an entity that is actually stated or clearly implied by the sentence/subject — never guess a name the script does not support. If no specific entity fits, describe a concrete generic scene instead.
 - search_query must describe visible footage, not abstract concepts (no: success, growth, strategy)
 - Do NOT search on voice-over words — search on what the viewer should see
+- Split multi-concept sentences into separate scenes with different visual_description + search_query
 - Script may be Dutch — all director fields except spoken_text must be English
 - Each scene will be 3–5 seconds on screen
 
@@ -341,6 +375,11 @@ Example sentence (Dutch):
   emotion: "focus"
   search_query: "person laptop office desk"
 (NOT "AI automation" or "innovation" — show what the viewer LITERALLY sees)
+
+Example — with a documentary subject "Adolf Hitler — the final days in the bunker":
+sentence "He gave his last orders as the enemy closed in."
+→ visual_description: "Adolf Hitler in a cramped underground bunker giving orders to officers, 1945."
+  search_query: "Adolf Hitler bunker 1945" (NOT "man giving orders" — anchor to the real subject)
 
 Example sentence (Dutch):
 "Dutch cyclists fill Amsterdam while highways expand outside the city."
@@ -378,7 +417,8 @@ function normalizeDirectorScene(
 
 async function generateDirectorBatch(
   sentences: string[],
-  offset: number
+  offset: number,
+  videoContext?: DirectorVideoContext
 ): Promise<VisualDirectorScene[]> {
   if (sentences.length === 0) return [];
 
@@ -391,7 +431,7 @@ async function generateDirectorBatch(
             "You are an expert documentary visual director. Return valid JSON only. " +
             "Answer the editorial viewer question first, then plan filmable B-roll from that scene — never keyword-copy narration.",
         },
-        { role: "user", content: buildDirectorBatchPrompt(sentences, offset) },
+        { role: "user", content: buildDirectorBatchPrompt(sentences, offset, videoContext) },
       ],
       preferProvider: "groq",
       response_format: DIRECTOR_JSON_SCHEMA,
@@ -428,7 +468,10 @@ function fallbackDirectorScene(sentence: string, index: number): VisualDirectorS
 }
 
 /** Run visual director on full script — must complete before footage search. */
-export async function generateVisualDirectorPlan(script: string): Promise<VisualDirectorScene[]> {
+export async function generateVisualDirectorPlan(
+  script: string,
+  videoContext?: DirectorVideoContext
+): Promise<VisualDirectorScene[]> {
   const sentences = extractNarrationSentences(script);
   if (sentences.length === 0) return [];
 
@@ -436,7 +479,7 @@ export async function generateVisualDirectorPlan(script: string): Promise<Visual
 
   for (let offset = 0; offset < sentences.length; offset += BATCH_SIZE) {
     const batch = sentences.slice(offset, offset + BATCH_SIZE);
-    const batchScenes = await generateDirectorBatch(batch, offset);
+    const batchScenes = await generateDirectorBatch(batch, offset, videoContext);
     all.push(...batchScenes);
   }
 

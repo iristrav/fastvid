@@ -41,6 +41,7 @@ import {
   VISUAL_DIRECTOR_MAX_SEC,
   VISUAL_DIRECTOR_MIN_SEC,
   type VisualDirectorScene,
+  type DirectorVideoContext,
 } from "./visualDirector";
 import { maxDirectorBeatsForSceneDuration } from "./vidrushQuality";
 
@@ -941,9 +942,10 @@ async function generateIntentBatch(
 
 /** Generate full visual intent plan via Visual Director (runs before footage search). */
 export async function generateScriptVisualIntents(
-  script: string
+  script: string,
+  videoContext?: DirectorVideoContext
 ): Promise<ScriptVisualIntentEntry[]> {
-  const directorScenes = await generateVisualDirectorPlan(script);
+  const directorScenes = await generateVisualDirectorPlan(script, videoContext);
   return directorScenes.map(directorSceneToIntent);
 }
 
@@ -1000,13 +1002,14 @@ export async function generateScriptVisualKeywords(
 /** Generate visual intents and merge into video metadata (script text unchanged). */
 export async function attachScriptVisualKeywords(
   script: string,
-  metadata: unknown = {}
+  metadata: unknown = {},
+  videoContext?: DirectorVideoContext
 ): Promise<{
   metadata: Record<string, unknown>;
   keywords: ScriptVisualKeywordEntry[];
   intents: ScriptVisualIntentEntry[];
 }> {
-  const directorScenes = await generateVisualDirectorPlan(script);
+  const directorScenes = await generateVisualDirectorPlan(script, videoContext);
   const intents = directorScenes.map(directorSceneToIntent);
   const keywords = intents.map(intentToKeywordEntry);
   return {

@@ -550,7 +550,9 @@ async function generateScriptOnly(videoId: number, prompt: string, videoLengthRa
     // Save script and return (no pause — caller decides next step)
     scriptContent = stripVisualTagsFromScript(scriptContent);
     try {
-      const attached = await attachScriptVisualKeywords(scriptContent, metadata);
+      // RONDE 17: give the Visual Director the video's subject so search queries anchor to the
+      // real named entities (person/place/event/year) instead of generic B-roll.
+      const attached = await attachScriptVisualKeywords(scriptContent, metadata, { title, topic: prompt });
       metadata = attached.metadata;
     } catch (err) {
       console.warn(`[Script] Video ${videoId}: visual keyword generation failed (non-fatal):`, err);
@@ -1090,7 +1092,11 @@ export const appRouter = router({
         await updateVideoStatus(video.id, "awaiting_approval", { script: finalScript });
       }
       try {
-        const attached = await attachScriptVisualKeywords(finalScript, metadataForApprove);
+        // RONDE 17: anchor the Visual Director's search queries to this video's real subject.
+        const attached = await attachScriptVisualKeywords(finalScript, metadataForApprove, {
+          title: video.title ?? undefined,
+          topic: video.prompt ?? undefined,
+        });
         metadataForApprove = attached.metadata;
       } catch (err) {
         console.warn(`[Script] Video ${video.id}: visual keyword regen failed (non-fatal):`, err);
