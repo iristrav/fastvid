@@ -157,7 +157,8 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs } from "./sourcingPolicy";
+import { archiveClipHasBakedEditText } from "./archiveClipFilter";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -20460,6 +20461,39 @@ function archiveVisionTryStrict(fastMode = false, videoLength?: string): number 
 const ARCHIVE_VISION_TRY_RELAXED = 10;
 const STOCK_QUERY_CAP = 5;
 
+/**
+ * RONDE 23: has this clip got baked-in on-screen text (burnt-in subtitles, news chyrons, title
+ * cards, editing-software UI, dominant watermarks)?
+ *
+ * Keyed by clipContentKey, not by path: the same source asset gets re-offered to many beats under
+ * different filenames, and the verdict depends only on the pixels. Without this, a single clip
+ * could cost one vision call per beat that considers it. Curated assets short-circuit on their own
+ * DB-cached verdict (clipContentKey returns their asset key), so they are never re-analysed here.
+ *
+ * Fails OPEN on error: if the vision call breaks, an unchecked clip is allowed through rather than
+ * emptying the whole cascade. The check is also inert when no vision key is configured.
+ */
+const beatClipBakedTextCache = new Map<string, boolean>();
+
+async function beatClipHasBakedText(clipPath: string): Promise<boolean> {
+  if (!beatClipTextFilterEnabled()) return false;
+  const key = clipContentKey(clipPath);
+  const cached = beatClipBakedTextCache.get(key);
+  if (cached !== undefined) return cached;
+  let verdict = false;
+  try {
+    verdict = await archiveClipHasBakedEditText(clipPath, "video/mp4");
+  } catch (err) {
+    console.warn(
+      `[Pipeline] baked-text check failed for ${path.basename(clipPath)} — allowing clip:`,
+      (err as Error).message?.slice(0, 120)
+    );
+    verdict = false;
+  }
+  beatClipBakedTextCache.set(key, verdict);
+  return verdict;
+}
+
 /** Vision gate on every adopted beat clip; optional relaxed floor for emergency geo stock. */
 async function beatClipPassesVisionGate(
   clipPath: string,
@@ -20479,6 +20513,26 @@ async function beatClipPassesVisionGate(
       ? stockClipQualityFloor(dedup.videoLength)
       : effectiveMinClipQualityScore(dedup.perf.fastStockMode, isFastShortVideoLength(dedup.videoLength)));
   const visualDesc = beatGateVisualDescription(beat, semanticProfile);
+  // RONDE 23: reject clips with baked-in on-screen text BEFORE the CLIP scoring below.
+  //
+  // The check itself already existed (archiveClipHasBakedEditText) but was wired into exactly one
+  // call site: the curated archive's adoption path. Everything sourced externally — YouTube CC,
+  // GDELT TV news, Internet Archive, SepiaSearch, Wikimedia, Openverse, SerpAPI, stock — reached
+  // the timeline with no text check whatsoever, which is why burnt-in subtitles and news chyrons
+  // kept showing up in finished videos. GDELT is the starkest case: it serves CNN/FOX/MSNBC/BBC
+  // broadcast segments, which essentially always carry lower-thirds and tickers.
+  //
+  // This function is the right place precisely because of the comment below it: every rescue and
+  // adoption route funnels through here, so one hook covers them all. It runs first so a clip with
+  // unusable text never costs a CLIP evaluation.
+  if (await beatClipHasBakedText(clipPath)) {
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text", queryLabel);
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: rejected — baked-in on-screen text ` +
+        `(${path.basename(clipPath)})`
+    );
+    return { pass: false, worstScore10: null, skipped: false, fromCache: false };
+  }
   // contentKey gives the vision-gate cache an asset-derived identity instead of falling back to
   // path.basename(clipPath) — this call funnels every rescue/adoption route (Openverse,
   // Wikimedia, Pexels, Pixabay, Internet Archive, YouTube CC, curated archive) through one

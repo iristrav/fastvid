@@ -714,6 +714,23 @@ export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
  * rescue that is genuinely still finding footage, only stop an unbounded one.
  */
 /**
+ * RONDE 23: run the baked-in-text check on EXTERNALLY sourced beat clips, not just curated ones.
+ *
+ * archiveClipHasBakedEditText existed but was wired into exactly one call site: the curated
+ * archive's own adoption path. Every external source — YouTube CC, GDELT TV news, Internet
+ * Archive, SepiaSearch, Wikimedia, Openverse, SerpAPI, stock — reached the timeline with no
+ * text check at all. GDELT is the clearest case: it serves CNN/FOX/MSNBC/BBC broadcast segments,
+ * which essentially always carry lower-thirds and news tickers.
+ *
+ * Default on. Turn off with ENABLE_BEAT_CLIP_TEXT_FILTER=false. The underlying check has its own
+ * independent kill switch (ENABLE_ARCHIVE_OVERLAY_FILTER) and returns "no text" when it has no
+ * vision key, so this stays inert rather than rejecting everything when unconfigured.
+ */
+export function beatClipTextFilterEnabled(): boolean {
+  return envFlagIsNotOff("ENABLE_BEAT_CLIP_TEXT_FILTER");
+}
+
+/**
  * RONDE 21: stall (idle) timeout for a download's BODY read.
  *
  * fetchWithTimeout arms an AbortController, awaits fetch(), then clears its timer in `finally`.
