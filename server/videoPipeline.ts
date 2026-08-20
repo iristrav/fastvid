@@ -10511,7 +10511,6 @@ export async function searchYoutubeVideoCandidates(
 ): Promise<YoutubeSearchRow[]> {
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (!youtubeApiKey) return [];
-  if (isYoutubeInCooldown()) return [];
 
   const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
   // Phase 5 query cache. Cached at the raw API-payload level, before any relevance/person
@@ -10519,7 +10518,14 @@ export async function searchYoutubeVideoCandidates(
   // minRelevanceScore), so two callers sharing a query still get their own ranking from the one
   // shared payload. license/maxResults shape the request itself and are therefore part of the
   // key; the quota-costly search call is what gets spent once.
-  const searchData = await cachedProviderSearch(
+  // RONDE 16: the cooldown (set by repeated official-API 429s) must skip only the OFFICIAL call,
+  // never the quota-free RapidAPI fallback below — that fallback exists precisely for the
+  // quota-exhausted case (RONDE 10), yet the old `if (isYoutubeInCooldown()) return []` above
+  // suppressed it too, so YouTube CC went fully dark for the whole 45+ minute cooldown. `null`
+  // here (never re-hammering the official API) flows straight into the fallback condition.
+  const searchData = isYoutubeInCooldown()
+    ? null
+    : await cachedProviderSearch(
     sourcingCache,
     "youtube_cc",
     `${query}#${license}#n${maxResults}`,
@@ -10600,7 +10606,12 @@ export async function fetchYouTubeCCClips(
   sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if (!youtubeSourcingEnabled()) return [];
-  if (isYoutubeInCooldown()) return [];
+  // RONDE 16: bail on the official-API quota cooldown ONLY when there is no quota-free fallback to
+  // try. The RapidAPI fair-use search hits a different host (not Google), so the official cooldown
+  // must not suppress it — otherwise the fallback built for the quota-exhausted case never runs.
+  // When the fallback IS available, proceed: searchYoutubeVideoCandidates skips the official call
+  // during cooldown and routes the fair-use pass through RapidAPI instead.
+  if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled() && youtubeFairUseEnabled())) return [];
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
