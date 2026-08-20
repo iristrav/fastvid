@@ -43,7 +43,8 @@ describe("RONDE 19B — GDELT gets a real breaker and honors it", () => {
       src.indexOf("export async function fetchGdeltTvNewsClips"),
       src.indexOf("providerMetrics(sourcingCache, \"gdelt_tv\").resultCount"),
     );
-    expect(fn).toContain("if (isGdeltInCooldown()) return [];");
+    // RONDE 20 widened this guard to also honor the download breaker; the search guard remains.
+    expect(fn).toContain("if (isGdeltInCooldown() || isGdeltDownloadInCooldown()) return [];");
     // A run of pure timeouts must be able to trip the breaker; a reachable response resets it.
     expect(fn).toContain("markGdeltSearchResult(true)");
     expect(fn).toContain("markGdeltSearchResult(false)");

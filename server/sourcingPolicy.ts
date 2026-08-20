@@ -700,6 +700,29 @@ export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
   return 30_000;
 }
 
+/**
+ * RONDE 20: hard wall-clock cap for ONE scene's compose-time rescue (recoverSceneClipsIfEmpty).
+ *
+ * That path was the only major stage with no time bound at all: it loops up to ~7 fallback texts,
+ * each running the full external cascade (Internet Archive, YouTube CC, Wikimedia, GDELT, ...).
+ * Render 526 spent 1084s of its 25 min there — the single largest cost — and render 527 HUNG in it
+ * outright: one await never settled after a GDELT "Archive TV metadata" timeout, so the pipeline
+ * sat at zero activity until the watchdog gave up 22 minutes later. A cap turns "hangs forever"
+ * into "returns what it found so far and moves on".
+ *
+ * Deliberately generous — this is a safety valve, not a pacing knob: it must not cut short a
+ * rescue that is genuinely still finding footage, only stop an unbounded one.
+ */
+export function composeRescueWallClockMs(videoLength?: string | null): number {
+  const raw = process.env.COMPOSE_RESCUE_WALL_CLOCK_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 30_000 && n <= 900_000) return n;
+  }
+  if (isFastShortVideoLength(videoLength)) return 90_000;
+  return 240_000;
+}
+
 /** Target on-screen duration per archive clip (seconds). */
 export function archiveVisualBeatSec(): number {
   const raw = process.env.ARCHIVE_VISUAL_BEAT_SEC?.trim();

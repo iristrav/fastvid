@@ -157,7 +157,7 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -998,6 +998,64 @@ function markGdeltSearchResult(success: boolean): void {
   }
 }
 
+/**
+ * RONDE 20: DOWNLOAD-tier breakers.
+ *
+ * Every breaker before this round watched only a provider's SEARCH call. Render 526's timeout
+ * census showed that is where the smaller half of the cost lives: of 225 timeouts, 65 were GDELT's
+ * per-clip "Archive TV metadata" (12s each) and 43 were "SepiaSearch download" (55s each) — both
+ * strictly AFTER a successful search, and a successful search RESET the search breaker, so no
+ * existing breaker could ever trip on them. Separate streaks, same shape as every other breaker:
+ * once a provider's fetch endpoint stops delivering, stop paying its per-clip timeout.
+ */
+const gdeltDownloadCooldownMs = 3 * 60_000;
+let gdeltDownloadFailureStreak = 0;
+let gdeltDownloadCooldownUntilMs = 0;
+
+function isGdeltDownloadInCooldown(): boolean {
+  return Date.now() < gdeltDownloadCooldownUntilMs;
+}
+
+function markGdeltDownloadResult(success: boolean): void {
+  if (success) {
+    gdeltDownloadFailureStreak = 0;
+    return;
+  }
+  gdeltDownloadFailureStreak++;
+  if (gdeltDownloadFailureStreak >= VISUAL_PROVIDER_FAILURE_STREAK_TRIP) {
+    gdeltDownloadCooldownUntilMs = Date.now() + gdeltDownloadCooldownMs;
+    gdeltDownloadFailureStreak = 0;
+    console.warn(
+      `[Pipeline] GDELT: ${VISUAL_PROVIDER_FAILURE_STREAK_TRIP} consecutive clip-download failures — ` +
+        `skipping for ${Math.round(gdeltDownloadCooldownMs / 60_000)}min`
+    );
+  }
+}
+
+const sepiaDownloadCooldownMs = 3 * 60_000;
+let sepiaDownloadFailureStreak = 0;
+let sepiaDownloadCooldownUntilMs = 0;
+
+function isSepiaDownloadInCooldown(): boolean {
+  return Date.now() < sepiaDownloadCooldownUntilMs;
+}
+
+function markSepiaDownloadResult(success: boolean): void {
+  if (success) {
+    sepiaDownloadFailureStreak = 0;
+    return;
+  }
+  sepiaDownloadFailureStreak++;
+  if (sepiaDownloadFailureStreak >= VISUAL_PROVIDER_FAILURE_STREAK_TRIP) {
+    sepiaDownloadCooldownUntilMs = Date.now() + sepiaDownloadCooldownMs;
+    sepiaDownloadFailureStreak = 0;
+    console.warn(
+      `[Pipeline] SepiaSearch: ${VISUAL_PROVIDER_FAILURE_STREAK_TRIP} consecutive download failures — ` +
+        `skipping for ${Math.round(sepiaDownloadCooldownMs / 60_000)}min`
+    );
+  }
+}
+
 const VIMEO_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;
 const VIMEO_COOLDOWN_MS = 3 * 60_000;
 let vimeoFailureStreak = 0;
@@ -1269,6 +1327,8 @@ export function __resetProviderCircuitBreakersForTest(): void {
   flickrFailureStreak = 0; flickrCooldownUntilMs = 0;
   sepiaSearchFailureStreak = 0; sepiaSearchCooldownUntilMs = 0;
   gdeltFailureStreak = 0; gdeltCooldownUntilMs = 0;
+  gdeltDownloadFailureStreak = 0; gdeltDownloadCooldownUntilMs = 0;
+  sepiaDownloadFailureStreak = 0; sepiaDownloadCooldownUntilMs = 0;
   vimeoFailureStreak = 0; vimeoCooldownUntilMs = 0;
   mediaCccFailureStreak = 0; mediaCccCooldownUntilMs = 0;
   nasaFailureStreak = 0; nasaCooldownUntilMs = 0;
@@ -8302,7 +8362,9 @@ async function fetchSepiaSearchVideos(
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
-  if (isSepiaSearchInCooldown()) return [];
+  // RONDE 20: also honor the download breaker — searching is cheap here, but each failing
+  // download costs 55s, so a dead fetch endpoint must skip the whole tier, not just its search.
+  if (isSepiaSearchInCooldown() || isSepiaDownloadInCooldown()) return [];
 
   type RankedHit = {
     uuid: string;
@@ -8492,12 +8554,18 @@ async function fetchSepiaSearchVideos(
           }
           results.push({ path: outPath, query: hit.query, title: metaTitle });
           downloaded++;
+          // RONDE 20: a completed download proves the peertube fetch endpoint is alive.
+          markSepiaDownloadResult(true);
           console.log(
             `[Pipeline] Scene ${sceneIndex}: SepiaSearch CC video (score ${hit.score}): ${metaTitle.slice(0, 60)}`
           );
         }
         try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       } catch (err) {
+        // RONDE 20: 43 of render 526's 225 timeouts were "SepiaSearch download exceeded 55s" —
+        // the most expensive single timeout in the pipeline, and invisible to the search-only
+        // breaker because the search that produced these hits had succeeded.
+        markSepiaDownloadResult(false);
         console.warn(`[Pipeline] SepiaSearch item failed scene ${sceneIndex}:`, (err as Error).message);
       }
     }
@@ -8603,9 +8671,10 @@ export async function fetchGdeltTvNewsClips(
 ): Promise<CelebrityClipCandidate[]> {
   const queryList = uniqueQueryStrings(Array.isArray(queries) ? queries : [queries]);
   if (!queryList.length) return [];
-  // RONDE 19: honor the GDELT breaker — once its TV endpoint has timed out repeatedly, skip the
-  // whole tier instead of re-paying 4×22s station queries on every beat of a stuck scene.
-  if (isGdeltInCooldown()) return [];
+  // RONDE 19/20: honor both GDELT breakers — its search endpoint (4×22s station queries per beat)
+  // and its per-clip download endpoint (12s each, the dominant cost). Once either has failed
+  // repeatedly, skip the whole tier instead of re-paying those timeouts on every beat.
+  if (isGdeltInCooldown() || isGdeltDownloadInCooldown()) return [];
 
   const results: CelebrityClipCandidate[] = [];
   const seenPreviews = new Set<string>();
@@ -8735,12 +8804,21 @@ export async function fetchGdeltTvNewsClips(
         if (ok) {
           results.push({ path: outPath, query: hit.query, title: hit.show ?? hit.snippet });
           downloaded++;
+          // RONDE 20: a completed download proves the clip endpoint is reachable — reset the
+          // download breaker's streak (see the catch below).
+          markGdeltDownloadResult(true);
           console.log(
             `[Pipeline] Scene ${sceneIndex}: GDELT TV news (${hit.station ?? "TV"}): ` +
               `${hit.show?.slice(0, 50) ?? hit.snippet?.slice(0, 50)}`
           );
         }
       } catch (err) {
+        // RONDE 20: RONDE 19's breaker only watched GDELT's SEARCH step, but 65 of render 526's
+        // 73 GDELT timeouts were here — "Archive TV metadata exceeded 12s", the per-clip download
+        // that runs AFTER a successful search. Because a successful search reset the streak, the
+        // search-only breaker could never see this failure mode, so GDELT kept costing 12s per
+        // clip all render long. Count download failures on their own streak.
+        markGdeltDownloadResult(false);
         console.warn(`[Pipeline] GDELT clip failed scene ${sceneIndex}:`, (err as Error).message);
       }
     }
@@ -16825,12 +16903,47 @@ async function fetchUniqueStockForBeatInner(
   return null;
 }
 
-/** Fill a scene that has zero usable clips (never grey placeholders). */
+/**
+ * Fill a scene that has zero usable clips (never grey placeholders).
+ *
+ * RONDE 20: this is now a hard-capped wrapper around the real work. The rescue loop below runs the
+ * full external cascade up to ~7 times for one scene and had NO time bound — render 527 hung
+ * inside it forever (an await that never settled after a GDELT metadata timeout; zero activity for
+ * 22 minutes until the watchdog gave up), and render 526 spent 1084s of its 25 minutes here.
+ * `clips`/`beatDurations` are owned by this wrapper and mutated by the inner call, so when the cap
+ * fires we still return every clip the rescue had already found instead of throwing that work away
+ * — a capped rescue degrades to "found fewer clips", exactly like a rescue that came up short.
+ */
 export async function recoverSceneClipsIfEmpty(
   scene: Scene,
   workDir: string,
   topicContext: string | undefined,
   dedup: VisualDedupState
+): Promise<SceneVisualsResult> {
+  const clips: string[] = [];
+  const beatDurations: number[] = [];
+  try {
+    return await withSceneFetchTimeout(
+      () => recoverSceneClipsIfEmptyInner(scene, workDir, topicContext, dedup, clips, beatDurations),
+      composeRescueWallClockMs(dedup.videoLength),
+      `compose-time rescue scene ${scene.index}`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: compose-time rescue capped — keeping ${clips.length} clip(s) ` +
+        `found so far: ${(err as Error).message?.slice(0, 120)}`
+    );
+    return { clips, beatDurations };
+  }
+}
+
+async function recoverSceneClipsIfEmptyInner(
+  scene: Scene,
+  workDir: string,
+  topicContext: string | undefined,
+  dedup: VisualDedupState,
+  clips: string[],
+  beatDurations: number[]
 ): Promise<SceneVisualsResult> {
   if (isComposeNetworkBlocked(dedup)) {
     return { clips: [], beatDurations: [] };
@@ -16852,8 +16965,8 @@ export async function recoverSceneClipsIfEmpty(
     scriptAnchored: false,
   };
   const n = Math.max(1, Math.min(4, Math.ceil(scene.duration / VIDRUSH_BEAT_SEC)));
-  const clips: string[] = [];
-  const beatDurations: number[] = [];
+  // RONDE 20: `clips`/`beatDurations` are the wrapper's arrays (see recoverSceneClipsIfEmpty) so
+  // partial results survive the wall-clock cap. Mutate them; never reassign.
 
   if (curatedArchiveOnlyVisuals()) {
     const stubPower = extractPowerWordFromSentence(scene.text.slice(0, 220), scenePersons);

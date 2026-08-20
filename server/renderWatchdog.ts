@@ -92,6 +92,46 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
       }
     }
     children.clear();
+    // RONDE 20: this used to be the ONLY thing the kill did besides SIGKILLing children — and
+    // nothing anywhere ever consumed `deadline`, so the rejection became an "Unhandled rejection
+    // (worker kept alive)" and the kill was structurally a no-op. Render 527 proved it: the
+    // pipeline hung with zero children (nothing to SIGKILL), the watchdog "killed" it at 22
+    // minutes of inactivity, and the render still sat in `generating` for another 2h17m.
+    //
+    // Fire the same cancellation signal user-initiated cancels and videoQueue's stale-job path
+    // already use: the pipeline's existing throwIfVideoGenerationCancelled()/
+    // throwIfActiveRenderCancelled() checkpoints make it actually unwind, which lets the normal
+    // failure path mark the video failed instead of leaving it "busy" forever.
+    // `videoId` is typed `number | string` (it was previously only ever used in log messages), so
+    // resolve it to a real row id before touching cancellation or the DB; a non-numeric id means
+    // there is nothing addressable to cancel or fail, and we fall back to logging only.
+    const numericVideoId = typeof videoId === "number" ? videoId : Number.parseInt(videoId, 10);
+    if (!Number.isFinite(numericVideoId)) {
+      deadline.catch(() => { /* no consumer — see below */ });
+      deadlineReject(new Error(`[Watchdog] video=${videoId} killed: ${reason}`));
+      return;
+    }
+    void import("./videoGenerationCancel")
+      .then(({ requestVideoGenerationCancel }) => requestVideoGenerationCancel(numericVideoId))
+      .catch(() => { /* cancel signalling is best-effort; the reject below still fires */ });
+    // ...and write the terminal state ourselves. Cancellation only lands once the pipeline
+    // reaches a checkpoint, which a genuinely hung await may never do — that is precisely the
+    // case this kill exists for. The watchdog is the one component that KNOWS the render is dead
+    // (it measured the inactivity), so it must not leave the row in a running state and hope
+    // someone else notices: video 527 sat in `generating` for 2h17m after its kill, and the
+    // queue's own 3h sweep then read it as "still actively progressing" and left it alone, so the
+    // app showed "busy" indefinitely. Marking it failed here makes a killed render always
+    // terminal, independent of whether the hung code ever unwinds.
+    void import("./db")
+      .then(({ updateVideoStatus }) =>
+        updateVideoStatus(numericVideoId, "failed", {
+          errorMessage: `Render stopped by watchdog: ${reason}`.slice(0, 500),
+        })
+      )
+      .catch((e) => console.error(`[Watchdog] video=${videoId} could not mark failed:`, (e as Error).message?.slice(0, 120)));
+    // Keep rejecting `deadline` for any caller that DOES race it, but never let an unconsumed
+    // deadline surface as an unhandled rejection that noisily destabilises the worker.
+    deadline.catch(() => { /* no consumer — see above */ });
     deadlineReject(new Error(`[Watchdog] video=${videoId} killed: ${reason}`));
   };
 
