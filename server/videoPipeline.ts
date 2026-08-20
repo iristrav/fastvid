@@ -157,7 +157,7 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { archiveClipHasBakedEditText } from "./archiveClipFilter";
+import { cachedClipHasBakedEditText } from "./archiveClipFilter";
 import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -20473,25 +20473,11 @@ const STOCK_QUERY_CAP = 5;
  * Fails OPEN on error: if the vision call breaks, an unchecked clip is allowed through rather than
  * emptying the whole cascade. The check is also inert when no vision key is configured.
  */
-const beatClipBakedTextCache = new Map<string, boolean>();
-
 async function beatClipHasBakedText(clipPath: string): Promise<boolean> {
   if (!beatClipTextFilterEnabled()) return false;
-  const key = clipContentKey(clipPath);
-  const cached = beatClipBakedTextCache.get(key);
-  if (cached !== undefined) return cached;
-  let verdict = false;
-  try {
-    verdict = await archiveClipHasBakedEditText(clipPath, "video/mp4");
-  } catch (err) {
-    console.warn(
-      `[Pipeline] baked-text check failed for ${path.basename(clipPath)} — allowing clip:`,
-      (err as Error).message?.slice(0, 120)
-    );
-    verdict = false;
-  }
-  beatClipBakedTextCache.set(key, verdict);
-  return verdict;
+  // RONDE 24: the memo lives in archiveClipFilter so archive ingestion shares it — a clip that
+  // wins its beat and is then ingested is judged once, not twice.
+  return cachedClipHasBakedEditText(clipPath, "video/mp4", clipContentKey(clipPath));
 }
 
 /** Vision gate on every adopted beat clip; optional relaxed floor for emergency geo stock. */

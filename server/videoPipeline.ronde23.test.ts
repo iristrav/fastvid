@@ -46,26 +46,32 @@ describe("RONDE 23 — external clips are checked, once per asset", () => {
   );
 
   it("reuses the existing detector rather than inventing a second one", () => {
-    expect(helper).toContain("archiveClipHasBakedEditText(clipPath");
+    // RONDE 24 moved the memo into archiveClipFilter so archive ingestion shares it; the beat
+    // gate now goes through that shared entry point instead of calling the raw detector itself.
+    expect(helper).toContain("cachedClipHasBakedEditText(clipPath");
   });
 
   it("caches by content key, so one asset costs one vision call across all beats", () => {
     expect(helper).toContain("clipContentKey(clipPath)");
-    expect(helper).toContain("beatClipBakedTextCache.get(key)");
-    expect(helper).toContain("beatClipBakedTextCache.set(key, verdict)");
   });
 
   it("honors the kill switch before doing any work", () => {
     const flagAt = helper.indexOf("beatClipTextFilterEnabled()");
-    const callAt = helper.indexOf("archiveClipHasBakedEditText");
+    const callAt = helper.indexOf("cachedClipHasBakedEditText");
     expect(flagAt).toBeGreaterThan(-1);
     expect(flagAt).toBeLessThan(callAt);
   });
 
   it("fails OPEN on a detector error instead of emptying the cascade", () => {
     // A broken vision call must not reject every candidate — that would starve the render.
-    expect(helper).toContain("catch (err)");
-    expect(helper).toMatch(/verdict = false;[\s\S]*\}\s*beatClipBakedTextCache\.set/);
+    // The fail-open behaviour now lives with the shared memo; assert it where it is implemented.
+    const filterSrc = readFileSync(path.join(__dirname, "archiveClipFilter.ts"), "utf8");
+    const cached = filterSrc.slice(
+      filterSrc.indexOf("export async function cachedClipHasBakedEditText("),
+      filterSrc.indexOf("export async function archiveClipHasBakedEditText("),
+    );
+    expect(cached).toContain("catch (err)");
+    expect(cached).toContain("verdict = false;");
   });
 });
 

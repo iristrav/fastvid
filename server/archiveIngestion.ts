@@ -19,6 +19,7 @@ import { createHash } from "crypto";
 import { storagePut } from "./storage";
 import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMediaArchives } from "./db";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
+import { cachedClipHasBakedEditText } from "./archiveClipFilter";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
 import type { InsertMediaArchiveAsset } from "../drizzle/schema";
@@ -181,6 +182,23 @@ async function ingestExternalClipToArchiveInner(
       return null;
     }
 
+    // RONDE 24: never let footage with baked-in on-screen text into the archive.
+    //
+    // This archive fills itself from what the pipeline finds while searching, so anything admitted
+    // here is permanent and gets re-offered to every later render. Ingestion had no text check at
+    // all, which is how burnt-in subtitles and news chyrons accumulated: renders 526/527 found 10
+    // of 17 assets flagged, leaving only 7 usable. Rejecting at the door — before the upload and
+    // the DB row — is what stops that from growing, and it costs nothing extra for the common
+    // case: the beat gate (RONDE 23) has usually already judged this exact clip, and the shared
+    // memo in archiveClipFilter returns that verdict instead of re-running the vision call.
+    const overlayKey = metadata.sourceUrl || `${metadata.sourceNote}:${path.basename(localPath)}`;
+    if (await cachedClipHasBakedEditText(localPath, metadata.mimeType, overlayKey)) {
+      console.log(
+        `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
+      );
+      return null;
+    }
+
     // F3-26: duplicate protection — the same web source URL must not be archived twice. Checked
     // before touching R2/DB so a repeat hit is a cheap read instead of a second upload+insert.
     const sourceUrlHash = metadata.sourceUrl ? hashSourceUrl(metadata.sourceUrl) : undefined;
@@ -259,6 +277,10 @@ async function ingestExternalClipToArchiveInner(
       matchedQuery: metadata.matchedQuery?.slice(0, 512),
       entities: metadata.entities?.map((e) => e.value),
       topics: metadata.topics,
+      // RONDE 24: we only get here because the overlay check above cleared this clip, so record
+      // that verdict now. Without it the asset lands with hasBakedEditText=null and the very first
+      // render that considers it pays a fresh vision call to rediscover what we already know.
+      hasBakedEditText: 0,
     };
 
     const assetId = await createMediaArchiveAsset(insertData);

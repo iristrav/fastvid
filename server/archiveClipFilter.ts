@@ -241,6 +241,48 @@ export async function archiveSegmentHasOnScreenText(
  * case, callers that already have the source file on disk should pass the path so this doesn't
  * need a full read-into-memory + write-back-to-disk round trip of what can be a large clip.
  */
+/**
+ * RONDE 24: process-wide memo of overlay verdicts, keyed by caller-supplied content identity.
+ *
+ * The same source asset is examined by several places in one render — the per-beat vision gate
+ * (RONDE 23) and, if it wins, the archive ingestion below — and it reaches them under different
+ * temporary filenames while the pixels are identical. Without a shared memo each of those is a
+ * separate vision call for the same footage. Living here rather than in videoPipeline keeps it
+ * usable from archiveIngestion too, which cannot import videoPipeline (that module imports IT).
+ */
+const overlayVerdictCache = new Map<string, boolean>();
+
+/** Test seam: clear the shared overlay memo between cases. */
+export function __resetOverlayVerdictCacheForTest(): void {
+  overlayVerdictCache.clear();
+}
+
+/**
+ * archiveClipHasBakedEditText, memoised on `cacheKey`. Fails OPEN (treats the clip as clean) when
+ * the detector errors, so a broken or unconfigured vision path degrades to today's behaviour
+ * rather than rejecting every candidate and starving the render.
+ */
+export async function cachedClipHasBakedEditText(
+  media: string,
+  mimeType: string,
+  cacheKey: string
+): Promise<boolean> {
+  const cached = overlayVerdictCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  let verdict = false;
+  try {
+    verdict = await archiveClipHasBakedEditText(media, mimeType);
+  } catch (err) {
+    console.warn(
+      `[ArchiveFilter] overlay verdict failed for ${cacheKey} — treating as clean:`,
+      (err as Error).message?.slice(0, 120)
+    );
+    verdict = false;
+  }
+  overlayVerdictCache.set(cacheKey, verdict);
+  return verdict;
+}
+
 export async function archiveClipHasBakedEditText(
   media: Buffer | string,
   mimeType: string,
