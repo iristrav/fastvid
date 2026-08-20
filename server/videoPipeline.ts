@@ -3504,7 +3504,16 @@ export async function downloadAndTrimPoolCandidate(
       // up to fetch() itself resolving (headers arriving), leaving the body-read unprotected.
       let resp: Awaited<ReturnType<typeof fetch>>;
       try {
-        resp = await fetch(candidate.remoteUrl, { signal: AbortSignal.timeout(22_000) });
+        // Wikimedia (upload.wikimedia.org / Commons) enforces a User-Agent policy: file
+        // downloads without a descriptive UA are throttled with HTTP 429 (and sometimes 403).
+        // The SEARCH requests already send this header (scenePool.ts), which is why search
+        // returned results while every download failed with status=429 — Wikimedia's downloads=0
+        // in the sourcing metrics. Sending the same UA here (harmless for Pexels/Pixabay/archive,
+        // required by Wikimedia) is what lets Wikimedia clips finally get downloaded and scored.
+        resp = await fetch(candidate.remoteUrl, {
+          headers: { "User-Agent": "Fastvid/1.0 (video generation; contact@fastvid.ai)" },
+          signal: AbortSignal.timeout(22_000),
+        });
       } catch (err: unknown) {
         if ((err as Error).name === "AbortError") {
           throw pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: Pool download s${sceneIndex}b${beatIndex} ${candidate.source}:${candidate.assetId} exceeded 22s`);
