@@ -92,6 +92,35 @@ export type VisualPlan = {
   };
 };
 
+/**
+ * Coerce an untrusted LLM value into a clean string[]. The visual-plan JSON comes straight from
+ * groq, whose historicalEntities fields are not shape-guaranteed: a field can arrive as null, a
+ * bare string, or a missing key. Downstream code spreads these arrays (`[...persons]`), so a
+ * non-array field throws "not iterable" and crashes the whole script generation. Normalise here.
+ */
+export function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  }
+  if (typeof value === "string" && value.trim().length > 0) return [value.trim()];
+  return [];
+}
+
+export function normalizeHistoricalEntities(entities: unknown): VisualPlan["historicalEntities"] {
+  const e = (entities && typeof entities === "object") ? (entities as Record<string, unknown>) : {};
+  return {
+    persons: toStringArray(e.persons),
+    locations: toStringArray(e.locations),
+    events: toStringArray(e.events),
+    objects: toStringArray(e.objects),
+    timePeriods: toStringArray(e.timePeriods),
+  };
+}
+
+function normalizeVisualPlan(plan: VisualPlan): VisualPlan {
+  return { ...plan, historicalEntities: normalizeHistoricalEntities(plan?.historicalEntities) };
+}
+
 export type ScriptScene = {
   index: number;
   title: string;
@@ -336,7 +365,7 @@ Return JSON array:
 
   try {
     const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, "").trim()) as VisualPlan[];
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizeVisualPlan);
   } catch { /* fall through */ }
 
   return scenes.map((s) => ({
@@ -476,8 +505,9 @@ async function writeSceneNarration(
   const minWords = Math.max(15, wordTarget - 20);
   const maxWords = wordTarget + 25;
 
-  const visualContext = visual
-    ? `Visual focus: ${visual.visualIntent}. Named entities: ${[...visual.historicalEntities.persons, ...visual.historicalEntities.locations, ...visual.historicalEntities.events].filter(Boolean).join(", ") || "none"}.`
+  const he = visual ? normalizeHistoricalEntities(visual.historicalEntities) : null;
+  const visualContext = visual && he
+    ? `Visual focus: ${visual.visualIntent}. Named entities: ${[...he.persons, ...he.locations, ...he.events].filter(Boolean).join(", ") || "none"}.`
     : "";
 
   const retentionInstruction = scene.retentionElements.length > 0
