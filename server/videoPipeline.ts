@@ -10702,7 +10702,11 @@ const TITLE_NON_NAME_WORDS = new Set([
   // Common documentary-title verbs ("How Napoleon Conquered Europe") — none are name tokens.
   "conquered", "invaded", "escaped", "survived", "killed", "died", "destroyed", "defeated",
   "betrayed", "ruled", "built", "created", "changed", "started", "ended", "failed", "saved",
-  "murdered",
+  "murdered", "married",
+  // Pronouns/relationship words (render 518: the script scan fabricated the person "His Wife"
+  // from the title "Why Hitler Killed Himself — And His Wife"). Never tokens of a real name.
+  "himself", "herself", "themselves", "wife", "husband", "mother", "father", "brother",
+  "sister", "son", "daughter",
 ]);
 
 /**
@@ -11610,14 +11614,35 @@ const PERSON_NAME_SKIP_PHRASES = new Set([
 ]);
 
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
-function extractPersonNamesFromText(text: string): string[] {
+export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
   const found = new Set<string>();
   const fullNames = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g) ?? [];
   for (const name of fullNames) {
     const n = name.trim();
     if (n.length < 5 || PERSON_NAME_SKIP_PHRASES.has(n.toLowerCase())) continue;
-    found.add(n);
+    // P1-A2 (render 518): a capitalized title fragment inside the script ("His Wife", "Why
+    // Hitler Killed Himself") must never be treated as a person — every consumer of this list
+    // (the primaryPerson lock chain, resolveScenePersons, the stock-query builders) uses it as
+    // literal person names. Framing words SPLIT the run instead of rejecting it wholesale, so
+    // a real name embedded after one ("… His Wife Eva Braun …" → "Eva Braun") still survives.
+    let segment: string[] = [];
+    const segments: string[][] = [];
+    for (const token of n.split(/\s+/)) {
+      if (TITLE_NON_NAME_WORDS.has(token.toLowerCase())) {
+        if (segment.length) segments.push(segment);
+        segment = [];
+      } else {
+        segment.push(token);
+      }
+    }
+    if (segment.length) segments.push(segment);
+    for (const seg of segments) {
+      const joined = seg.join(" ");
+      if (seg.length < 2 || joined.length < 5) continue;
+      if (PERSON_NAME_SKIP_PHRASES.has(joined.toLowerCase())) continue;
+      found.add(joined);
+    }
   }
   const kylie = text.match(/\b(kylie\s+jenner)\b/i);
   if (kylie?.[1]) found.add("Kylie Jenner");
@@ -16927,15 +16952,25 @@ async function finalizeLocalClipCacheForScene(
     `[Pipeline] Scene ${scene.index}: ${result.clips.length}/${minNeeded} compose-ready clips — pre-compose cache fill`
   );
 
-  const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, dedup);
-  if (rescued.length > 0) {
-    result = await applyReady(rescued, {
+  // RONDE 7 (render 518): each fill stage below used to REPLACE `result` with only its own
+  // clips — scene 0 entered this function with 4 compose-ready winners and left with the single
+  // clip the last stage happened to return, so the final scene was 1 clip + gray pad. A fill
+  // stage may only ever ADD clips: merge its output into the union (applyReady re-gates and
+  // dedupes by content key) and keep the previous result when the merge somehow shrinks.
+  const mergeIntoResult = async (extraClips: string[]): Promise<void> => {
+    if (!extraClips.length) return;
+    const union = [...result.clips, ...extraClips];
+    const merged = await applyReady(union, {
       ...vr,
-      clips: rescued,
-      beatDurations: rescued.map(() => beatSec),
+      clips: union,
+      beatDurations: union.map(() => beatSec),
     });
-    if (result.clips.length >= minNeeded) return result;
-  }
+    if (merged.clips.length > result.clips.length) result = merged;
+  };
+
+  const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, dedup);
+  await mergeIntoResult(rescued);
+  if (result.clips.length >= minNeeded) return result;
 
   try {
     const refilled = await withSceneFetchTimeout(
@@ -16945,7 +16980,7 @@ async function finalizeLocalClipCacheForScene(
         : 45_000,
       `Scene ${scene.index} pre-compose strict refill`
     );
-    result = await applyReady(refilled.clips, refilled);
+    await mergeIntoResult(refilled.clips);
     if (result.clips.length >= minNeeded) return result;
   } catch (err) {
     console.warn(
@@ -16963,7 +16998,7 @@ async function finalizeLocalClipCacheForScene(
         : 35_000,
       `Scene ${scene.index} pre-compose recovery`
     );
-    result = await applyReady(recovered.clips, recovered);
+    await mergeIntoResult(recovered.clips);
   } catch (err) {
     console.warn(
       `[Pipeline] Scene ${scene.index}: pre-compose recovery failed:`,
