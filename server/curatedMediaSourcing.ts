@@ -1075,6 +1075,25 @@ function curatedOffTopicPenalty(
   return isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic) ? -250 : 0;
 }
 
+/**
+ * RONDE 22: an asset already judged to have baked-in edit text (burnt-on subtitles, channel
+ * bumpers, hard-coded captions) can never be adopted — adoptCuratedArchiveAsset throws on it.
+ *
+ * That verdict is cached on the row, but it was only ever read at adoption time, i.e. AFTER the
+ * selector had already picked the asset and materialized it to disk. So the selector kept
+ * re-choosing assets it already knew were dead: render 526/527 logged 255 "has baked edit text —
+ * skipped" failures across just 10 distinct assets, each one paying a download/cache-restore
+ * first. With a small archive that is severe — 10 of 17 assets were flagged, so roughly six in
+ * ten picks were guaranteed to fail before the beat could reach a usable clip.
+ *
+ * Treating it as a selection-time filter (like the off-topic/geo/non-documentary checks beside it)
+ * points the selector at the assets that can actually be used. Only `=== 1` is filtered: null
+ * means "not checked yet" and must still flow through to the adoption-time check that fills it in.
+ */
+export function hasKnownBakedEditText(asset: Pick<MediaArchiveAsset, "hasBakedEditText">): boolean {
+  return asset.hasBakedEditText === 1;
+}
+
 export function isCuratedOffTopicAsset(
   asset: Pick<MediaArchiveAsset, "title" | "tags" | "mediaType" | "mixKind">,
   topicAnchors: string[],
@@ -1287,6 +1306,9 @@ export async function listCuratedArchiveCandidates(
     for (const asset of assets) {
       if (excludeIds.has(asset.id)) continue;
       if (excludeStorageUrls.has(asset.storageUrl)) continue;
+      // RONDE 22: adoption would throw on this asset anyway — don't spend a pick (and a
+      // download) rediscovering that. See hasKnownBakedEditText.
+      if (hasKnownBakedEditText(asset)) continue;
       const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
       if (isNonDocumentaryVisualHay(assetHay)) continue;
       if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
@@ -1322,6 +1344,7 @@ export async function listCuratedArchiveCandidates(
       for (const asset of assets) {
         if (excludeIds.has(asset.id)) continue;
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
+        if (hasKnownBakedEditText(asset)) continue; // RONDE 22 — unadoptable, see above
         const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
@@ -1345,6 +1368,9 @@ export async function listCuratedArchiveCandidates(
       const nicheTags = normalizeMediaTags(archive.nicheTags ?? []);
       for (const asset of assets) {
         if (excludeStorageUrls.has(asset.storageUrl)) continue;
+        // RONDE 22: even this last-resort reuse pool must skip them — re-offering an unadoptable
+        // clip cannot rescue the beat, it only guarantees another failed adoption.
+        if (hasKnownBakedEditText(asset)) continue;
         const assetHay = normalizeMediaTags(asset.tags ?? []).join(" ");
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
