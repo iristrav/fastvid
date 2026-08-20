@@ -130,10 +130,11 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     const result = await ingestExternalClipToArchive(clipPath, {
       title: "Brand new clip",
       tags: [],
-      sourceNote: "pexels:555",
+      // RONDE 9: fixtures moved off pexels — stock sources are now refused before this path.
+      sourceNote: "internet_archive:item555",
       mediaType: "video",
       mimeType: "video/mp4",
-      sourceUrl: "https://pexels.com/video/555",
+      sourceUrl: "https://archive.org/details/item555",
     });
     expect(result?.reused).toBeUndefined();
     expect(storagePutMock).toHaveBeenCalledTimes(1);
@@ -144,7 +145,7 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     const result = await ingestExternalClipToArchive(clipPath, {
       title: "No source URL",
       tags: [],
-      sourceNote: "pexels:777",
+      sourceNote: "wikimedia:File_Bar.mp4",
       mediaType: "video",
       mimeType: "video/mp4",
     });
@@ -158,13 +159,29 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     const result = await ingestExternalClipToArchive(tinyPath, {
       title: "Too small",
       tags: [],
-      sourceNote: "pexels:888",
+      sourceNote: "wikimedia:File_Tiny.mp4",
       mediaType: "video",
       mimeType: "video/mp4",
-      sourceUrl: "https://pexels.com/video/888",
+      sourceUrl: "https://commons.wikimedia.org/wiki/File:Tiny.mp4",
     });
     expect(result).toBeNull();
     expect(findMediaArchiveAssetBySourceUrlHashMock).not.toHaveBeenCalled();
+    expect(createMediaArchiveAssetMock).not.toHaveBeenCalled();
+  });
+
+  it("RONDE 9 — stock footage (Pexels/Pixabay) is refused outright, before any upload or insert", async () => {
+    for (const sourceNote of ["pexels:555", "pixabay:777"]) {
+      const result = await ingestExternalClipToArchive(clipPath, {
+        title: "Stock clip that won a beat",
+        tags: [],
+        sourceNote,
+        mediaType: "video",
+        mimeType: "video/mp4",
+        sourceUrl: `https://example.com/${sourceNote}`,
+      });
+      expect(result).toBeNull();
+    }
+    expect(storagePutMock).not.toHaveBeenCalled();
     expect(createMediaArchiveAssetMock).not.toHaveBeenCalled();
   });
 });

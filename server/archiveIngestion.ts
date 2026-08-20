@@ -155,6 +155,22 @@ async function ingestExternalClipToArchiveInner(
   metadata: IngestMetadata
 ): Promise<IngestResult | null> {
   try {
+    // RONDE 9 (render 519 + admin evidence): stock footage is never archive material. A generic
+    // Pexels clip that won a Hitler beat was ingested tagged "adolf hitler" and then outranked
+    // real archival footage on every later render about the same person (self-poisoning loop).
+    // Defense-in-depth: the funnel call site already refuses, this blocks every other caller.
+    const platform = (metadata.sourcePlatform ?? "").toLowerCase();
+    const sourcePrefix = metadata.sourceNote.toLowerCase();
+    if (
+      platform === "pexels" || platform === "pixabay" ||
+      sourcePrefix.startsWith("pexels:") || sourcePrefix.startsWith("pixabay:")
+    ) {
+      console.log(
+        `[Ingestion] Skipping ${metadata.sourcePlatform ?? metadata.sourceNote.split(":")[0]} clip — stock footage is never ingested into the curated archive`
+      );
+      return null;
+    }
+
     if (!passesQualityGate(localPath, metadata)) {
       return null;
     }
@@ -188,6 +204,27 @@ async function ingestExternalClipToArchiveInner(
     const safeSource = metadata.sourceNote.replace(/[^a-zA-Z0-9_:-]/g, "_").slice(0, 64);
     const storageKey = `archive-ingested/${archiveId}/${safeSource}${ext}`;
 
+    // RONDE 9: content-true person tags via AWS Rekognition celebrity recognition — tags must
+    // describe what is SHOWN, never what the narration said (the old beat-keyword tags poisoned
+    // the archive). Best-effort: no keys or any error → no person tags, ingestion continues.
+    let recognizedPersonTags: string[] = [];
+    try {
+      // Lazy import: the AWS SDK is heavyweight and only needed when keys are configured.
+      const { isRekognitionEnabled, recognizeCelebritiesInFile } = await import("./rekognitionCelebrity");
+      if (isRekognitionEnabled()) {
+        const rek = await recognizeCelebritiesInFile(localPath, metadata.mediaType, metadata.durationSec ?? null);
+        recognizedPersonTags = rek.persons.map((p) => p.name);
+        if (recognizedPersonTags.length > 0) {
+          console.log(
+            `[Ingestion] Rekognition identified in "${metadata.title.slice(0, 60)}": ${recognizedPersonTags.join(", ")}`
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(`[Ingestion] Rekognition tagging skipped:`, (err as Error).message?.slice(0, 120));
+    }
+    const contentTags = Array.from(new Set([...(metadata.tags ?? []), ...recognizedPersonTags]));
+
     const data = await fs.promises.readFile(localPath);
     const { key, url } = await storagePut(storageKey, data, metadata.mimeType);
 
@@ -199,7 +236,7 @@ async function ingestExternalClipToArchiveInner(
       mimeType: metadata.mimeType,
       storageUrl: url,
       storageKey: key,
-      tags: metadata.tags,
+      tags: contentTags,
       sourceNote: metadata.sourceNote.slice(0, 512),
       licenseNote: (metadata.licenseNote ?? "").slice(0, 256) || undefined,
       durationSec: metadata.durationSec,
@@ -223,7 +260,7 @@ async function ingestExternalClipToArchiveInner(
     void indexArchiveAssetEmbedding({
       id: assetId,
       title: metadata.title,
-      tags: metadata.tags,
+      tags: contentTags,
       sourceNote: metadata.sourceNote,
     }).catch(() => {});
 

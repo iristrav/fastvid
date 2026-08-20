@@ -38,7 +38,7 @@ function funnelBlock(): string {
   const start = pipelineSrc.indexOf("let funnelBeatEmb: number[] | null = null;");
   expect(start).toBeGreaterThan(-1);
   // RONDE 1 added the used-id argument to this call; anchor on the stable prefix.
-  const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored", start);
+  const end = pipelineSrc.indexOf("let winner = pickBestFunnelCandidate(scored", start);
   expect(end).toBeGreaterThan(start);
   return pipelineSrc.slice(start, end);
 }

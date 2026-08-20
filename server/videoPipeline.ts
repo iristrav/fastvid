@@ -10888,6 +10888,54 @@ interface CelebrityClipCandidate {
   title?: string;
 }
 
+// RONDE 9: AWS Rekognition celebrity verification for person-locked renders. Keyed by clip
+// content hash so the same clip is never analyzed twice (Rekognition bills per image).
+const rekognitionClipPersonsCache = new Map<string, string[]>();
+
+/**
+ * RONDE 9: returns true ONLY on strong evidence that the clip shows a DIFFERENT celebrity than
+ * the locked person (render 519 adopted mislabeled stock for Eva Braun beats; render 517's
+ * SepiaSearch pool carried Putin-comparison videos). Deliberately a NEGATIVE filter:
+ * - no Rekognition keys configured → false (feature off, zero behavior change)
+ * - no celebrity recognized (B-roll, places, objects, unclear old footage) → false
+ * - the locked person recognized → false
+ * - any error → false (fail-open, never blocks video production)
+ * Only a ≥90-confidence match on somebody else rejects.
+ */
+async function clipShowsWrongCelebrity(
+  clipPath: string,
+  personName: string,
+  mediaType: "video" | "image",
+  durationSec?: number | null
+): Promise<boolean> {
+  const person = coercePersonName(personName);
+  if (!person) return false;
+  try {
+    // Lazy import: the AWS SDK is heavyweight and only needed when keys are configured.
+    const { isRekognitionEnabled, recognizeCelebritiesInFile } = await import("./rekognitionCelebrity");
+    if (!isRekognitionEnabled()) return false;
+    const key = clipContentKey(clipPath);
+    let names = rekognitionClipPersonsCache.get(key);
+    if (!names) {
+      const rek = await recognizeCelebritiesInFile(clipPath, mediaType, durationSec ?? null);
+      names = rek.persons.filter((p) => p.confidence >= 90).map((p) => p.name);
+      rekognitionClipPersonsCache.set(key, names);
+    }
+    if (!names.length) return false;
+    const locked = names.some(
+      (n) => textMentionsPersonName(n, person) || textMentionsPersonName(person, n)
+    );
+    if (locked) return false;
+    console.log(
+      `[Rekognition] clip shows ${names.join(", ")} — not the locked person "${person}", rejecting: ${path.basename(clipPath)}`
+    );
+    return true;
+  } catch (err) {
+    console.warn(`[Rekognition] verification skipped:`, (err as Error).message?.slice(0, 120));
+    return false;
+  }
+}
+
 /** True when haystack contains the celebrity name (last name or full name). */
 function textMentionsPersonName(haystack: string, personName: string): boolean {
   const name = coercePersonName(personName);
@@ -24055,7 +24103,23 @@ async function fetchSceneVisualsInner(
         // untouched — the best REMAINING candidate still wins on its own score. When every
         // passer is used the full set is restored inside pickBestFunnelCandidate(), so reuse
         // is the last resort and a beat is never dropped to fallback because of this.
-        const winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
+        let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
+        // RONDE 9: person-locked renders verify the winner with AWS Rekognition celebrity
+        // recognition. Rejects ONLY on strong evidence of a different celebrity (see
+        // clipShowsWrongCelebrity) — B-roll and unrecognized footage always pass, any error
+        // fails open, and the whole check is a no-op without Rekognition keys.
+        if (winner && dedup.personTopicLock && dedup.primaryPerson) {
+          const wrongCeleb = await clipShowsWrongCelebrity(
+            winner.clipPath,
+            dedup.primaryPerson,
+            winner.candidate.mediaType,
+            winner.candidate.poolCandidate?.durationSec
+          );
+          if (wrongCeleb) {
+            dedup.usedFunnelCandidateIds.add(winner.candidate.id);
+            winner = null;
+          }
+        }
         let funnelClip: string | null = null;
         let winningExternalCandidate: FunnelCandidate | null = null;
         if (winner) {
@@ -24108,7 +24172,18 @@ async function fetchSceneVisualsInner(
         const stockWon = winner
           ? winner.candidate.source === "pexels" || winner.candidate.source === "pixabay"
           : false;
-        const willArchive = !!(funnelClip && winningExternalCandidate && externalAssetIngestionEnabled());
+        // RONDE 9 (render 519 + admin screenshot): stock footage is NEVER archive material — a
+        // generic Pexels clip that happened to win a Hitler beat was ingested tagged "adolf
+        // hitler", then outranked real archival footage on every later Hitler render (the
+        // self-poisoning loop). Only authentic sources may enter the curated archive.
+        const archiveEligible = !!(
+          funnelClip &&
+          winningExternalCandidate &&
+          externalAssetIngestionEnabled() &&
+          winningExternalCandidate.source !== "pexels" &&
+          winningExternalCandidate.source !== "pixabay"
+        );
+        const willArchive = archiveEligible;
         // FASE 4: sourceDistribution reports which sources actually made the download
         // shortlist (toScore), not the full discovered pool — this is what shows whether
         // buildDownloadShortlist()'s diversity caps are doing their job in practice.
@@ -24127,7 +24202,7 @@ async function fetchSceneVisualsInner(
         );
 
         // Self-learning: ingest winning external clip into archive (best-effort, background)
-        if (funnelClip && winningExternalCandidate && externalAssetIngestionEnabled()) {
+        if (archiveEligible && funnelClip && winningExternalCandidate) {
           const wec = winningExternalCandidate;
           const clipPath = funnelClip;
           const beatQuery = beat.searchQuery?.trim() || beat.text;
@@ -24135,7 +24210,11 @@ async function fetchSceneVisualsInner(
             try {
               await ingestExternalClipToArchive(clipPath, {
                 title: wec.title,
-                tags: beat.keywords ?? [],
+                // RONDE 9: NEVER the narration keywords — those describe what is SAID, not what
+                // is SHOWN, and they poisoned the archive (a stock clip tagged "adolf hitler").
+                // Content-true tags come from Rekognition inside ingestExternalClipToArchive;
+                // the provider's own title above stays the searchable text.
+                tags: [],
                 sourceNote: `${wec.source}:${wec.poolCandidate?.id ?? wec.id}`,
                 mediaType: wec.mediaType,
                 mimeType: wec.mediaType === "video" ? "video/mp4" : "image/jpeg",

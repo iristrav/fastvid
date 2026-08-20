@@ -1292,7 +1292,10 @@ export async function listCuratedArchiveCandidates(
       if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
       if (metadataBlocks && geoRequired.length > 0 && isWrongGeoForBeat(asset, geoRequired)) continue;
       const score = scoreCuratedAsset(asset, nicheTags, beatTags, topicAnchors, beatText, videoVisualTopic, beatCtx);
-      const effectiveScore = score > 0 ? score : metadataBlocks ? 0 : 1;
+      // RONDE 9 (render 519): a NEGATIVE score is active evidence of a mismatch — it must never
+      // be laundered into the score=1 "no signal" floor (assets scoring -65 were adopted for
+      // beats they demonstrably did not fit). Only a true no-signal (score === 0) may floor to 1.
+      const effectiveScore = score > 0 ? score : score < 0 || metadataBlocks ? 0 : 1;
       if (effectiveScore > 0) {
         scored.push({
           asset,
@@ -1323,6 +1326,10 @@ export async function listCuratedArchiveCandidates(
         if (isNonDocumentaryVisualHay(assetHay)) continue;
         if (metadataBlocks && isCuratedOffTopicAsset(asset, topicAnchors, beatTags, videoVisualTopic)) continue;
         const score = scoreCuratedAsset(asset, nicheTags, [], [], beatText, videoVisualTopic, beatCtx);
+        // RONDE 9: same rule as the primary pool — a negative score is an active mismatch and
+        // never enters the fallback pool either. (The final exhausted-reuse pool below is left
+        // as-is: it only re-offers clips that already passed scoring earlier this render.)
+        if (score < 0) continue;
         fallback.push({ asset, score: Math.max(score, 1), archiveName: archive.name, archiveNicheTags: nicheTags });
       }
     }

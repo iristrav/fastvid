@@ -37,7 +37,7 @@ function codeOnly(src: string): string {
 function funnelConsumptionBlock(): string {
   const start = pipelineSrc.indexOf("const toScore = buildDownloadShortlist(");
   expect(start).toBeGreaterThan(-1);
-  const end = pipelineSrc.indexOf("const winner = pickBestFunnelCandidate(scored", start);
+  const end = pipelineSrc.indexOf("let winner = pickBestFunnelCandidate(scored", start);
   expect(end).toBeGreaterThan(start);
   return pipelineSrc.slice(start, end);
 }
@@ -100,7 +100,7 @@ describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => 
   });
 
   it("winner selection (FIX 1) is untouched", () => {
-    expect(pipelineSrc).toContain("const winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);");
+    expect(pipelineSrc).toContain("let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);");
   });
 });
 
