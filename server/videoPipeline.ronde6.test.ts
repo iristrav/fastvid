@@ -88,9 +88,12 @@ describe("RONDE 6 P1-A — the pipeline chain wiring", () => {
   });
 
   it("the script-name fallback stays last in the chain (pre-existing behavior preserved)", () => {
-    const chainStart = pipelineSrc.indexOf("resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames)");
+    // RONDE 11 moved a validated anchor-resolution earlier in the chain; the raw scriptPersonNames[0]
+    // fallback still exists as the final resort. Anchor on the primaryPerson chain, not the first
+    // resolvePersonFromSurnameAnchor occurrence (there are now two).
+    const chainStart = pipelineSrc.indexOf("const primaryPerson =");
     expect(chainStart).toBeGreaterThan(-1);
-    const tail = pipelineSrc.slice(chainStart, chainStart + 200);
+    const tail = pipelineSrc.slice(chainStart, chainStart + 400);
     expect(tail).toContain("scriptPersonNames[0]");
   });
 

@@ -84,12 +84,14 @@ describe("RONDE 8B — a gray pad is registered and reported, not silently shipp
 // ─── 8D: archive.org yield ───────────────────────────────────────────────────────────────────
 
 describe("RONDE 8D — archive.org items survive their metadata/download window", () => {
-  it("the metadata call gets 15s (render 518 killed 9 relevant WW2 items at 8s)", () => {
+  it("the metadata call is back to 8s (RONDE 11 reverted the 15s that stalled render 521)", () => {
+    // RONDE 8 raised this to 15s; render 521 proved that backfired (36 calls × 15s = 12m44s
+    // render, all scenes gray), so RONDE 11 reverted it to 8s. The download timeout stays 45s.
     const idx = pipelineSrc.indexOf("`Internet Archive metadata scene ${sceneIndex}`");
     expect(idx).toBeGreaterThan(-1);
-    const window = pipelineSrc.slice(idx - 400, idx);
-    expect(window).toContain("15_000");
-    expect(window).not.toContain("8_000");
+    const window = pipelineSrc.slice(idx - 500, idx);
+    expect(window).toContain("8_000");
+    expect(window).not.toContain("15_000");
   });
 
   it("the download gets a flat 45s (the old Railway 18s killed real archive reels)", () => {

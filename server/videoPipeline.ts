@@ -9825,12 +9825,15 @@ export async function fetchInternetArchiveClips(
         let metaData = cachedAsset?.metadata as IaMetaData | undefined;
         if (!metaData) {
           const metaUrl = `https://archive.org/metadata/${doc.identifier}`;
-          // RONDE 8 (render 518): archive.org's metadata endpoint is routinely slower than 8s —
-          // 9 relevant WW2 items (CSPAN 1944, EUROPA The Last Battle, Churchill docs) died on
-          // this exact timeout in one render. 15s is still bounded by the per-beat budget above.
+          // RONDE 11 (render 521): RONDE 8 raised this from 8s to 15s to save slow WW2 items, but
+          // that BACKFIRED — 36 metadata calls each hung the full 15s, pushing the visual stage
+          // from ~24s to 47-65s/scene and a 1-min render to 12m44s, leaving every scene gray. A
+          // slow archive.org metadata endpoint is the common case, not a rare one; 8s cuts losers
+          // fast so the pipeline keeps moving. The genuinely-relevant items that need >8s are the
+          // exception, and losing them beats stalling every render.
           const metaResp = await providerLimiter("internetArchive").run(() => fetchWithTimeout(
             metaUrl,
-            15_000,
+            8_000,
             `Internet Archive metadata scene ${sceneIndex}`,
             { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
           ));
@@ -10867,6 +10870,12 @@ const TITLE_NON_NAME_WORDS = new Set([
   // from the title "Why Hitler Killed Himself — And His Wife"). Never tokens of a real name.
   "himself", "herself", "themselves", "wife", "husband", "mother", "father", "brother",
   "sister", "son", "daughter",
+  // RONDE 11 (render 521): capitalized CONCEPT nouns that a documentary title/script surfaces as
+  // fake two-word "names" ("Suicide Pact", "Nazi Germany", "As Nazi"). None are person tokens.
+  "suicide", "pact", "nazi", "germany", "reich", "führer", "fuhrer", "bunker", "army", "empire",
+  "battle", "invasion", "regime", "party", "hours", "moments", "motivations", "as", "into",
+  "downfall", "defeat", "victory", "surrender", "escape", "plot", "conspiracy", "mystery",
+  "remains", "germans", "allies", "soviets", "russians", "americans",
 ]);
 
 /**
@@ -27085,8 +27094,14 @@ async function _runVideoPipelineInner(
     extractPersonSurnameAnchor(userPrompt ?? videoRow?.prompt ?? "") ||
     extractPersonSurnameAnchor(videoTitle) ||
     extractPersonSurnameAnchor(topicContext);
+  // RONDE 11 (render 521): a title like "Hitler's Final Hours: The Suicide Pact" made the weak
+  // two-capitalized-word guess return "Suicide Pact" BEFORE the chain reached the surname anchor.
+  // The anchor is always validated against the script's real stated names, so it must win over
+  // any title/topic guess: resolve it first, and only fall through to the guesses when it is empty.
+  const anchorResolvedPerson = resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames);
   const primaryPerson =
     extractPrimaryPersonFromText(userPrompt ?? videoRow?.prompt ?? "") ||
+    anchorResolvedPerson ||
     extractPrimaryPersonFromText(videoTitle) ||
     extractPrimaryPersonFromText(topicContext) ||
     resolvePersonFromSurnameAnchor(surnameAnchor, scriptPersonNames) ||
