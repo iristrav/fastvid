@@ -1797,9 +1797,20 @@ function ffmpegSupportsDrawtext(): boolean {
   }
 }
 
-/** YouTube beat sourcing — opt-in via ENABLE_YOUTUBE_SOURCING=true (requires YOUTUBE_API_KEY + RAPIDAPI_KEY). */
+/**
+ * "YouTube-ONLY" sourcing: try YouTube per beat, and on failure fall straight to Pexels stock —
+ * bypassing the archival cascade (Internet Archive / LoC / Wikimedia / NARA / Europeana).
+ *
+ * RONDE 18: this used to default ON whenever YouTube sourcing was enabled
+ * (`YOUTUBE_ONLY_SOURCING !== "false"`). That was a trap: simply turning YouTube ON (to use YouTube
+ * CC) silently switched the WHOLE pipeline to YouTube-only → Pexels. Render 524 (a Hitler/WW2 doc)
+ * proved the damage — YouTube returned nothing (RapidAPI 403 + official 429), so 9 of 15 beats fell
+ * to modern Pexels stock, which can never be right for a 1940s subject. Now it is strictly opt-in
+ * (`=== "true"`): enabling YouTube adds it as ONE source in the cascade, it is no longer the only
+ * one, and archival footage stays primary for historical topics.
+ */
 function youtubeOnlySourcingEnabled(): boolean {
-  return youtubeSourcingEnabled() && process.env.YOUTUBE_ONLY_SOURCING !== "false";
+  return youtubeSourcingEnabled() && process.env.YOUTUBE_ONLY_SOURCING === "true";
 }
 
 /** Wall-clock budget per beat for YouTube search+download before Pexels fallback. */
@@ -10906,6 +10917,10 @@ const TITLE_NON_NAME_WORDS = new Set([
   "conquered", "invaded", "escaped", "survived", "killed", "died", "destroyed", "defeated",
   "betrayed", "ruled", "built", "created", "changed", "started", "ended", "failed", "saved",
   "murdered", "married",
+  // RONDE 18 (render 524): "Hitler Chose" locked as a person because "chose" is not a framing
+  // word — the surname anchor never fired, so the beat searched the fake two-word name instead of
+  // the script's real "Adolf Hitler". These decision verbs are title glue, never name tokens.
+  "chose", "chosen", "chooses", "decided", "planned", "wanted", "tried", "refused", "ordered",
   // Pronouns/relationship words (render 518: the script scan fabricated the person "His Wife"
   // from the title "Why Hitler Killed Himself — And His Wife"). Never tokens of a real name.
   "himself", "herself", "themselves", "wife", "husband", "mother", "father", "brother",
