@@ -39,6 +39,12 @@ export type IngestMetadata = {
   mediaType: "video" | "image";
   mimeType: string;
   durationSec?: number;
+  /**
+   * RONDE 9b: true only when the render this clip won was person-locked (a real name drives
+   * the video). AWS Rekognition person-tagging runs ONLY then — celebrity recognition on
+   * B-roll/place/object footage is wasted spend and adds nothing.
+   */
+  personContext?: boolean;
   /** License note, e.g. "CC0", "Pexels license" */
   licenseNote?: string;
   /** Override which archive to ingest into; defaults to the first active archive. */
@@ -209,9 +215,11 @@ async function ingestExternalClipToArchiveInner(
     // the archive). Best-effort: no keys or any error → no person tags, ingestion continues.
     let recognizedPersonTags: string[] = [];
     try {
+      // RONDE 9b: only for person-locked renders (metadata.personContext) — Rekognition is a
+      // PERSON check, running it on place/object/B-roll footage is pure wasted spend.
       // Lazy import: the AWS SDK is heavyweight and only needed when keys are configured.
       const { isRekognitionEnabled, recognizeCelebritiesInFile } = await import("./rekognitionCelebrity");
-      if (isRekognitionEnabled()) {
+      if (metadata.personContext === true && isRekognitionEnabled()) {
         const rek = await recognizeCelebritiesInFile(localPath, metadata.mediaType, metadata.durationSec ?? null);
         recognizedPersonTags = rek.persons.map((p) => p.name);
         if (recognizedPersonTags.length > 0) {

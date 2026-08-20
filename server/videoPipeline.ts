@@ -24215,6 +24215,8 @@ async function fetchSceneVisualsInner(
                 // Content-true tags come from Rekognition inside ingestExternalClipToArchive;
                 // the provider's own title above stays the searchable text.
                 tags: [],
+                // RONDE 9b: Rekognition person-tagging runs ONLY for person-locked renders.
+                personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
                 sourceNote: `${wec.source}:${wec.poolCandidate?.id ?? wec.id}`,
                 mediaType: wec.mediaType,
                 mimeType: wec.mediaType === "video" ? "video/mp4" : "image/jpeg",

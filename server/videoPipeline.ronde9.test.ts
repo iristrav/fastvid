@@ -58,6 +58,15 @@ describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => 
     expect(ingestionSrc).toMatch(/const contentTags = Array\.from\(\s*new Set\(\[\.\.\.\(metadata\.tags \?\? \[\]\), \.\.\.recognizedPersonTags\]\)\s*\)/);
   });
 
+  it("RONDE 9b — Rekognition runs ONLY for person-locked renders, at both call points", () => {
+    // Ingestion: gated on the explicit person-context flag from the render.
+    expect(ingestionSrc).toContain("if (metadata.personContext === true && isRekognitionEnabled()) {");
+    // The funnel call site passes that flag from the person lock — and nothing else sets it.
+    expect(pipelineSrc).toContain("personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),");
+    // Render-time winner verification: already gated on the person lock.
+    expect(pipelineSrc).toContain("if (winner && dedup.personTopicLock && dedup.primaryPerson) {");
+  });
+
   it("both the DB row and the embedding index use the content-true tag set", () => {
     expect(ingestionSrc).toContain("tags: contentTags,");
     const embedIdx = ingestionSrc.indexOf("indexArchiveAssetEmbedding({");
