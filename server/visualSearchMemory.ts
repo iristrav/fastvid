@@ -233,7 +233,7 @@ export function recordSearchMisses(input: {
  * already knows is a dead end. Kept separate from the proven list rather than merged into it:
  * these two answer different questions and mixing them invites using one as the other.
  */
-export async function getSearchMemoryDeadEnds(entity: string, limit = 50): Promise<Set<string>> {
+export async function getSearchMemoryDeadEnds(entity: string, limit = 200): Promise<Set<string>> {
   try {
     const db = await getDb();
     if (!db) return new Set();
@@ -250,6 +250,41 @@ export async function getSearchMemoryDeadEnds(entity: string, limit = 50): Promi
     console.warn("[SearchMemory] dead-end lookup failed:", (err as Error).message?.slice(0, 120));
     return new Set();
   }
+}
+
+/** How many distinct sources must have failed on a query before the QUERY is blamed. */
+const DEAD_QUERY_MIN_SOURCES = 2;
+
+/**
+ * Queries that came up empty on SEVERAL DIFFERENT sources for this entity.
+ *
+ * The distinction matters. A dead end is recorded per (source, query), and one source failing
+ * says something about that source — Pexels has no Führerbunker footage and never will, but
+ * Wikimedia might. When the SAME query fails across two or more independent sources, the query
+ * itself is the problem, and that is a conclusion worth carrying to the next render.
+ *
+ * Used to REORDER, never to remove: a query demoted here is still run if the earlier ones do not
+ * fill the beat. Dropping it outright would let two unlucky renders permanently blind a subject.
+ */
+export async function getDeadEndQueries(
+  entity: string,
+  minSources = DEAD_QUERY_MIN_SOURCES
+): Promise<Set<string>> {
+  const deadEnds = await getSearchMemoryDeadEnds(entity);
+  const sourcesPerQuery = new Map<string, Set<string>>();
+  for (const key of deadEnds) {
+    const sep = key.indexOf("|");
+    if (sep <= 0) continue;
+    const source = key.slice(0, sep);
+    const query = key.slice(sep + 1);
+    if (!query) continue;
+    (sourcesPerQuery.get(query) ?? sourcesPerQuery.set(query, new Set()).get(query)!).add(source);
+  }
+  const dead = new Set<string>();
+  for (const [query, sources] of sourcesPerQuery) {
+    if (sources.size >= minSources) dead.add(query);
+  }
+  return dead;
 }
 
 /**

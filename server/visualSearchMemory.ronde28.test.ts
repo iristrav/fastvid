@@ -231,6 +231,80 @@ describe("RONDE 28b — remembering the dead ends", () => {
 const memorySrc = readFileSync(path.join(__dirname, "visualSearchMemory.ts"), "utf8");
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
+describe("RONDE 28c — dead ends blame the query only when several sources agree", () => {
+  async function loadWithRows(rows: Array<{ source: string; query: string }>) {
+    vi.resetModules();
+    vi.doMock("./db", () => ({
+      getDb: async () => ({
+        select: () => ({
+          from: () => ({
+            where: () => ({ orderBy: () => ({ limit: async () => rows.map((r) => ({ ...r, usageCount: 1 })) }) }),
+          }),
+        }),
+      }),
+    }));
+    return import("./visualSearchMemory");
+  }
+
+  it("blames the query when two different sources both came up empty", () => {
+    return loadWithRows([
+      { source: "pexels", query: "hitler" },
+      { source: "pixabay", query: "hitler" },
+    ]).then(async (mod) => {
+      expect(await mod.getDeadEndQueries("Adolf Hitler")).toEqual(new Set(["hitler"]));
+    });
+  });
+
+  it("blames the SOURCE, not the query, when only one source failed", async () => {
+    // Pexels having no Führerbunker footage says nothing about Wikimedia. Demoting the query
+    // everywhere on that evidence would throw away a search that still works elsewhere.
+    const mod = await loadWithRows([{ source: "pexels", query: "hitler bunker" }]);
+    expect(await mod.getDeadEndQueries("Adolf Hitler")).toEqual(new Set());
+  });
+
+  it("keeps distinct queries apart", async () => {
+    const mod = await loadWithRows([
+      { source: "pexels", query: "hitler" },
+      { source: "pixabay", query: "hitler" },
+      { source: "pexels", query: "bunker" },
+    ]);
+    const dead = await mod.getDeadEndQueries("Adolf Hitler");
+    expect(dead.has("hitler")).toBe(true);
+    expect(dead.has("bunker")).toBe(false);
+  });
+
+  it("returns nothing when the memory is empty", async () => {
+    const mod = await loadWithRows([]);
+    expect((await mod.getDeadEndQueries("Adolf Hitler")).size).toBe(0);
+  });
+});
+
+describe("RONDE 28c — the pipeline demotes, it does not drop", () => {
+  const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+  const fn = src.slice(
+    src.indexOf("export async function primeQueriesWithSearchMemory("),
+    src.indexOf("/** F3-27: derive the F3-26 coverage-warning input"),
+  );
+
+  it("reads the dead-end half of the memory it has been writing", () => {
+    expect(fn).toContain("getDeadEndQueries(trimmedEntity)");
+  });
+
+  it("keeps every original query — a dead end moves to the back, it is not removed", () => {
+    // Dropping outright would let two unlucky renders blind a subject permanently.
+    expect(fn).toContain("...proven, ...kept, ...demoted");
+    expect(fn).not.toMatch(/return\s+kept\s*;/);
+  });
+
+  it("still returns the untouched list when there is nothing to say", () => {
+    expect(fn).toContain("if (proven.length === 0 && demoted.length === 0) return baseExtraQueries;");
+  });
+
+  it("degrades to the original queries if the lookup throws", () => {
+    expect(fn).toContain("} catch {\n    return baseExtraQueries;");
+  });
+});
+
 describe("RONDE 28b — dead ends are readable, and kept apart from the proven list", () => {
   it("has its own lookup that returns only failures", () => {
     const fn = memorySrc.slice(

@@ -310,7 +310,7 @@ import {
   type ScoredFunnelCandidate,
 } from "./retrievalFunnel";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
-import { getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
+import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
@@ -20424,13 +20424,31 @@ export async function primeQueriesWithSearchMemory(
   const trimmedEntity = entity?.trim();
   if (!trimmedEntity) return baseExtraQueries;
   try {
-    const memory = await getVisualSearchMemoryForEntity(trimmedEntity, 3);
+    const [memory, deadQueries] = await Promise.all([
+      getVisualSearchMemoryForEntity(trimmedEntity, 3),
+      // RONDE 28c: the dead-end half of the memory was being written and never read. Reading it
+      // here is the whole point of having recorded it.
+      getDeadEndQueries(trimmedEntity),
+    ]);
     const proven = memory
       .filter((m) => m.success && m.query)
       .sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0))
       .map((m) => m.query);
-    if (proven.length === 0) return baseExtraQueries;
-    return [...new Set([...proven, ...(baseExtraQueries ?? [])])];
+
+    const base = baseExtraQueries ?? [];
+    // Demote, never drop. A query that failed on several sources goes to the BACK of the list, so
+    // the earlier ones get first claim on the beat's budget — but if they come up short it is
+    // still tried. Removing it would let two unlucky renders blind this subject permanently.
+    const demoted = base.filter((q) => deadQueries.has(q));
+    const kept = base.filter((q) => !deadQueries.has(q));
+    if (proven.length === 0 && demoted.length === 0) return baseExtraQueries;
+    if (demoted.length > 0) {
+      console.log(
+        `[SearchMemory] "${trimmedEntity}": demoted ${demoted.length} quer(y/ies) that came up ` +
+          `empty on multiple sources — ${demoted.slice(0, 2).map((q) => `"${q.slice(0, 40)}"`).join(", ")}`
+      );
+    }
+    return [...new Set([...proven, ...kept, ...demoted])];
   } catch {
     return baseExtraQueries;
   }

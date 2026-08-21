@@ -14,9 +14,15 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // code was added.
 const getVisualSearchMemoryForEntityMock = vi.fn();
 const applyCoverageWarningIfNeededMock = vi.fn();
+// RONDE 28c: primeQueriesWithSearchMemory now also reads the dead-end half of the memory. A mock
+// missing that export made the call throw, which the function's own catch turned into "return the
+// queries unchanged" — so these cases silently stopped testing the priming they exist for.
+// Defaults to "no dead ends", which is the state these cases assume.
+const getDeadEndQueriesMock = vi.fn(async () => new Set<string>());
 
 vi.mock("./visualSearchMemory", () => ({
   getVisualSearchMemoryForEntity: (...args: unknown[]) => getVisualSearchMemoryForEntityMock(...args),
+  getDeadEndQueries: (...args: unknown[]) => getDeadEndQueriesMock(...(args as [])),
 }));
 vi.mock("./archiveCoverageWarning", () => ({
   applyCoverageWarningIfNeeded: (...args: unknown[]) => applyCoverageWarningIfNeededMock(...args),
@@ -33,6 +39,8 @@ describe("primeQueriesWithSearchMemory — F3-27 Test E (self-learning query pri
   beforeEach(() => {
     getVisualSearchMemoryForEntityMock.mockReset();
     applyCoverageWarningIfNeededMock.mockReset();
+    getDeadEndQueriesMock.mockReset();
+    getDeadEndQueriesMock.mockResolvedValue(new Set<string>());
   });
 
   it("prepends proven past queries (highest usageCount first) ahead of the normal query set", async () => {
@@ -80,6 +88,8 @@ describe("reportFunnelCoverageIfInsufficient — F3-27 Test F (genuine-shortage 
   beforeEach(() => {
     getVisualSearchMemoryForEntityMock.mockReset();
     applyCoverageWarningIfNeededMock.mockReset();
+    getDeadEndQueriesMock.mockReset();
+    getDeadEndQueriesMock.mockResolvedValue(new Set<string>());
   });
 
   it("Test F — coverage below the recommended minimum fires the F3-26 warning with real archive/web counts", () => {
