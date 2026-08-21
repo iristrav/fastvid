@@ -778,6 +778,40 @@ export function downloadStallTimeoutMs(): number {
   return 30_000;
 }
 
+/**
+ * RONDE 27: total budget for pulling one YouTube source file down.
+ *
+ * Was a flat 90s, and render 528 lost every YouTube clip to it — three relevant WWII finds, three
+ * timeouts, nothing in the cut. Raising a total budget used to be dangerous because a stalled
+ * connection would sit there consuming all of it; since RONDE 21 the body read has its own
+ * 30s idle guard (downloadStallTimeoutMs), so a dead transfer now dies on idle rather than on
+ * total time. That is what makes a longer ceiling safe: this budget is for a download that is
+ * genuinely still moving, not for one that has hung.
+ */
+export function youtubeDownloadTimeoutMs(): number {
+  const raw = process.env.YOUTUBE_DOWNLOAD_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 30_000 && n <= 600_000) return n;
+  }
+  return 180_000;
+}
+
+/**
+ * RONDE 27: lowest source height still worth downloading from YouTube.
+ *
+ * The clip is scaled into a 1920x1080 frame as B-roll behind narration. Below this the source
+ * starts to look soft enough to notice; at or above it, the smallest file wins on download time.
+ */
+export function youtubeMinFormatHeight(): number {
+  const raw = process.env.YOUTUBE_MIN_FORMAT_HEIGHT?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 144 && n <= 1080) return n;
+  }
+  return 480;
+}
+
 export function composeRescueWallClockMs(videoLength?: string | null): number {
   const raw = process.env.COMPOSE_RESCUE_WALL_CLOCK_MS?.trim();
   if (raw) {

@@ -388,6 +388,38 @@ export function extractBeatVisualTargets(
   return targets;
 }
 
+/**
+ * RONDE 27: words that start a clause, never an entity.
+ *
+ * Render 528's queries included "Over Surrender archival footage", "Chose Death archival footage",
+ * "As Soviet archival footage" and "did nazism archival footage". Those are title-cased fragments
+ * of narration ("…As Soviet troops closed in…") that the visual-target extractor read as named
+ * subjects. Searching a provider for "Over Surrender" returns whatever it likes — and that is a
+ * direct source of footage that has nothing to do with the beat.
+ */
+const QUERY_ANCHOR_LEAD_STOPWORDS = new Set([
+  "a", "an", "the", "and", "but", "or", "nor", "so", "yet",
+  "as", "at", "by", "for", "from", "in", "into", "of", "off", "on", "onto", "over", "to",
+  "under", "up", "with", "within", "without", "after", "before", "during", "through",
+  "did", "does", "do", "was", "were", "is", "are", "had", "has", "have", "been", "being",
+  "chose", "chosen", "decided", "planned", "wanted", "tried", "refused", "ordered",
+  "when", "while", "where", "which", "who", "whose", "why", "how", "that", "this", "these",
+  "those", "then", "than", "if", "because", "although", "though", "since", "until",
+]);
+
+/**
+ * Whether a candidate search anchor reads as a clause fragment rather than a subject.
+ *
+ * Only the FIRST word is judged. "Over Surrender" is rejected; "Adolf Hitler", "Eva Braun" and
+ * "Berlin bunker" are not — a real subject does not begin with a preposition, an auxiliary or a
+ * decision verb. Deliberately narrow: this drops obvious nonsense, it does not try to validate
+ * that what remains is a genuine entity.
+ */
+export function looksLikeSentenceFragment(text: string): boolean {
+  const first = text.trim().split(/\s+/)[0]?.toLowerCase().replace(/[^\p{L}]/gu, "");
+  return Boolean(first) && QUERY_ANCHOR_LEAD_STOPWORDS.has(first!);
+}
+
 /** Capitalised two-word sequence — the shape a written-out personal name takes in narration. */
 const FULL_NAME_RE = /\b(\p{Lu}[\p{L}''-]+)\s+(\p{Lu}[\p{L}''-]+)\b/gu;
 
@@ -474,7 +506,7 @@ export function buildHistoricalArchivalQueries(
   // hence duplicate-rejected) result instead of finding new ones).
   const yearMatch = beatText.match(/\b(18|19|20)\d{2}\b/);
   const year = yearMatch?.[0] ?? "";
-  if (anchor) {
+  if (anchor && !looksLikeSentenceFragment(anchor)) {
     out.push(
       `${anchor} archival footage`,
       `${anchor} historical documentary`,
@@ -487,6 +519,9 @@ export function buildHistoricalArchivalQueries(
   // multiple concrete visual targets, not just the single anchor string), when it adds real
   // phrasing variety beyond the generic set above.
   for (const target of targets) {
+    // RONDE 27: a target that reads as narration rather than a subject produces queries like
+    // "Over Surrender archival footage" — dropped here rather than sent to nine providers.
+    if (looksLikeSentenceFragment(target.text)) continue;
     switch (target.type) {
       case "person":
       case "location":

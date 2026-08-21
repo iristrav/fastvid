@@ -208,11 +208,27 @@ describe("mergeCandidates — FASE 3 source-tier bonus", () => {
     expect(order.slice(7).sort()).toEqual(["pexels", "pixabay"]);
   });
 
-  it("still lets Pexels/Pixabay compete (not removed), just without a bonus", () => {
+  it("still lets Pexels/Pixabay compete (not removed), just without a SOURCE-tier bonus", () => {
+    // RONDE 27 added a media-type bonus on top of the source-tier one, and poolCandidate()
+    // fixtures are mediaType "video", so the flat 0.7 became 0.78. What this test protects is
+    // that the two stock providers get no SOURCE bonus and are still in the pool — both still
+    // hold. Asserted as equality between the two rather than against a literal, so it keeps
+    // meaning the same thing if either bonus is retuned again.
     const pool: PoolCandidate[] = [poolCandidate("pexels", "p1"), poolCandidate("pixabay", "px1")];
     const merged = mergeCandidates([], [], pool, 1, 1, 10);
     expect(merged).toHaveLength(2);
-    expect(merged.every(c => c.rankingScore === 0.7)).toBe(true);
+    expect(merged[0]!.rankingScore).toBe(merged[1]!.rankingScore);
+    // Strictly below the lowest-tier source that does get a bonus, on identical media type.
+    const wiki = mergeCandidates([], [], [poolCandidate("wikimedia", "w1")], 1, 1, 10);
+    expect(merged[0]!.rankingScore).toBeLessThan(wiki[0]!.rankingScore);
+  });
+
+  it("gives moving footage a bonus over a still from the same source", () => {
+    const clip = poolCandidate("pexels", "vid1");
+    const still = { ...poolCandidate("pexels", "img1"), mediaType: "image" as const };
+    const merged = mergeCandidates([], [], [clip, still], 1, 1, 10);
+    const byId = new Map(merged.map(c => [c.id, c.rankingScore]));
+    expect(byId.get("pexels:vid1")!).toBeGreaterThan(byId.get("pexels:img1")!);
   });
 });
 

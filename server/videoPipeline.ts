@@ -158,7 +158,7 @@ import {
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -3623,7 +3623,16 @@ export async function downloadAndTrimPoolCandidate(
   const isVideo = candidate.mediaType === "video";
   const ext = isVideo ? "mp4" : "jpg";
   const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}_raw.${ext}`);
-  const outPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`);
+  // RONDE 27: stamp the provider-asset identity into the filename, like every other download
+  // route already does. Without it the scene/beat prefix is the only thing distinguishing two
+  // copies of the SAME source item, so the cross-scene dedup could not tell them apart: render
+  // 528 downloaded internet_archive/white-lives-matter-montana four times and cut it into two
+  // different scenes, and pexels_32021142 landed in two scenes as well.
+  const outPath = tagPathWithProviderAsset(
+    path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`),
+    candidate.source,
+    candidate.assetId
+  );
 
   const _dtT0 = Date.now();
   setWorkerHeartbeat(`downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`);
@@ -10307,7 +10316,7 @@ export async function downloadYouTubeCCClip(
       const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
         cloudTmpPath,
-        90_000,
+        youtubeDownloadTimeoutMs(),
         `YouTube CC cloud download scene ${sceneIndex}`,
         { headers: cloudHeaders },
         80 * 1024 * 1024
@@ -10373,19 +10382,31 @@ export async function downloadYouTubeCCClip(
           formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
           adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
         };
+        // RONDE 27: pick the SMALLEST adequate format, not the one closest to 720p.
+        //
+        // This route downloads the entire source video and only then trims out the few seconds
+        // the beat needs, so the file size is the download time. Render 528 found relevant WWII
+        // footage on three separate queries and lost all three to "RapidAPI YouTube download
+        // scene N exceeded 90s" — nothing from YouTube reached the cut, and the montage fell back
+        // on Ken Burns stills and generic stock. Sorting by "closest to 720" happily chose a
+        // half-gigabyte 720p file over a 40MB 480p one of the same video.
+        //
+        // The clip ends up scaled into a 1920x1080 frame as B-roll behind narration, where the
+        // difference between 480p and 720p source is far less visible than the difference between
+        // having the shot and not having it. Anything at or above the floor is good enough; below
+        // it we still prefer the tallest available rather than dropping to something unusable.
         const pickFormat = (
           formats: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }> | undefined
         ) => {
           const mp4 = (formats ?? []).filter((f) => f.url && f.mimeType?.includes("mp4"));
           if (!mp4.length) return undefined;
-          return mp4.sort((a, b) => {
-            const heightA = a.height ?? 720;
-            const heightB = b.height ?? 720;
-            const distA = Math.abs(heightA - 720);
-            const distB = Math.abs(heightB - 720);
-            if (distA !== distB) return distA - distB;
-            return parseInt(a.contentLength || "999999999", 10) - parseInt(b.contentLength || "999999999", 10);
-          })[0];
+          const sizeOf = (f: { contentLength?: string }): number => {
+            const n = parseInt(f.contentLength || "", 10);
+            return Number.isFinite(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER;
+          };
+          const adequate = mp4.filter((f) => (f.height ?? 720) >= youtubeMinFormatHeight());
+          if (adequate.length) return adequate.sort((a, b) => sizeOf(a) - sizeOf(b))[0];
+          return mp4.sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0];
         };
 
         const format = pickFormat(data.formats) ?? pickFormat(data.adaptiveFormats);
@@ -10395,7 +10416,7 @@ export async function downloadYouTubeCCClip(
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             format.url,
             tmpPath,
-            90_000,
+            youtubeDownloadTimeoutMs(),
             `RapidAPI YouTube download scene ${sceneIndex}`,
             {
               headers: {
@@ -29390,15 +29411,23 @@ async function _runVideoPipelineInner(
       fastShort: isFastShortVideoLength(videoLength),
       sceneCriticalFailed,
     });
-    // RONDE 8 (render 518): a scene padded with gray filler scored 100/100 because the pad is
-    // not a fallback clip. Same registration pattern as the silent-voiceover notes below.
+    // RONDE 8 (render 518): a scene whose montage came up short scored 100/100 because the filler
+    // is not a fallback clip. Same registration pattern as the silent-voiceover notes below.
+    //
+    // RONDE 27: reworded, twice over. The list is populated from the pre-compose ESTIMATE, so it
+    // flags scenes where the montage was predicted short — render 528 reported "gray pad scene 1"
+    // while no tpad filter appears in any of that render's ffmpeg commands, i.e. the estimate was
+    // pessimistic and nothing was actually padded. And since RONDE 26 the filler is a held last
+    // frame, not grey. Asserting a grey filler had been rendered was wrong on both counts. What the
+    // list genuinely means is "this scene did not have enough footage to fill its narration",
+    // which is the thing worth reporting either way.
     if (visualDedup.grayPadScenes.length > 0) {
       const padScenes = [...visualDedup.grayPadScenes].sort((a, b) => a - b);
       qualityReport.warnings.push(
-        `gray pad: scene(s) ${padScenes.join(", ")} rendered with a gray filler because the montage was shorter than the voice`
+        `short montage: scene(s) ${padScenes.join(", ")} had less footage than voice — the tail may be filled by holding the last frame`
       );
       console.warn(
-        `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with gray pad (${padScenes.join(", ")}) — visual coverage incomplete`
+        `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with a short montage (${padScenes.join(", ")}) — visual coverage incomplete`
       );
     }
     const silentVoiceoverNotes = getRenderCtx().voiceoverSilentFallbackNotes;

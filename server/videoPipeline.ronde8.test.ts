@@ -74,10 +74,14 @@ describe("RONDE 8B — a gray pad is registered and reported, not silently shipp
     expect(before).toContain("!composeOptions.dedup.grayPadScenes.includes(scene.index)");
   });
 
-  it("the export path pushes a gray-pad warning into the persisted quality report", () => {
+  it("the export path pushes the shortfall into the persisted quality report", () => {
+    // RONDE 27 reworded this warning without changing what triggers it. The old text asserted a
+    // grey filler had been RENDERED; the list is actually built from the pre-compose estimate,
+    // and since RONDE 26 the filler holds the last frame rather than going grey. The registration
+    // and the report entry — what this test exists to protect — are unchanged.
     expect(pipelineSrc).toContain("visualDedup.grayPadScenes.length > 0");
-    expect(pipelineSrc).toMatch(/qualityReport\.warnings\.push\(\s*`gray pad: scene\(s\)/);
-    expect(pipelineSrc).toContain("scene(s) with gray pad");
+    expect(pipelineSrc).toMatch(/qualityReport\.warnings\.push\(\s*`short montage: scene\(s\)/);
+    expect(pipelineSrc).toContain("scene(s) with a short montage");
   });
 });
 

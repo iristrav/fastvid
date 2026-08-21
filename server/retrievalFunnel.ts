@@ -21,6 +21,7 @@ import {
   listCuratedArchiveCandidates,
   buildBeatMatchTags,
   applyCrossVideoVarietyDegrade,
+  stubPowerWordFromSceneText,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -140,6 +141,30 @@ const EXTERNAL_SOURCE_TIER_BONUS: Partial<Record<FunnelCandidateSource, number>>
   pexels: 0,
   pixabay: 0,
 };
+
+/**
+ * RONDE 27: nudge toward footage that actually moves.
+ *
+ * Render 528's final cut was 18 clips of which 7 were stills panned with Ken Burns — Wikimedia
+ * photographs of Hitler, a Bundesarchiv plate, a curated still — because for this topic the
+ * best-MATCHING material is photographic while the moving material is mostly generic stock.
+ *
+ * This is deliberately a shortlist nudge, not a veto. rankingScore decides which candidates get
+ * downloaded and CLIP-scored at all (MAX_FUNNEL_CANDIDATES_TO_SCORE); the winner is still chosen
+ * by pickBestFunnelCandidate on real VisionGate scores. So a clip gets a better chance to be
+ * CONSIDERED, and a well-matching still still beats a poorly-matching clip. Sized at roughly half
+ * a source-tier step (the tier bonuses above span 0–0.15) — pushing harder would trade the user's
+ * "everything should match" against their "more video", which is the wrong trade to make blind.
+ */
+const MOVING_FOOTAGE_BONUS = 0.08;
+
+function movingFootageBonus(mediaType: "video" | "image"): number {
+  if (process.env.MOVING_FOOTAGE_BONUS?.trim()) {
+    const n = parseFloat(process.env.MOVING_FOOTAGE_BONUS.trim());
+    if (!isNaN(n) && n >= 0 && n <= 0.5) return mediaType === "video" ? n : 0;
+  }
+  return mediaType === "video" ? MOVING_FOOTAGE_BONUS : 0;
+}
 
 // ─── Per-beat gap strategy (self-learning retrieval) ─────────────────────────
 
@@ -331,7 +356,9 @@ async function searchArchiveCandidates(
     text: sceneText.slice(0, 400),
     keywords: words.slice(0, 8),
     searchQuery: query.slice(0, 120),
-    powerWord: words.find(w => w.length > 4) ?? words[0] ?? "documentary",
+    // RONDE 27: third instance of the "first word longer than four letters" anchor that RONDE 26
+    // replaced elsewhere. Same failure — for a Führerbunker scene it yields "chaos".
+    powerWord: stubPowerWordFromSceneText(sceneText.slice(0, 400)) || words[0] || "documentary",
   };
   const stubScene = { text: sceneText.slice(0, 200), pexelsQuery: query };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(
@@ -393,7 +420,9 @@ export function mergeCandidates(
     // Base score: normalised keyword match (0–1) × archive weight
     const kwBase = Math.min(1, pick.score / KEYWORD_SCORE_MAX);
     const embBoost = embSim !== null ? embSim * 0.4 : 0;
-    const rankingScore = (kwBase + embBoost) * archiveWeight;
+    const archiveMediaType = (pick.asset.mediaType === "video" ? "video" : "image") as "video" | "image";
+    const rankingScore =
+      (kwBase + embBoost + movingFootageBonus(archiveMediaType)) * archiveWeight;
 
     // Load stored embedding for fast per-beat cosine scoring (no extra API call)
     const storedEmb = loadStoredAssetEmbedding(pick.asset.id);
@@ -403,7 +432,7 @@ export function mergeCandidates(
       source: "archive",
       title: pick.asset.title ?? "archive clip",
       thumbnailUrl: null, // archive assets don't expose thumbnail URLs
-      mediaType: (pick.asset.mediaType === "video" ? "video" : "image") as "video" | "image",
+      mediaType: archiveMediaType,
       embeddingSimilarity: embSim,
       archiveKeywordScore: pick.score,
       clipSimilarity: null,
@@ -426,7 +455,9 @@ export function mergeCandidates(
     // (see videoPipeline.ts's MAX_FUNNEL_CANDIDATES_TO_SCORE cap). This bonus only affects which
     // candidates make that shortlist — the actual winner is still decided by
     // pickBestFunnelCandidate() on real VisionGate scores, unchanged.
-    const rankingScore = internetWeight * (0.7 + (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0));
+    const rankingScore =
+      internetWeight *
+      (0.7 + (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) + movingFootageBonus(c.mediaType));
     merged.push({
       id,
       source: c.source as FunnelCandidateSource,

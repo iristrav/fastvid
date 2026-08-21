@@ -950,17 +950,46 @@ export function isAllowedLocRights(rightsText: string | undefined | null): boole
   return /no known restrictions|public domain|not protected by copyright/.test(r);
 }
 
+/**
+ * RONDE 27: wall-clock ceiling for the whole Library of Congress sweep.
+ *
+ * Every provider in this pool runs concurrently under a single Promise.allSettled, so the pool's
+ * duration is the SLOWEST provider's duration. Render 528 measured
+ *   loc=60905ms, internet_archive=39090ms, wikimedia=887ms, openverse=623ms, pexels=132ms
+ * against a 60s pool budget: Wikimedia and Pexels were done inside a second, and the pool still
+ * sat there until LOC ran out the clock — 28 calls, 85 candidates, and no room left for anyone
+ * to top up. LOC is worth having (it holds real public-domain historical film), so this bounds it
+ * rather than dropping it: past the deadline it returns what it already found.
+ */
+export function locPoolBudgetMs(): number {
+  const raw = process.env.LOC_POOL_BUDGET_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 5_000 && n <= 120_000) return n;
+  }
+  return 20_000;
+}
+
 export async function searchLibraryOfCongressCandidates(
   queries: string[],
-  max: number
+  max: number,
+  budgetMs: number = locPoolBudgetMs()
 ): Promise<{ candidates: PoolCandidate[]; apiCalls: number }> {
   const candidates: PoolCandidate[] = [];
   let apiCalls = 0;
   const seenIds = new Set<string>();
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
+  const deadline = Date.now() + budgetMs;
+  const outOfTime = (): boolean => Date.now() >= deadline;
 
   for (const query of queries) {
     if (candidates.length >= max) break;
+    if (outOfTime()) {
+      console.warn(
+        `[ScenePool] Library of Congress budget spent (${budgetMs}ms) — keeping ${candidates.length} candidate(s), skipping remaining queries`
+      );
+      break;
+    }
     const searchUrl = `https://www.loc.gov/search/?q=${encodeURIComponent(query)}&fo=json&c=${max}`;
     try {
       const searchResp = await withTimeoutFetch(searchUrl, UA, 10_000, `Library of Congress pool search "${query}"`);
@@ -982,6 +1011,10 @@ export async function searchLibraryOfCongressCandidates(
       // both the candidate order and the max-cap behaviour are the sequential ones.
       for (let i = 0; i < results.length; i += DETAIL_FETCH_CONCURRENCY) {
         if (candidates.length >= max) break;
+        // The detail fetches are what actually burn the clock — one per search hit, five at a
+        // time, 8s each. Checked per batch rather than per item so a batch already in flight is
+        // still consumed instead of thrown away.
+        if (outOfTime()) break;
         const batch = results
           .slice(i, i + DETAIL_FETCH_CONCURRENCY)
           .map((result) => ({ result, itemUrl: result.url || result.id }))
