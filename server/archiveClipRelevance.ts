@@ -12,6 +12,7 @@ import { ENV } from "./_core/env";
 import {
   extractArchiveSegmentPreviewJpegs,
   imageMimeToDataUrl,
+  prepareImageForVision,
 } from "./archiveClipFilter";
 
 const execRaw = promisify(execCb);
@@ -184,7 +185,15 @@ export async function archiveClipMatchesArchiveSubject(
   if (!archiveSubjectFilterEnabled()) return true;
 
   if (mimeType.startsWith("image/")) {
-    return detectMatchesArchiveSubject([imageMimeToDataUrl(mediaBuffer, mimeType)], context);
+    // RONDE 26: same unsupported-format hazard as the overlay filter — tiff/svg/bmp from archive
+    // sources come back 400. Unconvertible means "no opinion", which for this gate is `true`
+    // (keep the candidate), matching how every other failure here degrades.
+    const prepared = await prepareImageForVision(mediaBuffer, mimeType);
+    if (!prepared) return true;
+    return detectMatchesArchiveSubject(
+      [imageMimeToDataUrl(prepared.buffer, prepared.mimeType)],
+      context
+    );
   }
 
   if (!mimeType.startsWith("video/")) return true;

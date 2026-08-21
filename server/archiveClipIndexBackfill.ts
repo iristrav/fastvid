@@ -137,6 +137,9 @@ function shouldSkipRecentIndexFailure(assetId: number): boolean {
   return true;
 }
 
+/** Whether the current pause has already been logged — see backfillMissingClipEmbeddings. */
+let backfillPauseAnnounced = false;
+
 function markIndexFailure(assetId: number): void {
   recentIndexFailures.set(assetId, Date.now() + INDEX_FAIL_COOLDOWN_MS);
 }
@@ -154,9 +157,16 @@ export async function backfillMissingClipEmbeddings(
   // Fully pause CLIP backfill while any render is active — CLIP is CPU-heavy and
   // competes directly with the render pipeline on the same worker process.
   if (!options?.ignoreActiveJobCap && activeJobs > 0) {
-    console.log(`[ClipEmbedding] Backfill paused — ${activeJobs} active render job(s) in progress`);
+    // RONDE 26: this poll runs every two minutes, so a three-hour render used to bury the log
+    // under 100 identical lines. Say it once per pause, then stay quiet until work resumes —
+    // the fact that a render is running is already visible everywhere else in the log.
+    if (!backfillPauseAnnounced) {
+      console.log(`[ClipEmbedding] Backfill paused — ${activeJobs} active render job(s) in progress`);
+      backfillPauseAnnounced = true;
+    }
     return { indexed: 0, skipped: 0, missing: 0 };
   }
+  backfillPauseAnnounced = false;
   const effectiveBatch = maxAssets;
 
   let indexed = 0;

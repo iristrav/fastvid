@@ -815,9 +815,12 @@ export async function searchNasaCandidates(
           if (called) apiCalls++;
           if (!assetData || seenIds.has(nasaId)) continue;
           try {
+          // RONDE 26: NASA asset hrefs contain literal spaces in the folder name. Escaping only
+          // the space keeps this idempotent for hrefs that already come percent-encoded.
           const assetUrls = (assetData.collection?.items ?? [])
             .map(i => i.href)
-            .filter((u): u is string => typeof u === "string" && u.length > 0);
+            .filter((u): u is string => typeof u === "string" && u.length > 0)
+            .map(u => u.replace(/ /g, "%20"));
           const mp4Url = assetUrls.find(u => /\.mp4$/i.test(u) && !/~mobile|~thumb|~preview|~small/i.test(u))
             ?? assetUrls.find(u => /\.mp4$/i.test(u));
           if (!mp4Url) continue;

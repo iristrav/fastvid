@@ -148,12 +148,25 @@ export function minLocalClipSimilarity(minScore10 = 8): number {
   return minScore10 / 40;
 }
 
+// RONDE 26: the original five probes were all indoor office/tech scenes. Renders 525-527 pulled
+// present-day OUTDOOR footage into a WWII documentary — internet-archive clips of 2020s roadside
+// and city protests, a 2019 NASA spacewalk — and not one of those contains a laptop, a projector
+// or a conference room, so every probe stayed deep inside the CLIP noise band and the gate had
+// nothing to weigh. The added probes describe modernity itself (clothing, vehicles, road markings,
+// hi-vis, glass towers, HD colour video) rather than a workplace, which is what actually separates
+// a 2021 street from a 1943 one. They stay deliberately subject-neutral: nothing here mentions
+// protest, crowd or march, because those read equally well on a Nuremberg rally.
 const MODERN_MISMATCH_QUERIES = [
   "modern business conference presentation projector screen audience",
   "laptop computer software code documentation office meeting",
   "corporate keynote speaker slide deck technology startup",
   "smartphone tablet digital app interface screen",
   "contemporary office whiteboard team meeting",
+  "people wearing modern casual clothing t-shirts jeans and sneakers",
+  "present day street with modern parked cars and road markings",
+  "contemporary city skyline with glass and steel skyscrapers",
+  "workers in high visibility safety vests and hard hats on a modern site",
+  "sharp high definition colour video of a present day outdoor scene",
 ];
 
 export function topicNeedsHistoricalFootage(beatText: string, videoTitle?: unknown): boolean {
@@ -212,8 +225,16 @@ const MODERN_EVIDENCE_MIN_SIM = 0.26;
 const MODERN_EVIDENCE_MARGIN = 0.05;
 /** Independent probes that must agree on the same frame. One probe is never enough. */
 const MODERN_EVIDENCE_MIN_PROBES = 2;
-/** Frames that must independently agree. One frame is never enough — with at most
- *  MODERN_EVIDENCE_MAX_FRAMES sampled, two flagged frames is also always a majority. */
+/**
+ * RONDE 26: probes that must agree when there is only ONE frame to look at.
+ *
+ * The corroboration requirement does not disappear in that case — it moves onto the probe axis,
+ * where it is the only axis left. Three independent probes clearing both the absolute floor and
+ * the margin over the beat's own query is a strictly harder bar per frame than the two demanded
+ * when a second frame can back it up.
+ */
+const MODERN_EVIDENCE_SINGLE_FRAME_MIN_PROBES = 3;
+/** Frames that must independently agree when more than one frame is available. */
 const MODERN_EVIDENCE_MIN_FRAMES = 2;
 /** Upper bound on frames compared (pure cosine math over already-computed embeddings). */
 const MODERN_EVIDENCE_MAX_FRAMES = 3;
@@ -274,6 +295,17 @@ export function decideModernContentMismatch(
   let topBeatSim = 0;
   let legacyWouldReject = false;
 
+  // RONDE 26: both requirements adapt to how many frames the caller could actually supply.
+  //
+  // The live path is scoreClipAcrossFrames → extractSinglePreviewFrame, which yields exactly one
+  // frame. Against a flat "two frames must agree" that made this gate mathematically unreachable:
+  // renders 525, 526 and 527 logged 152 evaluations, every one of them frames=0/1, and rejected
+  // nothing at all while legacyWouldReject was true on all 152. A veto that cannot fire is not a
+  // conservative veto, it is an absent one.
+  const probesRequired =
+    frames.length === 1 ? MODERN_EVIDENCE_SINGLE_FRAME_MIN_PROBES : MODERN_EVIDENCE_MIN_PROBES;
+  const framesRequired = Math.min(MODERN_EVIDENCE_MIN_FRAMES, frames.length);
+
   for (const { beatSim, negSims } of frames) {
     let probesFlagged = 0;
     for (let i = 0; i < negSims.length; i++) {
@@ -291,12 +323,11 @@ export function decideModernContentMismatch(
         probesFlagged++;
       }
     }
-    if (probesFlagged >= MODERN_EVIDENCE_MIN_PROBES) framesFlagged++;
+    if (probesFlagged >= probesRequired) framesFlagged++;
   }
 
   const framesEvaluated = frames.length;
-  const mismatch =
-    framesEvaluated >= MODERN_EVIDENCE_MIN_FRAMES && framesFlagged >= MODERN_EVIDENCE_MIN_FRAMES;
+  const mismatch = framesEvaluated > 0 && framesFlagged >= framesRequired;
 
   return {
     mismatch,

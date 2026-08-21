@@ -9600,9 +9600,14 @@ export async function fetchNasaVideoClips(
         const mp4Path = assetUrls.find((u) => /\.mp4$/i.test(u) && !/~mobile|~thumb|~preview|~small/i.test(u))
           ?? assetUrls.find((u) => /\.mp4$/i.test(u));
         if (!mp4Path) continue;
-        const mp4Url = mp4Path.startsWith("http")
-          ? mp4Path
-          : `https://images-assets.nasa.gov${mp4Path.startsWith("/") ? mp4Path : `/${mp4Path}`}`;
+        // RONDE 26: NASA hrefs carry literal spaces in the asset folder name — render 527 fetched
+        // ".../video/NHQ_2019_1018_all woman spacewalk/...". Node's fetch tolerated it, but a raw
+        // space in a URL is not valid and any proxy or agent in the path may not. Only spaces are
+        // escaped, which keeps this idempotent on hrefs that already arrive percent-encoded.
+        const mp4Href = mp4Path.replace(/ /g, "%20");
+        const mp4Url = mp4Href.startsWith("http")
+          ? mp4Href
+          : `https://images-assets.nasa.gov${mp4Href.startsWith("/") ? mp4Href : `/${mp4Href}`}`;
 
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}_tmp.mp4`);
         const outPath = tagPathWithProviderAsset(
@@ -13830,18 +13835,40 @@ function montageClipInputs(clips: string[]): string {
   return clips.map((c) => `-i "${c}"`).join(" ");
 }
 
+/**
+ * RONDE 26: tail filler for a montage that came up short against the voice track.
+ *
+ * This used to insert a flat dark-grey rectangle, on the reasoning that a freeze is worse than a
+ * pad. Render 526 shipped the result — the export gate recorded "gray pad: scene(s) 1 rendered
+ * with a gray filler" and passed the video at 86/100 anyway — and a grey box on screen reads to a
+ * viewer as a broken player. Holding the last frame does not: a held shot is an ordinary
+ * documentary device, and it keeps the picture on the subject the narration is still describing.
+ *
+ * Neither is a substitute for having enough footage. The gap is still registered on
+ * grayPadScenes and still reported by the quality gate, because the underlying shortfall is the
+ * thing worth fixing. Set MONTAGE_TAIL_PAD=grey to restore the old behaviour without a redeploy.
+ */
+function montageTailPadFilterChain(pad: number, context: string): string {
+  const useGrey = process.env.MONTAGE_TAIL_PAD?.trim().toLowerCase() === "grey";
+  console.warn(
+    `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — ` +
+      `${useGrey ? "grey pad" : "holding last frame"}`
+  );
+  return useGrey
+    ? `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`
+    : `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},`;
+}
+
 function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
   const pad = Math.max(0, outDur - montageDur - 0.04);
   if (pad < 0.08) {
     return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
   }
-  if (strictNoVisualRepeat()) {
-    console.warn(
-      `[Pipeline] Montage ${montageDur.toFixed(1)}s shorter than voice ${outDur.toFixed(1)}s — gray pad (strict no-repeat)`
-    );
-  }
-  // Pad with gray to match voice length — never freeze on the last video frame.
-  return `[${inLabel}]tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,${FPS_FORMAT_VF}[vmont]`;
+  const chain = montageTailPadFilterChain(
+    pad,
+    `Montage ${montageDur.toFixed(1)}s vs voice ${outDur.toFixed(1)}s${strictNoVisualRepeat() ? " (strict no-repeat)" : ""}`
+  );
+  return `[${inLabel}]${chain}${FPS_FORMAT_VF}[vmont]`;
 }
 
 function assertMontageClipsUnique(sceneIndex: number, clips: string[]): void {
@@ -14636,7 +14663,7 @@ async function renderSequentialArchiveMontage(
     const pad = Math.max(0, outDur - est - 0.04);
     const padFilter =
       pad >= 0.08 && !strictNoVisualRepeat()
-        ? `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`
+        ? montageTailPadFilterChain(pad, `Scene ${sceneIndex} single-clip montage`)
         : "";
     await withSceneFetchTimeout(
       () => exec(

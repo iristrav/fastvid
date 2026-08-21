@@ -388,6 +388,62 @@ export function extractBeatVisualTargets(
   return targets;
 }
 
+/** Capitalised two-word sequence — the shape a written-out personal name takes in narration. */
+const FULL_NAME_RE = /\b(\p{Lu}[\p{L}''-]+)\s+(\p{Lu}[\p{L}''-]+)\b/gu;
+
+/** "Hitler's" → "Hitler". Narration names people in the possessive constantly. */
+function stripPossessive(word: string): string {
+  return word.replace(/['']s$/iu, "").replace(/['']$/u, "");
+}
+
+/**
+ * Full personal names this beat could plausibly be about, best source first.
+ *
+ * intent.primaryPerson is deliberately blank for historical documentaries (videoPipeline passes
+ * `historicalDoc ? "" : personName`), which is exactly the case that needs this — so the beat and
+ * title text are mined too. Every name here is written down in the script; none is invented.
+ */
+function knownFullNames(intent: MediaSearchIntent): string[] {
+  const out: string[] = [];
+  const push = (raw: string | undefined): void => {
+    const value = raw?.trim();
+    if (value && /\s/.test(value)) out.push(value);
+  };
+  push(intent.primaryPerson);
+  for (const person of intent.persons) push(person);
+  for (const hay of [intent.videoTitle ?? "", intent.beatText]) {
+    for (const match of hay.matchAll(FULL_NAME_RE)) {
+      push(`${stripPossessive(match[1]!)} ${stripPossessive(match[2]!)}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * RONDE 26: a bare first name is not a search anchor.
+ *
+ * Renders 525-527 sent "Adolf archival footage" and "Adolf historical documentary" to YouTube CC
+ * and YouTube fair-use — eleven queries, every one logged "0 relevant results" — while Internet
+ * Archive, which builds its query from the full person name, got `title:(Adolf Hitler)` and came
+ * back with usable material. The anchor here comes from intent.powerWord or searchQueries[0],
+ * both ultimately LLM-authored, so it cannot be relied on to carry the whole name. When it is a
+ * single token that the script itself writes out as part of a full name, prefer the full name.
+ *
+ * Multi-word anchors are never touched, and a token that matches no known name is left exactly
+ * as it was — this only ever completes a fragment, it never substitutes a different subject.
+ */
+export function expandAnchorToKnownPerson(anchor: string, fullNames: string[]): string {
+  const trimmed = anchor.trim();
+  if (!trimmed || /\s/.test(trimmed)) return trimmed;
+  const needle = stripPossessive(trimmed).toLowerCase();
+  if (!needle) return trimmed;
+  for (const full of fullNames) {
+    const parts = full.toLowerCase().split(/\s+/).map(stripPossessive);
+    if (parts.length > 1 && parts.includes(needle)) return full;
+  }
+  return trimmed;
+}
+
 /**
  * Archival YouTube/Wiki/Archive search phrases for historical beats — one query variant per
  * concrete visual target (person/location/event/historical_context/archival) instead of a
@@ -401,7 +457,11 @@ export function buildHistoricalArchivalQueries(
   beatText: string
 ): string[] {
   const targets = extractBeatVisualTargets(beatText, intent, intent.videoTitle);
-  const anchor = intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || targets[0]?.text || "";
+  const fullNames = knownFullNames(intent);
+  const anchor = expandAnchorToKnownPerson(
+    intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || targets[0]?.text || "",
+    fullNames
+  );
   if (!anchor && !targets.length) return intent.searchQueries.slice(0, 6);
 
   const out: string[] = [];
@@ -430,7 +490,7 @@ export function buildHistoricalArchivalQueries(
     switch (target.type) {
       case "person":
       case "location":
-        out.push(`${target.text} archival footage`);
+        out.push(`${expandAnchorToKnownPerson(target.text, fullNames)} archival footage`);
         break;
       case "event":
         out.push(target.text);

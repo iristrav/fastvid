@@ -2060,6 +2060,54 @@ export function reorderForArchiveDiversity(
   return banded;
 }
 
+/** Words that are long enough to pass a naive length filter but say nothing about a subject. */
+const STUB_POWER_WORD_STOPWORDS = new Set([
+  "about", "after", "again", "against", "along", "already", "although", "always", "among",
+  "another", "because", "before", "began", "behind", "being", "below", "between", "beyond",
+  "could", "during", "every", "final", "first", "found", "still", "their", "there", "these",
+  "thing", "things", "those", "through", "under", "until", "where", "which", "while", "whose",
+  "would", "within", "without",
+]);
+
+/**
+ * RONDE 26: a scene-level stand-in topic, chosen by what a scene is ABOUT.
+ *
+ * This used to be `text.split(/\s+/).find((w) => w.length > 4)` — the first word longer than four
+ * letters — which for "In the dim chaos of the Führerbunker, Adolf Hitler's crumbling…" yields
+ * "chaos". That word then travels on as the pool's topic anchor. Named subjects are what a
+ * documentary scene is actually about, so they come first; a content word is the fallback, and
+ * "documentary" only when the text carries nothing usable at all.
+ */
+export function stubPowerWordFromSceneText(text: string): string {
+  const stripPossessive = (w: string): string => w.replace(/['’]s$/iu, "").replace(/['’]$/u, "");
+  // Capitalisation at the very start of a sentence is grammar, not meaning, so those are skipped.
+  const isSentenceStart = (at: number): boolean =>
+    /(^|[.!?]["'’)\]]?)\s*$/u.test(text.slice(0, at));
+
+  // Matched against the RAW text rather than punctuation-stripped words, because the punctuation
+  // is the signal: "…the Führerbunker, Adolf Hitler's plans…" contains the name "Adolf Hitler",
+  // and emphatically not "Führerbunker Adolf" — the comma between them says they are not one name.
+  for (const m of text.matchAll(/(\p{Lu}[\p{L}'’-]*)[ \t]+(\p{Lu}[\p{L}'’-]*)/gu)) {
+    if (isSentenceStart(m.index ?? 0)) continue;
+    return `${stripPossessive(m[1]!)} ${stripPossessive(m[2]!)}`;
+  }
+  // Then a single mid-sentence capitalised word — a place, an organisation, a surname alone.
+  for (const m of text.matchAll(/\p{Lu}[\p{L}'’-]{2,}/gu)) {
+    if (isSentenceStart(m.index ?? 0)) continue;
+    return stripPossessive(m[0]);
+  }
+  // Then the longest ordinary content word, which at least beats picking whichever came first.
+  let best = "";
+  for (const raw of text.split(/\s+/)) {
+    const w = stripPossessive(raw.replace(/[^\p{L}\p{N}'’-]/gu, ""));
+    const lower = w.toLowerCase();
+    if (lower.length > 4 && !STUB_POWER_WORD_STOPWORDS.has(lower) && lower.length > best.length) {
+      best = w;
+    }
+  }
+  return best || "documentary";
+}
+
 /** One-time per-video archive pool — avoids re-scanning every asset on each beat. */
 export async function buildVideoArchiveCandidatePool(
   videoTitle: string | undefined,
@@ -2079,7 +2127,7 @@ export async function buildVideoArchiveCandidatePool(
     text,
     keywords: stubKeywords.length > 0 ? stubKeywords : ["documentary"],
     searchQuery: text.split(/\s+/).slice(0, 8).join(" ") || "documentary",
-    powerWord: text.split(/\s+/).find((w) => w.length > 4) ?? "documentary",
+    powerWord: stubPowerWordFromSceneText(text),
   };
   const stubScene: CuratedSceneContext = { text, pexelsQuery: stubBeat.searchQuery };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(

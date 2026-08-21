@@ -62,6 +62,13 @@ describe("archiveClipFilter — F3-24 dominant vs. small baked-in text", () => {
     vi.doUnmock("./_core/llm");
   });
 
+  // RONDE 26: the fixture used to be a nine-byte "fake-jpeg" string that is not a JPEG at all.
+  // prepareImageForVision now refuses bytes it cannot identify as a vision-safe format instead of
+  // shipping them to a model that answers 400, so the stub has to carry a real JPEG signature.
+  // Only the fixture changed; every assertion below is the one it always made.
+  const fakeJpeg = (): Buffer =>
+    Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("fake-jpeg-body")]);
+
   function mockInvokeLLM(hasBakedEditText: boolean) {
     const invokeLLMMock = vi.fn().mockResolvedValue({
       choices: [{ message: { content: JSON.stringify({ hasBakedEditText }) } }],
@@ -73,21 +80,21 @@ describe("archiveClipFilter — F3-24 dominant vs. small baked-in text", () => {
   it("Test 7 — dominant baked-in subtitles: the model's true verdict is honored (candidate downgraded/rejected)", async () => {
     mockInvokeLLM(true);
     const { archiveClipHasBakedEditText: fn } = await import("./archiveClipFilter");
-    const result = await fn(Buffer.from("fake-jpeg"), "image/jpeg");
+    const result = await fn(fakeJpeg(), "image/jpeg");
     expect(result).toBe(true);
   });
 
   it("Test 8 — small/non-dominant historical text: the model's false verdict is honored (not auto-rejected)", async () => {
     mockInvokeLLM(false);
     const { archiveClipHasBakedEditText: fn } = await import("./archiveClipFilter");
-    const result = await fn(Buffer.from("fake-jpeg"), "image/jpeg");
+    const result = await fn(fakeJpeg(), "image/jpeg");
     expect(result).toBe(false);
   });
 
   it("prompt sent to the model requires DOMINANCE before rejecting, and still explicitly protects small/marginal text", async () => {
     const invokeLLMMock = mockInvokeLLM(false);
     const { archiveClipHasBakedEditText: fn } = await import("./archiveClipFilter");
-    await fn(Buffer.from("fake-jpeg"), "image/jpeg");
+    await fn(fakeJpeg(), "image/jpeg");
 
     expect(invokeLLMMock).toHaveBeenCalledTimes(1);
     const messages = invokeLLMMock.mock.calls[0]?.[0]?.messages as Array<{ content: unknown }>;

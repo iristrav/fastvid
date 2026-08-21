@@ -55,9 +55,138 @@ function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
 
+/**
+ * RONDE 26: image formats the vision models actually accept.
+ *
+ * Renders 517-527 logged 38 failures of the shape
+ *   [ArchiveFilter] overlay check failed: LLM invoke failed (openai, model=gpt-4o):
+ *   400 Bad Request – "You uploaded an unsupported image"
+ * and, because this detector fails OPEN, each one silently admitted a clip that was never
+ * examined. The cause is upstream of the model: imageMimeToDataUrl used to forward ANY
+ * `image/*` label verbatim, and archive sources routinely serve tiff, svg, bmp and heic —
+ * none of which the vision endpoints accept.
+ */
+const VISION_SUPPORTED_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+]);
+
+/** Bare mime type, lowercased, with any `; charset=…` parameters stripped. */
+function bareMime(mimeType: string): string {
+  return mimeType.trim().toLowerCase().split(";")[0]!.trim();
+}
+
+export function isVisionSupportedImageMime(mimeType: string): boolean {
+  return VISION_SUPPORTED_IMAGE_MIMES.has(bareMime(mimeType));
+}
+
 export function imageMimeToDataUrl(buffer: Buffer, mimeType: string): string {
-  const mime = mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+  // Only ever emit a label the vision endpoints know. Callers that may hold an exotic format
+  // must run it through prepareImageForVision first — this is the last line of defence, and it
+  // corrects a wrong LABEL on right BYTES, not the other way round.
+  const bare = bareMime(mimeType);
+  const mime = VISION_SUPPORTED_IMAGE_MIMES.has(bare) ? bare : "image/jpeg";
   return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+/**
+ * Make image bytes safe to hand to a vision model: pass supported formats through untouched,
+ * transcode anything else to JPEG with ffmpeg, and give up cleanly when that is not possible.
+ *
+ * Returning null means "do not call the model" — the caller then fails open exactly as it did
+ * before, but without spending a request that is certain to come back 400.
+ */
+export async function prepareImageForVision(
+  buffer: Buffer,
+  mimeType: string
+): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  // Too short to even carry a format signature. No size floor beyond that: a 35-byte GIF is a
+  // real image, and it is the SNIFF, not the length, that decides whether this is sendable.
+  if (buffer.length < 12) return null;
+
+  // The declared mime is only a hint — archive sources mislabel constantly, in both directions.
+  // Trust the bytes: a JPEG announced as image/tiff needs no conversion, and a TIFF announced as
+  // image/jpeg very much does. (archiveAssetTagging already learned this the same way.)
+  const detected = detectImageMimeFromBuffer(buffer);
+  if (detected && VISION_SUPPORTED_IMAGE_MIMES.has(detected)) {
+    return { buffer, mimeType: detected };
+  }
+
+  const declared = bareMime(mimeType);
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "vision-img-"));
+  try {
+    const srcPath = path.join(workDir, `source${extensionForImageMime(declared)}`);
+    const outPath = path.join(workDir, "converted.jpg");
+    fs.writeFileSync(srcPath, buffer);
+    // -frames:v 1 keeps multi-page TIFFs and animated formats to a single still.
+    const ok = await runFfmpegToJpeg(srcPath, outPath);
+    if (!ok) {
+      console.warn(
+        `[ArchiveFilter] cannot convert image (declared=${declared}, detected=${detected ?? "unknown"}) — skipping check`
+      );
+      return null;
+    }
+    return { buffer: fs.readFileSync(outPath), mimeType: "image/jpeg" };
+  } catch (err) {
+    console.warn(
+      `[ArchiveFilter] image conversion failed for ${declared}:`,
+      (err as Error).message?.slice(0, 120)
+    );
+    return null;
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+/** Format from the file's magic bytes, or null when it is none of the vision-safe four. */
+export function detectImageMimeFromBuffer(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return "image/gif";
+  if (
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+function extensionForImageMime(bare: string): string {
+  const sub = bare.startsWith("image/") ? bare.slice("image/".length) : "";
+  // ffmpeg picks its demuxer from content, but a plausible extension helps the odd container.
+  return /^[a-z0-9+.-]{1,12}$/.test(sub) ? `.${sub.replace(/[+.]/g, "")}` : ".img";
+}
+
+function runFfmpegToJpeg(srcPath: string, outPath: string): Promise<boolean> {
+  return ffmpegSemaphore
+    .run(() =>
+      withForkRetry(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const args = ["-y", "-i", srcPath, "-frames:v", "1", "-q:v", "3", outPath];
+            const child = spawn(ffmpegBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
+            let stderr = "";
+            child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+            const timer = setTimeout(() => {
+              try { child.kill("SIGKILL"); } catch { /* ignore */ }
+              reject(new Error("image convert timeout"));
+            }, 15_000);
+            child.on("close", (code) => {
+              clearTimeout(timer);
+              if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 800) resolve();
+              else reject(new Error(stderr.slice(-120) || `ffmpeg exit ${code}`));
+            });
+            child.on("error", reject);
+          })
+      )
+    )
+    .then(() => true)
+    .catch(() => false);
 }
 
 async function extractVideoPreviewJpeg(
@@ -328,8 +457,11 @@ export async function archiveClipHasBakedEditText(
 
   if (mimeType.startsWith("image/")) {
     const buf = typeof media === "string" ? fs.readFileSync(media) : media;
-    const dataUrl = imageMimeToDataUrl(buf, mimeType);
-    return detectOnScreenTextInImages([dataUrl]);
+    const prepared = await prepareImageForVision(buf, mimeType);
+    // Unconvertible format: fail open exactly as an errored check does, but without spending a
+    // request the endpoint is certain to reject.
+    if (!prepared) return false;
+    return detectOnScreenTextInImages([imageMimeToDataUrl(prepared.buffer, prepared.mimeType)]);
   }
 
   if (!mimeType.startsWith("video/")) return false;
