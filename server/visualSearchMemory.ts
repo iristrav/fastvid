@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "crypto";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { visualSearchMemory, type VisualSearchMemoryRow } from "../drizzle/schema";
 import type { SemanticEntityList } from "./semanticVisualMatching";
@@ -53,6 +53,19 @@ function dedupeKeyHash(entity: string, source: string, query: string): string {
   return createHash("sha256").update(`${norm(entity)}|${norm(source)}|${norm(query)}`).digest("hex");
 }
 
+/**
+ * RONDE 28: the one spelling an entity is stored and looked up under.
+ *
+ * dedupeKeyHash has always lowercased, so two spellings of the same name collapsed into one ROW —
+ * but getVisualSearchMemoryForEntity matched on the raw column, so "Adolf Hitler" could not find
+ * a row written as "adolf hitler". Write and read now agree. The handful of rows written before
+ * this are effectively invisible to lookups until they are hit again, which is acceptable at the
+ * volume involved (render 528 wrote seven).
+ */
+export function canonicalEntityKey(entity: string): string {
+  return entity.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 256);
+}
+
 export type RecordVisualSearchMemoryInput = {
   entity: string;
   entityType: VisualEntityType;
@@ -74,7 +87,7 @@ export async function recordVisualSearchMemory(input: RecordVisualSearchMemoryIn
   try {
     const db = await getDb();
     if (!db) return;
-    const entity = input.entity.trim().slice(0, 256);
+    const entity = canonicalEntityKey(input.entity);
     const query = input.query.trim().slice(0, 512);
     const source = input.source.trim().slice(0, 64);
     if (!entity || !query || !source) return;
@@ -111,6 +124,57 @@ export async function recordVisualSearchMemory(input: RecordVisualSearchMemoryIn
   }
 }
 
+/** Provider name out of a contentKey like "internet_archive:white-lives-matter-montana". */
+export function providerFromContentKey(contentKey: string): string {
+  const head = contentKey.split(":")[0]?.trim().toLowerCase() ?? "";
+  // "stock", "still", "curated" and "file" are content FAMILIES, not places you can search again.
+  return head && !["stock", "still", "curated", "file", "unknown", ""].includes(head) ? head : "";
+}
+
+export type AdoptedClipSource = {
+  /** The video's subject — the person it is about, or its title when there is no person. */
+  subject: string;
+  subjectType: VisualEntityType;
+  /** The query that actually produced this clip. Not the clip's title. */
+  query: string;
+  /** contentKey, e.g. "wikimedia:File_Foo.jpg" — the provider is taken from the head. */
+  contentKey: string;
+  /** Vision-gate score out of 10, when the gate produced one. */
+  score10?: number | null;
+};
+
+/**
+ * RONDE 28: remember every clip that WON a beat, not only the few that reach the archive.
+ *
+ * Before this, the only writer was archiveIngestion — so a source was remembered only if the clip
+ * also happened to be archive-eligible and survived ingestion. Render 528 put 18 clips in the
+ * finished video and made 10 ingestion attempts, of which 2 were admitted. The other 16 winners
+ * taught the system nothing: which provider and which query found them was thrown away the moment
+ * the render ended, and the next video on the same subject started from zero all over again.
+ *
+ * Fire-and-forget by design. This runs at the adopt-clip acceptance point, inside the dedup lock,
+ * on the hot path — it must never be able to slow a render down or fail one.
+ */
+export function recordAdoptedClipSource(input: AdoptedClipSource): void {
+  const source = providerFromContentKey(input.contentKey);
+  const subject = input.subject?.trim();
+  const query = input.query?.trim();
+  // No provider means a locally-produced clip (a still we rendered, an AI frame). There is no
+  // "where to look next time" to record, so silence is the honest answer.
+  if (!source || !subject || !query) return;
+  void recordVisualSearchMemory({
+    entity: subject,
+    entityType: input.subjectType,
+    query,
+    source,
+    success: true,
+    qualityScore:
+      input.score10 != null && isFinite(input.score10)
+        ? Math.max(0, Math.min(100, Math.round(input.score10 * 10)))
+        : undefined,
+  });
+}
+
 /**
  * Prior successful queries/sources for this entity, most-used first — so a future beat about
  * the same entity can try a proven query+source before inventing a new one.
@@ -119,14 +183,23 @@ export async function getVisualSearchMemoryForEntity(entity: string, limit = 10)
   try {
     const db = await getDb();
     if (!db) return [];
-    const normalized = entity.trim();
+    const normalized = canonicalEntityKey(entity);
     if (!normalized) return [];
-    return await db
+    const rows = await db
       .select()
       .from(visualSearchMemory)
-      .where(eq(visualSearchMemory.entity, normalized))
+      .where(and(eq(visualSearchMemory.entity, normalized), eq(visualSearchMemory.success, 1)))
       .orderBy(desc(visualSearchMemory.usageCount), desc(visualSearchMemory.lastUsedAt))
       .limit(limit);
+    if (rows.length > 0) {
+      // Without this you cannot tell a working memory from an empty table — render 528's log has
+      // not one line about search memory, which is exactly why its emptiness went unnoticed.
+      console.log(
+        `[SearchMemory] "${normalized}": ${rows.length} proven source(s) — ` +
+          rows.slice(0, 3).map((r) => `${r.source}("${r.query.slice(0, 40)}")×${r.usageCount}`).join(", ")
+      );
+    }
+    return rows;
   } catch (err) {
     console.warn("[VisualSearchMemory] lookup failed:", (err as Error).message?.slice(0, 120));
     return [];

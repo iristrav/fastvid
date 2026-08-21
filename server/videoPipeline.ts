@@ -310,7 +310,7 @@ import {
   type ScoredFunnelCandidate,
 } from "./retrievalFunnel";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
-import { getVisualSearchMemoryForEntity } from "./visualSearchMemory";
+import { getVisualSearchMemoryForEntity, recordAdoptedClipSource } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
@@ -16705,6 +16705,20 @@ async function adoptClip(
       // "curated", "file"). Pure counter increment, no I/O.
       providerMetrics(dedup.sourcingCache, contentKey.split(":")[0] || "unknown").acceptedCount++;
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
+      // RONDE 28: this is the moment we know a source WORKED — the provider, the query that
+      // found it, and the score the gate gave it. Recording here rather than at archive
+      // ingestion is the difference between remembering a couple of clips per render and
+      // remembering all of them: render 528 adopted 18 and archived 2.
+      const memoryTopic = get_activeVideoTopic();
+      if (memoryTopic) {
+        recordAdoptedClipSource({
+          subject: memoryTopic.primaryPerson || memoryTopic.videoTitle,
+          subjectType: memoryTopic.primaryPerson ? "person" : "topic",
+          query: sourceQuery || "",
+          contentKey,
+          score10: visionResult.worstScore10,
+        });
+      }
       const mustFairUse = clipRequiresFairUseTransform(p);
       if (dedup.perf.skipFairUseTransform && !mustFairUse) {
         if (await isValidVideoFile(p)) {
@@ -24730,7 +24744,11 @@ async function fetchSceneVisualsInner(
                 // exposes one (currently Wikimedia's extmetadata.LicenseUrl).
                 licenseUrl: wec.poolCandidate?.licenseUrl ?? undefined,
                 originalQuery: beatQuery,
-                matchedQuery: wec.poolCandidate?.title || beatQuery,
+                // RONDE 28: was `wec.poolCandidate?.title || beatQuery` — the ASSET'S TITLE, not
+                // the query that found it. Search memory stores this as "the query that worked",
+                // so a later render asking what to search for got back things like "White Lives
+                // Matter Montana - Stickering Action". A title is not a query.
+                matchedQuery: beatQuery,
                 topics: beat.keywords ?? [],
               });
             } catch {

@@ -103,7 +103,11 @@ describe("visual search memory — DB learning loop", () => {
     expect(insertValuesMock).toHaveBeenCalledTimes(1);
     const inserted = insertValuesMock.mock.calls[0]?.[0];
     expect(inserted).toMatchObject({
-      entity: "Justin Bieber",
+      // RONDE 28: stored canonically (lowercased, whitespace-collapsed). The dedupe hash always
+      // lowercased, so rows already collapsed across spellings — but the LOOKUP matched the raw
+      // column, so "Justin Bieber" could never find a row written as "justin bieber". Write and
+      // read now use the same key. Everything else this test asserts is unchanged.
+      entity: "justin bieber",
       entityType: "person",
       query: "Justin Bieber 2015 interview",
       source: "youtube_cc",
