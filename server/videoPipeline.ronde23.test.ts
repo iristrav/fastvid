@@ -82,7 +82,11 @@ describe("RONDE 23 — wired into the shared adoption funnel", () => {
   );
 
   it("rejects a clip with baked-in text", () => {
-    expect(gate).toContain("if (await beatClipHasBakedText(clipPath))");
+    // RONDE 29 split the call out of the `if` so the verdict can also be counted
+    // (recordGateVerdict). What has to hold is that the check runs and its true branch fails
+    // the clip — not the exact expression shape, which pinned an implementation detail.
+    expect(gate).toContain("await beatClipHasBakedText(clipPath)");
+    expect(gate).toMatch(/if \(hasBakedText\)|if \(await beatClipHasBakedText\(clipPath\)\)/);
     expect(gate).toContain("pass: false");
   });
 

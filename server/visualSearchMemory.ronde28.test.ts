@@ -345,9 +345,14 @@ describe("RONDE 28 — recording happens at every adoption, not just at archivin
   it("is hooked at the single acceptance point", () => {
     const at = pipelineSrc.indexOf("this stays the single acceptance point that marks the asset as used");
     expect(at).toBeGreaterThan(-1);
-    const after = pipelineSrc.slice(at, at + 1600);
+    // Window sized to the whole acceptance block rather than a tight byte count — RONDE 29
+    // added the moving/still counters between the marker and this call, and a snug slice made
+    // an unrelated insertion look like the hook had moved.
+    const after = pipelineSrc.slice(at, at + 3000);
     expect(after).toContain("recordAdoptedClipSource(");
     expect(after).toContain("contentKey,");
+    // The hook must still sit inside the acceptance block, not somewhere later in the file.
+    expect(after.indexOf("recordAdoptedClipSource(")).toBeLessThan(after.indexOf("const mustFairUse"));
   });
 
   it("uses the real query, not the clip's filename or title", () => {

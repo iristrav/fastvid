@@ -17,6 +17,7 @@ import {
 import { beatVisualDescriptionFromIntent } from "./scriptVisualKeywords";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
+import { recordGateVerdict } from "./gateFiringStats";
 
 export { coerceVisionString, asVideoTitleString } from "./stringCoercion";
 
@@ -371,6 +372,12 @@ async function evaluateModernContentMismatch(
   }));
 
   const verdict = decideModernContentMismatch(frames);
+
+  // RONDE 29: this gate is the reason the counters exist — it ran 152 times across three
+  // renders, logged every time, had its flag on, and could not return true. Recorded here,
+  // after the not-armed/no-probes early returns, so "asked" means the gate genuinely judged a
+  // candidate rather than declining to look at one.
+  recordGateVerdict("modern_mismatch", verdict.mismatch);
 
   // Logged once per gate evaluation, never per frame, and only for the candidates where this
   // gate actually mattered: a reject now, or a reject under the old conditions. Everything

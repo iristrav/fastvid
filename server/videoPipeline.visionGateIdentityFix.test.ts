@@ -203,9 +203,12 @@ describe("Vision Gate final hardening — Test C: a real adopted clip is never r
 
 describe("Vision Gate root-cause fix round 2 — Test 9: off_topic_visual rejects are now individually logged", () => {
   it("logs scene, beat, provider, query, and title before recording an off_topic_visual reject", () => {
-    const idx = fullSource.indexOf('"off_topic_visual"');
+    // Anchored on the reject itself, not on the first occurrence of the reason string —
+    // RONDE 29 added a recordGateVerdict("off_topic_visual", …) counter that now appears
+    // earlier in the file, and a bare indexOf would land on that instead.
+    const idx = fullSource.indexOf('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual"');
     expect(idx).toBeGreaterThan(-1);
-    const before = fullSource.slice(Math.max(0, idx - 500), idx);
+    const before = fullSource.slice(Math.max(0, idx - 700), idx);
     expect(before).toContain("off_topic_visual provider=");
     expect(before).toContain("query=");
     expect(before).toContain("title=");

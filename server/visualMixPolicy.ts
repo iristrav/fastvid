@@ -1,6 +1,23 @@
 /**
  * Documentary visual mix — target % per clip type across all beats.
  * Default: 10% real video, 40% photos, 20% stock, 15% screenshots, 15% motion graphics.
+ *
+ * ─── RONDE 29: what in this module IS wired, and what deliberately is not ────────────────────
+ *
+ * An audit found this whole file had zero callers. Two halves, two different verdicts:
+ *
+ * WIRED — resolveTargetMovingShare() and movingShareDeficit() below, plus classifyClipMixKind()
+ * for measurement. The render counts the moving/still split of the clips it actually adopts,
+ * reports it, and feeds the shortfall back into retrievalFunnel's moving-footage ranking bonus,
+ * so a render that is drifting toward an all-stills montage pulls harder on video candidates.
+ *
+ * NOT WIRED, on purpose — allocateMixCounts / buildInterleavedMixPlan / planVisualMixForBeats.
+ * These assign a REQUIRED kind to each beat slot up front ("beat 4 must be a screenshot").
+ * Honouring that means overriding the beat's best-matching candidate with a worse one whose
+ * only merit is being the right category, which trades directly against the primary goal that
+ * every image match its narration. A target the ranking leans toward is the right shape here;
+ * a quota the selection must satisfy is not. They stay as they are rather than being deleted,
+ * per the standing rule that dead code is only removed once something has replaced it.
  */
 export type VisualMixKind =
   | "real_video"
@@ -149,6 +166,61 @@ export function classifyClipMixKind(filePath: string): VisualMixKind {
   if (/serp|_wiki_|openverse|unsplash|_still|_ov_|_p0_|_p2_/i.test(base)) return "photo";
   if (/\.mp4$|\.webm$/i.test(base)) return "real_video";
   return "photo";
+}
+
+// ─── RONDE 29: moving-footage target (the wired half — see the file header) ───────────────────
+
+/**
+ * Share of a render's adopted clips that should be MOVING footage rather than a still panned
+ * with Ken Burns.
+ *
+ * 0.45 rather than DEFAULT_VISUAL_MIX_PERCENT.real_video's 10%: that 10% describes a classic
+ * archive documentary built mostly from photographs, and the explicit instruction for this
+ * pipeline is the opposite — more video, fewer stills. Render 528 landed at 11/18 stills.
+ * Deliberately below half, because for many historical subjects the best-MATCHING material
+ * genuinely is photographic, and match beats motion.
+ */
+export const DEFAULT_TARGET_MOVING_SHARE = 0.45;
+
+/** Read the target from env (TARGET_MOVING_SHARE=0.45), clamped to 0–1. */
+export function resolveTargetMovingShare(): number {
+  const raw = process.env.TARGET_MOVING_SHARE?.trim();
+  if (!raw) return DEFAULT_TARGET_MOVING_SHARE;
+  const n = parseFloat(raw);
+  if (isNaN(n) || n < 0 || n > 1) return DEFAULT_TARGET_MOVING_SHARE;
+  return n;
+}
+
+/**
+ * Below this many adopted clips the running share is noise — one still out of one clip is a
+ * 100% deficit and would hand the very next candidate the maximum bonus on no evidence.
+ */
+export const MIN_MIX_SAMPLE = 3;
+
+/**
+ * How far below the target this render's moving-footage share currently sits, as 0–1.
+ *
+ * 0 means "at or above target, or too early to tell" — the neutral value, which leaves the
+ * ranking bonus exactly where RONDE 27 set it. 1 means "not a single moving clip so far".
+ * Pure function of two counters: no I/O, no state, directly testable.
+ */
+export function movingShareDeficit(
+  movingCount: number,
+  totalCount: number,
+  target: number = resolveTargetMovingShare()
+): number {
+  if (totalCount < MIN_MIX_SAMPLE || target <= 0) return 0;
+  const share = movingCount / totalCount;
+  if (share >= target) return 0;
+  return Math.min(1, (target - share) / target);
+}
+
+/** One-line moving/still summary for the quality report. */
+export function summarizeMovingShare(movingCount: number, stillCount: number): string {
+  const total = movingCount + stillCount;
+  if (total === 0) return "no clips adopted";
+  const pct = Math.round((movingCount / total) * 100);
+  return `${movingCount}/${total} moving (${pct}%), ${stillCount} still`;
 }
 
 export function summarizeMixPlan(plan: VisualMixKind[]): string {

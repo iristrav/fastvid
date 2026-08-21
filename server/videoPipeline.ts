@@ -73,7 +73,22 @@ import {
   extractSceneSearchTags,
   extractVisualSearchTags,
   inferVideoVisualTopic,
+  isOffTopicProtestForBeat,
 } from "./visualBeatTags";
+import {
+  MIN_MIX_SAMPLE,
+  movingShareDeficit,
+  resolveTargetMovingShare,
+  summarizeMovingShare,
+} from "./visualMixPolicy";
+import {
+  createGateFiringStats,
+  findSilentGates,
+  formatGateFiringSummary,
+  getActiveGateFiringStats,
+  recordGateVerdict,
+  runWithGateFiringStats,
+} from "./gateFiringStats";
 import {
   buildCinematicOverlays,
   buildBeatAlignedYearOverlays,
@@ -12524,6 +12539,16 @@ export interface VisualDedupState {
   documentaryPlan?: import("./documentaryPlanningEngine").DocumentaryPlan;
   /** Budget tracker that records how many of each visual type has been used. */
   visualBudgetTracker?: import("./masterDocumentaryDirector").VisualBudgetTracker;
+  /**
+   * RONDE 29: running moving/still split of everything adopted this render.
+   *
+   * Until now nothing measured the result, so the RONDE 27 moving-footage ranking bonus was
+   * flat — it pushed just as hard on a montage that was already all video as on one that was
+   * all Ken Burns stills. These two counters close that loop (see movingShareDeficit) and are
+   * also what the quality report's mix line is built from.
+   */
+  movingClipCount: number;
+  stillClipCount: number;
   /** Clips adopted so far in the current scene — used by Asset Director for shot variety. */
   assetDirectorSceneClips: string[];
   /** Clips adopted in the previous scene — used for style continuity checks. */
@@ -12749,6 +12774,8 @@ export function createVisualDedupState(
     strictRefillAttemptedScenes: new Set(),
     historicalCascadeAttemptedBeats: new Set(),
     sourcingCache: createSourcingCache(),
+    movingClipCount: 0,
+    stillClipCount: 0,
   };
 }
 
@@ -16590,7 +16617,9 @@ async function adoptClip(
       // filename patterns) now applies unconditionally, including scriptImageFallback
       // candidates — it was previously exempted here, one of the gaps that let a completely
       // unrelated SerpAPI image reach adoption with zero topical scrutiny.
-      if (!clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle)) {
+      const failsDocumentaryBeatGate = !clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle);
+      recordGateVerdict("documentary_beat_gate", failsDocumentaryBeatGate);
+      if (failsDocumentaryBeatGate) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "documentary_beat_gate", sourceQuery);
         continue;
       }
@@ -16605,9 +16634,15 @@ async function adoptClip(
       // scriptImageFallback candidates — a named, REAL_ENTITY_RULES-covered entity in the beat
       // still needs independently-authored evidence (curated-archive annotation, or provider
       // title/description/tags) that the candidate actually shows that entity.
-      if (entityRules.length > 0 && !clipSatisfiesRealEntities(entityRules, dedup.clipAnnotationMeta.get(p))) {
-        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "entity_evidence", sourceQuery);
-        continue;
+      if (entityRules.length > 0) {
+        // Only counted when the beat actually HAS entity rules — a beat with none was never
+        // asked, and counting it as a silent ask would bury a genuinely broken gate in noise.
+        const failsEntityEvidence = !clipSatisfiesRealEntities(entityRules, dedup.clipAnnotationMeta.get(p));
+        recordGateVerdict("entity_evidence", failsEntityEvidence);
+        if (failsEntityEvidence) {
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "entity_evidence", sourceQuery);
+          continue;
+        }
       }
       // Final hardening round — point 3: the relevance floor (originally scoped to only
       // scriptImageFallback candidates — Problem 1/2, "Why Hitler Killed Himself and His Wife")
@@ -16620,7 +16655,13 @@ async function adoptClip(
       // Richard M. Stallman...") on a Hitler beat.
       {
         const providerTitle = dedup.clipAnnotationMeta.get(p)?.providerText?.title;
-        if (!scriptImageFallbackPassesRelevanceFloor(providerTitle, sourceQuery, beatText, opts.videoTitle)) {
+        const belowRelevanceFloor = !scriptImageFallbackPassesRelevanceFloor(
+          providerTitle, sourceQuery, beatText, opts.videoTitle
+        );
+        // Only an ask when there IS a provider title to judge — this check is a documented
+        // no-op without one, and counting those would make a broken gate look busy.
+        if (providerTitle) recordGateVerdict("off_topic_visual", belowRelevanceFloor);
+        if (belowRelevanceFloor) {
           // Production finding: this reject reason had no accompanying log line anywhere, so an
           // off_topic_visual reject in a coverage-gate summary could never be reconstructed from
           // logs (unlike vision_gate, which logs via evaluateClipVisionGate). Minimal targeted
@@ -16705,6 +16746,11 @@ async function adoptClip(
       // "curated", "file"). Pure counter increment, no I/O.
       providerMetrics(dedup.sourcingCache, contentKey.split(":")[0] || "unknown").acceptedCount++;
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
+      // RONDE 29: count the moving/still split as it happens. Classified with the file's own
+      // existing classifiers rather than the extension — by this point every adopted path is an
+      // mp4, including the ones that are a photograph panned with Ken Burns.
+      if (isStillPhotoClip(p) || isCuratedPreparedStillClip(p)) dedup.stillClipCount++;
+      else if (isRealVideoFootageClip(p)) dedup.movingClipCount++;
       // RONDE 28: this is the moment we know a source WORKED — the provider, the query that
       // found it, and the score the gate gave it. Recording here rather than at archive
       // ingestion is the difference between remembering a couple of clips per render and
@@ -20565,6 +20611,33 @@ async function beatClipHasBakedText(clipPath: string): Promise<boolean> {
   );
 }
 
+/**
+ * RONDE 29: the protest filter, applied to every route instead of only the archive.
+ *
+ * `assetIsOffTopicProtest` was wired into exactly one place — assetPassesBeatMinimum, which only
+ * ever sees curated-archive assets. Everything sourced externally (Wikimedia, Openverse, SerpAPI,
+ * Internet Archive, YouTube CC, stock) reached the timeline without this check, which is how a
+ * `white-lives-matter` clip ended up in a Führerbunker documentary.
+ *
+ * Judged on the candidate's OWN provider-authored text (title/description/tags), never the search
+ * query or the filename — the same evidence rule the entity/event/location scorers here use, and
+ * for the same reason: the query says what we asked for, not what we got. A candidate with no
+ * provider text at all is left alone; missing metadata is not evidence of a wrong clip.
+ */
+function beatClipIsOffTopicProtest(
+  clipPath: string,
+  beat: SceneBeat,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): boolean {
+  const pt =
+    dedup.clipAnnotationMeta.get(clipPath)?.providerText ??
+    dedup.sourcingCache.assets.get(clipContentKey(clipPath))?.providerText;
+  const hay = pt ? [pt.title, pt.description, pt.tags].filter(Boolean).join(" ") : "";
+  if (!hay.trim()) return false;
+  return isOffTopicProtestForBeat(beat.text, hay, inferVideoVisualTopic(videoTitle, beat.text));
+}
+
 /** Vision gate on every adopted beat clip; optional relaxed floor for emergency geo stock. */
 async function beatClipPassesVisionGate(
   clipPath: string,
@@ -20596,11 +20669,25 @@ async function beatClipPassesVisionGate(
   // This function is the right place precisely because of the comment below it: every rescue and
   // adoption route funnels through here, so one hook covers them all. It runs first so a clip with
   // unusable text never costs a CLIP evaluation.
-  if (await beatClipHasBakedText(clipPath)) {
+  const hasBakedText = await beatClipHasBakedText(clipPath);
+  recordGateVerdict("baked_text", hasBakedText);
+  if (hasBakedText) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text", queryLabel);
     console.warn(
       `[Pipeline] Scene ${scene.index} beat ${beat.index}: rejected — baked-in on-screen text ` +
         `(${path.basename(clipPath)})`
+    );
+    return { pass: false, worstScore10: null, skipped: false, fromCache: false };
+  }
+  // RONDE 29: same reasoning as the baked-text check above — one hook here covers every route.
+  // Runs before the CLIP evaluation so an off-topic protest clip costs no vision call.
+  const isOffTopicProtest = beatClipIsOffTopicProtest(clipPath, beat, videoTitle, dedup);
+  recordGateVerdict("off_topic_protest", isOffTopicProtest);
+  if (isOffTopicProtest) {
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "off_topic_protest", queryLabel);
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: rejected — protest footage for a beat ` +
+        `that is not about protests (${path.basename(clipPath)})`
     );
     return { pass: false, worstScore10: null, skipped: false, fromCache: false };
   }
@@ -20626,6 +20713,10 @@ async function beatClipPassesVisionGate(
   // A cache hit is the SAME earlier CLIP judgment being returned again, not a fresh evaluation
   // of this candidate — recording it as another "vision_gate" reject would count one real
   // verdict as if N different candidates had each been looked at and rejected.
+  if (!result.fromCache) {
+    // Same reasoning as the reject audit above: only a FRESH verdict is a real ask.
+    recordGateVerdict("vision_gate", !result.pass);
+  }
   if (!result.pass && !result.fromCache) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
   }
@@ -21588,6 +21679,10 @@ async function adoptWikimediaBeatClip(
     ).catch((err: Error) => { console.error(`[Hang] beatClipPassesVisionGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return { pass: false, worstScore10: null, skipped: false }; });
     console.log(`[Hang] adoptWikiPath AFTER beatClipPassesVisionGate s${_si}b${_bi} pass=${vision.pass} elapsed=${Date.now()-_vt0}ms`);
     if (!vision.pass) { clearWorkerHeartbeat(); return false; }
+    if (isStillPhotoClip(clipPath)) {
+      // Only a still can be capped — asking the counter about a video clip would say nothing.
+      recordGateVerdict("still_cap", !canUseDocumentaryStill(dedup));
+    }
     if (isStillPhotoClip(clipPath) && !canUseDocumentaryStill(dedup)) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "still_cap", label);
       clearWorkerHeartbeat();
@@ -24331,6 +24426,12 @@ async function fetchSceneVisualsInner(
               // Hold back archive assets used in recent same-topic videos so a filled
               // archive keeps looking for fresh footage instead of shipping the same clips.
               crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+              // RONDE 29: how far this render is running below its moving-footage target.
+              // 0 (neutral) for the first few clips and whenever the target is already met.
+              movingShareDeficit: movingShareDeficit(
+                dedup.movingClipCount,
+                dedup.movingClipCount + dedup.stillClipCount
+              ),
             }), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
         console.log(
           `[FunnelTimeout] scene=${scene.index} completed elapsedMs=${Date.now() - funnelAwaitT0} ` +
@@ -27444,9 +27545,15 @@ export async function runVideoPipeline(
   // cancellation check below and videoGenerationCancel.ts for why). One extra lookup here (not
   // per LLM call) to resolve the owning userId for per-user LLM spend attribution.
   const ownerUserId = (await getVideoById(videoId))?.userId ?? null;
-  return runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () => _runVideoPipelineInner(
-    videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
-  )), ownerUserId);
+  // RONDE 29: per-gate ask/fire counters for this render. Its own storage rather than a
+  // RenderCtx field because gates live in modules that must not import this one (see
+  // gateFiringStats.ts). Same per-render isolation, for the same concurrency reason.
+  const gateStats = createGateFiringStats();
+  return runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
+    runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
+      videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
+    ))
+  ), ownerUserId);
 }
 
 async function _runVideoPipelineInner(
@@ -27610,6 +27717,10 @@ async function _runVideoPipelineInner(
             videoTitle: topicContext || undefined,
             // Hold back archive assets reused in recent same-topic videos (computed above).
             crossVideoExcludeIds: crossVideoExcludeIdsForRun,
+            // No movingShareDeficit here on purpose: this prefetch runs during TTS, before a
+            // single clip has been adopted, so there is no mix to be behind on yet. The inline
+            // funnel call — the one that runs per scene, with clips already on the timeline —
+            // is where the measured deficit is passed.
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
@@ -29465,6 +29576,41 @@ async function _runVideoPipelineInner(
       console.warn(
         `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with a short montage (${padScenes.join(", ")}) — visual coverage incomplete`
       );
+    }
+    // RONDE 29: report the mix the render actually produced. Until now nothing measured this,
+    // so "there should be more video than photos" was a claim nobody could check against a
+    // finished render — including me, when I sized the moving-footage bonus in RONDE 27.
+    {
+      const moving = visualDedup.movingClipCount;
+      const still = visualDedup.stillClipCount;
+      const total = moving + still;
+      console.log(`[Quality] Video ${videoId}: visual mix — ${summarizeMovingShare(moving, still)}`);
+      if (total >= MIN_MIX_SAMPLE && movingShareDeficit(moving, total) > 0) {
+        qualityReport.warnings.push(
+          `visual mix: ${summarizeMovingShare(moving, still)} — below the ${Math.round(
+            resolveTargetMovingShare() * 100
+          )}% moving-footage target`
+        );
+      }
+    }
+    // RONDE 29: which gates actually said no this render, and which never did.
+    //
+    // A gate that was asked plenty and rejected nothing is exactly the shape of the modern-
+    // mismatch bug — 152 calls, healthy logs, flag on, structurally unable to fire. It may also
+    // just mean the material was clean, so this is a warning to go look, not a failure.
+    {
+      const gateStats = getActiveGateFiringStats();
+      if (gateStats) {
+        console.log(`[Quality] Video ${videoId}: gate firing — ${formatGateFiringSummary(gateStats)}`);
+        const silent = findSilentGates(gateStats);
+        if (silent.length > 0) {
+          const detail = silent.map((g) => `${g.gate} (${g.asked}×)`).join(", ");
+          qualityReport.warnings.push(
+            `silent gate(s): ${detail} — asked repeatedly, rejected nothing; verify the check can still fire`
+          );
+          console.warn(`[Quality] Video ${videoId}: silent gate(s) — ${detail}`);
+        }
+      }
     }
     // RONDE 28b: with the render finished we know which providers contributed nothing, so the
     // searches that led nowhere can be written down as dead ends. Done here rather than per

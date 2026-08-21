@@ -1183,6 +1183,27 @@ export function isProtestVisualHay(hay: string): boolean {
   return PROTEST_VISUAL_RE.test(hay.toLowerCase());
 }
 
+/**
+ * RONDE 29: topics whose footage must come from the era, not from a modern street.
+ *
+ * `videoVisualTopic` was already a parameter here and was read by nobody — the body branched
+ * purely on geo/urban beat types, which are the beat kinds a travel or city documentary
+ * produces. For a WWII script every one of those checks is false, so the function returned
+ * false for every beat and a modern protest clip (the `white-lives-matter` one that reached
+ * the Führerbunker documentary) sailed through.
+ */
+const HISTORICAL_VISUAL_TOPICS = new Set<VideoVisualTopic>(["wwii", "cold_war"]);
+
+/**
+ * Escape hatch for the rule above: period material that genuinely shows a historical
+ * demonstration says so in its own metadata — a year in the era, an archive name, a newsreel
+ * label. Without this a Nuremberg rally described as a "demonstration", or a 1953 East Berlin
+ * uprising reel, would be thrown away along with the modern street footage this rule targets.
+ * Deliberately matched against the asset's own text only, never the search query.
+ */
+const PERIOD_EVIDENCE_RE =
+  /\b(18\d\d|19[0-6]\d|nazi|nsdap|wehrmacht|reich|weimar|soviet|ussr|stasi|cold war|wartime|newsreel|archival|archive footage|bundesarchiv|national archives|getty archive|historical footage)\b/i;
+
 /** Reject protest/demonstration footage when the script does not mention protests. */
 export function isOffTopicProtestForBeat(
   beatText: string,
@@ -1191,6 +1212,10 @@ export function isOffTopicProtestForBeat(
 ): boolean {
   if (!isProtestVisualHay(hay)) return false;
   if (isProtestBeat(beatText)) return false;
+  // Historical topic + protest imagery + no period evidence in the asset's own text = a modern
+  // demonstration in a film about the past. Checked before the beat-type branches below, which
+  // never fire for a historical script.
+  if (HISTORICAL_VISUAL_TOPICS.has(videoVisualTopic) && !PERIOD_EVIDENCE_RE.test(hay)) return true;
   if (extractBeatGeoPlaceTags(beatText).length > 0) return true;
   if (isGeoStatBeat(beatText)) return true;
   if (isCarBeat(beatText)) return true;

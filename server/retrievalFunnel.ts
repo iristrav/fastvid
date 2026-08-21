@@ -158,12 +158,28 @@ const EXTERNAL_SOURCE_TIER_BONUS: Partial<Record<FunnelCandidateSource, number>>
  */
 const MOVING_FOOTAGE_BONUS = 0.08;
 
-function movingFootageBonus(mediaType: "video" | "image"): number {
+/**
+ * RONDE 29: the bonus now knows how the render is actually going.
+ *
+ * RONDE 27 applied a flat nudge whether the montage was already all video or all stills — it
+ * could not tell the difference, because nothing measured the result. `deficit` (0–1, from
+ * visualMixPolicy.movingShareDeficit) closes that loop: 0 when the render is at or above its
+ * moving-footage target, rising to 1 when nothing adopted so far moves.
+ *
+ * The bonus scales between 1× and 2× the base — so at most 0.16, still inside a single
+ * source-tier step (the tier bonuses span 0–0.15). A render on target behaves exactly as it did
+ * before this change; only a render drifting toward an all-stills montage pulls harder. Still a
+ * shortlist nudge, never a veto: the winner is decided by pickBestFunnelCandidate on real
+ * VisionGate scores, so a well-matching still continues to beat a poorly-matching clip.
+ */
+function movingFootageBonus(mediaType: "video" | "image", deficit = 0): number {
+  if (mediaType !== "video") return 0;
+  let base = MOVING_FOOTAGE_BONUS;
   if (process.env.MOVING_FOOTAGE_BONUS?.trim()) {
     const n = parseFloat(process.env.MOVING_FOOTAGE_BONUS.trim());
-    if (!isNaN(n) && n >= 0 && n <= 0.5) return mediaType === "video" ? n : 0;
+    if (!isNaN(n) && n >= 0 && n <= 0.5) base = n;
   }
-  return mediaType === "video" ? MOVING_FOOTAGE_BONUS : 0;
+  return base * (1 + Math.max(0, Math.min(1, deficit)));
 }
 
 // ─── Per-beat gap strategy (self-learning retrieval) ─────────────────────────
@@ -404,7 +420,9 @@ export function mergeCandidates(
   externalPool: PoolCandidate[],
   archiveWeight: number,
   internetWeight: number,
-  max: number
+  max: number,
+  /** RONDE 29: 0–1 shortfall against the render's moving-footage target. 0 = neutral. */
+  movingDeficit = 0
 ): FunnelCandidate[] {
   const seen = new Set<string>();
   const merged: FunnelCandidate[] = [];
@@ -422,7 +440,7 @@ export function mergeCandidates(
     const embBoost = embSim !== null ? embSim * 0.4 : 0;
     const archiveMediaType = (pick.asset.mediaType === "video" ? "video" : "image") as "video" | "image";
     const rankingScore =
-      (kwBase + embBoost + movingFootageBonus(archiveMediaType)) * archiveWeight;
+      (kwBase + embBoost + movingFootageBonus(archiveMediaType, movingDeficit)) * archiveWeight;
 
     // Load stored embedding for fast per-beat cosine scoring (no extra API call)
     const storedEmb = loadStoredAssetEmbedding(pick.asset.id);
@@ -457,7 +475,7 @@ export function mergeCandidates(
     // pickBestFunnelCandidate() on real VisionGate scores, unchanged.
     const rankingScore =
       internetWeight *
-      (0.7 + (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) + movingFootageBonus(c.mediaType));
+      (0.7 + (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) + movingFootageBonus(c.mediaType, movingDeficit));
     merged.push({
       id,
       source: c.source as FunnelCandidateSource,
@@ -490,6 +508,13 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
    * would starve the archive pool, they are kept as a last resort. Defaults to none.
    */
   crossVideoExcludeIds?: Set<number>;
+  /**
+   * RONDE 29: how far this render currently sits below its moving-footage target (0–1, from
+   * visualMixPolicy.movingShareDeficit). Scales the moving-footage ranking bonus so a montage
+   * drifting toward all-stills pulls harder on video candidates. Defaults to 0 — neutral, i.e.
+   * exactly the RONDE 27 behaviour — so callers that don't track the mix are unaffected.
+   */
+  movingShareDeficit?: number;
 };
 
 /**
@@ -585,7 +610,8 @@ export async function buildRetrievalFunnel(
   // ── 3. Merge + dedup + rank ────────────────────────────────────────────────
   const merged = mergeCandidates(
     archivePicks, allEmbSims, externalCandidates,
-    archiveWeight, internetWeight, maxTotal
+    archiveWeight, internetWeight, maxTotal,
+    req.movingShareDeficit ?? 0
   );
 
   const latencyMs = Date.now() - t0;
