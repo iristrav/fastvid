@@ -142,8 +142,119 @@ describe("RONDE 28 — recording a winning clip", () => {
   });
 });
 
+describe("RONDE 28b — remembering the dead ends", () => {
+  async function loadWithFakeDb() {
+    vi.resetModules();
+    const rows: Record<string, unknown>[] = [];
+    vi.doMock("./db", () => ({
+      getDb: async () => ({
+        insert: () => ({
+          values: (v: Record<string, unknown>) => {
+            rows.push(v);
+            return { onDuplicateKeyUpdate: async () => undefined };
+          },
+        }),
+      }),
+    }));
+    return { mod: await import("./visualSearchMemory"), rows };
+  }
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("writes a dead end for a provider that contributed nothing", async () => {
+    const { mod, rows } = await loadWithFakeDb();
+    mod.recordSearchMisses({
+      subject: "Adolf Hitler",
+      subjectType: "person",
+      searchedKeys: ["pexels|hitler", "pixabay|interview"],
+      adoptedByProvider: new Map([["wikimedia", 4]]),
+    });
+    await settle();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.success === 0)).toBe(true);
+    expect(rows.map((r) => r.source).sort()).toEqual(["pexels", "pixabay"]);
+  });
+
+  it("says nothing about a provider that DID contribute", async () => {
+    // Some of its queries missed too, but the metrics cannot say which. Marking a working query
+    // as dead would be far more damaging than recording nothing at all.
+    const { mod, rows } = await loadWithFakeDb();
+    mod.recordSearchMisses({
+      subject: "Adolf Hitler",
+      subjectType: "person",
+      searchedKeys: ["wikimedia|hitler portrait", "wikimedia|hitler bunker"],
+      adoptedByProvider: new Map([["wikimedia", 1]]),
+    });
+    await settle();
+    expect(rows).toHaveLength(0);
+  });
+
+  it("stores the query, splitting only on the first separator", async () => {
+    const { mod, rows } = await loadWithFakeDb();
+    mod.recordSearchMisses({
+      subject: "Berlin",
+      subjectType: "place",
+      searchedKeys: ["internet_archive|title:(Adolf Hitler) AND mediatype:movies"],
+      adoptedByProvider: new Map(),
+    });
+    await settle();
+    expect(rows[0]).toMatchObject({
+      source: "internet_archive",
+      query: "title:(Adolf Hitler) AND mediatype:movies",
+    });
+  });
+
+  it("ignores malformed keys and an empty subject", async () => {
+    const { mod, rows } = await loadWithFakeDb();
+    mod.recordSearchMisses({
+      subject: "Berlin", subjectType: "place",
+      searchedKeys: ["noseparator", "|emptysource", "pexels|"],
+      adoptedByProvider: new Map(),
+    });
+    mod.recordSearchMisses({
+      subject: "  ", subjectType: "topic",
+      searchedKeys: ["pexels|x"], adoptedByProvider: new Map(),
+    });
+    await settle();
+    expect(rows).toHaveLength(0);
+  });
+
+  it("cannot erase a proven source — a miss never downgrades a hit", async () => {
+    const { mod } = await loadWithFakeDb();
+    const src = readFileSync(path.join(__dirname, "visualSearchMemory.ts"), "utf8");
+    const upsert = src.slice(src.indexOf(".onDuplicateKeyUpdate("), src.indexOf(".onDuplicateKeyUpdate(") + 600);
+    // success:1 is only ever set when the new record IS a success; a failure sets nothing.
+    expect(upsert).toContain("...(input.success ? { success: 1 } : {})");
+    expect(typeof mod.recordSearchMisses).toBe("function");
+  });
+});
+
 const memorySrc = readFileSync(path.join(__dirname, "visualSearchMemory.ts"), "utf8");
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+
+describe("RONDE 28b — dead ends are readable, and kept apart from the proven list", () => {
+  it("has its own lookup that returns only failures", () => {
+    const fn = memorySrc.slice(
+      memorySrc.indexOf("export async function getSearchMemoryDeadEnds("),
+      memorySrc.indexOf("Prior successful queries/sources"),
+    );
+    expect(fn).toContain("eq(visualSearchMemory.success, 0)");
+    expect(fn).toContain("canonicalEntityKey(entity)");
+  });
+
+  it("keys dead ends by source AND query, not by source alone", () => {
+    // Killing a whole provider on one bad query would starve later renders.
+    const fn = memorySrc.slice(memorySrc.indexOf("export async function getSearchMemoryDeadEnds("));
+    expect(fn).toContain("${r.source}|${r.query}");
+  });
+
+  it("is recorded at the end of the render, when the answer is actually known", () => {
+    const at = pipelineSrc.indexOf("recordSearchMisses({");
+    expect(at).toBeGreaterThan(-1);
+    const call = pipelineSrc.slice(at, at + 400);
+    expect(call).toContain("visualDedup.sourcingCache.queries.keys()");
+    expect(call).toContain("adoptedByProvider");
+  });
+});
 
 describe("RONDE 28 — the score is stored on the scale the column expects", () => {
   it("converts the gate's 0-10 into the column's 0-100", () => {

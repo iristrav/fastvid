@@ -176,6 +176,83 @@ export function recordAdoptedClipSource(input: AdoptedClipSource): void {
 }
 
 /**
+ * RONDE 28b: remember where looking produced NOTHING, so a later render can stop looking there.
+ *
+ * Knowing a dead end is half the value of this memory. Every render re-searched Pexels and Pixabay
+ * for "hitler" and got nothing usable, every time, because nothing recorded that it had already
+ * been tried and had already failed.
+ *
+ * Attribution is deliberately conservative. Misses are recorded only for providers that adopted
+ * ZERO clips this render — for those, no query of theirs produced a winner, which is a fact. For a
+ * provider that did contribute, some of its queries still missed, but the metrics cannot say
+ * which, so those are left alone rather than guessed at. Recording a working query as dead would
+ * be far more damaging than recording nothing.
+ *
+ * recordVisualSearchMemory never downgrades an existing success, so a miss can only ever ADD a
+ * dead end — it cannot erase a proven one.
+ */
+export function recordSearchMisses(input: {
+  subject: string;
+  subjectType: VisualEntityType;
+  /** `${provider}|${query}` — the sourcing cache's own key for "we ran this search". */
+  searchedKeys: Iterable<string>;
+  /** provider → clips adopted from it this render. */
+  adoptedByProvider: Map<string, number>;
+}): void {
+  const subject = input.subject?.trim();
+  if (!subject) return;
+  let misses = 0;
+  for (const key of input.searchedKeys) {
+    const sep = key.indexOf("|");
+    if (sep <= 0) continue;
+    const source = key.slice(0, sep).trim().toLowerCase();
+    const query = key.slice(sep + 1).trim();
+    if (!source || !query) continue;
+    if ((input.adoptedByProvider.get(source) ?? 0) > 0) continue;
+    misses++;
+    void recordVisualSearchMemory({
+      entity: subject,
+      entityType: input.subjectType,
+      query,
+      source,
+      success: false,
+    });
+  }
+  if (misses > 0) {
+    console.log(
+      `[SearchMemory] "${canonicalEntityKey(subject)}": recorded ${misses} dead end(s) — ` +
+        `sources that returned nothing usable this render`
+    );
+  }
+}
+
+/**
+ * Sources that have already been tried for this entity and produced nothing usable.
+ *
+ * Returned as a Set of `${source}|${query}` so a caller can drop or deprioritise a query it
+ * already knows is a dead end. Kept separate from the proven list rather than merged into it:
+ * these two answer different questions and mixing them invites using one as the other.
+ */
+export async function getSearchMemoryDeadEnds(entity: string, limit = 50): Promise<Set<string>> {
+  try {
+    const db = await getDb();
+    if (!db) return new Set();
+    const normalized = canonicalEntityKey(entity);
+    if (!normalized) return new Set();
+    const rows = await db
+      .select()
+      .from(visualSearchMemory)
+      .where(and(eq(visualSearchMemory.entity, normalized), eq(visualSearchMemory.success, 0)))
+      .orderBy(desc(visualSearchMemory.usageCount), desc(visualSearchMemory.lastUsedAt))
+      .limit(limit);
+    return new Set(rows.map((r) => `${r.source}|${r.query}`));
+  } catch (err) {
+    console.warn("[SearchMemory] dead-end lookup failed:", (err as Error).message?.slice(0, 120));
+    return new Set();
+  }
+}
+
+/**
  * Prior successful queries/sources for this entity, most-used first — so a future beat about
  * the same entity can try a proven query+source before inventing a new one.
  */

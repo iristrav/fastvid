@@ -310,7 +310,7 @@ import {
   type ScoredFunnelCandidate,
 } from "./retrievalFunnel";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
-import { getVisualSearchMemoryForEntity, recordAdoptedClipSource } from "./visualSearchMemory";
+import { getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
@@ -29448,6 +29448,24 @@ async function _runVideoPipelineInner(
         `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with a short montage (${padScenes.join(", ")}) — visual coverage incomplete`
       );
     }
+    // RONDE 28b: with the render finished we know which providers contributed nothing, so the
+    // searches that led nowhere can be written down as dead ends. Done here rather than per
+    // search because only now is the answer actually known — mid-render a provider that has not
+    // produced anything yet may still be about to.
+    const missTopic = get_activeVideoTopic();
+    if (missTopic) {
+      const adoptedByProvider = new Map<string, number>();
+      for (const [provider, m] of visualDedup.sourcingCache.metrics) {
+        adoptedByProvider.set(provider.trim().toLowerCase(), m.acceptedCount);
+      }
+      recordSearchMisses({
+        subject: missTopic.primaryPerson || missTopic.videoTitle,
+        subjectType: missTopic.primaryPerson ? "person" : "topic",
+        searchedKeys: visualDedup.sourcingCache.queries.keys(),
+        adoptedByProvider,
+      });
+    }
+
     const silentVoiceoverNotes = getRenderCtx().voiceoverSilentFallbackNotes;
     if (silentVoiceoverNotes.length > 0) {
       // Registers the silent-fallback occurrence(s) in the persisted quality report — this
