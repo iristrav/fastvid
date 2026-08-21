@@ -52,7 +52,10 @@ import {
   type Scene,
 } from "./videoPipeline";
 
-const FFMPEG_TEST_TIMEOUT_MS = 60_000;
+// RONDE 30: raised from 60s. This case walks the whole external cascade with real ffmpeg
+// trims per candidate; 60s was enough when ffmpeg was absent and every encode failed fast,
+// but not once the encodes actually run.
+const FFMPEG_TEST_TIMEOUT_MS = 240_000;
 
 function makeScene(overrides: Partial<Scene> = {}): Scene {
   return {

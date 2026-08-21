@@ -33,6 +33,12 @@ describe("Leonardo AI + Runway Gen-4 create/poll timeout (F3-13 finding 3.2, tes
   let outputPath: string;
 
   beforeEach(() => {
+    // RONDE 30: these were never set anywhere, and the provider credentials used to be
+    // captured at import time, so this file could only pass when someone prefixed the
+    // vitest command with them by hand. The keys are read at call time now, so setting
+    // them here is enough — and a real key in the environment still wins.
+    process.env.LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "test-key";
+    process.env.RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "test-key";
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-f313-test-"));
     outputPath = path.join(dir, "scene_0.mp4");
     mockedFetch.mockReset();

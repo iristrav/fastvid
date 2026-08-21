@@ -124,7 +124,11 @@ export function extractVoiceoverKeywords(text: string, maxItems = 2): string[] {
 
   const hits: VoiceoverKeywordHit[] = [];
   const patterns: RegExp[] = [
-    /\d[\d,.]*\s*(?:%|percent|procent)\b/gi,
+    // RONDE 30: the trailing \b applied to the "%" alternative too, and "%" is not a word
+    // character — so a percentage at the end of a sentence ("en 15%") never matched, because
+    // end-of-string after a non-word character is not a word boundary. Only the spelled-out
+    // forms ever worked. The boundary now applies to the words that need it, not to the symbol.
+    /\d[\d,.]*\s*(?:%|(?:percent|procent)\b)/gi,
     /€\s*[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|biljoen|M|B|K))?/gi,
     /\$[\d,.]+(?:\s*(?:million|billion|miljoen|miljard|M|B|K))?/gi,
     /\b[\d,.]+\s*(?:miljoen|miljard|biljoen|duizend)\b/gi,

@@ -382,9 +382,33 @@ import { fingerprintMediaFile, isNearDuplicateHash } from "./archiveClipDedup";
 
 // API Keys
 const FISH_AUDIO_API_KEY = process.env.FISH_AUDIO_API_KEY || "";
-const STABILITY_AI_API_KEY = process.env.STABILITY_AI_API_KEY || "";
+/**
+ * RONDE 30: AI-provider credentials are read at call time, not captured at import time.
+ *
+ * These were four module-level consts. Because they were snapshotted when videoPipeline.ts
+ * first loaded, a value set afterwards was invisible — which is why four test files
+ * (f308AiProviders, f309GrokSizeValidation, f313LeonardoRunwayDownload,
+ * f313LeonardoRunwayTimeouts) could only pass when someone remembered to prefix the vitest
+ * command with the key. Their own comments said so. Nobody remembered, so all four sat red in
+ * the known-failing baseline for months while the download/timeout behaviour they guard went
+ * unchecked.
+ *
+ * Production behaviour is identical — Railway sets these before the process starts — but the
+ * code no longer depends on WHEN it was imported.
+ */
+function stabilityAiApiKey(): string {
+  return process.env.STABILITY_AI_API_KEY || "";
+}
+function replicateApiKey(): string {
+  return process.env.REPLICATE_API_KEY || "";
+}
+function runwayApiKey(): string {
+  return process.env.RUNWAY_API_KEY || "";
+}
+function leonardoApiKey(): string {
+  return process.env.LEONARDO_API_KEY || "";
+}
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
-const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY || "";
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
 const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
 const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
@@ -400,13 +424,11 @@ const VIMEO_ACCESS_TOKEN = process.env.VIMEO_ACCESS_TOKEN || "";
 /** GDELT TV News → Internet Archive television captions (free, no key) */
 const GDELT_TV_API = "https://api.gdeltproject.org/api/v2/tv/tv";
 const GDELT_TV_STATIONS = ["CNN", "FOXNEWS", "MSNBC", "BBCNEWS"] as const;
-const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || "";
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 /** Optional: Google Cloud TTS — free 1M chars/month (Neural2), commercial use allowed. Final
  *  voiceover fallback tier, after ElevenLabs and Fish Audio. */
 const GOOGLE_TTS_API_KEY = process.env.GOOGLE_TTS_API_KEY || process.env.GOOGLE_CLOUD_TTS_API_KEY || "";
 const LUMA_API_KEY = process.env.LUMA_API_KEY || "";
-const LEONARDO_API_KEY = process.env.LEONARDO_API_KEY || "";
 const PIKA_API_KEY = process.env.PIKA_API_KEY || "";
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
 /** Optional: high-quality CC photos (https://unsplash.com/developers) */
@@ -3194,7 +3216,7 @@ async function tryBeatTopicRealFootage(
 
 /** Cheap tier: still image → Ken Burns (~$0.03/beat). Best $/quality for documentaries. */
 function cheapAiImageProvidersReady(): boolean {
-  return Boolean(STABILITY_AI_API_KEY || LEONARDO_API_KEY);
+  return Boolean(stabilityAiApiKey() || leonardoApiKey());
 }
 
 /** Expensive tier: Grok/Veo/Runway video — off unless ENABLE_AI_VIDEO_FALLBACK=true. */
@@ -3206,7 +3228,7 @@ function aiProvidersReady(): boolean {
   if (cheapAiImageProvidersReady()) return true;
   return (
     premiumAiVideoFallbackEnabled() &&
-    Boolean(REPLICATE_API_KEY || RUNWAY_API_KEY || GOOGLE_GEMINI_API_KEY)
+    Boolean(replicateApiKey() || runwayApiKey() || GOOGLE_GEMINI_API_KEY)
   );
 }
 
@@ -5273,7 +5295,7 @@ export async function generateStabilityAIClip(
   if (!stabilityAiEnabled()) {
     return null;
   }
-  if (!STABILITY_AI_API_KEY) {
+  if (!stabilityAiApiKey()) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: No Stability AI key, skipping AI image`);
     return null;
   }
@@ -5305,7 +5327,7 @@ export async function generateStabilityAIClip(
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
+          Authorization: `Bearer ${stabilityAiApiKey()}`,
           Accept: "image/*",
         },
         body: form,
@@ -5338,7 +5360,7 @@ export async function generateStabilityAIClip(
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
+            Authorization: `Bearer ${stabilityAiApiKey()}`,
             Accept: "application/json",
             "Content-Type": "application/json",
           },
@@ -7505,7 +7527,7 @@ export async function generateGrokVideoClip(
   outputPath: string,
   sceneIndex: number
 ): Promise<string | null> {
-  if (!REPLICATE_API_KEY) {
+  if (!replicateApiKey()) {
     return null; // Fallback to other sources
   }
 
@@ -7643,7 +7665,7 @@ export async function generateLeonardoAIClip(
   outputPath: string,
   sceneIndex: number
 ): Promise<string | null> {
-  if (!LEONARDO_API_KEY) return null;
+  if (!leonardoApiKey()) return null;
   try {
     console.log(`[Pipeline] Scene ${sceneIndex}: Generating Leonardo AI image...`);
     const t = Date.now();
@@ -7657,7 +7679,7 @@ export async function generateLeonardoAIClip(
       `Leonardo AI generate scene ${sceneIndex}`,
       {
         method: "POST",
-        headers: { Authorization: `Bearer ${LEONARDO_API_KEY}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${leonardoApiKey()}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: prompt + ", cinematic, 4K, high quality, professional photography",
           negative_prompt: "blurry, low quality, watermark, text, logo, ugly, deformed",
@@ -7687,7 +7709,7 @@ export async function generateLeonardoAIClip(
         `https://cloud.leonardo.ai/api/rest/v1/generations/${generationId}`,
         10_000,
         `Leonardo AI poll scene ${sceneIndex}`,
-        { headers: { Authorization: `Bearer ${LEONARDO_API_KEY}` } }
+        { headers: { Authorization: `Bearer ${leonardoApiKey()}` } }
       );
       if (!pollResp.ok) continue;
       const pollData = await pollResp.json() as { generations_by_pk?: { status: string; generated_images?: Array<{ url: string }> } };
@@ -7750,7 +7772,7 @@ export async function generateRunwayClip(
   outputPath: string,
   sceneIndex: number
 ): Promise<string | null> {
-  if (!RUNWAY_API_KEY) return null;
+  if (!runwayApiKey()) return null;
   try {
     console.log(`[Pipeline] Scene ${sceneIndex}: Generating Runway Gen-4 video...`);
     const t = Date.now();
@@ -7772,7 +7794,7 @@ export async function generateRunwayClip(
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${RUNWAY_API_KEY}`,
+          Authorization: `Bearer ${runwayApiKey()}`,
           "Content-Type": "application/json",
           "X-Runway-Version": "2024-11-06",
         },
@@ -7798,7 +7820,7 @@ export async function generateRunwayClip(
         `https://api.dev.runwayml.com/v1/tasks/${taskId}`,
         10_000,
         `Runway poll scene ${sceneIndex}`,
-        { headers: { Authorization: `Bearer ${RUNWAY_API_KEY}`, "X-Runway-Version": "2024-11-06" } }
+        { headers: { Authorization: `Bearer ${runwayApiKey()}`, "X-Runway-Version": "2024-11-06" } }
       );
       if (!pollResp.ok) continue;
       const pollData = await pollResp.json() as { status: string; output?: string[] };
@@ -10604,7 +10626,7 @@ export async function probeStabilityAI(): Promise<{
   elapsedMs: number;
   message: string;
 }> {
-  if (!STABILITY_AI_API_KEY?.trim()) {
+  if (!stabilityAiApiKey()?.trim()) {
     return {
       ready: false,
       tier: "core",
@@ -10631,7 +10653,7 @@ export async function probeStabilityAI(): Promise<{
       fetch(endpoint, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${STABILITY_AI_API_KEY}`,
+          Authorization: `Bearer ${stabilityAiApiKey()}`,
           Accept: "image/*",
         },
         body: form,
@@ -11916,21 +11938,21 @@ async function fetchBeatAIClip(
 
   let generated: string | null = null;
   // Cheap tier: photoreal still → Ken Burns (~$0.03/beat, broadcast look)
-  if (STABILITY_AI_API_KEY) {
+  if (stabilityAiApiKey()) {
     generated = await generateStabilityAIClip(prompt, dur, outPath, sceneIndex);
   }
-  if (!generated && LEONARDO_API_KEY) {
+  if (!generated && leonardoApiKey()) {
     generated = await generateLeonardoAIClip(prompt, dur, outPath, sceneIndex);
   }
   // Premium tier only (Runway/Grok ~$0.25+ per clip) — ENABLE_AI_VIDEO_FALLBACK=true
   if (!generated && premiumAiVideoFallbackEnabled()) {
-    if (REPLICATE_API_KEY) {
+    if (replicateApiKey()) {
       generated = await generateGrokVideoClip(prompt, dur, outPath, sceneIndex);
     }
     if (!generated && GOOGLE_GEMINI_API_KEY) {
       generated = await generateVeoVideoClip(prompt, dur, outPath, sceneIndex);
     }
-    if (!generated && RUNWAY_API_KEY) {
+    if (!generated && runwayApiKey()) {
       generated = await generateRunwayClip(prompt, null, dur, outPath, sceneIndex);
     }
   }

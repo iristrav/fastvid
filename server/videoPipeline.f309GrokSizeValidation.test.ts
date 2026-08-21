@@ -46,6 +46,11 @@ describe("generateGrokVideoClip size validation (F3-09 finding 3.1)", () => {
   let outputPath: string;
 
   beforeEach(() => {
+    // RONDE 30: these were never set anywhere, and the provider credentials used to be
+    // captured at import time, so this file could only pass when someone prefixed the
+    // vitest command with them by hand. The keys are read at call time now, so setting
+    // them here is enough — and a real key in the environment still wins.
+    process.env.REPLICATE_API_KEY = process.env.REPLICATE_API_KEY || "test-key";
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-f309-test-"));
     outputPath = path.join(dir, "scene_0.mp4");
     mockedFetch.mockReset();

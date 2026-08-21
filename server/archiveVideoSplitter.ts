@@ -219,8 +219,12 @@ export function cutMergeGapSec(): number {
 export function maxArchiveClips(): number {
   const raw = process.env.ARCHIVE_MAX_CLIPS?.trim();
   if (raw) {
+    // RONDE 30: the ceiling was 600 while DEFAULT_MAX_CLIPS is 99999 — so the default was a
+    // value the env override could not express, and anyone setting ARCHIVE_MAX_CLIPS above 600
+    // silently got the default instead of their number. The default was deliberately raised
+    // ("no practical limit"); the clamp was left behind. Widened to match.
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 40 && n <= 600) return n;
+    if (!isNaN(n) && n >= 40 && n <= DEFAULT_MAX_CLIPS) return n;
   }
   return DEFAULT_MAX_CLIPS;
 }
@@ -279,8 +283,11 @@ export function splitBudgetMs(): number {
 export function maxArchiveVideoDurationSec(): number {
   const raw = process.env.ARCHIVE_MAX_VIDEO_DURATION_SEC?.trim();
   if (raw) {
+    // RONDE 30: same defect as maxArchiveClips above — the ceiling stayed at 7200 (2 hours)
+    // after DEFAULT_MAX_SOURCE_SEC was raised, so the shipped default was larger than anything
+    // the env var could set and a configured value above 2 hours was silently ignored.
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 60 && n <= 7_200) return n;
+    if (!isNaN(n) && n >= 60 && n <= DEFAULT_MAX_SOURCE_SEC) return n;
   }
   return DEFAULT_MAX_SOURCE_SEC;
 }

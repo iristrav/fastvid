@@ -273,7 +273,20 @@ export function pipelineWallClockGraceFactor(): number {
   return 1.3;
 }
 
-/** When true, enforce hard wall-clock fail + router race timeout. Default OFF — jobs finish at their own pace. */
+/**
+ * When true, enforce hard wall-clock fail + router race timeout. Default ON.
+ *
+ * RONDE 30: this doc comment used to say "Default OFF — jobs finish at their own pace", which
+ * contradicted the code below it. Two test files (beatVisualRescue, pipelineStall) asserted the
+ * documented OFF and had been failing ever since, unnoticed inside the known-failing baseline.
+ *
+ * Corrected the comment rather than the code: the watchdog work from RONDE 20/21/25 is built on
+ * a render budget existing — RenderWatchdog derives its idle limit from the whole render budget,
+ * and maxPipelineWallClockMin() returns PIPELINE_UNLIMITED_MS when this is off. Flipping the
+ * default to match the old comment would silently remove the ceiling that stops a hung render
+ * from running for hours. That is a product decision, not a test repair, so it is flagged rather
+ * than made here.
+ */
 export function pipelineWallClockLimitEnabled(): boolean {
   return process.env.PIPELINE_WALL_CLOCK_LIMIT !== "false";
 }
@@ -878,13 +891,20 @@ export function sceneBeatCapForCadence(
 }
 
 /**
- * Beat cap per scene — on 1-min fast path one archive clip covers the full beat window
- * (no 8s min-splitting that would force 3× more CLIP work per scene).
+ * Beat cap per scene.
+ *
+ * RONDE 30: the comment here used to say "on 1-min fast path one archive clip covers the full
+ * beat window", which stopped being true when the body was changed to always use the standard
+ * 6s cadence (see the inline note below — that change was deliberate and is kept). Two
+ * consequences were left behind: this comment described behaviour that no longer existed, and
+ * `videoLength` became an ignored parameter — the exact shape of bug that made the protest
+ * filter inert. Renamed to `_videoLength` so the signature says out loud that it is not read;
+ * callers are unaffected because it is positional.
  */
 export function sceneBeatCapForCadenceForVideo(
   sceneDurationSec: number,
   perfFloor = 1,
-  videoLength?: string | null,
+  _videoLength?: string | null,
   beatSec?: number
 ): number {
   // Always use the standard cadence (archiveVisualBeatSec = 6s) so beat count scales

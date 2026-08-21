@@ -212,7 +212,18 @@ export function buildVideoQualityReport(
     const mix = classifyClipMixKind(clipPath);
     byMixKind[mix]++;
 
-    const hay = `${path.basename(clipPath)} ${videoTitle}`.toLowerCase();
+    // RONDE 30: underscores and hyphens are normalised to spaces before matching.
+    //
+    // The haystack is a FILENAME plus the video title, and clip filenames separate words with
+    // underscores ("scene_2_force_serp_columbus_city_council.mp4"). Nearly every pattern in
+    // GEO_URBAN_OFFTOPIC_RE is multi-word with real spaces ("columbus city", "city council
+    // meeting", "auto dealer", "talking head interview"), and `\b` does not treat "_" as a word
+    // boundary — so those patterns could never match a filename. Only the handful of
+    // single-word entries ("ford", "walgreens") ever fired, which is why the off-topic suspect
+    // list came back empty even for a clip named after something on the list.
+    const hay = `${path.basename(clipPath)} ${videoTitle}`
+      .toLowerCase()
+      .replace(/[_-]+/g, " ");
     if (
       !skipUrbanOffTopic &&
       isOffTopicGeoUrbanVisual(hay) &&

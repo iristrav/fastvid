@@ -10,6 +10,10 @@ import {
   fallbackVisualKeyword,
   intentSearchQueries,
   lookupBeatVisualIntent,
+  // RONDE 30: this was missing from the import list, so the case below threw a ReferenceError
+  // instead of testing anything. The function itself exists and always has
+  // (scriptVisualKeywords.ts) — only the test was broken.
+  sanitizeVisualKeyword,
   lookupBeatVisualKeyword,
   mergeVisualIntentsIntoMetadata,
   mergeVisualKeywordsIntoMetadata,

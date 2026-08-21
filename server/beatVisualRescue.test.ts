@@ -43,11 +43,16 @@ describe("beatVisualRescue", () => {
     expect(maxFallbackBeatsPerVideo()).toBe(0);
   });
 
-  it("disables wall-clock limit by default but keeps 1-min fast path", () => {
-    expect(pipelineWallClockLimitEnabled()).toBe(false);
-    expect(isFastShortVideoLength("1")).toBe(true);
-    process.env.PIPELINE_WALL_CLOCK_LIMIT = "true";
+  it("enables the wall-clock limit by default and keeps the 1-min fast path", () => {
+    // RONDE 30: this asserted `false` and had been failing for months. The flag is opt-OUT
+    // (PIPELINE_WALL_CLOCK_LIMIT !== "false"), so the default is ON; only the doc comment in
+    // sourcingPolicy.ts said otherwise, and that comment is now corrected.
     expect(pipelineWallClockLimitEnabled()).toBe(true);
     expect(isFastShortVideoLength("1")).toBe(true);
+    process.env.PIPELINE_WALL_CLOCK_LIMIT = "false";
+    expect(pipelineWallClockLimitEnabled()).toBe(false);
+    expect(isFastShortVideoLength("1")).toBe(true);
+    // The original left PIPELINE_WALL_CLOCK_LIMIT set for every later test in this process.
+    delete process.env.PIPELINE_WALL_CLOCK_LIMIT;
   });
 });

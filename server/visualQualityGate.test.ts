@@ -46,14 +46,27 @@ describe("visualQualityGate", () => {
     process.env.ENABLE_LOCAL_VISION = prev;
   });
 
-  it("defaults to 80% vision frame coverage with same min score", () => {
+  it("defaults to 80% vision frame coverage, and strict mode keeps it there in fast mode too", () => {
+    // RONDE 30: this asserted 0.5 for fast mode. Strict voice↔visual match is on by default and
+    // deliberately removes the fast-path relaxation (same reasoning as effectiveMinClipQualityScore
+    // right above it in visualQualityGate.ts), so fast mode also gets 0.8. The old 0.5 only
+    // applies with strict mode off — now covered explicitly instead of assumed.
     const prev = process.env.CLIP_VISION_COVERAGE;
+    const prevStrict = process.env.STRICT_VOICE_VISUAL_MATCH;
     delete process.env.CLIP_VISION_COVERAGE;
+
     expect(clipVisionFrameCoverage()).toBe(0.8);
-    expect(clipVisionFrameCoverage(true)).toBe(0.5);
+    expect(clipVisionFrameCoverage(true)).toBe(0.8);
     expect(effectiveVisionSampleCount(false)).toBe(3);
+
+    process.env.STRICT_VOICE_VISUAL_MATCH = "false";
+    expect(clipVisionFrameCoverage(true)).toBe(0.5);
     expect(effectiveVisionSampleCount(true)).toBe(1);
-    process.env.CLIP_VISION_COVERAGE = prev;
+
+    if (prevStrict === undefined) delete process.env.STRICT_VOICE_VISUAL_MATCH;
+    else process.env.STRICT_VOICE_VISUAL_MATCH = prevStrict;
+    if (prev === undefined) delete process.env.CLIP_VISION_COVERAGE;
+    else process.env.CLIP_VISION_COVERAGE = prev;
   });
 });
 

@@ -52,7 +52,20 @@ describe("archiveAssetTagging", () => {
     });
     expect(flat).not.toBeNull();
     expect(flat!.tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
-    expect(flat!.tags).toContain("berlin metro transit");
+    // RONDE 30: this asserted the literal "berlin metro transit". Tags are capped to two words
+    // now (capTagToTwoWords), and the place tags are hoisted ahead of the AI-supplied ones, so
+    // the real output is ["germany", "berlin", "subway platform", "commuters waiting"]. Pinning
+    // one exact string tested the fixture, not the rule; these assert what the selection is
+    // actually meant to guarantee.
+    for (const tag of flat!.tags) {
+      expect(tag.split(" ").length, `tag "${tag}" should be at most two words`).toBeLessThanOrEqual(2);
+    }
+    // Place comes through — it is the strongest search signal for archive matching.
+    expect(flat!.tags).toContain("germany");
+    expect(flat!.tags).toContain("berlin");
+    // And at least one descriptive tag survives alongside the places, so the asset is findable
+    // by what is visible in it and not only by where it was shot.
+    expect(flat!.tags.some((t) => !["germany", "berlin"].includes(t))).toBe(true);
     expect(flat!.description).toMatch(/Countries:|Cities:|Setting:|Era:/);
   });
 

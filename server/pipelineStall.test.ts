@@ -17,7 +17,9 @@ describe("pipelineProgressStall", () => {
   it("recovery enabled by default with sensible thresholds", () => {
     expect(pipelineProgressStallRecoveryEnabled()).toBe(true);
     expect(pipelineMaxStallRecoveries()).toBe(3);
-    expect(pipelineWallClockLimitEnabled()).toBe(false);
+    // RONDE 30: was `false`; the flag is opt-out so the real default is ON. See the note on
+    // pipelineWallClockLimitEnabled in sourcingPolicy.ts.
+    expect(pipelineWallClockLimitEnabled()).toBe(true);
     expect(pipelineProgressStallThresholdMs("1", "generating_script")).toBe(10 * 60_000);
     expect(pipelineProgressStallThresholdMs("1", "generating_visuals")).toBe(25 * 60_000);
     expect(pipelineProgressStallThresholdMs("1", "generating_effects")).toBe(20 * 60_000);

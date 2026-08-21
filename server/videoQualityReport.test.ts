@@ -38,6 +38,12 @@ describe("buildVideoQualityReport", () => {
   });
 
   it("assertQualityReportExportGate records violations without blocking pipeline", () => {
+    // RONDE 30: criticalGeoViolations is produced by isArchiveGeoBlockedForBeat, which opens
+    // with `if (!metadataVisualBlocksEnabled()) return false;` — and that flag is off by
+    // default, so with shipped settings the quality report can never report a geo violation at
+    // all. The case is about the detection logic, so it enables the gate explicitly.
+    const prevBlocks = process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
     const report = buildVideoQualityReport(
       ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
       "Why the Netherlands Is the Opposite of the U.S.",
@@ -57,6 +63,8 @@ describe("buildVideoQualityReport", () => {
     );
     expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
     expect(() => assertQualityReportExportGate(report)).not.toThrow();
+    if (prevBlocks === undefined) delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+    else process.env.ENABLE_METADATA_VISUAL_BLOCKS = prevBlocks;
   });
 
   it("archive-only wwii scores high with vision-tracked adopts", () => {
@@ -126,6 +134,12 @@ describe("buildVideoQualityReport", () => {
   });
 
   it("Singapore geo violations are detected in report", () => {
+    // RONDE 30: criticalGeoViolations is produced by isArchiveGeoBlockedForBeat, which opens
+    // with `if (!metadataVisualBlocksEnabled()) return false;` — and that flag is off by
+    // default, so with shipped settings the quality report can never report a geo violation at
+    // all. The case is about the detection logic, so it enables the gate explicitly.
+    const prevBlocks = process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+    process.env.ENABLE_METADATA_VISUAL_BLOCKS = "true";
     const report = buildVideoQualityReport(
       ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
       "Why Singapore is the Blueprint for Future Cities",
@@ -143,6 +157,31 @@ describe("buildVideoQualityReport", () => {
       }
     );
     expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
+    if (prevBlocks === undefined) delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
+    else process.env.ENABLE_METADATA_VISUAL_BLOCKS = prevBlocks;
+  });
+
+  it("reports no geo violations with the shipped default — the metadata gate is off", () => {
+    // Recorded on purpose: with ENABLE_METADATA_VISUAL_BLOCKS unset, a Kansas City map adopted
+    // on a Singapore documentary produces an EMPTY violation list. If that default is ever
+    // changed, this fails and forces a second look.
+    const report = buildVideoQualityReport(
+      ["/tmp/scene_0_b0_hist_archive_kansas.mp4"],
+      "Why Singapore is the Blueprint for Future Cities",
+      {
+        adoptAudit: [
+          {
+            sceneIndex: 0,
+            beatIndex: 0,
+            beatText: "Affordable public housing shapes daily life.",
+            basename: "scene_0_b0_hist_archive_kansas.mp4",
+            source: "archive",
+            assetTitle: "Historical Map of Kansas City with Railroads",
+          },
+        ],
+      }
+    );
+    expect(report.criticalGeoViolations).toBeUndefined();
   });
 });
 
@@ -150,8 +189,10 @@ describe("wikimediaV1AdoptionThreshold", () => {
   it("uses one universal default for all topics", () => {
     expect(
       wikimediaV1AdoptionThreshold("Dutch cities vs American suburbs", "Amsterdam canal district")
-    ).toBe(70);
-    expect(wikimediaV1AdoptionThreshold("The sinking of the Titanic", "RMS Titanic departure")).toBe(70);
+    ).toBe(55);
+    // RONDE 30: was 70. The universal default is 55 now (see visualMatchingEngine.ts). What the
+    // case is really about is that the threshold does not vary by topic — asserted directly.
+    expect(wikimediaV1AdoptionThreshold("The sinking of the Titanic", "RMS Titanic departure")).toBe(55);
   });
 
   it("rejects ford dealer metadata unless beat allows", () => {

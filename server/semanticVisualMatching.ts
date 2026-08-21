@@ -842,12 +842,28 @@ export function buildSemanticPexelsQueries(
   if (literalSearchQuery?.trim()) push(literalSearchQuery);
   if (literalViewerVisual?.trim()) {
     push(literalViewerVisual.slice(0, 72));
-    for (const t of extractVisualSearchTags(literalViewerVisual, videoTitle).slice(0, 5)) push(t);
+    // RONDE 30: was slice(0, 5). The literal viewer visual is a generated sentence, so its tags
+    // are generic by nature ("europe", "european", "soldiers", "military", "troops" for a
+    // Poland-1939 beat). Five of them plus the two literal queries filled 7 of the 8 available
+    // slots, leaving one — which is why the beat's own "poland" never reached a provider. Two
+    // keeps the literal visual represented without letting it crowd out the named entities
+    // below, which are the specific half of the query set.
+    for (const t of extractVisualSearchTags(literalViewerVisual, videoTitle).slice(0, 2)) push(t);
   }
 
-  for (const tier of profile.searchTiers) {
-    for (const term of tier) push(term);
-  }
+  // RONDE 30: named entities now come BEFORE the generic tier expansions.
+  //
+  // The order used to be tiers first, entities second. Since the list is capped (maxQueries, 8
+  // by default) and the tiers are unbounded, the tiers ate every remaining slot and the concrete
+  // things the script actually names never made it into the query set. For the beat "Hitler
+  // invaded Poland in 1939" the eight queries were: the literal visual, "europe", "european",
+  // "soldiers", "military", "troops" — and no Poland. Generic stock is exactly what those
+  // generic terms return, while "poland 1939" is what finds real archive footage.
+  //
+  // A place, person or year the narration states is strictly more specific than a category
+  // expanded from it, so it earns its slot first. Nothing is dropped: the tiers still follow and
+  // still fill whatever room is left. The literal viewer visual keeps its place at the very
+  // front, which is what the ordering test above guards.
   for (const list of [
     profile.entities.persons,
     profile.entities.companies,
@@ -858,6 +874,9 @@ export function buildSemanticPexelsQueries(
     profile.entities.years,
   ]) {
     for (const item of list) push(item);
+  }
+  for (const tier of profile.searchTiers) {
+    for (const term of tier) push(term);
   }
   push(profile.summary);
   if (!literalViewerVisual?.trim() && !literalSearchQuery?.trim()) {

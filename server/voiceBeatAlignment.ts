@@ -169,10 +169,22 @@ export function alignBeatTextsToSegments(
     let bestScore = 0;
     let accumulated: string[] = [];
 
+    // RONDE 30: `>` instead of `>=` — this was a real alignment bug, not a rounding detail.
+    //
+    // tokenOverlapScore is pure recall (how many of the beat's words appear in the accumulated
+    // segment text), and `accumulated` only ever grows, so the score can never go down as more
+    // segments are folded in. With `>=`, bestEnd therefore advanced on every single iteration
+    // and always landed on the LAST segment: beat 0 was assigned the entire scene's audio, and
+    // every following beat got a zero-length window floored to 0.5s. Three beats whose text
+    // matched three Whisper segments word for word aligned as 0–8s, 8–8s, 8–8s.
+    //
+    // With `>`, the first — that is, the shortest — span that reaches the best score wins, which
+    // is what "where in the audio is this beat spoken" actually means. The break heuristic below
+    // now also does its job, since bestScore stops being rewritten on every step.
     for (let si = segCursor; si < segments.length; si++) {
       accumulated.push(...alignTokens(segments[si]!.text));
       const score = tokenOverlapScore(beatTokens, accumulated);
-      if (score >= bestScore) {
+      if (score > bestScore) {
         bestScore = score;
         bestEnd = si;
       }

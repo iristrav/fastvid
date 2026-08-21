@@ -26,6 +26,8 @@ function sha256(content: string): string {
 interface FakeDbState {
   records: Array<{ hash: string; created_at: number }>;
   existingTables: Set<string>;
+  /** Optional "table.index" entries; when omitted an index counts as present if its table is. */
+  existingIndexes?: Set<string>;
 }
 
 function makeMockDbOps(state: FakeDbState): MigrationDbOps {
@@ -35,6 +37,16 @@ function makeMockDbOps(state: FakeDbState): MigrationDbOps {
     },
     async tableExists(name: string) {
       return state.existingTables.has(name);
+    },
+    // RONDE 30: the mock used to implement tableExists only, so checkObjectExists() returned
+    // null for every index and the guard could never see a migration as fully applied —
+    // "GHOST only when every object was checkable AND every one exists" is deliberate and
+    // correct, the mock simply could not answer. The project's own migrations use the
+    // INFORMATION_SCHEMA idempotency pattern, whose embedded 'CREATE INDEX `x` ON `y`' string
+    // is picked up as a real object, so every one of them hit this. Modelling indexes here
+    // matches what the real dbOps can do; the three ghost tests then exercise the actual path.
+    async indexExists(table: string, name: string) {
+      return state.existingIndexes?.has(`${table}.${name}`) ?? state.existingTables.has(table);
     },
     async ensureMigrationsTable() {
       // no-op for tests

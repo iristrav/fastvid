@@ -30,8 +30,14 @@ describe("vidrushQuality", () => {
   });
 
   it("caps director beats to scene duration", () => {
-    expect(maxDirectorBeatsForSceneDuration(23)).toBe(6);
-    expect(maxDirectorBeatsForSceneDuration(8)).toBe(2);
+    // RONDE 30: these were hardcoded to 6 and 2, which matched a smaller minimum clip length
+    // than the current one. Derived from vidrushMinClipSec() now, so raising the floor again
+    // changes the expectation with it instead of silently reddening this file.
+    const floor = vidrushMinClipSec();
+    expect(maxDirectorBeatsForSceneDuration(23)).toBe(Math.floor(23 / floor));
+    expect(maxDirectorBeatsForSceneDuration(8)).toBe(Math.floor(8 / floor));
+    // The relationship that actually matters: a longer scene never yields fewer beats.
+    expect(maxDirectorBeatsForSceneDuration(23)).toBeGreaterThan(maxDirectorBeatsForSceneDuration(8));
   });
 
   it("never returns below floor when scaling down", () => {

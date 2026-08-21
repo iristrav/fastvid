@@ -9,7 +9,33 @@ import {
   stillOutputFrameCount,
 } from "./documentaryStyle";
 
-const FFMPEG = path.resolve("node_modules/ffmpeg-static/ffmpeg.exe");
+/**
+ * RONDE 30: resolve ffmpeg cross-platform.
+ *
+ * This was hardcoded to `node_modules/ffmpeg-static/ffmpeg.exe` — a Windows binary name — so on
+ * Linux (CI, Railway, any non-Windows dev machine) the beforeAll threw "ffmpeg-static not found"
+ * and the whole file failed. It has been red in the known-failing baseline ever since.
+ * Prefers the bundled ffmpeg-static binary when present, otherwise falls back to whatever ffmpeg
+ * is on PATH, and skips cleanly when neither exists.
+ */
+function resolveFfmpeg(): string | null {
+  for (const candidate of [
+    path.resolve("node_modules/ffmpeg-static/ffmpeg"),
+    path.resolve("node_modules/ffmpeg-static/ffmpeg.exe"),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  try {
+    const which = process.platform === "win32" ? "where ffmpeg" : "command -v ffmpeg";
+    const found = execSync(which, { encoding: "utf8" }).split("\n")[0]?.trim();
+    if (found && fs.existsSync(found)) return found;
+  } catch {
+    /* no ffmpeg on PATH */
+  }
+  return null;
+}
+
+const FFMPEG = resolveFfmpeg() ?? "";
 
 function probeDuration(filePath: string): number {
   try {
@@ -51,18 +77,26 @@ function pngSampleHash(pngPath: string): string {
   return String(sum);
 }
 
-describe("documentary still encode (ffmpeg integration)", () => {
+describe.skipIf(!FFMPEG)("documentary still encode (ffmpeg integration)", () => {
   const workDir = path.join(process.cwd(), "tmp-doc-style-test");
-  const imgA = path.join(process.cwd(), "tmp-video-analysis", "frame_0001.jpg");
-  const imgB = path.join(process.cwd(), "tmp-video-analysis", "frame_0010.jpg");
+  const imgA = path.join(workDir, "frame_0001.jpg");
+  const imgB = path.join(workDir, "frame_0010.jpg");
 
   beforeAll(() => {
-    if (!fs.existsSync(FFMPEG)) {
-      throw new Error("ffmpeg-static not found — run npm install");
-    }
     fs.mkdirSync(workDir, { recursive: true });
-    if (!fs.existsSync(imgA) || !fs.existsSync(imgB)) {
-      throw new Error("Test images missing — need tmp-video-analysis/frame_0001.jpg and frame_0010.jpg");
+    // RONDE 30: the two fixture images used to be required to already exist in a
+    // `tmp-video-analysis/` scratch folder that is not in the repository, so even with ffmpeg
+    // present this file could only run on the machine it was written on. They are generated
+    // here instead — two visibly different noisy frames, which is all the assertions need
+    // (they compare sampled pixels between frames to prove the Ken Burns motion is real).
+    for (const [img, seed] of [[imgA, 1], [imgB, 7]] as const) {
+      if (fs.existsSync(img)) continue;
+      fs.mkdirSync(path.dirname(img), { recursive: true });
+      execFileSync(FFMPEG, [
+        "-y", "-f", "lavfi",
+        "-i", `nullsrc=s=1280x720,geq=random(${seed})*255:128:128`,
+        "-frames:v", "1", img,
+      ], { stdio: "ignore" });
     }
   });
 
@@ -86,7 +120,8 @@ describe("documentary still encode (ffmpeg integration)", () => {
     extractFramePng(out, 0.2, f0);
     extractFramePng(out, 2.5, f2);
     expect(pngSampleHash(f0)).not.toBe(pngSampleHash(f2));
-  });
+    // RONDE 30: real ffmpeg encodes; the default 5s vitest timeout is not enough for them.
+  }, 60_000);
 
   it("encodes two different stills and montages them without freezing on one photo", () => {
     const beatDur = 3.5;
@@ -124,7 +159,7 @@ describe("documentary still encode (ffmpeg integration)", () => {
     extractFramePng(montageOut, 1.0, early);
     extractFramePng(montageOut, 5.5, late);
     expect(pngSampleHash(early)).not.toBe(pngSampleHash(late));
-  });
+  }, 120_000);
 
   it("falls back to simple Ken Burns when blur filter string is invalid", () => {
     const duration = 3;
@@ -133,5 +168,5 @@ describe("documentary still encode (ffmpeg integration)", () => {
     runStillEncode(imgA, out, duration, fc);
     expect(stillOutputFrameCount(duration)).toBe(75);
     expect(probeDuration(out)).toBeGreaterThan(2.8);
-  });
+  }, 60_000);
 });

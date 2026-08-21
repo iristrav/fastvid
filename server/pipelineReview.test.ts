@@ -33,6 +33,10 @@ describe("pipelineReview", () => {
     ];
     const result = await reviewPipelineBeforeExport(scenes, ["/missing/composed.mp4"]);
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain("ontbreken");
+    // RONDE 30: the summary was Dutch ("ontbreken") when this was written and is English now
+    // ("Final review: N scene(s) missing"). Asserting the count and the subject rather than one
+    // word, so a future rewording does not silently break the test again — what matters is that
+    // the summary names how many scenes are missing.
+    expect(result.summary).toMatch(/1 scene\(s\) missing/i);
   });
 });

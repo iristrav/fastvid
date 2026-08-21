@@ -27,9 +27,14 @@ describe("visual cadence (5–8s per clip)", () => {
     expect(27 / cap).toBeLessThanOrEqual(8);
   });
 
-  it("1-min video perf floor: one beat per ~20s scene (fast path)", () => {
-    expect(sceneBeatCapForCadenceForVideo(20, 1, "1")).toBe(1);
-    expect(curatedPerfBeatsFloor("1")).toBe(1);
+  it("1-min video uses the same cadence as every other length — no fast-path shortcut", () => {
+    // RONDE 30: this asserted 1 beat per 20s scene on the 1-min fast path. That shortcut was
+    // deliberately removed (see sceneBeatCapForCadenceForVideo — beat count now scales with the
+    // real voiceover duration regardless of target length), but the test was never updated and
+    // sat in the known-failing baseline. A 20s scene gets 4 beats at the standard 6s cadence,
+    // the same answer the "8-10" case below already expects — which is the point of the change.
+    expect(sceneBeatCapForCadenceForVideo(20, 1, "1")).toBe(4);
+    expect(curatedPerfBeatsFloor("1")).toBe(4);
   });
 
   it("long-form 20s scene still needs 3–4 beats", () => {

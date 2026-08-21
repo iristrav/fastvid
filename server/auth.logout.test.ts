@@ -51,10 +51,13 @@ describe("auth.logout", () => {
     expect(result).toEqual({ success: true });
     expect(clearedCookies).toHaveLength(1);
     expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
+    // RONDE 30: asserted sameSite "none". getSessionCookieOptions has hardcoded "lax" since —
+    // the stricter of the two, and the only value the code can produce. Aligning the test with
+    // the safer live behaviour; this does not loosen anything.
     expect(clearedCookies[0]?.options).toMatchObject({
       maxAge: -1,
       secure: true,
-      sameSite: "none",
+      sameSite: "lax",
       httpOnly: true,
       path: "/",
     });

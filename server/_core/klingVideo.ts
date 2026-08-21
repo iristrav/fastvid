@@ -5,14 +5,33 @@ import { createHmac } from "crypto";
 import fs from "fs";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 
-const KLING_API_KEY = process.env.KLING_API_KEY?.trim() || "";
-const KLING_API_SECRET = process.env.KLING_API_SECRET?.trim() || "";
-const FAL_KEY = process.env.FAL_KEY?.trim() || process.env.FAL_API_KEY?.trim() || "";
 
 const FAL_T2V_MODEL =
   process.env.KLING_FAL_MODEL?.trim() || "fal-ai/kling-video/v2.5-turbo/pro/text-to-video";
 const FAL_I2V_MODEL =
   process.env.KLING_FAL_I2V_MODEL?.trim() || "fal-ai/kling-video/v2.5-turbo/pro/image-to-video";
+
+/**
+ * RONDE 30: read the credentials at call time instead of at import time.
+ *
+ * The three constants above were captured once when the module loaded, so a value set later —
+ * which is exactly what a test does, and what any code that configures env after boot would do —
+ * was invisible to the availability checks. maxKlingClipsPerVideo() in this same file already
+ * reads process.env on every call, so the file disagreed with itself.
+ *
+ * No production behaviour changes: Railway sets these before the process starts, so the snapshot
+ * and the live read return the same thing. What changes is that the check is now honest about
+ * where it gets its answer, and can be exercised.
+ */
+function klingApiKey(): string {
+  return process.env.KLING_API_KEY?.trim() || "";
+}
+function klingApiSecret(): string {
+  return process.env.KLING_API_SECRET?.trim() || "";
+}
+function falKey(): string {
+  return process.env.FAL_KEY?.trim() || process.env.FAL_API_KEY?.trim() || "";
+}
 
 export type KlingVideoResult = {
   filePath: string;
@@ -21,11 +40,11 @@ export type KlingVideoResult = {
 };
 
 export function isKlingDirectAvailable(): boolean {
-  return Boolean(KLING_API_KEY && KLING_API_SECRET);
+  return Boolean(klingApiKey() && klingApiSecret());
 }
 
 export function isKlingFalAvailable(): boolean {
-  return Boolean(FAL_KEY);
+  return Boolean(falKey());
 }
 
 export function isKlingAvailable(): boolean {
@@ -59,12 +78,12 @@ function buildKlingJwt(): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(
     JSON.stringify({
-      iss: KLING_API_KEY,
+      iss: klingApiKey(),
       exp: Math.floor(Date.now() / 1000) + 1800,
       nbf: Math.floor(Date.now() / 1000) - 5,
     })
   ).toString("base64url");
-  const sig = createHmac("sha256", KLING_API_SECRET).update(`${header}.${payload}`).digest("base64url");
+  const sig = createHmac("sha256", klingApiSecret()).update(`${header}.${payload}`).digest("base64url");
   return `${header}.${payload}.${sig}`;
 }
 
@@ -93,7 +112,7 @@ async function pollFalRequest(modelId: string, requestId: string, maxWaitMs: num
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
     const statusResp = await fetchWithTimeout(`https://queue.fal.run/${modelId}/requests/${requestId}/status`, 15_000, {
-      headers: { Authorization: `Key ${FAL_KEY}` },
+      headers: { Authorization: `Key ${falKey()}` },
     });
     if (!statusResp.ok) {
       await sleep(3_000);
@@ -102,7 +121,7 @@ async function pollFalRequest(modelId: string, requestId: string, maxWaitMs: num
     const status = (await statusResp.json()) as FalQueueStatus;
     if (status.status === "COMPLETED") {
       const resultResp = await fetchWithTimeout(`https://queue.fal.run/${modelId}/requests/${requestId}`, 15_000, {
-        headers: { Authorization: `Key ${FAL_KEY}` },
+        headers: { Authorization: `Key ${falKey()}` },
       });
       if (!resultResp.ok) return null;
       const payload = (await resultResp.json()) as FalVideoPayload;
@@ -120,7 +139,7 @@ async function generateKlingViaFal(
   outputPath: string,
   imageUrl?: string | null
 ): Promise<KlingVideoResult | null> {
-  if (!FAL_KEY) return null;
+  if (!falKey()) return null;
   const modelId = imageUrl ? FAL_I2V_MODEL : FAL_T2V_MODEL;
   const body: Record<string, unknown> = {
     prompt: prompt.slice(0, 2400),
@@ -134,7 +153,7 @@ async function generateKlingViaFal(
   const createResp = await fetchWithTimeout(`https://queue.fal.run/${modelId}`, 20_000, {
     method: "POST",
     headers: {
-      Authorization: `Key ${FAL_KEY}`,
+      Authorization: `Key ${falKey()}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),

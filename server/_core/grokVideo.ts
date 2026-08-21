@@ -5,7 +5,10 @@
 
 import { fetchWithTimeout } from "./fetchWithTimeout";
 
-const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
+/** RONDE 30: read at call time, not captured at import — see the note in videoPipeline.ts. */
+function replicateApiKey(): string | undefined {
+  return process.env.REPLICATE_API_KEY;
+}
 const REPLICATE_MODEL = "xai/grok-imagine-video";
 
 export interface GrokVideoResponse {
@@ -23,7 +26,7 @@ export async function generateGrokVideo(
   prompt: string,
   duration: number = 6
 ): Promise<GrokVideoResponse | null> {
-  if (!REPLICATE_API_KEY) {
+  if (!replicateApiKey()) {
     console.warn("[Grok] REPLICATE_API_KEY not set, skipping Grok video generation");
     return null;
   }
@@ -33,7 +36,7 @@ export async function generateGrokVideo(
     const createResponse = await fetchWithTimeout("https://api.replicate.com/v1/predictions", 20_000, {
       method: "POST",
       headers: {
-        "Authorization": `Token ${REPLICATE_API_KEY}`,
+        "Authorization": `Token ${replicateApiKey()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -62,7 +65,7 @@ export async function generateGrokVideo(
         `https://api.replicate.com/v1/predictions/${predictionId}`,
         15_000,
         {
-          headers: { "Authorization": `Token ${REPLICATE_API_KEY}` },
+          headers: { "Authorization": `Token ${replicateApiKey()}` },
         }
       );
 

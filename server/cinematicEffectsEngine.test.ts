@@ -29,6 +29,7 @@ import {
   parseFacelessSubtitleLines,
   planCinematicScene,
 } from "./cinematicEffectsEngine";
+import { archiveVisualMinClipSec } from "./sourcingPolicy";
 
 describe("cinematicEffectsEngine", () => {
   it("is enabled by default", () => {
@@ -168,8 +169,17 @@ describe("cinematicEffectsEngine", () => {
     expect(plan!.xfadeSec).toBe(0);
     expect(plan!.cutStartsSec[0]).toBeCloseTo(0, 2);
     expect(plan!.cutStartsSec[1]).toBeCloseTo(2.0, 2);
-    expect(plan!.durations[0]).toBeCloseTo(2.0, 1);
-    expect(plan!.durations[1]).toBeCloseTo(3.5, 1);
+    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
+    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
+    // the montage necessarily runs long — the tail is covered by holding the last frame
+    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
+    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
+    // reported separately; it is not something a test edit should paper over silently.
+    const floor = archiveVisualMinClipSec();
+    expect(plan!.durations[0]).toBeGreaterThanOrEqual(floor);
+    expect(plan!.durations[1]).toBeGreaterThanOrEqual(floor);
+    // The second beat has the longer voice window, so it must never be the shorter clip.
+    expect(plan!.durations[1]).toBeGreaterThanOrEqual(plan!.durations[0]);
   });
 
   it("computeTtsHardCutMontagePlan works with partial TTS windows", () => {
@@ -195,10 +205,21 @@ describe("cinematicEffectsEngine", () => {
     const xfade = 0.3;
     const durs = computeVoiceSyncedClipDurations(beats, voiceDur, [0, 1, 2], xfade);
     expect(durs).toHaveLength(3);
+    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
+    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
+    // the montage necessarily runs long — the tail is covered by holding the last frame
+    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
+    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
+    // reported separately; it is not something a test edit should paper over silently.
     const montageLen = durs.reduce((s, d) => s + d, 0) - 2 * xfade;
-    expect(montageLen).toBeCloseTo(voiceDur, 1);
-    expect(durs[1]).toBeGreaterThan(durs[0]);
-    expect(durs[1]).toBeGreaterThan(durs[2]);
+    // Never shorter than the narration (that would leave audio with no picture), and never more
+    // than one minimum clip longer than the unavoidable floor for this many clips.
+    expect(montageLen).toBeGreaterThanOrEqual(voiceDur);
+    expect(montageLen).toBeLessThanOrEqual(
+      Math.max(voiceDur, durs.length * archiveVisualMinClipSec()) + archiveVisualMinClipSec()
+    );
+    expect(durs[1]).toBeGreaterThanOrEqual(durs[0]);
+    expect(durs[1]).toBeGreaterThanOrEqual(durs[2]);
   });
 
   it("splits voice window when multiple clips map to one beat", () => {
@@ -210,8 +231,14 @@ describe("cinematicEffectsEngine", () => {
     const xfade = 0.25;
     const durs = computeVoiceSyncedClipDurations(beats, voiceDur, [0, 1, 1], xfade, 0);
     expect(durs).toHaveLength(3);
+    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
+    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
+    // the montage necessarily runs long — the tail is covered by holding the last frame
+    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
+    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
+    // reported separately; it is not something a test edit should paper over silently.
     expect(durs[2]).toBeCloseTo(durs[1], 0);
-    expect(durs[1]).toBeGreaterThan(durs[0]);
+    expect(durs[1]).toBeGreaterThanOrEqual(durs[0]);
   });
 
   it("prefers later beats for backfill when end voice still needs footage", () => {
@@ -231,8 +258,19 @@ describe("cinematicEffectsEngine", () => {
   it("finalizeVoiceSyncedMontageDurations scales down when montage runs long", () => {
     const seed = [6, 6, 6];
     const out = finalizeVoiceSyncedMontageDurations(seed, 10, [20, 20, 20], 0.3, 0);
+    // RONDE 30: these numbers predate archiveVisualMinClipSec() being raised to 5s. Every clip
+    // now has a 5-second floor, so a voice window shorter than that cannot be matched exactly and
+    // the montage necessarily runs long — the tail is covered by holding the last frame
+    // (RONDE 26). Asserting the invariants that survive a change to the floor instead of the old
+    // literals. The underlying tension (a 5s floor cannot fit a 2s sentence) is real and is
+    // reported separately; it is not something a test edit should paper over silently.
     const montageLen = out.reduce((s, d) => s + d, 0) - 2 * 0.3;
-    expect(montageLen).toBeLessThanOrEqual(10.3);
+    // Three clips cannot go below 3 x the 5s floor, so the reachable target is that, not 10.3.
+    expect(montageLen).toBeLessThanOrEqual(
+      Math.max(10.3, out.length * archiveVisualMinClipSec())
+    );
+    // It must still have scaled DOWN from the 6s seed.
+    expect(Math.max(...out)).toBeLessThan(6);
   });
 
   it("plans interval screen labels every 30s with years and keywords", () => {
@@ -253,7 +291,7 @@ describe("cinematicEffectsEngine", () => {
     expect(labels.some((l) => /1933|1939/.test(l.displayText))).toBe(true);
   });
 
-  it("builds yellow pill typewriter drawtext bottom-left", () => {
+  it("builds centred white typewriter drawtext that types out and fades", () => {
     const chain = buildYearDrawtextFilterChain("vmont", "vout", [
       {
         year: "1933",
@@ -263,13 +301,20 @@ describe("cinematicEffectsEngine", () => {
         endTime: 6,
       },
     ]);
-    expect(chain).toContain("drawbox");
-    expect(chain).toContain("0xFFCC00");
-    expect(chain).toContain("fontcolor=black");
-    expect(chain).toContain(`fontsize=${SCREEN_LABEL_FONT_SIZE}`);
+    // RONDE 30: this asserted the old look — a yellow pill (drawbox, 0xFFCC00, black text)
+    // pinned to the bottom-left. The label is a centred white "V3" typewriter now: no box, white
+    // text, centred x and y, typed one character at a time and then faded. The whole treatment
+    // was redesigned and the test was never updated. Asserting the current design plus the
+    // behaviour that matters — the label appears, it is timed to its window, and it fades out.
+    expect(chain).not.toContain("drawbox");
+    expect(chain).toContain("fontcolor=white");
+    expect(chain).toContain("x=(w-text_w)/2");
+    expect(chain).toContain("y=(h-text_h)/2");
     expect(chain).toContain("1933");
-    expect(chain).toContain("between(t\\,2.000\\,2.042)");
-    expect(chain).toContain("y=h-");
+    // Typed out one character at a time, starting at the label's own start time.
+    expect(chain).toContain("between(t\\,2.000\\,");
+    // And faded rather than cut, so it does not pop off screen.
+    expect(chain).toContain("alpha=");
   });
 
   it("plans shutter cues when photo stills enter montage", () => {
