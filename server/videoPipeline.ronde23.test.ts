@@ -48,7 +48,7 @@ describe("RONDE 23 — external clips are checked, once per asset", () => {
   it("reuses the existing detector rather than inventing a second one", () => {
     // RONDE 24 moved the memo into archiveClipFilter so archive ingestion shares it; the beat
     // gate now goes through that shared entry point instead of calling the raw detector itself.
-    expect(helper).toContain("cachedClipHasBakedEditText(clipPath");
+    expect(helper).toMatch(/cachedClipHasBakedEditText\(\s*clipPath/);
   });
 
   it("caches by content key, so one asset costs one vision call across all beats", () => {

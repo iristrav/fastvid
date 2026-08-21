@@ -43,6 +43,17 @@ export interface RenderWatchdog {
   concatStart(): void;
   /** Signal that the final concat ended. */
   concatEnd(): void;
+  /**
+   * RONDE 25: report that the render is still doing useful work.
+   *
+   * The idle detector's only signal used to be trackChild — a child process starting or exiting.
+   * Every phase that spawns no ffmpeg/ffprobe therefore read as a dead render, most importantly
+   * the final upload (the code that calls it notes final videos run to "hundreds of MB to
+   * low-GB"). That was survivable while the kill was effectively a no-op; since the kill now
+   * cancels the render AND marks the video failed, a long child-free phase could destroy a
+   * perfectly healthy render. Call this from any long-running phase that has no child processes.
+   */
+  ping(reason?: string): void;
   /** Stop the watchdog (called when render completes normally). */
   stop(): void;
   /**
@@ -206,6 +217,13 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
     sceneComposeEnd(si)    { markActivity(); delete sceneComposeStartMs[si]; },
     concatStart()          { markActivity(); concatStartMs = Date.now(); },
     concatEnd()            { markActivity(); concatStartMs = 0; },
+    ping(reason?: string) {
+      if (stopped) return;
+      markActivity();
+      if (reason) {
+        console.log(`[Watchdog] video=${videoId} still working: ${reason}`);
+      }
+    },
     updateBudget(newBudgetMs: number) {
       if (stopped) return;
       const oldSec = Math.round(activeBudgetMs / 1000);

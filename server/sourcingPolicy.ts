@@ -731,6 +731,30 @@ export function beatClipTextFilterEnabled(): boolean {
 }
 
 /**
+ * RONDE 25: how many DISTINCT clips one render may text-check before the filter stops spending.
+ *
+ * Each check costs an ffprobe, two ffmpeg frame extractions and an LLM vision call (up to 18s) —
+ * and the ffmpeg work queues behind the render's own on a semaphore of 3. Render 526/527 put 64
+ * distinct clips through the shared beat gate, so RONDE 23 was unbounded: worst case roughly 64
+ * vision calls and 128 extra ffmpeg operations on a render that already took 25 minutes. The
+ * detector's existing ARCHIVE_OVERLAY_MAX_CLIPS valve does not apply here — it is driven by an
+ * opts.clipCount the beat gate has no meaningful value for.
+ *
+ * The cap counts only cache MISSES, so re-offering the same asset to many beats stays free and a
+ * normal render never reaches it. Past the cap the filter allows clips through rather than
+ * rejecting them: refusing everything once the budget ran out would starve the cascade, which is
+ * a worse failure than the text it is guarding against. Every skip is logged.
+ */
+export function beatClipTextFilterMaxChecks(): number {
+  const raw = process.env.BEAT_CLIP_TEXT_FILTER_MAX_CHECKS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0 && n <= 500) return n;
+  }
+  return 40;
+}
+
+/**
  * RONDE 21: stall (idle) timeout for a download's BODY read.
  *
  * fetchWithTimeout arms an AbortController, awaits fetch(), then clears its timer in `finally`.

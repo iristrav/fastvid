@@ -20,6 +20,7 @@ import { storagePut } from "./storage";
 import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMediaArchives } from "./db";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import { cachedClipHasBakedEditText } from "./archiveClipFilter";
+import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
 import type { InsertMediaArchiveAsset } from "../drizzle/schema";
@@ -192,7 +193,7 @@ async function ingestExternalClipToArchiveInner(
     // case: the beat gate (RONDE 23) has usually already judged this exact clip, and the shared
     // memo in archiveClipFilter returns that verdict instead of re-running the vision call.
     const overlayKey = metadata.sourceUrl || `${metadata.sourceNote}:${path.basename(localPath)}`;
-    if (await cachedClipHasBakedEditText(localPath, metadata.mimeType, overlayKey)) {
+    if (await cachedClipHasBakedEditText(localPath, metadata.mimeType, overlayKey, beatClipTextFilterMaxChecks())) {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );

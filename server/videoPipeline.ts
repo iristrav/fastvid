@@ -157,8 +157,8 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
-import { cachedClipHasBakedEditText } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled } from "./sourcingPolicy";
+import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -20477,7 +20477,12 @@ async function beatClipHasBakedText(clipPath: string): Promise<boolean> {
   if (!beatClipTextFilterEnabled()) return false;
   // RONDE 24: the memo lives in archiveClipFilter so archive ingestion shares it — a clip that
   // wins its beat and is then ingested is judged once, not twice.
-  return cachedClipHasBakedEditText(clipPath, "video/mp4", clipContentKey(clipPath));
+  return cachedClipHasBakedEditText(
+    clipPath,
+    "video/mp4",
+    clipContentKey(clipPath),
+    beatClipTextFilterMaxChecks()
+  );
 }
 
 /** Vision gate on every adopted beat clip; optional relaxed floor for emergency geo stock. */
@@ -27388,6 +27393,10 @@ async function _runVideoPipelineInner(
   const { createRenderWatchdog, WATCHDOG_RENDER_MAX_MS } = await import("./renderWatchdog");
   const initialWatchdogBudgetMs = Math.max(WATCHDOG_RENDER_MAX_MS, maxPipelineWallClockHardMin(videoLength) * 60_000);
   const watchdog = createRenderWatchdog(videoId, initialWatchdogBudgetMs);
+  // RONDE 25: each render gets its own overlay-check allowance (and a clean memo) so one
+  // expensive render cannot spend the next one's budget, and the cache cannot grow unbounded
+  // across the lifetime of a long-lived worker process.
+  resetOverlayBudget();
   getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with
@@ -29642,6 +29651,10 @@ async function _runVideoPipelineInner(
       // Spot check + upload in parallel — spot check reads the local file,
       // upload streams the same file; both start at the same wall-clock time.
       await touchVideoProgress(videoId);
+      // RONDE 25: same reasoning as the sequential branch below — the upload itself spawns no
+      // child process. The concurrent spot check does, but it finishes long before a multi-GB
+      // upload does, so the tail of this Promise.all is just as child-free.
+      watchdog.ping("uploading final video (with concurrent spot check)");
       const [uploadResult, spot] = await Promise.all([
         withTimeout(
           storagePutFromFile(`videos/${videoId}/final.mp4`, finalVideoPath, "video/mp4"),
@@ -29650,6 +29663,7 @@ async function _runVideoPipelineInner(
         ),
         spotCheckFinalVideo(finalVideoPath),
       ]);
+      watchdog.ping("final video uploaded");
       url = uploadResult.url;
       qualityReport.postRenderSpotCheck = {
         ok: spot.ok,
@@ -29708,11 +29722,17 @@ async function _runVideoPipelineInner(
           postRenderOk: spot.ok,
         });
       }
+      // RONDE 25: the upload spawns no child process, so it is invisible to the watchdog's idle
+      // detector (whose only other signal is trackChild). Final videos run to hundreds of MB, and
+      // a kill now cancels the render and marks the video failed — so announce this phase before
+      // entering it rather than letting a slow upload look like a dead render.
+      watchdog.ping(`uploading final video (budget ${Math.round(renderBudgetUploadMs / 1000)}s)`);
       const uploadResult = await withTimeout(
         storagePutFromFile(`videos/${videoId}/final.mp4`, finalVideoPath, "video/mp4"),
         renderBudgetUploadMs,
         "S3 upload"
       );
+      watchdog.ping("final video uploaded");
       url = uploadResult.url;
     }
 

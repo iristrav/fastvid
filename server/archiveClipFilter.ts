@@ -252,9 +252,30 @@ export async function archiveSegmentHasOnScreenText(
  */
 const overlayVerdictCache = new Map<string, boolean>();
 
+/**
+ * RONDE 25: how many cache MISSES (i.e. real vision calls) have been spent since the last reset.
+ * Callers pass a ceiling; past it the check is skipped rather than run. Counting misses rather
+ * than calls is what keeps re-offering the same asset to many beats free.
+ */
+let overlayChecksPerformed = 0;
+
+/**
+ * Start a fresh overlay budget. Called once per render so one expensive render cannot spend the
+ * next one's allowance, and so the memo does not grow without bound across a long-lived worker.
+ */
+export function resetOverlayBudget(): void {
+  overlayVerdictCache.clear();
+  overlayChecksPerformed = 0;
+}
+
 /** Test seam: clear the shared overlay memo between cases. */
 export function __resetOverlayVerdictCacheForTest(): void {
-  overlayVerdictCache.clear();
+  resetOverlayBudget();
+}
+
+/** Vision calls actually spent since the last reset — for logging and tests. */
+export function overlayChecksSpent(): number {
+  return overlayChecksPerformed;
 }
 
 /**
@@ -265,10 +286,24 @@ export function __resetOverlayVerdictCacheForTest(): void {
 export async function cachedClipHasBakedEditText(
   media: string,
   mimeType: string,
-  cacheKey: string
+  cacheKey: string,
+  maxChecks?: number
 ): Promise<boolean> {
   const cached = overlayVerdictCache.get(cacheKey);
   if (cached !== undefined) return cached;
+  // RONDE 25: a miss is about to cost an ffprobe, two ffmpeg extractions and a vision call, so
+  // the ceiling is enforced here — the one place that knows a miss is happening. Past it we allow
+  // the clip: an exhausted budget must not turn into "reject everything", which would starve the
+  // cascade far more destructively than the text this guards against. Not cached, so a later
+  // reset (next render) re-evaluates this clip properly instead of inheriting a budget artefact.
+  if (maxChecks !== undefined && overlayChecksPerformed >= maxChecks) {
+    console.warn(
+      `[ArchiveFilter] overlay budget spent (${overlayChecksPerformed}/${maxChecks}) — ` +
+        `skipping text check for ${cacheKey}, clip allowed unchecked`
+    );
+    return false;
+  }
+  overlayChecksPerformed++;
   let verdict = false;
   try {
     verdict = await archiveClipHasBakedEditText(media, mimeType);

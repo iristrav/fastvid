@@ -56,8 +56,8 @@ describe("RONDE 24 — the overlay memo is shared, not duplicated", () => {
   });
 
   it("is used by the beat gate and by ingestion", () => {
-    expect(pipelineSrc).toContain("cachedClipHasBakedEditText(clipPath");
-    expect(ingestionSrc).toContain("cachedClipHasBakedEditText(localPath");
+    expect(pipelineSrc).toMatch(/cachedClipHasBakedEditText\(\s*clipPath/);
+    expect(ingestionSrc).toMatch(/cachedClipHasBakedEditText\(\s*localPath/);
   });
 
   it("no longer keeps a second private cache in videoPipeline", () => {
