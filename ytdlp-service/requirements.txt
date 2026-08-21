@@ -1,0 +1,8 @@
+# Pinned to minor versions: this service is deployed rarely and debugged remotely, so an
+# unattended dependency bump between deploys is a worse trade than a manual upgrade.
+fastapi==0.115.*
+uvicorn[standard]==0.32.*
+# yt-dlp is intentionally NOT pinned: YouTube changes its extraction surface every few weeks and a
+# stale yt-dlp is the single most common cause of this service silently failing. The Docker image
+# is rebuilt to pick up the current release; see README.
+yt-dlp

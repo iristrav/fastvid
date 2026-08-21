@@ -30,3 +30,7 @@ uploads
 tsc_errors*.txt
 vitest_new*.json
 todo.md
+
+# The Python clip-extraction service builds from its own Dockerfile (root dir
+# ytdlp-service) and has nothing to do with the Node image.
+ytdlp-service
