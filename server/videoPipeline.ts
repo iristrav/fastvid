@@ -665,6 +665,16 @@ function montageStreamMetaUsable(
   trimStart: number
 ): boolean {
   if (meta.width < 2 || meta.height < 2) return false;
+  // A MEASURED duration at or below 0.15s is rejected outright. Both duration rules here used
+  // to open with `durationSec > 0.15`, which meant a clip of 0.1s fell through every check and
+  // was treated as acceptable — "too short to measure" and "approved" were the same answer.
+  //
+  // The unknown case is deliberately left as it was: ffprobe reports 0 for streams whose
+  // duration it cannot determine, and those must keep flowing through the existing logic rather
+  // than being thrown away. So only a finite, positive, genuinely-short duration is rejected.
+  if (Number.isFinite(meta.durationSec) && meta.durationSec > 0 && meta.durationSec <= 0.15) {
+    return false;
+  }
   if (meta.durationSec > 0.15 && meta.durationSec <= trimStart + 0.15) return false;
   return true;
 }
@@ -5454,10 +5464,20 @@ export async function fetchPexelsClips(
   const results: string[] = [];
 
   // Never fall back to generic nature/city b-roll — that produces irrelevant footage (wind turbines, cyclists, etc.)
+  //
+  // `strictQueries` is now honoured. It was declared and never read, while nine call sites pass
+  // `true` — so a caller asking for a narrow, exact search silently got the broadened one. Two
+  // things broaden a query here, and strict mode skips both:
+  //   1. extraQueries are appended, searching for things the caller did not ask for;
+  //   2. simplifyStockSearchWord collapses a whole phrase down to ONE token (and falls back to
+  //      the literal word "documentary" when nothing survives) — "hitler bunker berlin 1945"
+  //      becomes a single generic word.
+  // With strictQueries=false nothing changes: same inputs, same filter, same simplification.
+  const rawQueries = strictQueries ? [query] : [query, ...(extraQueries ?? [])];
   const queryList = Array.from(
     new Set(
-      filterQueryStrings([query, ...(extraQueries ?? [])], 3, (q) => !isBlockedStockQuery(q)).map((q) =>
-        simplifyStockSearchWord(q, q, true)
+      filterQueryStrings(rawQueries, 3, (q) => !isBlockedStockQuery(q)).map((q) =>
+        strictQueries ? q : simplifyStockSearchWord(q, q, true)
       )
     )
   );
@@ -5819,10 +5839,13 @@ export async function fetchPixabayClips(
   if (isPixabayInCooldown()) return [];
   const results: string[] = [];
 
+  // `strictQueries` is now honoured — see the note in fetchPexelsClips. This function never
+  // took extraQueries, so the only broadening here is simplifyStockSearchWord collapsing the
+  // phrase to a single token; strict mode keeps the caller's query as given. Unchanged when false.
   const queryList = Array.from(
     new Set(
       filterQueryStrings([query], 3, (q) => !isBlockedStockQuery(q)).map((q) =>
-        simplifyStockSearchWord(q, q, true)
+        strictQueries ? q : simplifyStockSearchWord(q, q, true)
       )
     )
   );
@@ -21007,6 +21030,10 @@ async function adoptBestSimilarBeatClip(
 
   const similarFloor = adoptOpts?.visionFloor ?? archiveSimilarMatchVisionFloor();
   const similarSource = adoptOpts?.adoptSource ?? "archive_similar";
+  // Inputs for the three relevance gates below — same shape adoptClip builds them from
+  // (sourceQuery + beatText + sceneText + videoTitle), resolved once instead of per candidate.
+  const similarQuery = toQueryString(beat.searchQuery) || beat.text;
+  const similarEntityRules = extractBeatRealEntities(beat.text, scene.text ?? "", videoTitle ?? "");
   // Use a much higher cap when the pool is large — with 100s of archive clips we should
   // try many more candidates before giving up and falling back to color.
   const baseCap = isFastShortVideoLength(dedup.videoLength) ? 12 : 20;
@@ -21040,6 +21067,40 @@ async function adoptBestSimilarBeatClip(
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
     if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index))) continue;
+
+    // The same three relevance gates adoptClip applies. This route reaches pushClip directly
+    // instead of going through adoptClip, so until now it got the CLIP vision gate but skipped
+    // the documentary blocklist, the entity-evidence requirement and the provider-title
+    // relevance floor — the same "one route bypasses the check" shape as the protest filter.
+    // Identical existing functions, identical thresholds, identical audit reasons; nothing new
+    // is judged here. Placed before the vision gate so a rejected candidate costs no CLIP
+    // evaluation, matching the ordering in adoptClip and beatClipPassesVisionGate.
+    const similarFailsDocGate = !clipPassesDocumentaryBeatGate(clip, similarQuery, beat.text, videoTitle);
+    recordGateVerdict("documentary_beat_gate", similarFailsDocGate);
+    if (similarFailsDocGate) {
+      recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "documentary_beat_gate", similarQuery);
+      continue;
+    }
+    if (similarEntityRules.length > 0) {
+      const similarFailsEntity = !clipSatisfiesRealEntities(similarEntityRules, dedup.clipAnnotationMeta.get(clip));
+      recordGateVerdict("entity_evidence", similarFailsEntity);
+      if (similarFailsEntity) {
+        recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "entity_evidence", similarQuery);
+        continue;
+      }
+    }
+    {
+      const similarProviderTitle =
+        dedup.clipAnnotationMeta.get(clip)?.providerText?.title ?? picked.asset.title ?? undefined;
+      const similarBelowFloor = !scriptImageFallbackPassesRelevanceFloor(
+        similarProviderTitle, similarQuery, beat.text, videoTitle
+      );
+      if (similarProviderTitle) recordGateVerdict("off_topic_visual", similarBelowFloor);
+      if (similarBelowFloor) {
+        recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "off_topic_visual", similarQuery);
+        continue;
+      }
+    }
 
     const vision = await beatClipPassesVisionGate(
       clip,
