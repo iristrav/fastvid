@@ -130,7 +130,10 @@ describe("Final production fix — Path A/B rescue-compose guaranteed clips now 
   it("Path A: both the first-attempt and retry guaranteed clip are recorded (P5A rescue loop)", () => {
     const idx = fullSource.indexOf('`P5A composeSceneVideo s${scene.index}`');
     expect(idx).toBeGreaterThan(-1);
-    const scoped = fullSource.slice(idx, idx + 4000);
+    // RONDE 32 widened this window: the P5A rescue block now salvages a completed compose
+    // output, keeps the scene's surviving winners and shares one exclusion set across slots,
+    // so the retry branch sits further down. Same property, longer block.
+    const scoped = fullSource.slice(idx, idx + 6500);
     expect(scoped).toContain('`[Compose] Scene ${scene.index}: guaranteed clip ${si} failed, retrying once:`');
     const recordCount = (scoped.match(/recordClipAdopt\(visualDedup\.clipAdoptAudit/g) ?? []).length;
     expect(recordCount).toBe(2);
@@ -139,18 +142,25 @@ describe("Final production fix — Path A/B rescue-compose guaranteed clips now 
   it("Path B: the Stage4 rescue-compose loop records each guaranteed clip", () => {
     const idx = fullSource.indexOf('`Stage4 composeSceneVideo s${scene.index}`');
     expect(idx).toBeGreaterThan(-1);
-    const scoped = fullSource.slice(idx, idx + 2500);
-    expect(scoped).toContain("generateGuaranteedBeatClip(scene.index, si, hold, workDir)");
+    // RONDE 32: the call is now multi-line — it also passes the slot's beat text and the
+    // batch-scoped exclusion sets — so match its shape rather than one flat line.
+    const scoped = fullSource.slice(idx, idx + 6000);
+    expect(scoped).toMatch(/generateGuaranteedBeatClip\(\s*scene\.index,\s*si,\s*hold,\s*workDir,/);
     expect(scoped).toContain("recordClipAdopt(visualDedup.clipAdoptAudit");
   });
 
   it("Path B last-resort: only records when a NEW clip was generated (no double-count when rescueClips[0] is reused)", () => {
     const idx = fullSource.indexOf('`Stage4 composeSceneVideo s${scene.index}`');
     expect(idx).toBeGreaterThan(-1);
-    const scoped = fullSource.slice(idx, idx + 5500);
+    // RONDE 32 widened this window for the same reason as the two above; RONDE 33 widened it
+    // again (the rescue block now also resolves uncovered beats from the adopt audit).
+    const scoped = fullSource.slice(idx, idx + 10000);
     expect(scoped).toContain("generateGuaranteedBeatClip(scene.index, 9999,");
-    expect(scoped).toContain("hadRescueClips");
-    expect(scoped).toContain("if (!hadRescueClips)");
+    // RONDE 32 (B1): the guard variable is now `reusableLastClip` — it covers a reused rescue
+    // clip AND a surviving winner, where `hadRescueClips` only ever looked at rescueClips. The
+    // property this test protects (record only when a NEW clip was generated) is unchanged.
+    expect(scoped).toContain("reusableLastClip");
+    expect(scoped).toContain("if (!reusableLastClip)");
     const recordCount = (scoped.match(/recordClipAdopt\(visualDedup\.clipAdoptAudit/g) ?? []).length;
     // 1 in the si-loop above + 1 guarded last-resort call.
     expect(recordCount).toBeGreaterThanOrEqual(1);

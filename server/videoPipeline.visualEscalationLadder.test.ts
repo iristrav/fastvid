@@ -69,14 +69,23 @@ describe("Visual sourcing escalation ladder — generateGuaranteedBeatClip", () 
     expect(searchTiersIdx).toBeGreaterThan(-1);
     const loopIdx = src.indexOf("for (const query of searchTiers)");
     expect(loopIdx).toBeGreaterThan(searchTiersIdx);
-    const scoped = src.slice(loopIdx, loopIdx + 1200);
+    // RONDE 32 widened this window: the tier loop now also marks its pick as used
+    // (markCuratedAssetUsed) so a rescue batch cannot re-pick the same curated asset, which
+    // pushed `return topicalClip` past the old 1200-byte slice. Same property, longer block.
+    // RONDE 33 widened it once more: the loop now also threads the picked asset's identity back
+    // out (pickedOut) so the storageUrl can be marked as used.
+    const scoped = src.slice(loopIdx, loopIdx + 2600);
     expect(scoped).toContain("fetchCuratedArchiveBeatClip(");
-    expect(scoped).toContain("{ relaxed: true }");
+    // RONDE 33: the options object also carries `pickedOut` now, so the picked asset's real
+    // storageUrl reaches markCuratedAssetUsed. `relaxed: true` itself is unchanged.
+    expect(scoped).toMatch(/\{ relaxed: true[,}]/);
     expect(scoped).toContain("return topicalClip");
   });
 
   it("tries one more real provider (Wikimedia) before ever falling to text-overlay/color", () => {
-    const wikiIdx = src.indexOf("fetchWikimediaImages(wikiQuery");
+    // RONDE 33: the call is multi-line now — it passes a per-slot file tag and the batch's URL
+    // exclusion set — so locate it by its first argument rather than by a flat prefix.
+    const wikiIdx = src.search(/fetchWikimediaImages\(\s*\n?\s*wikiQuery/);
     expect(wikiIdx).toBeGreaterThan(-1);
     const textOverlayIdx = src.indexOf("Try text-over-gradient");
     const colorIdx = src.indexOf("generateColorFallback(sceneIndex * 1000");

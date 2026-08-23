@@ -2587,6 +2587,16 @@ export async function fetchCuratedArchiveBeatClip(
     videoLength?: string | null;
     /** F3-23: see searchCuratedCandidatesForBeat's usedArchiveNames option. */
     usedArchiveNames?: Map<string, number>;
+    /**
+     * RONDE 33: filled in with the winning asset's own identity when this call returns a clip.
+     *
+     * This function returns a file path, so a caller that wants to mark the pick as used has
+     * only the filename to go on — which yields the asset id (curatedClipPathAssetId) but never
+     * the storageUrl, leaving markCuratedAssetUsed's usedStorageUrls set permanently empty and
+     * two rows pointing at the same file both selectable. Handing the real values back through
+     * an optional out-object keeps the return type and every existing caller untouched.
+     */
+    pickedOut?: { assetId?: number; storageUrl?: string };
   }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
@@ -2717,8 +2727,17 @@ export async function fetchCuratedArchiveBeatClip(
     }
   };
 
+  /** RONDE 33: report the winning asset's identity, but only when a clip was actually produced. */
+  const recordPicked = (picked: CuratedCandidatePick, clipPath: string | null): string | null => {
+    if (clipPath && options?.pickedOut) {
+      options.pickedOut.assetId = picked.asset.id;
+      options.pickedOut.storageUrl = picked.asset.storageUrl;
+    }
+    return clipPath;
+  };
+
   if (eligible.length === 1) {
-    return tryPrepare(eligible[0]!);
+    return recordPicked(eligible[0]!, await tryPrepare(eligible[0]!));
   }
 
   const parallelTries = visualFootageFocusEnabled()
@@ -2743,7 +2762,7 @@ export async function fetchCuratedArchiveBeatClip(
       /* ignore */
     }
   }
-  return winner.clipPath;
+  return recordPicked(winner.picked, winner.clipPath);
 }
 
 /** Mark a curated asset as used after it is adopted into the montage. */
