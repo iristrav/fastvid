@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import * as fs from "fs";
 import * as os from "os";
 import path from "path";
+import { execFileSync } from "child_process";
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 
 // RONDE 50 — pre-render hardening.
@@ -76,6 +77,14 @@ vi.mock("node-fetch", () => ({
   },
 }));
 
+// Lets a cached candidate be "restored" without any network: the mock writes a real JPEG to the
+// path the pipeline asked for and reports a hit, so the rest of the cached branch (ffmpeg
+// still-to-video) runs for real. Defaults to a miss; individual tests opt in.
+vi.mock("./mediaCache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mediaCache")>();
+  return { ...actual, tryRestoreFromMediaCache: vi.fn(async () => false), reportToMediaCache: vi.fn() };
+});
+
 const searchRequests = () => netlog.calls.filter((u) => u.includes("list=search"));
 
 const CACHED_TWO = [
@@ -101,9 +110,16 @@ const CACHED_TWO = [
 
 describe("RONDE 50 #1 — a cached pool exhausted by exclusions no longer ends the search", () => {
   let dir: string;
+  let sampleJpeg: string;
 
   beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "fastvid-r50-wiki-"));
+    sampleJpeg = path.join(dir, "sample.jpg");
+    execFileSync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", "color=c=steelblue:s=640x480", "-frames:v", "1", sampleJpeg],
+      { stdio: "ignore" }
+    );
   });
   afterAll(() => {
     try {
@@ -112,8 +128,10 @@ describe("RONDE 50 #1 — a cached pool exhausted by exclusions no longer ends t
       /* ignore */
     }
   });
-  afterEach(() => {
+  afterEach(async () => {
     netlog.calls.length = 0;
+    const { tryRestoreFromMediaCache } = await import("./mediaCache");
+    vi.mocked(tryRestoreFromMediaCache).mockImplementation(async () => false);
   });
 
   it("issues the live search when every cached candidate is already excluded", async () => {
@@ -160,12 +178,35 @@ describe("RONDE 50 #1 — a cached pool exhausted by exclusions no longer ends t
 
   it("does NOT issue a live search when the cached pool still satisfies the request", async () => {
     const { getCandidatePool } = await import("./sceneCandidateCache");
+    const { tryRestoreFromMediaCache } = await import("./mediaCache");
+    const { fetchWikimediaImages } = await import("./videoPipeline");
+    vi.mocked(getCandidatePool).mockResolvedValue(CACHED_TWO as never);
+
+    // Both cached candidates are genuinely usable: the media cache hands back a real JPEG and
+    // ffmpeg turns it into a clip, so the call reaches `count` without touching the network.
+    vi.mocked(tryRestoreFromMediaCache).mockImplementation(async (_url: string, dest: string) => {
+      fs.copyFileSync(sampleJpeg, dest);
+      return true;
+    });
+    netlog.calls.length = 0;
+
+    // Exclusions ARE active — they just do not hit either cached candidate. This is the case
+    // §2B protects: no extra request when the pool already answers the question.
+    const results = await fetchWikimediaImages("berlin 1945", 2, dir, 4, 2, "r50sat", {
+      excludeUrls: new Set(["https://upload.invalid/unrelated.jpg"]),
+    });
+
+    expect(results.length).toBe(2);
+    expect(searchRequests().length).toBe(0);
+  }, 180_000);
+
+  it("count=0 is trivially satisfied and also issues nothing", async () => {
+    const { getCandidatePool } = await import("./sceneCandidateCache");
     const { fetchWikimediaImages } = await import("./videoPipeline");
     vi.mocked(getCandidatePool).mockResolvedValue(CACHED_TWO as never);
     netlog.calls.length = 0;
 
-    // count=0 is trivially satisfied, so the fall-through must not fire even with exclusions set.
-    await fetchWikimediaImages("berlin 1945", 3, dir, 4, 0, "r50", { excludeUrls: new Set() });
+    await fetchWikimediaImages("berlin 1945", 3, dir, 5, 0, "r50", { excludeUrls: new Set() });
 
     expect(searchRequests().length).toBe(0);
   }, 60_000);
@@ -220,6 +261,32 @@ describe("RONDE 50 #2 — the guaranteed ladder reports which rung answered", ()
     expect(summary.beatsFilled).toBe(5);
     // Pre-fix every one of these five was "fallback" — 5/5, a guaranteed majority-fallback.
     expect(summary.fallbackBeats).toBe(1);
+  });
+
+  it("each of the four rungs lands on the right side of the fallback count", async () => {
+    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
+      "./clipAdoptAudit"
+    );
+    const { guaranteedAdoptSource } = await import("./videoPipeline");
+
+    // One beat per rung, so each tier's effect on fallbackBeats is isolated rather than inferred
+    // from a mixed total. This is the end the export gate actually reads.
+    const per = (tier: Parameters<typeof guaranteedAdoptSource>[0]) => {
+      const audit = createClipAdoptAudit();
+      recordClipAdopt(audit, 0, 0, "b", "/w/x.mp4", guaranteedAdoptSource(tier));
+      return summarizeAdoptAudit(audit);
+    };
+
+    // A — the topical rung returned curated ARCHIVE footage: real media, not a placeholder.
+    expect(per("topical").fallbackBeats).toBe(0);
+    expect(per("topical").archiveBeats).toBe(1);
+    // B — the Wikimedia rung returned a Commons file: real media, counted as wiki.
+    expect(per("wikimedia").fallbackBeats).toBe(0);
+    expect(per("wikimedia").wikiBeats).toBe(1);
+    // C — a text-over-gradient card is a placeholder and must still count as one.
+    expect(per("text_overlay").fallbackBeats).toBe(1);
+    // D — so is a plain colour card.
+    expect(per("color_fallback").fallbackBeats).toBe(1);
   });
 
   it("a render the ladder saved with real media now passes the export gate", async () => {
