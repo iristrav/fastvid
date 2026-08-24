@@ -257,10 +257,23 @@ describe("RONDE 6 P1-B — breadth guarantee and bounds", () => {
   });
 });
 
-describe("RONDE 6 P1-B — wiring: all four funnel/pool query call sites are anchored", () => {
-  it("videoPipeline.ts calls anchorQueriesToHistoricalContext at 4 call sites", () => {
+describe("RONDE 6 P1-B — wiring: every funnel/pool query call site is anchored", () => {
+  it("videoPipeline.ts calls anchorQueriesToHistoricalContext at 5 call sites", () => {
     const calls = pipelineSrc.match(/anchorQueriesToHistoricalContext\(\{/g) ?? [];
-    expect(calls.length).toBe(4);
+    // RONDE 55 added the fifth: the Internet Archive geo path. It was the one query builder
+    // that had never been routed through anchoring, and render 531 showed the cost — a
+    // documentary about April 1945 opening with "berlin city skyline", "berlin public
+    // transport" and "berlin city street" against a general-purpose archive.
+    //
+    // This count is the point of the test: a new query builder that skips anchoring shows up
+    // here as a number that did not move.
+    expect(calls.length).toBe(5);
+  });
+
+  it("the Internet Archive geo path is one of them", () => {
+    const idx = pipelineSrc.indexOf("const geoQueries = buildInternetArchiveGeoQueries(");
+    expect(idx).toBeGreaterThan(-1);
+    expect(pipelineSrc.slice(idx, idx + 900)).toContain("anchorQueriesToHistoricalContext({");
   });
 
   it("the funnel prefetch passes the anchored queries, not the raw scene phrasing", () => {

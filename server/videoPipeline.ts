@@ -22461,7 +22461,33 @@ async function adoptInternetArchiveBeatClip(
     return false;
   };
 
-  const queries = buildInternetArchiveGeoQueries(beat.text, videoTitle, beat.index);
+  // RONDE 55: anchor these to the period the script states, exactly as the scene-pool queries
+  // already are (anchorQueriesToHistoricalContext, added for render 517 — "the funnel/scene-pool
+  // queries carried no period at all, so for historical documentaries the pool filled with
+  // present-day footage of the right place in the wrong century").
+  //
+  // The geo builder was never routed through it. Render 531 shows what that costs: the first
+  // five Internet Archive searches of scene 0 were "berlin city skyline", "berlin public
+  // transport", "berlin public transport documentary", "berlin city street" and "berlin city
+  // street documentary" — a documentary about April 1945 asking a general-purpose archive for
+  // present-day Berlin. Those ran FIRST and spent the scene's budget; the seven topical ones
+  // after them ("Adolf Hitler archival footage", "subject:\"Adolf Hitler\"") were every one
+  // aborted before they could finish. The pipeline discarded its best queries and kept its worst.
+  //
+  // Anchoring is deterministic and sourced from the script itself — no LLM call, no invented
+  // date, and the original phrasings stay in the list behind the anchored ones, so this can only
+  // make the queries era-correct, never narrower than they were.
+  const geoQueries = buildInternetArchiveGeoQueries(beat.text, videoTitle, beat.index);
+  const anchored = anchorQueriesToHistoricalContext({
+    primaryQuery: geoQueries[0] ?? "",
+    extraQueries: geoQueries.slice(1),
+    sceneText: beat.text || scene.text,
+    videoTitle,
+    primaryPerson: dedup.primaryPerson || undefined,
+  });
+  const queries = anchored.anchored
+    ? [anchored.primaryQuery, ...anchored.extraQueries]
+    : geoQueries;
   const beatKeywords = beat.keywords ?? [];
   try {
     const hits = await fetchInternetArchiveClips(
