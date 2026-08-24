@@ -835,6 +835,18 @@ type SceneFetchScope = {
   controller: AbortController;
   children: Set<import("child_process").ChildProcess>;
   childScopes: Set<SceneFetchScope>;
+  /**
+   * RONDE 52: wall-clock moment this scope gives up, so a call INSIDE it can size its own
+   * timeout against the time that is actually left rather than a fixed constant that may be
+   * many times larger than the budget containing it.
+   *
+   * Render 530: the historical rescue scope allowed 22s while the YouTube download inside it was
+   * allowed 180s. Every YouTube attempt was cut off mid-flight, and because the inner call
+   * reported ITS OWN timeout the log blamed RapidAPI for a 20-second hang that never happened —
+   * nine failures landed within 2ms of each other, which is the signature of one abort, not of
+   * nine independent timeouts.
+   */
+  deadlineAtMs: number;
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
 
@@ -4072,7 +4084,7 @@ export async function fetchExternalUrlSafely(rawUrl: string, maxRedirects = 5, t
 
 // ─── Timeout helper ───────────────────────────────────────────────────────────
 // fetchWithTimeout: truly cancels the download using AbortController (unlike withTimeout which only races)
-async function fetchWithTimeout(url: string, timeoutMs: number, label: string, options: Record<string, unknown> = {}): Promise<ReturnType<typeof fetch>> {
+export async function fetchWithTimeout(url: string, timeoutMs: number, label: string, options: Record<string, unknown> = {}): Promise<ReturnType<typeof fetch>> {
   const delayMs = Math.max(1, Math.round(timeoutMs));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), delayMs);
@@ -4095,12 +4107,102 @@ async function fetchWithTimeout(url: string, timeoutMs: number, label: string, o
     return resp;
   } catch (err: unknown) {
     if ((err as Error).name === 'AbortError') {
+      // RONDE 52: say which signal actually fired.
+      //
+      // This message used to report the call's OWN timeout no matter what aborted it. When the
+      // enclosing scene budget ran out — the common case — every in-flight request in that scope
+      // died at once and each one claimed to have exceeded its own limit. Render 530 logged nine
+      // "RapidAPI YouTube meta exceeded 20s" within 2 milliseconds of each other, plus one
+      // "exceeded 180s" in the same batch, all of them started seconds earlier. That reads as a
+      // dead provider and sent the investigation to the wrong place; the actual cause was the
+      // 22-second scope on the line above them.
+      //
+      // The local timer having fired is the discriminator: if it has not, this request still had
+      // time of its own and was cancelled from outside.
+      if (!controller.signal.aborted && scopeSignal?.aborted) {
+        throw scopeAbortError(label, timeoutMs);
+      }
       throw pipelineError(PIPELINE_ERROR.TIMEOUT, `Timeout: ${label} exceeded ${Math.round(timeoutMs / 1000)}s`);
     }
     throw err;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * RONDE 52: the budget the historical/archival rescue actually needs to finish a YouTube attempt.
+ *
+ * This path runs Internet Archive, then YouTube CC, then the remaining free tiers. A YouTube
+ * attempt is a search, then a metadata call, then a download of the source video. It used to be
+ * given `beatClipTimeoutMs` — 22 seconds on Railway for short videos — while the download step
+ * alone is allowed 180 seconds. A chain whose last step may take eight times the budget of the
+ * scope containing it cannot complete, and in render 530 it never did: 10 searches, 60 results,
+ * 44 download attempts, **zero** clips adopted. Every attempt was cut off, and the misleading
+ * error message (see fetchWithTimeout above) made it look like the provider was hanging.
+ *
+ * The floor is the smallest window in which the chain can realistically finish. It applies only
+ * to this rescue path, which runs after normal sourcing has already failed for a beat, and the
+ * number of YouTube attempts per video is separately capped by maxEntityYoutubePerVideo — so
+ * this buys a real chance at archival footage for the beats that need it, not a longer budget
+ * for every beat in the render. Env-overridable; set it to the old behaviour by pointing it at
+ * whatever beatClipTimeoutMs is for the profile.
+ */
+const HISTORICAL_RESCUE_MIN_BUDGET_MS = 90_000;
+
+export function historicalRescueBudgetMs(dedup: { perf: { beatClipTimeoutMs: number } }): number {
+  const raw = process.env.HISTORICAL_RESCUE_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 10_000 && n <= 600_000) return n;
+  }
+  return Math.max(dedup.perf.beatClipTimeoutMs, HISTORICAL_RESCUE_MIN_BUDGET_MS);
+}
+
+/** Marker carried by an abort that came from the enclosing scope, not from the call's own timer. */
+const SCOPE_ABORT_FLAG = "__fastvidScopeAbort";
+
+function scopeAbortError(label: string, ownTimeoutMs: number): Error {
+  const err = pipelineError(
+    PIPELINE_ERROR.TIMEOUT,
+    `Aborted: ${label} was cancelled by the enclosing scene budget before its own ` +
+      `${Math.round(ownTimeoutMs / 1000)}s timeout — the request itself did not time out`
+  );
+  (err as unknown as Record<string, unknown>)[SCOPE_ABORT_FLAG] = true;
+  return err;
+}
+
+/**
+ * True when this failure was the enclosing budget running out, not the provider failing.
+ *
+ * Circuit breakers must not count these: the provider did nothing wrong, and tripping on them
+ * disables a healthy source because the pipeline happened to be busy.
+ */
+export function isScopeAbortError(err: unknown): boolean {
+  return Boolean(err && typeof err === "object" && (err as Record<string, unknown>)[SCOPE_ABORT_FLAG]);
+}
+
+/**
+ * RONDE 52: milliseconds left in the enclosing scene-fetch scope, or Infinity outside one.
+ *
+ * Lets a call size its own timeout against the budget that actually contains it instead of a
+ * constant that may be many times larger.
+ */
+export function remainingScopeMs(): number {
+  const deadline = sceneFetchScopeStorage.getStore()?.deadlineAtMs;
+  if (deadline == null || !Number.isFinite(deadline)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, deadline - Date.now());
+}
+
+/**
+ * The timeout a call should actually use: its own preference, capped by what the enclosing scope
+ * can still give it, with a small margin so the inner call fails first and reports honestly
+ * instead of being cut off from outside.
+ */
+export function scopedTimeoutMs(preferredMs: number, floorMs = 1_000): number {
+  const remaining = remainingScopeMs();
+  if (!Number.isFinite(remaining)) return preferredMs;
+  return Math.max(floorMs, Math.min(preferredMs, Math.floor(remaining * 0.9)));
 }
 
 // F3-05: streams a download response's body straight to disk instead of buffering the whole
@@ -4237,7 +4339,15 @@ function withTimeout<T>(
 export function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label: string): Promise<T> {
   const delayMs = Math.max(1, Math.round(ms));
   const controller = new AbortController();
-  const scope: SceneFetchScope = { controller, children: new Set(), childScopes: new Set() };
+  // RONDE 52: a nested scope can never outlive its parent, so the effective deadline is the
+  // earlier of the two. Without this a child scope would advertise more time than it can spend.
+  const parentDeadline = sceneFetchScopeStorage.getStore()?.deadlineAtMs ?? Number.POSITIVE_INFINITY;
+  const scope: SceneFetchScope = {
+    controller,
+    children: new Set(),
+    childScopes: new Set(),
+    deadlineAtMs: Math.min(Date.now() + delayMs, parentDeadline),
+  };
   const parentScope = sceneFetchScopeStorage.getStore();
   parentScope?.childScopes.add(scope);
   const detachFromParent = () => { parentScope?.childScopes.delete(scope); };
@@ -10644,9 +10754,12 @@ export async function downloadYouTubeCCClip(
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
     try {
       const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
+      // RONDE 52: size this against the budget that actually contains it. A flat 20s inside a
+      // 22s scope meant the metadata call could consume the whole window and leave the download
+      // nothing — and when the scope won the race, the error blamed this call for a hang.
       const metaResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
         metaUrl,
-        20_000,
+        scopedTimeoutMs(20_000, 3_000),
         `RapidAPI YouTube meta scene ${sceneIndex}`,
         {
           headers: {
@@ -10695,7 +10808,9 @@ export async function downloadYouTubeCCClip(
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             format.url,
             tmpPath,
-            youtubeDownloadTimeoutMs(),
+            // RONDE 52: 180s was eight times the scope containing it, so this step could never
+            // finish. It now takes what is left, and reports honestly when that is not enough.
+            scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000),
             `RapidAPI YouTube download scene ${sceneIndex}`,
             {
               headers: {
@@ -10733,6 +10848,11 @@ export async function downloadYouTubeCCClip(
         );
       }
     } catch (err) {
+      // RONDE 52: same as the search path — a thrown timeout never reached the breaker, so 22
+      // consecutive RapidAPI failures in render 530 did nothing to stop the 23rd. Scope aborts
+      // stay uncounted: those said nothing about RapidAPI's health, and the misleading message
+      // they carried is exactly what made this look like a provider outage in the first place.
+      if (!isScopeAbortError(err)) markYoutubeSearchResult(false);
       console.warn(
         `[Pipeline] Scene ${sceneIndex}: RapidAPI download failed for ${videoId}:`,
         (err as Error).message
@@ -11059,9 +11179,12 @@ export async function searchYoutubeVideoCandidates(
       searchUrl.searchParams.set("order", "relevance");
       searchUrl.searchParams.set("videoEmbeddable", "true");
 
+      // RONDE 52: clamped to the enclosing budget — a flat 15s inside a 22s scope left the
+      // metadata call and the download with nothing, which is why render 530 found 60 videos
+      // and adopted none of them.
       const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
         searchUrl.toString(),
-        15_000,
+        scopedTimeoutMs(15_000, 3_000),
         `${label} search scene ${sceneIndex}`
       ));
       if (!searchResp.ok) {
@@ -11294,6 +11417,16 @@ export async function fetchYouTubeCCClips(
           }
         }
       } catch (err) {
+        // RONDE 52: this catch used to swallow the failure without touching the breaker, because
+        // markYoutubeSearchResult(false) sits after the `searchResp.ok` check inside the search
+        // and a thrown timeout never reaches it. YouTube therefore never tripped its own
+        // circuit: render 530 retried it 24 times while Wikimedia correctly stood itself down
+        // after three ("3 consecutive search failures — skipping for 3min").
+        //
+        // A scope abort is explicitly NOT counted. That is the pipeline running out of budget,
+        // not the provider misbehaving, and counting it would disable a healthy source because
+        // the render happened to be busy — the opposite mistake.
+        if (!isScopeAbortError(err)) markYoutubeSearchResult(false);
         console.warn(
           `[Pipeline] Scene ${sceneIndex}: ${pass.tag} search failed for "${query}":`,
           (err as Error).message
@@ -23077,7 +23210,7 @@ async function rescueBeatVisualWhenEmpty(
   try {
     const histRescue = await withSceneFetchTimeout(
       () => fetchHistoricalBeatRescue(beat, scene, workDir, scene.index, holdSec, dedup, videoTitle, {}, "rescue"),
-      dedup.perf.beatClipTimeoutMs,
+      historicalRescueBudgetMs(dedup),
       `historical archival rescue s${scene.index} b${beat.index}`
     );
     if (histRescue && (await pushClip(histRescue, holdSec))) {
