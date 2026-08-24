@@ -125,9 +125,13 @@ describe("RONDE 52 #2 — a call sizes itself against the budget containing it",
         expect(remaining).toBeGreaterThan(0);
         // The render-530 numbers: a 180s download inside a scope with seconds left.
         expect(scopedTimeoutMs(180_000, 5_000)).toBeLessThan(180_000);
-        expect(scopedTimeoutMs(180_000, 5_000)).toBeLessThanOrEqual(remaining);
-        // It never returns something unusably small either.
+        // It never returns something unusably small — and the floor deliberately wins even when
+        // the scope has less left than that, so a call is never handed a millisecond budget.
+        // (Asserting <= remaining here would be wrong AND flaky: `remaining` decays between the
+        // two calls, and the floor is allowed to exceed it by design.)
         expect(scopedTimeoutMs(180_000, 5_000)).toBeGreaterThanOrEqual(5_000);
+        // With a floor small enough not to bind, the scope's remaining time is the real cap.
+        expect(scopedTimeoutMs(180_000, 1)).toBeLessThanOrEqual(remainingScopeMs());
         return null;
       },
       5_000,

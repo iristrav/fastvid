@@ -30,10 +30,20 @@
  * number. It shares no word with "Hitler" or "bunker", exactly like the sticker does not. A rule
  * that demands topical evidence would throw both away.
  *
- * So a candidate is only rejected when its metadata argues AGAINST it — it describes something
- * else at length, or it carries an era that cannot be this video's. A candidate that simply says
- * nothing is kept: absence of evidence is not evidence of absence, and the query that found it
- * was already topical.
+ * So a candidate is only rejected when its metadata argues AGAINST it. RONDE 57 narrowed what
+ * counts as arguing against it down to one thing: an era this video cannot be about.
+ *
+ * The rule that went with it — "enough descriptive words, none of them topical, therefore wrong"
+ * — was measured against realistic B-roll before it ever reached a render, and it had the answer
+ * backwards. "Ruins of a bombed city", "Soldiers marching" and "Typewriter close up" were all
+ * rejected for a documentary about Berlin in 1945, while "Dark concrete room with dim light" was
+ * accepted because the video is titled "The Dark End of the Third Reich".
+ *
+ * "Ruins of a bombed city" and "white-lives-matter-montana-sticker" both describe themselves at
+ * length and both share no word with the topic. Keyword overlap cannot separate them; that needs
+ * meaning. Rather than guess, the sticker now survives as unjudged and simply ranks below
+ * everything that did name the subject — which is the safer half of the trade, because a wrong
+ * clip ranked last is recoverable and a right clip deleted is not.
  */
 
 import { foldSearchText } from "./searchTextNormalize";
@@ -74,6 +84,21 @@ const STOP = new Set([
   "collection", "collections", "fonds", "bild", "bilder", "foto", "fotos", "photo", "photos",
   "photograph", "photographs", "image", "images", "picture", "pictures", "videos", "films",
   "reel", "reels", "record", "records", "item", "items", "digital", "public", "domain",
+]);
+
+/**
+ * Words common enough that matching one proves nothing about the subject.
+ *
+ * They are perfectly good words for a title to contain — that is the problem. A candidate
+ * sharing only one of these with the video has not identified itself as being about the same
+ * thing; it has used ordinary English. A candidate matching one of these AND something specific
+ * still counts, because the specific token carries the match.
+ */
+const GENERIC_TOPIC_WORDS = new Set([
+  "dark", "death", "dead", "died", "dying", "end", "final", "last", "chose", "choice", "decision",
+  "story", "life", "lives", "living", "day", "days", "night", "time", "times", "hour", "hours",
+  "great", "world", "man", "men", "woman", "women", "people", "real", "truth", "secret", "hidden",
+  "mystery", "why", "how", "what", "inside", "beneath", "behind", "final", "moment", "moments",
 ]);
 
 /** Era words that pin a candidate to a period no modern-era documentary can be describing. */
@@ -121,14 +146,6 @@ export function buildTopicMatcher(
 
 /** How many years apart a candidate may be before its period contradicts the video's. */
 const ERA_TOLERANCE_YEARS = 40;
-/**
- * Descriptive words a candidate must volunteer before silence stops being an excuse.
- *
- * Two is deliberate: "Bundesarchiv Bild" is two words and says nothing about its subject, while
- * "white lives matter montana sticker" is five and says a great deal — about something else.
- */
-const MIN_DESCRIPTIVE_TOKENS_TO_JUDGE = 3;
-
 export function assessCandidateTopicality(
   candidate: { title?: string | null; description?: string | null; tags?: string[] | null; assetId?: string | null },
   matcher: TopicMatcher
@@ -167,30 +184,47 @@ export function assessCandidateTopicality(
   if (eraConflict) {
     return { verdict: "off_topic", matched, descriptiveTokens: tokens.length, eraConflict, reason };
   }
-  if (matched.length > 0) {
+  // RONDE 57: one everyday word from the title is not evidence.
+  //
+  // extractTopicAnchorTags on "Why Hitler Chose Death: The Dark End of the Third Reich" returns
+  // ["hitler","chose","death","dark","third","reich"] — half of it generic. That made
+  // "Dark concrete room with dim light" and "Candle burning in the dark" read as topical purely
+  // because the title contains the word "dark", while "Ruins of a bombed city" did not. The
+  // match has to rest on something that actually identifies this subject.
+  const evidence = matched.filter((t) => !GENERIC_TOPIC_WORDS.has(t));
+  if (evidence.length > 0) {
     return {
       verdict: "topical",
       matched,
       descriptiveTokens: tokens.length,
       eraConflict: false,
-      reason: `matches ${matched.slice(0, 3).join(", ")}`,
+      reason: `matches ${evidence.slice(0, 3).join(", ")}`,
     };
   }
-  if (tokens.length >= MIN_DESCRIPTIVE_TOKENS_TO_JUDGE) {
-    return {
-      verdict: "off_topic",
-      matched,
-      descriptiveTokens: tokens.length,
-      eraConflict: false,
-      reason: `${tokens.length} descriptive words, none about this topic`,
-    };
-  }
+  // RONDE 57: no longer rejected for merely failing to mention the topic.
+  //
+  // The earlier rule — "enough descriptive words and none of them topical, therefore wrong" —
+  // was tested against realistic B-roll metadata before this went anywhere near a render, and it
+  // had it backwards:
+  //
+  //     off_topic  Ruins of a bombed city     6 descriptive words, none about this topic
+  //     off_topic  Soldiers marching          4 descriptive words, none about this topic
+  //     off_topic  Typewriter close up        5 descriptive words, none about this topic
+  //
+  // Those are exactly the shots a documentary about Berlin in 1945 needs. And the candidates it
+  // waved through were worse than the ones it dropped (see topicalEvidence below).
+  //
+  // "Ruins of a bombed city" and "white-lives-matter-montana-sticker" both have descriptive
+  // metadata and both share no word with the topic. Keyword overlap cannot tell them apart —
+  // that needs meaning, not word matching. So absence of overlap is no longer treated as
+  // evidence of anything: it leaves the candidate unjudged, ranked below the ones that DID name
+  // the subject, and the only hard rejection left is a period this video cannot be about.
   return {
     verdict: "neutral",
     matched,
     descriptiveTokens: tokens.length,
     eraConflict: false,
-    reason: "too little metadata to judge",
+    reason: matched.length > 0 ? "matched only generic words" : "no topical evidence either way",
   };
 }
 

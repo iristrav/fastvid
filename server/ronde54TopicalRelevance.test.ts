@@ -59,24 +59,54 @@ describe("RONDE 54 — footage that belongs is kept", () => {
 });
 
 describe("RONDE 54 — footage that does not belong is rejected", () => {
-  it("rejects the five that actually shipped", () => {
-    // Render 531
+  it("rejects the two of the five it can actually prove wrong", () => {
+    // RONDE 57 narrowed rejection to a provable era conflict. These two carry one.
     expect(assess("faces of ancient europe 1-500 A.D.", "faces-of-ancient-europe-1-500-a.-d_202506").verdict)
       .toBe("off_topic");
-    expect(assess("white lives matter montana sticker", "white-lives-matter-montana-sticker").verdict)
-      .toBe("off_topic");
-    expect(assess("bulgarian national union customs", "bulgarian-national-union-customs").verdict)
-      .toBe("off_topic");
-    // Render 530
     expect(assess("trae crowder comments 12 02 2022", "trae-crowder-comments-12-02-2022").verdict)
       .toBe("off_topic");
-    expect(assess("verdachte huub wijfjes", "verdachte-huub-wijfjes").verdict).toBe("off_topic");
+  });
+
+  it("the other three survive as unjudged, and that is the deliberate trade", () => {
+    // These three are wrong, and keyword overlap cannot say so: they share no word with the
+    // topic, and neither does "Ruins of a bombed city", which is exactly the shot this video
+    // needs. The rule that caught them also deleted that one — see the B-roll block below.
+    // Unjudged means no ranking bonus, so they sit below everything that named the subject.
+    for (const [title, assetId] of [
+      ["white lives matter montana sticker", "white-lives-matter-montana-sticker"],
+      ["bulgarian national union customs", "bulgarian-national-union-customs"],
+      ["verdachte huub wijfjes", "verdachte-huub-wijfjes"],
+    ] as const) {
+      const a = assess(title, assetId);
+      expect(a.verdict).toBe("neutral");
+      expect(topicalRankingBonus(a.verdict)).toBe(0);
+    }
+    // And a candidate that DID name the subject outranks them.
+    expect(topicalRankingBonus(assess("Signed Photograph of Adolf Hitler").verdict)).toBeGreaterThan(0);
   });
 
   it("names the reason, so a production log says why", () => {
     expect(assess("faces of ancient europe 1-500 A.D.").reason).toMatch(/ancient|medieval/);
     expect(assess("trae crowder comments 12 02 2022").reason).toMatch(/2022.*from the topic period/);
-    expect(assess("white lives matter montana sticker").reason).toMatch(/none about this topic/);
+    expect(assess("white lives matter montana sticker").reason).toMatch(/no topical evidence/);
+  });
+
+  it("B-roll that belongs is never deleted for failing to say so", () => {
+    // The measurement that forced RONDE 57. Every one of these was rejected by the previous
+    // rule, in a documentary about Berlin in 1945.
+    for (const title of ["Ruins of a bombed city", "Soldiers marching", "Typewriter close up"]) {
+      expect(assess(title).verdict).not.toBe("off_topic");
+    }
+  });
+
+  it("a single everyday word from the title is not topical evidence", () => {
+    // "The Dark End of the Third Reich" put "dark" in the anchors, and these two were being
+    // waved through on it while the B-roll above was being deleted.
+    expect(assess("Dark concrete room with dim light").verdict).toBe("neutral");
+    expect(assess("Candle burning in the dark").verdict).toBe("neutral");
+    expect(assess("Dark concrete room with dim light").reason).toMatch(/only generic words/);
+    // A generic word alongside a specific one still counts — the specific token carries it.
+    expect(assess("The dark final hours of Adolf Hitler").verdict).toBe("topical");
   });
 
   it("an era far from the topic is a conflict; one inside it is not", () => {
@@ -89,29 +119,29 @@ describe("RONDE 54 — footage that does not belong is rejected", () => {
 
 describe("RONDE 54 — the gate cannot starve a scene", () => {
   it("keeps everything when every candidate reads as off-topic", () => {
-    const all = ["white lives matter sticker", "bulgarian union customs", "trae crowder 2022"];
+    // All three carry an era conflict, so all three would be dropped — and a beat with no
+    // candidates becomes a colour card, which is worse than a weak clip.
+    const all = ["ancient rome mosaics", "medieval castle tour", "smartphone review 2021"];
     const { kept, dropped } = rejectOffTopicCandidates(all, (t) => assess(t));
-    // A beat with no candidates becomes a colour card, which is worse than a weak clip.
     expect(kept).toHaveLength(3);
     expect(dropped).toHaveLength(0);
   });
 
-  it("drops only the off-topic ones when something usable survives", () => {
+  it("drops only what it can prove wrong when something usable survives", () => {
     const mixed = [
       "Signed Photograph of Adolf Hitler",
-      "white lives matter montana sticker",
-      "Bundesarchiv Bild 183-1989-0322-506",
       "faces of ancient europe 1-500 A.D.",
+      "Bundesarchiv Bild 183-1989-0322-506",
+      "Ruins of a bombed city",
     ];
     const { kept, dropped } = rejectOffTopicCandidates(mixed, (t) => assess(t));
     expect(kept).toEqual([
       "Signed Photograph of Adolf Hitler",
       "Bundesarchiv Bild 183-1989-0322-506",
+      // Kept: RONDE 57 no longer deletes B-roll for failing to name the subject.
+      "Ruins of a bombed city",
     ]);
-    expect(dropped.map((d) => d.candidate)).toEqual([
-      "white lives matter montana sticker",
-      "faces of ancient europe 1-500 A.D.",
-    ]);
+    expect(dropped.map((d) => d.candidate)).toEqual(["faces of ancient europe 1-500 A.D."]);
   });
 
   it("without a topic to compare against, nothing is judged at all", () => {
