@@ -54,10 +54,15 @@ describe("Final production fix — appendGuaranteedSceneClips now records adopti
     expect(src).toMatch(/dedup\?:\s*VisualDedupState/);
   });
 
-  it("calls recordClipAdopt with source 'fallback' when a clip is successfully pushed", () => {
+  it("records the adoption with the source of the rung that actually answered", () => {
     expect(src).toContain("clips.push(clip)");
-    expect(src).toContain("recordClipAdopt(dedup.clipAdoptAudit");
-    expect(src).toContain('"fallback"');
+    expect(src).toMatch(/recordClipAdopt\(\s*\n?\s*dedup\.clipAdoptAudit/);
+    // RONDE 50: this used to be the blanket "fallback" literal. The guaranteed ladder now
+    // reports which rung produced the clip, so real archive/Commons media no longer counts as a
+    // placeholder in fallbackBeats. That this site records at all — the property Round 17 added
+    // and this test exists for — is unchanged.
+    expect(src).toContain("guaranteedAdoptSource(tierOut.tier)");
+    expect(src).toContain("tierOut");
   });
 
   it("all 5 call sites pass dedup/visualDedup through", () => {
@@ -90,12 +95,13 @@ describe("Final production fix — fillBeatVisual emergency-finish guaranteed cl
     // fillBeatVisual doesn't contain this marker (it's isPipelineEmergencyFinish inside
     // ensureBeatVisualFilled) — locate the actual emergency-finish branch instead, scoped by
     // its distinctive generateGuaranteedBeatClip(scene.index, beat.index, ...) call.
-    const idx = src.indexOf("generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir, beat.text)");
+    const idx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*beat\.index,\s*holdSec,\s*workDir,\s*beat\.text,/);
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 700);
+    const scoped = src.slice(idx, idx + 900);
     expect(scoped).toContain("pushClip(guaranteed, holdSec)");
-    expect(scoped).toContain("recordClipAdopt(dedup.clipAdoptAudit");
-    expect(scoped).toContain('"fallback"');
+    expect(scoped).toMatch(/recordClipAdopt\(\s*\n?\s*dedup\.clipAdoptAudit/);
+    // RONDE 50: tier-aware source, see the note on the appendGuaranteedSceneClips test above.
+    expect(scoped).toContain("guaranteedAdoptSource(guaranteedTierOut.tier)");
     void marker;
   });
 });
@@ -107,11 +113,12 @@ describe("Final production fix — composeSceneVideoInner's fourth guaranteed-fi
     const marker = "alle clips faalden validatie — guaranteed compose fill";
     const idx = src.indexOf(marker);
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 900);
-    expect(scoped).toContain("generateGuaranteedBeatClip(scene.index, 1001,");
+    const scoped = src.slice(idx, idx + 1200);
+    expect(scoped).toMatch(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*1001,/);
     expect(scoped).toContain("safeClips.push(adopted)");
-    expect(scoped).toContain("recordClipAdopt(composeOptions.dedup.clipAdoptAudit");
-    expect(scoped).toContain('"fallback"');
+    expect(scoped).toMatch(/recordClipAdopt\(\s*\n?\s*composeOptions\.dedup\.clipAdoptAudit/);
+    // RONDE 50: tier-aware source.
+    expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
   });
 
   it("emits a FINAL_VISUAL_MANIFEST line per clip entering the montage", () => {
@@ -120,7 +127,7 @@ describe("Final production fix — composeSceneVideoInner's fourth guaranteed-fi
   });
 
   it("all 3 recordClipAdopt(...'fallback') calls from Round 17 + follow-up review remain intact", () => {
-    const count = (src.match(/recordClipAdopt\(composeOptions\.dedup\.clipAdoptAudit/g) ?? []).length;
+    const count = (src.match(/recordClipAdopt\(\s*\n?\s*composeOptions\.dedup\.clipAdoptAudit/g) ?? []).length;
     // 3 pre-existing (loop, slot 999, slot 8888) + 1 new (slot 1001) = 4
     expect(count).toBe(4);
   });
@@ -154,8 +161,8 @@ describe("Final production fix — Path A/B rescue-compose guaranteed clips now 
     expect(idx).toBeGreaterThan(-1);
     // RONDE 32 widened this window for the same reason as the two above; RONDE 33 widened it
     // again (the rescue block now also resolves uncovered beats from the adopt audit).
-    const scoped = fullSource.slice(idx, idx + 12000);
-    expect(scoped).toContain("generateGuaranteedBeatClip(scene.index, 9999,");
+    const scoped = fullSource.slice(idx, idx + 14000);
+    expect(scoped).toMatch(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*9999,/);
     // RONDE 32 (B1): the guard variable is now `reusableLastClip` — it covers a reused rescue
     // clip AND a surviving winner, where `hadRescueClips` only ever looked at rescueClips.
     // RONDE 48 (C1): the branch is entered through `lastClip`, which is seeded from

@@ -164,7 +164,7 @@ describe("RONDE 32 B1 — a scene with real survivors is never written off as a 
     // footage from that call is not a colour rescue. The counter itself is asserted in
     // videoPipeline.ronde48StageFourCounter.test.ts; what B1 guards here is the branch key.
     expect(s).toContain("let lastClip = reusableLastClip;");
-    expect(s).toMatch(/if \(!lastClip\) \{[\s\S]{0,600}?recordClipAdopt\(visualDedup\.clipAdoptAudit/);
+    expect(s).toMatch(/if \(!lastClip\) \{[\s\S]{0,900}?recordClipAdopt\(\s*\n?\s*visualDedup\.clipAdoptAudit/);
   });
 
   it("the P5A colour card only runs when there is genuinely nothing to reuse", () => {

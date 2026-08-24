@@ -127,10 +127,12 @@ describe("Vision Gate root-cause fix round 2 — appendGuaranteedSceneClips: syn
   const src = extractFunctionSource("appendGuaranteedSceneClips");
 
   it("offsets the recordClipAdopt beatIndex away from the raw array-position `slot`, matching the sentinel-slot pattern used by other guaranteed-fill call sites (999/1001/8888/9999)", () => {
-    const idx = src.indexOf("recordClipAdopt(dedup.clipAdoptAudit, scene.index,");
+    // RONDE 50 split this call across lines (the source is now tier-aware); the sentinel-offset
+    // property it guards is unchanged.
+    const idx = src.search(/recordClipAdopt\(\s*\n?\s*dedup\.clipAdoptAudit,\s*scene\.index,/);
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 120);
-    expect(scoped).not.toContain("scene.index, slot,");
+    const scoped = src.slice(idx, idx + 200);
+    expect(scoped).not.toMatch(/scene\.index,\s*slot,/);
     expect(scoped).toMatch(/scene\.index,\s*\d+\s*\+\s*slot/);
   });
 });

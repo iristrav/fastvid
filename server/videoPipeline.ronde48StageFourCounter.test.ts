@@ -126,7 +126,8 @@ describe("RONDE 48 (C1) — Stage4 increments only when no clip could be produce
     const block = stage4LastResortBlock(SRC());
     const increments = [...block.matchAll(/visualDedup\.sceneRescueColorFallbackCount\+\+;/g)];
     expect(increments).toHaveLength(1);
-    const generate = block.indexOf("generateGuaranteedBeatClip(scene.index, 9999,");
+    // RONDE 50 split the call across lines (it now passes a tier out-parameter).
+    const generate = block.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*9999,/);
     expect(generate).toBeGreaterThan(-1);
     expect(increments[0].index!).toBeGreaterThan(generate);
   });
@@ -144,17 +145,17 @@ describe("RONDE 48 (C1) — Stage4 increments only when no clip could be produce
     const tryIdx = block.lastIndexOf("try {", catchIdx);
     expect(tryIdx).toBeGreaterThan(-1);
     const tryBlock = block.slice(tryIdx, catchIdx);
-    expect(tryBlock).toContain("generateGuaranteedBeatClip(scene.index, 9999,");
+    expect(tryBlock).toMatch(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*9999,/);
     expect(tryBlock).not.toContain("composeLastResortSceneFromClip(");
   });
 
   it("a successfully produced clip is still recorded once, and a reused one still is not", () => {
     const block = stage4LastResortBlock(SRC());
-    const records = [...block.matchAll(/recordClipAdopt\(visualDedup\.clipAdoptAudit, scene\.index, 9999,/g)];
+    const records = [...block.matchAll(/recordClipAdopt\(\s*\n?\s*visualDedup\.clipAdoptAudit,\s*scene\.index,\s*9999,/g)];
     expect(records).toHaveLength(1);
     // The record sits in the same "nothing to reuse" branch as the generation — a reused rescue
     // clip or survivor was already recorded where it was adopted, so it must not be recorded here.
-    const generate = block.indexOf("generateGuaranteedBeatClip(scene.index, 9999,");
+    const generate = block.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*9999,/);
     expect(records[0].index!).toBeGreaterThan(generate);
     // And the muxed output is still produced from whatever clip won, reused or generated.
     expect(block).toContain("composeLastResortSceneFromClip(");

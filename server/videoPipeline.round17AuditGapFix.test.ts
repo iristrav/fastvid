@@ -74,39 +74,43 @@ describe("Round 17 — composeSceneVideoInner's guaranteed-fill blocks now recor
     // recordClipAdopt must appear within this branch, before the branch's closing structure —
     // scoped to comfortably cover the loop body (including its explanatory comment) without
     // reaching into the unrelated "else" branch that follows.
-    const scoped = src.slice(loopIdx, loopIdx + 1400);
+    const scoped = src.slice(loopIdx, loopIdx + 1800);
     expect(scoped).toContain("generateGuaranteedBeatClip");
     expect(scoped).toContain("recordClipAdopt");
-    expect(scoped).toContain('"fallback"');
+    // RONDE 50: the source is no longer the blanket "fallback" literal — it names the rung of
+    // the guaranteed ladder that actually answered, so a clip that came back with real archive
+    // or Commons media stops inflating fallbackBeats. The property this test guards (this branch
+    // records its adoption at all) is unchanged.
+    expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
   });
 
   it("calls recordClipAdopt for the final standalone guaranteed-fill fallback (validClips still empty after every other branch)", () => {
     // The second, standalone `generateGuaranteedBeatClip(scene.index, 999, ...)` call — distinct
     // from the loop above (slot 999 vs. loop index i).
-    const standaloneMarker = "generateGuaranteedBeatClip(scene.index, 999,";
-    const standaloneIdx = src.indexOf(standaloneMarker);
+    // RONDE 50 made this call multi-line (it now passes a tier out-parameter), so match its
+    // shape rather than one flat line. Slot 999 is still pinned.
+    const standaloneIdx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*999,/);
     expect(standaloneIdx).toBeGreaterThan(-1);
-    const scoped = src.slice(standaloneIdx, standaloneIdx + 400);
+    const scoped = src.slice(standaloneIdx, standaloneIdx + 600);
     expect(scoped).toContain("recordClipAdopt");
-    expect(scoped).toContain('"fallback"');
+    expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
   });
 
   it("the fix is additive — validClips.push still happens for both guaranteed-fill sites (selection/output unchanged)", () => {
     const loopIdx = src.indexOf("geen bruikbare clips — guaranteed compose fill");
-    expect(src.slice(loopIdx, loopIdx + 800)).toContain("validClips.push(clip)");
-    const standaloneIdx = src.indexOf("generateGuaranteedBeatClip(scene.index, 999,");
-    expect(src.slice(standaloneIdx, standaloneIdx + 400)).toContain("validClips.push(clip)");
+    expect(src.slice(loopIdx, loopIdx + 900)).toContain("validClips.push(clip)");
+    const standaloneIdx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*999,/);
+    expect(src.slice(standaloneIdx, standaloneIdx + 600)).toContain("validClips.push(clip)");
   });
 
   it("calls recordClipAdopt for the compose-empty guaranteed clip rescue (third audit-gap site, slot 8888)", () => {
     // The "compose empty — guaranteed clip rescue" branch — triggered when the real ffmpeg
     // montage produces a missing/empty output file, distinct from both guaranteed-fill sites
     // above (synthetic slot 8888, not a loop index or 999).
-    const rescueMarker = "generateGuaranteedBeatClip(scene.index, 8888,";
-    const rescueIdx = src.indexOf(rescueMarker);
+    const rescueIdx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*8888,/);
     expect(rescueIdx).toBeGreaterThan(-1);
-    const scoped = src.slice(rescueIdx, rescueIdx + 700);
+    const scoped = src.slice(rescueIdx, rescueIdx + 900);
     expect(scoped).toContain("recordClipAdopt");
-    expect(scoped).toContain('"fallback"');
+    expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
   });
 });

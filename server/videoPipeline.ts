@@ -6356,10 +6356,24 @@ export async function fetchWikimediaImages(
           excludeUrls?.add(c.url);
         }
       }
-      return results;
+      // RONDE 50: a cache HIT used to be the end of the story. The pool is stored in the database
+      // with a seven-day TTL and is only as deep as the call that wrote it — a plain
+      // (non-excluding) call scans at most `count` titles, so a two-entry pool written days ago
+      // by another render would cap every later rescue at those same two candidates. With an
+      // exclusion set active that is exactly the case where both are already taken and the
+      // rescue needs NEW candidates. So when exclusions are in play and the cached pool could
+      // not fill the request, fall through to the live search below instead of returning short.
+      //
+      // Without exclusions nothing changes: the cached pool is still the whole answer, and no
+      // extra request is made. With them, the request is made only when the pool fell short —
+      // a pool that already satisfied `count` returns here as before. The live path appends to
+      // this same `results` array, keeps the same WIKIMEDIA_MAX_CANDIDATE_SCAN ceiling, the same
+      // provider limiter and the same timeouts, and every URL adopted above is already in
+      // excludeUrls so it cannot be picked twice.
+      if (!excludeUrls || results.length >= count) return results;
     }
 
-    // Cache miss — search Wikimedia Commons
+    // Cache miss — or a cache hit that exclusions left short (RONDE 50). Search Wikimedia Commons
     // RONDE 34 (point 3): when a rescue batch is excluding what earlier slots already took, ask
     // Commons for a deeper result set in the SAME request rather than settling for a pool too
     // small to satisfy the exclusions. One request either way — no pagination loop, no retry
@@ -6375,7 +6389,8 @@ export async function fetchWikimediaImages(
     ));
     if (!searchResp.ok) {
       markWikimediaSearchResult(false);
-      return [];
+      // RONDE 50: `results` may already hold clips adopted from the cached pool above.
+      return results;
     }
     markWikimediaSearchResult(true);
     const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
@@ -6385,7 +6400,7 @@ export async function fetchWikimediaImages(
     const titles = excludeUrls
       ? allTitles.slice(0, WIKIMEDIA_MAX_CANDIDATE_SCAN)
       : allTitles.slice(0, count * 2);
-    if (!titles.length) return [];
+    if (!titles.length) return results;
     const poolForCache: CachedCandidate[] = [];
 
     // Get image info for each result.
@@ -7292,6 +7307,45 @@ export function guaranteedTextOverlayDurationSec(duration: number): number {
   return Math.min(Math.max(duration, 3), archiveVisualMaxClipSec());
 }
 
+/**
+ * RONDE 50: which rung of the guaranteed ladder actually answered.
+ *
+ * The first two return real media — curated archive footage and a Commons file. The last two are
+ * synthetic cards this pipeline drew itself. Every rung writes to the SAME output path, so this
+ * cannot be recovered from the filename afterwards, and until now every guaranteed clip was
+ * recorded in the adopt audit as "fallback" regardless. That inflated fallbackBeats, which
+ * assertVisualCoverageExportGate reads as `fallbackBeats / beatsFilled > 0.5` — so a render the
+ * rescue ladder saved with real footage could be refused for being mostly placeholders.
+ */
+export type GuaranteedClipTier = "topical" | "wikimedia" | "text_overlay" | "color_fallback";
+
+/** Out-parameter so the tier can be reported without changing this function's return type. */
+export type GuaranteedTierOut = { tier?: GuaranteedClipTier };
+
+/**
+ * The adopt-audit source for a guaranteed clip, chosen by the rung that answered.
+ *
+ * Deliberately reuses source labels clipAdoptAudit already classifies — "rescue_archive" counts
+ * as archive, "wikimedia" as wiki, "fallback" as fallback. No new vocabulary, no new field, and
+ * the gate's threshold is untouched: it simply stops being told that real footage is a placeholder.
+ * An unknown tier (a caller that passed no out-parameter) keeps the old "fallback" answer.
+ */
+export function guaranteedAdoptSource(tier: GuaranteedClipTier | undefined): string {
+  switch (tier) {
+    case "topical":
+      return "rescue_archive";
+    case "wikimedia":
+      return "wikimedia";
+    default:
+      return "fallback";
+  }
+}
+
+/** True when the guaranteed ladder produced a synthetic card rather than real media. */
+export function isPlaceholderGuaranteedTier(tier: GuaranteedClipTier | undefined): boolean {
+  return tier !== "topical" && tier !== "wikimedia";
+}
+
 export async function generateGuaranteedBeatClip(
   sceneIndex: number,
   slotIndex: number,
@@ -7303,6 +7357,9 @@ export async function generateGuaranteedBeatClip(
   // sets keeps every existing caller (which passes neither) behaving exactly as before.
   usedAssetIds?: Set<number>,
   usedStorageUrls?: Set<string>,
+  // RONDE 50: optional; filled in with the rung that answered. Callers that omit it are
+  // byte-for-byte unaffected.
+  tierOut?: GuaranteedTierOut,
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${sceneIndex}_slot${slotIndex}_guaranteed.mp4`);
   const excludeAssetIds = usedAssetIds ?? new Set<number>();
@@ -7375,6 +7432,7 @@ export async function generateGuaranteedBeatClip(
         // could both be adopted into the same rescue batch.
         markCuratedAssetUsed(topicalClip, excludeAssetIds, excludeStorageUrls, pickedOut.storageUrl);
         console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: topical archive fallback OK (${query})`);
+        if (tierOut) tierOut.tier = "topical";
         return topicalClip;
       }
     } catch {
@@ -7403,6 +7461,7 @@ export async function generateGuaranteedBeatClip(
       const wikiClip = wikiClips?.[0];
       if (wikiClip && (await isValidVideoFile(wikiClip))) {
         console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: Wikimedia topical fallback OK (${wikiQuery})`);
+        if (tierOut) tierOut.tier = "wikimedia";
         return wikiClip;
       }
     } catch {
@@ -7429,18 +7488,26 @@ export async function generateGuaranteedBeatClip(
       );
       if (await isValidVideoFile(outputPath)) {
         console.log(`[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: text-overlay fallback OK`);
+        if (tierOut) tierOut.tier = "text_overlay";
         return outputPath;
       }
     } catch { /* fall through to plain color */ }
   }
   try {
-    return await generateColorFallback(sceneIndex * 1000 + slotIndex, duration, workDir, outputPath);
+    const card = await generateColorFallback(sceneIndex * 1000 + slotIndex, duration, workDir, outputPath);
+    if (tierOut) tierOut.tier = "color_fallback";
+    return card;
   } catch (err) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex} slot ${slotIndex}: guaranteed clip fallback failed:`,
       (err as Error).message?.slice(0, 80)
     );
-    if (fs.existsSync(outputPath) && (await isValidVideoFile(outputPath))) return outputPath;
+    // Whatever is on disk here came from a partially-completed placeholder attempt, never from a
+    // real provider — the two real rungs return early and never reach this catch.
+    if (fs.existsSync(outputPath) && (await isValidVideoFile(outputPath))) {
+      if (tierOut) tierOut.tier = "color_fallback";
+      return outputPath;
+    }
     throw err;
   }
 }
@@ -7462,7 +7529,10 @@ async function appendGuaranteedSceneClips(
   let slot = clips.length;
   while (clips.length < minClips) {
     try {
-      const clip = await generateGuaranteedBeatClip(scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90));
+      const tierOut: GuaranteedTierOut = {};
+      const clip = await generateGuaranteedBeatClip(
+        scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90), undefined, undefined, tierOut
+      );
       const key = clipContentKey(clip);
       if (!clips.some((c) => clipContentKey(c) === key)) {
         clips.push(clip);
@@ -7485,7 +7555,12 @@ async function appendGuaranteedSceneClips(
         // by other guaranteed-fill call sites — 999/1001/8888/9999) keeps this purely-synthetic
         // audit entry from ever colliding with a real beat's entry.
         if (dedup) {
-          recordClipAdopt(dedup.clipAdoptAudit, scene.index, 2000 + slot, scene.text, clip, "fallback");
+          // RONDE 50: the source now names the rung that answered, so a guaranteed clip that
+          // came back with real archive/Commons media stops counting toward fallbackBeats.
+          recordClipAdopt(
+            dedup.clipAdoptAudit, scene.index, 2000 + slot, scene.text, clip,
+            guaranteedAdoptSource(tierOut.tier)
+          );
         }
       }
     } catch (err) {
@@ -23061,11 +23136,16 @@ async function rescueBeatVisualWhenEmpty(
   }
 
   for (let attempt = 0; attempt < 4; attempt++) {
+    const tierOut: GuaranteedTierOut = {};
     const placeholder = await generateGuaranteedBeatClip(
       scene.index,
       beat.index + attempt * 100,
       holdSec,
-      workDir
+      workDir,
+      undefined,
+      undefined,
+      undefined,
+      tierOut
     );
     if (!placeholder) continue;
     if (await pushClip(placeholder, holdSec)) {
@@ -23075,7 +23155,8 @@ async function rescueBeatVisualWhenEmpty(
         beat.index,
         beat.text,
         placeholder,
-        "rescue_placeholder",
+        // RONDE 50: "rescue_placeholder" only when it really is one.
+        isPlaceholderGuaranteedTier(tierOut.tier) ? "rescue_placeholder" : guaranteedAdoptSource(tierOut.tier),
         undefined,
         dedup.segmentGeoLock
       );
@@ -23191,12 +23272,16 @@ async function ensureBeatVisualFilled(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — guaranteed clip (pipeline must complete)`
   );
   for (let attempt = 0; attempt < 4; attempt++) {
+    const tierOut: GuaranteedTierOut = {};
     const beatClip = await generateGuaranteedBeatClip(
       scene.index,
       beat.index + attempt * 100,
       holdSec,
       workDir,
       beat.text,
+      undefined,
+      undefined,
+      tierOut
     );
     if (await pushClip(beatClip, holdSec)) {
       recordClipAdopt(
@@ -23205,7 +23290,7 @@ async function ensureBeatVisualFilled(
         beat.index,
         beat.text,
         beatClip,
-        "fallback",
+        guaranteedAdoptSource(tierOut.tier),
         undefined,
         dedup.segmentGeoLock
       );
@@ -23582,12 +23667,18 @@ async function fillBeatVisual(
         );
       }
       if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
-      const guaranteed = await generateGuaranteedBeatClip(scene.index, beat.index, holdSec, workDir, beat.text);
+      const guaranteedTierOut: GuaranteedTierOut = {};
+      const guaranteed = await generateGuaranteedBeatClip(
+        scene.index, beat.index, holdSec, workDir, beat.text, undefined, undefined, guaranteedTierOut
+      );
       if (guaranteed && (await pushClip(guaranteed, holdSec))) {
         // Audit-gap fix (same class as Round 17 + follow-up fixes): this emergency-finish
         // guaranteed clip was pushed via pushClip but never recorded, making it invisible to
         // assertVisualCoverageExportGate/canAddGuaranteedFallbackClip. Additive only.
-        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, guaranteed, "fallback");
+        recordClipAdopt(
+          dedup.clipAdoptAudit, scene.index, beat.index, beat.text, guaranteed,
+          guaranteedAdoptSource(guaranteedTierOut.tier)
+        );
         return true;
       }
       return false;
@@ -26719,7 +26810,10 @@ export async function composeSceneVideoInner(
       const minNeeded = Math.max(1, minClipsForBalancedVoice(duration + 0.15));
       const holdSec = Math.max(3, duration / minNeeded);
       for (let i = 0; i < minNeeded; i++) {
-        const clip = await generateGuaranteedBeatClip(scene.index, i, holdSec, workDir);
+        const tierOut: GuaranteedTierOut = {};
+        const clip = await generateGuaranteedBeatClip(
+          scene.index, i, holdSec, workDir, undefined, undefined, undefined, tierOut
+        );
         if (await montageClipPassesComposeGate(clip, scene.index, i)) {
           validClips.push(clip);
           // Round 17: this proactive guaranteed-fill path (composeSceneVideo finding zero usable
@@ -26731,7 +26825,10 @@ export async function composeSceneVideoInner(
           // label the beat-level rescue ladder already uses (ensureBeatVisualFilled) makes this
           // path visible to both, additively, without changing which clip is selected or used.
           if (composeOptions?.dedup) {
-            recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, i, scene.text, clip, "fallback");
+            recordClipAdopt(
+              composeOptions.dedup.clipAdoptAudit, scene.index, i, scene.text, clip,
+              guaranteedAdoptSource(tierOut.tier)
+            );
           }
         }
       }
@@ -26780,11 +26877,17 @@ export async function composeSceneVideoInner(
   }
 
   if (validClips.length === 0 && canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
-    const clip = await generateGuaranteedBeatClip(scene.index, 999, Math.max(3, duration), workDir);
+    const tierOut: GuaranteedTierOut = {};
+    const clip = await generateGuaranteedBeatClip(
+      scene.index, 999, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+    );
     validClips.push(clip);
     // Round 17: same audit gap as the guaranteed-fill loop above — see its comment.
     if (composeOptions?.dedup) {
-      recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, 999, scene.text, clip, "fallback");
+      recordClipAdopt(
+        composeOptions.dedup.clipAdoptAudit, scene.index, 999, scene.text, clip,
+        guaranteedAdoptSource(tierOut.tier)
+      );
     }
   }
 
@@ -26810,7 +26913,10 @@ export async function composeSceneVideoInner(
   if (safeClips.length === 0) {
     if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
       console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
-      const clip = await generateGuaranteedBeatClip(scene.index, 1001, Math.max(3, duration), workDir);
+      const tierOut: GuaranteedTierOut = {};
+      const clip = await generateGuaranteedBeatClip(
+        scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+      );
       const ok = await requireValidClip(clip, scene.index, duration, workDir);
       const adopted = ok ?? clip;
       safeClips.push(adopted);
@@ -26818,7 +26924,10 @@ export async function composeSceneVideoInner(
       // follow-up fixes above): this "every previously-valid clip failed ffprobe re-validation"
       // rescue also used a successfully generated guaranteed clip without recording it.
       if (composeOptions?.dedup) {
-        recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, 1001, scene.text, adopted, "fallback");
+        recordClipAdopt(
+          composeOptions.dedup.clipAdoptAudit, scene.index, 1001, scene.text, adopted,
+          guaranteedAdoptSource(tierOut.tier)
+        );
       }
     } else {
       const fastShort = isFastShortVideoLength(composeOptions?.dedup?.videoLength);
@@ -27640,7 +27749,10 @@ export async function composeSceneVideoInner(
 
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
-    const clip = await generateGuaranteedBeatClip(scene.index, 8888, Math.max(3, duration), workDir);
+    const tierOut: GuaranteedTierOut = {};
+    const clip = await generateGuaranteedBeatClip(
+      scene.index, 8888, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+    );
     // Round 17 audit-gap fix, third site: same class of gap as the two guaranteed-fill blocks
     // above (composeSceneVideoInner) — this compose-empty rescue path also used a successfully
     // generated guaranteed clip without ever recording it, making it invisible to both
@@ -27648,7 +27760,10 @@ export async function composeSceneVideoInner(
     // canAddGuaranteedFallbackClip's per-video fallback cap. Additive bookkeeping only, same
     // "fallback" source label, no change to which clip is used or how it's rendered.
     if (composeOptions?.dedup) {
-      recordClipAdopt(composeOptions.dedup.clipAdoptAudit, scene.index, 8888, scene.text, clip, "fallback");
+      recordClipAdopt(
+        composeOptions.dedup.clipAdoptAudit, scene.index, 8888, scene.text, clip,
+        guaranteedAdoptSource(tierOut.tier)
+      );
     }
     try {
       await withSceneFetchTimeout(
@@ -29153,10 +29268,11 @@ async function _runVideoPipelineInner(
                         const slotBeatText =
                           rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text;
                         const slotBeatIndex = rescueBeatIndexForSlot(si, uncoveredBeats);
+                        const slotTierOut: GuaranteedTierOut = {};
                         try {
                           const rescueClip = await generateGuaranteedBeatClip(
                             scene.index, si, hold, workDir, slotBeatText,
-                            rescueUsedAssetIds, rescueUsedStorageUrls
+                            rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut
                           );
                           rescueClips.push(rescueClip);
                           rescueBeatIndices.push(slotBeatIndex);
@@ -29166,9 +29282,11 @@ async function _runVideoPipelineInner(
                           // filename isn't caught by isPipelineFallbackClip's "_fallback" check),
                           // so they were never recorded anywhere. Additive only.
                           // RONDE 34 (point 2): record the beat, not the slot number.
+                          // RONDE 50: source names the rung that answered — real archive or
+                          // Commons media no longer inflates fallbackBeats.
                           recordClipAdopt(
                             visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
-                            scene.text, rescueClip, "fallback"
+                            scene.text, rescueClip, guaranteedAdoptSource(slotTierOut.tier)
                           );
                         } catch (guaranteedErr) {
                           // A single failure here is often transient (fork pressure, a one-off
@@ -29179,16 +29297,17 @@ async function _runVideoPipelineInner(
                             `[Compose] Scene ${scene.index}: guaranteed clip ${si} failed, retrying once:`,
                             (guaranteedErr as Error).message?.slice(0, 150)
                           );
+                          const retryTierOut: GuaranteedTierOut = {};
                           try {
                             const retryClip = await generateGuaranteedBeatClip(
                               scene.index, si, hold, workDir, slotBeatText,
-                              rescueUsedAssetIds, rescueUsedStorageUrls
+                              rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut
                             );
                             rescueClips.push(retryClip);
                             rescueBeatIndices.push(slotBeatIndex);
                             recordClipAdopt(
                               visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
-                              scene.text, retryClip, "fallback"
+                              scene.text, retryClip, guaranteedAdoptSource(retryTierOut.tier)
                             );
                           } catch (retryErr) {
                             // Even this can exhaust every color-fallback retry under severe fork
@@ -29269,9 +29388,11 @@ async function _runVideoPipelineInner(
                         // and the counter still fires only then — a scene that ends up with a
                         // real clip is not a colour rescue.
                         let parityClip: string | null = null;
+                        const parityTierOut: GuaranteedTierOut = {};
                         try {
                           parityClip = await generateGuaranteedBeatClip(
-                            scene.index, 9999, Math.max(3, scene.duration), workDir, scene.text
+                            scene.index, 9999, Math.max(3, scene.duration), workDir, scene.text,
+                            undefined, undefined, parityTierOut
                           );
                         } catch (guaranteedErr) {
                           console.warn(
@@ -29281,7 +29402,8 @@ async function _runVideoPipelineInner(
                         }
                         if (parityClip) {
                           recordClipAdopt(
-                            visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, parityClip, "fallback"
+                            visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, parityClip,
+                            guaranteedAdoptSource(parityTierOut.tier)
                           );
                         }
                         let parityResult: string | null = null;
@@ -30001,7 +30123,7 @@ async function _runVideoPipelineInner(
                     );
                     for (let si = 0; si < missing; si++) {
                       const slotBeatIndex = rescueBeatIndexForSlot(si, uncoveredBeats);
-                      rescueBeatIndices.push(slotBeatIndex);
+                      const slotTierOut: GuaranteedTierOut = {};
                       const rescueClip = await generateGuaranteedBeatClip(
                         scene.index,
                         si,
@@ -30009,9 +30131,17 @@ async function _runVideoPipelineInner(
                         workDir,
                         rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text,
                         rescueUsedAssetIds,
-                        rescueUsedStorageUrls
+                        rescueUsedStorageUrls,
+                        slotTierOut
                       );
                       rescueClips.push(rescueClip);
+                      // RONDE 50 (point 8): the beat mapping is published only once the clip it
+                      // describes actually exists — the P5A mirror already did it in this order.
+                      // Pushing before the await left an index with no clip behind it if the
+                      // generation threw; nothing observed that today, but the two arrays are
+                      // index-aligned by contract and the asymmetry was one refactor away from
+                      // silently shifting every beat in the merged mapping.
+                      rescueBeatIndices.push(slotBeatIndex);
                       // Audit-gap fix (same class as Round 17 + follow-up fixes, Path B mirror
                       // of the Path A fix above): these Stage4 rescue-compose-retry clips reach
                       // validClips via composeSceneVideo's normal path with no bookkeeping.
@@ -30019,7 +30149,7 @@ async function _runVideoPipelineInner(
                       // slot number — the audit is read back as a clip->beat mapping.
                       recordClipAdopt(
                         visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
-                        scene.text, rescueClip, "fallback"
+                        scene.text, rescueClip, guaranteedAdoptSource(slotTierOut.tier)
                       );
                     }
                   }
@@ -30086,9 +30216,13 @@ async function _runVideoPipelineInner(
               // follows: P5A degrades to a colour card, Stage4 lets the failure propagate, so
               // this increment records a render that is already lost rather than causing one.
               let lastClip = reusableLastClip;
+              const lastTierOut: GuaranteedTierOut = {};
               if (!lastClip) {
                 try {
-                  lastClip = await generateGuaranteedBeatClip(scene.index, 9999, Math.max(3, scene.duration), workDir);
+                  lastClip = await generateGuaranteedBeatClip(
+                    scene.index, 9999, Math.max(3, scene.duration), workDir,
+                    undefined, undefined, undefined, lastTierOut
+                  );
                 } catch (guaranteedErr) {
                   visualDedup.sceneRescueColorFallbackCount++;
                   throw guaranteedErr;
@@ -30096,7 +30230,10 @@ async function _runVideoPipelineInner(
                 // Audit-gap fix: only record here when this call actually generated a NEW clip —
                 // a reused rescue clip or survivor was already recorded where it was adopted, and
                 // recording it again would double-count.
-                recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, lastClip, "fallback");
+                recordClipAdopt(
+                  visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, lastClip,
+                  guaranteedAdoptSource(lastTierOut.tier)
+                );
               }
               result = await composeLastResortSceneFromClip(
                 scene.index,
