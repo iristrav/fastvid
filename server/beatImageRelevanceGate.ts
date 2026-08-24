@@ -98,17 +98,33 @@ export function createBeatImageGateState(): BeatImageGateState {
   return { seen: new Map(), judgementsUsed: 0 };
 }
 
-function buildPrompt(beatText: string, videoTitle?: string, sceneText?: string): string {
+function buildPrompt(
+  beatText: string,
+  frameCount: number,
+  videoTitle?: string,
+  sceneText?: string
+): string {
+  const many = frameCount > 1;
   return [
-    "You are the picture editor on a documentary. You are shown one frame from a clip that is",
-    "about to be cut under a line of narration. Decide whether this image belongs there.",
+    "You are the picture editor on a documentary. You are shown " +
+      (many
+        ? `${frameCount} frames sampled in order from across one clip`
+        : "one frame from a clip") +
+      " that is about to be cut under a line of narration. Decide whether this belongs there.",
+    many
+      ? "The frames are from the SAME clip at different moments — a long source can change shot" +
+        " part-way through, so judge what is on screen across all of them, not one instant."
+      : "",
     "",
     videoTitle ? `Documentary: "${videoTitle}"` : "",
     sceneText && sceneText !== beatText ? `Scene: "${sceneText.slice(0, 300)}"` : "",
     `Narration for this shot: "${beatText.slice(0, 300)}"`,
     "",
-    "First say plainly what the frame shows — the subject, the period it looks like, and any",
-    "text or graphics visible in it.",
+    many
+      ? "First say plainly what the clip shows — the subject, the period it looks like, any text" +
+        " or graphics visible in it, and whether the frames show the same thing or change."
+      : "First say plainly what the frame shows — the subject, the period it looks like, and any" +
+        " text or graphics visible in it.",
     "",
     "Then decide. It BELONGS when a viewer would accept it under this narration: the subject, the",
     "place or the period fits, or it is honest atmospheric footage of the right era and setting.",
@@ -118,6 +134,10 @@ function buildPrompt(beatText: string, videoTitle?: string, sceneText?: string):
     "a different century, a different country with nothing to do with the story, modern footage",
     "under historical narration, a logo, a title card, a screenshot of a webpage or a person",
     "talking to camera about an unrelated topic.",
+    many
+      ? "If most of what is on screen is a title card, a leader or a countdown rather than actual" +
+        " footage, it does not belong: the viewer would be looking at text, not at the story."
+      : "",
     "",
     "Judge the picture, not its file name. When you genuinely cannot tell, say it belongs.",
   ]
@@ -126,13 +146,20 @@ function buildPrompt(beatText: string, videoTitle?: string, sceneText?: string):
 }
 
 /**
- * Judges one frame. Never throws.
+ * Judges a clip from one or more frames sampled across it. Never throws.
+ *
+ * RONDE 59: a single frame is not a clip. A 272-second archive source cut down to three and a
+ * half seconds can still change shot inside that cut, and the frame that happens to sit at 45%
+ * is not necessarily what the viewer sees. Several frames from across the clip mean the verdict
+ * covers all of what will be on screen. Frames that cannot be read are simply left out; only
+ * when NONE are readable does the gate fall back to "unknown".
  *
  * `contentKey` identifies the clip's content (not its path) so a clip renamed or re-trimmed
  * between beats is recognised as already judged.
  */
 export async function judgeBeatImage(params: {
-  framePath: string;
+  /** Frames sampled across the clip, in order. A single-element array is a single frame. */
+  framePaths: string[];
   beatText: string;
   videoTitle?: string;
   sceneText?: string;
@@ -140,7 +167,7 @@ export async function judgeBeatImage(params: {
   state: BeatImageGateState;
   timeoutMs?: number;
 }): Promise<BeatImageJudgement> {
-  const { framePath, beatText, videoTitle, sceneText, contentKey, state } = params;
+  const { framePaths, beatText, videoTitle, sceneText, contentKey, state } = params;
   const unknown = (reason: string): BeatImageJudgement => ({ verdict: "unknown", depicts: "", reason });
 
   if (!beatImageRelevanceGateEnabled()) return unknown("gate disabled");
@@ -150,17 +177,22 @@ export async function judgeBeatImage(params: {
     return unknown("render judgement budget spent");
   }
   if (!beatText?.trim()) return unknown("no narration to judge against");
-  if (!framePath || !fs.existsSync(framePath)) return unknown("no frame available");
 
-  let dataUrl: string;
-  try {
-    const raw = fs.readFileSync(framePath);
-    const prepared = await prepareImageForVision(raw, "image/jpeg");
-    if (!prepared) return unknown("frame not usable as an image");
-    dataUrl = imageMimeToDataUrl(prepared.buffer, prepared.mimeType);
-  } catch (err) {
-    return unknown(`frame unreadable: ${(err as Error).message?.slice(0, 60)}`);
+  const usable = (framePaths ?? []).filter((p) => p && fs.existsSync(p));
+  if (usable.length === 0) return unknown("no frame available");
+
+  const dataUrls: string[] = [];
+  for (const framePath of usable) {
+    try {
+      const raw = fs.readFileSync(framePath);
+      const prepared = await prepareImageForVision(raw, "image/jpeg");
+      if (!prepared) continue;
+      dataUrls.push(imageMimeToDataUrl(prepared.buffer, prepared.mimeType));
+    } catch {
+      // One unreadable frame does not sink the judgement — the others still describe the clip.
+    }
   }
+  if (dataUrls.length === 0) return unknown("frames not usable as images");
 
   state.judgementsUsed++;
   const timeoutMs = params.timeoutMs ?? 12_000;
@@ -177,10 +209,17 @@ export async function judgeBeatImage(params: {
           {
             role: "user",
             content: [
-              { type: "text", text: buildPrompt(beatText, videoTitle, sceneText) },
+              {
+                type: "text",
+                text: buildPrompt(beatText, dataUrls.length, videoTitle, sceneText),
+              },
               // "low" detail: enough to recognise subject, period and on-screen text, at a
-              // fraction of the tokens a full-resolution read would cost.
-              { type: "image_url" as const, image_url: { url: dataUrl, detail: "low" as const } },
+              // fraction of the tokens a full-resolution read would cost. That is what makes
+              // three frames per clip affordable where one full-resolution read would not be.
+              ...dataUrls.map((url) => ({
+                type: "image_url" as const,
+                image_url: { url, detail: "low" as const },
+              })),
             ],
           },
         ],

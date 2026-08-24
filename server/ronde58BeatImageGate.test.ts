@@ -52,7 +52,7 @@ afterEach(async () => {
 
 const judge = async (overrides: Partial<Parameters<typeof judgeBeatImage>[0]> = {}) =>
   judgeBeatImage({
-    framePath: frame,
+    framePaths: [frame],
     beatText: "In April 1945, Adolf Hitler and Eva Braun died in the Führerbunker.",
     videoTitle: "Why Hitler Chose Death",
     contentKey: `key-${Math.random()}`,
@@ -96,7 +96,7 @@ describe("RONDE 58 — it fails open, in every direction", () => {
   const expectAdopts = (verdict: string) => expect(verdict).not.toBe("does_not_fit");
 
   it("a missing frame adopts the clip", async () => {
-    const v = await judge({ framePath: path.join(dir, "nope.jpg") });
+    const v = await judge({ framePaths: [path.join(dir, "nope.jpg")] });
     expect(v.verdict).toBe("unknown");
     expectAdopts(v.verdict);
     // And it never spent a call on it.
@@ -186,7 +186,7 @@ describe("RONDE 58 — the wiring", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2600);
+    const block = src.slice(idx, idx + 3400);
     expect(block).toContain("judgeBeatImage({");
     // Bounded per beat, and a rejected winner steps down to the next-best rather than to nothing.
     expect(block).toContain("look < MAX_JUDGEMENTS_PER_BEAT");
@@ -203,16 +203,16 @@ describe("RONDE 58 — the wiring", () => {
     expect(src).toContain("state: dedup.beatImageGate,");
   });
 
-  it("the frame it judges is cleaned up", () => {
+  it("the frames it judges are cleaned up", () => {
     const src = SRC();
     const idx = src.indexOf("judgeBeatImage({");
-    expect(src.slice(idx, idx + 900)).toContain("fs.unlinkSync(framePath)");
+    expect(src.slice(idx, idx + 900)).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
   });
 
   it("a rejection is recorded in the audit, so the reason survives the render", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    expect(src.slice(idx, idx + 2600)).toContain('"beat_image_gate"');
+    expect(src.slice(idx, idx + 3400)).toContain('"beat_image_gate"');
   });
 
   it("MAX_JUDGEMENTS_PER_BEAT is small — this is a verification step, not a search", () => {

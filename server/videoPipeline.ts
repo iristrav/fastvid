@@ -316,6 +316,7 @@ import {
   MAX_JUDGEMENTS_PER_BEAT,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
+import { pickBeatSegmentStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
 import {
@@ -3851,9 +3852,16 @@ export async function downloadAndTrimPoolCandidate(
           if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
         } catch { /* use candidate.durationSec */ }
         if (sourceDur < 1.5) return null;
-        console.log(`[Hang] downloadAndTrim BEFORE trim s${sceneIndex}b${beatIndex} dur=${sourceDur.toFixed(1)}s`);
+        // RONDE 59: not the first seconds. This call used to pass no start offset at all, so
+        // every pool candidate was cut from second 0 — from render 531's 272-second source it
+        // took the opening 3.5 seconds, eight separate times. On archive material that opening
+        // is a title card, a leader or a countdown, which is both the wrong picture AND the
+        // reason every downstream judge saw a flat, text-heavy frame.
+        const takeSec = Math.min(holdSec, Math.max(2.5, sourceDur - 0.05));
+        const startOffsetSec = pickBeatSegmentStartSec(sourceDur, takeSec, beatIndex);
+        console.log(`[Hang] downloadAndTrim BEFORE trim s${sceneIndex}b${beatIndex} dur=${sourceDur.toFixed(1)}s ss=${startOffsetSec.toFixed(1)}s`);
         const _t0 = Date.now();
-        const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`);
+        const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec);
         console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
         console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
         clearWorkerHeartbeat();
@@ -25397,21 +25405,31 @@ async function fetchSceneVisualsInner(
         // beat. Every failure mode returns "unknown", which adopts exactly as before.
         if (winner && beatImageRelevanceGateEnabled()) {
           for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++) {
-            const framePath = path.join(
-              workDir,
-              `bir_s${scene.index}b${beat.index}_${look}.jpg`
-            );
-            const gotFrame = await extractFrameAtFraction(winner.clipPath, framePath, 0.45, 8_000)
-              .catch(() => false);
+            // RONDE 59: sample across the clip, not one instant of it. A cut can change shot
+            // part-way through, and the frame that happens to sit at 45% is not necessarily
+            // what the viewer sees.
+            const framePaths: string[] = [];
+            for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
+              const framePath = path.join(
+                workDir,
+                `bir_s${scene.index}b${beat.index}_${look}_${f}.jpg`
+              );
+              const got = await extractFrameAtFraction(
+                winner.clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
+              ).catch(() => false);
+              if (got) framePaths.push(framePath);
+            }
             const judgement = await judgeBeatImage({
-              framePath: gotFrame ? framePath : "",
+              framePaths,
               beatText: beat.text,
               videoTitle,
               sceneText: scene.text,
               contentKey: clipContentKey(winner.clipPath),
               state: dedup.beatImageGate,
             });
-            try { if (gotFrame) fs.unlinkSync(framePath); } catch { /* ignore */ }
+            for (const p of framePaths) {
+              try { fs.unlinkSync(p); } catch { /* ignore */ }
+            }
 
             console.log(
               `[BeatImageGate] s${scene.index}b${beat.index} ${judgement.verdict} ` +
