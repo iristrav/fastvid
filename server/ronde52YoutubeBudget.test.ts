@@ -194,12 +194,16 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
 
   it("every YouTube step is clamped, none of them flat", async () => {
     const s = await src();
-    // search, metadata, download — the three steps of the chain that never completed.
+    // Search and download are clamped to the budget containing them.
     expect(s).toContain("scopedTimeoutMs(15_000, 3_000)");
-    expect(s).toContain("scopedTimeoutMs(20_000, 3_000)");
     expect(s).toContain("scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000)");
-    // The flat values that could not fit are gone from those call sites.
-    expect(s).not.toMatch(/metaUrl,\s*\n\s*20_000,/);
+    // RONDE 56: the metadata step is no longer clamped — it is no longer INSIDE the beat scope.
+    // Clamping it there bottomed out at the 3s floor on every one of render 531's 85 attempts,
+    // because the scene had nothing left to give. It now runs detached with its own full 20s;
+    // see ronde56YoutubeMetaCache.test.ts for that half.
+    expect(s).toContain("fetchWithTimeout(metaUrl, 20_000,");
+    expect(s).toContain("sceneFetchScopeStorage.exit(");
+    // The flat download value that could not fit is still gone.
     expect(s).not.toMatch(/youtubeDownloadTimeoutMs\(\),\s*\n\s*`RapidAPI YouTube download/);
   });
 
@@ -214,8 +218,9 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
   it("both YouTube catch paths reach the breaker, and both exempt scope aborts", async () => {
     const s = await src();
     const guarded = [...s.matchAll(/if \(!isScopeAbortError\(err\)\) markYoutubeSearchResult\(false\);/g)];
-    // One in the search catch, one in the RapidAPI download catch.
-    expect(guarded).toHaveLength(2);
+    // Search catch, RapidAPI download catch, and (RONDE 56) the detached metadata helper —
+    // which owns the marking for its own step, so the download catch never double-counts it.
+    expect(guarded).toHaveLength(3);
     // And the breaker is never called unguarded from a catch block.
     expect(s).not.toMatch(/catch \(err\) \{\s*\n\s*markYoutubeSearchResult\(false\);/);
   });

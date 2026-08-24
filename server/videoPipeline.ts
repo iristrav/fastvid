@@ -10672,13 +10672,99 @@ async function fetchArchiveSegmentViaFfmpeg(
 }
 
 // ─── 3c3a. Download a YouTube CC clip (RapidAPI first, cloud service fallback) ─
+/** RapidAPI's `/dl` payload — only the two format lists this pipeline reads. */
+type RapidApiYoutubeMeta = {
+  formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
+  adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
+};
+
+/**
+ * RONDE 56: the YouTube metadata lookup, cached per render and run outside the beat's deadline.
+ *
+ * Render 531 measured the whole YouTube branch failing in exactly one place:
+ *
+ *     185 results -> 103 download attempts -> 2 adopted
+ *      85 RapidAPI failures, ALL of them:
+ *         - aborted by the enclosing scope, never a real timeout
+ *         - at the META step, never reaching the download
+ *         - granted "own 3s" — the floor of scopedTimeoutMs, i.e. the scene had nothing left
+ *      86 attempts for 14 unique video ids
+ *      metadataCacheHits=0
+ *
+ * Two things follow from that, and this function is both of them.
+ *
+ * CACHED. The same video was looked up roughly six times over, each attempt paying full price
+ * and each one cut off. The render-scoped asset cache already exists and already has a
+ * `metadata` field and a `metadataCacheHits` counter; nothing was writing to it. A negative
+ * result is cached too, so a video that genuinely has no usable format is not re-asked all
+ * render — the same reasoning putCachedProviderAsset already applies to licence rejections.
+ *
+ * OUTSIDE THE BEAT SCOPE. The scene pool's Internet Archive calls complete in 17-23 seconds
+ * because they run as a prefetch; this call was running inside `script image` (12s) and
+ * `beat fill` (20s) scopes that were already spent by the time it started. AsyncLocalStorage's
+ * exit() detaches it, so it gets its own full budget and its own honest timeout.
+ *
+ * That detachment is safe HERE and would not be for the download. This is a JSON GET: it writes
+ * nothing, so an answer arriving after the beat gave up costs a cache entry and nothing else.
+ * The download writes to workDir, and a detached write into a directory the render has already
+ * cleaned up is the ENOENT class of bug fetchWithTimeout's scope signal exists to prevent — so
+ * the download stays inside the scope, unchanged.
+ */
+async function fetchRapidApiYoutubeMeta(
+  videoId: string,
+  sceneIndex: number,
+  sourcingCache?: SourcingCache
+): Promise<RapidApiYoutubeMeta | null> {
+  const cached = getCachedProviderAsset(sourcingCache, "youtube_cc", videoId);
+  if (cached?.metadata !== undefined) {
+    providerMetrics(sourcingCache, "youtube_cc").metadataCacheHits++;
+    return (cached.metadata as RapidApiYoutubeMeta | null) ?? null;
+  }
+
+  const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
+  providerMetrics(sourcingCache, "youtube_cc").metadataCount++;
+  // exit() runs the callback with no scene-fetch scope in context, so fetchWithTimeout sees no
+  // scope signal and no scope deadline: its own 20s is the only limit, exactly as intended.
+  const meta = await sceneFetchScopeStorage.exit(async () => {
+    try {
+      const resp = await providerLimiter("youtube").run(() =>
+        fetchWithTimeout(metaUrl, 20_000, `RapidAPI YouTube meta scene ${sceneIndex}`, {
+          headers: { "x-rapidapi-host": RAPIDAPI_YT_HOST, "x-rapidapi-key": RAPIDAPI_KEY },
+        })
+      );
+      if (!resp.ok) {
+        // Deliberately NOT a breaker failure. A non-ok answer for ONE video says that video has
+        // no metadata — it may be private, removed or region-locked — not that RapidAPI is down.
+        // Counting it would trip the cooldown on a healthy provider, which is what the original
+        // inline code avoided by leaving this branch unmarked. Transport errors (the catch
+        // below) are the real provider signal.
+        return null;
+      }
+      markYoutubeSearchResult(true);
+      return (await resp.json()) as RapidApiYoutubeMeta;
+    } catch (err) {
+      if (!isScopeAbortError(err)) markYoutubeSearchResult(false);
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: RapidAPI meta failed for ${videoId}:`,
+        (err as Error).message?.slice(0, 120)
+      );
+      return null;
+    }
+  });
+
+  putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, { metadata: meta });
+  return meta;
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
   clipStart: number,
   outPath: string,
   sceneIndex: number,
-  title?: string
+  title?: string,
+  /** RONDE 56: render-scoped cache, so 86 attempts for 14 videos become 14 lookups. */
+  sourcingCache?: SourcingCache
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
 
@@ -10753,27 +10839,11 @@ export async function downloadYouTubeCCClip(
   if (RAPIDAPI_KEY) {
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
     try {
-      const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
-      // RONDE 52: size this against the budget that actually contains it. A flat 20s inside a
-      // 22s scope meant the metadata call could consume the whole window and leave the download
-      // nothing — and when the scope won the race, the error blamed this call for a hang.
-      const metaResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
-        metaUrl,
-        scopedTimeoutMs(20_000, 3_000),
-        `RapidAPI YouTube meta scene ${sceneIndex}`,
-        {
-          headers: {
-            "x-rapidapi-host": RAPIDAPI_YT_HOST,
-            "x-rapidapi-key": RAPIDAPI_KEY,
-          },
-        }
-      ));
-      if (metaResp.ok) {
-        markYoutubeSearchResult(true);
-        const data = await metaResp.json() as {
-          formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
-          adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
-        };
+      // RONDE 56: cached per render and fetched outside the beat's deadline — see
+      // fetchRapidApiYoutubeMeta. Render 531 lost all 85 of its RapidAPI attempts here, every
+      // one of them aborted by an already-spent scene budget before the download ever started.
+      const data = await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache);
+      if (data) {
         // RONDE 27: pick the SMALLEST adequate format, not the one closest to 720p.
         //
         // This route downloads the entire source video and only then trims out the few seconds
@@ -10843,8 +10913,10 @@ export async function downloadYouTubeCCClip(
           }
         }
       } else {
+        // RONDE 56: the helper already logged and classified the failure (and cached the null so
+        // this video is not asked again this render).
         console.warn(
-          `[Pipeline] Scene ${sceneIndex}: RapidAPI error ${metaResp.status} for ${videoId}`
+          `[Pipeline] Scene ${sceneIndex}: RapidAPI returned no usable metadata for ${videoId}`
         );
       }
     } catch (err) {
@@ -11396,7 +11468,10 @@ export async function fetchYouTubeCCClips(
               clipStart,
               outPath,
               sceneIndex,
-              item.snippet?.title
+              item.snippet?.title,
+              // RONDE 56: render-scoped, so the metadata for a video already looked up on an
+              // earlier beat is reused instead of re-fetched and re-aborted.
+              sourcingCache
             );
             providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
             if (ok) {
