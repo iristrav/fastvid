@@ -107,7 +107,10 @@ describe("FASE 7.2 Test 1 — the text embedding is preserved for archive/text r
 
   it("findBestArchiveScoreForBeat still receives the text embedding", () => {
     const block = funnelBlock();
-    expect(block).toMatch(/findBestArchiveScoreForBeat\(funnelResult\.candidates,\s*beatEmb\)/);
+    // RONDE 38 appended an optional out-object for the [FunnelBeatCalib] line, so the
+    // call now has a third argument. What this test guards — the TEXT embedding in the
+    // second position — is unchanged, so the match ends at the argument boundary.
+    expect(block).toMatch(/findBestArchiveScoreForBeat\(funnelResult\.candidates,\s*beatEmb[,)]/);
   });
 
   it("computeSegmentSimilarities still receives funnelBeatEmb", () => {

@@ -24761,8 +24761,12 @@ async function fetchSceneVisualsInner(
           const beatEmb = await createTextEmbedding(beatDoc).catch(() => null);
           funnelBeatEmb = beatEmb;
           // 2. Score archive candidates in-memory (no API calls)
+          // RONDE 38: bestArchiveOut captures WHICH candidate produced the score, for the
+          // diagnostic line below. Same loop inside findBestArchiveScoreForBeat, same returned
+          // score — the out-object is written but never read by any decision.
+          const bestArchiveOut: { candidate?: FunnelCandidate } = {};
           const bestArchiveScore = beatEmb
-            ? findBestArchiveScoreForBeat(funnelResult.candidates, beatEmb)
+            ? findBestArchiveScoreForBeat(funnelResult.candidates, beatEmb, bestArchiveOut)
             : null;
           // 3. Resolve gap strategy based on confidence + diversity guard
           const gapStrategy = resolvePerBeatGapStrategy(bestArchiveScore, dedup.consecutiveArchiveBeats);
@@ -24770,6 +24774,27 @@ async function fetchSceneVisualsInner(
             `[Funnel] s${scene.index}b${beat.index}: archiveScore=${bestArchiveScore?.toFixed(3) ?? "n/a"} ` +
             `consec=${dedup.consecutiveArchiveBeats} strategy=${gapStrategy}`
           );
+          // RONDE 38 — calibration measurement only, never a decision.
+          //
+          // This is the per-beat counterpart to [FunnelCalib]: computeArchiveCoverage runs once
+          // per SCENE and has no beat index, but THIS is where the strategy that actually orders
+          // the candidates for a beat is chosen. Everything printed is already in hand — the
+          // score was just computed, the candidate came back with it, and the beat text is the
+          // loop variable — so there is no query, no fetch and no embedding call here.
+          {
+            const bc = bestArchiveOut.candidate;
+            const bcAssetId = bc?.archivePick?.asset?.id;
+            const bcArchive = bc?.archivePick?.archiveName?.trim();
+            const bcTitle = bc?.title?.trim();
+            const bcKeyword = bc?.archiveKeywordScore;
+            console.log(
+              `[FunnelBeatCalib] s${scene.index}b${beat.index} strategy=${gapStrategy} ` +
+              `archiveScore=${bestArchiveScore?.toFixed(4) ?? "n/a"} kw=${bcKeyword ?? "unknown"} ` +
+              `asset=${bcAssetId ?? "unknown"} archive="${bcArchive || "unknown"}" ` +
+              `title="${bcTitle || "unknown"}" ` +
+              `beat="${(beat.text ?? "").replace(/\s+/g, " ").trim().slice(0, 60) || "unknown"}"`
+            );
+          }
           // 4. Order candidates: archive leads unless aggressive mode
           funnelCandidates = orderCandidatesForBeatGap(funnelResult.candidates, gapStrategy);
           // Update consecutive archive counter

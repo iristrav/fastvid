@@ -228,7 +228,8 @@ describe("FASE 7.3 Test 6 — FASE 7.2 embedding separation intact", () => {
   });
 
   it("the text embedding is still used for archive/text ranking", () => {
-    expect(pipelineSrc).toMatch(/findBestArchiveScoreForBeat\(funnelResult\.candidates,\s*beatEmb\)/);
+    // RONDE 38: third (optional, diagnostic-only) argument added — arg 2 unchanged.
+    expect(pipelineSrc).toMatch(/findBestArchiveScoreForBeat\(funnelResult\.candidates,\s*beatEmb[,)]/);
     const calls = pipelineSrc.match(/computeSegmentSimilarities\([^)]*\)/g) ?? [];
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain("funnelBeatEmb");

@@ -248,7 +248,13 @@ export function scoreFunnelCandidateForBeat(
  */
 export function findBestArchiveScoreForBeat(
   candidates: FunnelCandidate[],
-  beatEmbedding: number[]
+  beatEmbedding: number[],
+  /**
+   * RONDE 38: filled with the candidate that produced the returned score, for the
+   * [FunnelBeatCalib] diagnostic line only. Same loop, same comparisons, same return value —
+   * omit it and this function behaves exactly as before.
+   */
+  bestOut?: { candidate?: FunnelCandidate }
 ): number | null {
   let best: number | null = null;
   for (const c of candidates) {
@@ -256,6 +262,7 @@ export function findBestArchiveScoreForBeat(
     const score = scoreFunnelCandidateForBeat(c, beatEmbedding);
     if (score !== null && (best === null || score > best)) {
       best = score;
+      if (bestOut) bestOut.candidate = c;
     }
   }
   return best;
@@ -321,6 +328,12 @@ export function orderCandidatesForBeatGap(
 async function computeArchiveCoverage(
   candidates: CuratedCandidatePick[],
   beatDocument: string,
+  /**
+   * RONDE 36: only used for the [FunnelCalib] diagnostic line below. The coverage value itself
+   * does not depend on it. This function runs once per scene (buildRetrievalFunnel), so there is
+   * no beat index to log here — the beat-level decision is a separate call in videoPipeline.
+   */
+  sceneIndex: number,
   topK = 5
 ): Promise<number> {
   if (candidates.length === 0) return 0;
@@ -331,15 +344,66 @@ async function computeArchiveCoverage(
   const embSims = await Promise.all(
     top.map(c => scoreBeatAgainstStoredEmbedding(beatDocument, c.asset.id).catch(() => null))
   );
-  const maxEmb = Math.max(...embSims.filter((s): s is number => s !== null));
+  // RONDE 36: same maximum the previous `Math.max(...embSims.filter(...))` produced, but the
+  // index is kept so the calibration line can name the asset the coverage is actually based on.
+  // An empty/all-null set leaves maxEmb at -Infinity, exactly as Math.max() of nothing did, and
+  // a NaN entry never wins the comparison — both still fall through to the keyword branch below.
+  let maxEmb = -Infinity;
+  let maxEmbIdx = -1;
+  for (let i = 0; i < embSims.length; i++) {
+    const s = embSims[i];
+    if (s === null) continue;
+    if (s > maxEmb) {
+      maxEmb = s;
+      maxEmbIdx = i;
+    }
+  }
   if (isFinite(maxEmb) && maxEmb > 0) {
+    logFunnelCalibration(sceneIndex, maxEmb, top[maxEmbIdx], beatDocument);
     return Math.min(1, maxEmb);
   }
 
   // Fallback: normalise keyword score (raw points → 0–1)
   const topScore = candidates[0].score;
+  logFunnelCalibration(sceneIndex, null, candidates[0], beatDocument);
   if (!topScore || topScore <= 0) return 0;
   return Math.min(1, topScore / KEYWORD_SCORE_MAX);
+}
+
+/**
+ * RONDE 36 — calibration measurement only. Emits nothing but a log line.
+ *
+ * The audit proved the two coverage branches are not on one scale: the embedding branch returns a
+ * raw text↔text cosine in [0,1], the keyword branch an unbounded point sum divided by an
+ * arbitrary KEYWORD_SCORE_MAX, and the strategy thresholds (0.50 / 0.75 / 0.94) sit on top of
+ * both. Choosing a correct recalibration needs the two numbers PAIRED, per real beat, with the
+ * asset they came from — which nothing logs today: the embedding score is reported alone, and the
+ * keyword score only surfaces in a different message from a different code path.
+ *
+ * Deliberately reads nothing it is not handed: the pick is already in memory, so there is no DB
+ * query, no embedding call, no asset lookup. Values are printed at full precision (cosine to four
+ * decimals, keyword score raw and unnormalised) so the analysis is not fighting rounding.
+ */
+function logFunnelCalibration(
+  sceneIndex: number,
+  cosine: number | null,
+  pick: CuratedCandidatePick | undefined,
+  beatDocument: string
+): void {
+  const assetId = pick?.asset?.id;
+  const archive = pick?.archiveName?.trim();
+  const title = pick?.asset?.title?.trim();
+  // RONDE 38: the archive NAME and the beat text turn this line from "two numbers" into
+  // something a human can actually judge. Render 529 showed why both are needed: every curated
+  // adoption came from an archive called "Pexels", so a rising coverage score there would mean
+  // "more stock via the archive route", not "more historical footage" — and without the beat
+  // text there is no way to tell whether the asset belonged to the sentence at all.
+  const beat = beatDocument.replace(/\s+/g, " ").trim().slice(0, 60);
+  console.log(
+    `[FunnelCalib] s${sceneIndex} emb=${cosine === null ? "n/a" : cosine.toFixed(4)} ` +
+      `kw=${pick?.score ?? "unknown"} asset=${assetId ?? "unknown"} ` +
+      `archive="${archive || "unknown"}" title="${title || "unknown"}" beat="${beat || "unknown"}"`
+  );
 }
 
 // ─── Strategy resolution ──────────────────────────────────────────────────────
@@ -598,7 +662,7 @@ export async function buildRetrievalFunnel(
     }
   }
 
-  const archiveCoverage = await computeArchiveCoverage(archivePicks, beatDoc);
+  const archiveCoverage = await computeArchiveCoverage(archivePicks, beatDoc, sceneIndex);
   const strategy = resolveStrategy(archiveCoverage);
   const { archive: archiveWeight, internet: internetWeight } = sourceWeights(strategy);
 
