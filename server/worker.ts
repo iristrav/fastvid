@@ -8,6 +8,7 @@ import { shouldRunQueueWorker } from "@shared/videoQueue";
 import { recoverAllStuckVideos } from "./db";
 import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { startVideoQueueWorker, stopVideoQueueWorker } from "./queue";
+import { applyCalibrationGuard } from "./calibrationGuard";
 import { workerLocalActiveJobs } from "./videoQueue";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -157,6 +158,23 @@ function startWorkerHealthServer(): void {
 async function main() {
   if (!shouldRunQueueWorker({ ...process.env, WORKER_MODE: "true" })) {
     console.error("[Worker] WORKER_MODE must be true");
+    process.exit(1);
+  }
+
+  // RONDE 43: database isolation for a calibration worker.
+  //
+  // Placed here, at the very top of main(), rather than immediately before runMigrations() —
+  // recordWorkerHeartbeat() below already writes to the database, so a guard sitting next to
+  // the migration call would fire one write too late. Everything after this line resolves its
+  // connection from process.env.DATABASE_URL (getDb() reads it lazily on first use), so pinning
+  // it here pins the whole process.
+  //
+  // In production (CALIBRATION_MODE unset) this is a single string comparison that returns
+  // immediately and changes nothing.
+  try {
+    applyCalibrationGuard();
+  } catch (err) {
+    console.error(`[CalibrationGuard] ${(err as Error).message}`);
     process.exit(1);
   }
 
