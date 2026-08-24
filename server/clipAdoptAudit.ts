@@ -107,7 +107,19 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
       stockBeats += 1;
     } else if (source === "wikimedia" || source === "wikimedia_video") {
       wikiBeats += 1;
-    } else if (source === "archive" || source === "archive_fetch" || source.startsWith("rescue_similar") || source === "rescue_archive") {
+    } else if (
+      source === "archive" || source === "archive_fetch" ||
+      source.startsWith("rescue_similar") || source === "rescue_archive" ||
+      // RONDE 51: the real provider names the scene-pool path reports. These are archives —
+      // Internet Archive, Library of Congress, NARA, NASA, Openverse, media.ccc.de — but none of
+      // them matched any branch, so a beat filled from one of them counted toward beatsFilled
+      // and toward no category at all. Render 530 reported "beats=13 wiki=0 arch=7 stock=0"
+      // while six of those thirteen beats had come from exactly these sources.
+      source === "internet_archive" || source === "loc" || source === "nara" ||
+      source === "nasa" || source === "openverse" || source === "mediaccc" ||
+      source === "europeana" || source === "gdelt" || source === "sepiasearch" ||
+      source === "flickr" || source === "rescue_wikimedia"
+    ) {
       archiveBeats += 1;
     } else if (source === "kling" || source === "rescue_ai") {
       klingBeats += 1;

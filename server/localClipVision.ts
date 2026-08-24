@@ -220,10 +220,42 @@ async function getModernMismatchEmbeddings(): Promise<number[][]> {
 /** Absolute similarity a probe must reach before it counts as modern evidence at all.
  *  Set above the entire similarity band observed for genuine historical candidates in render
  *  512 (max 0.2358), so a value inside that band can no longer flag anything. */
-const MODERN_EVIDENCE_MIN_SIM = 0.26;
+/**
+ * RONDE 51 — recalibrated against render 530, where this gate was consulted 54 times and fired
+ * zero times (`gate firing — modern_mismatch=0/54`), together with off_topic_protest 0/20 and
+ * vision_gate 0/20. A veto with a 0/94 firing rate is not conservative, it is absent, and the
+ * render shipped Pexels stock and a 2022 Internet Archive comment video for 1945 bunker beats.
+ *
+ * The floor was set to 0.26 from render 512, above the whole band seen there (max 0.2358). Render
+ * 530 measured, per candidate (topNegSim / beatSim):
+ *
+ *   genuine archive   Bundesarchiv 0.2103/0.2145 · 0.2077/0.1974 · Klara_Hitler 0.1890/0.1974
+ *   modern stock      pexels 0.2432/0.2129 · 0.2284/0.2260 · 0.2389/0.2230
+ *
+ * Everything sits below 0.26, so no probe ever cleared the floor. But the two groups do separate
+ * on the OTHER axis: for real archive the probe scores at or below the beat's own query
+ * (−0.005..+0.01), while for modern stock it scores consistently above it (+0.02..+0.03). The
+ * 0.05 margin was wider than the separation that exists.
+ *
+ * The floor now sits just under the modern band and above the archive band, and the margin is
+ * inside the observed separation. Both stay overridable from the environment; the pre-Ronde-51
+ * values were 0.26 and 0.05.
+ *
+ * This is n≈10 from one render. It is a deliberate move from "never fires" to "fires on the
+ * separation we can actually see", and the per-candidate log line makes the next render measure
+ * it. If it starts rejecting genuine archive material, raise MODERN_EVIDENCE_MIN_SIM back.
+ */
+const MODERN_EVIDENCE_MIN_SIM = visionThreshold("MODERN_EVIDENCE_MIN_SIM", 0.235);
 /** How decisively a probe must beat the beat's own query. Replaces the original `- 0.01`,
  *  which fired on near-ties and even when the probe scored below the beat query. */
-const MODERN_EVIDENCE_MARGIN = 0.05;
+const MODERN_EVIDENCE_MARGIN = visionThreshold("MODERN_EVIDENCE_MARGIN", 0.015);
+
+function visionThreshold(envKey: string, fallback: number): number {
+  const raw = process.env[envKey]?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
+}
 /** Independent probes that must agree on the same frame. One probe is never enough. */
 const MODERN_EVIDENCE_MIN_PROBES = 2;
 /**
@@ -500,7 +532,55 @@ export function buildBeatVisionQueryText(ctx: BeatVisionQueryContext): string {
   const videoTitle = coerceVisionString(ctx.videoTitle);
   if (videoTitle?.trim() && !hasRichVisualIntent) parts.push(truncateAtWordBoundary(videoTitle.trim(), 60));
 
-  return parts.filter(Boolean).join(". ");
+  return dedupeQueryParts(parts).join(". ");
+}
+
+/**
+ * RONDE 51: drop parts that say nothing the query does not already say.
+ *
+ * Every field feeding buildBeatVisionQueryText can fall back to the same beat sentence, and each
+ * one is truncated to a different length before it lands in `parts`. The old exact-equality
+ * checks never caught that, so render 530 embedded queries like:
+ *
+ *     "hitler hitler suicide. In April 1945. In April. In April 194"
+ *
+ * — four parts that are all the same sentence at four different cut points, plus a leading token
+ * repeated from the part after it. CLIP gets one 77-token window: every repeated word crowds out
+ * a word that carried information, which is a direct cause of the flat similarity scores that
+ * render logged (beatSim ≈ topNegSim ≈ 0.21 for everything, historical and stock alike).
+ *
+ * A part is dropped when a kept part already begins with it (the truncation case) or when it is
+ * contained in a kept part. Adjacent duplicate words inside a part are collapsed. Order is
+ * preserved — the richest visual-intent parts still come first.
+ */
+export function dedupeQueryParts(parts: string[]): string[] {
+  const kept: string[] = [];
+  for (const raw of parts) {
+    const part = collapseRepeatedWords(raw).trim();
+    if (!part) continue;
+    const norm = part.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (!norm) continue;
+    const redundant = kept.some((k) => {
+      const kn = k.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+      return kn.startsWith(norm) || norm.startsWith(kn) || kn.includes(norm);
+    });
+    if (redundant) continue;
+    kept.push(part);
+  }
+  return kept;
+}
+
+/** "hitler hitler suicide" → "hitler suicide". Case-insensitive, punctuation-aware. */
+export function collapseRepeatedWords(text: string): string {
+  const words = text.split(/\s+/);
+  const out: string[] = [];
+  for (const w of words) {
+    const prev = out[out.length - 1];
+    const bare = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (prev && bare(prev) && bare(prev) === bare(w)) continue;
+    out.push(w);
+  }
+  return out.join(" ");
 }
 
 export function beatVisionContextFromProfile(

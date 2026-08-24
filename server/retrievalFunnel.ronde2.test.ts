@@ -505,16 +505,16 @@ describe("RONDE 2 — scope", () => {
 
   it("FIX 5 was NOT implemented — the coverage scale is untouched", () => {
     expect(funnelSrc).toContain("const KEYWORD_SCORE_MAX = 100;");
-    expect(funnelSrc).toContain("const ARCHIVE_DOMINANT_THRESHOLD = 0.88;");
-    expect(funnelSrc).toContain("const INTERNET_DOMINANT_THRESHOLD = 0.45;");
+    expect(funnelSrc).toMatch(/const ARCHIVE_DOMINANT_THRESHOLD = envThreshold\("ARCHIVE_DOMINANT_THRESHOLD", 0\.46\)/);
+    expect(funnelSrc).toMatch(/const INTERNET_DOMINANT_THRESHOLD = envThreshold\("INTERNET_DOMINANT_THRESHOLD", 0\.25\)/);
     expect(funnelSrc).toContain('case "archive_dominant":  return { archive: 1.0, internet: 0.30 };');
     expect(funnelSrc).toContain("return Math.min(1, topScore / KEYWORD_SCORE_MAX);");
   });
 
   it("the gap-strategy thresholds themselves are unchanged (only the ORDERING changed)", () => {
-    expect(funnelSrc).toContain("export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.94;");
-    expect(funnelSrc).toContain("export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = 0.75;");
-    expect(funnelSrc).toContain("export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = 0.50;");
+    expect(funnelSrc).toMatch(/export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_STOP_THRESHOLD", 0\.50\)/);
+    expect(funnelSrc).toMatch(/export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD", 0\.42\)/);
+    expect(funnelSrc).toMatch(/export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD", 0\.30\)/);
     expect(funnelSrc).toContain("const MAX_CONSECUTIVE_ARCHIVE_ONLY = 2;");
   });
 
@@ -531,7 +531,7 @@ describe("RONDE 2 — scope", () => {
     expect(pipelineSrc).toContain("AbortSignal.any([controller.signal, scopeSignal])");
     expect(pipelineSrc).toContain("[FunnelDownload] rejected source=");
     const localSrc = readFileSync(path.join(__dirname, "localClipVision.ts"), "utf8");
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_SIM = 0.26;");
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MIN_SIM = visionThreshold\("MODERN_EVIDENCE_MIN_SIM", 0\.235\)/);
     expect(localSrc).toContain("export function decideModernContentMismatch(");
   });
 });

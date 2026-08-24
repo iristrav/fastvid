@@ -2,6 +2,7 @@
  * Tracks archive assets used in recent videos so the next generation picks different footage.
  * Persisted to disk (survives restarts on Railway volume / local uploads dir).
  */
+import { foldSearchText } from "./searchTextNormalize";
 import * as fs from "fs";
 import * as path from "path";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
@@ -54,7 +55,7 @@ export function normalizeArchiveTopicKey(topic: string): string {
   for (const [re, key] of buckets) {
     if (re.test(t)) return key;
   }
-  const words = t
+  const words = foldSearchText(t)
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length > 3)

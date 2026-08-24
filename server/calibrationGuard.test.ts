@@ -291,11 +291,11 @@ describe("RONDE 43 — placement and blast radius", () => {
     expect(FUNNEL).toContain("export function orderCandidatesForBeatGap(");
     // and no threshold moved
     expect(FUNNEL).toContain("const KEYWORD_SCORE_MAX = 100;");
-    expect(FUNNEL).toContain("const ARCHIVE_DOMINANT_THRESHOLD = 0.88;");
-    expect(FUNNEL).toContain("const INTERNET_DOMINANT_THRESHOLD = 0.45;");
-    expect(FUNNEL).toContain("export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.94;");
-    expect(FUNNEL).toContain("export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = 0.75;");
-    expect(FUNNEL).toContain("export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = 0.50;");
+    expect(FUNNEL).toMatch(/const ARCHIVE_DOMINANT_THRESHOLD = envThreshold\("ARCHIVE_DOMINANT_THRESHOLD", 0\.46\)/);
+    expect(FUNNEL).toMatch(/const INTERNET_DOMINANT_THRESHOLD = envThreshold\("INTERNET_DOMINANT_THRESHOLD", 0\.25\)/);
+    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_STOP_THRESHOLD", 0\.50\)/);
+    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD", 0\.42\)/);
+    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD", 0\.30\)/);
   });
 
   it("the guard module itself touches nothing but env", () => {

@@ -362,8 +362,8 @@ describe("downstream contracts and earlier rounds are untouched", () => {
 
   it("coverage thresholds and funnel constants did not move (FIX 5 still not done)", () => {
     expect(funnelSrc).toContain("const KEYWORD_SCORE_MAX = 100;");
-    expect(funnelSrc).toContain("const ARCHIVE_DOMINANT_THRESHOLD = 0.88;");
-    expect(funnelSrc).toContain("export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.94;");
+    expect(funnelSrc).toMatch(/const ARCHIVE_DOMINANT_THRESHOLD = envThreshold\("ARCHIVE_DOMINANT_THRESHOLD", 0\.46\)/);
+    expect(funnelSrc).toMatch(/export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_STOP_THRESHOLD", 0\.50\)/);
     expect(funnelSrc).toContain("export const STOCK_TIER_WIN_MARGIN = 1.0;");
   });
 

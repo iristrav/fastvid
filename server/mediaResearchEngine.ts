@@ -2,6 +2,7 @@
  * Universal media research engine — Laag 1 (intent) + Laag 3 (ranking).
  * Laag 2 (multi-source fetch) and Laag 4 (montage) live in videoPipeline.ts.
  */
+import { foldSearchText } from "./searchTextNormalize";
 import path from "path";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
@@ -84,8 +85,7 @@ const RELEVANCE_STOP_WORDS = new Set([
 ]);
 
 function tokenizeForRelevance(text: string): string[] {
-  return text
-    .toLowerCase()
+  return foldSearchText(text)
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));

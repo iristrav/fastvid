@@ -17464,6 +17464,14 @@ async function recoverSceneClipsIfEmptyInner(
     const loopMax = fastShort ? Math.min(need + 1, 2) : need + 4;
     for (let fi = 0; fi < loopMax; fi++) {
       stubBeat.index = fi;
+      // RONDE 51: give each slot its own sentence instead of re-searching the scene's opening
+      // line `loopMax` times. Only the query-bearing fields move; holdSec, keywords and the
+      // rest of the stub are untouched.
+      stubBeat.text = sceneSentenceForSlot(scene.text, fi);
+      stubBeat.powerWord = extractPowerWordFromSentence(stubBeat.text, scenePersons);
+      stubBeat.searchQuery = enrichStockQuery(
+        stubBeat.powerWord, scene, topicContext, scenePersons[0], stubBeat.text
+      );
       const clip = await fetchCuratedArchiveBeatClip(
         stubBeat,
         scene,
@@ -25329,6 +25337,19 @@ async function fetchSceneVisualsInner(
         }
         if (poolClip) {
           clip = poolClip;
+          // RONDE 51: the scene-pool path adopted clips without ever recording the adoption.
+          // scenePool.ts contains no recordClipAdopt call at all, and this is the only place a
+          // pool candidate becomes the beat's clip — so every `*_pool_*` clip was invisible to
+          // the adopt audit. Render 530 shipped 19 clips of which 10 were pool clips, and the
+          // quality gate judged the render on the 13 beats it could see, reporting
+          // "wiki=0 stock=0" while three Wikimedia and six Pexels clips were in the video.
+          const adopted = poolCandidates.find(
+            (c) => poolClip!.includes(c.assetId.replace(/[^a-z0-9]/gi, "_").slice(0, 30))
+          ) ?? poolCandidates[0];
+          recordClipAdopt(
+            dedup.clipAdoptAudit, scene.index, beat.index, beat.text, poolClip,
+            adopted?.source ?? "pool", adopted?.title, dedup.segmentGeoLock
+          );
         } else {
           if (_poolFailReasons.length > 0) {
             console.log(`[Retry] s${scene.index}b${beat.index} all ${_poolFailReasons.length} pool candidate(s) failed — falling back to per-beat retrieval. Reasons: ${_poolFailReasons.join(" | ")}`);
@@ -26634,6 +26655,34 @@ export function mergedRescueClipBeatIndices(
  * beat-specific left to say (every beat already covered, or no beat metadata at all). The
  * caller falls back to the scene text, which is still better than the video-wide topic query.
  */
+/**
+ * RONDE 51: the sentence a rescue/backfill slot should search for.
+ *
+ * Several recovery paths build ONE stub beat from `scene.text.slice(0, 220)` and then reuse it
+ * for every slot, mutating only `index`. Render 530 shows the result: fifteen consecutive
+ * archive searches logged the identical query and the identical tags —
+ *
+ *     [ArchiveSearch] zin 0..5 "In a surreal scene amidst Berlin's collapse, Adolf Hitler an"
+ *     beatTags: [hitler, eva, braun]   ×15
+ *
+ * — so every slot got the same ranked candidate list (`#1 id=55976, #2 id=55977`), and the
+ * content dedup then threw away everything after the first. A scene cannot show different
+ * pictures for different sentences if every sentence is searched with the same words.
+ *
+ * The scene's narration already contains the sentences. Rotating through them per slot costs
+ * nothing, needs no beat metadata, and gives each slot its own query. When the text holds no
+ * sentence boundary the original behaviour (the whole opening slice) is returned unchanged.
+ */
+export function sceneSentenceForSlot(sceneText: string, slot: number, maxLen = 220): string {
+  const sentences = (sceneText ?? "")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 12);
+  if (sentences.length <= 1) return (sceneText ?? "").slice(0, maxLen);
+  const picked = sentences[Math.abs(slot) % sentences.length]!;
+  return picked.slice(0, maxLen);
+}
+
 export function rescueBeatTextForSlot(
   slot: number,
   beats: SceneBeat[] | undefined,
@@ -27000,9 +27049,20 @@ export async function composeSceneVideoInner(
     const audit = composeOptions.dedup.clipAdoptAudit;
     for (const clipPath of safeClips) {
       const basename = path.basename(clipPath);
+      // RONDE 51: fall back to content identity when the exact basename no longer matches.
+      // A clip is renamed after it is adopted — "_still" is appended by the still-to-video step,
+      // "_transformed" by the transform step, and a padded clip is republished as
+      // "pad_combined_sNbM_<ts>.mp4" — so the basename recorded at adoption time is not the
+      // basename that reaches the montage. In render 530 that broke the lookup for 14 of 19
+      // clips, every one of which printed "beat=? source=unknown" even though its adoption HAD
+      // been recorded. clipContentKey already normalises those renames for dedup; using it here
+      // makes the manifest and the audit agree on what a clip is.
+      const key = clipContentKey(clipPath);
       const entry =
         audit.find((e) => e.sceneIndex === scene.index && e.basename === basename) ??
-        audit.find((e) => e.basename === basename);
+        audit.find((e) => e.basename === basename) ??
+        audit.find((e) => e.sceneIndex === scene.index && clipContentKey(e.basename) === key) ??
+        audit.find((e) => clipContentKey(e.basename) === key);
       const source = entry?.source ?? "unknown";
       const fallback = entry ? entry.source === "fallback" || entry.source === "rescue_placeholder" : isPipelineFallbackClip(clipPath);
       console.log(

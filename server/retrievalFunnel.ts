@@ -115,8 +115,19 @@ export type RetrievalFunnelResult = {
 
 // ─── Thresholds ───────────────────────────────────────────────────────────────
 
-const ARCHIVE_DOMINANT_THRESHOLD = 0.88;
-const INTERNET_DOMINANT_THRESHOLD = 0.45;
+// RONDE 51: same recalibration as the per-beat thresholds below — these are compared against
+// the same raw-cosine coverage value. Render 530 measured scene-level coverage at 0.4146,
+// 0.4496 and 0.4671, so 0.88 was unreachable and every scene resolved the same way.
+// Overridable from the environment; the pre-Ronde-51 values were 0.88 and 0.45.
+const ARCHIVE_DOMINANT_THRESHOLD = envThreshold("ARCHIVE_DOMINANT_THRESHOLD", 0.46);
+const INTERNET_DOMINANT_THRESHOLD = envThreshold("INTERNET_DOMINANT_THRESHOLD", 0.25);
+
+function envThreshold(envKey: string, fallback: number): number {
+  const raw = process.env[envKey]?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
+}
 
 /** When the archive has NO embedding index at all, fall back to normalised keyword
  *  score.  The keyword scorer returns raw integer points — 100 pts ~ good match. */
@@ -189,9 +200,46 @@ function movingFootageBonus(mediaType: "video" | "image", deficit = 0): number {
  * When an archive candidate's per-beat embedding similarity meets one of these
  * thresholds, only the specified number of external sources are queried.
  */
-export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.94;        // archive wins — skip internet (raised for diversity)
-export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = 0.75; // good match — hedge with one external
-export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = 0.50; // weak match — try all externals
+/**
+ * RONDE 51 — recalibrated against the first real measurement (render 530, 14 beats).
+ *
+ * These thresholds are compared against the value computeArchiveCoverage returns, which on the
+ * embedding path is a RAW text↔text cosine from text-embedding-3-small. They were set as if that
+ * value were a normalised relevance score where 0.94 means "excellent". It is not: for two
+ * genuinely related pieces of text that model lands around 0.4, and 0.94 would require nearly
+ * identical strings.
+ *
+ * Render 530 measured, across every beat of a WWII documentary against a WWII archive:
+ *
+ *     0.2143  0.2488  0.2510  0.2526  0.2642  0.3529  0.3952
+ *     0.3985  0.4200  0.4264  0.4373  0.4618  0.5069  0.5344
+ *
+ *     min 0.2143 · median ~0.40 · max 0.5344 · n=14
+ *
+ * Against 0.94 / 0.75 / 0.50 that produced twelve "aggressive" and two "all_external" — the
+ * archive could not win a single beat, and the strategy decision carried no information because
+ * it was the same for almost every beat. The archive was still used (a separate keyword path in
+ * curatedMediaSourcing adopts assets on its own scores of 96–306), so this was never a hard
+ * block; it made the funnel's verdict meaningless.
+ *
+ * The new defaults place the tiers inside the band that was actually observed: the top of the
+ * measured range wins outright, the upper third hedges with one external, and the bottom third
+ * still fans out. Every value stays overridable from the environment so the next render can move
+ * them without a deploy, and reverting is setting three variables back to 0.94 / 0.75 / 0.50.
+ *
+ * n=14 from one render is a starting point, not a final calibration. The [FunnelBeatCalib] line
+ * logs the score for every beat, so the next render measures these directly.
+ */
+function archiveThreshold(envKey: string, fallback: number): number {
+  const raw = process.env[envKey]?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : fallback;
+}
+
+export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold("BEAT_ARCHIVE_STOP_THRESHOLD", 0.50);
+export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = archiveThreshold("BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD", 0.42);
+export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = archiveThreshold("BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD", 0.30);
 
 /** Max consecutive archive-only beats before forcing at least one external source for variety. */
 const MAX_CONSECUTIVE_ARCHIVE_ONLY = 2;

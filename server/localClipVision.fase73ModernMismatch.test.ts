@@ -263,8 +263,8 @@ describe("FASE 7.3 Test 7 — FASE 7.1 streaming / AbortSignal fix intact", () =
 
 describe("FASE 7.3 Test 8 — no threshold constant was changed", () => {
   it("the FASE 7.3 constants are new and separate from any similarity threshold", () => {
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_SIM = 0.26;");
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MARGIN = 0.05;");
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MIN_SIM = visionThreshold\("MODERN_EVIDENCE_MIN_SIM", 0\.235\)/);
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MARGIN = visionThreshold\("MODERN_EVIDENCE_MARGIN", 0\.015\)/);
     expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_PROBES = 2;");
     expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_FRAMES = 2;");
     // The gate-threshold helpers themselves are untouched.

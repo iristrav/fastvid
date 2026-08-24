@@ -167,8 +167,8 @@ describe("nothing under test was disturbed", () => {
 
   it("FASE 7.3: the evidence rules are byte-identical", () => {
     const localSrc = readFileSync(path.join(__dirname, "localClipVision.ts"), "utf8");
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_SIM = 0.26;");
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MARGIN = 0.05;");
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MIN_SIM = visionThreshold\("MODERN_EVIDENCE_MIN_SIM", 0\.235\)/);
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MARGIN = visionThreshold\("MODERN_EVIDENCE_MARGIN", 0\.015\)/);
     expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_PROBES = 2;");
     expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_FRAMES = 2;");
     expect(localSrc).toContain("export function decideModernContentMismatch(");

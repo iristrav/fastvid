@@ -2,6 +2,7 @@
  * Per-sentence visual planning for stock/archive footage.
  * Analyses full voice-over context (subject, action, editor intent) — not loose words.
  */
+import { foldToSearchTokensText } from "./searchTextNormalize";
 import { invokeLLM } from "./_core/llm";
 import {
   extractFullNarrationText,
@@ -304,9 +305,7 @@ export function fallbackVisualIntent(sentence: string): ScriptVisualIntentEntry 
     primary = sanitizeVisualKeyword(buildEnglishVisualKeywordFromSentence(sentence) ?? "");
   }
   if (!primary) {
-    const tokens = sentence
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
+    const tokens = foldToSearchTokensText(sentence)
       .split(/\s+/)
       .filter((w) => w.length >= 4 && !ABSTRACT_KEYWORD_RE.test(w))
       .slice(0, 3);

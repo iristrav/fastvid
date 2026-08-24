@@ -107,11 +107,11 @@ describe("RONDE 36 — the line costs nothing", () => {
 describe("RONDE 36 — behaviour is unchanged (measurement round, not calibration)", () => {
   it("no threshold or scale constant moved", () => {
     expect(FUNNEL).toContain("const KEYWORD_SCORE_MAX = 100;");
-    expect(FUNNEL).toContain("const ARCHIVE_DOMINANT_THRESHOLD = 0.88;");
-    expect(FUNNEL).toContain("const INTERNET_DOMINANT_THRESHOLD = 0.45;");
-    expect(FUNNEL).toContain("export const BEAT_ARCHIVE_STOP_THRESHOLD = 0.94;");
-    expect(FUNNEL).toContain("export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = 0.75;");
-    expect(FUNNEL).toContain("export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = 0.50;");
+    expect(FUNNEL).toMatch(/const ARCHIVE_DOMINANT_THRESHOLD = envThreshold\("ARCHIVE_DOMINANT_THRESHOLD", 0\.46\)/);
+    expect(FUNNEL).toMatch(/const INTERNET_DOMINANT_THRESHOLD = envThreshold\("INTERNET_DOMINANT_THRESHOLD", 0\.25\)/);
+    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_STOP_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_STOP_THRESHOLD", 0\.50\)/);
+    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD", 0\.42\)/);
+    expect(FUNNEL).toMatch(/export const BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD = archiveThreshold\("BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD", 0\.30\)/);
     expect(FUNNEL).toContain("const MAX_CONSECUTIVE_ARCHIVE_ONLY = 2;");
   });
 
@@ -167,19 +167,34 @@ describe("RONDE 36 — behaviour is unchanged (measurement round, not calibratio
   });
 
   it("the existing strategy boundaries still read as written (pinned, not changed)", async () => {
-    const { resolvePerBeatGapStrategy } = await import("./retrievalFunnel");
-    // Exact boundary semantics as the code defines them: > 0.94, >= 0.75, >= 0.50.
-    expect(resolvePerBeatGapStrategy(0.949)).toBe("archive_only");
-    expect(resolvePerBeatGapStrategy(0.94)).toBe("archive_only");   // >= STOP
-    expect(resolvePerBeatGapStrategy(0.939)).toBe("one_external");
-    expect(resolvePerBeatGapStrategy(0.75)).toBe("one_external");
-    expect(resolvePerBeatGapStrategy(0.749)).toBe("all_external");
-    expect(resolvePerBeatGapStrategy(0.5)).toBe("all_external");
-    expect(resolvePerBeatGapStrategy(0.499)).toBe("aggressive");
+    const {
+      resolvePerBeatGapStrategy,
+      BEAT_ARCHIVE_STOP_THRESHOLD,
+      BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD,
+      BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD,
+    } = await import("./retrievalFunnel");
+
+    // RONDE 51: the thresholds moved (render 530 measured the score band at 0.21–0.53, so the
+    // old 0.94/0.75/0.50 were unreachable). What this test guards is the BOUNDARY SEMANTICS —
+    // which comparison is >= and which is > , and that each tier owns the band below the one
+    // above it. Those are expressed against the constants now, so the test keeps its meaning
+    // when the numbers are retuned again after the next render.
+    const STOP = BEAT_ARCHIVE_STOP_THRESHOLD;
+    const ONE = BEAT_ARCHIVE_ONE_EXTERNAL_THRESHOLD;
+    const ALL = BEAT_ARCHIVE_ALL_EXTERNAL_THRESHOLD;
+    const eps = 0.001;
+
+    expect(resolvePerBeatGapStrategy(STOP + eps)).toBe("archive_only");
+    expect(resolvePerBeatGapStrategy(STOP)).toBe("archive_only");   // >= STOP
+    expect(resolvePerBeatGapStrategy(STOP - eps)).toBe("one_external");
+    expect(resolvePerBeatGapStrategy(ONE)).toBe("one_external");
+    expect(resolvePerBeatGapStrategy(ONE - eps)).toBe("all_external");
+    expect(resolvePerBeatGapStrategy(ALL)).toBe("all_external");
+    expect(resolvePerBeatGapStrategy(ALL - eps)).toBe("aggressive");
     expect(resolvePerBeatGapStrategy(null)).toBe("aggressive");
-    // The diversity guard is also unchanged.
-    expect(resolvePerBeatGapStrategy(0.99, 2)).toBe("one_external");
-    expect(resolvePerBeatGapStrategy(0.99, 1)).toBe("archive_only");
+    // The diversity guard is unchanged.
+    expect(resolvePerBeatGapStrategy(STOP + 0.05, 2)).toBe("one_external");
+    expect(resolvePerBeatGapStrategy(STOP + 0.05, 1)).toBe("archive_only");
   });
 });
 

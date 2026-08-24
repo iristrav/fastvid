@@ -3,6 +3,7 @@
  */
 import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
+import { foldSearchText } from "./searchTextNormalize";
 import {
   extractVisualSearchTags,
   extractSceneSearchTags,
@@ -347,9 +348,9 @@ const SHORT_TOPIC_TOKENS = new Set([
 ]);
 
 export function extractTopicAnchorTags(videoTitle?: unknown, extraText?: unknown): string[] {
-  const raw = [asVideoTitleString(videoTitle), asVideoTitleString(extraText)]
-    .join(" ")
-    .toLowerCase()
+  // RONDE 51: fold diacritics before the ASCII strip (see searchTextNormalize) — otherwise
+  // "Führerbunker" arrives here as "f hrerbunker" and the anchor tag is lost.
+  const raw = foldSearchText([asVideoTitleString(videoTitle), asVideoTitleString(extraText)].join(" "))
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
     .filter(
@@ -364,8 +365,9 @@ function tokenizeBeatText(raw: unknown): string[] {
   const text = asVideoTitleString(raw).trim();
   if (!text) return [];
   return normalizeMediaTags(
-    text
-      .toLowerCase()
+    // RONDE 51: same folding as extractTopicAnchorTags — this is the function that produced
+    // beatTags: [claustrophobic, depths, hrerbunker] in render 530.
+    foldSearchText(text)
       .replace(/[^a-z0-9\s-]/g, " ")
       .split(/\s+/)
       .filter((w) => w.length > 2 && !QUERY_STOP_WORDS.has(w))

@@ -301,6 +301,6 @@ describe("wiring + scope", () => {
     expect(pipelineSrc).toContain("AbortSignal.any([controller.signal, scopeSignal])");
     expect(pipelineSrc).toContain("[FunnelDownload] rejected source=");
     const localSrc = readFileSync(path.join(__dirname, "localClipVision.ts"), "utf8");
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_SIM = 0.26;");
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MIN_SIM = visionThreshold\("MODERN_EVIDENCE_MIN_SIM", 0\.235\)/);
   });
 });

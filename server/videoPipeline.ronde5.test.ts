@@ -245,7 +245,7 @@ describe("RONDE 1-4 are untouched by RONDE 5", () => {
 
   it("FASE 7.2/7.3 intact", () => {
     const localSrc = readFileSync(path.join(__dirname, "localClipVision.ts"), "utf8");
-    expect(localSrc).toContain("const MODERN_EVIDENCE_MIN_SIM = 0.26;");
+    expect(localSrc).toMatch(/const MODERN_EVIDENCE_MIN_SIM = visionThreshold\("MODERN_EVIDENCE_MIN_SIM", 0\.235\)/);
     expect(pipelineSrc).toContain("queryEmbeddingSource=resolved-by-vision-gate");
   });
 
