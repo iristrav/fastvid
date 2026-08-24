@@ -162,7 +162,7 @@ import {
 } from "./archiveClipEmbedding";
 import { scheduleStockClipEmbedding, scheduleStockClipEmbeddingByKey, rankStockVideoIdsByEmbedding, stockClipEmbeddingEnabled } from "./stockClipEmbedding";
 import { pickStockInClipStartSec, stockInClipOffsetEnabled } from "./clipInClipOffset";
-import { resolveBeatVisionQueryEmbedding, coerceVisionString, asVideoTitleString, beatGateVisualDescription } from "./localClipVision";
+import { resolveBeatVisionQueryEmbedding, coerceVisionString, asVideoTitleString, beatGateVisualDescription, extractFrameAtFraction } from "./localClipVision";
 import {
   coercePersonName,
   toQueryString,
@@ -309,6 +309,13 @@ import {
 } from "./editorialGraphicsEngine";
 import { buildEditorScenesFromPipeline } from "./editorClips";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
+import {
+  judgeBeatImage,
+  createBeatImageGateState,
+  beatImageRelevanceGateEnabled,
+  MAX_JUDGEMENTS_PER_BEAT,
+  type BeatImageGateState,
+} from "./beatImageRelevanceGate";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
 import {
@@ -13023,6 +13030,12 @@ export interface VisualDedupState {
   clipRejectAudit: ClipRejectEntry[];
   /** Successfully adopted clips per beat (for geo export gate). */
   clipAdoptAudit: ClipAdoptEntry[];
+  /**
+   * RONDE 58: verdicts and spend for the vision gate that looks at the frame and says whether it
+   * belongs under this narration. Render-scoped so two concurrent renders cannot read each
+   * other's verdicts or spend each other's budget.
+   */
+  beatImageGate: BeatImageGateState;
   /** Sticky NL/US segment lock for comparison documentaries. */
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
@@ -13250,6 +13263,7 @@ export function createVisualDedupState(
     currentBeatTopicKey: "",
     clipRejectAudit: [],
     clipAdoptAudit: createClipAdoptAudit(),
+    beatImageGate: createBeatImageGateState(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
     assetDirectorSceneClips: [],
@@ -25368,6 +25382,52 @@ async function fetchSceneVisualsInner(
         // passer is used the full set is restored inside pickBestFunnelCandidate(), so reuse
         // is the last resort and a beat is never dropped to fallback because of this.
         let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
+
+        // RONDE 58: before adopting, look at the picture.
+        //
+        // Every other judge in this pipeline decides without seeing the image: the metadata gate
+        // reads the provider's title, and the CLIP score is measurably inverted for this
+        // material (render 531 scored a white-lives-matter sticker 0.2226 and a genuine Hitler
+        // photograph 0.2116 on the same beat). This asks a vision model what is actually in the
+        // frame and whether that belongs under this line of narration.
+        //
+        // It runs on the candidate about to be ADOPTED, not on all of them — one call per beat
+        // in the ordinary case. A rejected winner is marked used, the next-best is tried, and
+        // after MAX_JUDGEMENTS_PER_BEAT the pipeline takes what it has rather than starving the
+        // beat. Every failure mode returns "unknown", which adopts exactly as before.
+        if (winner && beatImageRelevanceGateEnabled()) {
+          for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++) {
+            const framePath = path.join(
+              workDir,
+              `bir_s${scene.index}b${beat.index}_${look}.jpg`
+            );
+            const gotFrame = await extractFrameAtFraction(winner.clipPath, framePath, 0.45, 8_000)
+              .catch(() => false);
+            const judgement = await judgeBeatImage({
+              framePath: gotFrame ? framePath : "",
+              beatText: beat.text,
+              videoTitle,
+              sceneText: scene.text,
+              contentKey: clipContentKey(winner.clipPath),
+              state: dedup.beatImageGate,
+            });
+            try { if (gotFrame) fs.unlinkSync(framePath); } catch { /* ignore */ }
+
+            console.log(
+              `[BeatImageGate] s${scene.index}b${beat.index} ${judgement.verdict} ` +
+                `src=${winner.candidate.source} clip=${path.basename(winner.clipPath)} ` +
+                `depicts="${judgement.depicts}" reason="${judgement.reason}"`
+            );
+            if (judgement.verdict !== "does_not_fit") break;
+
+            recordClipReject(
+              dedup.clipRejectAudit, scene.index, beat.index, winner.clipPath,
+              "beat_image_gate", winner.candidate.title
+            );
+            dedup.usedFunnelCandidateIds.add(winner.candidate.id);
+            winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
+          }
+        }
         // RONDE 9: person-locked renders verify the winner with AWS Rekognition celebrity
         // recognition. Rejects ONLY on strong evidence of a different celebrity (see
         // clipShowsWrongCelebrity) — B-roll and unrecognized footage always pass, any error
