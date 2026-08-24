@@ -25291,6 +25291,25 @@ async function fetchSceneVisualsInner(
           // what later beats of this render try to avoid repeating.
           dedup.usedFunnelCandidateIds.add(candidate.id);
           funnelClip = clipPath;
+          // RONDE 53: record the adoption. This is the SECOND route that never did.
+          //
+          // Ronde 51 closed the scene-pool branch in fetchSceneVisualsInner, but the retrieval
+          // funnel adopts through downloadFunnelCandidate — curated assets via
+          // prepareCuratedArchiveClip and external ones via downloadAndTrimPoolCandidate — and
+          // this block only registered the candidate id, the embedding similarity and the
+          // segment similarities. The adoption itself went unrecorded, which is why render 531
+          // still printed "beat=? source=unknown" for eleven of seventeen manifest lines, all of
+          // them either *_curated_a*.mp4 or *_pool_*.mp4, and why the quality report read
+          // "adopt audit beats=8" for a video holding seventeen clips.
+          //
+          // candidate.source is already the vocabulary summarizeAdoptAudit classifies (archive,
+          // wikimedia, pexels, internet_archive, loc, nara, nasa, openverse, europeana), so the
+          // beat lands in the right bucket without translating anything.
+          recordClipAdopt(
+            dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clipPath,
+            candidate.source, candidate.title, dedup.segmentGeoLock,
+            candidate.archivePick?.asset?.id
+          );
           if (candidate.source !== "archive") winningExternalCandidate = candidate;
           // Register embedding similarity so AssetDirector can use it in ranking
           if (candidate.embeddingSimilarity != null) {
