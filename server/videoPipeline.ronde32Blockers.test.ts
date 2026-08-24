@@ -154,21 +154,44 @@ describe("RONDE 32 B1 — a scene with real survivors is never written off as a 
     const survivorLookups = s.match(/const lastResortSurvivors = await usableSurvivorClips\(/g) ?? [];
     expect(survivorLookups.length).toBe(2);
 
-    // The colour-card counter and the "fallback" adopt record must both hang off the same
-    // "nothing to reuse" condition — not off rescueClips alone, which FIX A can legitimately
-    // leave empty for a scene full of good footage.
+    // The "fallback" adopt record must hang off the "nothing to reuse" condition — not off
+    // rescueClips alone, which FIX A can legitimately leave empty for a scene full of good
+    // footage. That is the B1 property and it is unchanged.
     expect(s).not.toContain("const hadRescueClips = rescueClips.length > 0;");
-    expect(s).toContain("if (!reusableLastClip) visualDedup.sceneRescueColorFallbackCount++;");
-    expect(s).toMatch(/if \(!reusableLastClip\) \{\s*\n\s*recordClipAdopt\(visualDedup\.clipAdoptAudit/);
+    // RONDE 48 (C1): Stage4's branch is still keyed on the same reuse chain — `lastClip` is
+    // seeded FROM reusableLastClip — but the colour-card counter no longer hangs off it. It
+    // moved into the failure path of the guaranteed-clip call, because a scene that gets real
+    // footage from that call is not a colour rescue. The counter itself is asserted in
+    // videoPipeline.ronde48StageFourCounter.test.ts; what B1 guards here is the branch key.
+    expect(s).toContain("let lastClip = reusableLastClip;");
+    expect(s).toMatch(/if \(!lastClip\) \{[\s\S]{0,600}?recordClipAdopt\(visualDedup\.clipAdoptAudit/);
   });
 
   it("the P5A colour card only runs when there is genuinely nothing to reuse", () => {
     const s = src();
-    // generateColorFallback must now sit inside the else of the reuse check, and the counter
-    // with it — a scene that still has footage no longer increments the colour-rescue metric.
-    expect(s).toMatch(
-      /if \(reusableLastClip\) \{[\s\S]{0,600}?composeLastResortSceneFromClip\([\s\S]{0,400}?\} else \{[\s\S]{0,900}?visualDedup\.sceneRescueColorFallbackCount\+\+;\s*\n\s*result = await generateColorFallback\(/
-    );
+    // Ordering inside the P5A rescue block, asserted by position rather than by a char window —
+    // RONDE 34 (point 7) inserted a parity attempt here (generate a guaranteed clip and mux it
+    // like Stage4 does) and the block will keep growing. The invariant is the ORDER: reuse a
+    // real clip first, then try to produce one, and only then write the scene off as a card.
+    const p5 = s.indexOf("`P5A composeSceneVideo s${scene.index}`");
+    expect(p5).toBeGreaterThan(-1);
+    const at = (needle: string) => {
+      const i = s.indexOf(needle, p5);
+      expect(i).toBeGreaterThan(-1);
+      return i;
+    };
+    const reuse = at("const reusableLastClip = rescueClips[0] ?? lastResortSurvivors[0];");
+    const reuseBranch = at("if (reusableLastClip) {");
+    const parity = at("parityClip = await generateGuaranteedBeatClip(");
+    const counter = at("visualDedup.sceneRescueColorFallbackCount++;");
+    const card = at("result = await generateColorFallback(");
+
+    expect(reuse).toBeLessThan(reuseBranch);
+    expect(reuseBranch).toBeLessThan(parity);
+    expect(parity).toBeLessThan(counter);
+    expect(counter).toBeLessThan(card);
+    // The counter still fires only alongside the card, never for a scene that got real footage.
+    expect(card - counter).toBeLessThan(200);
   });
 });
 

@@ -603,7 +603,19 @@ const PROBE_MEMO_MAX_ENTRIES = 512;
 function probeMemoKey(filePath: string): string | null {
   try {
     const st = fs.statSync(filePath);
-    return `${filePath}:${st.size}:${st.mtimeMs}`;
+    // RONDE 34: close the "same path, same size, same mtime, different bytes" collision the
+    // Ronde-33 note called out.
+    //
+    // dev + ino identify the file itself rather than the name it is reachable under. That alone
+    // is NOT enough: a filesystem is free to hand a just-freed inode straight back, and the
+    // regression test for this proved it does exactly that here — unlink + recreate returned the
+    // same inode. ctimeMs is the discriminator that holds. It is stamped when the inode's
+    // metadata last changed, userspace cannot set it (utimes moves atime/mtime and bumps ctime
+    // as a side effect), so a recreated or rewritten file always carries a newer one.
+    //
+    // All five values come out of the stat call that was already being made, so the memo still
+    // costs nothing beyond it.
+    return `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}:${filePath}`;
   } catch {
     return null;
   }
@@ -6268,6 +6280,13 @@ function normalizeImageSourceUrl(url: string): string {
 // and fetchSerpAPIImages below.
 const MAX_IMAGE_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 
+/**
+ * RONDE 34 (point 3): hard ceiling on how many Commons results one rescue-aware search may scan.
+ * Bounds both the search request and the per-title imageinfo loop, so an exclusion set can never
+ * turn candidate exhaustion into runaway fetching.
+ */
+const WIKIMEDIA_MAX_CANDIDATE_SCAN = 25;
+
 export async function fetchWikimediaImages(
   query: string,
   duration: number,
@@ -6341,7 +6360,13 @@ export async function fetchWikimediaImages(
     }
 
     // Cache miss — search Wikimedia Commons
-    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=10&format=json&origin=*`;
+    // RONDE 34 (point 3): when a rescue batch is excluding what earlier slots already took, ask
+    // Commons for a deeper result set in the SAME request rather than settling for a pool too
+    // small to satisfy the exclusions. One request either way — no pagination loop, no retry
+    // layer — and a hard ceiling (WIKIMEDIA_MAX_CANDIDATE_SCAN) bounds it. Callers that pass no
+    // exclusion set keep the original srlimit=10 and are byte-for-byte unaffected.
+    const searchLimit = excludeUrls ? WIKIMEDIA_MAX_CANDIDATE_SCAN : 10;
+    const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srnamespace=6&srlimit=${searchLimit}&format=json&origin=*`;
     const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
       searchUrl,
       5_000,
@@ -6354,7 +6379,12 @@ export async function fetchWikimediaImages(
     }
     markWikimediaSearchResult(true);
     const searchData = await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
-    const titles = searchData.query?.search?.map(r => r.title).slice(0, count * 2) || [];
+    // Without exclusions the window stays count*2, exactly as before. With them it opens up to
+    // the whole (already paid for) result set, so N slots can find N distinct files.
+    const allTitles = searchData.query?.search?.map(r => r.title) ?? [];
+    const titles = excludeUrls
+      ? allTitles.slice(0, WIKIMEDIA_MAX_CANDIDATE_SCAN)
+      : allTitles.slice(0, count * 2);
     if (!titles.length) return [];
     const poolForCache: CachedCandidate[] = [];
 
@@ -12630,6 +12660,32 @@ export interface VisualDedupState {
   /** Source image URLs already used (prevents same Google Image twice). */
   usedImageUrls: Set<string>;
   /** Curated admin archive asset IDs already used this video. */
+/*
+ * RONDE 34 (point 8) — DEDUP SCOPES, stated once so no route can drift between them.
+ *
+ * RENDER-WIDE (one VisualDedupState, lives for the whole video)
+ *   usedContentKeys ............ every clip's content identity; the last line of defence, and
+ *                                what stops the same footage appearing twice in one video.
+ *   usedCuratedAssetIds ........ curated archive asset rows already adopted.
+ *   usedCuratedStorageUrls ..... the storage files behind them, so two rows pointing at one file
+ *                                cannot both be adopted (RONDE 34 point 1 finally populates it).
+ *   usedPexelsIds / usedFunnelCandidateIds / crossVideoExcludeIds ... same idea per source.
+ *
+ * RESCUE-BATCH-WIDE (a fresh pair of Sets per compose rescue, deliberately NOT the render-wide
+ * ones — this code only runs because normal sourcing already failed, and a render-wide exclusion
+ * there starves the rescue into a colour card instead of feeding it)
+ *   rescueUsedAssetIds / rescueUsedStorageUrls ... passed to generateGuaranteedBeatClip, which
+ *                                marks each pick, so slot N+1 cannot re-take slot N's asset.
+ *   the same Set is handed to fetchWikimediaImages as excludeUrls, keyed on the Commons file URL.
+ *
+ * SCENE-WIDE (local to one compose or one scene fill)
+ *   seenKeys / seenRecover / collected ... prevent duplicates inside a single montage.
+ *
+ * RETRY-WIDE
+ *   None by design. A retry inherits the render-wide sets (so it cannot resurrect footage the
+ *   video already used) and starts a NEW rescue batch (so a failed attempt's exclusions do not
+ *   permanently narrow the next one).
+ */
   usedCuratedAssetIds: Set<number>;
   /** Storage URLs from curated archive — blocks same file twice even with different IDs. */
   usedCuratedStorageUrls: Set<string>;
@@ -12650,6 +12706,8 @@ export interface VisualDedupState {
   archiveCandidatePool: CuratedCandidatePick[] | null;
   /** Cache archive asset lists within one video (speeds per-sentence search). */
   archiveAssetsCache: Map<number, ArchiveAssetRow[]>;
+  /** RONDE 34: asset.id -> storageUrl, resolved from the caches above. "" means "looked, not found". */
+  curatedStorageUrlById: Map<number, string>;
   /** Per-video seed so archive picks differ between generations. */
   varietySeed: number;
   /** Assets used in recent same-topic videos — skipped when pool allows. */
@@ -12894,6 +12952,7 @@ export function createVisualDedupState(
     videoLength: "15-20",
     motionGraphicsUsed: 0,
     archiveCandidatePool: null,
+    curatedStorageUrlById: new Map(),
     archiveAssetsCache: new Map(),
     varietySeed: 0,
     crossVideoExcludeIds: new Set(),
@@ -13358,6 +13417,42 @@ function isAmbiguousRocketQuery(q: string): boolean {
 
 function isPipelineFallbackClip(filePath: string): boolean {
   return /_fallback\.mp4$/i.test(path.basename(filePath));
+}
+
+/**
+ * RONDE 34 (point 1): the storage URL of the curated asset a prepared clip came from, or
+ * undefined when this render has no record of it.
+ *
+ * Every markCuratedAssetUsed call site in this file is a generic pushClip/rejectClip helper that
+ * only ever receives a clip PATH — the asset row lives inside the sourcing function that already
+ * returned. Threading the row out to all eight would mean changing the signature of every
+ * adoption callback and every sourcing function feeding them, so instead the id encoded in the
+ * filename (which curatedClipPathAssetId already reads, and which the pipeline itself wrote
+ * there) is used to look the asset up in state this render has ALREADY loaded.
+ *
+ * The URL therefore always comes from the asset row, never from the path: the path only supplies
+ * the id. When the asset is not in either cache the answer is undefined and the caller marks the
+ * id alone — exactly today's behaviour, never a guess.
+ */
+export function curatedStorageUrlForClip(clipPath: string, dedup: VisualDedupState): string | undefined {
+  const assetId = curatedClipPathAssetId(clipPath);
+  if (assetId == null) return undefined;
+  const memoed = dedup.curatedStorageUrlById.get(assetId);
+  if (memoed !== undefined) return memoed || undefined;
+  let found: string | undefined;
+  for (const pick of dedup.archiveCandidatePool ?? []) {
+    if (pick.asset.id === assetId) { found = pick.asset.storageUrl; break; }
+  }
+  if (found === undefined) {
+    outer: for (const rows of dedup.archiveAssetsCache.values()) {
+      for (const row of rows) {
+        if (row.id === assetId) { found = row.storageUrl; break outer; }
+      }
+    }
+  }
+  // Negative results are memoised as "" so a miss costs one scan per asset, not one per adopt.
+  dedup.curatedStorageUrlById.set(assetId, found ?? "");
+  return found || undefined;
 }
 
 async function probeClipMeanLuma(filePath: string, atSec: number): Promise<number | null> {
@@ -17610,7 +17705,7 @@ async function rescueFastShortComposeClips(
     const key = clipContentKey(clipPath);
     if (collected.some((c) => clipContentKey(c) === key)) return false;
     collected.push(clipPath);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     dedup.usedContentKeys.add(key);
     return true;
   };
@@ -21370,7 +21465,7 @@ export async function adoptArchiveBeatClip(
     if (!clipPath || isPipelineFallbackClip(clipPath)) return;
     await withVisualDedupLock(dedup, async () => {
       dedup.usedContentKeys.add(clipContentKey(clipPath));
-      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     });
   };
   const tryClip = async (
@@ -23262,7 +23357,7 @@ async function backfillComposeMontageIfShort(
       beatIndex ??
       pickVoiceBackfillBeatIndex(beatInputs, outDur, composeClipBeatIndices, composeBeatDurations, xfade);
     composeClipBeatIndices.push(bi);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
     return true;
   };
@@ -23848,7 +23943,7 @@ async function fetchArchiveSentenceMontage(
       clips.push(clipPath);
       beatDurations.push(actualHold);
       clipBeatIndices.push(beatIndex);
-      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
       if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
         dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
       }
@@ -24051,7 +24146,7 @@ async function refillSceneStrictVoiceMatch(
       clips.push(clipPath);
       beatDurations.push(actualHold);
       clipBeatIndices.push(beatIndex);
-      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+      markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
       return true;
     });
   };
@@ -24379,7 +24474,7 @@ async function ensureArchiveMontageVoiceCoverage(
     // backfillArchiveMontageFromPool always supplies a real beatIndex in practice; this fallback
     // only guards the declared-optional type contract, never the actual runtime call pattern.
     clipBeatIndices.push(beatIndex ?? 0);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
     return true;
   };
@@ -24711,7 +24806,7 @@ async function fetchSceneVisualsInner(
     dedup.usedContentKeys.add(key);
     clips.push(clipPath);
     beatDurations.push(actualHold);
-    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+    markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     if (archiveOnly) archiveBeatFilled.add(beatIndex);
     if (
       clipPath && !isPipelineFallbackClip(clipPath) && !isStillPhotoClip(clipPath) &&
@@ -25507,7 +25602,7 @@ async function fetchSceneVisualsInner(
     if (archiveOnly) {
       if (!(await montageClipPassesComposeGate(extra, scene.index, clips.length))) {
         dedup.usedContentKeys.add(clipContentKey(extra));
-        markCuratedAssetUsed(extra, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls);
+        markCuratedAssetUsed(extra, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(extra, dedup));
         backfillAttempts++;
         continue;
       }
@@ -26328,8 +26423,18 @@ export function uncoveredBeatIndicesForRescue(
  * one of our own fallback cards, and actually decode. Nothing is copied, renamed or re-encoded;
  * this only reads.
  */
-export async function usableSurvivorClips(clips: readonly string[]): Promise<string[]> {
+export async function usableSurvivorClips(
+  clips: readonly string[],
+  /**
+   * RONDE 34: stop after this many usable clips. The last-resort path only ever reads [0], so
+   * validating the whole list there spent one ffprobe per remaining survivor on a code path that
+   * is already handling a failure. The predicate below is unchanged — this only decides how far
+   * the scan runs, never what counts as usable.
+   */
+  limit = Number.POSITIVE_INFINITY
+): Promise<string[]> {
   const usable: string[] = [];
+  if (limit <= 0) return usable;
   for (const p of clips) {
     if (!p) continue;
     try {
@@ -26340,6 +26445,7 @@ export async function usableSurvivorClips(clips: readonly string[]): Promise<str
     if (isPipelineFallbackClip(p)) continue;
     if (!(await isValidVideoFile(p))) continue;
     usable.push(p);
+    if (usable.length >= limit) break;
   }
   return usable;
 }
@@ -26355,9 +26461,20 @@ export async function composeLastResortSceneFromClip(
   sceneDurationSec: number,
   clipPath: string,
   audioPath: string,
-  workDir: string
+  workDir: string,
+  /**
+   * RONDE 34: which compose phase this last resort stands in for. Previously the helper silently
+   * assumed "full" by writing scene_N_lastresort.mp4 regardless of what the failing compose had
+   * been producing, so an assembly-phase failure would have published a file the assembly stage
+   * does not look for. Both current callers are full-phase, which is why nothing broke — the
+   * assumption is now stated instead of hidden.
+   */
+  phase: ComposePhase = "full"
 ): Promise<string> {
-  const outputPath = path.join(workDir, `scene_${sceneIndex}_lastresort.mp4`);
+  const outputPath = path.join(
+    workDir,
+    phase === "assembly" ? `scene_${sceneIndex}_assembly_lastresort.mp4` : `scene_${sceneIndex}_lastresort.mp4`
+  );
   const audioValid = fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100;
   let safeAudioPath = audioPath;
   if (!audioValid) {
@@ -26388,6 +26505,37 @@ export async function composeLastResortSceneFromClip(
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: compose failed — all rescue paths exhausted`);
   }
   return outputPath;
+}
+
+/**
+ * RONDE 34 (point 2): the beat a rescue slot is standing in for, when that is actually known.
+ *
+ * The rescue loop already picks an uncovered beat to search for; recording the SLOT number as the
+ * beat index (which is what recordClipAdopt was given) put a wrong mapping into the adopt audit —
+ * the same audit uncoveredBeatIndicesForRescue now reads back. Returning null when there is no
+ * uncovered beat keeps the caller on the old slot-number behaviour rather than inventing one.
+ */
+export function rescueBeatIndexForSlot(slot: number, uncoveredBeatIndices: number[]): number | null {
+  if (uncoveredBeatIndices.length === 0) return null;
+  return uncoveredBeatIndices[slot % uncoveredBeatIndices.length] ?? null;
+}
+
+/**
+ * RONDE 34 (point 2): clipBeatIndices for the merged survivors+rescue clip array, or undefined.
+ *
+ * composeSceneVideo only trusts this array when it is index-aligned with the clip list, so it can
+ * only be produced when EVERY survivor's beat is known — a partially known list would have to
+ * invent the rest. Undefined means "pass the original through unchanged", which is what the
+ * rescue did before this round.
+ */
+export function mergedRescueClipBeatIndices(
+  survivorBeatIndices: number[] | undefined,
+  survivorCount: number,
+  rescueBeatIndices: readonly (number | null)[]
+): number[] | undefined {
+  if (!survivorBeatIndices || survivorBeatIndices.length !== survivorCount) return undefined;
+  if (rescueBeatIndices.some((bi) => bi === null)) return undefined;
+  return [...survivorBeatIndices, ...(rescueBeatIndices as number[])];
 }
 
 /**
@@ -26483,7 +26631,13 @@ export async function composeSceneVideoInner(
     workDir,
     `${outputBase}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.mp4`
   );
+  // RONDE 34 (point 4): staged clip list, published only on a successful return.
+  let pendingUsedClips: string[] = [];
   const returnComposed = (composedPath: string): string => {
+    if (usedClipsOut) {
+      usedClipsOut.length = 0;
+      usedClipsOut.push(...pendingUsedClips);
+    }
     // Only the compose output itself is published atomically; a caller that hands back some
     // other path (there is none today) is returned unchanged rather than renamed blindly.
     let published = composedPath;
@@ -27007,10 +27161,13 @@ export async function composeSceneVideoInner(
     composeOptions.composeMetaOut.montagePlan = montagePlan;
   }
   const composeClips = safeClips;
-  if (usedClipsOut) {
-    usedClipsOut.length = 0;
-    usedClipsOut.push(...uniqueClipsInOrder(safeClips));
-  }
+  // RONDE 34 (point 4): the clip list this attempt INTENDS to use. It is not published to
+  // usedClipsOut here — an attempt that fails after this line (the ffmpeg montage, the mux, a
+  // timeout) would otherwise leave its clips reported as successfully used, and the caller's
+  // last-resort/rescue bookkeeping would inherit them. returnComposed commits it, so only an
+  // attempt that actually produced an output contributes to composedUsedClips, allClipPaths and
+  // the quality report.
+  pendingUsedClips = uniqueClipsInOrder(safeClips);
   const estBeforeCompose = prepared.estSec;
   const minClipsNeeded = requiredMontageClipsForDuration(outDur);
   if (safeClips.length < minClipsNeeded) {
@@ -28972,6 +29129,8 @@ async function _runVideoPipelineInner(
                         ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
                         : [];
                     const hold = Math.max(3, scene.duration / minNeeded);
+                    // RONDE 34 (point 2): mirror of the Stage4 path — see the note there.
+                    const rescueBeatIndices: (number | null)[] = [];
                     if (missing > 0 && rescueClips.length === 0) {
                       // RONDE 32 (FIX B): batch-scoped exclusion sets shared by every slot below,
                       // so the curated archive cannot answer each slot with the same top-scoring
@@ -28993,18 +29152,24 @@ async function _runVideoPipelineInner(
                       for (let si = 0; si < missing; si++) {
                         const slotBeatText =
                           rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text;
+                        const slotBeatIndex = rescueBeatIndexForSlot(si, uncoveredBeats);
                         try {
                           const rescueClip = await generateGuaranteedBeatClip(
                             scene.index, si, hold, workDir, slotBeatText,
                             rescueUsedAssetIds, rescueUsedStorageUrls
                           );
                           rescueClips.push(rescueClip);
+                          rescueBeatIndices.push(slotBeatIndex);
                           // Audit-gap fix (same class as Round 17 + follow-up fixes): these
                           // rescue-compose-retry clips flow into composeSceneVideo's `clips`
                           // input and reach validClips via the normal path (their "_guaranteed"
                           // filename isn't caught by isPipelineFallbackClip's "_fallback" check),
                           // so they were never recorded anywhere. Additive only.
-                          recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, si, scene.text, rescueClip, "fallback");
+                          // RONDE 34 (point 2): record the beat, not the slot number.
+                          recordClipAdopt(
+                            visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
+                            scene.text, rescueClip, "fallback"
+                          );
                         } catch (guaranteedErr) {
                           // A single failure here is often transient (fork pressure, a one-off
                           // ffmpeg spawn error) rather than permanent — retry the same slot once
@@ -29020,7 +29185,11 @@ async function _runVideoPipelineInner(
                               rescueUsedAssetIds, rescueUsedStorageUrls
                             );
                             rescueClips.push(retryClip);
-                            recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, si, scene.text, retryClip, "fallback");
+                            rescueBeatIndices.push(slotBeatIndex);
+                            recordClipAdopt(
+                              visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
+                              scene.text, retryClip, "fallback"
+                            );
                           } catch (retryErr) {
                             // Even this can exhaust every color-fallback retry under severe fork
                             // pressure. This whole chain runs inside a Promise.all over every scene
@@ -29048,11 +29217,16 @@ async function _runVideoPipelineInner(
                         ? [...(svr!.beatDurations as number[])]
                         : survivors.map(() => hold);
                     try {
+                      // RONDE 34 (point 2): see the Stage4 mirror.
+                      const mergedBeatIndices = mergedRescueClipBeatIndices(
+                        svr?.clipBeatIndices, survivors.length, rescueBeatIndices
+                      );
                       result = await composeSceneVideo(
                         scene, [...survivors, ...rescueClips], audioPaths[i], scene.duration, workDir, scenes.length,
                         enableSubtitles, visualDedup.lastMuskStockClip,
                         [...survivorDurations, ...rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength))],
-                        usedClips, composeOpts
+                        usedClips,
+                        mergedBeatIndices ? { ...composeOpts, clipBeatIndices: mergedBeatIndices } : composeOpts
                       );
                     } catch (rescueErr) {
                       // Rescue compose also failed — use a guaranteed black-fill path so the
@@ -29067,7 +29241,7 @@ async function _runVideoPipelineInner(
                       // survivors already meet minNeeded, so this branch is reachable with real
                       // footage on disk. Only when there is genuinely nothing to reuse does the
                       // original colour-card path below run, unchanged.
-                      const lastResortSurvivors = await usableSurvivorClips(svr?.clips ?? []);
+                      const lastResortSurvivors = await usableSurvivorClips(svr?.clips ?? [], 1);
                       const reusableLastClip = rescueClips[0] ?? lastResortSurvivors[0];
                       if (reusableLastClip) {
                         result = await composeLastResortSceneFromClip(
@@ -29075,17 +29249,67 @@ async function _runVideoPipelineInner(
                           scene.duration,
                           reusableLastClip,
                           audioPaths[i],
-                          workDir
+                          workDir,
+                          composeOpts.phase ?? "full"
                         );
                         usedClips.push(reusableLastClip);
                       } else {
-                        // Problem 10 (production render finding): this scene has now exhausted
-                        // composeSceneVideo, the rescue-compose retry, AND every per-slot
-                        // guaranteed-clip attempt — the whole scene is about to become one static
-                        // color card. Counted so the final export validation can fail the render
-                        // explicitly instead of silently shipping it as "successful".
-                        visualDedup.sceneRescueColorFallbackCount++;
-                        result = await generateColorFallback(scene.index, scene.duration, workDir);
+                        // RONDE 34 (point 7): fallback parity with Stage4.
+                        //
+                        // With nothing to reuse, Stage4 generates a guaranteed beat clip — which
+                        // still runs the topical archive + Wikimedia ladder and often returns REAL
+                        // footage — and muxes it with the voiceover. P5A dropped straight to a
+                        // silent colour card. Nothing in either comment or in the call contracts
+                        // justifies the difference: the Stage4 last-resort predates it and P5A
+                        // simply never gained it. Two things followed from that. The scene lost
+                        // its last chance at real footage, and it lost its audio track, while
+                        // every other scene output carries one.
+                        //
+                        // The colour card is kept as the final answer for when even that fails,
+                        // and the counter still fires only then — a scene that ends up with a
+                        // real clip is not a colour rescue.
+                        let parityClip: string | null = null;
+                        try {
+                          parityClip = await generateGuaranteedBeatClip(
+                            scene.index, 9999, Math.max(3, scene.duration), workDir, scene.text
+                          );
+                        } catch (guaranteedErr) {
+                          console.warn(
+                            `[Compose] Scene ${scene.index}: last-resort guaranteed clip failed:`,
+                            (guaranteedErr as Error).message?.slice(0, 120)
+                          );
+                        }
+                        if (parityClip) {
+                          recordClipAdopt(
+                            visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, parityClip, "fallback"
+                          );
+                        }
+                        let parityResult: string | null = null;
+                        if (parityClip) {
+                          try {
+                            parityResult = await composeLastResortSceneFromClip(
+                              scene.index, scene.duration, parityClip, audioPaths[i], workDir,
+                              composeOpts.phase ?? "full"
+                            );
+                            usedClips.push(parityClip);
+                          } catch (lastResortErr) {
+                            console.warn(
+                              `[Compose] Scene ${scene.index}: last-resort compose failed:`,
+                              (lastResortErr as Error).message?.slice(0, 120)
+                            );
+                          }
+                        }
+                        if (parityResult) {
+                          result = parityResult;
+                        } else {
+                          // Problem 10 (production render finding): this scene has now exhausted
+                          // composeSceneVideo, the rescue-compose retry, AND every per-slot
+                          // guaranteed-clip attempt — the whole scene is about to become one static
+                          // color card. Counted so the final export validation can fail the render
+                          // explicitly instead of silently shipping it as "successful".
+                          visualDedup.sceneRescueColorFallbackCount++;
+                          result = await generateColorFallback(scene.index, scene.duration, workDir);
+                        }
                       }
                     }
                     }
@@ -29752,6 +29976,9 @@ async function _runVideoPipelineInner(
                       ? await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup)
                       : [];
                   const hold = Math.max(3, scene.duration / minNeeded);
+                  // RONDE 34 (point 2): the beat each rescue slot is standing in for, kept so the
+                  // merged clip list can carry a real clipBeatIndices array into compose.
+                  const rescueBeatIndices: (number | null)[] = [];
                   if (missing > 0 && rescueClips.length === 0) {
                     // RONDE 32 (FIX B): one exclusion set for the whole rescue batch, so slot 1
                     // cannot re-pick what slot 0 just took. Deliberately batch-scoped rather
@@ -29773,6 +30000,8 @@ async function _runVideoPipelineInner(
                       }
                     );
                     for (let si = 0; si < missing; si++) {
+                      const slotBeatIndex = rescueBeatIndexForSlot(si, uncoveredBeats);
+                      rescueBeatIndices.push(slotBeatIndex);
                       const rescueClip = await generateGuaranteedBeatClip(
                         scene.index,
                         si,
@@ -29786,7 +30015,12 @@ async function _runVideoPipelineInner(
                       // Audit-gap fix (same class as Round 17 + follow-up fixes, Path B mirror
                       // of the Path A fix above): these Stage4 rescue-compose-retry clips reach
                       // validClips via composeSceneVideo's normal path with no bookkeeping.
-                      recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, si, scene.text, rescueClip, "fallback");
+                      // RONDE 34 (point 2): record the beat this slot was fetched FOR, not the
+                      // slot number — the audit is read back as a clip->beat mapping.
+                      recordClipAdopt(
+                        visualDedup.clipAdoptAudit, scene.index, slotBeatIndex ?? si,
+                        scene.text, rescueClip, "fallback"
+                      );
                     }
                   }
                   composeMeta.montageDurations = [];
@@ -29802,12 +30036,19 @@ async function _runVideoPipelineInner(
                     sceneVisualResults[i]?.beatDurations?.length === survivors.length
                       ? [...(sceneVisualResults[i]!.beatDurations as number[])]
                       : survivors.map(() => hold);
+                  // RONDE 34 (point 2): survivors keep the beat they were adopted for and the
+                  // rescue clips carry the beat they were fetched for, so the merged array is a
+                  // real mapping. It is only built when every survivor's beat is known —
+                  // otherwise the original is passed through untouched rather than half-invented.
+                  const mergedBeatIndices = mergedRescueClipBeatIndices(
+                    sceneVisualResults[i]?.clipBeatIndices, survivors.length, rescueBeatIndices
+                  );
                   return composeSceneVideo(
                     scene, [...survivors, ...rescueClips], audioPaths[i], scene.duration, workDir, scenes.length,
                     enableSubtitles, visualDedup.lastMuskStockClip,
                     [...survivorDurations, ...rescueClips.map(() => archiveVisualBeatSecForVideo(videoLength))],
                     usedClips,
-                    composeOpts
+                    mergedBeatIndices ? { ...composeOpts, clipBeatIndices: mergedBeatIndices } : composeOpts
                   );
                 },
                 renderBudgetComposeMs,
@@ -29829,15 +30070,32 @@ async function _runVideoPipelineInner(
               // reaching for a freshly generated fallback card here would destroy real clips
               // that are sitting on disk. Rescue clips keep first claim (unchanged precedence);
               // a survivor is consulted before anything new is generated.
-              const lastResortSurvivors = await usableSurvivorClips(sceneVisualResults[i]?.clips ?? []);
+              const lastResortSurvivors = await usableSurvivorClips(sceneVisualResults[i]?.clips ?? [], 1);
               const reusableLastClip = rescueClips[0] ?? lastResortSurvivors[0];
-              if (!reusableLastClip) visualDedup.sceneRescueColorFallbackCount++;
-              const lastClip =
-                reusableLastClip ?? (await generateGuaranteedBeatClip(scene.index, 9999, Math.max(3, scene.duration), workDir));
-              // Audit-gap fix: only record here when this call actually generated a NEW clip —
-              // a reused rescue clip or survivor was already recorded where it was adopted, and
-              // recording it again would double-count.
-              if (!reusableLastClip) {
+              // RONDE 48 (C1): count the OUTCOME, not the intent.
+              //
+              // This used to increment the moment there was nothing to reuse — before
+              // generateGuaranteedBeatClip had even run. That call escalates through the topical
+              // archive and Wikimedia before it ever reaches a placeholder tier, so it usually
+              // comes back with real footage, which is then muxed with the voice-over. The scene
+              // was fine and the render was rejected anyway: assertVisualCoverageExportGate
+              // throws on ANY non-zero count.
+              //
+              // P5A (RONDE 34 point 7) already counts this way — only when nothing usable could
+              // be produced at all. Stage4 now matches it. The two paths still differ in what
+              // follows: P5A degrades to a colour card, Stage4 lets the failure propagate, so
+              // this increment records a render that is already lost rather than causing one.
+              let lastClip = reusableLastClip;
+              if (!lastClip) {
+                try {
+                  lastClip = await generateGuaranteedBeatClip(scene.index, 9999, Math.max(3, scene.duration), workDir);
+                } catch (guaranteedErr) {
+                  visualDedup.sceneRescueColorFallbackCount++;
+                  throw guaranteedErr;
+                }
+                // Audit-gap fix: only record here when this call actually generated a NEW clip —
+                // a reused rescue clip or survivor was already recorded where it was adopted, and
+                // recording it again would double-count.
                 recordClipAdopt(visualDedup.clipAdoptAudit, scene.index, 9999, scene.text, lastClip, "fallback");
               }
               result = await composeLastResortSceneFromClip(
@@ -29845,7 +30103,8 @@ async function _runVideoPipelineInner(
                 scene.duration,
                 lastClip,
                 audioPaths[i],
-                workDir
+                workDir,
+                composeOpts.phase ?? "full"
               );
               usedClips.push(lastClip);
             }
