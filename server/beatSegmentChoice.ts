@@ -75,6 +75,61 @@ export function pickBeatSegmentStartSec(
   return Math.max(0, Math.min(start, fullSlack));
 }
 
+/** Opening of a long video assumed to be intro/branding before the content starts. */
+const LONG_HEAD_FRACTION = 0.1;
+const LONG_HEAD_MIN_SEC = 4;
+const LONG_HEAD_MAX_SEC = 90;
+/** Tail assumed to be outro, credits or an end card. */
+const LONG_TAIL_FRACTION = 0.05;
+const LONG_TAIL_MAX_SEC = 60;
+
+/** Stable, well-spread [0,1) from a string. FNV-1a — no dependency, no collisions that matter. */
+function seedFraction(seed: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 0) % 100_000) / 100_000;
+}
+
+/**
+ * RONDE 60 — where to start in a long video nothing has told us anything about.
+ *
+ * This is the LAST resort on the YouTube path, used only when the transcript could not locate
+ * the subject. It cannot know where the right moment is; what it can know is where the right
+ * moment is NOT. In render 531 every YouTube clip started at second 8 or second 12, whether the
+ * video ran four minutes or forty — which on YouTube is reliably the channel leader, the host
+ * introducing themselves, and the subscribe card.
+ *
+ * So: skip the opening, skip the outro, and place the cut somewhere in the body, chosen from a
+ * hash of the video id so two different videos do not both land on the same fraction and a
+ * re-run of the same render is reproducible.
+ */
+export function pickLongVideoStartSec(
+  sourceDurationSec: number,
+  takeSec: number,
+  seed: string
+): number {
+  if (!beatSegmentChoiceEnabled()) return 0;
+  if (!Number.isFinite(sourceDurationSec) || !Number.isFinite(takeSec)) return 0;
+  if (sourceDurationSec <= 0 || takeSec <= 0) return 0;
+
+  const fullSlack = sourceDurationSec - takeSec;
+  if (fullSlack < MIN_SLACK_SEC) return 0;
+
+  const head = Math.min(
+    LONG_HEAD_MAX_SEC,
+    Math.max(LONG_HEAD_MIN_SEC, sourceDurationSec * LONG_HEAD_FRACTION)
+  );
+  const tail = Math.min(LONG_TAIL_MAX_SEC, sourceDurationSec * LONG_TAIL_FRACTION);
+  // On a video too short to carry both, fall back to the plain leader skip rather than to zero.
+  const span = sourceDurationSec - takeSec - head - tail;
+  if (span < MIN_SLACK_SEC) return pickBeatSegmentStartSec(sourceDurationSec, takeSec, 0);
+
+  return Math.max(0, Math.min(head + seedFraction(seed) * span, fullSlack));
+}
+
 /**
  * The fractions of a trimmed clip to sample when judging what it shows.
  *

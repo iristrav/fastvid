@@ -316,7 +316,8 @@ import {
   MAX_JUDGEMENTS_PER_BEAT,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
-import { pickBeatSegmentStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
+import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
+import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
 import {
@@ -2156,6 +2157,7 @@ async function fetchBeatYoutubeOnly(
           beatText: beat.text,
           videoTitle,
           fastMode: dedup.perf.fastStockMode,
+          imageGate: dedup.beatImageGate,
         }
       ),
       youtubeBeatSearchBudgetMs(),
@@ -2991,6 +2993,7 @@ async function tryBeatRealYouTubeFootage(
                 beatText: beat.text,
                 videoTitle: adoptOpts.videoTitle,
                 fastMode: dedup.perf.fastStockMode,
+                imageGate: dedup.beatImageGate,
               },
               dedup.usedContentKeys,
               dedup.sourcingCache
@@ -10771,6 +10774,54 @@ async function fetchRapidApiYoutubeMeta(
   return meta;
 }
 
+/**
+ * RONDE 60 — look at the YouTube clip before returning it.
+ *
+ * The beat-image gate built in RONDE 58 hangs off pickBestFunnelCandidate, and YouTube is not a
+ * FunnelCandidateSource: youtube_cc clips reach a beat through fetchYouTubeCCClips -> adoptClip,
+ * a route the gate never sees. So the source with by far the longest videos — the one whose
+ * start offset is the least certain — was the only one never checked against what is actually
+ * on screen.
+ *
+ * Fails open exactly like the funnel's copy: no gate state, no narration, no extractable frame,
+ * a model outage or a spent budget all return true and adopt the clip.
+ */
+async function youtubeClipPassesImageGate(
+  clipPath: string,
+  workDir: string,
+  sceneIndex: number,
+  videoId: string,
+  scriptGuided?: ScriptGuidedBeatContext
+): Promise<boolean> {
+  const gate = scriptGuided?.imageGate;
+  if (!gate || !beatImageRelevanceGateEnabled() || !scriptGuided?.beatText?.trim()) return true;
+
+  const framePaths: string[] = [];
+  for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
+    const framePath = path.join(workDir, `ytgate_s${sceneIndex}_${videoId.slice(0, 12)}_${f}.jpg`);
+    const got = await extractFrameAtFraction(
+      clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
+    ).catch(() => false);
+    if (got) framePaths.push(framePath);
+  }
+  const judgement = await judgeBeatImage({
+    framePaths,
+    beatText: scriptGuided.beatText,
+    videoTitle: scriptGuided.videoTitle,
+    contentKey: clipContentKey(clipPath),
+    state: gate,
+  });
+  for (const p of framePaths) {
+    try { fs.unlinkSync(p); } catch { /* ignore */ }
+  }
+
+  console.log(
+    `[BeatImageGate] youtube s${sceneIndex} ${videoId.slice(0, 12)} ${judgement.verdict} ` +
+      `depicts="${judgement.depicts}" reason="${judgement.reason}"`
+  );
+  return judgement.verdict !== "does_not_fit";
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -11148,6 +11199,12 @@ type ScriptGuidedBeatContext = {
   beatText: string;
   videoTitle?: string;
   fastMode?: boolean;
+  /**
+   * RONDE 60: the render's beat-image judgement budget, so a downloaded YouTube clip can be
+   * looked at before it is returned. Optional — a call site without it simply is not gated,
+   * which is the same behaviour every other failure mode of the gate produces.
+   */
+  imageGate?: BeatImageGateState;
 };
 
 type YoutubeSearchRow = {
@@ -11429,7 +11486,16 @@ export async function fetchYouTubeCCClips(
           }
 
           try {
-            let clipStart = 15;
+            const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
+            // RONDE 60: the old flat 15 was applied to every candidate past the guided-attempt
+            // limit — second 15 of a forty-minute documentary is its intro. When this render has
+            // already read the video's length (cached, no fetch), place the cut in the body
+            // instead. peek never blocks, so the attempt limit still bounds the time spent.
+            const peeked = peekYoutubeVideoContext(videoId);
+            let clipStart =
+              peeked && peeked.durationSec > 0
+                ? pickLongVideoStartSec(peeked.durationSec, clipDur, videoId)
+                : 15;
             if (
               scriptGuidedClipsEnabled() &&
               scriptGuided?.beatText?.trim() &&
@@ -11450,6 +11516,7 @@ export async function fetchYouTubeCCClips(
                   videoTitle: scriptGuided.videoTitle,
                   deadlineMs: Math.min(ytDeadline, guidedDeadline),
                   fastMode: scriptGuided.fastMode,
+                  clipDurationSec: clipDur,
                 }
               );
               if (plan.skip) {
@@ -11460,7 +11527,9 @@ export async function fetchYouTubeCCClips(
               }
               clipStart = Math.max(0, Math.round(plan.startSec * 10) / 10);
               console.log(
-                `[ScriptGuided] Scene ${sceneIndex}: ${plan.method} @${clipStart}s "${title.slice(0, 55)}"`
+                `[ScriptGuided] Scene ${sceneIndex}: ${plan.method} @${clipStart}s ` +
+                  `src=${plan.sourceDurationSec ? `${Math.round(plan.sourceDurationSec)}s` : "unknown"} ` +
+                  `"${title.slice(0, 55)}"`
               );
             }
 
@@ -11475,8 +11544,6 @@ export async function fetchYouTubeCCClips(
             putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
               providerText: { title, description: row.desc },
             });
-            const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
-
             const ok = await downloadYouTubeCCClip(
               videoId,
               clipDur,
@@ -11489,6 +11556,12 @@ export async function fetchYouTubeCCClips(
               sourcingCache
             );
             providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
+            if (ok && !(await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided))) {
+              // Rejected on what it shows, not on what it is called. The file is removed so a
+              // later beat cannot pick it up off disk, and the loop moves to the next candidate.
+              try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+              continue;
+            }
             if (ok) {
               results.push(outPath);
               downloadedIds.add(videoId);
@@ -18735,7 +18808,7 @@ export async function fetchHistoricalBeatVideo(
         if (!youtubeReady) return [];
         return fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
-          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode },
+          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate },
           dedup.usedContentKeys,
           dedup.sourcingCache
         );
@@ -19070,6 +19143,7 @@ async function researchBeatClipUnified(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
+              imageGate: dedup.beatImageGate,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -19098,6 +19172,7 @@ async function researchBeatClipUnified(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
+              imageGate: dedup.beatImageGate,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -19933,6 +20008,7 @@ async function fetchBeatClip(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
+              imageGate: dedup.beatImageGate,
             }),
         },
         {
@@ -19987,6 +20063,7 @@ async function fetchBeatClip(
             beatText: beat.text,
             videoTitle,
             fastMode: perf.fastStockMode,
+            imageGate: dedup.beatImageGate,
           }),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
@@ -20009,6 +20086,7 @@ async function fetchBeatClip(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
+              imageGate: dedup.beatImageGate,
             }),
         },
       ],
@@ -20094,6 +20172,7 @@ async function fetchBeatClip(
               beatText: beat.text,
               videoTitle,
               fastMode: perf.fastStockMode,
+              imageGate: dedup.beatImageGate,
             }),
         },
       ],
