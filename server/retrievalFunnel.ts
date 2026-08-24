@@ -18,10 +18,17 @@
  */
 
 import {
+  buildTopicMatcher,
+  assessCandidateTopicality,
+  topicalRankingBonus,
+  type TopicMatcher,
+} from "./candidateTopicalRelevance";
+import {
   listCuratedArchiveCandidates,
   buildBeatMatchTags,
   applyCrossVideoVarietyDegrade,
   stubPowerWordFromSceneText,
+  extractTopicAnchorTags,
   type CuratedCandidatePick,
 } from "./curatedMediaSourcing";
 import {
@@ -534,10 +541,18 @@ export function mergeCandidates(
   internetWeight: number,
   max: number,
   /** RONDE 29: 0–1 shortfall against the render's moving-footage target. 0 = neutral. */
-  movingDeficit = 0
+  movingDeficit = 0,
+  /**
+   * RONDE 54: what this video is about, so an external candidate can be judged on the words its
+   * own provider attached to it. Optional — omitted, every candidate is treated as unjudgeable
+   * and the ranking is exactly what it was.
+   */
+  topicMatcher?: TopicMatcher
 ): FunnelCandidate[] {
   const seen = new Set<string>();
   const merged: FunnelCandidate[] = [];
+  /** RONDE 54: external candidates whose metadata argues against them. */
+  const offTopic: Array<{ candidate: PoolCandidate; reason: string }> = [];
 
   // Archive candidates
   for (let i = 0; i < archivePicks.length; i++) {
@@ -585,9 +600,21 @@ export function mergeCandidates(
     // (see videoPipeline.ts's MAX_FUNNEL_CANDIDATES_TO_SCORE cap). This bonus only affects which
     // candidates make that shortlist — the actual winner is still decided by
     // pickBestFunnelCandidate() on real VisionGate scores, unchanged.
+    // RONDE 54: the candidate's own metadata finally gets a vote. Until now every external
+    // candidate scored identically here regardless of subject, so "white-lives-matter-montana-
+    // sticker" and "Signed Photograph of Adolf Hitler" arrived at the CLIP tie-break level —
+    // and CLIP scored the sticker HIGHER (0.2226 vs 0.2116 in render 531).
+    const topical = topicMatcher ? assessCandidateTopicality(c, topicMatcher) : null;
+    if (topical?.verdict === "off_topic") {
+      offTopic.push({ candidate: c, reason: topical.reason });
+      continue;
+    }
     const rankingScore =
       internetWeight *
-      (0.7 + (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) + movingFootageBonus(c.mediaType, movingDeficit));
+      (0.7 +
+        (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) +
+        movingFootageBonus(c.mediaType, movingDeficit) +
+        topicalRankingBonus(topical?.verdict ?? "neutral"));
     merged.push({
       id,
       source: c.source as FunnelCandidateSource,
@@ -600,6 +627,36 @@ export function mergeCandidates(
       rankingScore,
       poolCandidate: c,
     });
+  }
+
+  // RONDE 54: never starve a scene. A beat with no candidates becomes a colour card, which is
+  // worse than a weak clip — so when the topical filter would leave nothing, the rejects come
+  // back and the ranking penalty decides the order instead. Same principle as the archive's
+  // exhaustion rule.
+  if (merged.length === 0 && offTopic.length > 0) {
+    console.warn(
+      `[Funnel] every external candidate read as off-topic (${offTopic.length}) — keeping them ` +
+        `rather than leaving the scene empty: ${offTopic.slice(0, 3).map((o) => o.reason).join(" | ")}`
+    );
+    for (const { candidate: c } of offTopic) {
+      merged.push({
+        id: `${c.source}:${c.assetId}`,
+        source: c.source as FunnelCandidateSource,
+        title: c.title,
+        thumbnailUrl: c.thumbnailUrl,
+        mediaType: c.mediaType,
+        embeddingSimilarity: null,
+        archiveKeywordScore: null,
+        clipSimilarity: null,
+        rankingScore: internetWeight * 0.2,
+        poolCandidate: c,
+      });
+    }
+  } else if (offTopic.length > 0) {
+    console.log(
+      `[Funnel] dropped ${offTopic.length} off-topic candidate(s): ` +
+        offTopic.slice(0, 4).map((o) => `"${(o.candidate.title || o.candidate.assetId).slice(0, 40)}" (${o.reason})`).join(", ")
+    );
   }
 
   merged.sort((a, b) => b.rankingScore - a.rankingScore);
@@ -723,7 +780,9 @@ export async function buildRetrievalFunnel(
   const merged = mergeCandidates(
     archivePicks, allEmbSims, externalCandidates,
     archiveWeight, internetWeight, maxTotal,
-    req.movingShareDeficit ?? 0
+    req.movingShareDeficit ?? 0,
+    // RONDE 54: built from what the pipeline already knows about this video.
+    buildTopicMatcher(req.videoTitle, extractTopicAnchorTags(req.videoTitle, req.sceneText), req.sceneText)
   );
 
   const latencyMs = Date.now() - t0;
