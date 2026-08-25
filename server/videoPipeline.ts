@@ -391,7 +391,7 @@ import {
 } from "./voiceTtsAlignment";
 import { buildEmergencyGeoStockQueries, buildDocumentaryShotQueries, enforceQualityExportGate } from "./pipelineSelfHeal";
 import { ensureFinalVideoExportReady, plainConcatSceneVideos } from "./finalVideoGate";
-import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
+import { extractTitleGeoPlaceTags, ALL_GEO_SLUGS } from "./worldGeoSlugs";
 import { fetchWikimediaTitlesForVideoGeo, wikimediaGeosearchEnabled } from "./wikimediaGeoSearch";
 import { buildEuropeanaBeatQueries, titleSuggestsEuropeana } from "./europeanaGeo";
 import {
@@ -13167,6 +13167,116 @@ const PERSON_NAME_SKIP_PHRASES = new Set([
   "decoding the", "rumors about", "facts fiction", "exclusive interview",
 ]);
 
+/**
+ * RONDE 72 — a capitalised run is not a person just because it is capitalised.
+ *
+ * extractPersonNamesFromText matched /[A-Z][a-z]+(\s+[A-Z][a-z]+)+/ and called every hit a
+ * person. Measured on the real function:
+ *
+ *     "The construction of the Eiffel Tower."       -> ["Eiffel Tower"]
+ *     "British Spitfire fighters scramble…"         -> ["British Spitfire"]
+ *
+ * A building and an aircraft, handed to the primaryPerson lock, to resolveScenePersons and to
+ * the query builders as literal names — and, since RONDE 71's ranking work, worth +12 in
+ * entityMatchTierScore when a candidate's provider text happens to echo them.
+ *
+ * These are the head nouns that make a capitalised run a THING. A run containing any of them is
+ * never a person. Deliberately head nouns rather than full phrases: enumerating "Eiffel Tower",
+ * "Brandenburg Gate" and "Reich Chancellery" one by one never ends, while "tower", "gate" and
+ * "chancellery" cover the class.
+ */
+const NON_PERSON_ENTITY_WORDS = new Set([
+  // structures and places
+  "tower","bridge","palace","castle","cathedral","chancellery","reichstag","bunker","museum",
+  "station","hall","gate","wall","monument","memorial","square","stadium","airport","airfield",
+  "harbour","harbor","factory","plant","works","abbey","church","temple","mosque","prison",
+  "camp","fortress","citadel","barracks","headquarters","embassy","parliament","capitol",
+  "university","college","school","hospital","library","theatre","theater","hotel","tunnel",
+  "canal","dam","port","dock","quay","pier","observatory","lighthouse","garden","park",
+  // vehicles, aircraft and vessels
+  "spitfire","hurricane","messerschmitt","panzer","tiger","sherman","lancaster","mustang",
+  "junkers","heinkel","stuka","zeppelin","bomber","fighter","fighters","tank","tanks","ship",
+  "boat","submarine","u-boat","carrier","cruiser","destroyer","battleship","frigate","convoy",
+  "train","locomotive","aircraft","plane","jet","rocket","missile","truck","lorry","jeep",
+  // military and organisational
+  "army","navy","luftwaffe","wehrmacht","waffen","gestapo","corps","division","regiment",
+  "brigade","battalion","infantry","artillery","cavalry","guard","forces","troops","command",
+  "reich","empire","republic","union","federation","party","ministry","council","committee",
+  "bureau","agency","department","commission","authority","alliance","coalition","front",
+  "offensive","campaign","operation","battle","siege","invasion","uprising","revolution",
+  // generic geography
+  "city","town","village","river","mountain","mountains","island","islands","sea","ocean",
+  "lake","valley","desert","forest","coast","bay","gulf","strait","street","avenue","road",
+  "district","province","county","state","kingdom","territory","region","border","frontier",
+  // directional modifiers: they only ever qualify a place ("Eastern Poland", "Lower Saxony")
+  "eastern","western","northern","southern","central","upper","lower","greater","outer","inner",
+]);
+
+/**
+ * Verbs only a person performs. Evidence that a BARE capitalised token — "Churchill", "Hitler" —
+ * is a name rather than a place, which the two-token requirement could never see.
+ *
+ * Deliberately excludes copulas and auxiliaries. "Berlin was under bombardment" and "Dunkirk had
+ * fallen" must stay places, and "was"/"had" are true of everything.
+ */
+const PERSON_ACTION_VERBS = new Set([
+  "said","says","told","tells","wrote","writes","spoke","speaks","addressed","addresses",
+  "announced","announces","declared","declares","ordered","orders","commanded","commands",
+  "dictated","dictates","promised","promises","warned","warns","replied","replies","asked",
+  "asks","argued","argues","insisted","insists","admitted","admits","confessed","denied",
+  "believed","believes","decided","decides","refused","refuses","agreed","agrees","hoped",
+  "feared","knew","knows","thought","thinks","wanted","wants","planned","plans","intended",
+  "married","marries","divorced","died","dies","killed","kills","survived","survives","fled",
+  "flees","escaped","escapes","retreated","retreats","returned","returns","arrived","arrives",
+  "entered","enters","left","leaves","remained","remains","stayed","stays","travelled",
+  "traveled","visited","visits","met","meets","greeted","led","leads","ruled","rules",
+  "governed","governs","resigned","resigns","appointed","appoints","dismissed","signed",
+  "signs","gave","gives","took","takes","received","receives","sent","sends","summoned",
+  "celebrated","celebrates","watched","watches","listened","waited","waits","walked","walks",
+  "sat","stood","turned","looked","looks","smiled","laughed","wept","shouted","whispered",
+]);
+
+/** Lower-cased place vocabulary the pipeline already carries, for O(1) lookup. */
+const GEO_SLUG_SET = new Set(ALL_GEO_SLUGS.map((s) => s.toLowerCase()));
+
+function normaliseNameToken(token: string): string {
+  return token.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
+}
+
+/** A head noun that names a thing. Decisive on its own: "Eiffel Tower" is not a person. */
+function isThingToken(token: string): boolean {
+  return NON_PERSON_ENTITY_WORDS.has(normaliseNameToken(token));
+}
+
+/**
+ * A token that appears in the place vocabulary. NOT decisive on its own inside a full name:
+ * "washington" and "lincoln" are both places and surnames, so "George Washington" must survive.
+ * A run is a place only when EVERY token is one; a lone token is treated as a place by default.
+ */
+function isPlaceToken(token: string): boolean {
+  return GEO_SLUG_SET.has(normaliseNameToken(token));
+}
+
+/** A single capitalised token that names a thing or a place, never a person on its own. */
+function isNonPersonToken(token: string): boolean {
+  return isThingToken(token) || isPlaceToken(token);
+}
+
+/**
+ * Does this sentence give evidence that `token` is a person?
+ *
+ * Two signals, both from text the beat already carries: the token performs an action only a
+ * person performs, or it holds a possessive ("Hitler's testament"). Nothing else — a bare
+ * capitalised word with no such evidence stays what it was, a candidate the pipeline does not
+ * claim to have identified.
+ */
+function sentenceSupportsPerson(sentence: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`\\b${escaped}'s\\b`, "i").test(sentence)) return true;
+  const after = new RegExp(`\\b${escaped}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
+  return Boolean(after?.[1] && PERSON_ACTION_VERBS.has(after[1].toLowerCase()));
+}
+
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
 export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
@@ -13195,7 +13305,38 @@ export function extractPersonNamesFromText(text: string): string[] {
       const joined = seg.join(" ");
       if (seg.length < 2 || joined.length < 5) continue;
       if (PERSON_NAME_SKIP_PHRASES.has(joined.toLowerCase())) continue;
+      // RONDE 72: a run naming a thing is not a person. One head noun is decisive — "Eiffel
+      // Tower" carries "tower", "British Spitfire" carries "spitfire".
+      if (seg.some(isThingToken)) continue;
+      // Place names are only decisive when the WHOLE run is one. "New York" is a place;
+      // "George Washington" is a person whose surname happens to also name places.
+      if (seg.every(isPlaceToken)) continue;
       found.add(joined);
+    }
+  }
+
+  // RONDE 72: a bare surname, when the sentence itself says it is a person.
+  //
+  // The two-token requirement is deliberate — a lone capitalised word is ambiguous, and
+  // extractPersonSurnameAnchor/resolvePersonFromSurnameAnchor already resolve a title's anchor
+  // against full names the script states elsewhere. But a beat that only ever says "Churchill"
+  // or "Hitler" gave the pipeline nothing at all, so the person-name lock, resolveScenePersons
+  // and the query builders all treated the beat as person-less.
+  //
+  // A single token is accepted only when it names no thing or place AND the sentence shows it
+  // acting as a person. "Berlin was under bombardment" and "Dunkirk had fallen" stay places:
+  // "was" and "had" are not person verbs, and both words are in the geo vocabulary anyway.
+  for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+    const singles = sentence.match(/\b[A-Z][a-z]{2,}\b/g) ?? [];
+    for (const token of singles) {
+      if (found.has(token)) continue;
+      // Already covered by a full name in this text ("Hitler" beside "Adolf Hitler").
+      if ([...found].some((n) => n.split(/\s+/).includes(token))) continue;
+      if (TITLE_NON_NAME_WORDS.has(token.toLowerCase())) continue;
+      if (PERSON_NAME_SKIP_PHRASES.has(token.toLowerCase())) continue;
+      if (isNonPersonToken(token)) continue;
+      if (!sentenceSupportsPerson(sentence, token)) continue;
+      found.add(token);
     }
   }
   const kylie = text.match(/\b(kylie\s+jenner)\b/i);

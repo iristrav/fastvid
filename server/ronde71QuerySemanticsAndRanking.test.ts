@@ -181,7 +181,13 @@ describe("RONDE 71 §2 — a beat that states no year does not inherit the title
   it("the Eiffel Tower is not searched as 1945", () => {
     const q = queriesForBeat("The construction of the Eiffel Tower.", TITLE).join(" | ");
     expect(q).not.toContain("1945");
-    expect(q).toContain("Eiffel Tower");
+    // RONDE 72 stopped classifying "Eiffel Tower" as a PERSON, so the query is now built by the
+    // ordinary subject path and comes out lower-cased instead of carrying the person branch's
+    // original casing. The casing was incidental — every provider query is case-folded by
+    // normalizeProviderQuery — and what this test exists to prove is that the named structure
+    // survives into the query and the title's year does not.
+    expect(q.toLowerCase()).toContain("eiffel tower");
+    expect(q.toLowerCase()).toContain("construction");
   });
 
   it("a beat that DOES state the year keeps it", () => {
