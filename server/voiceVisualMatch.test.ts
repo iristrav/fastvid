@@ -49,7 +49,12 @@ describe("voiceVisualMatch", () => {
     expect(summary.ok).toBe(true);
   });
 
-  it("flags rescue-tier beats but allows export when degraded export is on", () => {
+  /**
+   * RONDE 64: rescue_similar is real footage that arrived on the second pass, not a degradation.
+   * Counting it as one made `ok` false on every archive render — permanently false, and so
+   * permanently uninformative. The split is asserted on both sides here.
+   */
+  it("reports a rescue-sourced beat without failing the render", () => {
     const summary = buildVoiceVisualMatchSummary(
       [
         {
@@ -58,14 +63,36 @@ describe("voiceVisualMatch", () => {
           beatText: "Amsterdam grachten.",
           basename: "scene_0_rescue.mp4",
           source: "rescue_similar",
-          visionScore10: 5,
+          visionScore10: 9,
         },
       ],
       ["/tmp/scene_0_rescue.mp4"],
       []
     );
-    expect(summary.ok).toBe(false);
     expect(summary.rescueBeats).toBe(1);
-    expect(summary.warnings.some((w) => w.includes("rescue-tier"))).toBe(true);
+    expect(summary.rescueSourcedBeats).toBe(1);
+    expect(summary.degradedBeats).toBe(0);
+    expect(summary.ok).toBe(true);
+    expect(summary.warnings.some((w) => w.includes("echt beeld"))).toBe(true);
+  });
+
+  it("fails the render on a beat that genuinely has no picture of its own", () => {
+    const summary = buildVoiceVisualMatchSummary(
+      [
+        {
+          sceneIndex: 0,
+          beatIndex: 1,
+          beatText: "Amsterdam grachten.",
+          basename: "extend_s0b1_123.mp4",
+          source: "rescue_extend",
+          visionScore10: 9,
+        },
+      ],
+      ["/tmp/extend_s0b1_123.mp4"],
+      []
+    );
+    expect(summary.degradedBeats).toBe(1);
+    expect(summary.ok).toBe(false);
+    expect(summary.warnings.some((w) => w.includes("zonder eigen beeld"))).toBe(true);
   });
 });

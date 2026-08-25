@@ -8492,6 +8492,36 @@ export async function generateManusForgeClip(
 // F3-45: temporarily exported (visibility only, no logic changed) so
 // server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
 // once that temporary diagnostic script is deleted.
+/**
+ * RONDE 64: the start offset, corrected against the file that is actually on disk.
+ *
+ * `seedId` is what spreads two clips cut from the same source; `startIsExact` marks a start
+ * something located deliberately — a transcript hit — which must be honoured rather than
+ * improved on. Returns the original when the source cannot be probed.
+ */
+export async function resolveTrimStartSec(
+  sourcePath: string,
+  requestedStart: number,
+  takeSec: number,
+  seedId: string,
+  startIsExact = false
+): Promise<number> {
+  const sourceDur = await probeVideoDurationSec(sourcePath).catch(() => 0);
+  if (!Number.isFinite(sourceDur) || sourceDur <= 0) return Math.max(0, requestedStart);
+
+  // A guessed start on a source whose length is now known can be improved on: the guess was made
+  // before anything had seen the file. A located one is left alone.
+  const start = startIsExact
+    ? requestedStart
+    : pickLongVideoStartSec(sourceDur, takeSec, seedId) || requestedStart;
+
+  // And whatever it is, it has to exist. Nothing clamped this before: a blind 12-second offset
+  // on an eight-second video asked ffmpeg for a second that was not in the file, which yields an
+  // empty or single-frozen-frame clip that the size check downstream can still wave through.
+  const latest = Math.max(0, sourceDur - takeSec);
+  return Math.max(0, Math.min(start, latest));
+}
+
 export async function trimRemoteVideoToClip(
   sourcePath: string,
   outputPath: string,
@@ -10938,7 +10968,12 @@ export async function downloadYouTubeCCClip(
   sceneIndex: number,
   title?: string,
   /** RONDE 56: render-scoped cache, so 86 attempts for 14 videos become 14 lookups. */
-  sourcingCache?: SourcingCache
+  sourcingCache?: SourcingCache,
+  /**
+   * RONDE 64: true when clipStart was LOCATED (a transcript hit), false when it was guessed.
+   * A guess is re-derived once the real source length is known; a located start is honoured.
+   */
+  startIsExact = false
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
 
@@ -11069,12 +11104,27 @@ export async function downloadYouTubeCCClip(
             let rapidFileSize = -1;
             try { rapidFileSize = fs.statSync(tmpPath).size; } catch { /* leave as -1 */ }
             if (rapidFileSize >= 50_000 && rapidFileSize <= 80 * 1024 * 1024) {
+              // RONDE 64: the whole source is on disk here, so stop guessing its length.
+              //
+              // This route downloads the entire video and only then trims. Every attempt so far
+              // to learn the duration before the download — the watch page, the metadata field —
+              // was indirect, and the watch page demonstrably does not work on Railway. The file
+              // itself always does.
+              const resolvedStart = await resolveTrimStartSec(
+                tmpPath, clipStart, duration, videoId, startIsExact
+              );
+              if (Math.abs(resolvedStart - clipStart) > 0.05) {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: ${videoId} trim start ${clipStart.toFixed(1)}s ` +
+                    `→ ${resolvedStart.toFixed(1)}s (source probed)`
+                );
+              }
               if (
                 await trimRemoteVideoToClip(
                   tmpPath,
                   outPath,
                   duration,
-                  clipStart,
+                  resolvedStart,
                   `YouTube CC RapidAPI scene ${sceneIndex}`
                 )
               ) {
@@ -11631,6 +11681,7 @@ export async function fetchYouTubeCCClips(
               sourceDurationSec > 0
                 ? pickLongVideoStartSec(sourceDurationSec, clipDur, videoId)
                 : 15;
+            let startIsExact = false;
             if (
               scriptGuidedClipsEnabled() &&
               scriptGuided?.beatText?.trim() &&
@@ -11664,6 +11715,10 @@ export async function fetchYouTubeCCClips(
                 continue;
               }
               clipStart = Math.max(0, Math.round(plan.startSec * 10) / 10);
+              // RONDE 64: only a transcript hit LOCATED this second. Every other method on the
+              // ladder — metadata, thumbnail vision, the default — produced a guess, and a guess
+              // is worth re-deriving once the source's real length is on disk.
+              startIsExact = plan.method === "transcript";
               console.log(
                 `[ScriptGuided] Scene ${sceneIndex}: ${plan.method} @${clipStart}s ` +
                   `src=${plan.sourceDurationSec ? `${Math.round(plan.sourceDurationSec)}s` : "unknown"} ` +
@@ -11692,7 +11747,8 @@ export async function fetchYouTubeCCClips(
               item.snippet?.title,
               // RONDE 56: render-scoped, so the metadata for a video already looked up on an
               // earlier beat is reused instead of re-fetched and re-aborted.
-              sourcingCache
+              sourcingCache,
+              startIsExact
             );
             providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
             if (ok && !(await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided))) {
@@ -12503,8 +12559,18 @@ function sceneHasVisualOverlayFootage(clips: string[]): boolean {
 
 
 /** Map temp clip filename → editor manifest source (pexels, youtube, serpapi, …). */
-function inferClipSourceFromPath(filePath: string): string {
+export function inferClipSourceFromPath(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)$/i, "").toLowerCase();
+  // RONDE 64: the provider-asset tag first — it is stamped by tagPathWithProviderAsset and names
+  // the provider outright, so it beats every guess below it. Render 532's five source=unknown
+  // manifest lines were all clips whose names said what they were.
+  const pid = /__pid_([a-z0-9_]+)-[0-9a-f]+/.exec(base);
+  if (pid) return pid[1]!;
+  const pool = /_pool_([a-z_]+?)_/.exec(base);
+  if (pool) return pool[1]!;
+  if (/^extend_s\d+b\d+/.test(base)) return "rescue_extend";
+  if (/guaranteed/.test(base)) return "guaranteed";
+  if (/_ia_archive_|internet_archive/.test(base)) return "internet_archive";
   if (/_ytfu_|_ytcc_|_b\d+_yt_|_yt_\d/i.test(base)) return "youtube";
   if (
     /pexels|_pex_|lr_pex|_b\d+_fast|_fast_vid|_b\d+_script|_script_vid|_golden|_b\d+_lr_pex|scene_\d+_b\d+_vid\d+|person_stock/i.test(
@@ -27751,10 +27817,18 @@ export async function composeSceneVideoInner(
         audit.find((e) => e.basename === basename) ??
         audit.find((e) => e.sceneIndex === scene.index && clipContentKey(e.basename) === key) ??
         audit.find((e) => clipContentKey(e.basename) === key);
-      const source = entry?.source ?? "unknown";
+      // RONDE 64: when the audit has no entry, read the source off the clip's own name rather
+      // than reporting "unknown". Render 532 printed source=unknown for five clips whose names
+      // said exactly what they were — scene_0_b0_curated_a55995.mp4 is a curated archive clip.
+      // The `origin` field keeps the two apart, so a shrinking or growing recording gap stays
+      // visible instead of being papered over.
+      const inferred = entry ? null : inferClipSourceFromPath(basename);
+      const source = entry?.source ?? (inferred && inferred !== "unknown" ? inferred : "unknown");
+      const origin = entry ? "recorded" : source === "unknown" ? "none" : "inferred";
       const fallback = entry ? entry.source === "fallback" || entry.source === "rescue_placeholder" : isPipelineFallbackClip(clipPath);
       console.log(
-        `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${entry?.beatIndex ?? "?"} source=${source} fallback=${fallback} clip=${basename}`
+        `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${entry?.beatIndex ?? "?"} source=${source} ` +
+          `origin=${origin} fallback=${fallback} clip=${basename}`
       );
     }
   }
