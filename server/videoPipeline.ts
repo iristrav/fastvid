@@ -314,6 +314,7 @@ import {
   createBeatImageGateState,
   beatImageRelevanceGateEnabled,
   MAX_JUDGEMENTS_PER_BEAT,
+  maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
 import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
@@ -10795,6 +10796,11 @@ async function youtubeClipPassesImageGate(
 ): Promise<boolean> {
   const gate = scriptGuided?.imageGate;
   if (!gate || !beatImageRelevanceGateEnabled() || !scriptGuided?.beatText?.trim()) return true;
+  // RONDE 61: YouTube gets a slice of the render's judgements, not all of them. It is judged
+  // before a clip is even accepted into the pool, so it spends calls on material that may never
+  // be used; the funnel spends them on the clip about to go into the video. Past the slice this
+  // adopts as before, exactly like every other way this gate declines to answer.
+  if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return true;
 
   const framePaths: string[] = [];
   for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
@@ -10804,6 +10810,7 @@ async function youtubeClipPassesImageGate(
     ).catch(() => false);
     if (got) framePaths.push(framePath);
   }
+  const spentBefore = gate.judgementsUsed;
   const judgement = await judgeBeatImage({
     framePaths,
     beatText: scriptGuided.beatText,
@@ -10811,6 +10818,9 @@ async function youtubeClipPassesImageGate(
     contentKey: clipContentKey(clipPath),
     state: gate,
   });
+  // Only a call that actually cost something counts against YouTube's slice — a cached verdict
+  // for a video already judged on an earlier beat is free.
+  if (gate.judgementsUsed > spentBefore) gate.youtubeJudgementsUsed++;
   for (const p of framePaths) {
     try { fs.unlinkSync(p); } catch { /* ignore */ }
   }
@@ -13117,6 +13127,12 @@ export interface VisualDedupState {
    * other's verdicts or spend each other's budget.
    */
   beatImageGate: BeatImageGateState;
+  /**
+   * RONDE 61: funnel candidates the beat-image gate has REFUSED. Separate from
+   * usedFunnelCandidateIds, which is a soft variety preference the picker restores when
+   * everything has been used — this one is never restored.
+   */
+  beatImageRejectedIds: Set<string>;
   /** Sticky NL/US segment lock for comparison documentaries. */
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
@@ -13345,6 +13361,7 @@ export function createVisualDedupState(
     clipRejectAudit: [],
     clipAdoptAudit: createClipAdoptAudit(),
     beatImageGate: createBeatImageGateState(),
+    beatImageRejectedIds: new Set<string>(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
     assetDirectorSceneClips: [],
@@ -25468,7 +25485,7 @@ async function fetchSceneVisualsInner(
         // untouched — the best REMAINING candidate still wins on its own score. When every
         // passer is used the full set is restored inside pickBestFunnelCandidate(), so reuse
         // is the last resort and a beat is never dropped to fallback because of this.
-        let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
+        let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
 
         // RONDE 58: before adopting, look at the picture.
         //
@@ -25521,8 +25538,24 @@ async function fetchSceneVisualsInner(
               dedup.clipRejectAudit, scene.index, beat.index, winner.clipPath,
               "beat_image_gate", winner.candidate.title
             );
+            // RONDE 61: a hard exclusion, not a used-marker. Marking it "used" alone put the
+            // clip straight back: with one passer on the beat, unusedPassers empties, the picker
+            // restores the full set and hands back the very clip just refused. Render 532 shows
+            // exactly that — s2b1, s2b2 and s2b3 each judged twice, does_not_fit both times,
+            // and all three in the final manifest, including a white-lives-matter roadside
+            // clip under narration about the Battle of Berlin.
+            dedup.beatImageRejectedIds.add(winner.candidate.id);
             dedup.usedFunnelCandidateIds.add(winner.candidate.id);
-            winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);
+            winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
+          }
+          // Out of looks, still holding something the gate refused: drop it. The beat falls
+          // through to the next source, which beats showing a picture that does not belong.
+          if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id)) {
+            console.log(
+              `[BeatImageGate] s${scene.index}b${beat.index} no acceptable candidate ` +
+                `after ${MAX_JUDGEMENTS_PER_BEAT} looks — falling through`
+            );
+            winner = null;
           }
         }
         // RONDE 9: person-locked renders verify the winner with AWS Rekognition celebrity

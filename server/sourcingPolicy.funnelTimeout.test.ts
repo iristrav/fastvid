@@ -183,6 +183,6 @@ describe("nothing under test was disturbed", () => {
     expect(localSrc).toContain("return Math.max(0, Math.min(10, Math.round(sim * 40)));");
     const funnelSrc = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
     // Local renamed to allPassers by RONDE 1; the passers-only rule itself is unchanged.
-    expect(funnelSrc).toContain("const allPassers = scored.filter(s => s.visionResult.pass);");
+    expect(funnelSrc).toMatch(/const allPassers = scored\s*\n?\s*\.filter\(s => s\.visionResult\.pass\)/);
   });
 });

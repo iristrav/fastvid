@@ -80,6 +80,19 @@ export function maxBeatImageJudgementsPerRender(): number {
   return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 60, 0, 500);
 }
 
+/**
+ * RONDE 61: how much of that ceiling YouTube may take.
+ *
+ * Render 532 spent 52 of its 60 judgements on YouTube candidates and refused 48 of them, leaving
+ * the funnel — the route the adopted clips actually come from — just 8. YouTube is judged BEFORE
+ * a clip is accepted into the pool, so it burns calls on material that was never going to be
+ * used; the funnel is judged on the clip about to go into the video. When the two compete for
+ * one budget, the wrong one wins.
+ */
+export function maxYoutubeBeatImageJudgements(): number {
+  return envInt("MAX_YOUTUBE_BEAT_IMAGE_JUDGEMENTS", 24, 0, 500);
+}
+
 export function beatImageRelevanceGateEnabled(): boolean {
   return process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false";
 }
@@ -92,10 +105,12 @@ export type BeatImageGateState = {
   /** contentKey -> verdict, so the same clip is judged once per render. */
   seen: Map<string, BeatImageJudgement>;
   judgementsUsed: number;
+  /** Of those, how many went to YouTube candidates — capped separately. */
+  youtubeJudgementsUsed: number;
 };
 
 export function createBeatImageGateState(): BeatImageGateState {
-  return { seen: new Map(), judgementsUsed: 0 };
+  return { seen: new Map(), judgementsUsed: 0, youtubeJudgementsUsed: 0 };
 }
 
 function buildPrompt(

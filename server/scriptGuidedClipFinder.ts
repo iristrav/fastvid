@@ -7,6 +7,7 @@ import { localVisionEnabled, scoreUrlImageAgainstBeat } from "./localClipVision"
 import { pickLongVideoStartSec } from "./beatSegmentChoice";
 import {
   fetchYoutubeVideoContext,
+  youtubeVideoContextTimeoutMs,
   pickCaptionTrack,
   type YoutubeCaptionTrack,
 } from "./youtubeVideoContext";
@@ -288,7 +289,14 @@ export async function planScriptGuidedClip(
   // One watch-page read gives both the caption tracks and the duration; fetchYoutubeTranscript
   // below reads the same cached context, so this costs nothing extra.
   const transcriptMs = options.fastMode ? 3_500 : 5_000;
-  durationSec = (await fetchYoutubeVideoContext(candidate.videoId, transcriptMs)).durationSec;
+  // RONDE 61: the watch page gets its own budget, capped by what is left of the planning
+  // deadline. It was being handed the 3.5s transcript timeout, which is not enough to fetch and
+  // read one to two megabytes of HTML — render 532 logged src=unknown on all 52 plans.
+  const contextMs = Math.max(
+    2_500,
+    Math.min(youtubeVideoContextTimeoutMs(), options.deadlineMs - Date.now())
+  );
+  durationSec = (await fetchYoutubeVideoContext(candidate.videoId, contextMs)).durationSec;
 
   const segments = await fetchYoutubeTranscript(candidate.videoId, transcriptMs);
   // A caption track also states the length, for the case where the page did not.

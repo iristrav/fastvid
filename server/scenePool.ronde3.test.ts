@@ -442,7 +442,7 @@ describe("RONDE 1 + RONDE 2 are untouched by RONDE 3", () => {
   it("FIX 1/2 cross-beat memory is intact", () => {
     expect(funnelSrc).toContain("const unused = usedCandidateIds?.size");
     expect(funnelSrc).toContain("const unusedPassers = usedCandidateIds?.size");
-    expect(pipelineSrc).toContain("pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds)");
+    expect(pipelineSrc).toMatch(/pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds[,)]/);
   });
 
   it("FIX 3 failed-download registration is intact", () => {

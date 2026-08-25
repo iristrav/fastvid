@@ -930,9 +930,19 @@ export function buildDownloadShortlist(
 
 export function pickBestFunnelCandidate(
   scored: ScoredFunnelCandidate[],
-  usedCandidateIds?: ReadonlySet<string>
+  usedCandidateIds?: ReadonlySet<string>,
+  /**
+   * RONDE 61: candidates a judge has looked at and REFUSED. Unlike usedCandidateIds — a soft
+   * preference for variety, restored below when everything has been used — this is a hard
+   * exclusion that is never restored. Returning null is the correct answer here: the beat falls
+   * through to the next source, which is strictly better than showing a picture the pipeline has
+   * already established does not belong.
+   */
+  rejectedCandidateIds?: ReadonlySet<string>
 ): ScoredFunnelCandidate | null {
-  const allPassers = scored.filter(s => s.visionResult.pass);
+  const allPassers = scored
+    .filter(s => s.visionResult.pass)
+    .filter(s => !rejectedCandidateIds?.has(s.candidate.id));
   if (allPassers.length === 0) return null;
 
   // FIX 1 — cross-beat asset memory. The funnel path never consulted any used-asset

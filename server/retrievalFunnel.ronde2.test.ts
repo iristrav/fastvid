@@ -285,7 +285,7 @@ describe("FIX 3 — wiring at the single call site", () => {
   it("the winner registration from FIX 1 is still there too", () => {
     const occurrences = codeOnly(pipelineSrc).match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
     expect(occurrences).toHaveLength(2); // failed download + winner
-    expect(pipelineSrc).toContain("pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds)");
+    expect(pipelineSrc).toMatch(/pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds[,)]/);
   });
 
   it("downloadedCount still counts only real downloads", () => {

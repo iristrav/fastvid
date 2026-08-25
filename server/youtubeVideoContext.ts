@@ -48,6 +48,24 @@ export function youtubeVideoContextEnabled(): boolean {
 }
 
 /**
+ * RONDE 61: its own budget, not the transcript's.
+ *
+ * Render 532 logged `src=unknown` on all 52 plans — the page never came through — and it was
+ * being given the caller's transcript timeout, which on Railway is 3.5 seconds. A YouTube watch
+ * page is one to two megabytes of HTML; 3.5 seconds to connect, transfer and read it is not a
+ * budget, it is a coin toss. This is the single highest-value request on the YouTube path: it
+ * decides both which second gets cut and whether the transcript can be read at all.
+ */
+export function youtubeVideoContextTimeoutMs(): number {
+  const raw = process.env.YOUTUBE_CONTEXT_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1_000 && n <= 30_000) return n;
+  }
+  return 9_000;
+}
+
+/**
  * Process-level cache. Unlike the judgement budget in beatImageRelevanceGate — which is
  * deliberately per-render so two renders cannot spend each other's calls — this holds immutable
  * facts about a video: its length and its caption URLs. Sharing those across renders is free and
@@ -190,12 +208,16 @@ export function pickCaptionTrack(
  */
 export async function fetchYoutubeVideoContext(
   videoId: string,
-  timeoutMs = 6_000
+  timeoutMs = youtubeVideoContextTimeoutMs()
 ): Promise<YoutubeVideoContext> {
   if (!youtubeVideoContextEnabled() || !videoId) return EMPTY;
   const cached = cacheGet(videoId);
   if (cached) return cached;
 
+  // Every outcome is logged. Render 532 could only report `src=unknown` on all 52 plans, with
+  // nothing to say whether the page timed out, was refused, or arrived in a shape this could
+  // not read — three very different problems with three different fixes.
+  const t0 = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -212,12 +234,26 @@ export async function fetchYoutubeVideoContext(
       },
       signal: controller.signal as never,
     });
-    if (!resp.ok) return EMPTY;
-    const ctx = parseYoutubeWatchPage(await resp.text());
+    if (!resp.ok) {
+      console.warn(`[YTContext] ${videoId} http=${resp.status} ms=${Date.now() - t0}`);
+      return EMPTY;
+    }
+    const html = await resp.text();
+    const ctx = parseYoutubeWatchPage(html);
+    const usable = ctx.durationSec > 0 || ctx.captionTracks.length > 0;
+    console.log(
+      `[YTContext] ${videoId} ${usable ? "ok" : "unreadable"} dur=${ctx.durationSec}s ` +
+        `tracks=${ctx.captionTracks.length} bytes=${html.length} ms=${Date.now() - t0}`
+    );
     // Only worth remembering when it actually said something.
-    if (ctx.durationSec > 0 || ctx.captionTracks.length > 0) cacheSet(videoId, ctx);
+    if (usable) cacheSet(videoId, ctx);
     return ctx;
-  } catch {
+  } catch (err) {
+    const aborted = (err as Error)?.name === "AbortError";
+    console.warn(
+      `[YTContext] ${videoId} ${aborted ? `timeout after ${timeoutMs}ms` : "failed"}: ` +
+        `${(err as Error).message?.slice(0, 100)}`
+    );
     return EMPTY;
   } finally {
     clearTimeout(timer);

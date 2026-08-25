@@ -100,7 +100,7 @@ describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => 
   });
 
   it("winner selection (FIX 1) is untouched", () => {
-    expect(pipelineSrc).toContain("let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);");
+    expect(pipelineSrc).toMatch(/let winner = pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds[,)]/);
   });
 });
 

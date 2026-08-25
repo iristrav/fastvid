@@ -186,12 +186,16 @@ describe("RONDE 58 — the wiring", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 3400);
+    const block = src.slice(idx, idx + 4600);
     expect(block).toContain("judgeBeatImage({");
     // Bounded per beat, and a rejected winner steps down to the next-best rather than to nothing.
     expect(block).toContain("look < MAX_JUDGEMENTS_PER_BEAT");
     expect(block).toContain("dedup.usedFunnelCandidateIds.add(winner.candidate.id);");
-    expect(block).toContain("winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds);");
+    // RONDE 61: the re-pick now also excludes what the gate refused, so a beat with a single
+    // passer cannot be handed the very clip just rejected.
+    expect(block).toMatch(
+      /winner = pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds, dedup\.beatImageRejectedIds\);/
+    );
     // Only a definite "does not fit" costs the candidate its place.
     expect(block).toContain('if (judgement.verdict !== "does_not_fit") break;');
   });
@@ -212,7 +216,7 @@ describe("RONDE 58 — the wiring", () => {
   it("a rejection is recorded in the audit, so the reason survives the render", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    expect(src.slice(idx, idx + 3400)).toContain('"beat_image_gate"');
+    expect(src.slice(idx, idx + 4600)).toContain('"beat_image_gate"');
   });
 
   it("MAX_JUDGEMENTS_PER_BEAT is small — this is a verification step, not a search", () => {

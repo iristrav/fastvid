@@ -261,8 +261,9 @@ describe("wiring + scope", () => {
     expect(pipelineSrc).toMatch(
       /buildDownloadShortlist\(\s*funnelCandidates,\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds\s*\)/
     );
-    expect(pipelineSrc).toContain(
-      "pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds)"
+    expect(pipelineSrc).toMatch(
+      // RONDE 61 added a third argument (the gate's refusal set); the used-set is still passed.
+      /pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds[,)]/
     );
     expect(pipelineSrc).toContain("dedup.usedFunnelCandidateIds.add(candidate.id);");
   });
