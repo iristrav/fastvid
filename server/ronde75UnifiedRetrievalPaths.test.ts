@@ -98,7 +98,8 @@ function wikiVideoQueries(beat: string, fastMode = false): string[] {
 describe("RONDE 75 — the typed query is #1 on both paths", () => {
   const cases: Array<[string, string, string[]]> = [
     [BEAT_1, "Adolf Hitler Fuhrerbunker 1945", ["Adolf Hitler", "Fuhrerbunker", "1945"]],
-    [BEAT_2, "Brandenburg Gate battle", ["Brandenburg Gate", "battle"]],
+    // RONDE 78 named the event rather than reducing it to its verb: "battle" -> "Battle of Berlin".
+    [BEAT_2, "Brandenburg Gate Battle of Berlin", ["Brandenburg Gate", "Battle of Berlin"]],
     [BEAT_3, "Reichstag 1945", ["Reichstag", "1945"]],
     [BEAT_4, "Churchill France", ["Churchill", "France"]],
   ];

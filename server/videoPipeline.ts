@@ -2168,23 +2168,27 @@ function buildBeatYoutubeQueries(
   videoTitle: string | undefined,
   personName: string
 ): string[] {
-  return [
-    ...new Set(
-      [
-        ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
-        ...(coercePersonName(personName)
-          ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
-          : []),
-        ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
-        beat.searchQuery,
-        scene.visualCue,
-        scene.pexelsQuery,
-        ...(asVideoTitleString(videoTitle).trim()
-          ? [`${asVideoTitleString(videoTitle)} documentary footage`]
-          : []),
-      ].filter((q) => toQueryString(q).length > 3)
-    ),
-  ].slice(0, 6);
+  // RONDE 78: YouTube asks the typed question too. It was the last of the historical/documentary
+  // retrieval families still opening with the anchor word alone, and the cap grows by what was
+  // prepended so every query the list had before still reaches the provider.
+  const typed = typedQueryPrefix(beat.text, { scenePersons: [personName] }).slice(0, 2);
+  const rest = [
+    ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+    ...(coercePersonName(personName)
+      ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
+      : []),
+    ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
+    beat.searchQuery,
+    scene.visualCue,
+    scene.pexelsQuery,
+    ...(asVideoTitleString(videoTitle).trim()
+      ? [`${asVideoTitleString(videoTitle)} documentary footage`]
+      : []),
+  ].filter((q) => toQueryString(q).length > 3);
+
+  const unique = [...new Set([...typed, ...rest].map((q) => toQueryString(q)))];
+  const typedKept = unique.filter((q) => typed.includes(q)).length;
+  return unique.slice(0, 6 + typedKept);
 }
 
 async function fetchBeatYoutubeOnly(
@@ -13510,17 +13514,23 @@ export function extractActionCue(beatText: string): string {
  * no query builder at all, which is what keeps it safe to drop into one: nothing here can
  * re-enter the builder that invoked it.
  *
- * Two ways a caller can supply a person the beat does not name:
+ * RONDE 78 — THE BEAT'S PERSON WINS, whatever the caller supplies.
  *
- *   scenePersons — context. A beat that says "he" belongs to whoever the scene resolved, so the
- *     scene's name is worth combining; but a beat that says "Soviet soldiers raised their flag"
- *     is not about the scene's protagonist, and leading with his name would ask the wrong
- *     question. Both families are therefore built and interleaved: the beat's own answer takes
- *     position 1, the scene's takes position 2, and a caller keeping only two keeps one of each.
+ * RONDE 77 had two modes and one of them was wrong. `forcePerson` let a caller's name replace the
+ * beat's, so a celebrity fetch for Hitler on the beat
  *
- *   forcePerson — the request itself. The celebrity path is asking a provider for footage OF a
- *     named person; there the name is not context to be weighed against the beat, it is the
- *     subject, and the beat only says where and when.
+ *     "Churchill addressed the nation after the fall of France."
+ *
+ * asked "Adolf Hitler France" first. The reasoning was that the caller is fetching footage OF a
+ * named person — but a beat that names Churchill is about Churchill, and asking the archive about
+ * the wrong man is not a retrieval strategy. There is now one rule for both callers:
+ *
+ *     beat person   -> primary retrieval context
+ *     supplied name -> secondary, interleaved behind it
+ *
+ * The two families are interleaved rather than concatenated, so the supplied name still reaches
+ * the provider at position 2 and the scene-level fallback a pronoun beat depends on is intact.
+ * When the beat names nobody, the supplied name is the only person there is and leads by default.
  */
 export function typedQueryPrefix(
   beatText: string,
@@ -13533,14 +13543,13 @@ export function typedQueryPrefix(
   const family = (persons: string[]): string[] =>
     combinedTypedQueriesForBeat(text, persons, place, action);
 
-  const forced = toQueryString(opts.forcePerson ?? "");
-  if (forced) return [...new Set(family([forced]))];
-
   const own = family(extractPersonNamesFromText(text));
-  const scenePerson = (opts.scenePersons ?? []).map((p) => toQueryString(p)).find(Boolean) ?? "";
-  if (!scenePerson) return [...new Set(own)];
+  const supplied =
+    toQueryString(opts.forcePerson ?? "") ||
+    ((opts.scenePersons ?? []).map((p) => toQueryString(p)).find(Boolean) ?? "");
+  if (!supplied) return [...new Set(own)];
 
-  const contextual = family([scenePerson]);
+  const contextual = family([supplied]);
   const woven: string[] = [];
   for (let i = 0; i < Math.max(own.length, contextual.length); i += 1) {
     if (own[i]) woven.push(own[i]!);

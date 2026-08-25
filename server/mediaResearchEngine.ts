@@ -346,6 +346,103 @@ export function extractObjectCue(beatText: string): string | null {
 }
 
 /**
+ * RONDE 78 — the named event, not the bare verb.
+ *
+ * extractEventCue (above) returns one lower-cased word out of EVENT_CUE_RE and must keep doing
+ * exactly that: classifyBeatFocus and eventMatchScore are built on it, and this round changes no
+ * ranking. So the query path gets its own, wider answer here, and the two coexist:
+ *
+ *     "The Brandenburg Gate stood in ruins after the Battle of Berlin."
+ *        extractEventCue        -> "battle"           (ranking, unchanged)
+ *        extractEventPhrase...  -> "Battle of Berlin" (retrieval)
+ *
+ * Three rules, in order, no general NER:
+ *
+ *   1. "<head> of <Capitalised>" — the way documentaries name events. The heads are the small
+ *      set below; EVENT_CUE_RE's own words are folded in, so "battle", "siege" and "trial" are
+ *      not listed twice.
+ *   2. the direct object of the beat's verb — the run of lower-case words between the action and
+ *      the next preposition, with determiners and time filler dropped. This is what recovers
+ *      "political testament" out of "dictated his final political testament in the …" without
+ *      anyone having listed the word "testament".
+ *   3. EVENT_CUE_RE's own bare match, i.e. exactly what extractEventCue already returned.
+ */
+const EVENT_HEAD_WORDS =
+  "battle|siege|fall|invasion|liberation|treaty|trial|uprising|revolt|coronation|massacre|" +
+  "occupation|surrender|blockade|airlift|conference|offensive|assault|capture|retreat|" +
+  "evacuation|bombing|raid|march|defence|defense|sinking|signing|death|birth";
+
+// The head may be capitalised ("the Battle of Berlin") or not ("the fall of France"), but the
+// event's name must stay upper-case — so the head is spelled in both cases rather than matched
+// with the "i" flag, which would also make \p{Lu} case-insensitive and let "fall of france"
+// through. That is the RONDE 73 place-regex bug, not repeated here.
+const EVENT_HEAD_EITHER_CASE = EVENT_HEAD_WORDS.split("|")
+  .map((w) => `[${w[0]!.toUpperCase()}${w[0]}]${w.slice(1)}`)
+  .join("|");
+
+const NAMED_EVENT_RE = new RegExp(
+  `\\b((?:${EVENT_HEAD_EITHER_CASE})\\s+of\\s+(?:the\\s+)?\\p{Lu}[\\p{L}'-]+(?:\\s+\\p{Lu}[\\p{L}'-]+){0,2})`,
+  "u"
+);
+
+/** Determiners, possessives and time filler that can never be the event itself. */
+const EVENT_PHRASE_SKIP = new Set([
+  "a", "an", "the", "his", "her", "its", "their", "our", "my", "your", "this", "that", "these",
+  "those", "final", "last", "first", "own", "very", "new", "old", "great", "whole", "entire",
+  "second", "third", "another", "some", "any", "all", "both", "each", "more", "most", "such",
+]);
+
+export function extractEventPhraseForQuery(beatText: string, action = ""): string {
+  const text = (beatText ?? "").replace(/\[visual:[^\]]*\]/gi, " ").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+
+  const named = text.match(NAMED_EVENT_RE)?.[1];
+  if (named) return named.replace(/\s+of\s+the\s+/i, " of ").trim();
+
+  const verb = (action ?? "").trim().toLowerCase();
+  if (verb) {
+    // Everything the verb governs, up to the preposition that starts the next phrase.
+    const after = new RegExp(`\\b${verb}\\b\\s+([^.,;:]*)`, "i").exec(text)?.[1] ?? "";
+    const words: string[] = [];
+    for (const raw of after.split(/\s+/)) {
+      const w = raw.replace(/[^\p{L}'-]/gu, "");
+      if (!w) continue;
+      const lower = w.toLowerCase();
+      // A preposition or a capitalised name ends the object phrase — "in the Führerbunker" is the
+      // place, and the place has its own field.
+      if (/^(?:in|at|on|over|from|into|to|of|by|with|near|across|through|after|before|during|as|while|and|or|inside|outside|toward|towards|against|beneath|below|above|beyond|under)$/.test(lower)) break;
+      if (w[0] !== w[0]!.toLowerCase()) break;
+      if (EVENT_PHRASE_SKIP.has(lower)) continue;
+      words.push(lower);
+    }
+    // Two content words at most: "political testament", not "final political testament of".
+    const phrase = words.slice(-2).join(" ").trim();
+    if (phrase.split(/\s+/).length >= 2) return phrase;
+  }
+
+  return extractEventCue(text) ?? "";
+}
+
+/**
+ * RONDE 78 — the fullest period the beat states, e.g. "April 1945".
+ *
+ * The typed context has carried the bare year since RONDE 73, and the bare year is what the
+ * entity combinations use, unchanged. A beat that names the month knows more than that, and this
+ * is where that extra is kept so a month-qualified variant can be produced alongside.
+ * Returns "" when the beat states no year — never the video title's.
+ */
+const PERIOD_MONTHS =
+  "January|February|March|April|May|June|July|August|September|October|November|December";
+
+export function extractPeriodPhrase(beatText: string): string {
+  const text = (beatText ?? "").replace(/\[visual:[^\]]*\]/gi, " ");
+  const year = text.match(/\b(?:18|19|20)\d{2}\b/)?.[0] ?? "";
+  if (!year) return "";
+  const withMonth = new RegExp(`\\b(${PERIOD_MONTHS})\\s+${year}\\b`, "u").exec(text);
+  return withMonth ? `${withMonth[1]} ${year}` : year;
+}
+
+/**
  * Deterministic, LLM-free extraction of multiple concrete visual targets for one beat (Point 1
  * of the visual-selection upgrade) — reuses only signals already available in this module/intent
  * (persons, beat text, video title, year). Not a general NER system; a small, targeted set of
@@ -519,6 +616,33 @@ export function expandAnchorToKnownPerson(anchor: string, fullNames: string[]): 
  * says nothing — a beat whose event is "political testament" contributes person, place and time
  * and leaves event out. Fabricating a field would be worse than omitting it.
  */
+/**
+ * RONDE 78 — the beat's retrieval context, in one place.
+ *
+ * The five categories the brief names, plus the two the pipeline already carried:
+ *
+ *   person  the beat's own named person, never the scene's — see typedQueryPrefix
+ *   place   extractVisualPlacePhrase's answer, never a month
+ *   time    the fullest period the beat states: "April 1945"
+ *   year    the query-stable part of it: "1945". The entity combinations use this, so a beat
+ *           that names its month does not change the queries RONDE 73 measured.
+ *   event   extractEventPhraseForQuery: "Battle of Berlin", "political testament"
+ *   action  the verb: "dictated", "raised", "stood"
+ *   object  extractObjectCue: "flag", "bunker"
+ *
+ * Every field is a string and "" means "the beat does not say" — never null, never undefined,
+ * so no combination below can produce a gap.
+ */
+export interface TypedRetrievalContext {
+  person: string;
+  place: string;
+  time: string;
+  year: string;
+  event: string;
+  action: string;
+  object: string;
+}
+
 function buildCombinedTypedQueries(fields: {
   person: string;
   place: string;
@@ -527,16 +651,31 @@ function buildCombinedTypedQueries(fields: {
   object: string;
   /** RONDE 77: the verb the beat describes. "" when it describes none — see extractActionCue. */
   action?: string;
+  /** RONDE 78: the month-qualified period, when the beat names one. "" otherwise. */
+  period?: string;
 }): string[] {
   const { person, place, time, event, object } = fields;
   const action = (fields.action ?? "").trim();
+  const period = (fields.period ?? "").trim() === time ? "" : (fields.period ?? "").trim();
   const join = (...parts: string[]): string => parts.filter((p) => p && p.trim()).join(" ").trim();
   const out: string[] = [];
-  /** Adds a combination only when every part it names is present. */
+  /**
+   * Adds a combination only when every part it names is present, and only when the parts do not
+   * repeat each other. RONDE 78: the event phrase can carry the place — "fall of France" on a
+   * beat whose place is "France" — and `place + event` would then read "France fall of France".
+   * A query that says the same word twice is not a better query.
+   */
   const combine = (...parts: string[]): void => {
     if (parts.some((p) => !p || !p.trim())) return;
     const q = join(...parts);
-    if (q) out.push(q);
+    if (!q) return;
+    const seen = new Set<string>();
+    for (const w of q.toLowerCase().split(/\s+/)) {
+      if (w === "of" || w === "the" || w === "and") continue;
+      if (seen.has(w)) return;
+      seen.add(w);
+    }
+    out.push(q);
   };
 
   combine(person, place, time);
@@ -553,10 +692,55 @@ function buildCombinedTypedQueries(fields: {
   combine(place, action, time);
   combine(person, place, action);
   combine(place, action);
+  // RONDE 78: the month-qualified period, behind the year-only forms. An archive that indexes
+  // "April 1945" answers this one; one that indexes the year only already answered above.
+  combine(person, place, period);
+  combine(place, event, period);
+  combine(person, event, period);
   // The strongest combination again, phrased for an archive rather than a search engine.
   combine(person, place, "archival footage");
   if (!person && place) combine(place, "archival footage");
   return out;
+}
+
+/**
+ * RONDE 78 — the beat's context, assembled once.
+ *
+ * person, place and action come from the caller: their extractors live in videoPipeline, which
+ * imports this module and not the other way round. Everything else is derived here, from the
+ * vocabulary this module already owns.
+ */
+export function buildTypedRetrievalContext(
+  beatText: string,
+  opts: { persons?: string[]; place?: string; action?: string } = {}
+): TypedRetrievalContext {
+  const text = (beatText ?? "").trim();
+  const action = (opts.action ?? "").trim();
+  const period = extractPeriodPhrase(text);
+  return {
+    person: coercePersonName(opts.persons?.[0] ?? "") || "",
+    place: (opts.place ?? "").trim(),
+    time: period,
+    year: text.match(/\b(?:18|19|20)\d{2}\b/)?.[0] ?? "",
+    event: extractEventPhraseForQuery(text, action),
+    action,
+    object: extractObjectCue(text) ?? "",
+  };
+}
+
+/** The query family for one already-assembled context. The single combination point. */
+export function centralTypedQueries(ctx: TypedRetrievalContext): string[] {
+  return buildCombinedTypedQueries({
+    person: ctx.person,
+    place: ctx.place,
+    // The year anchors the entity combinations; the month-qualified period is a variant behind
+    // them. Swapping these would rewrite every query RONDE 73 and RONDE 75 pinned.
+    time: ctx.year,
+    period: ctx.time,
+    event: ctx.event,
+    object: ctx.object,
+    action: ctx.action,
+  });
 }
 
 /**
@@ -576,14 +760,7 @@ export function combinedTypedQueriesForBeat(
   place: string,
   action = ""
 ): string[] {
-  return buildCombinedTypedQueries({
-    person: coercePersonName(persons[0] ?? "") || "",
-    place: (place ?? "").trim(),
-    time: beatText.match(/\b(18|19|20)\d{2}\b/)?.[0] ?? "",
-    event: extractEventCue(beatText) ?? "",
-    object: extractObjectCue(beatText) ?? "",
-    action,
-  });
+  return centralTypedQueries(buildTypedRetrievalContext(beatText, { persons, place, action }));
 }
 
 export function buildHistoricalArchivalQueries(
@@ -607,22 +784,23 @@ export function buildHistoricalArchivalQueries(
 
   // RONDE 73: the typed combination goes FIRST. Everything below is unchanged and stays as the
   // breadth/fallback layer it has always been — see the F3-39 note on cache breadth.
-  const yearForCombo = beatText.match(/\b(18|19|20)\d{2}\b/)?.[0] ?? "";
+  // RONDE 78: through the same buildTypedRetrievalContext every other path uses, so this one
+  // cannot drift from typedQueryPrefix's answer.
   out.push(
-    ...buildCombinedTypedQueries({
-      // Only the classifier's own answer. knownFullNames below mines the beat with a bare
-      // two-capitals regex and reads "The Brandenburg" out of "The Brandenburg Gate stood…" —
-      // fine as a loose anchor expander, useless as the subject of a combined query.
-      person:
-        coercePersonName(intent.primaryPerson) ||
-        coercePersonName(intent.persons?.[0] ?? "") ||
-        "",
-      place: (opts.place ?? "").trim(),
-      time: yearForCombo,
-      event: extractEventCue(beatText) ?? "",
-      object: extractObjectCue(beatText) ?? "",
-      action: (opts.action ?? "").trim(),
-    })
+    ...centralTypedQueries(
+      buildTypedRetrievalContext(beatText, {
+        // Only the classifier's own answer. knownFullNames below mines the beat with a bare
+        // two-capitals regex and reads "The Brandenburg" out of "The Brandenburg Gate stood…" —
+        // fine as a loose anchor expander, useless as the subject of a combined query.
+        persons: [
+          coercePersonName(intent.primaryPerson) ||
+            coercePersonName(intent.persons?.[0] ?? "") ||
+            "",
+        ],
+        place: opts.place,
+        action: opts.action,
+      })
+    )
   );
 
   // Always generate a broad, generic anchor-based set first — this guarantees at least the

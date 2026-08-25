@@ -286,7 +286,7 @@ describe("RONDE 77 §E — a missing action leaves no gap", () => {
 describe("RONDE 77 §F — buildBeatVisualQueryList asks the typed question first", () => {
   const cases: Array<[string, string]> = [
     [BEAT_1, "Adolf Hitler Fuhrerbunker 1945"],
-    [BEAT_2, "Brandenburg Gate battle"],
+    [BEAT_2, "Brandenburg Gate Battle of Berlin"],
     [BEAT_3, "Reichstag 1945"],
     [BEAT_4, "Churchill France"],
   ];
@@ -373,21 +373,25 @@ describe("RONDE 77 §G — added to the list, never swapped into it", () => {
 
 /* ═════════════ §H/§I — the second central lever ═════════════ */
 
-describe("RONDE 77 §H — buildPersonCelebrityVideoQueries asks about the person it was given", () => {
-  it("the typed combination leads, built on the requested person", () => {
+describe("RONDE 77 §H — buildPersonCelebrityVideoQueries leads with the typed combination", () => {
+  it("the typed combination leads", () => {
+    // BEAT_1 names the same person the caller asked for, so both answers agree.
     expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_1, 0)[0])
       .toBe("Adolf Hitler Fuhrerbunker 1945");
+    // BEAT_3 names nobody, so the caller's person is the only one there is.
     expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_3, 0)[0])
+      .toBe("Reichstag 1945");
+    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_3, 0)[1])
       .toBe("Adolf Hitler Reichstag 1945");
   });
 
-  it("a person the beat names is NOT allowed to displace the person requested", () => {
-    // BEAT_4 names Churchill. This builder's caller is fetching footage of the person in its
-    // first argument, so the beat supplies the place and the year and nothing else.
+  it("RONDE 78 — the person the BEAT names is not displaced by the person requested", () => {
+    // RONDE 77 had this the other way round: the caller's name replaced the beat's, so a fetch
+    // for Hitler on a Churchill beat asked "Adolf Hitler France" first. A beat that names
+    // Churchill is about Churchill; the requested name follows at position 2 rather than leading.
     const qs = buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_4, 0);
-    expect(qs[0]).toBe("Adolf Hitler France");
-    expect(qs[0]).not.toBe("Churchill France");
-    expect(qs.slice(0, 2).join(" | ")).not.toContain("Churchill France");
+    expect(qs[0]).toBe("Churchill France");
+    expect(qs[1]).toBe("Adolf Hitler France");
   });
 
   it("the beat's place and year reach the celebrity provider", () => {
