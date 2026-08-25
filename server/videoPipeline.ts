@@ -2439,7 +2439,8 @@ export async function fetchBeatArchivalThenPexels(
   // query-priming helper (computed once) so a proven past query for this video's topic/entity
   // is tried first, across both engines below.
   const webWideQueries = await primeQueriesWithSearchMemory(
-    videoTitle, buildHistoricalArchivalQueries(intent, beat.text).slice(0, 2)
+    videoTitle,
+    buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) }).slice(0, 2)
   );
 
   // F3-30: real video first — Europeana aggregates real video from EU cultural institutions
@@ -2723,7 +2724,7 @@ async function fetchBeatAuthenticStills(
     muskTopic: adoptOpts.muskTopic ?? false,
   });
   const queries = [
-    ...buildHistoricalArchivalQueries(intent, beat.text).slice(0, 3),
+    ...buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) }).slice(0, 3),
     enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
     beat.searchQuery,
     scene.visualCue,
@@ -13185,31 +13186,50 @@ const PERSON_NAME_SKIP_PHRASES = new Set([
  * "Brandenburg Gate" and "Reich Chancellery" one by one never ends, while "tower", "gate" and
  * "chancellery" cover the class.
  */
-const NON_PERSON_ENTITY_WORDS = new Set([
-  // structures and places
+/**
+ * RONDE 73 splits the RONDE 72 vocabulary into named groups. The union below is byte-for-byte
+ * the same set the person classifier already used, so nothing about that changes — but the
+ * structure group is now separately addressable, because "a capitalised run ending in a BUILDING
+ * noun is a place" is true while "a run ending in an ORGANISATION noun is a place" is not: it
+ * would read "The Red Army" as a location.
+ */
+const PLACE_STRUCTURE_WORDS = new Set([
   "tower","bridge","palace","castle","cathedral","chancellery","reichstag","bunker","museum",
   "station","hall","gate","wall","monument","memorial","square","stadium","airport","airfield",
   "harbour","harbor","factory","plant","works","abbey","church","temple","mosque","prison",
   "camp","fortress","citadel","barracks","headquarters","embassy","parliament","capitol",
   "university","college","school","hospital","library","theatre","theater","hotel","tunnel",
   "canal","dam","port","dock","quay","pier","observatory","lighthouse","garden","park",
-  // vehicles, aircraft and vessels
+]);
+
+const VEHICLE_WORDS = new Set([
   "spitfire","hurricane","messerschmitt","panzer","tiger","sherman","lancaster","mustang",
   "junkers","heinkel","stuka","zeppelin","bomber","fighter","fighters","tank","tanks","ship",
   "boat","submarine","u-boat","carrier","cruiser","destroyer","battleship","frigate","convoy",
   "train","locomotive","aircraft","plane","jet","rocket","missile","truck","lorry","jeep",
-  // military and organisational
+]);
+
+const ORGANISATION_WORDS = new Set([
   "army","navy","luftwaffe","wehrmacht","waffen","gestapo","corps","division","regiment",
   "brigade","battalion","infantry","artillery","cavalry","guard","forces","troops","command",
   "reich","empire","republic","union","federation","party","ministry","council","committee",
   "bureau","agency","department","commission","authority","alliance","coalition","front",
   "offensive","campaign","operation","battle","siege","invasion","uprising","revolution",
-  // generic geography
+]);
+
+const GENERIC_GEOGRAPHY_WORDS = new Set([
   "city","town","village","river","mountain","mountains","island","islands","sea","ocean",
   "lake","valley","desert","forest","coast","bay","gulf","strait","street","avenue","road",
   "district","province","county","state","kingdom","territory","region","border","frontier",
   // directional modifiers: they only ever qualify a place ("Eastern Poland", "Lower Saxony")
   "eastern","western","northern","southern","central","upper","lower","greater","outer","inner",
+]);
+
+const NON_PERSON_ENTITY_WORDS = new Set([
+  ...PLACE_STRUCTURE_WORDS,
+  ...VEHICLE_WORDS,
+  ...ORGANISATION_WORDS,
+  ...GENERIC_GEOGRAPHY_WORDS,
 ]);
 
 /**
@@ -13275,6 +13295,104 @@ function sentenceSupportsPerson(sentence: string, token: string): boolean {
   if (new RegExp(`\\b${escaped}'s\\b`, "i").test(sentence)) return true;
   const after = new RegExp(`\\b${escaped}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
   return Boolean(after?.[1] && PERSON_ACTION_VERBS.has(after[1].toLowerCase()));
+}
+
+/**
+ * RONDE 73 — the place a beat is actually about, for the QUERY PATH ONLY.
+ *
+ * mediaResearchEngine.extractLocationPhrase already answers this question, and it answers it
+ * wrongly for documentary narration. Measured on the real function:
+ *
+ *     "…in the Führerbunker in April 1945."          -> "April"
+ *     "…over the Reichstag in April 1945."           -> "April"
+ *     "The Brandenburg Gate stood in ruins…"         -> null
+ *     "Churchill … after the fall of France."        -> null
+ *
+ * Three causes: the regex requires a capital immediately after the preposition, so "in the
+ * Führerbunker" cannot match while "in April" can; "of" is not in its preposition list; and it
+ * takes the first match rather than the best one.
+ *
+ * It is NOT fixed in place. It feeds classifyBeatFocus, and a beat whose focus flips from
+ * "location" to something else changes beatFocusPenalty — an indirect ranking change this round
+ * explicitly excludes. So this is a separate function, called only from the query path, and
+ * extractLocationPhrase keeps returning exactly what it returned before.
+ *
+ * No new vocabulary: MONTH_NAMES (RONDE 71), PLACE_STRUCTURE_WORDS (RONDE 72's structures group)
+ * and the pipeline's existing GEO_SLUG_SET do all the work.
+ */
+/**
+ * Both cases spelled out on purpose: the pattern below must NOT carry the `i` flag, because that
+ * would fold \p{Lu} and make every lower-case word match the capitalised-run pattern.
+ */
+const PLACE_PREPOSITIONS =
+  "[Ii]n|[Aa]t|[Nn]ear|[Oo]ver|[Aa]cross|[Tt]hrough|[Ii]nside|[Oo]utside|[Aa]round|" +
+  "[Ww]ithin|[Bb]eneath|[Bb]elow|[Aa]bove|[Oo]f|[Ff]rom|[Ii]nto|[Oo]nto|[Tt]oward|[Tt]owards";
+
+/** A capitalised run of 1–3 words, e.g. "Führerbunker", "Brandenburg Gate", "Reich Chancellery". */
+const CAPITALISED_RUN_SOURCE = "\\p{Lu}[\\p{L}'-]+(?:\\s+\\p{Lu}[\\p{L}'-]+){0,2}";
+
+/** "The Brandenburg Gate" -> "Brandenburg Gate". Narration capitalises its articles at a full stop. */
+function stripLeadingArticle(phrase: string): string {
+  return phrase.replace(/^(?:the|a|an)\s+/i, "").trim();
+}
+
+function isMonthPhrase(phrase: string): boolean {
+  const first = phrase.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return MONTH_NAMES.has(first);
+}
+
+/** True when the phrase's LAST word names a building or site — "Brandenburg Gate", "Reichstag". */
+function endsInPlaceStructure(phrase: string): boolean {
+  const last = phrase.trim().split(/\s+/).pop()?.toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "") ?? "";
+  return PLACE_STRUCTURE_WORDS.has(last);
+}
+
+/** Every word of the phrase is in the place vocabulary — "Berlin", "Soviet Russia". */
+function isKnownGeoPhrase(phrase: string): boolean {
+  const words = phrase.trim().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every((w) => isPlaceToken(w));
+}
+
+/**
+ * The beat's place, or "" when the beat names none.
+ *
+ * Order of preference, vocabulary-driven rather than pattern-driven:
+ *   1. a capitalised run ending in a BUILDING noun, wherever it sits — this is what finds "The
+ *      Brandenburg Gate stood in ruins", where no preposition introduces it;
+ *   2. a prepositional phrase the geo or structure vocabulary recognises — "over the Reichstag",
+ *      "of France";
+ *   3. any remaining prepositional phrase that is not a month — "Führerbunker" is in no
+ *      vocabulary at all and is still plainly where this beat is set;
+ *   4. a bare capitalised run that is entirely place vocabulary — "Berlin was under bombardment".
+ * A month is never a place, at any step.
+ */
+export function extractVisualPlacePhrase(beatText: string): string {
+  const text = (beatText ?? "").replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  if (!text) return "";
+  const runs = [...text.matchAll(new RegExp(CAPITALISED_RUN_SOURCE, "gu"))]
+    .map((m) => stripLeadingArticle(m[0]))
+    .filter((r) => r && !isMonthPhrase(r));
+
+  // 1. building nouns, anywhere in the sentence.
+  const structure = runs.find(endsInPlaceStructure);
+  if (structure) return structure;
+
+  // 2 + 3. prepositional phrases; the article, when present, must be a whole word.
+  const prepositional = new RegExp(
+    `\\b(?:${PLACE_PREPOSITIONS})\\s+(?:(?:the|a|an)\\s+)?(${CAPITALISED_RUN_SOURCE})`,
+    "gu"
+  );
+  const candidates: string[] = [];
+  for (const m of text.matchAll(prepositional)) {
+    const phrase = stripLeadingArticle(m[1] ?? "");
+    if (phrase && !isMonthPhrase(phrase)) candidates.push(phrase);
+  }
+  const vocabHit = candidates.find((c) => endsInPlaceStructure(c) || isKnownGeoPhrase(c));
+  if (vocabHit) return vocabHit;
+  if (candidates.length > 0) return candidates[0]!;
+
+  // 4. a bare place name the beat opens with.
+  return runs.find(isKnownGeoPhrase) ?? "";
 }
 
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
@@ -19579,7 +19697,7 @@ export async function fetchHistoricalBeatVideo(
   }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
-  const queries = buildHistoricalArchivalQueries(intent, beat.text);
+  const queries = buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) });
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
   // Credit optimization: cap applies per tier (each of the 9 tiers below tries the same
   // deduped query list, in order, stopping at first success) — was 6 in normal mode, which at
@@ -19896,7 +20014,7 @@ async function researchBeatClipUnified(
   }
 
   const queries = archivalFirst
-    ? buildHistoricalArchivalQueries(intent, beat.text).slice(0, perf.fastStockMode ? 4 : 6)
+    ? buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) }).slice(0, perf.fastStockMode ? 4 : 6)
     : intent.searchQueries.slice(0, perf.fastStockMode ? 2 : 4);
   const primaryQ = queries[0] || beat.searchQuery || beat.powerWord;
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;

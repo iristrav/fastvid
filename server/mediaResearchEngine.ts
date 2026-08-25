@@ -355,7 +355,17 @@ export function extractObjectCue(beatText: string): string | null {
 export function extractBeatVisualTargets(
   beatText: string,
   intent: Pick<MediaSearchIntent, "persons" | "primaryPerson" | "powerWord" | "searchQueries">,
-  videoTitle?: string
+  videoTitle?: string,
+  /**
+   * RONDE 73: the place the QUERY path resolved, when the caller has one.
+   *
+   * extractLocationPhrase below reads "…in April 1945" as a location called "April", and it
+   * cannot be corrected here — it also feeds classifyBeatFocus, and changing what that sees
+   * changes beatFocusPenalty, an indirect ranking change this round excludes. videoPipeline's
+   * extractVisualPlacePhrase answers the same question correctly for the query path and passes
+   * the answer in. Omit it and this function behaves exactly as before.
+   */
+  opts: { place?: string } = {}
 ): VisualTarget[] {
   const targets: VisualTarget[] = [];
   const seen = new Set<string>();
@@ -372,11 +382,19 @@ export function extractBeatVisualTargets(
     add(coercePersonName(p) || undefined, "person");
   }
 
-  const location = extractLocationPhrase(beatText) || extractLocationPhrase(asVideoTitleString(videoTitle));
+  const location =
+    opts.place?.trim() ||
+    extractLocationPhrase(beatText) ||
+    extractLocationPhrase(asVideoTitleString(videoTitle));
   add(location, "location");
 
   const anchor = intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || location || targets[0]?.text || "";
   add(extractEventPhrase(beatText, anchor), "event");
+
+  // RONDE 73: extractObjectCue has existed since the visual-selection hardening round and its
+  // answer never reached the targets, so a beat centred on a flag, a document or a bunker
+  // carried no object signal into the query builder at all. Same vocabulary, now connected.
+  add(extractObjectCue(beatText), "object");
 
   const yearMatch = beatText.match(/\b(1[0-9]{3}|20[0-2][0-9])\b/);
   if (yearMatch) add(`${anchor} ${yearMatch[0]}`.trim(), "historical_context");
@@ -484,11 +502,61 @@ export function expandAnchorToKnownPerson(anchor: string, fullNames: string[]): 
  * ship") — harmless for a Titanic beat, nonsense for anything else (a Hitler beat produced
  * literal "RMS Hitler" / "Hitler sinking" queries).
  */
+/**
+ * RONDE 73 — the typed fields, combined.
+ *
+ * The pipeline already knew the person, the place and the year of a beat and asked about each of
+ * them separately: "Adolf Hitler archival footage" and "hitler bunker 1945" as two unrelated
+ * queries, never "Adolf Hitler Führerbunker 1945". A provider answering the first returns any
+ * Hitler footage from any year; a provider answering the combination returns the beat.
+ *
+ * Only fields that are actually filled take part — a missing field drops out of the combination
+ * rather than leaving a gap, so no query ever contains an empty slot, a doubled space, or the
+ * word "undefined". Combinations whose parts do not both exist are simply not produced.
+ *
+ * Event and action are deliberately NOT invented here. extractEventCue answers only for the
+ * small documentary-verb vocabulary it already carries, and where it says nothing this builder
+ * says nothing — a beat whose event is "political testament" contributes person, place and time
+ * and leaves event out. Fabricating a field would be worse than omitting it.
+ */
+function buildCombinedTypedQueries(fields: {
+  person: string;
+  place: string;
+  time: string;
+  event: string;
+  object: string;
+}): string[] {
+  const { person, place, time, event, object } = fields;
+  const join = (...parts: string[]): string => parts.filter((p) => p && p.trim()).join(" ").trim();
+  const out: string[] = [];
+  /** Adds a combination only when every part it names is present. */
+  const combine = (...parts: string[]): void => {
+    if (parts.some((p) => !p || !p.trim())) return;
+    const q = join(...parts);
+    if (q) out.push(q);
+  };
+
+  combine(person, place, time);
+  combine(person, event, time);
+  combine(place, event, time);
+  combine(person, place);
+  combine(place, event);
+  combine(place, time);
+  combine(event, time);
+  combine(place, object, time);
+  // The strongest combination again, phrased for an archive rather than a search engine.
+  combine(person, place, "archival footage");
+  if (!person && place) combine(place, "archival footage");
+  return out;
+}
+
 export function buildHistoricalArchivalQueries(
   intent: MediaSearchIntent,
-  beatText: string
+  beatText: string,
+  /** RONDE 73: the query path's own place answer — see extractBeatVisualTargets. */
+  opts: { place?: string } = {}
 ): string[] {
-  const targets = extractBeatVisualTargets(beatText, intent, intent.videoTitle);
+  const targets = extractBeatVisualTargets(beatText, intent, intent.videoTitle, opts);
   const fullNames = knownFullNames(intent);
   const anchor = expandAnchorToKnownPerson(
     intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || targets[0]?.text || "",
@@ -497,6 +565,26 @@ export function buildHistoricalArchivalQueries(
   if (!anchor && !targets.length) return intent.searchQueries.slice(0, 6);
 
   const out: string[] = [];
+
+  // RONDE 73: the typed combination goes FIRST. Everything below is unchanged and stays as the
+  // breadth/fallback layer it has always been — see the F3-39 note on cache breadth.
+  const yearForCombo = beatText.match(/\b(18|19|20)\d{2}\b/)?.[0] ?? "";
+  out.push(
+    ...buildCombinedTypedQueries({
+      // Only the classifier's own answer. knownFullNames below mines the beat with a bare
+      // two-capitals regex and reads "The Brandenburg" out of "The Brandenburg Gate stood…" —
+      // fine as a loose anchor expander, useless as the subject of a combined query.
+      person:
+        coercePersonName(intent.primaryPerson) ||
+        coercePersonName(intent.persons?.[0] ?? "") ||
+        "",
+      place: (opts.place ?? "").trim(),
+      time: yearForCombo,
+      event: extractEventCue(beatText) ?? "",
+      object: extractObjectCue(beatText) ?? "",
+    })
+  );
+
   // Always generate a broad, generic anchor-based set first — this guarantees at least the
   // same query BREADTH the old fixed 7-phrase list did (regression found via F3-39: a beat
   // whose extracted targets collapse to just one or two entries used to starve the provider
@@ -538,7 +626,11 @@ export function buildHistoricalArchivalQueries(
     }
   }
   out.push(...intent.searchQueries);
-  return uniqueQueryStrings(out, 3).slice(0, 8);
+  // RONDE 73: 8 -> 12. The generic set alone is 5 and the per-target variants add several more,
+  // so keeping the old cap would have let the combined family evict exactly the breadth the
+  // F3-39 note above says the provider query-cache depends on. Better queries AND the existing
+  // fallbacks, not better queries INSTEAD of them.
+  return uniqueQueryStrings(out, 3).slice(0, 12);
 }
 
 /** Result of anchorQueriesToHistoricalContext — `anchored` false means untouched inputs. */
