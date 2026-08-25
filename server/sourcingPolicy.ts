@@ -1,5 +1,7 @@
 /** Production sourcing policy — archive-first visuals; ElevenLabs for voice. */
 
+import fs from "fs";
+import os from "os";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "../shared/videoLengths";
 
 /**
@@ -452,27 +454,83 @@ export function polishBeforeComposeEnabled(
 /** Parallel scene compose jobs. Was tuned for Railway's 24 vCPU/24GB RAM box; the current
  *  Hetzner host has 4 vCPU, so this now stays modest regardless of video length rather than
  *  scaling up for longer videos. Override via COMPOSE_PARALLELISM. */
+/**
+ * RONDE 63: how many CPUs this process may actually use.
+ *
+ * `os.cpus().length` reports the HOST's cores, not the container's share, so inside a cgroup it
+ * can be wildly optimistic — which is the trap the numbers below have to avoid. The cgroup quota
+ * is the real answer when there is one; the host count is the fallback.
+ *
+ * Cached: the quota does not change under a running process, and this is read on every compose.
+ */
+let cachedCpuCount: number | null = null;
+export function availableCpuCount(): number {
+  if (cachedCpuCount != null) return cachedCpuCount;
+  const hostCount = Math.max(1, os.cpus().length);
+  let quota = 0;
+  try {
+    // cgroup v2: "<quota> <period>", or "max <period>" when uncapped.
+    const v2 = fs.readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim().split(/\s+/);
+    if (v2.length === 2 && v2[0] !== "max") {
+      const q = Number.parseInt(v2[0]!, 10);
+      const p = Number.parseInt(v2[1]!, 10);
+      if (q > 0 && p > 0) quota = q / p;
+    }
+  } catch {
+    try {
+      // cgroup v1: -1 means uncapped.
+      const q = Number.parseInt(fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "utf8").trim(), 10);
+      const p = Number.parseInt(fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "utf8").trim(), 10);
+      if (q > 0 && p > 0) quota = q / p;
+    } catch {
+      /* no cgroup limits readable — the host count stands */
+    }
+  }
+  cachedCpuCount = Math.max(1, Math.floor(quota > 0 ? Math.min(quota, hostCount) : hostCount));
+  return cachedCpuCount;
+}
+
+/** Test seam — the quota cannot change under a running process, so this is only for tests. */
+export function _resetCpuCountCache(): void {
+  cachedCpuCount = null;
+}
+
+function clampInt(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+/**
+ * RONDE 63: scenes composed at once.
+ *
+ * This returned a flat 2 because it was tuned, per the comment it used to carry, for "the current
+ * Hetzner host [with] 4 vCPU total". Render 532 ran on a box reporting 48 cores, and between this,
+ * montageSegmentParallelism and the 2-thread ffmpeg flag the render used four of them.
+ *
+ * Deriving it from what is actually available keeps the old behaviour on a small box — a 4-core
+ * host still gets 2 — and uses a large one.
+ */
 export function composeParallelismForVideo(videoLength?: string | null, isRailway = false): number {
   const raw = process.env.COMPOSE_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 6) return n;
   }
-  // 1-min fast path has a tight 420s hard cap on the compose stage — keep moderate.
-  if (isFastShortVideoLength(videoLength)) return 2;
-  return 2;
+  return clampInt(availableCpuCount() / 12, 2, 4);
 }
 
-/** Parallel montage segment encodes within a scene. Was tuned for 24 vCPU Railway (3
- *  segments × 4 compose jobs = 12 concurrent ffmpeg ops there); the current Hetzner host
- *  has 4 vCPU total, so this now stays low regardless of compose parallelism above it. */
+/**
+ * Parallel montage segment encodes within a scene.
+ *
+ * RONDE 63: was a flat 2 for the same stale reason as composeParallelismForVideo — see there.
+ * Derived from the real CPU allowance now, and still 2 on a small host.
+ */
 export function montageSegmentParallelism(isRailway = false): number {
   const raw = process.env.MONTAGE_SEGMENT_PARALLELISM?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 4) return n;
   }
-  return 2;
+  return clampInt(availableCpuCount() / 16, 2, 3);
 }
 
 /** FFmpeg thread cap per encode. Was 4 threads/process for Railway's 24 vCPU box; the
@@ -486,9 +544,16 @@ export function montageSegmentParallelism(isRailway = false): number {
  *  modules (e.g. documentaryStyle.ts) don't need their own copy of that detection. */
 export function ffmpegThreadFlag(isRailway = !process.env.BUILT_IN_FORGE_API_KEY): string {
   const raw = process.env.FFMPEG_THREADS?.trim();
-  const n = raw ? parseInt(raw, 10) : isRailway ? 2 : 0;
-  if (!n || isNaN(n) || n < 1) return "";
-  return `-threads ${Math.min(6, n)}`;
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (n && !isNaN(n) && n >= 1) return `-threads ${Math.min(6, n)}`;
+    return "";
+  }
+  // RONDE 63: split what is left between the encodes that will be running at once, rather than
+  // handing every process a flat 2 threads. compose × montage-segment is the concurrency this
+  // has to share with; the floor of 2 keeps the old behaviour on a small host.
+  const concurrent = Math.max(1, composeParallelismForVideo() * montageSegmentParallelism());
+  return `-threads ${clampInt(availableCpuCount() / concurrent, 2, 6)}`;
 }
 
 /** Burn faceless subtitles during montage segment encode (only when faceless subs enabled). */

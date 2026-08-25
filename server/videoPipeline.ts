@@ -1487,6 +1487,9 @@ export function __resetProviderCircuitBreakersForTest(): void {
   elevenLabsFailureStreak = 0; elevenLabsCooldownUntilMs = 0;
   fishAudioFailureStreak = 0; fishAudioCooldownUntilMs = 0;
   googleTtsFailureStreak = 0; googleTtsCooldownUntilMs = 0;
+  // RONDE 63: a new render must re-judge its own clips — a path from a previous render may have
+  // been rewritten under the same name.
+  resetComposeClipValidationMemo();
 }
 
 /** Hard-kill a scope's own children and recursively abort/kill every nested child scope. */
@@ -7872,6 +7875,19 @@ async function fetchMuskGoldenStockBeat(
 }
 
 /** Return clipPath if ffprobe confirms a video stream; never substitute grey placeholders. */
+/**
+ * RONDE 63: compose-time validation verdicts, keyed by clip content.
+ *
+ * Bounded and cleared per render (see resetVisualDedupState) so one render cannot inherit
+ * another's judgement of a path that has since been rewritten.
+ */
+const composeClipValidationMemo = new Map<string, boolean>();
+const COMPOSE_VALIDATION_MEMO_MAX = 500;
+
+export function resetComposeClipValidationMemo(): void {
+  composeClipValidationMemo.clear();
+}
+
 async function requireValidClip(
   clipPath: string,
   sceneIndex: number,
@@ -14945,7 +14961,26 @@ function composeSceneTimeoutMs(clipCount: number, videoLength?: string, sceneDur
   if (_b2) {
     // Complexity formula: scene_duration × 3s/s + 2.5s per clip, bounded by budget base
     const complexity = Math.round(sceneDurationSec * 3_000 + Math.max(0, clipCount) * 2_500);
-    return Math.round(Math.min(Math.max(complexity, 45_000), _b2.basePerSceneComposeMs));
+    // RONDE 63: the cap has to know that scenes compose side by side.
+    //
+    // basePerSceneComposeMs is (total × 0.55) / scenes — a scene's SHARE of the compose budget,
+    // which is the right number if scenes composed one after another. They do not: composeLimit
+    // runs `composeParallelism` of them at once, so a scene's wall clock is roughly that many
+    // times its solo time. Render 532 measured exactly that, with parallelism 2:
+    //
+    //     scene 0   alone 57.5s   alongside scene 1  101.4s
+    //     scene 1   alone 65.0s   alongside scene 0  148.2s
+    //
+    // Both blew the 88s cap, both were abandoned mid-encode, and both were composed again from
+    // scratch — 250 seconds of finished work thrown away, a quarter of the whole render. And the
+    // discarded attempts kept encoding alongside their own replacements.
+    //
+    // Multiplying the cap by the parallelism restores the arithmetic rather than loosening it:
+    // with P scenes at a time, total wall is (scenes / P) × (base × P) = scenes × base, which is
+    // the budget the formula started from.
+    const parallelism = Math.max(1, composeParallelismForVideo(videoLength, IS_RAILWAY));
+    const cap = _b2.basePerSceneComposeMs * parallelism;
+    return Math.round(Math.min(Math.max(complexity, 45_000), cap));
   }
   if (isFastShortVideoLength(videoLength)) return 60_000;
   if (curatedArchiveOnlyVisuals() && clipCount > 8) return 90_000;
@@ -27577,10 +27612,34 @@ export async function composeSceneVideoInner(
     "image_processing",
     "Compose clip validation (ffprobe)",
     async () => {
-      for (const clip of safeClips) {
-        const ok = await requireValidClip(clip, scene.index, duration, workDir);
-        if (ok) verifiedClips.push(ok);
-      }
+      // RONDE 63: validate the clips side by side, and remember the verdicts.
+      //
+      // This was a plain sequential for-loop, and the step is not the cheap ffprobe its label
+      // suggests: requireValidClip also runs isMostlyBlackClip, which decodes frames. Render 532
+      // spent 201 seconds here — scene 1 alone 64.5s for fourteen clips — with one core busy and
+      // the rest of the machine idle, inside the very compose timeout the scene then blew.
+      //
+      // The check is per-clip and independent, so it parallelises exactly. And it is a pure
+      // function of the clip's content, so the second compose of a scene re-derives verdicts it
+      // already had: render 532 composed scenes 0 and 1 twice and paid for this twice.
+      const limit = pLimit(Math.max(2, montageSegmentParallelism(IS_RAILWAY) * 2));
+      const results = await Promise.all(
+        safeClips.map((clip) =>
+          limit(async () => {
+            const key = clipContentKey(clip);
+            const cached = composeClipValidationMemo.get(key);
+            if (cached !== undefined) return cached ? clip : null;
+            const ok = await requireValidClip(clip, scene.index, duration, workDir);
+            if (composeClipValidationMemo.size >= COMPOSE_VALIDATION_MEMO_MAX) {
+              const oldest = composeClipValidationMemo.keys().next();
+              if (!oldest.done) composeClipValidationMemo.delete(oldest.value);
+            }
+            composeClipValidationMemo.set(key, ok != null);
+            return ok;
+          })
+        )
+      );
+      for (const ok of results) if (ok) verifiedClips.push(ok);
     },
     scene.index
   );
