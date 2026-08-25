@@ -5920,7 +5920,8 @@ export async function fetchPexelsClips(
       if (r.status === "fulfilled" && r.value) results.push(r.value);
     }
     } catch (err) {
-      markPexelsSearchResult(false);
+      // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+      if (!isScopeAbortError(err)) markPexelsSearchResult(false);
       console.warn(`[Pipeline] Pexels search failed for query "${currentQuery}" scene ${sceneIndex}:`, err);
     }
   }
@@ -6243,7 +6244,8 @@ export async function fetchPixabayClips(
         }
       }
     } catch (err) {
-      markPixabaySearchResult(false);
+      // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+      if (!isScopeAbortError(err)) markPixabaySearchResult(false);
       console.warn(`[Pipeline] Pixabay search failed for query "${currentQuery}" scene ${sceneIndex}:`, err);
     }
   }
@@ -6642,7 +6644,8 @@ export async function fetchWikimediaImages(
       void putCandidatePool(query, "wikimedia", poolForCache);
     }
   } catch (err) {
-    markWikimediaSearchResult(false);
+    // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+    if (!isScopeAbortError(err)) markWikimediaSearchResult(false);
     console.warn(`[Pipeline] Wikimedia search failed for scene ${sceneIndex}:`, err);
   }
   return results;
@@ -6774,7 +6777,8 @@ async function fetchWikimediaImagesV1(
         markWikimediaSearchResult(true);
         return { query, results: searchData.query?.search ?? [] };
       } catch (err) {
-        markWikimediaSearchResult(false);
+        // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+        if (!isScopeAbortError(err)) markWikimediaSearchResult(false);
         console.warn(`[V1] Wikimedia query "${query}" failed:`, (err as Error).message);
         return { query, results: [] as WikiSearchResult[] };
       }
@@ -8672,7 +8676,8 @@ async function fetchWikimediaVideos(
       }
     }
   } catch (err) {
-    markWikimediaSearchResult(false);
+    // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+    if (!isScopeAbortError(err)) markWikimediaSearchResult(false);
     console.warn(`[Pipeline] Wikimedia video search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -8847,7 +8852,8 @@ async function fetchFlickrCCVideos(
       }
     }
   } catch (err) {
-    markFlickrSearchResult(false);
+    // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+    if (!isScopeAbortError(err)) markFlickrSearchResult(false);
     console.warn(`[Pipeline] Flickr search failed scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -8946,7 +8952,8 @@ async function fetchSepiaSearchVideos(
           providerMetrics(sourcingCache, "sepiasearch").resultCount += data.data?.length ?? 0;
           return (data.data ?? []).map((item) => ({ item, query }));
         } catch (err) {
-          markSepiaSearchResult(false);
+          // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+          if (!isScopeAbortError(err)) markSepiaSearchResult(false);
           console.warn(`[Pipeline] SepiaSearch query "${query}" failed:`, (err as Error).message);
           return [];
         }
@@ -9256,7 +9263,9 @@ export async function fetchGdeltTvNewsClips(
           gdeltAnyResponse = true;
           return (data?.clips ?? []).map((clip) => ({ clip, query }));
         } catch (err) {
-          gdeltAnyError = true;
+          // RONDE 68: a cancellation FastVid caused is not a provider fault — see the note on
+          // isScopeAbortError's use at the other provider catches.
+          if (!isScopeAbortError(err)) gdeltAnyError = true;
           console.warn(`[Pipeline] GDELT TV query "${query}" failed:`, (err as Error).message);
           return [];
         }
@@ -9560,7 +9569,8 @@ export async function fetchEuropeanaVideos(
         }
       }
     } catch (err) {
-      markEuropeanaSearchResult(false);
+      // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+      if (!isScopeAbortError(err)) markEuropeanaSearchResult(false);
       console.warn(`[Pipeline] Europeana search failed scene ${sceneIndex}:`, (err as Error).message);
     }
   }
@@ -9698,7 +9708,8 @@ async function fetchVimeoCCVideos(
         }
       }
     } catch (err) {
-      markVimeoSearchResult(false);
+      // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+      if (!isScopeAbortError(err)) markVimeoSearchResult(false);
       console.warn(`[Pipeline] Vimeo CC search failed scene ${sceneIndex}:`, (err as Error).message);
     }
   }
@@ -9820,7 +9831,8 @@ async function fetchMediaCccVideos(
       }
     }
   } catch (err) {
-    markMediaCccSearchResult(false);
+    // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+    if (!isScopeAbortError(err)) markMediaCccSearchResult(false);
     console.warn(`[Pipeline] media.ccc search failed scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -10136,7 +10148,8 @@ export async function fetchNasaVideoClips(
       }
     }
   } catch (err) {
-    markNasaSearchResult(false);
+    // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+    if (!isScopeAbortError(err)) markNasaSearchResult(false);
     console.warn(`[Pipeline] NASA video search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -10245,7 +10258,8 @@ export async function fetchNaraClips(
       }
     }
   } catch (err) {
-    markNaraSearchResult(false);
+    // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+    if (!isScopeAbortError(err)) markNaraSearchResult(false);
     console.warn(`[Pipeline] NARA search failed for scene ${sceneIndex}:`, (err as Error).message);
   }
   return results;
@@ -10693,7 +10707,8 @@ export async function fetchInternetArchiveClips(
       }
     }
     } catch (err) {
-      markInternetArchiveSearchResult(false);
+      // RONDE 68: a cancellation FastVid caused is not a provider fault — see isScopeAbortError.
+      if (!isScopeAbortError(err)) markInternetArchiveSearchResult(false);
       console.warn(`[Pipeline] Scene ${sceneIndex}: Internet Archive search failed for "${query}":`, (err as Error).message);
     }
   }
