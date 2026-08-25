@@ -17410,7 +17410,22 @@ async function adoptClip(
     dedup.clipAnnotationMeta,
     adScores
   );
-  const finalPaths = tasteResult.rankedPaths;
+  // RONDE 67: a working copy, because the loop below appends to it — see the reprieve.
+  const finalPaths = [...tasteResult.rankedPaths];
+  /**
+   * Candidates the picture gate refused, which get one more turn at the very end.
+   *
+   * Render 533 rejected 34 clips on this gate and put PLACEHOLDERS on eight beats:
+   *
+   *     [VisualCoverage] s1b4: rejected=7 topRejects=beat_image_gate:6,vision_gate:1
+   *                      fallback=PLACEHOLDER (all real sourcing strategies exhausted)
+   *
+   * The gate was applying one standard to the first candidate and to the last. Refusing the
+   * first is free — another follows. Refusing the last means a grey card, which matches the
+   * narration less well than the imperfect picture it replaced. A real image always beats a
+   * placeholder.
+   */
+  const gateReprieved = new Set<string>();
 
   return withVisualDedupLock(dedup, async () => {
     // F3-04: record every candidate considered for this beat (adopted or not) so a post-scene
@@ -17609,9 +17624,24 @@ async function adoptClip(
       // other route passes through: curated archive, rescue, Wikimedia, Openverse, stock, the
       // lot. Verdicts are cached by content identity, so a clip the funnel already judged is
       // free here, and the render-wide budget still bounds the total.
-      if (!(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))) {
+      if (
+        !gateReprieved.has(p) &&
+        !(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))
+      ) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
+        // Not discarded — moved to the back of the queue. for...of reads the array by index, so
+        // an append is visited after every candidate that has not been refused. If one of those
+        // is adopted this is never reached again; if none is, this clip gets its turn rather
+        // than the beat getting a placeholder.
+        gateReprieved.add(p);
+        finalPaths.push(p);
         continue;
+      }
+      if (gateReprieved.has(p)) {
+        console.log(
+          `[BeatImageGate] reprieve s${sceneIndex}b${beatIndex} ${path.basename(p)} — ` +
+            `refused, but every alternative failed too; a real picture beats a placeholder`
+        );
       }
       // contentKey was computed and checked at the top of this iteration (see the comment
       // there). Nothing between that check and here can add to usedContentKeys — the whole
@@ -25755,6 +25785,8 @@ async function fetchSceneVisualsInner(
         // passer is used the full set is restored inside pickBestFunnelCandidate(), so reuse
         // is the last resort and a beat is never dropped to fallback because of this.
         let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
+        /** RONDE 67: the refused winner, kept in case nothing better turns up. */
+        let gateReprieveWinner: typeof winner = null;
 
         // RONDE 58: before adopting, look at the picture.
         //
@@ -25817,13 +25849,18 @@ async function fetchSceneVisualsInner(
             dedup.usedFunnelCandidateIds.add(winner.candidate.id);
             winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
           }
-          // Out of looks, still holding something the gate refused: drop it. The beat falls
-          // through to the next source, which beats showing a picture that does not belong.
+          // RONDE 61 dropped the winner here so the beat could fall through to another source.
+          // RONDE 67 keeps it: render 533 showed what "falling through" costs when the other
+          // sources have nothing either — eight beats ended on a grey placeholder, which matches
+          // the narration worse than the imperfect picture that was refused. The candidate is
+          // held as a reprieve and used only if nothing else is found; funnelClip stays null so
+          // every other route is still tried first.
           if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id)) {
             console.log(
               `[BeatImageGate] s${scene.index}b${beat.index} no acceptable candidate ` +
-                `after ${MAX_JUDGEMENTS_PER_BEAT} looks — falling through`
+                `after ${MAX_JUDGEMENTS_PER_BEAT} looks — held as reprieve`
             );
+            gateReprieveWinner = winner;
             winner = null;
           }
         }
@@ -25842,6 +25879,15 @@ async function fetchSceneVisualsInner(
             dedup.usedFunnelCandidateIds.add(winner.candidate.id);
             winner = null;
           }
+        }
+        // Nothing survived, but something was refused: take the refusal back rather than leave
+        // the beat to a placeholder. A picture the gate disliked is still a picture.
+        if (!winner && gateReprieveWinner) {
+          console.log(
+            `[BeatImageGate] reprieve s${scene.index}b${beat.index} ` +
+              `${path.basename(gateReprieveWinner.clipPath)} — nothing else passed`
+          );
+          winner = gateReprieveWinner;
         }
         let funnelClip: string | null = null;
         let winningExternalCandidate: FunnelCandidate | null = null;
@@ -31416,6 +31462,28 @@ async function _runVideoPipelineInner(
     // mismatch bug — 152 calls, healthy logs, flag on, structurally unable to fire. It may also
     // just mean the material was clean, so this is a warning to go look, not a failure.
     {
+      // RONDE 67: say how many picture judgements the model could not deliver.
+      //
+      // Render 533 refused 34 clips on this gate while the log carried 16 `Gemini API error 429`
+      // and 5 `groq 400 Bad Request`, and nothing in the report told the two apart. "The gate
+      // looked and said no" means the sourcing is wrong; "the gate could not look" means the
+      // verdicts are noise and the montage was assembled without a picture editor. Reading one
+      // as the other sends the next round of work in the wrong direction.
+      {
+        const g = visualDedup.beatImageGate;
+        if (g.judgementsUsed > 0 || g.judgementsFailed > 0) {
+          const line =
+            `beat image gate — judged=${g.judgementsUsed} unavailable=${g.judgementsFailed}` +
+            ` (youtube ${g.youtubeJudgementsUsed})`;
+          console.log(`[Quality] Video ${videoId}: ${line}`);
+          if (g.judgementsFailed >= Math.max(3, g.judgementsUsed * 0.25)) {
+            qualityReport.warnings.push(
+              `beeldgate kon ${g.judgementsFailed} van ${g.judgementsUsed + g.judgementsFailed} ` +
+                `oordelen niet ophalen — die clips zijn ONGEZIEN aangenomen`
+            );
+          }
+        }
+      }
       const gateStats = getActiveGateFiringStats();
       if (gateStats) {
         console.log(`[Quality] Video ${videoId}: gate firing — ${formatGateFiringSummary(gateStats)}`);

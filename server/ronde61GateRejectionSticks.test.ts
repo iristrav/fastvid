@@ -110,7 +110,7 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 4600);
+    const block = src.slice(idx, idx + 5200);
     const picks = [...block.matchAll(/pickBestFunnelCandidate\(\s*\n?\s*scored, dedup\.usedFunnelCandidateIds, dedup\.beatImageRejectedIds/g)];
     expect(picks.length).toBe(2);
     // The bare two-argument call that could hand a refused clip back is gone from this block.
@@ -120,18 +120,27 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   it("a refusal is added to the hard set, not only to the soft one", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 4600);
+    const block = src.slice(idx, idx + 5200);
     expect(block).toContain("dedup.beatImageRejectedIds.add(winner.candidate.id);");
   });
 
-  it("running out of looks while still holding a refused clip drops it", () => {
+  /**
+   * RONDE 67 amends this. Dropping the winner let the beat fall through to another source, which
+   * is right when another source has something — and render 533 showed what it costs when none
+   * does: eight beats ended on a grey placeholder, which matches the narration worse than the
+   * imperfect picture that was refused. The refusal still removes it from THIS decision; it is
+   * now held and used only if nothing else is found anywhere.
+   */
+  it("running out of looks releases the winner, but keeps it as a last resort", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 4600);
+    const block = src.slice(idx, idx + 5200);
     expect(block).toContain("if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id))");
     expect(block).toContain("no acceptable candidate");
-    // This is the line that stops the adoption: render 532 adopted three refused clips here.
-    expect(block).toMatch(/no acceptable candidate[\s\S]{0,240}winner = null;/);
+    // Still nulled here, so every other route is tried first — that half is unchanged.
+    expect(block).toMatch(/no acceptable candidate[\s\S]{0,320}winner = null;/);
+    // And no longer thrown away.
+    expect(block).toMatch(/gateReprieveWinner = winner;[\s\S]{0,80}winner = null;/);
   });
 });
 

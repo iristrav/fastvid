@@ -47,7 +47,9 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     const before = src.slice(Math.max(0, accept - 1400), accept);
     expect(before).toContain("beatClipPassesImageGate(");
     expect(before).toContain('"beat_image_gate"');
-    expect(before).toMatch(/beatClipPassesImageGate\([\s\S]{0,200}?continue;/);
+    // RONDE 67 put the reprieve between the refusal and the continue, so the window is wider —
+    // but a refusal still ends the iteration rather than falling through to acceptance.
+    expect(before).toMatch(/beatClipPassesImageGate\([\s\S]{0,700}?continue;/);
   });
 
   it("it fails open, like every other copy of this gate", () => {

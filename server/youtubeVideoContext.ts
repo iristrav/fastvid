@@ -106,9 +106,42 @@ export function peekYoutubeVideoContext(videoId: string): YoutubeVideoContext | 
   return cacheGet(videoId);
 }
 
+/**
+ * RONDE 67: stand down when YouTube says no.
+ *
+ * Render 533 made 197 of these calls: 89 came back http=429 and 108 arrived unreadable, and not
+ * one of them produced a usable answer. Asking two hundred times is what earns a 429 in the
+ * first place. Every other provider in this pipeline has a breaker; this one had none.
+ *
+ * Deliberately NOT cleared per render: a rate limit is a property of the address, not of the
+ * job, and a second render starting fresh would walk straight back into it.
+ */
+const CONSECUTIVE_FAILURES_TRIP = 6;
+const COOLDOWN_MS = 10 * 60_000;
+let consecutiveFailures = 0;
+let cooldownUntilMs = 0;
+
+function inCooldown(): boolean {
+  return Date.now() < cooldownUntilMs;
+}
+
+function noteFailure(videoId: string): void {
+  consecutiveFailures++;
+  if (consecutiveFailures >= CONSECUTIVE_FAILURES_TRIP) {
+    cooldownUntilMs = Date.now() + COOLDOWN_MS;
+    consecutiveFailures = 0;
+    console.warn(
+      `[YTContext] ${CONSECUTIVE_FAILURES_TRIP} consecutive failures (last ${videoId}) — ` +
+        `standing down for ${Math.round(COOLDOWN_MS / 60_000)} min`
+    );
+  }
+}
+
 /** Test seam: a render should never inherit another test's cached page. */
 export function _resetYoutubeVideoContextCache(): void {
   cache.clear();
+  consecutiveFailures = 0;
+  cooldownUntilMs = 0;
 }
 
 /**
@@ -283,6 +316,8 @@ export async function fetchYoutubeVideoContext(
   if (!youtubeVideoContextEnabled() || !videoId) return EMPTY;
   const cached = cacheGet(videoId);
   if (cached) return cached;
+  // A cached answer is still served during the cooldown — it costs nothing and is already known.
+  if (inCooldown()) return EMPTY;
 
   // Every outcome is logged. Render 532 could only report `src=unknown` on all 52 plans, with
   // nothing to say whether the page timed out, was refused, or arrived in a shape this could
@@ -298,6 +333,7 @@ export async function fetchYoutubeVideoContext(
       `[YTContext] ${videoId} ok via=innertube dur=${viaPlayer.durationSec}s ` +
         `tracks=${viaPlayer.captionTracks.length} ms=${Date.now() - t0}`
     );
+    consecutiveFailures = 0;
     cacheSet(videoId, viaPlayer);
     return viaPlayer;
   }
@@ -320,6 +356,7 @@ export async function fetchYoutubeVideoContext(
     });
     if (!resp.ok) {
       console.warn(`[YTContext] ${videoId} via=watchpage http=${resp.status} ms=${Date.now() - t0}`);
+      noteFailure(videoId);
       return EMPTY;
     }
     const html = await resp.text();
@@ -330,7 +367,12 @@ export async function fetchYoutubeVideoContext(
         `tracks=${ctx.captionTracks.length} bytes=${html.length} ms=${Date.now() - t0}`
     );
     // Only worth remembering when it actually said something.
-    if (usable) cacheSet(videoId, ctx);
+    if (usable) {
+      consecutiveFailures = 0;
+      cacheSet(videoId, ctx);
+    } else {
+      noteFailure(videoId);
+    }
     return ctx;
   } catch (err) {
     const aborted = (err as Error)?.name === "AbortError";
@@ -338,6 +380,7 @@ export async function fetchYoutubeVideoContext(
       `[YTContext] ${videoId} ${aborted ? `timeout after ${timeoutMs}ms` : "failed"}: ` +
         `${(err as Error).message?.slice(0, 100)}`
     );
+    noteFailure(videoId);
     return EMPTY;
   } finally {
     clearTimeout(timer);

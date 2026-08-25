@@ -107,10 +107,20 @@ export type BeatImageGateState = {
   judgementsUsed: number;
   /** Of those, how many went to YouTube candidates — capped separately. */
   youtubeJudgementsUsed: number;
+  /**
+   * RONDE 67: how many judgements the model could not deliver — a 429, a timeout, a malformed
+   * answer, a refused image.
+   *
+   * Render 533 logged 16 `Gemini API error 429` and 5 `groq 400 Bad Request` while this gate was
+   * refusing 34 clips, and nothing in the quality report told the two apart. "The gate looked and
+   * said no" and "the gate could not look" lead to opposite conclusions — the first means the
+   * sourcing is wrong, the second means the verdicts are noise — and they were being read as one.
+   */
+  judgementsFailed: number;
 };
 
 export function createBeatImageGateState(): BeatImageGateState {
-  return { seen: new Map(), judgementsUsed: 0, youtubeJudgementsUsed: 0 };
+  return { seen: new Map(), judgementsUsed: 0, youtubeJudgementsUsed: 0, judgementsFailed: 0 };
 }
 
 function buildPrompt(
@@ -247,9 +257,15 @@ export async function judgeBeatImage(params: {
     ]);
 
     const content = response.choices[0]?.message?.content;
-    if (typeof content !== "string") return unknown("no answer");
+    if (typeof content !== "string") {
+      state.judgementsFailed++;
+      return unknown("no answer");
+    }
     const parsed = JSON.parse(content) as { depicts?: string; belongs?: boolean; reason?: string };
-    if (typeof parsed.belongs !== "boolean") return unknown("answer had no verdict");
+    if (typeof parsed.belongs !== "boolean") {
+      state.judgementsFailed++;
+      return unknown("answer had no verdict");
+    }
 
     const judgement: BeatImageJudgement = {
       verdict: parsed.belongs ? "fits" : "does_not_fit",
@@ -259,7 +275,9 @@ export async function judgeBeatImage(params: {
     state.seen.set(contentKey, judgement);
     return judgement;
   } catch (err) {
-    // Fail open, always. A model outage must not be able to empty a montage.
+    // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
+    // so a render whose verdicts were mostly unobtainable can say so.
+    state.judgementsFailed++;
     return unknown(`judgement failed: ${(err as Error).message?.slice(0, 80)}`);
   }
 }
