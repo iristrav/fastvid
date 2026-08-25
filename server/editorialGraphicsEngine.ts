@@ -33,8 +33,9 @@ import * as path from "path";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { analyzeScene } from "./visualDirector/analyzer";
-import { ffmpegThreadFlag } from "./sourcingPolicy";
+import { ffmpegThreadFlag, montageSegmentParallelism } from "./sourcingPolicy";
 import { ffmpegSemaphore } from "./_core/semaphore";
+import pLimit from "p-limit";
 
 // Route through the shared ffmpeg concurrency gate — editorialGraphicsEnabled() is default-on
 // and this runs once per graphic (per scene), previously entirely outside FFMPEG_CONCURRENCY_LIMIT.
@@ -529,7 +530,40 @@ async function pngToMp4(pngPath: string, mp4Path: string, durationSec: number): 
  * Returns the clip path on success, null on failure.
  * Never throws.
  */
+/**
+ * RONDE 83 — backpressure on graphic encoding.
+ *
+ * planVideoGraphics caps a video at maxPerVideo = 20 plans, and videoPipeline pre-generates
+ * them with one Promise.all over the whole list. That started all twenty at once. The ffmpeg
+ * child processes themselves were never the problem — execAsync above routes every one of them
+ * through ffmpegSemaphore, which admits 3 process-wide — but starting twenty tasks against three
+ * slots is still wrong, for a reason that is easy to miss:
+ *
+ *     await Promise.race([execAsync(cmd), <15s / 30s timeout>])
+ *
+ * execAsync's promise covers ACQUIRING the semaphore as well as running the command, and the
+ * timeout starts at the same instant. A task queued behind seventeen others therefore spends its
+ * whole timeout waiting for a slot it never gets, fails, and its graphic is silently dropped —
+ * the more graphics a video plans, the more of them are lost. Longer videos plan more.
+ *
+ * The limiter is not a cap on how many graphics a video may have; all twenty plans are still
+ * produced. It caps how many are IN FLIGHT, so each one's timeout measures its own encode
+ * instead of the queue in front of it.
+ *
+ * Sized from montageSegmentParallelism — the value the pipeline already uses for "parallel
+ * encodes of short clips", which is exactly what a graphic clip is — and deliberately at or
+ * below the ffmpeg semaphore's own limit, so graphics can never monopolise it.
+ */
+const graphicEncodeLimit = pLimit(Math.max(1, montageSegmentParallelism()));
+
 export async function generateGraphicClip(
+  plan: GraphicPlan,
+  workDir: string
+): Promise<GraphicClip | null> {
+  return graphicEncodeLimit(() => generateGraphicClipInner(plan, workDir));
+}
+
+async function generateGraphicClipInner(
   plan: GraphicPlan,
   workDir: string
 ): Promise<GraphicClip | null> {
