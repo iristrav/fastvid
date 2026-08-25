@@ -307,7 +307,14 @@ describe("Test 16 — [VisualCoverage] explainability log reuses the existing re
     const placeholderLoopIdx = src.indexOf("for (let attempt = 0; attempt < 4; attempt++)");
     expect(logIdx).toBeGreaterThan(-1);
     expect(logIdx).toBeLessThan(placeholderLoopIdx);
-    expect(src).toContain("dedup.clipRejectAudit.filter(");
+    // RONDE 70 keeps the invariant this test protects — the line is still built from the
+    // EXISTING reject audit, not a new tracking system — but no longer by filtering the entry
+    // array. That array is capped at 400 entries and the cap is chronological, so late beats
+    // reported rejected=0 they had not earned. It now reads the audit's per-beat tally, which
+    // is never dropped. Same audit trail, a count that is actually true.
+    expect(src).toContain("beatRejectCount(dedup.clipRejectAudit, scene.index, beat.index)");
+    expect(src).toContain("beatRejectReasons(dedup.clipRejectAudit, scene.index, beat.index)");
+    expect(src).not.toContain("dedup.clipRejectAudit.filter(");
   });
 });
 

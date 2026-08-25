@@ -259,8 +259,26 @@ import {
   isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
 import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
-import type { ClipRejectEntry } from "./clipRejectAudit";
-import { recordClipReject, summarizeClipRejectAudit } from "./clipRejectAudit";
+import type { ClipRejectAudit } from "./clipRejectAudit";
+import {
+  recordClipReject,
+  summarizeClipRejectAudit,
+  createClipRejectAudit,
+  beatRejectCount,
+  beatRejectReasons,
+} from "./clipRejectAudit";
+// RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
+import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
+import {
+  createBeatOutcomeAudit,
+  noteBeatCandidatesOffered,
+  noteBeatEligible,
+  noteBeatAdopted,
+  noteBeatPlaceholder,
+  noteBeatVision,
+  renderBeatFunnelReport,
+  formatEligibleNotAdoptedByProvider,
+} from "./beatOutcomeAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
@@ -10936,6 +10954,27 @@ async function fetchRapidApiYoutubeMeta(
  * gate switched off, no narration, no extractable frame, a model outage, the budget spent —
  * returns true and adopts exactly as before.
  */
+/**
+ * RONDE 70: attribute one judgement's outcome to the beat that asked for it.
+ *
+ * BeatImageGateState counts render-wide, which answers "how much did the gate spend" but not
+ * "which beat was assembled without a picture editor". The state's own counters are read either
+ * side of the call and the delta is attributed — so a cached verdict, which spends nothing,
+ * correctly counts as nothing, and judgeBeatImage's signature and behaviour are untouched.
+ */
+function noteVisionDelta(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  before: { used: number; failed: number }
+): void {
+  const g = dedup.beatImageGate;
+  const judged = g.judgementsUsed - before.used;
+  const failed = g.judgementsFailed - before.failed;
+  for (let i = 0; i < judged; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "judged");
+  for (let i = 0; i < failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
+}
+
 async function beatClipPassesImageGate(
   clipPath: string,
   contentKey: string,
@@ -10956,6 +10995,10 @@ async function beatClipPassesImageGate(
     ).catch(() => false);
     if (got) framePaths.push(framePath);
   }
+  const visionBefore = {
+    used: dedup.beatImageGate.judgementsUsed,
+    failed: dedup.beatImageGate.judgementsFailed,
+  };
   const judgement = await judgeBeatImage({
     framePaths,
     beatText,
@@ -10964,6 +11007,7 @@ async function beatClipPassesImageGate(
     contentKey,
     state: dedup.beatImageGate,
   });
+  noteVisionDelta(dedup, sceneIndex, beatIndex, visionBefore);
   for (const fp of framePaths) {
     try { fs.unlinkSync(fp); } catch { /* ignore */ }
   }
@@ -13413,8 +13457,11 @@ export interface VisualDedupState {
    * e.g. "amsterdam" → "wwii" → "amsterdam" when a Netherlands video discusses WWII occupation.
    */
   currentBeatTopicKey: string;
-  /** Reject reasons during adoptClip (for quality report). */
-  clipRejectAudit: ClipRejectEntry[];
+  /** Reject reasons during adoptClip (for quality report). RONDE 70: the per-beat tally inside
+   *  it is uncapped, so a late beat can no longer report a rejection count it did not earn. */
+  clipRejectAudit: ClipRejectAudit;
+  /** RONDE 70: per-beat funnel record — offered/eligible/adopted/vision, one status per beat. */
+  beatOutcomeAudit: BeatOutcomeAudit;
   /** Successfully adopted clips per beat (for geo export gate). */
   clipAdoptAudit: ClipAdoptEntry[];
   /**
@@ -13656,7 +13703,8 @@ export function createVisualDedupState(
     personTopicLock: Boolean(topic?.personTopicLock && topic?.primaryPerson?.trim()),
     usedPexelsAnchors: new Map(),
     currentBeatTopicKey: "",
-    clipRejectAudit: [],
+    clipRejectAudit: createClipRejectAudit(),
+    beatOutcomeAudit: createBeatOutcomeAudit(),
     clipAdoptAudit: createClipAdoptAudit(),
     beatImageGate: createBeatImageGateState(),
     beatImageRejectedIds: new Set<string>(),
@@ -14496,6 +14544,19 @@ export interface ProviderSourcingMetrics {
   downloadCacheHits: number;
   duplicateSkipped: number;
   acceptedCount: number;
+  /**
+   * RONDE 70 — categories D and E, told apart at last.
+   *
+   * eligibleCount is bumped where a candidate has passed EVERY gate; adoptedCount only where it
+   * actually became a beat's clip. Between the two the file still has to validate and, when the
+   * clip needs one, a fair-use transform still has to produce a file. A candidate that clears
+   * every gate and falls in that gap is category D, and nothing measured it.
+   *
+   * acceptedCount is left exactly as it was and is NOT an alias of either: these are two new
+   * counters at two distinct points, so `eligible > adopted` is now directly readable.
+   */
+  eligibleCount: number;
+  adoptedCount: number;
 }
 
 export interface SourcingCache {
@@ -14541,6 +14602,7 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
     licenseCalls: 0, licenseCacheHits: 0, licenseRejectedCacheHits: 0,
     downloadCount: 0, downloadCacheHits: 0,
     duplicateSkipped: 0, acceptedCount: 0,
+    eligibleCount: 0, adoptedCount: 0,
   };
 }
 
@@ -17575,6 +17637,9 @@ async function adoptClip(
       dedup.sceneCandidatePaths.set(sceneIndex, sceneCandidates);
     }
     for (const p of finalPaths) sceneCandidates.add(p);
+    // RONDE 70: what this beat was actually offered. Counting only — nothing is fetched,
+    // ranked or judged here, and finalPaths is the list the loop below is about to read.
+    noteBeatCandidatesOffered(dedup.beatOutcomeAudit, sceneIndex, beatIndex, finalPaths.length);
 
     for (const p of finalPaths) {
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
@@ -17789,7 +17854,18 @@ async function adoptClip(
       // Phase 20: attribute the acceptance to whatever produced the content key — a provider
       // name for provider-tagged assets, otherwise the key's own family ("stock", "still",
       // "curated", "file"). Pure counter increment, no I/O.
-      providerMetrics(dedup.sourcingCache, contentKey.split(":")[0] || "unknown").acceptedCount++;
+      const providerOfKey = contentKey.split(":")[0] || "unknown";
+      providerMetrics(dedup.sourcingCache, providerOfKey).acceptedCount++;
+      // RONDE 70: every gate is behind this candidate now. Whether it becomes the beat's clip is
+      // still decided below, so this is where "eligible" is counted and NOT where "adopted" is.
+      providerMetrics(dedup.sourcingCache, providerOfKey).eligibleCount++;
+      noteBeatEligible(dedup.beatOutcomeAudit, sceneIndex, beatIndex);
+      /** The single point at which a candidate really becomes this beat's clip. */
+      const markAdopted = (finalPath: string): string => {
+        providerMetrics(dedup.sourcingCache, providerOfKey).adoptedCount++;
+        noteBeatAdopted(dedup.beatOutcomeAudit, sceneIndex, beatIndex, providerOfKey, path.basename(finalPath));
+        return finalPath;
+      };
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
       // RONDE 29: count the moving/still split as it happens. Classified with the file's own
       // existing classifiers rather than the extension — by this point every adopted path is an
@@ -17821,9 +17897,9 @@ async function adoptClip(
           const trimHint = adResult.trimHints?.get(p);
           if (trimHint) {
             const trimmed = await applySegmentTrimIfNeeded(p, trimHint, workDir).catch(() => null);
-            if (trimmed) return trimmed;
+            if (trimmed) return markAdopted(trimmed);
           }
-          return p;
+          return markAdopted(p);
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         continue;
@@ -17848,7 +17924,7 @@ async function adoptClip(
         recordAdoptedClip(transformed, adCtx);
         dedup.assetDirectorSceneClips.push(transformed);
         recordTasteModelAdoption(transformed, dedup.tasteModelCtx, dedup.clipAnnotationMeta.get(p));
-        return transformed;
+        return markAdopted(transformed);
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
       if (mustFairUse) continue;
@@ -23914,19 +23990,23 @@ async function rescueBeatVisualWhenEmpty(
   // the reject-reason breakdown, so this is explainability on top of an existing audit trail, not
   // a new logging/tracking system.
   {
-    const beatRejects = dedup.clipRejectAudit.filter(
-      (e) => e.sceneIndex === scene.index && e.beatIndex === beat.index
-    );
-    const reasonCounts: Record<string, number> = {};
-    for (const e of beatRejects) reasonCounts[e.reason] = (reasonCounts[e.reason] ?? 0) + 1;
+    // RONDE 70: read the per-beat TALLY, not the capped detail list.
+    //
+    // This used to filter dedup.clipRejectAudit, which stopped recording after 80 entries. The
+    // cap is chronological, so late beats reported rejected=0 while early ones were complete —
+    // and rejected=0 is exactly how a beat that was never offered anything looks. Render 534 had
+    // 398 candidates against that cap. The tally is never dropped, so this number is now real.
+    const rejectedHere = beatRejectCount(dedup.clipRejectAudit, scene.index, beat.index);
     const topRejects =
-      Object.entries(reasonCounts)
-        .sort((a, b) => b[1] - a[1])
+      beatRejectReasons(dedup.clipRejectAudit, scene.index, beat.index)
         .slice(0, 3)
         .map(([reason, count]) => `${reason}:${count}`)
         .join(",") || "none";
+    // This block runs at the exact moment the beat falls back to a placeholder, so it is also
+    // the beat's terminal event for the funnel audit.
+    noteBeatPlaceholder(dedup.beatOutcomeAudit, scene.index, beat.index);
     console.warn(
-      `[VisualCoverage] s${scene.index}b${beat.index}: rejected=${beatRejects.length} topRejects=${topRejects} ` +
+      `[VisualCoverage] s${scene.index}b${beat.index}: rejected=${rejectedHere} topRejects=${topRejects} ` +
         `contextualSearch=true fallback=PLACEHOLDER (all real/contextual/AI sourcing strategies exhausted)`
     );
   }
@@ -25953,6 +26033,10 @@ async function fetchSceneVisualsInner(
               ).catch(() => false);
               if (got) framePaths.push(framePath);
             }
+            const visionBefore = {
+              used: dedup.beatImageGate.judgementsUsed,
+              failed: dedup.beatImageGate.judgementsFailed,
+            };
             const judgement = await judgeBeatImage({
               framePaths,
               beatText: beat.text,
@@ -25961,6 +26045,7 @@ async function fetchSceneVisualsInner(
               contentKey: clipContentKey(winner.clipPath),
               state: dedup.beatImageGate,
             });
+            noteVisionDelta(dedup, scene.index, beat.index, visionBefore);
             for (const p of framePaths) {
               try { fs.unlinkSync(p); } catch { /* ignore */ }
             }
@@ -31552,7 +31637,7 @@ async function _runVideoPipelineInner(
     const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
       pipelineSec: Math.round((Date.now() - t0) / 1000),
       stockBeatsUsed: visualDedup.stockBeatsUsed,
-      rejectAudit: visualDedup.clipRejectAudit,
+      rejectAudit: visualDedup.clipRejectAudit.entries,
       adoptAudit: visualDedup.clipAdoptAudit,
       archiveOnly: curatedArchiveOnlyVisuals(),
       fastShort: isFastShortVideoLength(videoLength),
@@ -31620,6 +31705,33 @@ async function _runVideoPipelineInner(
             );
           }
         }
+      }
+      // RONDE 70: one funnel line per beat, for EVERY beat.
+      //
+      // Until now the render explained only its failures — [VisualCoverage] fires inside the
+      // placeholder block, so a beat that got a clip said nothing at all. Render 534's central
+      // question ("398 candidates, where did they go?") cannot be answered from a log that
+      // records only the losses.
+      //
+      // The report is built in beatOutcomeAudit.renderBeatFunnelReport rather than inlined here,
+      // so "one line per beat" is something a test can count instead of read. Everything it uses
+      // is a counter this render already kept: no provider is called, nothing is re-ranked and
+      // nothing is re-judged.
+      {
+        const planned: Array<{ sceneIndex: number; beatIndex: number }> = [];
+        sceneVisualResults.forEach((svr, si) => {
+          const sceneIndex = scenes[si]?.index ?? si;
+          for (const b of svr?.beats ?? []) planned.push({ sceneIndex, beatIndex: b.index });
+        });
+        for (const line of renderBeatFunnelReport(
+          visualDedup.beatOutcomeAudit,
+          planned,
+          visualDedup.clipRejectAudit
+        )) {
+          console.log(line);
+        }
+        const byProvider = formatEligibleNotAdoptedByProvider(visualDedup.sourcingCache.metrics);
+        if (byProvider) console.log(byProvider);
       }
       const gateStats = getActiveGateFiringStats();
       if (gateStats) {
@@ -32107,7 +32219,7 @@ async function _runVideoPipelineInner(
           videoTitle: topicContext,
           scenes: scenes.map((s) => ({ index: s.index, text: s.text ?? "" })),
           adoptAudit: visualDedup.clipAdoptAudit,
-          rejectAudit: visualDedup.clipRejectAudit,
+          rejectAudit: visualDedup.clipRejectAudit.entries,
           qualityReport,
           sceneClips: sceneVisualResults.map((svr) => svr?.clips ?? []),
           sceneBeatDurations: sceneVisualResults.map((svr) => svr?.beatDurations ?? []),
