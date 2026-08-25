@@ -91,7 +91,21 @@ describe("archiveClipFilter — F3-24 dominant vs. small baked-in text", () => {
     expect(result).toBe(false);
   });
 
-  it("prompt sent to the model requires DOMINANCE before rejecting, and still explicitly protects small/marginal text", async () => {
+  /**
+   * RONDE 66 REPLACES the F3-24 policy this test used to pin, at the user's explicit request to
+   * get text out of the picture.
+   *
+   * F3-24's reasoning was sound as far as it went: a size threshold stops the filter from
+   * throwing away archive footage over a small date label. But it also let through every burnt-in
+   * subtitle, channel watermark and title card, and render 532 showed the cost — the filter fired
+   * 3 times in 35 while the beat-image gate kept naming title cards in the same footage.
+   *
+   * The replacement keeps what F3-24 was protecting, on a better axis: text that was physically
+   * in front of the camera (a newspaper, a street sign, a map, an inscription) is kept whatever
+   * its size, and text added in post is refused whatever its size. The two assertions below are
+   * the two halves of that, so neither can regress silently.
+   */
+  it("prompt asks where the text came from, and protects text that was really in the scene", async () => {
     const invokeLLMMock = mockInvokeLLM(false);
     const { archiveClipHasBakedEditText: fn } = await import("./archiveClipFilter");
     await fn(fakeJpeg(), "image/jpeg");
@@ -101,10 +115,15 @@ describe("archiveClipFilter — F3-24 dominant vs. small baked-in text", () => {
     const userContent = messages?.[1]?.content as Array<{ type: string; text?: string }>;
     const promptText = userContent?.find((c) => c.type === "text")?.text ?? "";
 
-    // Rejection now requires dominance, not mere presence of text.
-    expect(promptText).toMatch(/DOMINANTE/);
-    // Small/marginal text is still explicitly protected from auto-rejection.
-    expect(promptText).toMatch(/niet-dominante ondertitels/);
-    expect(promptText).toMatch(/klein deel van het beeld/);
+    // Rejection turns on origin, and size is explicitly ruled out as the test.
+    expect(promptText).toMatch(/De vraag is NIET hoe groot de tekst is/);
+    expect(promptText).toMatch(/ACHTERAF TOEGEVOEGD/);
+    // An added subtitle is refused however small — the half F3-24 could not do.
+    expect(promptText).toMatch(/ondertitels of captions, ook kleine/);
+    // And what F3-24 existed to protect is still protected, on the new axis.
+    expect(promptText).toMatch(/opgenomen werkelijkheid/);
+    expect(promptText).toMatch(/historische kaart/);
+    // The size rule itself is gone.
+    expect(promptText).not.toMatch(/DOMINANTE/);
   });
 });

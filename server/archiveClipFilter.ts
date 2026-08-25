@@ -227,25 +227,44 @@ async function extractVideoPreviewJpeg(
 // meaningful part of the picture) passed this gate uncontested. The fix is a DOMINANCE
 // qualifier, not a blanket ban — a historical photo with small background text/labels still
 // must not be auto-rejected, per the same prompt's existing intent.
+/**
+ * RONDE 66: the axis is where the text came from, not how big it is.
+ *
+ * This prompt used to reject only DOMINANT text, and said in as many words that lower thirds,
+ * burnt-in subtitles, captions, headlines and watermarks were no reason to refuse a clip. In
+ * render 532 it therefore fired 3 times out of 35, while the beat-image gate — looking at the
+ * same footage with a different question — kept reporting exactly what this was supposed to
+ * catch: "Title card with text 'History Excursion' and flames", "Propaganda or newsreel title
+ * card with text 'Soviet Fights Back!'", "An academic article titled 'Physician Suicide'".
+ *
+ * Size was the wrong test. A small modern subtitle burnt into archive footage is as wrong as a
+ * big one; a large newspaper headline the camera is pointed AT is the documentary itself. What
+ * separates them is whether the text was added in post or was physically in front of the lens —
+ * which is a question a picture editor answers instantly, and a size threshold never can.
+ */
 const OVERLAY_PROMPT = `Beoordeel deze videostill(s) voor een documentaire-archief.
 
-hasBakedEditText = true wanneer ÉÉN of meer stills DOMINANTE, onbruikbare tekst bevatten — tekst
-die een aanzienlijk deel van het beeld inneemt en de aandacht wegtrekt van het beeldmateriaal zelf:
-- titelkaarten of chapter cards die het beeld volledig overdekken
-- intro/outro-tekst of aftiteling
-- grote, dominante ingebakken ondertitels/captions (bijv. een brede onderbalk met een volledige
-  lopende zin), zeker wanneer de taal niet aansluit bij de narratie
-- grote montage-tekst die het beeldmateriaal onbruikbaar maakt
-- bewerkingssoftware-interface zichtbaar in beeld (DaVinci, Premiere, etc.)
-- een groot, prominent watermerk dat het beeld domineert
+De vraag is NIET hoe groot de tekst is, maar waar hij vandaan komt: is hij ACHTERAF TOEGEVOEGD
+(in de montage, door een omroep, door een uploader), of stond hij ECHT VOOR DE CAMERA?
 
-hasBakedEditText = false bij normaal documentaire- of archiefmateriaal, ook als er:
-- kleine lower thirds zijn met naam, datum, locatie of jaar
-- kleine, niet-dominante ondertitels of bijschriften die maar een klein deel van het beeld innemen
-- historische tekst, krantenkoppen, kaarten of labels zichtbaar zijn, zolang ze het beeld niet domineren
-- een klein logo of watermerk in de hoek staat
-Kleine, marginale documentaire-labels zijn GEEN reden voor afwijzing — het gaat uitsluitend om
-tekst die zo groot/dominant is dat ze het beeldmateriaal zelf onbruikbaar maakt.`;
+hasBakedEditText = true — tekst die achteraf over het beeld is gelegd, hoe klein ook:
+- titelkaarten, chapter cards, intro- of outrotekst, aftiteling
+- ingebakken ondertitels of captions, ook kleine, ook in de taal van de narratie
+- lower thirds, naambalken, nieuwstickers, omroeplogo's, kanaalbranding
+- watermerken, uploader-handtekeningen, "subscribe"-oproepen, URL's of social-media-namen
+- een schermafdruk van een webpagina, een document, een artikel of een presentatie
+- bewerkingssoftware in beeld (DaVinci, Premiere, etc.)
+- een aftelklok of leader met cijfers
+
+hasBakedEditText = false — tekst die deel is van de opgenomen werkelijkheid:
+- een krant, boek of brief die iemand vasthoudt of die gefilmd wordt
+- een straatnaambord, winkelpui, spandoek, affiche of opschrift op een gebouw of voertuig
+- een historische kaart, plattegrond of document dat het onderwerp van de opname is
+- opschriften op uniformen, vliegtuigen, tanks of machines
+En uiteraard false wanneer er helemaal geen tekst in beeld is.
+
+Bij twijfel over de herkomst: kijk of de tekst meebeweegt met het beeld (dan stond hij er echt)
+of vaststaat over een bewegend beeld heen (dan is hij toegevoegd).`;
 
 async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> {
   if (dataUrls.length === 0) return false;
@@ -478,12 +497,15 @@ export async function archiveClipHasBakedEditText(
   }
   try {
     const dur = await probeVideoDurationSec(videoPath);
+    // RONDE 66: sample the ends too. 0.35/0.65 covers the middle third and misses precisely
+    // where a title card, a leader and an end card live — and a clip that opens on a caption
+    // and clears it is still a clip that opens on a caption.
     const sampleSec =
       dur <= 0.4
         ? [dur > 0 ? dur * 0.5 : 0]
         : fastMode
           ? [dur * 0.5]
-          : [dur * 0.35, dur * 0.65];
+          : [dur * 0.15, dur * 0.5, dur * 0.85];
     const frames = await extractVideoPreviewJpegs(videoPath, workDir, sampleSec);
     if (frames.length === 0) return false;
     const dataUrls = frames.map((buf) => imageMimeToDataUrl(buf, "image/jpeg"));
