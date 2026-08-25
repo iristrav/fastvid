@@ -932,6 +932,37 @@ function markWikimediaSearchResult(success: boolean): void {
   }
 }
 
+/**
+ * RONDE 69: a Wikimedia HTTP failure must leave a trace.
+ *
+ * Render 534 tripped the Wikimedia breaker and the log gave no reason for it. Three of the
+ * catch sites announce themselves; the five `!resp.ok` sites called markWikimediaSearchResult
+ * (false) and returned in silence. So a 429, a 403 and an outage were all indistinguishable
+ * from "Wikimedia simply found nothing", and the only way to tell them apart was to guess.
+ *
+ * What may be logged is deliberately narrow. The request URL carries the search terms and, on
+ * other providers, the API key; the response body can carry either. Neither is diagnostic here
+ * and both are a leak, so this prints the status and nothing else — the two facts that say
+ * whether the provider refused us, rate-limited us, or fell over.
+ *
+ * This is observability only. The breaker's counting, trip threshold and cooldown are
+ * untouched: the caller still calls markWikimediaSearchResult(false) exactly as before.
+ */
+function logWikimediaHttpFailure(
+  what: string,
+  sceneIndex: number,
+  resp: { status: number; statusText?: string }
+): void {
+  const status = typeof resp.status === "number" ? resp.status : 0;
+  const reason = typeof resp.statusText === "string" && resp.statusText.trim()
+    ? ` ${resp.statusText.trim()}`
+    : "";
+  console.warn(
+    `[Pipeline] Wikimedia ${what} for scene ${sceneIndex}: HTTP ${status}${reason} — ` +
+      `counting as a provider failure`
+  );
+}
+
 // Same circuit breaker, same evidence: archive.org's advancedsearch endpoint showed the
 // identical 100%-failure pattern (30 failures, 0 successes) in the same log windows as
 // Wikimedia — timeouts and outright fetch errors, all paying their own 6-10s search cost
@@ -2181,7 +2212,9 @@ async function fetchBeatYoutubeOnly(
           videoTitle,
           fastMode: dedup.perf.fastStockMode,
           imageGate: dedup.beatImageGate,
-        }
+        },
+        dedup.usedContentKeys,
+        dedup.sourcingCache
       ),
       youtubeBeatSearchBudgetMs(),
       `${label} fetch s${sceneIndex} b${beat.index}`
@@ -6541,6 +6574,7 @@ export async function fetchWikimediaImages(
       { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
     ));
     if (!searchResp.ok) {
+      logWikimediaHttpFailure("search", sceneIndex, searchResp);
       markWikimediaSearchResult(false);
       // RONDE 50: `results` may already hold clips adopted from the cached pool above.
       return results;
@@ -6574,6 +6608,7 @@ export async function fetchWikimediaImages(
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
         ));
         if (!infoResp.ok) {
+          logWikimediaHttpFailure("imageinfo", sceneIndex, infoResp);
           markWikimediaSearchResult(false);
           continue;
         }
@@ -6683,6 +6718,7 @@ async function fetchWikimediaImagesV1(
       { headers: UA }
     ));
     if (!infoResp.ok) {
+      logWikimediaHttpFailure("V1 imageinfo", sceneIndex, infoResp);
       markWikimediaSearchResult(false);
       return null;
     }
@@ -6768,6 +6804,7 @@ async function fetchWikimediaImagesV1(
           { headers: UA }
         ));
         if (!searchResp.ok) {
+          logWikimediaHttpFailure("V1 search", sceneIndex, searchResp);
           markWikimediaSearchResult(false);
           return { query, results: [] as WikiSearchResult[] };
         }
@@ -8590,6 +8627,7 @@ async function fetchWikimediaVideos(
           `&srsearch=${encodeURIComponent(`${query} filetype:video`)}&srnamespace=6&srlimit=15&format=json&origin=*`;
         const searchResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(searchUrl, 10_000, `Wikimedia video search scene ${sceneIndex}`, { headers: UA }));
         if (!searchResp.ok) {
+          logWikimediaHttpFailure("video search", sceneIndex, searchResp);
           markWikimediaSearchResult(false);
           return null;
         }
@@ -11637,6 +11675,14 @@ export async function fetchYouTubeCCClips(
   const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadCount;
   const maxDownloadAttempts = youtubeMaxDownloadsPerRender();
 
+  /**
+   * RONDE 69: reserve the slot, then download — never the other way round. Render 534 logged
+   * 20/20, 21/20, 22/20, 23/20 because the check and the increment sat on opposite sides of two
+   * awaits. See claimYoutubeDownloadSlot for why this is the whole fix.
+   */
+  const claimDownloadSlot = (): boolean =>
+    claimYoutubeDownloadSlot(sourcingCache, maxDownloadAttempts);
+
   const ytDeadline = Date.now() + (IS_RAILWAY ? 88_000 : 55_000);
   const guidedDeadline =
     scriptGuidedClipsEnabled() && scriptGuided?.beatText?.trim()
@@ -11784,6 +11830,16 @@ export async function fetchYouTubeCCClips(
             putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
               providerText: { title, description: row.desc },
             });
+            // RONDE 69: the ceiling is enforced HERE, with nothing awaited between the read and
+            // the write. The loop-level checks above stay as cheap early exits; this is the one
+            // that holds.
+            if (!claimDownloadSlot()) {
+              console.log(
+                `[Pipeline] Scene ${sceneIndex}: YouTube download ceiling reached for this RENDER ` +
+                  `(${downloadsSoFar()}/${maxDownloadAttempts} downloads, ${fetched} accepted here)`
+              );
+              break;
+            }
             const ok = await downloadYouTubeCCClip(
               videoId,
               clipDur,
@@ -11796,7 +11852,6 @@ export async function fetchYouTubeCCClips(
               sourcingCache,
               startIsExact
             );
-            providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
             if (ok && !(await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided))) {
               // Rejected on what it shows, not on what it is called. The file is removed so a
               // later beat cannot pick it up off disk, and the loop moves to the next candidate.
@@ -14507,6 +14562,42 @@ export function providerMetrics(cache: SourcingCache | undefined, provider: stri
     cache.metrics.set(provider, m);
   }
   return m;
+}
+
+/**
+ * RONDE 69: reserve a YouTube download slot, or refuse. Reserve first, download second.
+ *
+ * Render 534 announced the render-wide ceiling four times with a rising number:
+ *
+ *     ceiling reached for this RENDER (20/20 downloads, 0 accepted here)
+ *                                     (21/20 ...)  (22/20 ...)  (23/20 ...)
+ *
+ * RONDE 68 had moved the counter onto the render-scoped metrics, which was right, but the check
+ * still sat at the top of the candidate loop while the increment ran after the download
+ * returned — with two awaits in between (planScriptGuidedClip, fetchRapidApiYoutubeMeta). Node
+ * is single-threaded but concurrent: several fetchYouTubeCCClips calls interleave at those
+ * await points, all read the same count, and all pass a check that was true when they read it
+ * and false by the time they acted on it. A ceiling that is checked and acted on across an
+ * await is not a ceiling.
+ *
+ * Read and write here with nothing awaited between them. Within one event loop turn that IS the
+ * atomic operation — no lock, no queue, no new concurrency layer, and nothing shared between
+ * renders: the counter is the render's own SourcingCache.
+ *
+ * The limit is on ATTEMPTS, not on successes. A failed download does not return its slot: the
+ * 134 downloads of render 533 were nearly all failures, and a ceiling that only counted the
+ * successes is exactly the ceiling that did not hold.
+ *
+ * Returns true when the slot is yours, false when the render is out.
+ */
+export function claimYoutubeDownloadSlot(
+  cache: SourcingCache | undefined,
+  maxDownloads: number
+): boolean {
+  const m = providerMetrics(cache, "youtube_cc");
+  if (m.downloadCount >= maxDownloads) return false;
+  m.downloadCount++;
+  return true;
 }
 
 /** Exact-match normalization only: case-folded and whitespace-collapsed. Intentionally does no
@@ -20331,7 +20422,7 @@ async function fetchBeatClip(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
-            }),
+            }, dedup.usedContentKeys, dedup.sourcingCache),
         },
         {
           query: "SpaceX Starship",
@@ -20386,7 +20477,7 @@ async function fetchBeatClip(
             videoTitle,
             fastMode: perf.fastStockMode,
             imageGate: dedup.beatImageGate,
-          }),
+          }, dedup.usedContentKeys, dedup.sourcingCache),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
     );
@@ -20409,7 +20500,7 @@ async function fetchBeatClip(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
-            }),
+            }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "archival early", adoptOpts
@@ -20495,7 +20586,7 @@ async function fetchBeatClip(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
-            }),
+            }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "archival", adoptOpts

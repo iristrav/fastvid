@@ -57,8 +57,17 @@ describe("RONDE 68 — the ceiling counts what it claimed to count", () => {
   });
 
   it("it reads the same counter the download increments, so it cannot drift", () => {
+    // RONDE 69 makes this stricter rather than looser. RONDE 68 had the check at the top of the
+    // loop and the increment after the download returned — the same counter, but two awaits
+    // apart, which render 534 showed is not a ceiling at all (20/20, 21/20, 22/20, 23/20).
+    // The read and the write are now two adjacent lines of one function, so "cannot drift" is
+    // no longer a property of where the calls happen to sit. See claimYoutubeDownloadSlot.
     const src = PIPELINE();
-    expect(src).toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
+    expect(src).toContain('const m = providerMetrics(cache, "youtube_cc");');
+    expect(src).toContain("if (m.downloadCount >= maxDownloads) return false;");
+    expect(src).toContain("m.downloadCount++;");
+    // And the loop no longer increments behind the download's back.
+    expect(src).not.toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
   });
 
   it("the ceiling is a render budget YouTube can still work within", () => {
