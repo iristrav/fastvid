@@ -12909,25 +12909,156 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Extract the visual subject from a beat sentence.
- * Returns 1–3 meaningful words (nouns, proper nouns, key verbs) — no stop words.
- * Persons array takes priority: if names are present, they anchor the query.
+ * RONDE 71 — words that describe an action, a quantity or a moment, not a thing to photograph.
+ *
+ * STOP_WORDS already removes grammar. What it does not remove is narration verbs and time and
+ * quantity filler, and those were reaching the providers because they happened to be long
+ * enough and to sit early in the sentence. Deliberately a list of what cannot be photographed:
+ * "soldiers", "banner", "airfield", "birthday", "construction" are all concrete and stay.
  */
+const NON_VISUAL_QUERY_WORDS = new Set([
+  // narration verbs
+  "spent","come","came","received","dictated","showed","shown","ended","raised","reached",
+  "remained","controlled","described","address","addresses","addressed","married","retreat",
+  "retreats","retreated","closing","closed","defending","defended","fighting","fought",
+  "scramble","scrambled","gave","given","took","taken","made","went","gone","said","told",
+  "began","begun","started","stopped","entered","left","arrived","moved","held","kept",
+  "brought","found","felt","knew","thought","become","became","refused","wished","lay",
+  "laid","stood","sat","turned","looked","asked","called","used","wrote","written","spoke",
+  "spoken","carried","fell","fallen","rose","risen","kill","killed","died","dies","dying",
+  "visited","marching","walked","ran","running","meets","meet","met",
+  // pronouns and reflexives STOP_WORDS does not carry
+  "them","him","himself","herself","itself","themselves","whom","whose","hers","theirs",
+  // time, order and quantity filler
+  "final","finally","first","last","latest","next","later","earlier","early","late","then",
+  "point","moment","week","weeks","month","months","day","days","hour","hours","minute",
+  "minutes","night","morning","evening","today","yesterday","tomorrow","twentieth","eighth",
+  "thirtieth","half","constant","constantly","longer","already","almost","nearly","again",
+  "once","twice","ever","never","always","often","soon","yet","shortly","meanwhile","inside",
+  "outside","under","above","beneath","below","beyond","toward","towards","across","against",
+  "little","more","less","several","enough",
+  // abstractions with nothing to show
+  "impact","importance","significance","effect","effects","result","results","reason",
+  "reasons","cause","causes","sense","idea","ideas","thing","things","kind","sort","way",
+  "ways","part","parts","fact","facts","case","cases","level","state","states","situation",
+  "psychological","emotional","mental",
+  // spelled-out numerals and bare units — "the bunker lay eight and a half metres below" is a
+  // measurement, and "bunker eight metres" is not an image anyone can look for.
+  "three","four","five","seven","eight","nine","eleven","twelve","dozen","hundred","thousand",
+  "million","billion","metre","metres","meter","meters","foot","feet","mile","miles","yard",
+  "yards","kilometre","kilometres","kilometer","kilometers","percent","dozens","hundreds",
+  "thousands","millions",
+]);
+
+/**
+ * Month names. Capitalised in narration and period markers in their own right, but three of them
+ * collide with ordinary words STOP_WORDS carries — "may" the modal, "march" the verb, "august"
+ * the adjective — so "on the eighth of May" lost its month entirely. A capitalised month is a
+ * month.
+ */
+const MONTH_NAMES = new Set([
+  "january","february","march","april","may","june",
+  "july","august","september","october","november","december",
+]);
+
+/** Common sentence openers that are capitalised only because they start the sentence. */
+const SENTENCE_OPENER_WORDS = new Set([
+  "the","a","an","it","he","she","they","we","in","on","at","by","for","with","from","after",
+  "before","above","below","during","when","while","that","this","these","those","there","then",
+  "but","and","or","as","if","so","by","life","most","many","some","every","each","one","two",
+]);
+
+/**
+ * Extract the visual subject from a beat sentence.
+ *
+ * RONDE 71 — chosen by meaning, not by position.
+ *
+ * This used to take "the first three unique words of four letters or more that are not stop
+ * words". Whether that produced a usable query depended entirely on where the concrete nouns
+ * happened to sit in the sentence. Measured on real documentary narration:
+ *
+ *     "Berlin was under constant bombardment in the last week of April 1945."
+ *                                                    -> berlin under constant
+ *     "It was his final birthday, the twentieth of April 1945."
+ *                                                    -> final birthday twentieth
+ *     "Hitler received military reports that described armies which no longer existed."
+ *                                                    -> hitler received military
+ *
+ * while sentences that happen to open with their subject came out fine. Documentary narration
+ * does both constantly, so the extractor was not broken but unreliable — which for a production
+ * render is the same problem.
+ *
+ * The order of preference is the brief's: concrete entities first, then everything else.
+ *
+ *   1. proper nouns — capitalisation is what separates Führerbunker, Reichstag, Dunkirk,
+ *      Spitfire and the Blitz from spent, under, constant and twentieth. A word capitalised
+ *      mid-sentence is a name; a capitalised sentence opener is only a name when it is not one
+ *      of the ordinary words a sentence can start with.
+ *   2. concrete common nouns — soldiers, bunker, banner, airfield, construction.
+ *   3. an explicit year, but only one this beat itself states (see RONDE 71 fix 2).
+ *
+ * Nothing that describes an action, a quantity or a moment is eligible at all.
+ *
+ * No new LLM call, no new API, no new dependency: two word sets and the capitalisation the
+ * script already carries.
+ */
+function beatSubjectCandidates(clean: string): { proper: string[]; common: string[]; year: string } {
+  const proper: string[] = [];
+  const common: string[] = [];
+  const seen = new Set<string>();
+  // Sentence-initial position is per sentence, not per beat: a beat can hold several.
+  for (const sentence of clean.split(/(?<=[.!?])\s+/)) {
+    const tokens = sentence.split(/\s+/).filter(Boolean);
+    tokens.forEach((raw, i) => {
+      const word = raw.replace(/[^\p{L}\p{N}'-]/gu, "");
+      if (word.length < 3) return;
+      const lower = word.toLowerCase();
+      if (seen.has(lower)) return;
+      const capitalisedMonth = word[0] !== word[0]!.toLowerCase() && MONTH_NAMES.has(lower);
+      if (!capitalisedMonth && (STOP_WORDS.has(lower) || NON_VISUAL_QUERY_WORDS.has(lower))) return;
+      // A pure number is a year or a count; years are handled separately, counts are not visual.
+      if (/^\d+$/.test(word)) return;
+      const capitalised = word[0] !== word[0]!.toLowerCase();
+      const isProperNoun = capitalised && (i > 0 || !SENTENCE_OPENER_WORDS.has(lower));
+      // Three letters is enough for a name — May, RAF, Ford — but not for a common noun, where
+      // it is almost always grammar the stop list has not happened to catch.
+      if (word.length < 4 && !isProperNoun) return;
+      seen.add(lower);
+      (isProperNoun ? proper : common).push(lower);
+    });
+  }
+  // Only a year the beat itself states — never one inherited from the video title.
+  const year = clean.match(/\b(1[5-9]\d{2}|20\d{2})\b/)?.[0] ?? "";
+  return { proper, common, year };
+}
+
 function extractBeatSubject(beatText: string, persons: string[] = []): string {
   const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  const { proper, common, year } = beatSubjectCandidates(clean);
 
-  // If a person is named, use "Person + first meaningful non-stop word"
+  // If a person is named, they anchor the query and the best remaining ENTITY joins them —
+  // previously this was "the first non-stop word", which is how "Eva Braun come" happened.
   if (persons.length > 0) {
-    const person = persons[0];
-    const words = clean.toLowerCase().split(/\W+/).filter(w => w.length > 3 && !STOP_WORDS.has(w) && !person.toLowerCase().includes(w));
-    const extra = words[0] ?? "";
+    const person = persons[0]!;
+    const personWords = new Set(person.toLowerCase().split(/\W+/).filter(Boolean));
+    const notPerson = (w: string) => !personWords.has(w);
+    const extra = proper.find(notPerson) ?? common.find(notPerson) ?? "";
     return extra ? `${person} ${extra}` : person;
   }
 
-  // Otherwise: take the longest meaningful non-stop words from the sentence
-  const words = clean.split(/\W+/).filter(w => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
-  const unique = [...new Set(words.map(w => w.toLowerCase()))];
-  return unique.slice(0, 3).join(" ") || clean.split(/\s+/).slice(0, 2).join(" ");
+  // Entities first, then concrete nouns, then the beat's own year if it stated one.
+  const ranked = [...proper, ...common].slice(0, 3);
+  if (ranked.length === 0) {
+    // Nothing concrete survived. Fall back to the old positional behaviour rather than
+    // returning nothing — a weak query still beats no query, and scriptStockSearchQueries'
+    // sceneText/videoTitle cascade below only runs on an empty subject.
+    const words = clean.split(/\W+/).filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
+    const unique = [...new Set(words.map((w) => w.toLowerCase()))];
+    return unique.slice(0, 3).join(" ") || clean.split(/\s+/).slice(0, 2).join(" ");
+  }
+  // The year rides along only when there is room and it is not already in the words.
+  if (year && ranked.length < 3) ranked.push(year);
+  return ranked.join(" ");
 }
 
 export function scriptStockSearchQueries(
@@ -16933,9 +17064,20 @@ function extractYearFromText(text: string | undefined): number | null {
 export function historicalDateAlignmentScore(
   providerText: { title?: string; description?: string; dateHint?: string } | undefined,
   beatText: string,
-  videoTitle?: string
+  /** RONDE 71: accepted and deliberately unused — see the target-year note below. */
+  _videoTitle?: string
 ): number {
-  const targetYear = extractYearFromText(beatText) ?? extractYearFromText(asVideoTitleString(videoTitle));
+  // RONDE 71: the target period comes from the BEAT, never from the video title.
+  //
+  // Point 3 of this round promotes historical accuracy above media type in the ranking. Doing
+  // that while the target year could be inherited from the title would make the promotion
+  // actively harmful: a Blitz beat under a "April 1945" title would reserve +2 for a 1945
+  // photograph and score the correct 1940 one at 0. Returning 0 for a beat that states no year
+  // is a weaker signal; ranking on a year the beat never claimed is a wrong one.
+  //
+  // The parameter stays in the signature: callers pass it positionally, and removing it would
+  // be a wider change than this round allows. It is prefixed to say the omission is deliberate.
+  const targetYear = extractYearFromText(beatText);
   if (targetYear == null) return 0;
   const candidateYear =
     extractYearFromText(providerText?.dateHint) ??
@@ -16947,6 +17089,44 @@ export function historicalDateAlignmentScore(
   if (diff <= 2) return 1;
   if (diff <= 10) return 0;
   return -3;
+}
+
+/**
+ * RONDE 71 — relevance decides; motion breaks a tie.
+ *
+ * The candidate sort used to open with
+ *
+ *     if (stillA !== stillB) return stillA - stillB;
+ *
+ * before a single score was compared. Media type therefore beat content outright: a mediocre
+ * modern stock video won against a perfect Bundesarchiv photograph every time, on every beat.
+ * For 1945 the best available material very often IS a photograph, so the rule was inverted
+ * against exactly the documentaries this pipeline exists to make.
+ *
+ * Motion is still a real editorial preference — a montage of stills is worse television — so it
+ * is not removed, only demoted. When two candidates are genuinely comparable on content, the
+ * moving one still wins. When one is meaningfully more relevant, content wins.
+ *
+ * "Meaningfully" is MOTION_TIE_BREAK_MARGIN, measured in the same points the sort already uses:
+ * an exact entity match is +12, a wrong period -3, a right one +2. A margin of 3 means a period
+ * mismatch (5 points between a right and a wrong year) decides, while noise does not.
+ *
+ * Returns a comparator result for Array.sort — negative keeps `a` first.
+ */
+export const MOTION_TIE_BREAK_MARGIN = 3;
+
+export function compareBeatCandidates(
+  scoreA: number,
+  isStillA: boolean,
+  scoreB: number,
+  isStillB: boolean
+): number {
+  const gap = scoreB - scoreA;
+  // Content first: a clear difference in relevance is never overruled by media type.
+  if (Math.abs(gap) > MOTION_TIE_BREAK_MARGIN) return gap;
+  // Comparable on content — the existing motion preference decides, exactly as before.
+  if (isStillA !== isStillB) return (isStillA ? 1 : 0) - (isStillB ? 1 : 0);
+  return gap;
 }
 
 /** How strongly a candidate's own provider evidence supports the beat's primary person. */
@@ -17471,26 +17651,19 @@ async function adoptClip(
       genericPersonPenalty(beatFocus, tier, eventScore, locationScore, objectScore, hasProviderText)
     );
   };
-  const sortedPaths = [...paths].sort((a, b) => {
-    const stillA = isStillPhotoClip(a) ? 1 : 0;
-    const stillB = isStillPhotoClip(b) ? 1 : 0;
-    if (stillA !== stillB) return stillA - stillB;
-    const scoreB =
-      scoreVisualRelevance(`${sourceQuery} ${path.basename(b)} ${beatText}`, keywords) +
-      scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
-      scoreBeatNarrationMatch(beatText, sourceQuery, b) * 4 +
-      realEntityScore(entityRules, sourceQuery, b) +
-      nextLevelScore(b) +
-      (muskTopic ? muskBrandScore(sourceQuery, b) : 0);
-    const scoreA =
-      scoreVisualRelevance(`${sourceQuery} ${path.basename(a)} ${beatText}`, keywords) +
-      scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
-      scoreBeatNarrationMatch(beatText, sourceQuery, a) * 4 +
-      realEntityScore(entityRules, sourceQuery, a) +
-      nextLevelScore(a) +
-      (muskTopic ? muskBrandScore(sourceQuery, a) : 0);
-    return scoreB - scoreA;
-  });
+  // RONDE 71: the same score terms as before, in the same order, computed once per candidate
+  // instead of twice per comparison. Nothing was added to or removed from the sum.
+  const candidateScore = (p: string): number =>
+    scoreVisualRelevance(`${sourceQuery} ${path.basename(p)} ${beatText}`, keywords) +
+    scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery)) +
+    scoreBeatNarrationMatch(beatText, sourceQuery, p) * 4 +
+    realEntityScore(entityRules, sourceQuery, p) +
+    nextLevelScore(p) +
+    (muskTopic ? muskBrandScore(sourceQuery, p) : 0);
+  const sortedPaths = [...paths].sort((a, b) =>
+    // Content decides; motion only breaks a tie. See compareBeatCandidates.
+    compareBeatCandidates(candidateScore(a), isStillPhotoClip(a), candidateScore(b), isStillPhotoClip(b))
+  );
 
   // Point 9 (final multi-candidate visual selection patch — score explainability): log the
   // winning pre-AssetDirector candidate's full signal breakdown — entity/event/location/date

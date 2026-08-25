@@ -167,14 +167,27 @@ describe("RONDE 6 P1-B — the year the script states anchors the queries", () =
     expect(res.primaryQuery).toBe("munich street scene 1923");
   });
 
-  it("falls back to the title's year when the scene states none", () => {
+  it("does NOT fall back to the title's year when the scene states none", () => {
+    // RONDE 71 reverses this deliberately. RONDE 6 added the title fallback as extra context,
+    // and it is extra context only when every scene of the video shares the title's period.
+    // The forensic audit measured what it does otherwise, from the real code path, under a
+    // title of "… April 1945":
+    //
+    //     "Life inside London during the Blitz."          -> life inside london 1945  (1940-41)
+    //     "Churchill addresses the nation after Dunkirk." -> churchill … 1945         (1940)
+    //     "The construction of the Eiffel Tower."         -> Eiffel Tower … 1945      (1887-89)
+    //
+    // Every documentary that walks a timeline was sent to one year of it. A query with no
+    // period is weaker; a query with the wrong period is wrong, and the archive answers it
+    // precisely. The scene's own year still wins whenever it states one — see the two tests
+    // above, which are unchanged.
     const res = anchorQueriesToHistoricalContext({
       primaryQuery: "city in ruins",
       sceneText: "The Red Army encircled the city in the final days of the war.",
       videoTitle: "The Fall of Berlin 1945",
     });
-    expect(res.year).toBe("1945");
-    expect(res.primaryQuery).toBe("city in ruins 1945");
+    expect(res.year).toBe("");
+    expect(res.primaryQuery).toBe("city in ruins");
   });
 });
 

@@ -578,9 +578,21 @@ export function anchorQueriesToHistoricalContext(params: {
   const sceneText = params.sceneText ?? "";
   if (!primaryQuery || !isHistoricalDocumentary(title, sceneText)) return unchanged;
 
-  // Period anchor: only a year the script/title literally states. Scene text wins over title
-  // (a scene about 1923 in a video titled "… 1945" should search 1923, not 1945).
-  const year = sceneText.match(QUERY_YEAR_RE)?.[0] ?? title.match(QUERY_YEAR_RE)?.[0] ?? "";
+  // Period anchor: ONLY a year the narration of this scene literally states.
+  //
+  // RONDE 71 — the video title is not a period for a beat that names none.
+  //
+  // This used to fall back to a year in the title, which is true of every scene in the video.
+  // With a title of "… April 1945" the audit measured, from the real code path:
+  //
+  //     "Life inside London during the Blitz."       -> life inside london 1945   (was 1940-41)
+  //     "Churchill addresses the nation after Dunkirk." -> churchill … 1945        (was 1940)
+  //     "The construction of the Eiffel Tower."      -> Eiffel Tower construction 1945
+  //
+  // Every documentary that walks a timeline was being sent to one year of it. A query with no
+  // period is a weaker query; a query with the WRONG period is a wrong one, and the archive
+  // answers it precisely. So when the scene states no year, no year is added.
+  const year = sceneText.match(QUERY_YEAR_RE)?.[0] ?? "";
   // Person anchor only when THIS scene's own text mentions them — the title mentioning the
   // person is true for every scene of the video and would inject the name into beats that are
   // not about them (the "query must come from the existing beat intent" rule).
