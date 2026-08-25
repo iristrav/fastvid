@@ -23244,6 +23244,46 @@ async function adoptArchiveBeatClipWithBudget(
 }
 
 /** Wikimedia Commons — video first, stills deferred in archive-first mode. */
+/**
+ * RONDE 75 — the typed query family, for the two retrieval paths that build their own lists.
+ *
+ * RONDE 73 wired person/place/time/event/object into buildHistoricalArchivalQueries and reached
+ * four call sites with it. adoptInternetArchiveBeatClip and adoptWikimediaBeatClip were not
+ * among them: they assemble their queries from the geo/stock builders instead, and the RONDE 74
+ * trace measured what that costs on the same beats the typed path gets right:
+ *
+ *     "…in the Führerbunker in April 1945."         -> "hitler bunker"
+ *     "The Brandenburg Gate stood in ruins…"        -> "berlin city skyline"
+ *     "…their flag over the Reichstag in April 1945." -> "russia aerial video"
+ *     "Churchill … after the fall of France."       -> "france aerial video"
+ *
+ * This is not a third query architecture. It is the adapter those two paths were missing: it
+ * assembles the MediaSearchIntent the existing builder already takes, and returns exactly what
+ * the other four call sites receive. Nothing new is extracted and no new query shape is invented.
+ */
+function typedRetrievalQueriesForBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState
+): string[] {
+  const intent = buildMediaSearchIntent({
+    beatText: beat.text,
+    searchQueries: beatMediaSearchQueries(beat, videoTitle),
+    keywords: beat.keywords ?? [],
+    primaryPerson: "",
+    persons: resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined),
+    videoTitle,
+    powerWord: beat.powerWord,
+    personTopicLock: dedup.personTopicLock ?? false,
+    spaceTopic: false,
+    muskTopic: false,
+  });
+  return buildHistoricalArchivalQueries(intent, beat.text, {
+    place: extractVisualPlacePhrase(beat.text),
+  });
+}
+
 async function adoptWikimediaBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -23272,15 +23312,20 @@ async function adoptWikimediaBeatClip(
   const geoQueries = buildGeoStockSearchQueries(beat.text, videoTitle).slice(0, 3);
   const titleGeo = extractTitleGeoPlaceTags(videoTitle).slice(0, 3);
   const wikiQueries = buildV1WikimediaQueries(baseAnalysis, videoTitle).slice(0, dedup.perf.fastStockMode ? 3 : 5);
+  // RONDE 75: the same typed family the other retrieval paths get, computed once for this beat
+  // and put in front of the geo/stock builders below rather than replacing them.
+  const typedQueries = typedRetrievalQueriesForBeat(beat, scene, videoTitle, dedup);
   const geoVideoQueries = uniqueQueryStrings(
     [
+      ...typedQueries.slice(0, 3),
       ...wikiQueries,
       ...geoQueries,
       ...buildWikimediaVideoGeoQueries(beat.text, videoTitle),
       toQueryString(beat.searchQuery),
     ],
     3
-  ).slice(0, dedup.perf.fastStockMode ? 5 : 8);
+    // Cap raised by exactly the number of typed entries added, so no existing query is evicted.
+  ).slice(0, dedup.perf.fastStockMode ? 8 : 11);
 
   const adoptWikiPath = async (
     clipPath: string | null | undefined,
@@ -23388,6 +23433,15 @@ async function adoptWikimediaBeatClip(
     visionMinScore: number;
   }> = dedup.perf.fastStockMode
     ? [
+        // RONDE 75: the typed queries lead the stills attempts too, in the same shape and with
+        // the same thresholds as the geo attempts below them. Two in fast mode, three otherwise.
+        ...typedQueries.slice(0, 2).map((q, qi) => ({
+          analysis: { ...baseAnalysis, keyword: q },
+          fileTag: `wiki${beat.index}ty${qi}`,
+          timeoutMs: 22_000,
+          minThreshold: relaxedThreshold,
+          visionMinScore: minClipQualityScore(),
+        })),
         {
           analysis: baseAnalysis,
           fileTag: `wiki${beat.index}`,
@@ -23411,6 +23465,13 @@ async function adoptWikimediaBeatClip(
         })),
       ]
     : [
+        ...typedQueries.slice(0, 3).map((q, qi) => ({
+          analysis: { ...baseAnalysis, keyword: q },
+          fileTag: `wiki${beat.index}ty${qi}`,
+          timeoutMs: 35_000,
+          minThreshold: relaxedThreshold,
+          visionMinScore: minClipQualityScore(),
+        })),
         {
           analysis: baseAnalysis,
           fileTag: `wiki${beat.index}`,
@@ -23493,9 +23554,10 @@ async function adoptWikimediaBeatClip(
 
   const geoDoc = isGeoDocumentaryContext(beat.text, videoTitle);
   const openverseQueries = uniqueQueryStrings(
-    [...wikiQueries, ...geoQueries, beat.searchQuery],
+    // RONDE 75: typed first here too; the cap grows by the same amount so nothing is lost.
+    [...typedQueries.slice(0, 2), ...wikiQueries, ...geoQueries, beat.searchQuery],
     3
-  ).slice(0, geoDoc ? 6 : 4);
+  ).slice(0, geoDoc ? 8 : 6);
   for (const q of openverseQueries) {
     if (sceneFetchAborted()) break;
     try {
@@ -23598,9 +23660,20 @@ async function adoptInternetArchiveBeatClip(
     videoTitle,
     primaryPerson: dedup.primaryPerson || undefined,
   });
-  const queries = anchored.anchored
+  const geoFallback = anchored.anchored
     ? [anchored.primaryQuery, ...anchored.extraQueries]
     : geoQueries;
+  // RONDE 75: the typed family leads; everything above stays as the fallback it has always been.
+  // fetchInternetArchiveClips stops once it has `count` hits, so a typed query that answers means
+  // the generic ones below it are never searched at all — better queries first costs less, not
+  // more. The fallback list is at most 8 (buildInternetArchiveGeoQueries caps at 8; anchoring
+  // yields a primary plus at most 6 extras), so the cap is 8 + the 3 typed entries: the typed
+  // family is ADDED to the existing breadth, and no fallback is evicted to make room. A test
+  // pins that every query this path produced before still appears.
+  const queries = uniqueQueryStrings(
+    [...typedRetrievalQueriesForBeat(beat, scene, videoTitle, dedup).slice(0, 3), ...geoFallback],
+    3
+  ).slice(0, 11);
   const beatKeywords = beat.keywords ?? [];
   try {
     const hits = await fetchInternetArchiveClips(
