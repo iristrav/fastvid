@@ -129,6 +129,7 @@ import {
   applyAiRelevanceRanking,
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
+  combinedTypedQueriesForBeat,
   extractEventCue,
   extractLocationPhrase,
   extractObjectCue,
@@ -2440,7 +2441,7 @@ export async function fetchBeatArchivalThenPexels(
   // is tried first, across both engines below.
   const webWideQueries = await primeQueriesWithSearchMemory(
     videoTitle,
-    buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) }).slice(0, 2)
+    buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text), action: extractActionCue(beat.text) }).slice(0, 2)
   );
 
   // F3-30: real video first — Europeana aggregates real video from EU cultural institutions
@@ -2724,7 +2725,7 @@ async function fetchBeatAuthenticStills(
     muskTopic: adoptOpts.muskTopic ?? false,
   });
   const queries = [
-    ...buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) }).slice(0, 3),
+    ...buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text), action: extractActionCue(beat.text) }).slice(0, 3),
     enrichStockQuery(beat.powerWord, scene, videoTitle, personName, beat.text),
     beat.searchQuery,
     scene.visualCue,
@@ -12257,7 +12258,7 @@ function buildPersonBeatRelevanceKeywords(personName: string, beatText: string):
  * Script-aware celebrity video queries: events + visual cues + person variants.
  * Rotated per beat so each narration line gets a different search angle.
  */
-function buildPersonCelebrityVideoQueries(
+export function buildPersonCelebrityVideoQueries(
   personName: string,
   beatText: string,
   beatIndex: number
@@ -12281,7 +12282,19 @@ function buildPersonCelebrityVideoQueries(
 
   const unique = [...new Set(combined)];
   const offset = beatIndex % Math.max(1, unique.length);
-  return [...unique.slice(offset), ...unique.slice(0, offset)].slice(0, 7);
+  const rotated = [...unique.slice(offset), ...unique.slice(0, offset)].slice(0, 7);
+
+  // RONDE 77: the typed combination, in front of the rotation rather than inside it. The rotation
+  // exists so consecutive beats about one person do not all fetch the same clip; the typed query
+  // already differs per beat because the place, the year and the verb do, so rotating it would
+  // only cost the beat its most specific question. personName is forced rather than weighed: the
+  // caller is asking a provider for footage OF this person, so a name the beat happens to mention
+  // supplies no subject here, and a beat that says "he" carries no name of its own.
+  const typed = typedQueryPrefix(clean, { forcePerson: personName })
+    .filter((q) => !isBlockedStockQuery(toQueryString(q)))
+    .slice(0, 2);
+  const head = typed.filter((q) => !rotated.includes(q));
+  return [...head, ...rotated];
 }
 
 function scoreCelebrityCandidate(
@@ -12917,7 +12930,14 @@ const STOP_WORDS = new Set([
  * enough and to sit early in the sentence. Deliberately a list of what cannot be photographed:
  * "soldiers", "banner", "airfield", "birthday", "construction" are all concrete and stay.
  */
-const NON_VISUAL_QUERY_WORDS = new Set([
+/**
+ * RONDE 77 splits the RONDE 71 vocabulary into named groups. The union below is byte-for-byte the
+ * same set the subject extractor already used, so nothing about query subjects changes — but the
+ * verb group is now separately addressable. extractActionCue needs exactly the words this set
+ * exists to keep OUT of a subject: a verb is wrong as the thing to photograph and right as the
+ * thing being done.
+ */
+const NARRATION_VERB_WORDS = new Set([
   // narration verbs
   "spent","come","came","received","dictated","showed","shown","ended","raised","reached",
   "remained","controlled","described","address","addresses","addressed","married","retreat",
@@ -12928,8 +12948,14 @@ const NON_VISUAL_QUERY_WORDS = new Set([
   "laid","stood","sat","turned","looked","asked","called","used","wrote","written","spoke",
   "spoken","carried","fell","fallen","rose","risen","kill","killed","died","dies","dying",
   "visited","marching","walked","ran","running","meets","meet","met",
+]);
+
+const NARRATION_PRONOUN_WORDS = new Set([
   // pronouns and reflexives STOP_WORDS does not carry
   "them","him","himself","herself","itself","themselves","whom","whose","hers","theirs",
+]);
+
+const TIME_QUANTITY_WORDS = new Set([
   // time, order and quantity filler
   "final","finally","first","last","latest","next","later","earlier","early","late","then",
   "point","moment","week","weeks","month","months","day","days","hour","hours","minute",
@@ -12938,17 +12964,46 @@ const NON_VISUAL_QUERY_WORDS = new Set([
   "once","twice","ever","never","always","often","soon","yet","shortly","meanwhile","inside",
   "outside","under","above","beneath","below","beyond","toward","towards","across","against",
   "little","more","less","several","enough",
+]);
+
+const ABSTRACTION_WORDS = new Set([
   // abstractions with nothing to show
   "impact","importance","significance","effect","effects","result","results","reason",
   "reasons","cause","causes","sense","idea","ideas","thing","things","kind","sort","way",
   "ways","part","parts","fact","facts","case","cases","level","state","states","situation",
   "psychological","emotional","mental",
+]);
+
+const NUMERAL_UNIT_WORDS = new Set([
   // spelled-out numerals and bare units — "the bunker lay eight and a half metres below" is a
   // measurement, and "bunker eight metres" is not an image anyone can look for.
   "three","four","five","seven","eight","nine","eleven","twelve","dozen","hundred","thousand",
   "million","billion","metre","metres","meter","meters","foot","feet","mile","miles","yard",
   "yards","kilometre","kilometres","kilometer","kilometers","percent","dozens","hundreds",
   "thousands","millions",
+]);
+
+const NON_VISUAL_QUERY_WORDS = new Set([
+  ...NARRATION_VERB_WORDS,
+  ...NARRATION_PRONOUN_WORDS,
+  ...TIME_QUANTITY_WORDS,
+  ...ABSTRACTION_WORDS,
+  ...NUMERAL_UNIT_WORDS,
+]);
+
+/**
+ * Everything NON_VISUAL_QUERY_WORDS keeps out of a query subject EXCEPT the verbs.
+ *
+ * The distinction the split exists for: "raised" is a bad thing to photograph and a good thing to
+ * say something is doing. extractActionCue excludes this set, not the union — excluding the union
+ * rejected every verb the union was built to collect, which is how "raised" came back empty.
+ * "later", "them" and "metres" stay excluded, because they are not actions either.
+ */
+const NON_ACTION_QUERY_WORDS = new Set([
+  ...NARRATION_PRONOUN_WORDS,
+  ...TIME_QUANTITY_WORDS,
+  ...ABSTRACTION_WORDS,
+  ...NUMERAL_UNIT_WORDS,
 ]);
 
 /**
@@ -13395,6 +13450,105 @@ export function extractVisualPlacePhrase(beatText: string): string {
   return runs.find(isKnownGeoPhrase) ?? "";
 }
 
+/**
+ * RONDE 77 — the action a beat describes.
+ *
+ * The typed representation has carried person, place, time, event and object; `action` was named
+ * in every brief since RONDE 73 and never existed. EVENT_CUE_RE covers a small set of fixed
+ * documentary verbs — "died", "married", "surrendered" — and says nothing about "dictated",
+ * "raised" or "addressed", which is why those beats reached the providers with no verb at all.
+ *
+ * Two sources, in that order, and no new list of names or events:
+ *   1. PERSON_ACTION_VERBS — the verbs RONDE 72 already assembled as person evidence. Reused
+ *      here, not copied, and not modified: adding to it would change person classification.
+ *   2. generic morphology — a lower-case word of five letters or more ending in "ed" that no
+ *      other vocabulary claims. That is what catches "raised" without anyone having listed it.
+ *
+ * Copulas and auxiliaries are excluded by construction: "was", "had" and "were" are in neither
+ * source. Capitalised words are skipped so "United" in "United States" is never read as a verb.
+ *
+ * Returns "" when the beat describes no action — the common case, and callers must treat it as
+ * "nothing to add", never as evidence of anything. The morphological branch is deliberately
+ * generous: it will occasionally read a state ("finished") as an action. An action only ever
+ * appears in a query behind an entity that anchors it, so a loose verb costs a low-ranked query
+ * and never the subject of the search.
+ */
+export function extractActionCue(beatText: string): string {
+  const text = (beatText ?? "").replace(/\[visual:[^\]]*\]/gi, " ");
+  const tokens = text.split(/\s+/).filter(Boolean);
+  let morphological = "";
+  for (const raw of tokens) {
+    const word = raw.replace(/[^\p{L}'-]/gu, "");
+    if (word.length < 3) continue;
+    // A capitalised word mid-sentence is a name, not a verb.
+    if (word[0] !== word[0]!.toLowerCase()) continue;
+    const lower = word.toLowerCase();
+    if (PERSON_ACTION_VERBS.has(lower)) return lower;
+    if (
+      !morphological &&
+      word.length >= 5 &&
+      lower.endsWith("ed") &&
+      !STOP_WORDS.has(lower) &&
+      !NON_ACTION_QUERY_WORDS.has(lower) &&
+      !isNonPersonToken(lower)
+    ) {
+      morphological = lower;
+    }
+  }
+  return morphological;
+}
+
+/**
+ * RONDE 77 — the typed query family from beat text alone.
+ *
+ * The four RONDE 73 call sites and the two RONDE 75 ones go through typedRetrievalQueriesForBeat,
+ * which needs a SceneBeat, a Scene and the dedup state. Most of the pipeline's query builders have
+ * none of those — they receive a string, which is why the RONDE 76 audit found 68 of 102 provider
+ * call sites still asking the untyped question.
+ *
+ * This is the same combination, built from the same extractors, requiring only the text. It calls
+ * no query builder at all, which is what keeps it safe to drop into one: nothing here can
+ * re-enter the builder that invoked it.
+ *
+ * Two ways a caller can supply a person the beat does not name:
+ *
+ *   scenePersons — context. A beat that says "he" belongs to whoever the scene resolved, so the
+ *     scene's name is worth combining; but a beat that says "Soviet soldiers raised their flag"
+ *     is not about the scene's protagonist, and leading with his name would ask the wrong
+ *     question. Both families are therefore built and interleaved: the beat's own answer takes
+ *     position 1, the scene's takes position 2, and a caller keeping only two keeps one of each.
+ *
+ *   forcePerson — the request itself. The celebrity path is asking a provider for footage OF a
+ *     named person; there the name is not context to be weighed against the beat, it is the
+ *     subject, and the beat only says where and when.
+ */
+export function typedQueryPrefix(
+  beatText: string,
+  opts: { scenePersons?: string[]; forcePerson?: string } = {}
+): string[] {
+  const text = (beatText ?? "").trim();
+  if (!text) return [];
+  const place = extractVisualPlacePhrase(text);
+  const action = extractActionCue(text);
+  const family = (persons: string[]): string[] =>
+    combinedTypedQueriesForBeat(text, persons, place, action);
+
+  const forced = toQueryString(opts.forcePerson ?? "");
+  if (forced) return [...new Set(family([forced]))];
+
+  const own = family(extractPersonNamesFromText(text));
+  const scenePerson = (opts.scenePersons ?? []).map((p) => toQueryString(p)).find(Boolean) ?? "";
+  if (!scenePerson) return [...new Set(own)];
+
+  const contextual = family([scenePerson]);
+  const woven: string[] = [];
+  for (let i = 0; i < Math.max(own.length, contextual.length); i += 1) {
+    if (own[i]) woven.push(own[i]!);
+    if (contextual[i]) woven.push(contextual[i]!);
+  }
+  return [...new Set(woven)];
+}
+
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
 export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
@@ -13547,7 +13701,7 @@ function extractPowerWordFromSentence(sentence: string, persons: string[] = []):
 }
 
 /** Ordered queries for one beat — max 2 script subjects, then geo fallbacks. */
-function buildBeatVisualQueryList(
+export function buildBeatVisualQueryList(
   beatText: string,
   scene: Scene,
   videoTitle: string | undefined,
@@ -13556,18 +13710,26 @@ function buildBeatVisualQueryList(
 ): string[] {
   const anchor = resolveBeatScriptVisualAnchor(beatText);
   const beatAnchored = buildGeoStockSearchQueries(beatText, videoTitle);
+  // RONDE 77: the typed combination leads. This is the central lever the RONDE 76 audit pointed
+  // at — seven call sites reach the providers through this one list, and every one of them was
+  // asking with the anchor word alone. "Adolf Hitler" and "berlin city skyline" both still go,
+  // one place further down; the cap grows by exactly what was added so nothing is evicted.
+  const typed = typedQueryPrefix(beatText, { scenePersons }).slice(0, 2);
   // Person context (e.g. "Adolf Hitler") is resolved once per scene/video, not per beat — many
   // beats refer to the subject with a pronoun ("he", "his") instead of repeating the name, so
   // without this a beat like "He then gave the order..." never even tries a person-name query,
   // missing archive footage that a name match would otherwise score very highly (+200 in
   // scoreCuratedAsset). Listed first so it always survives the maxQueries cap below.
   const ordered = [
+    ...typed,
     ...scenePersons,
     ...anchor.searchSubjects,
     ...beatAnchored.slice(0, 2),
   ].filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)));
 
-  return [...new Set(ordered.map((q) => toQueryString(q)))].slice(0, Math.max(2, maxQueries));
+  const unique = [...new Set(ordered.map((q) => toQueryString(q)))];
+  const typedKept = unique.filter((q) => typed.includes(q)).length;
+  return unique.slice(0, Math.max(2, maxQueries) + typedKept);
 }
 
 function hydrateSceneBeatInPlace(beat: SceneBeat): SceneBeat {
@@ -19697,7 +19859,7 @@ export async function fetchHistoricalBeatVideo(
   }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
   const loose: VisualAdoptOptions = { ...adoptOpts, requireBeatMatch: false, scriptAnchored: false };
-  const queries = buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) });
+  const queries = buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text), action: extractActionCue(beat.text) });
   const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, adoptOpts.videoTitle);
   // Credit optimization: cap applies per tier (each of the 9 tiers below tries the same
   // deduped query list, in order, stopping at first success) — was 6 in normal mode, which at
@@ -20014,7 +20176,7 @@ async function researchBeatClipUnified(
   }
 
   const queries = archivalFirst
-    ? buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text) }).slice(0, perf.fastStockMode ? 4 : 6)
+    ? buildHistoricalArchivalQueries(intent, beat.text, { place: extractVisualPlacePhrase(beat.text), action: extractActionCue(beat.text) }).slice(0, perf.fastStockMode ? 4 : 6)
     : intent.searchQueries.slice(0, perf.fastStockMode ? 2 : 4);
   const primaryQ = queries[0] || beat.searchQuery || beat.powerWord;
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
@@ -23281,6 +23443,7 @@ function typedRetrievalQueriesForBeat(
   });
   return buildHistoricalArchivalQueries(intent, beat.text, {
     place: extractVisualPlacePhrase(beat.text),
+    action: extractActionCue(beat.text),
   });
 }
 

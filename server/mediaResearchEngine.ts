@@ -525,8 +525,11 @@ function buildCombinedTypedQueries(fields: {
   time: string;
   event: string;
   object: string;
+  /** RONDE 77: the verb the beat describes. "" when it describes none — see extractActionCue. */
+  action?: string;
 }): string[] {
   const { person, place, time, event, object } = fields;
+  const action = (fields.action ?? "").trim();
   const join = (...parts: string[]): string => parts.filter((p) => p && p.trim()).join(" ").trim();
   const out: string[] = [];
   /** Adds a combination only when every part it names is present. */
@@ -544,17 +547,53 @@ function buildCombinedTypedQueries(fields: {
   combine(place, time);
   combine(event, time);
   combine(place, object, time);
+  // RONDE 77: the action variants. Only where the beat actually states a verb, and always after
+  // the entity combinations above — a verb narrows a search, it does not anchor one.
+  combine(person, action, time);
+  combine(place, action, time);
+  combine(person, place, action);
+  combine(place, action);
   // The strongest combination again, phrased for an archive rather than a search engine.
   combine(person, place, "archival footage");
   if (!person && place) combine(place, "archival footage");
   return out;
 }
 
+/**
+ * RONDE 77 — the combined typed family for callers that hold only the beat's text.
+ *
+ * Exposes the combination buildHistoricalArchivalQueries already builds, without the intent, the
+ * anchor set or the per-target variants. It exists so a query builder deeper in the pipeline can
+ * put the typed queries in front of its own list without acquiring a SceneBeat — and, critically,
+ * without calling any query builder, so it can never re-enter the one that called it.
+ *
+ * person, place and action are supplied by the caller because their extractors live in
+ * videoPipeline, which imports this module and not the other way round.
+ */
+export function combinedTypedQueriesForBeat(
+  beatText: string,
+  persons: string[],
+  place: string,
+  action = ""
+): string[] {
+  return buildCombinedTypedQueries({
+    person: coercePersonName(persons[0] ?? "") || "",
+    place: (place ?? "").trim(),
+    time: beatText.match(/\b(18|19|20)\d{2}\b/)?.[0] ?? "",
+    event: extractEventCue(beatText) ?? "",
+    object: extractObjectCue(beatText) ?? "",
+    action,
+  });
+}
+
 export function buildHistoricalArchivalQueries(
   intent: MediaSearchIntent,
   beatText: string,
-  /** RONDE 73: the query path's own place answer — see extractBeatVisualTargets. */
-  opts: { place?: string } = {}
+  /**
+   * RONDE 73: the query path's own place answer — see extractBeatVisualTargets.
+   * RONDE 77: and the action, which no extractor in this module can supply.
+   */
+  opts: { place?: string; action?: string } = {}
 ): string[] {
   const targets = extractBeatVisualTargets(beatText, intent, intent.videoTitle, opts);
   const fullNames = knownFullNames(intent);
@@ -582,6 +621,7 @@ export function buildHistoricalArchivalQueries(
       time: yearForCombo,
       event: extractEventCue(beatText) ?? "",
       object: extractObjectCue(beatText) ?? "",
+      action: (opts.action ?? "").trim(),
     })
   );
 
