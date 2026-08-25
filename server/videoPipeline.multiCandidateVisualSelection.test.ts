@@ -127,7 +127,11 @@ describe("Test 6 — wrong providerText gets a heavy penalty", () => {
     const event = eventMatchScore(beatText, wrongText);
     const location = locationMatchScore(null, wrongText);
     const penalty = beatFocusPenalty(focus, tier, event, location, true);
-    expect(tier).toBe("general");
+    // RONDE 79: the candidate NAMES a different person, which is evidence rather than a gap, so
+    // it is classified "wrong" instead of "general". "general" now means "this text names no
+    // person at all" and is neutral; the penalty this test is about moved to the tier that
+    // earned it, and got heavier.
+    expect(tier).toBe("wrong");
     expect(entityMatchTierScore(tier)).toBeLessThan(0);
     expect(penalty).toBeLessThan(0);
     // Combined, a completely unrelated candidate for a specific beat lands well below neutral.

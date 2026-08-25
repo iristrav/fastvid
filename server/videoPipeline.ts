@@ -129,7 +129,10 @@ import {
   applyAiRelevanceRanking,
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
+  buildTypedRetrievalContext,
   combinedTypedQueriesForBeat,
+  extractPeriodPhrase,
+  type TypedRetrievalContext,
   extractEventCue,
   extractLocationPhrase,
   extractObjectCue,
@@ -17515,10 +17518,27 @@ export function historicalDateAlignmentScore(
     extractYearFromText(providerText?.description);
   if (candidateYear == null) return 0;
   const diff = Math.abs(candidateYear - targetYear);
-  if (diff === 0) return 2;
-  if (diff <= 2) return 1;
+  // RONDE 79: the same ladder, at a weight that can actually decide something.
+  //
+  // At -3..+2 the period was noise beside a +12 person match: "Adolf Hitler speaking, 1939" beat
+  // "Führerbunker Berlin April 1945" on a beat that says April 1945, because six years of error
+  // cost nothing and the name paid twelve. The rungs and their meanings are unchanged — exact,
+  // close, uncertain, clearly wrong — only the distance between them.
+  //
+  // The month rung is new and is the one §8 asked for: a beat that says "April 1945" and a
+  // candidate that says "April 1945" agree on more than the year, and can say so.
+  if (diff === 0) {
+    const beatPeriod = extractPeriodPhrase(beatText);
+    const candidateText = [providerText?.dateHint, providerText?.title, providerText?.description]
+      .filter(Boolean)
+      .join(" ");
+    const sameMonth =
+      beatPeriod.includes(" ") && candidateText.toLowerCase().includes(beatPeriod.toLowerCase());
+    return sameMonth ? 8 : 6;
+  }
+  if (diff <= 2) return 3;
   if (diff <= 10) return 0;
-  return -3;
+  return -6;
 }
 
 /**
@@ -17559,8 +17579,20 @@ export function compareBeatCandidates(
   return gap;
 }
 
-/** How strongly a candidate's own provider evidence supports the beat's primary person. */
-export type EntityMatchTier = "exact" | "strong" | "general" | "unknown";
+/**
+ * How strongly a candidate's own provider evidence supports the beat's primary person.
+ *
+ * RONDE 79 adds "wrong". The four tiers before it could not tell these two apart:
+ *
+ *   beat: Hitler   candidate title: "Winston Churchill in London, 1945"   -> names someone else
+ *   beat: Hitler   candidate title: "Führerbunker Berlin April 1945"      -> names nobody
+ *
+ * Both were "general" and both scored -6, which is the missing-metadata rule inverted: the
+ * second candidate is the correct one for a Führerbunker beat and was being punished for not
+ * repeating a name. "general" now means "this text names no person" and is neutral; a candidate
+ * that names a DIFFERENT person is "wrong" and is the one that pays.
+ */
+export type EntityMatchTier = "exact" | "strong" | "general" | "wrong" | "unknown";
 
 /**
  * Point 3 (next-level visual selection — hard entity matching): classifies a candidate against
@@ -17568,6 +17600,10 @@ export type EntityMatchTier = "exact" | "strong" | "general" | "unknown";
  * filename). "unknown" whenever there's nothing to check — no primary person expected for this
  * beat, or the provider gave no text at all — per the explicit rule that missing metadata must
  * never itself be treated as a wrong candidate.
+ *
+ * RONDE 79: the "names a different person" case is separated out, using extractPersonNamesFromText
+ * — the same classifier the beat side uses, not a second one — so "wrong" needs real evidence of
+ * another person and never fires on a candidate that simply says nothing.
  */
 export function classifyEntityMatchTier(
   primaryPerson: string | undefined,
@@ -17575,22 +17611,45 @@ export function classifyEntityMatchTier(
 ): EntityMatchTier {
   const person = coercePersonName(primaryPerson ?? "");
   if (!person) return "unknown";
-  const hay = providerText
-    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+  const raw = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ")
     : "";
+  const hay = raw.toLowerCase();
   if (!hay.trim()) return "unknown";
   const parts = person.toLowerCase().split(/\s+/).filter((p) => p.length >= 2);
   if (!parts.length) return "unknown";
   if (parts.length >= 2 ? parts.every((p) => hay.includes(p)) : hay.includes(parts[0])) return "exact";
   if (parts.length >= 2 && hay.includes(parts[parts.length - 1])) return "strong";
+  // The candidate names a person, and it is not this one. That is evidence, not a gap.
+  //
+  // extractPersonNamesFromText is tuned for narration sentences; a provider caption is a
+  // fragment, and on fragments it over-reaches — "Fuhrerbunker Berlin April 1945" comes back as
+  // the person "Fuhrerbunker Berlin April". Reading that as a competing person would put a -12
+  // on the single most relevant candidate a Führerbunker beat can have, so a caption name has to
+  // clear a second bar before it counts: at least two tokens, none of them a month, a known
+  // place, or a word the entity vocabulary already knows is a thing.
+  const competing = extractPersonNamesFromText(raw).filter((n) => {
+    const tokens = n.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) return false;
+    if (tokens.some((t) => MONTH_NAMES.has(t.toLowerCase()))) return false;
+    if (tokens.some((t) => isNonPersonToken(t.toLowerCase()) || isKnownGeoPhrase(t))) return false;
+    return !parts.some((p) => n.toLowerCase().includes(p));
+  });
+  if (competing.length > 0) return "wrong";
   return "general";
 }
 
 /**
- * Small, bounded score per entity-match tier — an EXACT match is preferred over a GENERAL one,
- * but the gap is deliberately modest so this nudges adoptClip's existing candidate sort instead
- * of overriding the relevance/narration-match terms already there. "unknown" is neutral (0),
- * not a penalty — consistent with historicalDateAlignmentScore's missing-metadata handling.
+ * Score per entity-match tier.
+ *
+ * RONDE 79 rebalances two of the five. "general" — the candidate's text names no person at all —
+ * moves from -6 to 0, because a beat whose best available footage is an unattributed archive
+ * still is not served by punishing it for saying nothing. "wrong" takes over the penalty and
+ * takes it further: a candidate that demonstrably shows a different person is the one that should
+ * lose, and it loses exactly as much as an exact match wins.
+ *
+ * exact stays at +12 so a real person match keeps its weight — but it no longer decides alone:
+ * place, time, event and action now carry comparable weight beside it. See beatContextMatchScore.
  */
 export function entityMatchTierScore(tier: EntityMatchTier): number {
   switch (tier) {
@@ -17598,8 +17657,10 @@ export function entityMatchTierScore(tier: EntityMatchTier): number {
       return 12;
     case "strong":
       return 6;
+    case "wrong":
+      return -12;
     case "general":
-      return -6;
+      return 0;
     case "unknown":
       return 0;
   }
@@ -17623,7 +17684,11 @@ export function eventMatchScore(
     ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
     : "";
   if (!hay.trim()) return 0;
-  return hay.includes(cue) ? 8 : -2;
+  // RONDE 79: a text that does not spell the cue out is UNKNOWN, not WRONG. The -2 here was the
+  // same missing-metadata-as-evidence mistake entityMatchTierScore's "general" tier made: a
+  // Bundesarchiv still titled "Brandenburger Tor 1945" does not say "battle", and was being
+  // marked down for it on a Battle of Berlin beat.
+  return hay.includes(cue) ? 8 : 0;
 }
 
 /**
@@ -17662,7 +17727,198 @@ export function objectMatchScore(
     ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
     : "";
   if (!hay.trim()) return 0;
-  return hay.includes(cue) ? 8 : -2;
+  // RONDE 79: a text that does not spell the cue out is UNKNOWN, not WRONG. The -2 here was the
+  // same missing-metadata-as-evidence mistake entityMatchTierScore's "general" tier made: a
+  // Bundesarchiv still titled "Brandenburger Tor 1945" does not say "battle", and was being
+  // marked down for it on a Battle of Berlin beat.
+  return hay.includes(cue) ? 8 : 0;
+}
+
+/* ═══════════════ RONDE 79 — the beat's own context, as a ranking signal ═══════════════ */
+
+/**
+ * RONDE 79 — the beat's place, scored against the candidate.
+ *
+ * There was no beat-place signal in the ranking at all. locationMatchScore (above) reads
+ * dedup.assetDirectorActiveLocation, which is resolved per SCENE and is null on most renders, so
+ * "Führerbunker" — a field RONDE 78 already extracts and already sends to the providers — never
+ * reached the sort. That is the whole of why
+ *
+ *     beat: "…in the Führerbunker in April 1945."
+ *     candidate: "Führerbunker Berlin April 1945"
+ *
+ * scored -10 and lost to a generic 1945 portrait.
+ *
+ * Four tiers, and the missing one is neutral:
+ *
+ *   exact    the candidate's text contains the place phrase                    +9
+ *   partial  it contains a content word of the place or of the named event —   +4
+ *            "Berlin" for a "Battle of Berlin" beat is genuinely relevant
+ *   wrong    it names a known geographic place, the beat names a known         -6
+ *            geographic place, and they are different ones
+ *   unknown  it names no place this pipeline can recognise                      0
+ *
+ * "wrong" needs BOTH sides to be recognisable geography, via the worldGeoSlugs vocabulary the
+ * place extractor already uses. A beat whose place is a building ("Führerbunker", "Reichstag")
+ * cannot prove that a candidate mentioning London is wrong — London may well be where the
+ * building is filed — so that case stays unknown rather than guessing.
+ */
+export function placeMatchScore(
+  beatPlace: string,
+  beatEvent: string,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  const place = (beatPlace ?? "").trim();
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ")
+    : "";
+  if (!hay.trim()) return 0;
+  const low = hay.toLowerCase();
+  if (place && low.includes(place.toLowerCase())) return 9;
+
+  const contentTokens = (phrase: string): string[] =>
+    phrase
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.replace(/[^\p{L}'-]/gu, ""))
+      .filter((t) => t.length >= 4 && !STOP_WORDS.has(t) && !NON_VISUAL_QUERY_WORDS.has(t));
+
+  const tokens = [...contentTokens(place), ...contentTokens(beatEvent ?? "")];
+  if (tokens.some((t) => low.includes(t))) return 4;
+
+  if (place && isKnownGeoPhrase(place)) {
+    const candidateGeo = [...hay.matchAll(new RegExp(CAPITALISED_RUN_SOURCE, "gu"))]
+      .map((m) => stripLeadingArticle(m[0]))
+      .filter((p) => p && isKnownGeoPhrase(p));
+    if (candidateGeo.length > 0) return -6;
+  }
+  return 0;
+}
+
+/**
+ * RONDE 79 — the beat's action, scored against the candidate.
+ *
+ * Deliberately the smallest of the five. A verb is corroboration, not identification: a still
+ * captioned "Hitler dictating his testament" is better than one captioned "Hitler", but not by
+ * as much as being in the right place in the right year. Matched on the stem so "dictated"
+ * finds "dictating" and "dictates" without a conjugation table.
+ *
+ * Returns 0 — never a penalty — when the beat states no action or the candidate's text does not
+ * describe one. Provider captions almost never name the verb, and §11's rule applies here more
+ * than anywhere: a caption that says nothing about the action is not evidence of a wrong action.
+ */
+export function actionMatchScore(
+  beatAction: string,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  const action = (beatAction ?? "").trim().toLowerCase();
+  if (action.length < 4) return 0;
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return 0;
+  const stem = action.replace(/(?:ed|es|s|ing)$/u, "");
+  if (stem.length < 3) return 0;
+  return new RegExp(`\\b${stem}(?:e?[ds]|ing|es)?\\b`, "u").test(hay) ? 4 : 0;
+}
+
+/**
+ * RONDE 79 — the beat's named event, scored against the candidate.
+ *
+ * eventMatchScore (above) tests EVENT_CUE_RE's bare verb and stays exactly as it is, because
+ * classifyBeatFocus and beatFocusPenalty are built on that vocabulary. This scores the RONDE 78
+ * phrase instead: "Battle of Berlin", "political testament", "fall of France". A candidate that
+ * names the event outright is the single best piece of evidence a caption can carry.
+ *
+ * exact phrase +8; every content word present but not adjacent +5; nothing +0, never a penalty.
+ */
+export function eventPhraseMatchScore(
+  beatEvent: string,
+  providerText: { title?: string; description?: string; tags?: string } | undefined
+): number {
+  const event = (beatEvent ?? "").trim().toLowerCase();
+  if (!event) return 0;
+  const hay = providerText
+    ? [providerText.title, providerText.description, providerText.tags].filter(Boolean).join(" ").toLowerCase()
+    : "";
+  if (!hay.trim()) return 0;
+  if (hay.includes(event)) return 8;
+  const words = event.split(/\s+/).filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
+  if (words.length >= 2 && words.every((w) => hay.includes(w))) return 5;
+  return 0;
+}
+
+/**
+ * RONDE 79 — a modern candidate on a historical beat.
+ *
+ * This is evidence, not a gap, which is why it is allowed to be a penalty: the candidate states
+ * a year and that year is recent, while the beat states a period or names a historical event.
+ * "Modern Berlin skyline 2019" is a real answer to "which Berlin?" and a wrong one for a beat
+ * about the Battle of Berlin. Small — smaller than a wrong location — so it orders candidates
+ * without ever outweighing a real place or person match.
+ *
+ * Silent when the candidate gives no year (unknown is not wrong) or when the beat is not
+ * historical, so a modern beat is never penalised for modern footage.
+ */
+export function modernContextPenalty(
+  beatYear: string,
+  beatEvent: string,
+  providerText: { title?: string; description?: string; dateHint?: string } | undefined
+): number {
+  const historical =
+    /^(?:18|19)\d{2}$/.test((beatYear ?? "").trim()) ||
+    /\p{Lu}/u.test((beatEvent ?? "").trim());
+  if (!historical) return 0;
+  const candidateYear =
+    extractYearFromText(providerText?.dateHint) ??
+    extractYearFromText(providerText?.title) ??
+    extractYearFromText(providerText?.description);
+  if (candidateYear == null) return 0;
+  return candidateYear >= 1990 ? -3 : 0;
+}
+
+/** Every RONDE 79 context term for one candidate, and their sum. */
+export interface BeatContextMatch {
+  place: number;
+  action: number;
+  eventPhrase: number;
+  modern: number;
+  total: number;
+}
+
+/**
+ * RONDE 79 — the four new terms, computed together from the RONDE 78 retrieval context.
+ *
+ * The context is the SAME object the providers were queried with — buildTypedRetrievalContext's
+ * answer, assembled once per beat in adoptClip and handed to every candidate. There is no second
+ * extraction layer for ranking: what the pipeline asked the archive for is what it scores the
+ * archive's answer against.
+ */
+export function beatContextMatchScore(
+  ctx: TypedRetrievalContext | undefined,
+  providerText: { title?: string; description?: string; tags?: string; dateHint?: string } | undefined
+): BeatContextMatch {
+  if (!ctx) return { place: 0, action: 0, eventPhrase: 0, modern: 0, total: 0 };
+  const place = placeMatchScore(ctx.place, ctx.event, providerText);
+  const action = actionMatchScore(ctx.action, providerText);
+  const eventPhrase = eventPhraseMatchScore(ctx.event, providerText);
+  const modern = modernContextPenalty(ctx.year, ctx.event, providerText);
+  return { place, action, eventPhrase, modern, total: place + action + eventPhrase + modern };
+}
+
+/**
+ * RONDE 79 — the retrieval context for one beat, for the ranking side.
+ *
+ * Same call, same extractors, same answer as typedQueryPrefix's. Computed once per candidate
+ * pool, never per candidate: no network call, no LLM, no new metadata.
+ */
+export function rankingContextForBeat(beatText: string): TypedRetrievalContext {
+  const text = (beatText ?? "").trim();
+  return buildTypedRetrievalContext(text, {
+    persons: extractPersonNamesFromText(text),
+    place: extractVisualPlacePhrase(text),
+    action: extractActionCue(text),
+  });
 }
 
 /**
@@ -18062,6 +18318,10 @@ async function adoptClip(
   // pool, so it's classified once outside the per-path closure below.
   const beatFocus = classifyBeatFocus(beatText, opts.primaryPerson, opts.videoTitle);
   const secondaryEntities = extractSecondaryEntities(beatText, opts.primaryPerson);
+  // RONDE 79: the beat's own retrieval context, assembled once for the whole pool. This is the
+  // same object RONDE 78 builds the provider queries from, so the sort scores candidates against
+  // exactly the question that was asked.
+  const rankCtx = rankingContextForBeat(beatText);
   const nextLevelScore = (p: string): number => {
     const pt = dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined;
     const tier = classifyEntityMatchTier(opts.primaryPerson, pt);
@@ -18069,16 +18329,27 @@ async function adoptClip(
     const locationScore = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
     const objectScore = objectMatchScore(beatText, pt);
     const secondaryScore = secondaryEntityMatchScore(secondaryEntities, pt);
+    const context = beatContextMatchScore(rankCtx, pt);
     const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
+    // RONDE 79: place/event evidence counts as a positive signal for the focus penalties too.
+    // Without this a candidate that names the beat's place but not its EVENT_CUE_RE verb was
+    // still called generic and docked twice for it.
+    const specificScore = Math.max(eventScore, locationScore, context.place, context.eventPhrase);
     return (
       historicalDateAlignmentScore(pt, beatText, opts.videoTitle) +
       entityMatchTierScore(tier) +
-      eventScore +
+      // RONDE 79: eventMatchScore's verb and eventPhraseMatchScore's phrase are the SAME
+      // evidence read at two resolutions — "battle" and "Battle of Berlin". Summing them paid
+      // twice for one caption, so the stronger reading is taken and the other discarded.
+      Math.max(eventScore, context.eventPhrase) +
       locationScore +
       objectScore +
       secondaryScore +
-      beatFocusPenalty(beatFocus, tier, eventScore, locationScore, hasProviderText, objectScore) +
-      genericPersonPenalty(beatFocus, tier, eventScore, locationScore, objectScore, hasProviderText)
+      context.place +
+      context.action +
+      context.modern +
+      beatFocusPenalty(beatFocus, tier, eventScore, specificScore, hasProviderText, objectScore) +
+      genericPersonPenalty(beatFocus, tier, eventScore, specificScore, objectScore, hasProviderText)
     );
   };
   // RONDE 71: the same score terms as before, in the same order, computed once per candidate
@@ -18118,16 +18389,20 @@ async function adoptClip(
       const location = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
       const object = objectMatchScore(beatText, pt);
       const date = historicalDateAlignmentScore(pt, beatText, opts.videoTitle);
+      const context = beatContextMatchScore(rankCtx, pt);
       const visual =
         scoreVisualRelevance(`${sourceQuery} ${path.basename(p)} ${beatText}`, keywords) +
         scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery));
       const narration = scoreBeatNarrationMatch(beatText, sourceQuery, p) * 4;
       const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
-      const negativeEvidence = beatFocusPenalty(beatFocus, tier, event, location, hasProviderText, object);
-      const genericPenalty = genericPersonPenalty(beatFocus, tier, event, location, object, hasProviderText);
+      const specific = Math.max(event, location, context.place, context.eventPhrase);
+      const negativeEvidence = beatFocusPenalty(beatFocus, tier, event, specific, hasProviderText, object);
+      const genericPenalty = genericPersonPenalty(beatFocus, tier, event, specific, object, hasProviderText);
       const finalScore =
-        date + entity + secondary + event + location + object + visual + narration + negativeEvidence + genericPenalty;
-      return { tier, entity, secondary, event, location, object, date, visual, narration, negativeEvidence, genericPenalty, finalScore };
+        date + entity + secondary + Math.max(event, context.eventPhrase) + location + object +
+        context.place + context.action + context.modern + visual + narration +
+        negativeEvidence + genericPenalty;
+      return { tier, entity, secondary, event, location, object, date, context, visual, narration, negativeEvidence, genericPenalty, finalScore };
     };
     const topPath = sortedPaths[0]!;
     const top = breakdown(topPath);
@@ -18135,7 +18410,9 @@ async function adoptClip(
       `[VisualSelection] scene=${sceneIndex} beat=${beatIndex} pool=${sortedPaths.length} ` +
         `winner=${path.basename(topPath)} focus=${beatFocus} primaryEntity=${fmt(top.entity)}(${top.tier}) ` +
         `secondaryEntity=${fmt(top.secondary)} event=${fmt(top.event)} location=${fmt(top.location)} ` +
-        `object=${fmt(top.object)} date=${fmt(top.date)} narration=${fmt(top.narration)} visual=${fmt(top.visual)} ` +
+        `object=${fmt(top.object)} date=${fmt(top.date)} place=${fmt(top.context.place)} ` +
+        `eventPhrase=${fmt(top.context.eventPhrase)} action=${fmt(top.context.action)} ` +
+        `modern=${fmt(top.context.modern)} narration=${fmt(top.narration)} visual=${fmt(top.visual)} ` +
         `negativeEvidence=${fmt(top.negativeEvidence)} genericPenalty=${fmt(top.genericPenalty)} finalScore=${fmt(top.finalScore)}`
     );
     if (sortedPaths.length > 2) {

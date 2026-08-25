@@ -94,9 +94,16 @@ describe("Test 5 — wrong entity is rejected/strongly penalized", () => {
     const { classifyEntityMatchTier, entityMatchTierScore } = await freshPipeline();
     const wrongEntityTier = classifyEntityMatchTier("Adolf Hitler", { title: "Richard Stallman portrait, free software conference" });
     const noMetadataTier = classifyEntityMatchTier("Adolf Hitler", undefined);
-    expect(wrongEntityTier).toBe("general");
+    // RONDE 79: "Richard Stallman portrait" names a person, and not this one — that is the
+    // "wrong" tier. The assertion this test exists for is unchanged and now holds harder: a
+    // candidate that shows someone else scores below one that simply has no metadata.
+    expect(wrongEntityTier).toBe("wrong");
     expect(entityMatchTierScore(wrongEntityTier)).toBeLessThan(entityMatchTierScore(noMetadataTier));
     expect(entityMatchTierScore(wrongEntityTier)).toBeLessThan(0);
+    // And a candidate whose text names NOBODY is not punished for saying nothing.
+    const silentTier = classifyEntityMatchTier("Adolf Hitler", { title: "Berlin street, 1945" });
+    expect(silentTier).toBe("general");
+    expect(entityMatchTierScore(silentTier)).toBe(0);
   });
 });
 

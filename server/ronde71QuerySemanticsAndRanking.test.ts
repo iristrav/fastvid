@@ -221,13 +221,19 @@ describe("RONDE 71 §2 — a beat that states no year does not inherit the title
     // Neither is rewarded or punished on a year this beat never claimed.
     expect(historicalDateAlignmentScore(blitzPhoto1940, beat, TITLE)).toBe(0);
     expect(historicalDateAlignmentScore(bunkerPhoto1945, beat, TITLE)).toBe(0);
-    // And where the beat DOES state a period, the scorer still works exactly as before —
-    // same ladder, untouched: 0 years apart +2, within 2 years +1, within 10 years 0, beyond -3.
+    // And where the beat DOES state a period, the scorer still works the same way — the rungs
+    // are unchanged in meaning and order. RONDE 79 widened the gaps between them (exact +6,
+    // within 2 years +3, within 10 years 0, beyond -6, and +8 when the MONTH matches too) so
+    // that a six-year error can no longer be bought off by a person's name being present.
     const dated = "Hitler in the bunker in April 1945.";
-    expect(historicalDateAlignmentScore(bunkerPhoto1945, dated, TITLE)).toBe(2);
+    expect(historicalDateAlignmentScore(bunkerPhoto1945, dated, TITLE)).toBe(6);
+    expect(historicalDateAlignmentScore({ title: "Berlin bunker, April 1945" }, dated, TITLE)).toBe(8);
     expect(historicalDateAlignmentScore(blitzPhoto1940, dated, TITLE)).toBe(0);
-    expect(historicalDateAlignmentScore({ title: "Berlin, 1946" }, dated, TITLE)).toBe(1);
-    expect(historicalDateAlignmentScore({ title: "Paris exposition, 1889" }, dated, TITLE)).toBe(-3);
+    expect(historicalDateAlignmentScore({ title: "Berlin, 1946" }, dated, TITLE)).toBe(3);
+    expect(historicalDateAlignmentScore({ title: "Paris exposition, 1889" }, dated, TITLE)).toBe(-6);
+    // The ordering the ladder exists for is what actually matters, and it is intact.
+    expect(historicalDateAlignmentScore(bunkerPhoto1945, dated, TITLE))
+      .toBeGreaterThan(historicalDateAlignmentScore({ title: "Berlin, 1946" }, dated, TITLE));
   });
 });
 

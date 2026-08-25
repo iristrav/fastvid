@@ -53,13 +53,20 @@ describe("Points 6/7/8 — historicalDateAlignmentScore (soft historical-consist
     expect(historicalDateAlignmentScore({ dateHint: "1945" }, "A calm walk through the park")).toBe(0);
   });
 
-  it("the bonus/penalty stays small and bounded, so it can only nudge — never override — relevance/entity scoring", async () => {
-    const { historicalDateAlignmentScore } = await freshPipeline();
+  it("the bonus/penalty stays bounded below an exact entity match, so it weighs beside the other signals and never replaces them", async () => {
+    const { historicalDateAlignmentScore, entityMatchTierScore } = await freshPipeline();
     const beatText = "Hitler's final days in April 1945.";
     const exact = historicalDateAlignmentScore({ dateHint: "1945" }, beatText);
     const farOff = historicalDateAlignmentScore({ dateHint: "1800" }, beatText);
-    expect(Math.abs(exact)).toBeLessThanOrEqual(3);
-    expect(Math.abs(farOff)).toBeLessThanOrEqual(3);
+    // RONDE 79 raised the ladder from -3..+2 to -6..+8, because at the old weight six years of
+    // historical error cost less than a name being present and the period decided nothing. The
+    // invariant that matters is unchanged and is asserted directly: no date term, in either
+    // direction, outweighs an exact person match on its own.
+    const exactPerson = entityMatchTierScore("exact");
+    expect(Math.abs(exact)).toBeLessThanOrEqual(exactPerson);
+    expect(Math.abs(farOff)).toBeLessThanOrEqual(exactPerson);
+    expect(exact).toBeGreaterThan(0);
+    expect(farOff).toBeLessThan(0);
   });
 });
 
