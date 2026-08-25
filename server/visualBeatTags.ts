@@ -725,8 +725,22 @@ const INFRASTRUCTURE_RE =
 const PROTEST_BEAT_RE =
   /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|civil unrest|protest march|picket(?:ing|ers?)?)\b/i;
 
+/**
+ * RONDE 62: what counts as protest imagery.
+ *
+ * Render 532 asked this 32 times and matched nothing, while two white-lives-matter clips went
+ * into a Führerbunker documentary. Their own titles were
+ * "white-lives-matter-alabama-roadside-activism" and
+ * "white-lives-matter-montana-activism-in-b" — and `activists?` matches "activist" and
+ * "activists" but not "activism", which is the word both of them actually use. The movement
+ * names and rallies were missing too.
+ *
+ * A genuine period demonstration still survives: PERIOD_EVIDENCE_RE is the escape hatch, and
+ * archive material of a Nazi rally says "nazi", "reich", "bundesarchiv" or a 19xx year in its
+ * own metadata.
+ */
 const PROTEST_VISUAL_RE =
-  /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activists?|picket(?:ing|ers?)?|civil unrest|protest march|protest signs?|street protest|anti[- ]?war protest)\b/i;
+  /\b(protest(?:ing|ers?|s)?|demonstration|demonstrators?|demonstratie|betog(?:ing|ers?)?|riot(?:ing|ers?)?|activis(?:t|ts|m)|picket(?:ing|ers?)?|civil unrest|protest march|protest signs?|street protest|anti[- ]?war protest|rall(?:y|ies)|(?:black|white|all) lives matter|\bblm\b|antifa|placards?|counter[- ]?protest|sit[- ]?in)\b/i;
 
 /** Narration about cycling / fietsen — needs people on bikes, not generic city shots. */
 export function isCyclingBeat(beatText: string): boolean {

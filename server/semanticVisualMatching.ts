@@ -174,6 +174,34 @@ function domainFallbackTiers(domain: string): string[][] {
 }
 
 /** Rule-based profile when LLM is unavailable. */
+/**
+ * RONDE 62: a year is not a decade.
+ *
+ * The old form turned 1945 into the search term "1945s", which render 532 sent to Internet
+ * Archive, SepiaSearch, Wikimedia and YouTube — 84 retrieval rounds, 0 hits. No archive on earth
+ * indexes "1945s"; the decade it was reaching for is 1940s.
+ */
+export function decadeOf(year: string | number): string {
+  const n = typeof year === "number" ? year : Number.parseInt(String(year).trim(), 10);
+  if (!Number.isFinite(n) || n < 1000 || n > 9999) return String(year);
+  return `${Math.floor(n / 10) * 10}s`;
+}
+
+/**
+ * RONDE 62: drops terms wholly contained in a longer one, keeping the longer.
+ *
+ * "hitler" alongside "adolf hitler" is one person named twice, and joining the two produced the
+ * query "hitler adolf hitler" that render 532 sent to every provider.
+ */
+export function dropSubsumedTerms(terms: string[]): string[] {
+  const norm = (t: string) => ` ${t.toLowerCase().replace(/\s+/g, " ").trim()} `;
+  return terms.filter((t) => {
+    const a = norm(t);
+    if (a.trim().length === 0) return false;
+    return !terms.some((other) => other !== t && norm(other).length > a.length && norm(other).includes(a));
+  });
+}
+
 export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: string): BeatSemanticProfile {
   const cleaned = beatText.replace(/\[visual:[^\]]+\]/gi, " ").trim();
   const years = [...cleaned.matchAll(/\b(1[0-9]{3}|20[0-9]{2})\b/g)].map((m) => m[1]!);
@@ -212,9 +240,9 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
         const domain = inferTopicDomain(cleaned, videoTitle);
         if (domain === "geography_urban") return ["modern day", "contemporary city"];
         if (domain === "wwii") {
-          return years.length > 0 ? [`${years[0]}s`, "world war ii"] : ["world war ii", "1930s", "1940s"];
+          return years.length > 0 ? [decadeOf(years[0]), "world war ii"] : ["world war ii", "1930s", "1940s"];
         }
-        return years.length > 0 ? [`${years[0]}s`] : [];
+        return years.length > 0 ? [decadeOf(years[0])] : [];
       })()
     ),
     years: uniqueStrings(years),
@@ -229,7 +257,11 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
   if (entities.locations.length > 0) tiers.push(entities.locations);
   if (entities.events.length > 0) tiers.push(entities.events.slice(0, 5));
   if (anchor) tiers.push([anchor]);
-  const combined = uniqueStrings([...entities.persons, ...entities.locations, ...entities.events]);
+  // RONDE 62: "hitler" and "adolf hitler" are the same person, and joining them produced the
+  // query "hitler adolf hitler" that render 532 sent to every provider.
+  const combined = dropSubsumedTerms(
+    uniqueStrings([...entities.persons, ...entities.locations, ...entities.events])
+  );
   if (combined.length >= 2) tiers.unshift([combined.slice(0, 2).join(" ")]);
   if (entities.years.length > 0) tiers.push(entities.years);
   if (entities.timePeriods.length > 0) tiers.push(entities.timePeriods.slice(0, 3));

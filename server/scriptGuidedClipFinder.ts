@@ -41,6 +41,11 @@ export type ScriptGuidedOptions = {
   fastMode?: boolean;
   /** RONDE 60: how much of the video will be taken, so a fallback start can leave room for it. */
   clipDurationSec?: number;
+  /**
+   * RONDE 62: the source length, when the caller already knows it. The RapidAPI metadata call
+   * states it and works where the watch page does not, so this is the trusted number when given.
+   */
+  sourceDurationSec?: number;
 };
 
 const STOP = new Set([
@@ -261,8 +266,11 @@ export async function planScriptGuidedClip(
   // How much of the source will be taken — needed so a fallback start still leaves room for it.
   const take = options.clipDurationSec && options.clipDurationSec > 0 ? options.clipDurationSec : 6;
 
-  // Filled in from the watch page below; 0 means we never got to look, or it did not say.
-  let durationSec = 0;
+  // The caller's number when it has one (RONDE 62 — RapidAPI metadata), otherwise filled in
+  // from the watch page below. 0 means nothing knows, and the legacy flat default applies.
+  let durationSec = options.sourceDurationSec && options.sourceDurationSec > 0
+    ? options.sourceDurationSec
+    : 0;
 
   /**
    * RONDE 60: what to do when nothing has located the subject.
@@ -296,7 +304,8 @@ export async function planScriptGuidedClip(
     2_500,
     Math.min(youtubeVideoContextTimeoutMs(), options.deadlineMs - Date.now())
   );
-  durationSec = (await fetchYoutubeVideoContext(candidate.videoId, contextMs)).durationSec;
+  const pageDuration = (await fetchYoutubeVideoContext(candidate.videoId, contextMs)).durationSec;
+  if (durationSec <= 0) durationSec = pageDuration;
 
   const segments = await fetchYoutubeTranscript(candidate.videoId, transcriptMs);
   // A caption track also states the length, for the case where the page did not.

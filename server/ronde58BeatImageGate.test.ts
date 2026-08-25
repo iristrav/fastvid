@@ -209,7 +209,10 @@ describe("RONDE 58 — the wiring", () => {
 
   it("the frames it judges are cleaned up", () => {
     const src = SRC();
-    const idx = src.indexOf("judgeBeatImage({");
+    // RONDE 62 added two more copies of this gate (the adoption path and YouTube); anchor on
+    // the funnel's, which is the one this file is about.
+    const idx = src.indexOf("judgeBeatImage({", src.indexOf("let winner = pickBestFunnelCandidate("));
+    expect(idx).toBeGreaterThan(-1);
     expect(src.slice(idx, idx + 900)).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
   });
 

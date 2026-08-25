@@ -291,8 +291,13 @@ describe("RONDE 60 #1 — the pipeline's own flat 15 is gone", () => {
 
   it("a candidate past the guided-attempt limit uses a known duration when there is one", () => {
     const src = SRC();
-    expect(src).toContain("const peeked = peekYoutubeVideoContext(videoId);");
-    expect(src).toContain("pickLongVideoStartSec(peeked.durationSec, clipDur, videoId)");
+    // RONDE 62: the RapidAPI metadata call is now the primary source of the duration — it works
+    // on Railway where the watch page did not — with the cached page kept as the backup.
+    expect(src).toContain("peekYoutubeVideoContext(videoId)?.durationSec");
+    expect(src).toContain("rapidApiYoutubeMetaDurationSec(");
+    expect(src).toContain("pickLongVideoStartSec(sourceDurationSec, clipDur, videoId)");
+    // The flat 15 survives only as the last resort, when nothing knows the length.
+    expect(src).toMatch(/sourceDurationSec > 0\s*\n?\s*\?[\s\S]{0,120}:\s*15;/);
   });
 
   it("and peeks rather than fetches, so the attempt limit still bounds the time spent", () => {

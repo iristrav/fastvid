@@ -801,6 +801,22 @@ export function downloadStallTimeoutMs(): number {
  * total time. That is what makes a longer ceiling safe: this budget is for a download that is
  * genuinely still moving, not for one that has hung.
  */
+/**
+ * RONDE 62: how many YouTube videos one scene may download before giving up on the source.
+ *
+ * Render 532 transferred 97 of them and used zero. The loop counted only accepted clips, so
+ * with the picture gate refusing most candidates it never reached its stop condition — and the
+ * downloads it did keep making were the reason the beat budget ran out.
+ */
+export function youtubeMaxDownloadAttemptsPerScene(): number {
+  const raw = process.env.YOUTUBE_MAX_DOWNLOAD_ATTEMPTS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 100) return n;
+  }
+  return 6;
+}
+
 export function youtubeDownloadTimeoutMs(): number {
   const raw = process.env.YOUTUBE_DOWNLOAD_TIMEOUT_MS?.trim();
   if (raw) {

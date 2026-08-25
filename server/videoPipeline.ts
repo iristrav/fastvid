@@ -173,7 +173,7 @@ import {
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMinFormatHeight } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadAttemptsPerScene, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -881,6 +881,15 @@ function sceneFetchAborted(): boolean {
 // fire far fewer calls and a premature voice fail-over is more disruptive than a skipped image
 // source. One shared constant so this stays in lockstep across every visual/search provider.
 const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;
+
+/**
+ * RONDE 62: beats where every plan-rescue round missed before the source stands down.
+ *
+ * Four is deliberately more than the provider breakers' three: a miss here is not a provider
+ * fault, it is a subject a stock library does not cover, and a render whose early beats happen
+ * to be abstract should still get a chance to find something for a concrete one later.
+ */
+const PLAN_RESCUE_MISS_STREAK_TRIP = 4;
 
 // Circuit breaker for commons.wikimedia.org: process-wide (not per-render), same idea as
 // llm.ts's groqCooldownUntilMs. Live logs showed a full render (100+ beats over an hour-plus)
@@ -10695,7 +10704,30 @@ async function fetchArchiveSegmentViaFfmpeg(
 type RapidApiYoutubeMeta = {
   formats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
   adaptiveFormats?: Array<{ url?: string; mimeType?: string; contentLength?: string; height?: number }>;
+  /**
+   * RONDE 62: the source length, which this response has been carrying all along.
+   *
+   * The watch page added in RONDE 60 was meant to supply this, and on Railway it never came
+   * through: render 532 logged src=unknown on all 52 plans, so every clip was still cut at a
+   * flat second 12. THIS call demonstrably works there — 63 metadata lookups, 34 of them served
+   * from cache — and states the duration in the same response the download URL comes from.
+   * Different providers spell it differently; all three spellings are read.
+   */
+  lengthSeconds?: string | number;
+  videoDetails?: { lengthSeconds?: string | number };
+  duration?: string | number;
 };
+
+/** Seconds from a RapidAPI metadata response, 0 when it did not say. */
+export function rapidApiYoutubeMetaDurationSec(meta: RapidApiYoutubeMeta | null | undefined): number {
+  if (!meta) return 0;
+  for (const raw of [meta.lengthSeconds, meta.videoDetails?.lengthSeconds, meta.duration]) {
+    if (raw == null) continue;
+    const n = typeof raw === "number" ? raw : Number.parseInt(String(raw).trim(), 10);
+    if (Number.isFinite(n) && n > 0 && n < 86_400) return n;
+  }
+  return 0;
+}
 
 /**
  * RONDE 56: the YouTube metadata lookup, cached per render and run outside the beat's deadline.
@@ -10787,6 +10819,56 @@ async function fetchRapidApiYoutubeMeta(
  * Fails open exactly like the funnel's copy: no gate state, no narration, no extractable frame,
  * a model outage or a spent budget all return true and adopt the clip.
  */
+/**
+ * RONDE 62 — the picture gate for the adoption path.
+ *
+ * Same contract as the funnel's and YouTube's copies: three frames from across the clip, one
+ * judgement, and only a definite "does not fit" costs the clip its place. Everything else — the
+ * gate switched off, no narration, no extractable frame, a model outage, the budget spent —
+ * returns true and adopts exactly as before.
+ */
+async function beatClipPassesImageGate(
+  clipPath: string,
+  contentKey: string,
+  beatText: string,
+  opts: VisualAdoptOptions,
+  workDir: string,
+  sceneIndex: number,
+  beatIndex: number,
+  dedup: VisualDedupState
+): Promise<boolean> {
+  if (!beatImageRelevanceGateEnabled() || !beatText?.trim()) return true;
+
+  const framePaths: string[] = [];
+  for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
+    const framePath = path.join(workDir, `birx_s${sceneIndex}b${beatIndex}_${f}.jpg`);
+    const got = await extractFrameAtFraction(
+      clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
+    ).catch(() => false);
+    if (got) framePaths.push(framePath);
+  }
+  const judgement = await judgeBeatImage({
+    framePaths,
+    beatText,
+    videoTitle: asVideoTitleString(opts.videoTitle) || undefined,
+    sceneText: opts.sceneText,
+    contentKey,
+    state: dedup.beatImageGate,
+  });
+  for (const fp of framePaths) {
+    try { fs.unlinkSync(fp); } catch { /* ignore */ }
+  }
+
+  if (judgement.verdict === "does_not_fit") {
+    console.log(
+      `[BeatImageGate] adopt s${sceneIndex}b${beatIndex} does_not_fit ` +
+        `clip=${path.basename(clipPath)} depicts="${judgement.depicts}" reason="${judgement.reason}"`
+    );
+    return false;
+  }
+  return true;
+}
+
 async function youtubeClipPassesImageGate(
   clipPath: string,
   workDir: string,
@@ -11429,6 +11511,18 @@ export async function fetchYouTubeCCClips(
   // Track video IDs already downloaded to avoid duplicates across query variants
   const downloadedIds = new Set<string>();
   let fetched = 0;
+  /**
+   * RONDE 62: a ceiling on download ATTEMPTS, not just on accepted clips.
+   *
+   * Render 532 downloaded 97 YouTube videos and used none of them. The loop only counted
+   * successes, so with the picture gate refusing most candidates `fetched` never reached
+   * `count` and it kept downloading through every candidate of every query of every licence
+   * pass. Each of those is a full video transfer inside the beat's budget — which is also why
+   * every download ended up "cancelled by the enclosing scene budget before its own 5s
+   * timeout": the budget had already gone on downloads that were thrown away.
+   */
+  let downloadAttempts = 0;
+  const maxDownloadAttempts = youtubeMaxDownloadAttemptsPerScene();
 
   const ytDeadline = Date.now() + (IS_RAILWAY ? 88_000 : 55_000);
   const guidedDeadline =
@@ -11445,10 +11539,12 @@ export async function fetchYouTubeCCClips(
 
   for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;
+    if (downloadAttempts >= maxDownloadAttempts) break;
     if (Date.now() > ytDeadline) break;
 
     for (const pass of licensePasses) {
       if (fetched >= count) break;
+      if (downloadAttempts >= maxDownloadAttempts) break;
       if (Date.now() > ytDeadline) break;
       if (pass.license === "any" && fetched >= count) break;
 
@@ -11479,6 +11575,13 @@ export async function fetchYouTubeCCClips(
         for (const row of items.slice(0, 5)) {
           if (fetched >= count) break;
           if (Date.now() > ytDeadline) break;
+          if (downloadAttempts >= maxDownloadAttempts) {
+            console.log(
+              `[Pipeline] Scene ${sceneIndex}: YouTube download ceiling reached ` +
+                `(${downloadAttempts}/${maxDownloadAttempts} attempts, ${fetched} accepted)`
+            );
+            break;
+          }
           const item = row.item;
           const videoId = item.id?.videoId;
           if (!videoId || downloadedIds.has(videoId)) continue;
@@ -11497,14 +11600,20 @@ export async function fetchYouTubeCCClips(
 
           try {
             const clipDur = capYoutubeClipDuration(duration, pass.fileTag);
-            // RONDE 60: the old flat 15 was applied to every candidate past the guided-attempt
-            // limit — second 15 of a forty-minute documentary is its intro. When this render has
-            // already read the video's length (cached, no fetch), place the cut in the body
-            // instead. peek never blocks, so the attempt limit still bounds the time spent.
-            const peeked = peekYoutubeVideoContext(videoId);
+            // RONDE 62: ask the metadata call that actually works on Railway how long the video
+            // is. The watch page added in RONDE 60 was supposed to answer this and did not —
+            // render 532 logged src=unknown on all 52 plans — while this same response, which
+            // the download needs anyway, has been carrying lengthSeconds the whole time. It is
+            // render-cached, so fetching it here rather than inside the download costs nothing.
+            const sourceDurationSec =
+              rapidApiYoutubeMetaDurationSec(
+                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache)
+              ) || peekYoutubeVideoContext(videoId)?.durationSec || 0;
+            // The old flat 15 was applied to every candidate past the guided-attempt limit —
+            // second 15 of a forty-minute documentary is its intro.
             let clipStart =
-              peeked && peeked.durationSec > 0
-                ? pickLongVideoStartSec(peeked.durationSec, clipDur, videoId)
+              sourceDurationSec > 0
+                ? pickLongVideoStartSec(sourceDurationSec, clipDur, videoId)
                 : 15;
             if (
               scriptGuidedClipsEnabled() &&
@@ -11527,6 +11636,9 @@ export async function fetchYouTubeCCClips(
                   deadlineMs: Math.min(ytDeadline, guidedDeadline),
                   fastMode: scriptGuided.fastMode,
                   clipDurationSec: clipDur,
+                  // Hand over the length we already know, so the planner's fallback scales even
+                  // when its own watch-page read comes back empty.
+                  sourceDurationSec,
                 }
               );
               if (plan.skip) {
@@ -11554,6 +11666,7 @@ export async function fetchYouTubeCCClips(
             putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
               providerText: { title, description: row.desc },
             });
+            downloadAttempts++;
             const ok = await downloadYouTubeCCClip(
               videoId,
               clipDur,
@@ -13159,6 +13272,8 @@ export interface VisualDedupState {
    */
   movingClipCount: number;
   stillClipCount: number;
+  /** RONDE 62: consecutive beats where every plan-rescue round missed. */
+  planRescueMissStreak: number;
   /** Clips adopted so far in the current scene — used by Asset Director for shot variety. */
   assetDirectorSceneClips: string[];
   /** Clips adopted in the previous scene — used for style continuity checks. */
@@ -13389,6 +13504,7 @@ export function createVisualDedupState(
     sourcingCache: createSourcingCache(),
     movingClipCount: 0,
     stillClipCount: 0,
+    planRescueMissStreak: 0,
   };
 }
 
@@ -17384,6 +17500,18 @@ async function adoptClip(
         }
         continue;
       }
+      // RONDE 62: look at the picture here too.
+      //
+      // The gate built in RONDE 58 hangs off the funnel's winner block, and render 532 ran the
+      // funnel for exactly one of its three scenes — so scenes 0 and 1 reached the timeline
+      // with nothing having looked at what was in the frame. This is the acceptance point every
+      // other route passes through: curated archive, rescue, Wikimedia, Openverse, stock, the
+      // lot. Verdicts are cached by content identity, so a clip the funnel already judged is
+      // free here, and the render-wide budget still bounds the total.
+      if (!(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))) {
+        recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
+        continue;
+      }
       // contentKey was computed and checked at the top of this iteration (see the comment
       // there). Nothing between that check and here can add to usedContentKeys — the whole
       // loop runs inside withVisualDedupLock, which serialises every adopt across the render —
@@ -21296,7 +21424,23 @@ function beatClipIsOffTopicProtest(
   const pt =
     dedup.clipAnnotationMeta.get(clipPath)?.providerText ??
     dedup.sourcingCache.assets.get(clipContentKey(clipPath))?.providerText;
-  const hay = pt ? [pt.title, pt.description, pt.tags].filter(Boolean).join(" ") : "";
+  let hay = pt ? [pt.title, pt.description, pt.tags].filter(Boolean).join(" ") : "";
+  // RONDE 62: fall back to the file's own name.
+  //
+  // This gate asked 32 times in render 532 and matched nothing, because for pool downloads no
+  // providerText is registered and an empty hay returns false without a word being read. The
+  // asset slug is right there in the path — the two clips that got through were literally named
+  // scene_0_b0_pool_internet_archive_white-lives-matter-alabama-roadside-acti__pid_... — so when
+  // there is no provider text, read that instead of reading nothing.
+  if (!hay.trim()) {
+    hay = path
+      .basename(clipPath)
+      .replace(/__pid_[a-z0-9_]+-[0-9a-f]+/i, " ")
+      .replace(/^scene_\d+_(b\d+_)?(pool_)?/i, " ")
+      .replace(/\.(mp4|jpg|jpeg|png|webm)$/i, " ")
+      .replace(/[_-]+/g, " ")
+      .trim();
+  }
   if (!hay.trim()) return false;
   return isOffTopicProtestForBeat(beat.text, hay, inferVideoVisualTopic(videoTitle, beat.text));
 }
@@ -23364,7 +23508,21 @@ async function rescueBeatVisualWhenEmpty(
   }
 
   // Plan-based multi-round rescue — adaptive: stops at first hit
-  if (visualSearchPlanEnabled() && archivePexelsFallbackEnabled() && canUseLicensedStockBeat(dedup)) {
+  //
+  // RONDE 62: and stops for the whole render once it is clearly not going to have one.
+  //
+  // This is the licensed-STOCK fallback, and render 532 ran it 84 times — six rounds on every
+  // beat — for zero hits. That is the correct answer: the queries are "hitler", "führerbunker",
+  // "berlin 1945", and a stock library does not hold WWII archive footage. Asking anyway, once
+  // per round per beat, is latency the render spends to be told no again. After enough beats
+  // where every round missed, the source stands down for the rest of the render, exactly as the
+  // provider breakers do.
+  if (
+    visualSearchPlanEnabled() &&
+    archivePexelsFallbackEnabled() &&
+    canUseLicensedStockBeat(dedup) &&
+    dedup.planRescueMissStreak < PLAN_RESCUE_MISS_STREAK_TRIP
+  ) {
     try {
       const videoCtx: VideoVisualContext | undefined = dedup.videoVisualContext;
       const plan = await getOrGenerateSearchPlan(`s${scene.index}`, {
@@ -23382,7 +23540,17 @@ async function rescueBeatVisualWhenEmpty(
           { visionFloor: 0, adoptSource: `rescue_plan_${round.label}` }
         );
         logRetrievalRound(scene.index, beat.index, round, hit, hit ? round.queries[0] : undefined);
-        if (hit) return true;
+        if (hit) {
+          dedup.planRescueMissStreak = 0;
+          return true;
+        }
+      }
+      dedup.planRescueMissStreak++;
+      if (dedup.planRescueMissStreak >= PLAN_RESCUE_MISS_STREAK_TRIP) {
+        console.log(
+          `[Retrieval] plan rescue stood down — ${dedup.planRescueMissStreak} consecutive beats ` +
+            `with no hit on any round; licensed stock has nothing for this subject`
+        );
       }
     } catch (err) {
       console.warn("[Retrieval] plan rescue error:", (err as Error).message?.slice(0, 100));
@@ -25602,6 +25770,24 @@ async function fetchSceneVisualsInner(
             candidate.archivePick?.asset?.id
           );
           if (candidate.source !== "archive") winningExternalCandidate = candidate;
+          // RONDE 62: count the moving/still split here too.
+          //
+          // These counters live in adoptClip, which the funnel does not go through — so render
+          // 532 reported "0/4 moving" for a video holding 22 clips. The mix it printed was not a
+          // measurement of the render, it was a measurement of the four clips that happened to
+          // take the other route.
+          if (isStillPhotoClip(clipPath) || isCuratedPreparedStillClip(clipPath)) dedup.stillClipCount++;
+          else if (isRealVideoFootageClip(clipPath)) dedup.movingClipCount++;
+          // RONDE 62: register the candidate's own title as provider text. Without it every
+          // metadata-reading gate — off_topic_protest among them, which asked 32 times in render
+          // 532 and read an empty string every time — is judging a clip it knows nothing about.
+          if (candidate.title?.trim()) {
+            const existingMeta = dedup.clipAnnotationMeta.get(clipPath) ?? {};
+            dedup.clipAnnotationMeta.set(clipPath, {
+              ...existingMeta,
+              providerText: { ...existingMeta.providerText, title: candidate.title },
+            });
+          }
           // Register embedding similarity so AssetDirector can use it in ranking
           if (candidate.embeddingSimilarity != null) {
             const existing = dedup.clipAnnotationMeta.get(clipPath) ?? {};
