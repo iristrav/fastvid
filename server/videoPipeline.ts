@@ -4051,11 +4051,71 @@ export function groupScenesIntoChunks(scenes: Scene[], targetChunkSec = 60): Arr
   return chunks.length > 0 ? chunks : [{ start: 0, end: scenes.length }];
 }
 
-/** Portions a whole-video stage timeout down to this chunk's share, by scene count — reuses
- *  the existing tuned whole-video timeout values instead of inventing new ones per chunk. */
-function chunkStageTimeoutMs(totalStageMs: number, chunkSceneCount: number, totalSceneCount: number, minMs = 20_000): number {
-  if (totalSceneCount <= 0) return Math.max(minMs, totalStageMs);
-  return Math.max(minMs, Math.round((totalStageMs * chunkSceneCount) / totalSceneCount));
+/**
+ * Portions a whole-video stage timeout down to this chunk's share, by scene count — reuses the
+ * existing tuned whole-video timeout values instead of inventing new ones per chunk.
+ *
+ * RONDE 81 — the portion alone is not a valid deadline.
+ *
+ * The whole-video stage totals are flat (a fixed 40 min for compose, a fixed ~103 min for
+ * visuals, for EVERY long length), so dividing by the scene count produced a chunk deadline that
+ * shrank as the video grew, while the per-scene timeouts inside that chunk stayed flat. Measured:
+ *
+ *     length    chunk visual deadline    the 2 scenes inside may take    overcommit
+ *     1 min                     1200s                             540s   fits
+ *     8-10                       690s                            1440s   2.09x
+ *     10-15                      497s                            1200s   2.42x
+ *     15-20                      355s                            1200s   3.38x
+ *
+ * A chunk was being killed for taking time its own scenes were explicitly allowed to take, and
+ * the overcommit got worse the longer the video. `perSceneMs` closes that: the deadline is never
+ * below what the scenes in this chunk are individually permitted, plus the existing slack ratio
+ * for the per-chunk work that sits outside the per-scene timeouts (audit, montage sync, logging).
+ * Callers that have no per-scene deadline to declare pass nothing and keep the old behaviour.
+ */
+const CHUNK_DEADLINE_SLACK = 1.15;
+
+/**
+ * RONDE 81 — what one compose slot can legitimately cost, worst case.
+ *
+ * A scene's compose call is capped at renderBudgetComposeMs, but that is not the whole slot. On
+ * the long-video path the same slot also runs auditSceneVoiceMontageSync, then
+ * spotCheckComposedSceneBeatSync, and when the sync audit fails it composes the scene a SECOND
+ * time with forceTtsHardCutRemontage and audits it again.
+ *
+ * That remontage is not a stale special case and is deliberately kept: the audit catches a scene
+ * whose montage has drifted out of sync with the narration — the exact defect the whole visual
+ * pipeline exists to prevent — and recutting on the TTS hard cuts is the repair. It is skipped on
+ * the 1-minute path only because that path already composes as a hard-cut plain montage
+ * (fastShortPlainComposeEnabled), so there is nothing left to recut to.
+ *
+ * The chunk deadline therefore has to be told the worst case, not the single-compose figure:
+ * two composes plus the vision QA around them. The QA passes have no timeout of their own, so
+ * they are budgeted as half a compose each rather than assumed free.
+ */
+function composeSlotWorstCaseMs(perSceneComposeMs: number, videoLength?: string | null): number {
+  if (perSceneComposeMs <= 0) return 0;
+  // 1-minute path: one compose, one audit, no spot check, no remontage.
+  if (isFastShortVideoLength(videoLength)) return Math.round(perSceneComposeMs * 1.5);
+  // Long path: compose + audit + spot check + remontage compose + audit.
+  return Math.round(perSceneComposeMs * 3);
+}
+
+function chunkStageTimeoutMs(
+  totalStageMs: number,
+  chunkSceneCount: number,
+  totalSceneCount: number,
+  minMs = 20_000,
+  perSceneMs = 0
+): number {
+  const portion =
+    totalSceneCount <= 0
+      ? totalStageMs
+      : Math.round((totalStageMs * chunkSceneCount) / totalSceneCount);
+  // Generic in the chunk size: one scene, two, or twenty all get their own scenes' worth.
+  const scenesNeed =
+    perSceneMs > 0 ? Math.round(perSceneMs * Math.max(1, chunkSceneCount) * CHUNK_DEADLINE_SLACK) : 0;
+  return Math.max(minMs, portion, scenesNeed);
 }
 // ─── Types ─────────────────────────────────────────────────────────────────────────────────
 export interface Scene {
@@ -14044,7 +14104,7 @@ export interface VisualDedupState {
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
   pipelineStartedMs?: number;
-  /** At 7 min on 1-min path — finish visuals and export with compose grace past hard cap. */
+  /** Near the length's own deadline — finish visuals and export rather than keep searching. */
   forceExportMode?: boolean;
   /** Per-step timing for compose/visual bottleneck diagnosis. */
   stepTiming?: PipelineStepTiming;
@@ -14177,21 +14237,29 @@ function archiveNeedsOpeningFootage(dedup: VisualDedupState): boolean {
   return dedup.archiveVideoClipsUsed < archiveMinVideoClipsTarget(dedup.videoLength);
 }
 
-/** After turbo threshold on 1-min videos, prefer stock and skip slow archive retries. */
+/**
+ * After the turbo threshold, prefer stock and skip slow archive retries.
+ *
+ * RONDE 81: no longer 1-minute only. The threshold is a fraction of the length's own wall-clock
+ * target (see escalationThresholdMs), so a 1-minute video keeps its 5-minute trigger and a long
+ * video gets the same shape scaled to its budget instead of no escalation at all.
+ */
 function visualSourcingTurbo(dedup: VisualDedupState): boolean {
-  if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
+  if (!dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > visualSourcingTurboMs(dedup.videoLength);
 }
 
-/** Late in the 1-min budget — archive+stock parallel race to guarantee finish before hard cap. */
+/** Late in the budget — archive+stock parallel race to guarantee finish before the hard cap.
+ *  RONDE 81: applies to every length, at that length's own threshold. */
 function isPipelineRushMode(dedup: VisualDedupState): boolean {
-  if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
+  if (!dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > pipelineRushModeMs(dedup.videoLength);
 }
 
-/** Last resort before hard cap — short archive+stock race, then guaranteed clips. */
+/** Last resort before the hard cap — short archive+stock race, then guaranteed clips.
+ *  RONDE 81: applies to every length, at that length's own threshold. */
 function isPipelineEmergencyFinish(dedup: VisualDedupState): boolean {
-  if (!isFastShortVideoLength(dedup.videoLength) || !dedup.pipelineStartedMs) return false;
+  if (!dedup.pipelineStartedMs) return false;
   return Date.now() - dedup.pipelineStartedMs > pipelineEmergencyFinishMs(dedup.videoLength);
 }
 
@@ -31005,6 +31073,13 @@ async function _runVideoPipelineInner(
     // ── Shared outputs from Stage 3 + Stage 4 (hoisted for P5A pipeline mode) ─
     let sceneVisualResults: SceneVisualsResult[] = new Array(scenes.length);
     let composedScenes: string[] = [];
+    /**
+     * RONDE 81: every scene's composed output, keyed by its absolute index in `scenes`.
+     * Written by the Stage 4 closure as each scene finishes. On a chunk deadline the Promise.all
+     * never resolves and its per-scene results would be lost with it; this is what lets the
+     * salvage path below keep the finished ones instead of failing the whole video.
+     */
+    const composedByIndex: (string | undefined)[] = [];
     let composedUsedClips: string[][] = scenes.map(() => []);
     let sceneStartSecs: number[] = [];
     let voiceMontageSyncResults: Array<{ sceneIndex: number; audit: VoiceMontageSyncAuditResult }> = [];
@@ -31745,7 +31820,14 @@ async function _runVideoPipelineInner(
         });
         return result;
       }))),
-      chunkStageTimeoutMs(visualStageTimeoutMs(videoLength, perf), chunkScenes.length, scenes.length),
+      // RONDE 81: never below what the scenes in this chunk are each allowed to take.
+      chunkStageTimeoutMs(
+        visualStageTimeoutMs(videoLength, perf),
+        chunkScenes.length,
+        scenes.length,
+        20_000,
+        perf.sceneVisualTimeoutMs
+      ),
       `Visual generation stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
     } catch (visualStageErr) {
@@ -32033,7 +32115,9 @@ async function _runVideoPipelineInner(
     assertPipelineWithinBudget(videoId, pipelineWallStartMs, videoLength, visualDedup);
     onProgress?.({ stage: `${STAGE_LABELS.assembly} (chunk ${chunkIdx + 1}/${chunks.length})`, percent: 47 });
 
-    const chunkComposed = await withTimeout(
+    let chunkComposed: string[];
+    try {
+    chunkComposed = await withTimeout(
       Promise.all(
         chunkScenes.map((scene, ci) => {
           const i = chunk.start + ci;
@@ -32432,6 +32516,9 @@ async function _runVideoPipelineInner(
             stage: `${STAGE_LABELS.assembly} (${completedCompose}/${scenes.length})`,
             percent: 47 + Math.round((completedCompose / scenes.length) * 18),
           });
+          // RONDE 81: record by ABSOLUTE scene index, so a chunk that misses its deadline can
+          // still keep every scene that did finish — and keep them at the right index.
+          composedByIndex[i] = result;
           return result;
         });
         })
@@ -32442,19 +32529,83 @@ async function _runVideoPipelineInner(
       // to the same emergency-finish budget the rest of the pipeline already uses for that video
       // length, so it can never be the thing that fails a video the wall-clock budget allowed.
       // Portioned to this chunk's share of scenes, same reasoning as the Stage 3 chunk timeout.
+      // RONDE 81: never below what the scenes in this chunk are each allowed to take. A long
+      // video's scene may compose TWICE (the sync-audit remontage below), and both composes plus
+      // their audits sit inside this one slot — so the per-scene figure handed over is the full
+      // worst case, not a single compose. See composeSlotWorstCaseMs.
       chunkStageTimeoutMs(
         isFastShortVideoLength(videoLength) ? pipelineEmergencyFinishMs(videoLength) : 2400_000,
         chunkScenes.length,
-        scenes.length
+        scenes.length,
+        20_000,
+        composeSlotWorstCaseMs(renderBudgetComposeMs, videoLength)
       ),
       `Scene compose stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
-    // NOTE: no catch here, matching pre-chunking behavior — a whole-chunk compose timeout (as
-    // opposed to an individual scene's own rescue/last-resort fallback inside the closure
-    // above, which already guarantees some output per scene) propagates up and fails the whole
-    // video, same as a whole-video compose timeout did before chunking. Swallowing it here
-    // instead would silently produce fewer than chunkScenes.length entries, misaligning every
-    // later chunk's composedScenes[i] against scenes[i].
+    } catch (composeChunkErr) {
+      // RONDE 81 — a compose chunk deadline degrades the video, it does not destroy it.
+      //
+      // This used to have no catch at all, so one slow chunk failed the whole render even though
+      // every OTHER chunk had already produced finished scenes. The stated reason was index
+      // alignment: swallowing the error would push fewer than chunkScenes.length entries and
+      // every later chunk's composedScenes[i] would then line up against the wrong scenes[i].
+      //
+      // That is a real constraint and it is what this block satisfies rather than ignores. The
+      // chunk contributes EXACTLY chunkScenes.length entries, in order:
+      //   1. the scene's own composed output when it finished before the deadline
+      //      (composedByIndex, written by the closure above);
+      //   2. otherwise the existing minimal single-clip + voice-over compose
+      //      (composeLastResortSceneFromClip — the same helper Stage 4's own per-scene last
+      //      resort uses), built from a clip that scene already has on disk;
+      //   3. otherwise an empty-string placeholder, which keeps the index aligned and is dropped
+      //      later by the existing validScenePaths filter before concat.
+      // A scene's audio lives inside its own composed file, so a scene dropped at (3) takes its
+      // own voice-over with it and no other scene inherits it.
+      console.warn(
+        `[Pipeline] Compose chunk ${chunkIdx + 1}/${chunks.length} hit its deadline — ` +
+          `salvaging finished scenes:`,
+        (composeChunkErr as Error).message?.slice(0, 160)
+      );
+      visualDedup.lock = Promise.resolve();
+      const salvaged: string[] = [];
+      for (let si = chunk.start; si < chunk.end; si++) {
+        const done = composedByIndex[si];
+        if (done && fs.existsSync(done)) {
+          salvaged.push(done);
+          continue;
+        }
+        const scene = scenes[si]!;
+        let rescued = "";
+        try {
+          const survivors = await usableSurvivorClips(sceneVisualResults[si]?.clips ?? [], 1);
+          if (survivors[0] && audioPaths[si]) {
+            rescued = await composeLastResortSceneFromClip(
+              scene.index,
+              scene.duration,
+              survivors[0],
+              audioPaths[si]!,
+              workDir
+            );
+          }
+        } catch (lastResortErr) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index}: last-resort compose after chunk deadline failed:`,
+            (lastResortErr as Error).message?.slice(0, 120)
+          );
+        }
+        if (!rescued) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index}: no composed output after chunk deadline — dropped from the cut`
+          );
+        }
+        salvaged.push(rescued);
+      }
+      chunkComposed = salvaged;
+      console.warn(
+        `[Pipeline] Compose chunk ${chunkIdx + 1}/${chunks.length} salvage: ` +
+          `${salvaged.filter(Boolean).length}/${salvaged.length} scenes kept`
+      );
+    }
     composedScenes.push(...chunkComposed);
     } // end for (chunk of chunks)
     } finally {

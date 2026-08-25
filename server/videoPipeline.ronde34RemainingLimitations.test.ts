@@ -347,9 +347,15 @@ describe("RONDE 34 #5, #6, #10 — last-resort phase, survivor scan, probe ident
     expect(await usableSurvivorClips([good1], 0)).toEqual([]);
   }, 180_000);
 
-  it("#6 both last-resort call sites ask for one survivor only", () => {
+  it("#6 every last-resort call site asks for one survivor only", () => {
+    // RONDE 81 added a third last-resort site: the compose-chunk-deadline salvage, which builds
+    // the same minimal single-clip scene for a scene that never finished. The invariant is that
+    // a call site which caps the scan caps it at ONE — the two uncapped sites are the usedClips
+    // top-ups, which deliberately take everything that survived.
     const s = src();
-    expect((s.match(/usableSurvivorClips\([^)]*\?\? \[\], 1\)/g) ?? []).length).toBe(2);
+    const capped = s.match(/usableSurvivorClips\([^)]*\?\? \[\], (\d+)\)/g) ?? [];
+    expect(capped.length, "expected three capped last-resort scans").toBe(3);
+    for (const call of capped) expect(call, call).toMatch(/, 1\)$/);
   });
 
   it("#10 a file replaced at the same path with the same size and mtime is re-probed", async () => {

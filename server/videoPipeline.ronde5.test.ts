@@ -1,5 +1,10 @@
 import { readFileSync } from "fs";
 import path from "path";
+import {
+  pipelineEmergencyFinishMs,
+  pipelineRushModeMs,
+  visualSourcingTurboMs,
+} from "./sourcingPolicy";
 import { describe, expect, it } from "vitest";
 
 // RONDE 5 — FIX 6/7/8/9: the retrieval side was proven healthy in render 517 (funnel in
@@ -135,10 +140,15 @@ describe("FIX 7 — sourcing-ladder clock starts when the visual stage starts", 
     // 1-min video needs ~5min of visual stage, so the last scene always hit turbo budgets).
     // What this test still guards from FIX 7's contract: all three rungs exist for the
     // fast-short path and their ladder ordering is intact.
-    const policySrc = readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 5 * 60_000;"); // turbo
-    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 7 * 60_000;"); // rush
-    expect(policySrc).toContain("if (isFastShortVideoLength(videoLength)) return 9 * 60_000;"); // emergency
+    // RONDE 81 removed the isFastShortVideoLength branch: the rungs are now the same fractions
+    // of every length's own wall-clock target, so long videos get a ladder too. The fast-short
+    // VALUES are unchanged, which is what FIX 7's contract was actually about — so this asserts
+    // the values the functions return rather than the shape of the source that produces them.
+    expect(visualSourcingTurboMs("1")).toBe(5 * 60_000);      // turbo
+    expect(pipelineRushModeMs("1")).toBe(7 * 60_000);         // rush
+    expect(pipelineEmergencyFinishMs("1")).toBe(9 * 60_000);  // emergency
+    expect(visualSourcingTurboMs("1")).toBeLessThan(pipelineRushModeMs("1"));
+    expect(pipelineRushModeMs("1")).toBeLessThan(pipelineEmergencyFinishMs("1"));
   });
 });
 

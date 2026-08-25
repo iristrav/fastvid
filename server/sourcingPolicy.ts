@@ -379,8 +379,7 @@ export function pipelineRushModeMs(videoLength?: string | null): number {
   }
   // RONDE 8: keeps its position ABOVE the widened 5min turbo threshold (ladder order
   // turbo < rush < emergency must hold — each rung is compared against the same clock).
-  if (isFastShortVideoLength(videoLength)) return 7 * 60_000;
-  return 3 * 60_000;
+  return escalationThresholdMs(videoLength, RUSH_FRACTION);
 }
 
 /** Near hard cap — finish compose before wall-clock hard fail (quality path keeps archive longer on 1-min). */
@@ -392,8 +391,7 @@ export function pipelineEmergencyFinishMs(videoLength?: string | null): number {
   }
   // RONDE 8: shifted up with the turbo/rush rungs (5/7/9). Still far under the 22min
   // wall-clock hard cap for 1-min videos, and the clock starts at the visual stage (FIX 7).
-  if (isFastShortVideoLength(videoLength)) return 9 * 60_000;
-  return 7 * 60_000;
+  return escalationThresholdMs(videoLength, EMERGENCY_FRACTION);
 }
 
 /** 1-min Railway: hard-cut plain montage — skip cinematic/year-label compose passes. */
@@ -750,6 +748,31 @@ export function archiveVisualBeatSecForVideo(videoLength?: string | null): numbe
   return 10;
 }
 
+
+/**
+ * RONDE 81 — the escalation thresholds, for every video length.
+ *
+ * The turbo / rush / emergency-finish ladder existed only for 1-minute videos: the three
+ * predicates in videoPipeline.ts all opened with isFastShortVideoLength and returned false
+ * otherwise, so a long video had no way to shed work as its deadline approached. It ran every
+ * beat at the full budget until a stage deadline killed it. The values below the guard
+ * (12s turbo, 3min rush, 7min emergency) were dead code for long videos and are far too tight
+ * to simply switch on — a 20-minute video would have force-exported after seven minutes.
+ *
+ * The ladder is therefore expressed as a fraction of the length's own wall-clock target, using
+ * the fractions the 1-minute path already proves work: 5/20, 7/20 and 9/20 of its 20-minute
+ * target. A 1-minute video keeps exactly the thresholds it has today; every other length gets
+ * the same shape, scaled to its own budget.
+ */
+function escalationThresholdMs(videoLength: string | null | undefined, fraction: number): number {
+  return Math.round(maxPipelineWallClockMin(videoLength) * 60_000 * fraction);
+}
+
+/** Ladder order must hold — turbo < rush < emergency — against the same clock. */
+const TURBO_FRACTION     = 0.25;
+const RUSH_FRACTION      = 0.35;
+const EMERGENCY_FRACTION = 0.45;
+
 /** Wall-clock ms after pipeline start before turbo stock fallback on 1-min videos (default 12s; 3min on 1-min quality path). */
 export function visualSourcingTurboMs(videoLength?: string | null): number {
   const raw = process.env.VISUAL_SOURCING_TURBO_MS?.trim();
@@ -761,8 +784,7 @@ export function visualSourcingTurboMs(videoLength?: string | null): number {
   // took ~5min (scenes fill partly sequentially; IA search+metadata dominates), so the LAST
   // scene always landed in 12s turbo budgets and dropped its beats. The wall-clock hard cap
   // for 1-min videos is 22min, so 5min turbo still leaves ample headroom.
-  if (isFastShortVideoLength(videoLength)) return 5 * 60_000;
-  return 12_000;
+  return escalationThresholdMs(videoLength, TURBO_FRACTION);
 }
 
 /** Max ms per beat spent trying archive candidates before moving on. Beats are processed
