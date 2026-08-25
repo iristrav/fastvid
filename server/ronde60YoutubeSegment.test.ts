@@ -113,6 +113,16 @@ describe("RONDE 60 #2 — which caption track gets read", () => {
   });
 });
 
+/**
+ * RONDE 65 put the InnerTube player API in front of the watch page. These tests are about the
+ * page, so the mock declines the player call and the page route is exercised as before.
+ */
+const pageOnly = (impl: (url: string) => unknown) =>
+  vi.fn(async (url: string) => {
+    if (String(url).includes("youtubei")) return { ok: false, status: 404 };
+    return impl(String(url));
+  });
+
 describe("RONDE 60 #2 — the fetch never throws and never blocks a render", () => {
   it("an unreachable page is an empty context, not an error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ENOTFOUND")));
@@ -128,41 +138,48 @@ describe("RONDE 60 #2 — the fetch never throws and never blocks a render", () 
   });
 
   it("the page is read once per video, then remembered", async () => {
-    const f = vi.fn().mockResolvedValue({ ok: true, text: async () => watchPage() });
+    const f = pageOnly(() => ({ ok: true, text: async () => watchPage() }));
     vi.stubGlobal("fetch", f);
     await fetchYoutubeVideoContext("vid1");
     await fetchYoutubeVideoContext("vid1");
     await fetchYoutubeVideoContext("vid1");
-    expect(f).toHaveBeenCalledTimes(1);
+    // One player attempt plus one page read — and nothing at all on the two repeats.
+    expect(f).toHaveBeenCalledTimes(2);
   });
 
   it("an empty answer is NOT cached — a transient failure must not poison the render", async () => {
-    const f = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false, status: 500 })
-      .mockResolvedValue({ ok: true, text: async () => watchPage({ lengthSeconds: 900 }) });
+    let firstPageRead = true;
+    const f = pageOnly(() => {
+      if (firstPageRead) {
+        firstPageRead = false;
+        return { ok: false, status: 500 };
+      }
+      return { ok: true, text: async () => watchPage({ lengthSeconds: 900 }) };
+    });
     vi.stubGlobal("fetch", f);
     expect((await fetchYoutubeVideoContext("vid2")).durationSec).toBe(0);
     expect((await fetchYoutubeVideoContext("vid2")).durationSec).toBe(900);
   });
 
   it("it sends a real browser UA — the old Fastvid/1.0 gets a page with no tracks on it", async () => {
-    const f = vi.fn().mockResolvedValue({ ok: true, text: async () => watchPage() });
+    const f = pageOnly(() => ({ ok: true, text: async () => watchPage() }));
     vi.stubGlobal("fetch", f);
     await fetchYoutubeVideoContext("vid3");
-    const headers = f.mock.calls[0]![1].headers as Record<string, string>;
+    const pageCall = f.mock.calls.find((c) => String(c[0]).includes("/watch"))!;
+    const headers = pageCall[1].headers as Record<string, string>;
     expect(headers["User-Agent"]).toMatch(/Mozilla/);
     // And skips the EU consent interstitial, which replaces the player response entirely.
     expect(headers.Cookie).toContain("CONSENT");
   });
 
   it("peek answers from what is known and never reaches the network", async () => {
-    const f = vi.fn().mockResolvedValue({ ok: true, text: async () => watchPage({ lengthSeconds: 611 }) });
+    const f = pageOnly(() => ({ ok: true, text: async () => watchPage({ lengthSeconds: 611 }) }));
     vi.stubGlobal("fetch", f);
     expect(peekYoutubeVideoContext("vid4")).toBeNull();
     await fetchYoutubeVideoContext("vid4");
     expect(peekYoutubeVideoContext("vid4")!.durationSec).toBe(611);
-    expect(f).toHaveBeenCalledTimes(1);
+    // The peeks that follow cost nothing: player attempt + page read, and no more.
+    expect(f).toHaveBeenCalledTimes(2);
   });
 
   it("can be switched off entirely", async () => {

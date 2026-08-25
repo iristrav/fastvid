@@ -202,9 +202,79 @@ export function pickCaptionTrack(
 }
 
 /**
- * Fetches the watch page and reads the two facts off it. Never throws — an unreachable or
- * changed page returns an empty context, and every caller treats that as "unknown", not as a
- * reason to reject the video.
+ * RONDE 65: the InnerTube player endpoint, tried before the watch page.
+ *
+ * Render 532 logged src=unknown on all 52 plans — the HTML page never came through on Railway.
+ * Scraping it was the wrong instrument anyway: one to two megabytes of script, served differently
+ * to datacentre addresses, behind a consent interstitial in the EU, and with the player response
+ * embedded in a `<script>` rather than returned as data.
+ *
+ * This is the endpoint the page itself calls, and the one this repo already names as the route
+ * that gets around YouTube's server-side bot detection — see the ANDROID_VR note on the yt-dlp
+ * service in downloadYouTubeCCClip. It answers with about a hundred kilobytes of clean JSON:
+ * videoDetails.lengthSeconds, and the same captionTracks the page carries.
+ *
+ * No API key. The key baked into youtube.com is public, but hardcoding a Google key in a repo is
+ * the kind of thing that ages badly; the ANDROID client context is accepted without one, and the
+ * watch page remains as the fallback if it is not.
+ */
+async function fetchInnerTubePlayer(
+  videoId: string,
+  timeoutMs: number
+): Promise<YoutubeVideoContext | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch("https://www.youtube.com/youtubei/v1/player", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      body: JSON.stringify({
+        videoId,
+        context: {
+          client: {
+            clientName: "ANDROID",
+            clientVersion: "19.09.37",
+            androidSdkVersion: 30,
+            hl: "en",
+            gl: "US",
+          },
+        },
+      }),
+      signal: controller.signal as never,
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      videoDetails?: { lengthSeconds?: string | number };
+      captions?: {
+        playerCaptionsTracklistRenderer?: { captionTracks?: Array<Record<string, unknown>> };
+      };
+    };
+    const rawLen = data.videoDetails?.lengthSeconds;
+    const n = typeof rawLen === "number" ? rawLen : Number.parseInt(String(rawLen ?? ""), 10);
+    const durationSec = Number.isFinite(n) && n > 0 && n < 86_400 ? n : 0;
+    const captionTracks = (data.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [])
+      .map((t) => ({
+        baseUrl: typeof t.baseUrl === "string" ? t.baseUrl : "",
+        languageCode: typeof t.languageCode === "string" ? t.languageCode : "",
+        kind: typeof t.kind === "string" ? t.kind : undefined,
+      }))
+      .filter((t) => t.baseUrl.startsWith("http"));
+    if (durationSec <= 0 && captionTracks.length === 0) return null;
+    return { durationSec, captionTracks };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetches the video's context. Never throws — an unreachable or changed endpoint returns an empty
+ * context, and every caller treats that as "unknown", not as a reason to reject the video.
  */
 export async function fetchYoutubeVideoContext(
   videoId: string,
@@ -218,6 +288,20 @@ export async function fetchYoutubeVideoContext(
   // nothing to say whether the page timed out, was refused, or arrived in a shape this could
   // not read — three very different problems with three different fixes.
   const t0 = Date.now();
+
+  // RONDE 65: the player API first. It is what the page itself calls, answers in JSON, and is a
+  // twentieth of the bytes — the HTML route stays underneath it because neither can be verified
+  // from outside Railway, and having two independent ways in is worth more than picking one.
+  const viaPlayer = await fetchInnerTubePlayer(videoId, timeoutMs);
+  if (viaPlayer) {
+    console.log(
+      `[YTContext] ${videoId} ok via=innertube dur=${viaPlayer.durationSec}s ` +
+        `tracks=${viaPlayer.captionTracks.length} ms=${Date.now() - t0}`
+    );
+    cacheSet(videoId, viaPlayer);
+    return viaPlayer;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -235,14 +319,14 @@ export async function fetchYoutubeVideoContext(
       signal: controller.signal as never,
     });
     if (!resp.ok) {
-      console.warn(`[YTContext] ${videoId} http=${resp.status} ms=${Date.now() - t0}`);
+      console.warn(`[YTContext] ${videoId} via=watchpage http=${resp.status} ms=${Date.now() - t0}`);
       return EMPTY;
     }
     const html = await resp.text();
     const ctx = parseYoutubeWatchPage(html);
     const usable = ctx.durationSec > 0 || ctx.captionTracks.length > 0;
     console.log(
-      `[YTContext] ${videoId} ${usable ? "ok" : "unreadable"} dur=${ctx.durationSec}s ` +
+      `[YTContext] ${videoId} ${usable ? "ok" : "unreadable"} via=watchpage dur=${ctx.durationSec}s ` +
         `tracks=${ctx.captionTracks.length} bytes=${html.length} ms=${Date.now() - t0}`
     );
     // Only worth remembering when it actually said something.

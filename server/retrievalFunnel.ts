@@ -928,6 +928,22 @@ export function buildDownloadShortlist(
   return shortlist;
 }
 
+/**
+ * RONDE 65: score spread below which the CLIP ranking is treated as noise.
+ *
+ * One point on a 0-10 integer scale is 0.025 of cosine similarity — smaller than the gap render
+ * 531 measured between a modern political sticker and a photograph of the subject himself.
+ */
+function scoreSpreadEnv(fallback: number): number {
+  // Deliberately NOT envThreshold: that clamps to 0..1, which is right for a similarity and
+  // wrong for a gap on a 0-10 point scale.
+  const raw = process.env.NON_DISCRIMINATING_SCORE_SPREAD?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 10 ? n : fallback;
+}
+const NON_DISCRIMINATING_SCORE_SPREAD = scoreSpreadEnv(1);
+
 export function pickBestFunnelCandidate(
   scored: ScoredFunnelCandidate[],
   usedCandidateIds?: ReadonlySet<string>,
@@ -963,8 +979,30 @@ export function pickBestFunnelCandidate(
   const passers = unusedPassers.length > 0 ? unusedPassers : allPassers;
 
   const scoreOf = (s: ScoredFunnelCandidate): number => s.visionResult.worstScore10 ?? 0;
+
+  // RONDE 65: refuse to rank on a spread that carries no information.
+  //
+  // worstScore10 is Math.round(similarity * 40) — an INTEGER 0-10. Render 531 measured, on one
+  // beat:
+  //
+  //     white-lives-matter-montana-sticker   0.2226  ->  9
+  //     faces-of-ancient-europe-1-500-a.d    0.2225  ->  9
+  //     Signed Photograph of Adolf Hitler    0.2116  ->  8
+  //     Bundesarchiv Bild 183-1989-0322      0.2077  ->  8
+  //
+  // Obviously-right and obviously-wrong material sat 0.0149 apart, and rounding turned that into
+  // a one-point gap that decided the beat. The sticker did not beat the Hitler photograph
+  // because CLIP preferred it; it beat it because 8.90 rounds up and 8.46 rounds down.
+  //
+  // So when the whole field is within a point of itself, the score is not a ranking and is not
+  // used as one. The tier preference below still applies — provenance is a real signal — and
+  // within a tier the candidates keep the order the funnel ranked them in, which is built from
+  // topicality and source authority rather than image-text noise.
+  const scores = allPassers.map(scoreOf);
+  const discriminating =
+    scores.length < 2 || Math.max(...scores) - Math.min(...scores) > NON_DISCRIMINATING_SCORE_SPREAD;
   const best = (list: ScoredFunnelCandidate[]): ScoredFunnelCandidate =>
-    list.reduce((a, b) => (scoreOf(b) > scoreOf(a) ? b : a));
+    discriminating ? list.reduce((a, b) => (scoreOf(b) > scoreOf(a) ? b : a)) : list[0]!;
 
   const nonStock = passers.filter(s => !STOCK_SOURCES.has(s.candidate.source));
   const stock = passers.filter(s => STOCK_SOURCES.has(s.candidate.source));
@@ -975,7 +1013,9 @@ export function pickBestFunnelCandidate(
   if (stock.length === 0) return bestNonStock;
 
   const bestStock = best(stock);
-  if (scoreOf(bestStock) >= scoreOf(bestNonStock) + STOCK_TIER_WIN_MARGIN) {
+  // A margin measured in the same noisy points cannot decide anything either: when the field is
+  // flat, the non-stock tier simply wins, which is the preference this margin exists to bend.
+  if (discriminating && scoreOf(bestStock) >= scoreOf(bestNonStock) + STOCK_TIER_WIN_MARGIN) {
     return bestStock;
   }
   return bestNonStock;
