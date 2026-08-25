@@ -173,7 +173,7 @@ import {
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadAttemptsPerScene, youtubeMinFormatHeight } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -880,6 +880,16 @@ function sceneFetchAborted(): boolean {
 // sources that ARE responding (SerpAPI, YouTube CC). Voice (TTS) breakers keep their own 8 — they
 // fire far fewer calls and a premature voice fail-over is more disruptive than a skipped image
 // source. One shared constant so this stays in lockstep across every visual/search provider.
+/**
+ * RONDE 68: the least time in which a YouTube video download can plausibly finish.
+ *
+ * Below this the attempt is not a gamble, it is a donation: render 533 started 150 downloads
+ * with less than this left and had every one of them cancelled mid-transfer, having already
+ * consumed whatever the scene had. Skipping leaves that time to the sources that only need a
+ * JSON search to answer.
+ */
+const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS = 12_000;
+
 const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;
 
 /**
@@ -11084,6 +11094,22 @@ export async function downloadYouTubeCCClip(
         if (format?.url) {
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
+          // RONDE 68: do not start a transfer the budget cannot finish.
+          //
+          // Render 533 cancelled 150 of these mid-flight — "cancelled by the enclosing scene
+          // budget before its own 5s timeout" — and every one of them had already spent the
+          // scene's remaining time before dying. That is the time Wikimedia needed for a search
+          // it never got to run (0 searches that render), and Internet Archive for the 12
+          // results it downloaded none of. A whole video is the most expensive thing this
+          // pipeline fetches; it should be the first thing to stand aside, not the last.
+          const remainingMs = remainingScopeMs();
+          if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
+            console.log(
+              `[Pipeline] Scene ${sceneIndex}: skipping YouTube download of ${videoId} — ` +
+                `${Math.round(remainingMs / 1000)}s left in the scene budget, not enough to finish`
+            );
+            return false;
+          }
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             format.url,
             tmpPath,
@@ -11578,17 +11604,23 @@ export async function fetchYouTubeCCClips(
   const downloadedIds = new Set<string>();
   let fetched = 0;
   /**
-   * RONDE 62: a ceiling on download ATTEMPTS, not just on accepted clips.
+   * A ceiling on download ATTEMPTS, not just on accepted clips.
    *
-   * Render 532 downloaded 97 YouTube videos and used none of them. The loop only counted
-   * successes, so with the picture gate refusing most candidates `fetched` never reached
-   * `count` and it kept downloading through every candidate of every query of every licence
-   * pass. Each of those is a full video transfer inside the beat's budget — which is also why
-   * every download ended up "cancelled by the enclosing scene budget before its own 5s
-   * timeout": the budget had already gone on downloads that were thrown away.
+   * RONDE 62 added this because render 532 downloaded 97 YouTube videos and used none: the loop
+   * counted only successes, so with the picture gate refusing most candidates it kept
+   * downloading through every candidate of every query of every licence pass.
+   *
+   * RONDE 68 fixes where the counter lives. It was a local, so the ceiling was per CALL, and
+   * this function is called about twenty-six times per render. Render 533 logged
+   *
+   *     26 x "download ceiling reached (6/6 attempts, 0 accepted)"
+   *
+   * and 150 downloads cancelled by the enclosing scene budget — 26 x 6, almost exactly. The
+   * cap fired every time and bounded nothing. Counting on the render-scoped metrics object
+   * makes it what the comment always claimed it was.
    */
-  let downloadAttempts = 0;
-  const maxDownloadAttempts = youtubeMaxDownloadAttemptsPerScene();
+  const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadCount;
+  const maxDownloadAttempts = youtubeMaxDownloadsPerRender();
 
   const ytDeadline = Date.now() + (IS_RAILWAY ? 88_000 : 55_000);
   const guidedDeadline =
@@ -11605,12 +11637,12 @@ export async function fetchYouTubeCCClips(
 
   for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;
-    if (downloadAttempts >= maxDownloadAttempts) break;
+    if (downloadsSoFar() >= maxDownloadAttempts) break;
     if (Date.now() > ytDeadline) break;
 
     for (const pass of licensePasses) {
       if (fetched >= count) break;
-      if (downloadAttempts >= maxDownloadAttempts) break;
+      if (downloadsSoFar() >= maxDownloadAttempts) break;
       if (Date.now() > ytDeadline) break;
       if (pass.license === "any" && fetched >= count) break;
 
@@ -11641,10 +11673,10 @@ export async function fetchYouTubeCCClips(
         for (const row of items.slice(0, 5)) {
           if (fetched >= count) break;
           if (Date.now() > ytDeadline) break;
-          if (downloadAttempts >= maxDownloadAttempts) {
+          if (downloadsSoFar() >= maxDownloadAttempts) {
             console.log(
-              `[Pipeline] Scene ${sceneIndex}: YouTube download ceiling reached ` +
-                `(${downloadAttempts}/${maxDownloadAttempts} attempts, ${fetched} accepted)`
+              `[Pipeline] Scene ${sceneIndex}: YouTube download ceiling reached for this RENDER ` +
+                `(${downloadsSoFar()}/${maxDownloadAttempts} downloads, ${fetched} accepted here)`
             );
             break;
           }
@@ -11737,7 +11769,6 @@ export async function fetchYouTubeCCClips(
             putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
               providerText: { title, description: row.desc },
             });
-            downloadAttempts++;
             const ok = await downloadYouTubeCCClip(
               videoId,
               clipDur,

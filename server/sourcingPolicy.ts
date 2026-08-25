@@ -867,19 +867,29 @@ export function downloadStallTimeoutMs(): number {
  * genuinely still moving, not for one that has hung.
  */
 /**
- * RONDE 62: how many YouTube videos one scene may download before giving up on the source.
+ * How many YouTube videos one RENDER may download before the source stands down.
  *
- * Render 532 transferred 97 of them and used zero. The loop counted only accepted clips, so
- * with the picture gate refusing most candidates it never reached its stop condition — and the
- * downloads it did keep making were the reason the beat budget ran out.
+ * RONDE 62 introduced this per scene; RONDE 68 discovered it was really per CALL, because the
+ * counter was a local in a function invoked about twenty-six times per render. Render 533:
+ *
+ *     26 x "download ceiling reached (6/6 attempts, 0 accepted)"
+ *     150 x "RapidAPI YouTube download ... cancelled by the enclosing scene budget"
+ *
+ * 26 x 6 = 156. The ceiling fired on every call and bounded nothing, and those 150 abandoned
+ * video transfers are what left no scene budget for anything else — Wikimedia ran 0 searches
+ * that render, Internet Archive downloaded 0 of 12 results, and the montage fell back to stock.
+ *
+ * 20 is deliberately generous: YouTube must stay a real participant, it just cannot be allowed
+ * to spend the whole render's fetch budget on material it has yet to contribute a single clip
+ * from in three renders.
  */
-export function youtubeMaxDownloadAttemptsPerScene(): number {
-  const raw = process.env.YOUTUBE_MAX_DOWNLOAD_ATTEMPTS?.trim();
+export function youtubeMaxDownloadsPerRender(): number {
+  const raw = process.env.YOUTUBE_MAX_DOWNLOADS_PER_RENDER?.trim() ?? process.env.YOUTUBE_MAX_DOWNLOAD_ATTEMPTS?.trim();
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1 && n <= 100) return n;
+    if (!isNaN(n) && n >= 1 && n <= 200) return n;
   }
-  return 6;
+  return 20;
 }
 
 export function youtubeDownloadTimeoutMs(): number {

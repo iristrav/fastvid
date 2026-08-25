@@ -3,7 +3,6 @@ import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decadeOf, dropSubsumedTerms } from "./semanticVisualMatching";
 import { isOffTopicProtestForBeat, isProtestVisualHay, inferVideoVisualTopic } from "./visualBeatTags";
-import { youtubeMaxDownloadAttemptsPerScene } from "./sourcingPolicy";
 import { rapidApiYoutubeMetaDurationSec } from "./videoPipeline";
 
 /**
@@ -107,26 +106,29 @@ describe("RONDE 62 #2 — the YouTube duration comes from the call that works", 
   });
 });
 
+/**
+ * RONDE 68 moved this mechanism, and the move is the point.
+ *
+ * These three tests passed against a ceiling that bounded nothing. The counter was a local in
+ * fetchYouTubeCCClips, so "6 per scene" was really "6 per call" — and that function runs about
+ * twenty-six times per render. Render 533 logged 26 x "ceiling reached (6/6)" and 150 downloads
+ * cancelled by the scene budget: 26 x 6 = 156. Every assertion here was true and the behaviour
+ * was still wrong, because nothing checked the scope of the number.
+ *
+ * The live assertions now live in ronde68SupplyStarvation.test.ts, against a render-scoped
+ * count. What is kept here is the one thing that generalises: the ceiling must be counted
+ * somewhere that survives the call.
+ */
 describe("RONDE 62 #3 — 97 downloads for nothing does not happen again", () => {
-  it("there is a ceiling on attempts, not only on successes", () => {
-    expect(youtubeMaxDownloadAttemptsPerScene()).toBeGreaterThan(0);
-    // Render 532 averaged ~32 per scene.
-    expect(youtubeMaxDownloadAttemptsPerScene()).toBeLessThan(32);
-  });
-
-  it("is env-overridable within sane bounds", () => {
-    vi.stubEnv("YOUTUBE_MAX_DOWNLOAD_ATTEMPTS", "3");
-    expect(youtubeMaxDownloadAttemptsPerScene()).toBe(3);
-    vi.stubEnv("YOUTUBE_MAX_DOWNLOAD_ATTEMPTS", "0");
-    expect(youtubeMaxDownloadAttemptsPerScene()).toBe(6);
-    vi.stubEnv("YOUTUBE_MAX_DOWNLOAD_ATTEMPTS", "junk");
-    expect(youtubeMaxDownloadAttemptsPerScene()).toBe(6);
-  });
-
-  it("the counter is incremented on the attempt, and checked at all three loop levels", () => {
+  it("the ceiling is counted on render-scoped state, not on a per-call local", () => {
     const src = PIPELINE();
-    expect(src).toContain("downloadAttempts++;\n            const ok = await downloadYouTubeCCClip(");
-    const checks = [...src.matchAll(/if \(downloadAttempts >= maxDownloadAttempts\)/g)];
+    expect(src).toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount');
+    expect(src).not.toContain("let downloadAttempts = 0;");
+  });
+
+  it("it is still checked at all three loop levels", () => {
+    const src = PIPELINE();
+    const checks = [...src.matchAll(/downloadsSoFar\(\) >= maxDownloadAttempts/g)];
     expect(checks.length).toBe(3);
   });
 });
