@@ -318,7 +318,9 @@ describe("RONDE 88 §6/§10/§17/§18 — no guessing anywhere", () => {
     const idx = PIPELINE_SRC.indexOf("export async function cachedProviderSearch<T>(");
     expect(idx).toBeGreaterThan(-1);
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
-    expect(body).toContain("validateSearchQuery(query)");
+    // RONDE 89 renamed the local to `text` when the gate began accepting a query OBJECT as well
+    // as a string. The property asserted — the gate validates before it sends — is unchanged.
+    expect(body).toContain("validateSearchQuery(text)");
     expect(body).toContain("formatSearchQueryRejected(");
   });
 

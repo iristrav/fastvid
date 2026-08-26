@@ -303,6 +303,13 @@ import {
 import {
   buildPrioritisedQueries,
   checkPersonName,
+  formatSearchGateReport,
+  isVerifiedSearchQuery,
+  legacyQueryTicket,
+  mintVerifiedQuery,
+  searchGateAudit,
+  searchGateStrict,
+  type VerifiedSearchQuery,
   emptyQueryContext,
   formatSearchQueryRejected,
   isFunctionWord,
@@ -6121,6 +6128,9 @@ async function fetchBrollClips(
     if (stockClipEmbeddingEnabled()) {
       queryEmbForStock = await resolveBeatVisionQueryEmbedding({ beatText: query });
     }
+    // RONDE 89: the provider gate, per query in the loop. A refused query is skipped, never
+    // repaired or replaced.
+    if (admitProviderQuery("pexels", query, "fetchBrollClips") === null) continue;
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
       const searchResp = await fetchWithTimeout(
@@ -6697,6 +6707,10 @@ export async function fetchWikimediaImages(
       // provider limiter and the same timeouts, and every URL adopted above is already in
       // excludeUrls so it cannot be picked twice.
       if (!excludeUrls || results.length >= count) return results;
+      // RONDE 89: the provider gate, immediately before the one live search this function makes.
+      // A refused query means no live search — and the clips already adopted from the cached pool
+      // are returned rather than discarded, which is what the RONDE 50 fall-through guarantees.
+      if (admitProviderQuery("wikimedia", query, "fetchWikimediaImages") === null) return results;
     }
 
     // Cache miss — or a cache hit that exclusions left short (RONDE 50). Search Wikimedia Commons
@@ -6932,6 +6946,11 @@ async function fetchWikimediaImagesV1(
   type WikiSearchResult = { title: string; snippet?: string };
   const searchResults = await Promise.all(
     queries.map(async (query) => {
+      // RONDE 89: the provider gate, per query. A refused query yields no results for that
+      // query — it is never repaired, widened or replaced with a guess.
+      if (admitProviderQuery("wikimedia", query, "fetchWikimediaImagesV1") === null) {
+        return { query, results: [] as WikiSearchResult[] };
+      }
       try {
         const searchUrl =
           `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
@@ -7007,6 +7026,9 @@ async function fetchOpenverseImages(
     geoDocumentary?: boolean;
   } = {}
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("openverse", query, "fetchOpenverseImages") === null) return [];
   const geoOk = Boolean(opts.geoDocumentary && openverseGeoDocumentaryEnabled());
   if (!openverseStillsEnabled() && !geoOk) return [];
   const results: string[] = [];
@@ -7103,6 +7125,9 @@ async function fetchUnsplashImages(
   fileTag = "",
   opts: { personPortrait?: boolean; dedup?: VisualDedupState } = {}
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("unsplash", query, "fetchUnsplashImages") === null) return [];
   if (!UNSPLASH_ACCESS_KEY?.trim()) return [];
   const results: string[] = [];
   try {
@@ -7197,6 +7222,9 @@ async function fetchYouTubeThumbnails(
   count: number = 3,
   fileTag = ""
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("youtube", query, "fetchYouTubeThumbnails") === null) return [];
   if (!youtubeSourcingEnabled()) return [];
   const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
   if (!YOUTUBE_API_KEY) return [];
@@ -7307,6 +7335,9 @@ async function fetchSerpAPIImages(
     stillStyleContext?: StillStyleContext;
   } = {}
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("serpapi", query, "fetchSerpAPIImages") === null) return [];
   if (!SERPAPI_KEY) return [];
   if (isSerpApiInCooldown()) return [];
   // Ensure workDir exists — it may have been cleaned up between pipeline stages
@@ -10496,7 +10527,11 @@ export async function searchWebWideVideoClips(
     const videoId = getActiveVideoId();
     return videoId != null && isVideoGenerationCancelRequested(videoId);
   };
-  const uniqueQueries = uniqueQueryStrings(queries).slice(0, 3);
+  // RONDE 89: the provider gate. This route fans one beat's queries out across several
+  // providers, so a query the contract refuses is dropped here, before any of them is asked.
+  const uniqueQueries = uniqueQueryStrings(queries)
+    .filter((q) => admitProviderQuery("web_wide", q, "searchWebWideVideoClips") !== null)
+    .slice(0, 3);
   if (cancelled()) return results;
 
   for (const query of uniqueQueries) {
@@ -11656,6 +11691,9 @@ async function searchYoutubeViaRapidApi(
   sceneIndex: number,
   maxResults: number
 ): Promise<{ items?: YoutubeSearchRow["item"][] } | null> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("youtube", query, "searchYoutubeViaRapidApi") === null) return null;
   try {
     const url = `https://${RAPIDAPI_YT_SEARCH_HOST}/search?query=${encodeURIComponent(query)}&type=video`;
     const resp = await providerLimiter("youtube").run(() => fetchWithTimeout(
@@ -15736,37 +15774,121 @@ export function providerQueryCacheKey(provider: string, query: string): string {
  * exact query will not return something different 30 seconds later in the same render, and
  * re-asking is precisely the duplicate work this exists to remove.
  */
+/**
+ * RONDE 89 — the gate, for a fetcher that does not go through cachedProviderSearch.
+ *
+ * The audit found eight provider searches reaching the network without passing the gate: b-roll,
+ * Wikimedia images (v0 and v1), YouTube thumbnails, SerpAPI, Openverse, Unsplash and the RapidAPI
+ * YouTube search. Restructuring all eight to route through cachedProviderSearch would change their
+ * caching behaviour; this applies the SAME enforcement code at their entry instead.
+ *
+ * Returns the query when it may be sent, or null when it must not be. A null answer means the
+ * caller returns empty — never a substituted or repaired query.
+ */
+export function admitProviderQuery(
+  provider: string,
+  query: string | VerifiedSearchQuery,
+  route = "legacy_fetcher"
+): string | null {
+  const ticket: VerifiedSearchQuery = isVerifiedSearchQuery(query)
+    ? query
+    : legacyQueryTicket(String(query ?? ""), route);
+  searchGateAudit.record("queriesBuilt", provider, ticket.route);
+  const verdict = validateSearchQuery(ticket.query);
+  if (!verdict.ok) {
+    searchGateAudit.record("queriesRejected", provider, ticket.route, verdict.reason);
+    searchGateAudit.record("queriesBlocked", provider, ticket.route);
+    console.warn(
+      formatSearchQueryRejected({
+        query: ticket.query, provider, route: ticket.route,
+        reason: verdict.reason ?? "UNVERIFIED_TERM",
+        offendingTerm: verdict.offendingTerm,
+      })
+    );
+    return null;
+  }
+  if (!ticket.verified) {
+    searchGateAudit.record("bypassAttempts", provider, ticket.route, ticket.rejectReason);
+    if (searchGateStrict()) {
+      searchGateAudit.record("queriesBlocked", provider, ticket.route, ticket.rejectReason);
+      return null;
+    }
+  } else {
+    searchGateAudit.record("queriesValidated", provider, ticket.route);
+  }
+  searchGateAudit.record("queriesSent", provider, ticket.route);
+  return ticket.query;
+}
+
 export async function cachedProviderSearch<T>(
   cache: SourcingCache | undefined,
   provider: string,
-  query: string,
-  search: () => Promise<T>
+  /**
+   * RONDE 89 (§4): a bare string, or a VerifiedSearchQuery carrying its own proof.
+   *
+   * A string cannot say where it came from, which is exactly why it cannot be trusted here. It is
+   * accepted so the pipeline keeps sourcing while the remaining call sites are migrated, but it is
+   * counted as a bypass attempt on every single call and named in the end-of-render report — the
+   * difference between a known gap and an invisible one.
+   */
+  query: string | VerifiedSearchQuery,
+  search: () => Promise<T>,
+  route = "provider_search"
 ): Promise<T> {
   /**
-   * RONDE 88 (§16/§17) — every provider search in this file funnels through here, which makes it
-   * the one place a query can be refused for all of them at once.
+   * RONDE 88/89 — THE provider gate.
    *
-   * Without a per-beat context the validator can only apply the checks that need none: an empty
-   * query, and a capitalised pronoun. That is deliberate rather than lenient — "She France" was a
-   * real measured query, and refusing what is provably wrong is worth more than pretending the
-   * rest was checked. The queries built through buildVerifiedQueryContextForBeat carry their
-   * context and get the full check before they ever reach a fetcher.
+   * Every provider search in this file funnels through here, which makes it the one place a query
+   * can be refused for all of them at once. RONDE 89's audit found eight fetchers that reached the
+   * network without passing this point (b-roll, Wikimedia images v0 and v1, YouTube thumbnails,
+   * SerpAPI, Openverse, Unsplash, the RapidAPI YouTube search); they are routed through it now.
+   *
+   * Three outcomes, and only three:
+   *   · a VerifiedSearchQuery that the contract verified   -> sent
+   *   · anything the validator refuses                     -> blocked, logged, NOT sent
+   *   · a bare string or an unverified ticket              -> counted as a bypass attempt, and
+   *     blocked outright when SEARCH_GATE_STRICT=true
    */
-  const verdict = validateSearchQuery(query);
+  const ticket: VerifiedSearchQuery = isVerifiedSearchQuery(query)
+    ? query
+    : legacyQueryTicket(String(query ?? ""), route);
+  const text = ticket.query;
+  searchGateAudit.record("queriesBuilt", provider, ticket.route);
+
+  const verdict = validateSearchQuery(text);
   if (!verdict.ok) {
+    searchGateAudit.record("queriesRejected", provider, ticket.route, verdict.reason);
+    searchGateAudit.record("queriesBlocked", provider, ticket.route);
     console.warn(
       formatSearchQueryRejected({
-        query,
-        provider,
+        query: text, provider, route: ticket.route,
         reason: verdict.reason ?? "UNVERIFIED_TERM",
         offendingTerm: verdict.offendingTerm,
-        route: "provider_search",
       })
     );
     return [] as unknown as T;
   }
+
+  if (!ticket.verified) {
+    searchGateAudit.record("bypassAttempts", provider, ticket.route, ticket.rejectReason);
+    if (searchGateStrict()) {
+      searchGateAudit.record("queriesBlocked", provider, ticket.route, ticket.rejectReason);
+      console.warn(
+        formatSearchQueryRejected({
+          query: text, provider, route: ticket.route,
+          reason: "UNVERIFIED_TERM",
+          offendingTerm: ticket.rejectReason ?? "NO_SEARCH_CONTEXT",
+        })
+      );
+      return [] as unknown as T;
+    }
+  } else {
+    searchGateAudit.record("queriesValidated", provider, ticket.route);
+  }
+
+  searchGateAudit.record("queriesSent", provider, ticket.route);
   if (!cache) return search();
-  const key = providerQueryCacheKey(provider, query);
+  const key = providerQueryCacheKey(provider, text);
   const m = providerMetrics(cache, provider);
   if (cache.queries.has(key)) {
     m.queryCacheHits++;
@@ -15781,6 +15903,7 @@ export async function cachedProviderSearch<T>(
   cache.queries.set(key, payload);
   return payload;
 }
+
 
 /** Reads this render's cached knowledge about one provider asset (Phase 6). Callers that go on
  *  to reuse cached metadata/license (rather than just checking a cached rejection) additionally
@@ -34162,6 +34285,9 @@ async function _runVideoPipelineInner(
       const summary = ledger.summary();
       for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) console.log(line);
       for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) console.log(line);
+      // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
+      // and how many calls arrived without a context and were counted as bypass attempts.
+      for (const line of formatSearchGateReport()) console.log(line);
       const reconciliation = ledger.reconcile();
       for (const line of formatAuditReport(reconciliation)) console.log(line);
       console.log(formatGlobalBudget());

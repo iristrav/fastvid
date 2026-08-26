@@ -604,3 +604,158 @@ export function formatSearchQueryRejected(meta: {
     `route=${meta.route ?? "-"} provider=${meta.provider ?? "-"}`
   );
 }
+
+// ─── RONDE 89: the provider gate ─────────────────────────────────────────────
+
+/**
+ * A query that has been through the contract, carrying the proof with it.
+ *
+ * §4 of the round: a provider must be able to tell a validated query from a bare string. A string
+ * cannot say where it came from, so it cannot be trusted at the gate — this object can, because
+ * `verified` is set in exactly one place (mintVerifiedQuery) and only when validateSearchQuery
+ * agreed. There is deliberately no constructor that takes `verified: true` as an argument.
+ */
+export type VerifiedSearchQuery = {
+  readonly query: string;
+  readonly tokens: readonly QueryToken[];
+  readonly verified: boolean;
+  readonly route: string;
+  readonly renderId?: string;
+  readonly sceneIndex?: number;
+  readonly beatIndex?: number;
+  /** Set when verified is false — why the contract refused it. */
+  readonly rejectReason?: QueryRejectReason | LegacyRejectReason;
+};
+
+/** Reasons that describe HOW a query reached the gate rather than what is in it. */
+export type LegacyRejectReason =
+  | "NO_SEARCH_CONTEXT"
+  | "LEGACY_QUERY_BUILDER"
+  | "UNVERIFIED_QUERY"
+  | "SYSTEM_ANCHOR_NOT_ALLOWED"
+  | "LLM_DERIVED_TERM_NOT_ALLOWED"
+  | "PROVIDER_GATE_BYPASS";
+
+export type AnyRejectReason = QueryRejectReason | LegacyRejectReason;
+
+/**
+ * The ONE place a query becomes verified.
+ *
+ * Requires a context. A caller without one gets an unverified ticket carrying
+ * NO_SEARCH_CONTEXT — §3: "we don't know where this came from but it looks fine" is precisely
+ * the guess this round removes, so the absence of a context is recorded as such rather than
+ * treated as an absence of evidence against it.
+ */
+export function mintVerifiedQuery(
+  query: string,
+  ctx: VerifiedQueryContext | undefined,
+  meta: { route: string; renderId?: string; sceneIndex?: number; beatIndex?: number }
+): VerifiedSearchQuery {
+  const tokens = ctx
+    ? [...ctx.persons, ...ctx.places, ...ctx.countries, ...ctx.events, ...ctx.actions, ...ctx.objects, ...ctx.time, ...ctx.years]
+    : [];
+  if (!ctx) {
+    return { query, tokens, verified: false, rejectReason: "NO_SEARCH_CONTEXT", ...meta };
+  }
+  const verdict = validateSearchQuery(query, ctx);
+  return verdict.ok
+    ? { query, tokens, verified: true, ...meta }
+    : { query, tokens, verified: false, rejectReason: verdict.reason ?? "UNVERIFIED_TERM", ...meta };
+}
+
+/**
+ * A ticket for a caller that has no context to offer.
+ *
+ * Always unverified. It exists so such a call is COUNTED and NAMED at the gate rather than
+ * arriving as an anonymous string — the difference between a known gap and an invisible one.
+ */
+export function legacyQueryTicket(query: string, route: string): VerifiedSearchQuery {
+  return { query, tokens: [], verified: false, route, rejectReason: "LEGACY_QUERY_BUILDER" };
+}
+
+export function isVerifiedSearchQuery(value: unknown): value is VerifiedSearchQuery {
+  return (
+    typeof value === "object" && value !== null &&
+    typeof (value as VerifiedSearchQuery).query === "string" &&
+    typeof (value as VerifiedSearchQuery).verified === "boolean" &&
+    Array.isArray((value as VerifiedSearchQuery).tokens)
+  );
+}
+
+/** §15 — per-route and per-provider counters for what the gate did. */
+export type SearchGateCounters = {
+  queriesBuilt: number;
+  queriesValidated: number;
+  queriesRejected: number;
+  queriesSent: number;
+  queriesBlocked: number;
+  bypassAttempts: number;
+};
+
+function emptyGateCounters(): SearchGateCounters {
+  return { queriesBuilt: 0, queriesValidated: 0, queriesRejected: 0, queriesSent: 0, queriesBlocked: 0, bypassAttempts: 0 };
+}
+
+export class SearchGateAudit {
+  private readonly byProvider = new Map<string, SearchGateCounters>();
+  private readonly byRoute = new Map<string, SearchGateCounters>();
+  private readonly reasons = new Map<string, number>();
+  readonly total: SearchGateCounters = emptyGateCounters();
+
+  private bump(map: Map<string, SearchGateCounters>, key: string, field: keyof SearchGateCounters): void {
+    const entry = map.get(key) ?? emptyGateCounters();
+    entry[field] += 1;
+    map.set(key, entry);
+  }
+
+  record(field: keyof SearchGateCounters, provider: string, route: string, reason?: string): void {
+    this.total[field] += 1;
+    this.bump(this.byProvider, (provider || "unknown").toLowerCase(), field);
+    this.bump(this.byRoute, route || "unknown", field);
+    if (reason) this.reasons.set(reason, (this.reasons.get(reason) ?? 0) + 1);
+  }
+
+  summary(): {
+    total: SearchGateCounters;
+    byProvider: Record<string, SearchGateCounters>;
+    byRoute: Record<string, SearchGateCounters>;
+    rejectReasons: Record<string, number>;
+  } {
+    return {
+      total: { ...this.total },
+      byProvider: Object.fromEntries([...this.byProvider].map(([k, v]) => [k, { ...v }])),
+      byRoute: Object.fromEntries([...this.byRoute].map(([k, v]) => [k, { ...v }])),
+      rejectReasons: Object.fromEntries(this.reasons),
+    };
+  }
+}
+
+/** The process-wide audit. One render at a time writes far more than it reads. */
+export const searchGateAudit = new SearchGateAudit();
+
+export function formatSearchGateReport(audit: SearchGateAudit = searchGateAudit): string[] {
+  const s = audit.summary();
+  const line = (label: string, c: SearchGateCounters) =>
+    `[SearchGate] ${label} built=${c.queriesBuilt} validated=${c.queriesValidated} ` +
+    `rejected=${c.queriesRejected} sent=${c.queriesSent} blocked=${c.queriesBlocked} ` +
+    `bypassAttempts=${c.bypassAttempts}`;
+  const out = [line("TOTAL", s.total)];
+  for (const [provider, c] of Object.entries(s.byProvider)) out.push(line(`provider=${provider}`, c));
+  for (const [route, c] of Object.entries(s.byRoute)) out.push(line(`route=${route}`, c));
+  const reasons = Object.entries(s.rejectReasons).sort((a, b) => b[1] - a[1]);
+  if (reasons.length) out.push(`[SearchGate] rejectReasons ` + reasons.map(([r, n]) => `${r}=${n}`).join(" "));
+  return out;
+}
+
+/**
+ * Is the gate refusing unverified queries outright?
+ *
+ * Default OFF, and that is a deliberate, reported limitation rather than a design choice. Turning
+ * it on today would block every legacy call site that cannot yet supply a context — which is most
+ * of them — and stop the pipeline from sourcing anything at all. With it off, those calls are
+ * counted as bypassAttempts and named in the report, so the remaining work is visible and
+ * measurable instead of assumed away.
+ */
+export function searchGateStrict(): boolean {
+  return process.env.SEARCH_GATE_STRICT === "true";
+}
