@@ -15592,36 +15592,63 @@ function montageClipInputs(clips: string[]): string {
 }
 
 /**
- * RONDE 26: tail filler for a montage that came up short against the voice track.
+ * Tail filler for a montage that came up short against the voice track.
  *
- * This used to insert a flat dark-grey rectangle, on the reasoning that a freeze is worse than a
- * pad. Render 526 shipped the result — the export gate recorded "gray pad: scene(s) 1 rendered
- * with a gray filler" and passed the video at 86/100 anyway — and a grey box on screen reads to a
- * viewer as a broken player. Holding the last frame does not: a held shot is an ordinary
- * documentary device, and it keeps the picture on the subject the narration is still describing.
+ * RONDE 85 — the picture never stops moving.
  *
- * Neither is a substitute for having enough footage. The gap is still registered on
- * grayPadScenes and still reported by the quality gate, because the underlying shortfall is the
- * thing worth fixing. Set MONTAGE_TAIL_PAD=grey to restore the old behaviour without a redeploy.
+ * RONDE 26 replaced a flat grey rectangle with holding the last frame, on the reasoning that a
+ * grey box reads as a broken player while a held shot is an ordinary documentary device. Render
+ * 536 showed what that costs when the shortfall is large: scene 16 had ONE clip covering 7.0s of
+ * a 20.8s scene, the coverage backfill searched for five more and found none, and the export
+ * carried a 10.6-second frozen frame. The final video's own QA counted 30 frozen segments.
+ *
+ * A held frame is now not produced at all. The montage is slowed to fill the gap instead, so the
+ * shot the narration is describing stays on screen AND stays in motion. Slowing is not a repeat,
+ * so it is also the one filler compatible with strictNoVisualRepeat.
+ *
+ * The ratio is uncapped on purpose. Capping it would leave a remainder, and the only things that
+ * could fill that remainder are the two this round exists to remove. A large ratio is logged
+ * loudly instead: it means the scene is short of footage, which is the thing actually worth
+ * fixing — see ensureArchiveMontageVoiceCoverage and RONDE 84's candidate depth.
+ *
+ * MONTAGE_TAIL_PAD=freeze restores RONDE 26's held frame and =grey the original rectangle,
+ * either without a redeploy.
  */
-function montageTailPadFilterChain(pad: number, context: string): string {
-  const useGrey = process.env.MONTAGE_TAIL_PAD?.trim().toLowerCase() === "grey";
+export function montageTailPadFilterChain(montageDur: number, targetDur: number, context: string): string {
+  const mode = process.env.MONTAGE_TAIL_PAD?.trim().toLowerCase();
+  const pad = Math.max(0, targetDur - montageDur);
+  if (mode === "grey") {
+    console.warn(`[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — grey pad`);
+    return `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`;
+  }
+  if (mode === "freeze" || montageDur <= 0.05) {
+    // The ratio is meaningless without a real montage duration to stretch, so a zero-length
+    // montage keeps the old behaviour rather than dividing by it.
+    console.warn(
+      `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — holding last frame`
+    );
+    return `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},`;
+  }
+  const ratio = targetDur / montageDur;
   console.warn(
     `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — ` +
-      `${useGrey ? "grey pad" : "holding last frame"}`
+      `slowing ${ratio.toFixed(2)}x to fill (no frozen frame)` +
+      (ratio > 2 ? " — SCENE IS SHORT OF FOOTAGE" : "")
   );
-  return useGrey
-    ? `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`
-    : `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},`;
+  // Ahead of FPS_FORMAT_VF's fps=25, which then resamples the stretched timeline back to a
+  // constant frame rate. FPS_FORMAT_VF's trailing setpts=PTS-STARTPTS only rebases the origin,
+  // so it preserves the spacing this filter just changed.
+  return `setpts=${ratio.toFixed(6)}*PTS,`;
 }
 
-function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
+export function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
   const pad = Math.max(0, outDur - montageDur - 0.04);
   if (pad < 0.08) {
     return `[${inLabel}]${FPS_FORMAT_VF}[vmont]`;
   }
   const chain = montageTailPadFilterChain(
-    pad,
+    montageDur,
+    montageDur + pad,
     `Montage ${montageDur.toFixed(1)}s vs voice ${outDur.toFixed(1)}s${strictNoVisualRepeat() ? " (strict no-repeat)" : ""}`
   );
   return `[${inLabel}]${chain}${FPS_FORMAT_VF}[vmont]`;
@@ -16436,9 +16463,13 @@ async function renderSequentialArchiveMontage(
   if (segmentPaths.length === 1) {
     const est = segmentDurs[0]!;
     const pad = Math.max(0, outDur - est - 0.04);
+    // RONDE 85: the strictNoVisualRepeat guard is gone from this branch. It was here because the
+    // filler used to be a held frame, and a scene under a strict no-repeat rule was left short
+    // rather than given one. Slowing the clip repeats nothing, so it is allowed under that rule
+    // too — and leaving the scene short of its own voice track was never the better outcome.
     const padFilter =
-      pad >= 0.08 && !strictNoVisualRepeat()
-        ? montageTailPadFilterChain(pad, `Scene ${sceneIndex} single-clip montage`)
+      pad >= 0.08
+        ? montageTailPadFilterChain(est, est + pad, `Scene ${sceneIndex} single-clip montage`)
         : "";
     await withSceneFetchTimeout(
       () => exec(
