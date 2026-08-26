@@ -360,11 +360,12 @@ describe("RONDE 28 — recording happens at every adoption, not just at archivin
     // Window sized to the whole acceptance block rather than a tight byte count — RONDE 29
     // added the moving/still counters between the marker and this call, and a snug slice made
     // an unrelated insertion look like the hook had moved.
-    // RONDE 86 widened this again for the same reason: the lineage/funnel recording added to
-    // markAdopted sits between the marker and `const mustFairUse`, and a snug slice would make an
-    // unrelated insertion look like the hook had moved. The relationship being asserted — the
-    // hook is inside the acceptance block, before the fair-use transform — is unchanged.
-    const after = pipelineSrc.slice(at, at + 4000);
+    // RONDE 86 and RONDE 87 each widened this again for the same reason: the lineage recording
+    // added to the acceptance block (and to markAdopted) sits between the marker and
+    // `const mustFairUse`, and a snug slice would make an unrelated insertion look like the hook
+    // had moved. The relationship being asserted — the hook is inside the acceptance block, before
+    // the fair-use transform — is unchanged.
+    const after = pipelineSrc.slice(at, at + 6000);
     expect(after).toContain("recordAdoptedClipSource(");
     expect(after).toContain("contentKey,");
     // The hook must still sit inside the acceptance block, not somewhere later in the file.

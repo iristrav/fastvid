@@ -21,6 +21,7 @@ import type { BeatGeoRegion } from "./vidrushQuality";
 import { targetClipVisionScore } from "./visualQualityGate";
 import type { VoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
+import { UNVERIFIED_PROVIDER as UNVERIFIED_SOURCE } from "./visualSourceLineage";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 
 export type { VoiceVisualMatchSummary };
@@ -30,7 +31,19 @@ export type VideoQualityReport = {
   videoTitle: string;
   visualTopic: string;
   totalClips: number;
+  /**
+   * RONDE 87 — the OFFICIAL source attribution, from the lineage ledger only.
+   *
+   * A clip whose origin the render could not prove is counted under UNVERIFIED_SOURCE. It is never
+   * reassigned to a plausible provider read off its filename.
+   */
   bySource: Record<string, number>;
+  /**
+   * The filename reading, for debugging only. Never an official statistic: a filename says what a
+   * file was named, not where its content came from, and the two stopped agreeing the first time
+   * the compose path renamed a clip.
+   */
+  diagnosticBySource: Record<string, number>;
   byMixKind: Record<VisualMixKind, number>;
   wikimediaCount: number;
   archiveCount: number;
@@ -69,7 +82,13 @@ export type VideoQualityReport = {
   score: number;
 };
 
-/** Map temp clip filename → source bucket (mirrors videoPipeline.inferClipSourceFromPath). */
+/**
+ * DIAGNOSTIC ONLY — a guess at a clip's source from its filename.
+ *
+ * RONDE 87: feeds `diagnosticBySource` and the quality score's existing inputs, never the official
+ * `bySource`. See the long note on videoPipeline.inferClipSourceFromPath for why a filename cannot
+ * establish a provider. Official attribution comes from the lineage ledger via `opts.resolveSource`.
+ */
 export function inferClipSourceFromPath(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)$/i, "").toLowerCase();
   if (/_ytfu_|_ytcc_|_b\d+_yt_|_yt_\d/i.test(base)) return "youtube";
@@ -192,19 +211,31 @@ export function buildVideoQualityReport(
     fastShort?: boolean;
     sceneCriticalFailed?: number[];
     /**
-     * RONDE 86: the render's own record of where each clip came from.
+     * RONDE 86/87: the render's own record of where each clip came from.
      *
-     * `inferClipSourceFromPath` below reads a provider out of a FILENAME, and by the time a clip
-     * reaches this report it has been trimmed, padded and overlaid — render 536's own compose
-     * manifest could not name the source of 27 of its 66 clips for exactly that reason, and this
-     * report was counting the same 27 as `unknown` while `bySource` drove the score. When a
-     * resolver is supplied it is asked first and the filename is the fallback, so the report and
-     * the compose manifest can no longer disagree about what a clip is.
+     * `inferClipSourceFromPath` reads a provider out of a FILENAME, and by the time a clip reaches
+     * this report it has been trimmed, padded and overlaid — render 536's own compose manifest
+     * could not name the source of 27 of its 66 clips for exactly that reason.
+     *
+     * RONDE 87 makes this the ONLY input to the official attribution. It must return the proven
+     * provider or null; a null becomes UNVERIFIED, never a filename guess. The filename reading is
+     * still computed, but only into `diagnosticBySource` — see below.
      */
     resolveSource?: (clipPath: string) => string | null | undefined;
   }
 ): VideoQualityReport {
+  /** Official, lineage-only attribution. */
   const bySource: Record<string, number> = {};
+  /**
+   * RONDE 87: the old filename-derived counts, kept as pure diagnostics.
+   *
+   * Two reasons this is not simply deleted. It is the measurement that says how far the lineage
+   * wiring still has to go — a clip counted under `wikimedia` here and `UNVERIFIED` above is an
+   * unrecorded hop worth fixing. And the quality SCORE has always been computed from these
+   * numbers; §L of this round forbids changing scoring behaviour, so the score keeps reading
+   * exactly the counts it read before while the official report reads the ledger.
+   */
+  const diagnosticBySource: Record<string, number> = {};
   const byMixKind = emptyMixCounts();
   const warnings: string[] = [];
   const offTopicSuspects: Array<{ basename: string; reason: string }> = [];
@@ -218,9 +249,19 @@ export function buildVideoQualityReport(
   const unique = [...new Set(clipPaths.filter(Boolean))];
 
   for (const clipPath of unique) {
-    const recorded = opts?.resolveSource?.(clipPath)?.trim().toLowerCase();
-    const source = recorded && recorded !== "unknown" ? recorded : inferClipSourceFromPath(clipPath);
-    bySource[source] = (bySource[source] ?? 0) + 1;
+    const nameHint = inferClipSourceFromPath(clipPath);
+    diagnosticBySource[nameHint] = (diagnosticBySource[nameHint] ?? 0) + 1;
+    if (opts?.resolveSource) {
+      // Lineage only. A resolver that cannot prove the source says so, and the clip is counted as
+      // UNVERIFIED — which is a finding, not a bucket to be quietly reassigned to `nameHint`.
+      const recorded = opts.resolveSource(clipPath)?.trim().toLowerCase();
+      const source = recorded && recorded !== "unknown" ? recorded : UNVERIFIED_SOURCE;
+      bySource[source] = (bySource[source] ?? 0) + 1;
+    } else {
+      // No ledger supplied (tests, tools, callers outside a render). The filename reading is all
+      // there is, and it is reported as-is rather than pretending to a certainty it does not have.
+      bySource[nameHint] = (bySource[nameHint] ?? 0) + 1;
+    }
     const mix = classifyClipMixKind(clipPath);
     byMixKind[mix]++;
 
@@ -252,9 +293,12 @@ export function buildVideoQualityReport(
     }
   }
 
-  const wikimediaCount = (bySource.wikimedia ?? 0) + (bySource.openverse ?? 0);
-  const archiveCount = bySource.archive ?? 0;
-  const stockCount = (bySource.pexels ?? 0) + (bySource.pixabay ?? 0);
+  // RONDE 87: these three feed computeQualityScore and the warnings below, and both have always
+  // been computed from the filename reading. §L forbids changing scoring behaviour in this round,
+  // so they keep reading exactly what they read before — now under the name that says what it is.
+  const wikimediaCount = (diagnosticBySource.wikimedia ?? 0) + (diagnosticBySource.openverse ?? 0);
+  const archiveCount = diagnosticBySource.archive ?? 0;
+  const stockCount = (diagnosticBySource.pexels ?? 0) + (diagnosticBySource.pixabay ?? 0);
 
   if (!archiveOnly && wikimediaCount === 0 && unique.length >= 3) {
     warnings.push("Geen Wikimedia-stills — controleer zoekqueries of WIKIMEDIA_V1_THRESHOLD.");
@@ -264,6 +308,12 @@ export function buildVideoQualityReport(
   }
   if (offTopicSuspects.length > 0) {
     warnings.push(`${offTopicSuspects.length} clip(s) met kwaliteitswaarschuwing.`);
+  }
+  // RONDE 87: an unproven source is its own warning, and it names the right problem — the render
+  // could not establish where the clip came from, which is a lineage gap, not a mystery provider.
+  const unverifiedClips = bySource[UNVERIFIED_SOURCE] ?? 0;
+  if (unverifiedClips > 0) {
+    warnings.push(`${unverifiedClips} clip(s) met niet-bewezen bron (UNVERIFIED).`);
   }
   if ((bySource.unknown ?? 0) > 0) {
     warnings.push(`${bySource.unknown} clip(s) met onbekende bron.`);
@@ -346,6 +396,7 @@ export function buildVideoQualityReport(
     visualTopic: inferVideoVisualTopic(videoTitle, videoTitle),
     totalClips: unique.length,
     bySource,
+    diagnosticBySource,
     byMixKind,
     wikimediaCount,
     archiveCount,

@@ -2,11 +2,12 @@ import fs from "fs";
 import path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  SUMMARY_COUNTERS,
   VisualSourceLedger,
-  emptyFunnelCounts,
+  emptySummaryCounts,
   formatFunnelReport,
   formatLineageLine,
-  FUNNEL_STAGES,
+  formatSourceSummary,
 } from "./visualSourceLineage";
 import {
   adoptRouteForSource,
@@ -68,29 +69,30 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
   it("TEST 1 — lineage survives the pad rename that produced 27 unknowns", () => {
     const l = ledger();
     const downloaded = "/w/scene_3_b2__pid_wikimedia-a1b2c3d4e5f60718.mp4";
-    l.recordSelection({
-      renderId: "test", sceneIndex: 3, beatIndex: 2,
+    l.createLineage({
+      sceneIndex: 3, beatIndex: 2,
       candidateId: "wikimedia:a1b2c3d4e5f60718", contentKey: "wikimedia:a1b2c3d4e5f60718",
       provider: "wikimedia", providerAssetId: "File_Fuhrerbunker.jpg",
       localPath: downloaded, mediaType: "image", route: "primary",
     });
-    // Exactly the chain render 536 walked: trim → pad → text overlay.
+    // Exactly the chain render 536 walked: trim → pad → text overlay. RONDE 87 gives each hop its
+    // own record carrying parentLineageId, so a derived file can never read as its own source.
     const trimmed = "/w/scene_3_b2__pid_wikimedia-a1b2c3d4e5f60718_still.mp4";
     const padded = "/w/pad_combined_s3b2_1740000000000.mp4";
     const withText = "/w/pad_combined_s3b2_1740000000000_text.mp4";
-    l.linkDerivedPath(trimmed, downloaded);
-    l.linkDerivedPath(padded, trimmed);
-    l.linkDerivedPath(withText, padded);
+    l.linkDerivedPath(trimmed, downloaded, "TRIMMED");
+    l.linkDerivedPath(padded, trimmed, "PADDED");
+    l.linkDerivedPath(withText, padded, "OVERLAYED");
 
     expect(l.providerFor(withText), "the montage path must still resolve to wikimedia").toBe("wikimedia");
-    expect(l.resolve(withText)?.originalFilename).toBe(path.basename(downloaded));
-    expect(l.resolve(withText)?.finalFilename).toBe(path.basename(withText));
+    expect(l.rootOf(l.resolve(withText)!.lineageId)!.originalFilename).toBe(path.basename(downloaded));
+    expect(l.resolve(withText)?.currentFilename).toBe(path.basename(withText));
   });
 
   it("TEST 2 — a rename that was never linked still resolves by content key", () => {
     const l = ledger();
-    l.recordSelection({
-      renderId: "test", sceneIndex: 0, beatIndex: 0,
+    l.createLineage({
+      sceneIndex: 0, beatIndex: 0,
       candidateId: "pexels:deadbeefdeadbeef", contentKey: "pexels:deadbeefdeadbeef",
       provider: "pexels", localPath: "/w/a__pid_pexels-deadbeefdeadbeef.mp4",
       mediaType: "video", route: "primary",
@@ -103,8 +105,8 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
 
   it("TEST 3 — a derivation cycle cannot hang the resolver", () => {
     const l = ledger();
-    l.linkDerivedPath("/w/a.mp4", "/w/b.mp4");
-    l.linkDerivedPath("/w/b.mp4", "/w/a.mp4");
+    l.linkDerivedPath("/w/a.mp4", "/w/b.mp4", "TRIMMED");
+    l.linkDerivedPath("/w/b.mp4", "/w/a.mp4", "TRIMMED");
     expect(l.resolve("/w/a.mp4")).toBeNull();
   });
 
@@ -120,8 +122,13 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
     expect(record).not.toBeNull();
     expect(record!.sceneIndex).toBe(4);
     expect(record!.archiveAssetId).toBe(55995);
-    expect(record!.visionScore10).toBe(8);
+    expect(record!.visionScore).toBe(8);
     expect(record!.route).toBe("primary");
+    // RONDE 87: "archive" is the adopt ROUTE, and this clip's provider was never proven, so the
+    // record says so instead of borrowing the route label.
+    expect(record!.sourceLabel).toBe("archive");
+    expect(record!.provider).toBeNull();
+    expect(record!.providerStatus).toBe("UNVERIFIED");
   });
 
   it("TEST 5 — lineage is not truncated by the adopt audit's 120-entry cap", () => {
@@ -154,25 +161,29 @@ describe("RONDE 86 §A — a clip's origin outlives its filename", () => {
 
   it("TEST 7 — the compose manifest and the report read the same ledger", () => {
     expect(PIPELINE_SRC).toContain("resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath)");
-    expect(PIPELINE_SRC).toContain("formatLineageLine(lineageRecord, clipPath, source)");
-    // MUTATION GUARD: the two renames that ended provenance must both still be linked.
-    expect(PIPELINE_SRC).toContain("lineage.linkDerivedPath(effectiveClip, clipPath)");
-    expect(PIPELINE_SRC).toContain("lineage.linkDerivedPath(withText, effectiveClip)");
+    expect(PIPELINE_SRC).toContain("formatLineageLine(lineageRecord, clipPath)");
+    // MUTATION GUARD: the two renames that ended provenance must both still be linked, each with
+    // the stage that describes it (RONDE 87).
+    expect(PIPELINE_SRC).toContain('linkDerivedPath(effectiveClip, clipPath, "PADDED")');
+    expect(PIPELINE_SRC).toContain('linkDerivedPath(withText, effectiveClip, "OVERLAYED")');
   });
 
-  it("TEST 8 — the lineage line names the source and says whether it was recorded", () => {
+  it("TEST 8 — the lineage line names the source and whether it is proven", () => {
     const l = ledger();
-    const rec = l.recordSelection({
-      renderId: "test", sceneIndex: 2, beatIndex: 5,
+    const rec = l.createLineage({
+      sceneIndex: 2, beatIndex: 5,
       candidateId: "internet_archive:x", contentKey: "internet_archive:x",
       provider: "internet_archive", providerAssetId: "berlin-1945",
-      localPath: "/w/ia.mp4", mediaType: "video", route: "rescue", score: 142,
+      localPath: "/w/ia.mp4", mediaType: "video", route: "rescue", candidateScore: 142,
     });
-    const line = formatLineageLine(rec, "/w/ia.mp4", "unknown");
+    const line = formatLineageLine(rec, "/w/ia.mp4");
     expect(line).toContain("provider=internet_archive");
-    expect(line).toContain("origin=recorded");
+    expect(line).toContain("providerStatus=VERIFIED");
     expect(line).toContain("route=rescue");
-    expect(formatLineageLine(null, "/w/x.mp4", "pexels")).toContain("origin=inferred");
+    // RONDE 87: no record means no provider — the line says UNVERIFIED rather than naming a guess.
+    const unknown = formatLineageLine(null, "/w/x.mp4");
+    expect(unknown).toContain("provider=UNVERIFIED");
+    expect(unknown).toContain("providerStatus=UNVERIFIED");
   });
 });
 
@@ -276,7 +287,8 @@ describe("RONDE 86 §C — the curated failure route registers what failed", () 
     // learned anything.
     const idx = PIPELINE_SRC.indexOf("asset ${picked.asset.id} prepare failed:");
     expect(idx).toBeGreaterThan(-1);
-    const block = PIPELINE_SRC.slice(idx, idx + 400);
+    // Widened for RONDE 87, which records the DOWNLOAD_FAILED event in the same catch block.
+    const block = PIPELINE_SRC.slice(idx, idx + 900);
     expect(block).toContain("dedup.usedCuratedAssetIds.add(picked.asset.id)");
     expect(block).toContain("dedup.usedCuratedStorageUrls.add(picked.asset.storageUrl)");
   });
@@ -358,43 +370,75 @@ describe("RONDE 86 §D — search-memory writes are bounded, batched and de-dupl
 /* ═════════════ §E — the funnel has numbers ═════════════ */
 
 describe("RONDE 86 §E — every funnel stage is counted, per provider and in total", () => {
-  it("TEST 24 — the stages cover retrieval through composition, plus the exits", () => {
-    expect([...FUNNEL_STAGES]).toEqual([
-      "retrieved", "eligible", "ranked", "selected",
-      "downloaded", "adopted", "composed", "rejected", "fallback", "rescue",
+  /**
+   * RONDE 87 replaced the counter API these tests were written against.
+   *
+   * RONDE 86's funnel was a set of counters a caller incremented directly (countFunnel /
+   * countRejection), which made "one source of truth for the final counts" a convention rather
+   * than something the code could enforce — two call sites could count the same event twice, and
+   * a provider could be passed in as any string a caller liked. RONDE 87 derives every number
+   * from the lineage EVENTS instead, deduplicated on (lineageId, stage).
+   *
+   * The guarantees these tests were written for are unchanged and still asserted below, now
+   * against the API that actually enforces them. Their stricter successors — no double counting,
+   * per-asset rejection attribution, the UNVERIFIED bucket — live in
+   * ronde87SourceAuditLogging.test.ts.
+   */
+  const ledger87 = () => new VisualSourceLedger({ renderId: "r86-compat" });
+  const candidate = (l: VisualSourceLedger, provider: string, key: string, at = "/w/c.mp4") =>
+    l.createLineage({
+      sceneIndex: 0, beatIndex: 0, candidateId: key, contentKey: key,
+      provider, localPath: at,
+    });
+
+  it("TEST 24 — the funnel covers retrieval through composition, plus the exits", () => {
+    expect([...SUMMARY_COUNTERS]).toEqual([
+      "searches", "results", "eligible", "ranked", "selected",
+      "downloadStarted", "downloadSucceeded", "downloadFailed",
+      "adopted", "transformed", "composed", "replaced", "removed",
+      "finalVideo", "rejected", "fallback", "rescue", "backfill",
     ]);
-    const empty = emptyFunnelCounts();
-    for (const s of FUNNEL_STAGES) expect(empty[s]).toBe(0);
+    const empty = emptySummaryCounts();
+    for (const c of SUMMARY_COUNTERS) expect(empty[c]).toBe(0);
   });
 
   it("TEST 25 — counts are attributed to a provider and roll up to a total", () => {
-    const l = ledger();
-    l.countFunnel("retrieved", "Wikimedia", 40);
-    l.countFunnel("retrieved", "pexels", 60);
-    l.countFunnel("adopted", "wikimedia", 3);
-    const s = l.funnelSummary();
-    expect(s.total.retrieved).toBe(100);
+    const l = ledger87();
+    l.countSearch("Wikimedia", 40);
+    l.countSearch("pexels", 60);
+    const w = candidate(l, "wikimedia", "wikimedia:1", "/w/w.mp4");
+    l.recordEvent(w.lineageId, "ADOPTED", { status: "OK" });
+    const s = l.summary();
+    expect(s.total.results).toBe(100);
     // Provider names are one key regardless of how a caller spells them.
-    expect(s.byProvider.wikimedia!.retrieved).toBe(40);
-    expect(s.byProvider.wikimedia!.adopted).toBe(3);
+    expect(s.byProvider.wikimedia!.results).toBe(40);
+    expect(s.byProvider.wikimedia!.adopted).toBe(1);
   });
 
   it("TEST 26 — a rejection names the gate that produced it", () => {
-    const l = ledger();
-    l.countRejection("pexels", "vision_gate", 4);
-    l.countRejection("pexels", "baked_text");
-    const s = l.funnelSummary();
-    expect(s.total.rejected).toBe(5);
-    expect(s.rejectReasons.vision_gate).toBe(4);
-    expect(s.rejectReasons.baked_text).toBe(1);
+    const l = ledger87();
+    const c = candidate(l, "pexels", "pexels:1", "/w/p.mp4");
+    for (let i = 0; i < 4; i++) {
+      l.recordEvent(c.lineageId, "ELIGIBLE", {
+        status: "REJECTED", reason: "vision_gate", gate: "vision_gate", timestamp: 1000 + i,
+      });
+    }
+    const other = candidate(l, "pexels", "pexels:2", "/w/p2.mp4");
+    l.recordRejection(other.localPath, "baked_text");
+    const s = l.summary();
+    // The same asset refused by the same gate is ONE finding, however often it is logged.
+    expect(s.failureReasons.vision_gate).toBe(1);
+    expect(s.failureReasons.baked_text).toBe(1);
+    expect(s.total.rejected).toBe(2);
   });
 
   it("TEST 27 — every gate in the pipeline reports through one point", () => {
     const audit = createClipRejectAudit();
-    const l = ledger();
+    const l = ledger87();
     audit.lineage = l;
-    recordClipReject(audit, 1, 2, "/w/x.mp4", "vision_gate", "q");
-    expect(l.funnelSummary().total.rejected).toBe(1);
+    const c = candidate(l, "pexels", "pexels:1", "/w/p.mp4");
+    recordClipReject(audit, 1, 2, c.localPath, "vision_gate", "q");
+    expect(l.summary().total.rejected).toBe(1);
     // And an audit with no ledger (tests, tools) behaves exactly as before.
     const bare = createClipRejectAudit();
     expect(() => recordClipReject(bare, 1, 2, "/w/x.mp4", "vision_gate", "q")).not.toThrow();
@@ -409,30 +453,38 @@ describe("RONDE 86 §E — every funnel stage is counted, per provider and in to
     expect(adoptRouteForSource("guaranteed")).toBe("backfill");
 
     const audit = createClipAdoptAudit();
-    const l = ledger();
+    const l = ledger87();
     bindLineageLedger(audit, l);
     recordClipAdopt(audit, 0, 0, "b", "/w/a.mp4", "fallback");
     recordClipAdopt(audit, 0, 1, "b", "/w/b.mp4", "rescue_wikimedia");
     recordClipAdopt(audit, 0, 2, "b", "/w/c.mp4", "archive");
-    const s = l.funnelSummary();
+    const s = l.summary();
     expect(s.total.fallback).toBe(1);
     expect(s.total.rescue).toBe(1);
+    expect(s.total.adopted).toBe(3);
   });
 
   it("TEST 29 — the report is one readable block, ordered by contribution", () => {
-    const l = ledger();
-    l.countFunnel("retrieved", "pexels", 900);
-    l.countFunnel("adopted", "pexels", 1);
-    l.countFunnel("retrieved", "wikimedia", 40);
-    l.countFunnel("adopted", "wikimedia", 12);
-    const lines = formatFunnelReport(l.funnelSummary());
+    const l = ledger87();
+    l.countSearch("pexels", 900);
+    l.countSearch("wikimedia", 40);
+    const w = candidate(l, "wikimedia", "wikimedia:1", "/w/w.mp4");
+    l.recordEvent(w.lineageId, "COMPOSED", { status: "OK" });
+    l.markFinalVideo([w.localPath]);
+    const lines = formatFunnelReport(l.summary(), true);
     expect(lines[0]).toContain("[VisualFunnel] TOTAL");
-    expect(lines[1], "the provider that actually filled beats comes first").toContain("wikimedia");
+    expect(lines[1], "the provider that actually reached the video comes first").toContain("pexels");
+    const summaryLabels = formatSourceSummary(l.summary(), true)
+      .flatMap((b) => b.split("\n"))
+      .filter((x) => /^ {2}\S/.test(x))
+      .map((x) => x.trim());
+    expect(summaryLabels[0], "wikimedia filled the video, so it leads the summary").toBe("wikimedia");
   });
 
   it("TEST 30 — the render emits the funnel and the existing sourcing metrics both", () => {
-    expect(PIPELINE_SRC).toContain("formatFunnelReport(visualDedup.sourcingCache.lineage.funnelSummary())");
-    // RONDE 86 must not have replaced the Phase-20 counters it folds in.
+    expect(PIPELINE_SRC).toContain("formatFunnelReport(summary, ledger.finalVideoWasVerified)");
+    expect(PIPELINE_SRC).toContain("formatSourceSummary(summary, ledger.finalVideoWasVerified)");
+    // RONDE 86/87 must not have replaced the Phase-20 counters they sit beside.
     expect(PIPELINE_SRC).toContain("export function logSourcingMetrics(");
     expect(PIPELINE_SRC).toContain("[SourcingMetrics] videoId=");
   });

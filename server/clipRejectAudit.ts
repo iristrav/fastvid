@@ -80,11 +80,18 @@ export function recordClipReject(
   source?: string
 ): void {
   audit.recorded++;
-  // RONDE 86: the same refusal, counted in the retrieval funnel and attributed to its gate. The
-  // provider comes from the ledger when it knows this clip and from the reject reason otherwise,
-  // so a rejection is never filed under a provider the render only guessed at.
+  /**
+   * RONDE 86/87: the same refusal, attached to the ASSET that was refused.
+   *
+   * §E of the round: "Internet Archive rejected 184" is not an answer anybody can act on. A
+   * rejection recorded against the clip's own lineage carries its provider, its provider asset id
+   * and the gate that refused it, so the summary can say which provider fails on which gate and
+   * why. A clip the ledger does not know produces no event — there is nothing to attach it to,
+   * and attaching it to a guessed provider is what this round forbids. The per-beat and per-reason
+   * counters below are unaffected either way.
+   */
   if (audit.lineage) {
-    audit.lineage.countRejection(audit.lineage.providerFor(clipPath) ?? "unknown", reason);
+    audit.lineage.recordRejection(clipPath, reason);
   }
 
   // The count comes first and has no cap. Whatever happens to the detail below, the funnel

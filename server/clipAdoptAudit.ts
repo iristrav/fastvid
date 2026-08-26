@@ -21,6 +21,13 @@ export type ClipAdoptEntry = {
 
 export type AdoptAuditSummary = {
   beatsFilled: number;
+  /**
+   * RONDE 87: counts of ADOPT-ROUTE LABELS ("archive", "rescue_wikimedia", "fallback"), not of
+   * providers. The two look alike and are not the same thing: "archive" here means the beat was
+   * filled by the curated-archive route, and says nothing about which archive. The official
+   * per-provider attribution is VisualSourceLedger.summary(); this stays what it has always been —
+   * a breakdown of how beats were filled — and must not be read as a source statistic.
+   */
   bySource: Record<string, number>;
   stockBeats: number;
   wikiBeats: number;
@@ -74,28 +81,49 @@ export function recordClipAdopt(
   const ledger = ledgerByAudit.get(audit);
   const route = adoptRouteForSource(source);
   if (ledger) {
-    // A beat filled by the rescue ladder or by a colour card is not the same event as a beat
-    // filled by the route that was supposed to fill it, and the funnel has to be able to say
-    // which happened — render 536's report could name neither.
-    const provider = ledger.providerFor(clipPath) ?? source;
-    if (route === "fallback") ledger.countFunnel("fallback", provider);
-    else if (route === "rescue" || route === "backfill") ledger.countFunnel("rescue", provider);
+    const record = ledger.resolve(clipPath);
+    if (record) {
+      // The route and the beat identity are facts this call carries; the PROVIDER is not. It
+      // stays whatever the record was opened with, because `source` here is an adopt-route label
+      // ("archive", "rescue_wikimedia", "fallback") and treating a route label as a provider is
+      // the specific mistake RONDE 87 exists to make impossible.
+      record.route = route;
+      record.sceneIndex = sceneIndex;
+      record.beatIndex = beatIndex;
+      record.sourceLabel = source;
+      record.beatText ??= beatText?.slice(0, 240) || undefined;
+      record.assetTitle ??= assetTitle?.trim() || undefined;
+      record.archiveAssetId ??= typeof assetId === "number" ? assetId : undefined;
+      record.visionScore ??=
+        typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined;
+      ledger.recordEvent(record.lineageId, "ADOPTED", { status: "OK", currentPath: clipPath });
+    } else {
+      /**
+       * RONDE 87: an adoption of a clip the ledger has never seen.
+       *
+       * This is a real hole in the instrumentation, not something to paper over. A record is
+       * opened so the clip is at least accounted for and reconcile() can find it — with NO
+       * provider, so it is counted in the UNVERIFIED bucket and shows up in the audit as a clip
+       * whose origin this render cannot prove. Passing `source` as the provider here would have
+       * turned every such hole into a confident, wrong answer.
+       */
+      const created = ledger.createLineage({
+        sceneIndex,
+        beatIndex,
+        beatText: beatText?.slice(0, 240) || undefined,
+        candidateId: path.basename(clipPath),
+        contentKey: "",
+        localPath: clipPath,
+        route,
+        sourceLabel: source,
+        assetTitle: assetTitle?.trim() || undefined,
+        archiveAssetId: typeof assetId === "number" ? assetId : undefined,
+        visionScore:
+          typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
+      });
+      ledger.recordEvent(created.lineageId, "ADOPTED", { status: "OK", currentPath: clipPath });
+    }
   }
-  ledger?.recordAdoption(clipPath, {
-    sceneIndex,
-    beatIndex,
-    sourceLabel: source,
-    assetTitle: assetTitle?.trim() || undefined,
-    archiveAssetId: typeof assetId === "number" ? assetId : undefined,
-    visionScore10:
-      typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
-    query: beatText?.slice(0, 160) || undefined,
-    route,
-    // Only used when the ledger has never seen this clip — an adoption route that produced its
-    // file without going through putCachedProviderAsset. The source label is then the most
-    // specific true thing available, which still beats reading the filename.
-    provider: source,
-  });
 
   if (audit.length >= MAX_ENTRIES) return;
   const entry: ClipAdoptEntry = {

@@ -286,9 +286,14 @@ import {
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { bindLineageLedger, createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
 import {
+  UNVERIFIED_PROVIDER,
   VisualSourceLedger,
+  formatAuditReport,
   formatFunnelReport,
+  formatLineageEvent,
   formatLineageLine,
+  formatSourceSummary,
+  type VisualLineageRecord,
 } from "./visualSourceLineage";
 import {
   formatGlobalBudget,
@@ -12815,7 +12820,23 @@ function sceneHasVisualOverlayFootage(clips: string[]): boolean {
 }
 
 
-/** Map temp clip filename → editor manifest source (pexels, youtube, serpapi, …). */
+/**
+ * DIAGNOSTIC ONLY — a guess at a clip's source from its filename.
+ *
+ * RONDE 87: this function must never produce an official source attribution. It reads a NAME, and
+ * a name says what a file was called, not where its content came from — the two stop agreeing the
+ * first time the compose path renames a clip, which it does on every trim, pad, still and overlay.
+ * Render 536 shipped 66 clips of which 27 could not be named this way at all.
+ *
+ * Every official count comes from the lineage ledger (visualSourceLineage.ts). The two remaining
+ * callers use this only as a labelled hint alongside the ledger's answer — the compose manifest's
+ * `diagnosticNameHint` field and videoQualityReport's `diagnosticBySource` — so that a divergence
+ * between the guess and the proof stays VISIBLE instead of being resolved in the guess's favour.
+ *
+ * If you are adding a caller: you almost certainly want `ledger.providerFor()` or
+ * `ledger.providerBucketFor()` instead, and a null answer from those means UNVERIFIED, not
+ * "fall back to the filename".
+ */
 export function inferClipSourceFromPath(filePath: string): string {
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)$/i, "").toLowerCase();
   // RONDE 64: the provider-asset tag first — it is stamped by tagPathWithProviderAsset and names
@@ -15311,6 +15332,15 @@ export function createSourcingCache(videoId?: number): SourcingCache {
     lineage: new VisualSourceLedger({
       renderId: `r${Date.now().toString(36)}-${sourcingCacheSeq}`,
       videoId,
+      // RONDE 87 (§B): every lifecycle event is logged as it happens, so a Railway log alone is
+      // enough to reconstruct any clip's whole history. Behind a flag because a long render
+      // produces thousands of these and the end-of-render summary answers most questions;
+      // VISUAL_LINEAGE_EVENT_LOG=true turns on the per-event trail when a specific clip is in
+      // question. The events themselves are ALWAYS recorded — only the printing is optional.
+      emit:
+        process.env.VISUAL_LINEAGE_EVENT_LOG === "true"
+          ? (line: string) => console.log(line)
+          : undefined,
     }),
   };
 }
@@ -15470,7 +15500,6 @@ export function putCachedProviderAsset(
    */
   if (merged.localPath) {
     const existing = cache.lineage.resolve(merged.localPath, merged.contentKey ?? key);
-    if (!existing) cache.lineage.countFunnel("downloaded", provider);
     if (existing) {
       if (merged.canonicalUrl && !existing.originalUrl) existing.originalUrl = merged.canonicalUrl;
       if (merged.storageUrl && !existing.sourceUrl) existing.sourceUrl = merged.storageUrl;
@@ -15478,8 +15507,16 @@ export function putCachedProviderAsset(
         existing.assetTitle = merged.providerText.title;
       }
     } else {
-      cache.lineage.recordSelection({
-        renderId: cache.lineage.renderId,
+      /**
+       * RONDE 87 — this is where a provider becomes a PROVEN fact.
+       *
+       * `provider` and `id` are this function's own arguments, handed over by the fetcher that
+       * just talked to that provider's API. Nothing here is read off a filename or a URL shape.
+       * That is why createLineage may take the provider at face value at this one call site and
+       * mark the record VERIFIED — and why every other site downstream reads the record instead
+       * of setting a provider of its own.
+       */
+      const record = cache.lineage.createLineage({
         videoId: cache.lineage.videoId,
         sceneIndex: -1,
         beatIndex: -1,
@@ -15494,6 +15531,11 @@ export function putCachedProviderAsset(
         assetTitle: merged.providerText?.title,
         route: "primary",
       });
+      // The bytes are on disk by the time a localPath is cached, so the download is a completed
+      // fact. The start event is written alongside it rather than inferred later: a SUCCEEDED with
+      // no START is one of the inconsistencies reconcile() looks for.
+      cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
+      cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
     }
   }
 }
@@ -19185,24 +19227,45 @@ async function adoptClip(
       // still decided below, so this is where "eligible" is counted and NOT where "adopted" is.
       providerMetrics(dedup.sourcingCache, providerOfKey).eligibleCount++;
       noteBeatEligible(dedup.beatOutcomeAudit, sceneIndex, beatIndex);
+      /**
+       * RONDE 87: every gate is behind this candidate, so ELIGIBLE/RANKED/SELECTED are facts here.
+       *
+       * Deliberately attached to the candidate's OWN lineage record — the one
+       * putCachedProviderAsset opened with the provider's real name — rather than opening a new
+       * one. A candidate the ledger has never seen gets no record and no provider: this path
+       * cannot prove where such a file came from, and inventing a provider from `providerOfKey`
+       * (which is a content-key family like "stock" or "file", not a provider) is exactly the
+       * class of guess this round removes.
+       */
+      const eligibleRecord = dedup.sourcingCache.lineage.resolve(p, contentKey);
+      if (eligibleRecord) {
+        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "ELIGIBLE", { status: "OK" });
+        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "RANKED", { status: "OK" });
+        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "SELECTED", { status: "OK" });
+        eligibleRecord.sceneIndex = sceneIndex;
+        eligibleRecord.beatIndex = beatIndex;
+        eligibleRecord.beatText ??= beatText?.slice(0, 240);
+        eligibleRecord.query ??= sourceQuery || undefined;
+        eligibleRecord.visionScore ??= visionResult.worstScore10 ?? undefined;
+      }
       /** The single point at which a candidate really becomes this beat's clip. */
       const markAdopted = (finalPath: string): string => {
         providerMetrics(dedup.sourcingCache, providerOfKey).adoptedCount++;
         noteBeatAdopted(dedup.beatOutcomeAudit, sceneIndex, beatIndex, providerOfKey, path.basename(finalPath));
-        // RONDE 86: `finalPath` is `p` after the segment trim and/or the fair-use transform have
-        // renamed it. Linking the two is what lets the compose manifest find this candidate's
-        // provenance under a name that did not exist when it was downloaded.
-        dedup.sourcingCache.lineage.linkDerivedPath(finalPath, p);
-        dedup.sourcingCache.lineage.recordAdoption(finalPath, {
-          sceneIndex,
-          beatIndex,
-          contentKey,
-          provider: providerOfKey,
-          query: sourceQuery || undefined,
-          visionScore10: visionResult.worstScore10 ?? undefined,
-          route: "primary",
-        });
-        dedup.sourcingCache.lineage.countFunnel("adopted", providerOfKey);
+        // RONDE 86/87: `finalPath` is `p` after the segment trim and/or the fair-use transform
+        // have renamed it. The derived file gets its OWN record carrying parentLineageId, so the
+        // rename can never look like an independent source, and the adoption is recorded against
+        // whichever record actually reached the montage.
+        const derived =
+          finalPath === p
+            ? eligibleRecord
+            : dedup.sourcingCache.lineage.linkDerivedPath(finalPath, p, "TRANSFORMED");
+        if (derived) {
+          dedup.sourcingCache.lineage.recordEvent(derived.lineageId, "ADOPTED", {
+            status: "OK",
+            currentPath: finalPath,
+          });
+        }
         return finalPath;
       };
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
@@ -23259,6 +23322,12 @@ async function preparePooledArchiveClip(
   const cacheKey = `${picked.asset.id}:s${scene.index}:b${beat.index}`;
   const cached = dedup.preparedArchiveClips.get(cacheKey);
   if (cached && fs.existsSync(cached)) return cached;
+  // RONDE 87: the archive row IS the provider record, and it is known before the download — which
+  // is what lets a failure below be attributed to this exact asset instead of to a bare count.
+  // The scan loop has usually opened it already; the same asset keeps one lineage either way.
+  const pendingLineage = ensureCuratedAssetLineage(dedup, picked, scene.index, beat.index);
+  dedup.sourcingCache.lineage.recordEvent(pendingLineage.lineageId, "SELECTED", { status: "OK" });
+  dedup.sourcingCache.lineage.recordEvent(pendingLineage.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
   try {
     const clipPath = await prepareCuratedArchiveClip(
       picked.asset,
@@ -23277,31 +23346,18 @@ async function preparePooledArchiveClip(
     );
     dedup.preparedArchiveClips.set(cacheKey, clipPath);
     /**
-     * RONDE 86: the curated archive is a provider like any other, and this is its download step.
+     * RONDE 86/87: the curated archive is a provider like any other, and this is its download step.
      *
      * Without this the own-archive route had no lineage record at all — the manifest fell back to
      * reading "curated" out of the filename, which is a content FAMILY and not a source, and the
-     * archive row id it came from was nowhere in the report.
+     * archive row id it came from was nowhere in the report. The record was opened before the
+     * download so a failure can name the asset; here it is bound to the file that was produced.
      */
-    dedup.sourcingCache.lineage.recordSelection({
-      renderId: dedup.sourcingCache.lineage.renderId,
-      videoId: dedup.sourcingCache.lineage.videoId,
-      sceneIndex: scene.index,
-      beatIndex: beat.index,
-      candidateId: `archive:${picked.asset.id}`,
-      contentKey: clipContentKey(clipPath),
-      provider: picked.archiveName?.trim() || "own_archive",
-      providerAssetId: String(picked.asset.id),
-      sourceUrl: picked.asset.storageUrl ?? undefined,
-      localPath: clipPath,
-      mediaType: picked.asset.mediaType === "video" ? "video" : "image",
-      query: beat.text?.slice(0, 160),
-      score: picked.score,
-      archiveAssetId: picked.asset.id,
-      assetTitle: picked.asset.title ?? undefined,
-      route: "primary",
+    dedup.sourcingCache.lineage.bindPath(pendingLineage.lineageId, clipPath, clipContentKey(clipPath));
+    dedup.sourcingCache.lineage.recordEvent(pendingLineage.lineageId, "DOWNLOAD_SUCCEEDED", {
+      status: "OK",
+      currentPath: clipPath,
     });
-    dedup.sourcingCache.lineage.countFunnel("downloaded", picked.archiveName?.trim() || "own_archive");
     // Register annotation metadata so AssetDirector can score this clip semantically
     if (picked.asset.annotationJson) {
       dedup.clipAnnotationMeta.set(clipPath, {
@@ -23316,10 +23372,84 @@ async function preparePooledArchiveClip(
       `[Pipeline] Scene ${scene.index} beat ${beat.index}: asset ${picked.asset.id} prepare failed:`,
       (err as Error).message
     );
+    // RONDE 87 (§E): the failure is attached to THIS asset with the reason the thrower gave, so
+    // the summary can say "asset 55995 from Bundesarchiv failed on source_video_too_short" rather
+    // than "internet_archive rejected 184".
+    dedup.sourcingCache.lineage.recordEvent(pendingLineage.lineageId, "DOWNLOAD_FAILED", {
+      status: "FAILED",
+      reason: normalizeFailureReason((err as Error).message),
+    });
     dedup.usedCuratedAssetIds.add(picked.asset.id);
     dedup.usedCuratedStorageUrls.add(picked.asset.storageUrl);
     return null;
   }
+}
+
+/**
+ * RONDE 87 — one lineage record per curated archive asset, opened from the row itself.
+ *
+ * Called from two places that must not each open their own: the scan loop, which needs a record to
+ * hang ELIGIBLE/RANKED on before anything is downloaded, and preparePooledArchiveClip, which needs
+ * one to hang the download outcome on. Keyed on the asset's own content key — the same
+ * deterministic string clipContentKey() produces for a prepared curated clip — so the second
+ * caller finds the first caller's record instead of creating a duplicate.
+ *
+ * The provider comes from the archive row's own `archiveName`. That is the name of the collection
+ * the asset was ingested into and read back out of, which is a fact about the row, not a guess
+ * about a filename. `own_archive` is used only when the row itself carries no archive name, and is
+ * a real answer — this asset came from the customer's own uploaded archive.
+ */
+export function ensureCuratedAssetLineage(
+  dedup: VisualDedupState,
+  picked: CuratedCandidatePick,
+  sceneIndex: number,
+  beatIndex: number
+): VisualLineageRecord {
+  const ledger = dedup.sourcingCache.lineage;
+  const contentKey = curatedAssetContentKey(picked.asset.id);
+  const placeholder = `archive-asset:${picked.asset.id}`;
+  const existing = ledger.resolve(placeholder, contentKey);
+  if (existing) return existing;
+  return ledger.createLineage({
+    sceneIndex,
+    beatIndex,
+    candidateId: `archive:${picked.asset.id}`,
+    contentKey,
+    provider: picked.archiveName?.trim() || "own_archive",
+    providerAssetId: String(picked.asset.id),
+    sourceUrl: picked.asset.storageUrl ?? undefined,
+    localPath: placeholder,
+    mediaType: picked.asset.mediaType === "video" ? "video" : "image",
+    candidateScore: picked.score,
+    archiveAssetId: picked.asset.id,
+    assetTitle: picked.asset.title ?? undefined,
+    route: "primary",
+  });
+}
+
+/**
+ * RONDE 87 — a stable, groupable reason string from a thrown error message.
+ *
+ * The summary groups failures by reason, and raw ffmpeg/probe messages carry durations and paths
+ * that make every failure unique ("source video too short (2.14s)"). This maps the messages the
+ * prepare path actually throws onto the fixed vocabulary §F asks for. An unrecognised message is
+ * NOT forced into a bucket — it comes back as `other` with nothing invented about its cause.
+ */
+export function normalizeFailureReason(message: string | undefined): string {
+  const m = (message ?? "").toLowerCase();
+  if (!m.trim()) return "unspecified";
+  if (m.includes("source video too short")) return "source_video_too_short";
+  if (m.includes("trimmed clip too short")) return "trimmed_clip_too_short";
+  if (m.includes("ken burns clip too short")) return "ken_burns_clip_too_short";
+  if (m.includes("styled still clip too short")) return "styled_still_too_short";
+  if (m.includes("license")) return "license_rejected";
+  if (m.includes("timed out") || m.includes("timeout")) return "timeout";
+  if (m.includes("enoent") || m.includes("no such file")) return "file_missing";
+  if (m.includes("decode") || m.includes("invalid data")) return "decode_error";
+  if (m.includes("404") || m.includes("403") || m.includes("fetch") || m.includes("network")) {
+    return "download_error";
+  }
+  return "other";
 }
 
 async function pushMotionGraphicBeatClipIfAny(
@@ -23831,16 +23961,18 @@ export async function adoptArchiveBeatClip(
     if (padded) effectiveClip = padded;
     const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode);
     /**
-     * RONDE 86 — the two renames that used to end a clip's provenance.
+     * RONDE 86/87 — the two renames that used to end a clip's provenance.
      *
      * padShortClipWithNext republishes its input as `pad_combined_sNbM_<ts>.mp4`, which carries
      * no provider tag and no asset id, and the text overlay writes a third file again. Render
-     * 536's manifest reported 27 of 66 clips as source=unknown for exactly this reason. Linking
-     * both hops means the ledger resolves the final montage path back to the candidate the beat
-     * actually chose, whatever it ended up being called.
+     * 536's manifest reported 27 of 66 clips as source=unknown for exactly this reason.
+     *
+     * Each hop now produces a CHILD record carrying parentLineageId, so a derived file can never
+     * read as an independent source, and the provider it reports is the one it inherited along a
+     * derivation this pipeline performed — proof, not inference.
      */
-    dedup.sourcingCache.lineage.linkDerivedPath(effectiveClip, clipPath);
-    dedup.sourcingCache.lineage.linkDerivedPath(withText, effectiveClip);
+    dedup.sourcingCache.lineage.linkDerivedPath(effectiveClip, clipPath, "PADDED");
+    dedup.sourcingCache.lineage.linkDerivedPath(withText, effectiveClip, "OVERLAYED");
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
@@ -23965,7 +24097,22 @@ export async function adoptArchiveBeatClip(
     let scanned = 0;
     const funnel = dedup.sourcingCache.lineage;
     const funnelProvider = (p: CuratedCandidatePick) => p.archiveName?.trim() || "own_archive";
-    for (const p of ranked) funnel.countFunnel("retrieved", funnelProvider(p));
+    /**
+     * RONDE 87: retrieval is a PROVIDER fact, not a per-asset one.
+     *
+     * These candidates are DB rows that have not been prepared and may never be — opening a
+     * lineage record for each would put thousands of phantom rows in the audit and would inflate
+     * every per-asset count. `countSearch` keeps them in their own clearly-labelled channel, so
+     * they can never be confused with the event-derived numbers or double-counted against them.
+     */
+    {
+      const perProvider = new Map<string, number>();
+      for (const p of ranked) {
+        const key = funnelProvider(p);
+        perProvider.set(key, (perProvider.get(key) ?? 0) + 1);
+      }
+      for (const [provider, results] of perProvider) funnel.countSearch(provider, results);
+    }
     for (const picked of ranked) {
       if (scanned >= tryCap) break;
       /**
@@ -24012,12 +24159,17 @@ export async function adoptArchiveBeatClip(
       }
       scanned++;
       queue.push(picked);
-      funnel.countFunnel("eligible", funnelProvider(picked));
-      // Ranked and selected are the same event on this path: the queue IS the ranking, in order,
-      // and everything in it is prepared. Counting both keeps the funnel's stage list complete
-      // rather than leaving a gap a reader has to interpret.
-      funnel.countFunnel("ranked", funnelProvider(picked));
-      funnel.countFunnel("selected", funnelProvider(picked));
+      /**
+       * RONDE 87: this candidate cleared the beat minimum, the score floor and the geo/literal
+       * gates, and it is in the ranked queue. Both facts are proven here, so both are recorded
+       * here — against the asset's own lineage, opened from the archive row that supplies its
+       * provider. SELECTED is deliberately NOT written yet: the wave loop below stops at the
+       * first success, so a queued candidate the loop never reaches was eligible and ranked but
+       * never selected, and collapsing the three would hide exactly that.
+       */
+      const candidateLineage = ensureCuratedAssetLineage(dedup, picked, scene.index, beat.index);
+      funnel.recordEvent(candidateLineage.lineageId, "ELIGIBLE", { status: "OK" });
+      funnel.recordEvent(candidateLineage.lineageId, "RANKED", { status: "OK" });
     }
 
     const tryRankedPick = async (picked: CuratedCandidatePick, scanIdx: number): Promise<boolean> => {
@@ -29612,32 +29764,36 @@ export async function composeSceneVideoInner(
         audit.find((e) => e.basename === basename) ??
         audit.find((e) => e.sceneIndex === scene.index && clipContentKey(e.basename) === key) ??
         audit.find((e) => clipContentKey(e.basename) === key);
-      // RONDE 64: when the audit has no entry, read the source off the clip's own name rather
-      // than reporting "unknown". Render 532 printed source=unknown for five clips whose names
-      // said exactly what they were — scene_0_b0_curated_a55995.mp4 is a curated archive clip.
-      // The `origin` field keeps the two apart, so a shrinking or growing recording gap stays
-      // visible instead of being papered over.
-      const inferred = entry ? null : inferClipSourceFromPath(basename);
-      const source = entry?.source ?? (inferred && inferred !== "unknown" ? inferred : "unknown");
-      const origin = entry ? "recorded" : source === "unknown" ? "none" : "inferred";
-      const fallback = entry ? entry.source === "fallback" || entry.source === "rescue_placeholder" : isPipelineFallbackClip(clipPath);
-      console.log(
-        `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${entry?.beatIndex ?? "?"} source=${source} ` +
-          `origin=${origin} fallback=${fallback} clip=${basename}`
-      );
       /**
-       * RONDE 86 — the same clip, resolved through the derivation chain rather than its name.
+       * RONDE 87 — the manifest reports the LEDGER, and the filename guess is diagnostic only.
        *
-       * Printed alongside the manifest line rather than replacing it: the two disagreeing is
-       * itself the measurement that says whether the lineage wiring is complete, and silently
-       * swapping one for the other would hide a regression instead of exposing it.
+       * RONDE 64 made this line fall back to inferClipSourceFromPath when the audit had no entry,
+       * so a clip named `scene_0_b0_curated_a55995.mp4` was reported as source=curated. That is a
+       * content family read off a filename, presented in the same field as a real provider, and it
+       * is exactly what §"ABSOLUTE REGEL" forbids. The official field is now the lineage's proven
+       * provider or UNVERIFIED; `diagnosticNameHint` keeps the old guess visible for debugging,
+       * clearly labelled as a hint and never counted.
        */
       const lineageRecord = composeOptions.dedup.sourcingCache.lineage.resolve(clipPath, key);
-      console.log(formatLineageLine(lineageRecord, clipPath, source));
-      composeOptions.dedup.sourcingCache.lineage.countFunnel(
-        "composed",
-        lineageRecord?.provider ?? source
+      const source = lineageRecord?.provider ?? UNVERIFIED_PROVIDER;
+      const providerStatus = lineageRecord?.providerStatus ?? "UNVERIFIED";
+      const fallback = lineageRecord
+        ? lineageRecord.route === "fallback"
+        : entry
+          ? entry.source === "fallback" || entry.source === "rescue_placeholder"
+          : isPipelineFallbackClip(clipPath);
+      console.log(
+        `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${lineageRecord?.beatIndex ?? entry?.beatIndex ?? "?"} ` +
+          `source=${source} providerStatus=${providerStatus} fallback=${fallback} ` +
+          `diagnosticNameHint=${inferClipSourceFromPath(basename)} clip=${basename}`
       );
+      console.log(formatLineageLine(lineageRecord, clipPath));
+      if (lineageRecord) {
+        composeOptions.dedup.sourcingCache.lineage.recordEvent(lineageRecord.lineageId, "COMPOSED", {
+          status: "OK",
+          currentPath: clipPath,
+        });
+      }
     }
   }
 
@@ -33265,37 +33421,10 @@ async function _runVideoPipelineInner(
       archiveOnly: curatedArchiveOnlyVisuals(),
       fastShort: isFastShortVideoLength(videoLength),
       sceneCriticalFailed,
-      // RONDE 86: the report now reads the same ledger the compose manifest does, so the two
-      // cannot disagree about which provider a clip came from.
+      // RONDE 86/87: the report reads the ledger and nothing else. A clip whose origin cannot be
+      // proven comes back null here and is counted as UNVERIFIED — never re-derived from its name.
       resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
     });
-    // RONDE 86: the whole retrieval funnel, per provider and in total, in one block. Render 536
-    // lost 2632 of 2671 candidates before the download step and nothing could say at which stage
-    // or to which provider — this is that number, broken out.
-    //
-    // The external providers already count their own search results in ProviderSourcingMetrics
-    // (resultCount / eligibleCount / adoptedCount), so those are folded in here rather than
-    // re-instrumented at a dozen fetch sites. Folded, not overwritten: a provider the ledger
-    // already counted keeps the ledger's number, so nothing is ever double-counted.
-    {
-      const funnel = visualDedup.sourcingCache.lineage;
-      const summary = funnel.funnelSummary();
-      for (const [provider, m] of visualDedup.sourcingCache.metrics) {
-        const known = summary.byProvider[provider];
-        if (!known?.retrieved) funnel.countFunnel("retrieved", provider, m.resultCount);
-        if (!known?.eligible) funnel.countFunnel("eligible", provider, m.eligibleCount);
-        if (!known?.downloaded) funnel.countFunnel("downloaded", provider, m.downloadCount);
-        if (!known?.adopted) funnel.countFunnel("adopted", provider, m.adoptedCount);
-      }
-    }
-    for (const line of formatFunnelReport(visualDedup.sourcingCache.lineage.funnelSummary())) {
-      console.log(line);
-    }
-    console.log(formatGlobalBudget());
-    console.log(
-      `[SourceLineage] video=${videoId} render=${visualDedup.sourcingCache.lineage.renderId} ` +
-        `clipsWithProvenance=${visualDedup.sourcingCache.lineage.size}`
-    );
     // RONDE 8 (render 518): a scene whose montage came up short scored 100/100 because the filler
     // is not a fallback clip. Same registration pattern as the silent-voiceover notes below.
     //
@@ -33581,6 +33710,16 @@ async function _runVideoPipelineInner(
       console.warn("[CinematicAudio] Ambient track generation failed (non-fatal):", (err as Error).message?.slice(0, 120));
     }
 
+    /**
+     * RONDE 87 (§D) — the list of scene videos that provably went into the delivered file.
+     *
+     * Starts as the list this stage hands to the concat, and is REPLACED by whatever the heal loop
+     * concatenated if it had to rebuild. FINAL_VIDEO is derived from this and from nothing else:
+     * DOWNLOADED is not ADOPTED is not COMPOSED is not FINAL_VIDEO, and a clip only earns the last
+     * one when its scene is in the input of the concat that produced the validated output.
+     */
+    let finalConcatInputs: string[] = orderedClips;
+
     let finalVideoPath = await timePipelineStep(
       pipelineStepTiming,
       "video_rendering",
@@ -33620,7 +33759,7 @@ async function _runVideoPipelineInner(
           (p) => p && fs.existsSync(p) && fs.statSync(p).size > 1_000
         );
         if (validClips.length === 0) return null;
-        return concatenateScenesWithMusic(
+        const out = await concatenateScenesWithMusic(
           validClips,
           workDir,
           videoId,
@@ -33630,8 +33769,17 @@ async function _runVideoPipelineInner(
           videoLength,
           renderBudgetConcatMs
         );
+        // RONDE 87: the heal loop can rebuild the final file from a SUBSET of the scenes. Whatever
+        // it actually concatenated is what the delivered file contains, so that is what
+        // FINAL_VIDEO must be proven against — not the list this stage started with.
+        if (out) finalConcatInputs = validClips;
+        return out;
       },
-      reassemblePlain: async () => plainConcatSceneVideos(composedScenes, workDir, videoId),
+      reassemblePlain: async () => {
+        const out = await plainConcatSceneVideos(composedScenes, workDir, videoId);
+        if (out) finalConcatInputs = composedScenes.filter((p) => p && fs.existsSync(p));
+        return out;
+      },
       onHeartbeat: () => touchVideoProgress(videoId),
     });
     finalVideoPath = exportReadyPath;
@@ -33649,6 +33797,52 @@ async function _runVideoPipelineInner(
       console.warn(
         `[Pipeline] Video ${videoId}: export QA notes — ${finalValidation.softWarnings.slice(0, 4).join("; ")}`
       );
+    }
+
+    /**
+     * ── RONDE 87 (§D/§F/§G/§H): the visual source audit ────────────────────────
+     *
+     * Emitted HERE, after the delivered file has been produced and validated, because this is the
+     * first moment FINAL_VIDEO is knowable. Everything before this point can say what was
+     * downloaded, adopted and composed; only the concat that produced the validated output can say
+     * what is actually in the video the customer receives.
+     *
+     * The proof chain is: finalConcatInputs holds the scene videos that went into that concat;
+     * composedScenes[i] is scene i's video and composedUsedClips[i] is the clip list that scene
+     * was composed from; so a clip is in the final video exactly when its scene's video is in
+     * finalConcatInputs. Nothing here is inferred from a name, a count or a position.
+     */
+    try {
+      const ledger = visualDedup.sourcingCache.lineage;
+      const deliveredScenes = new Set(finalConcatInputs.filter(Boolean));
+      const deliveredClips: string[] = [];
+      for (let i = 0; i < composedScenes.length; i++) {
+        const sceneVideo = composedScenes[i];
+        if (!sceneVideo || !deliveredScenes.has(sceneVideo)) continue;
+        for (const clip of composedUsedClips[i] ?? []) {
+          if (clip) deliveredClips.push(clip);
+        }
+      }
+      const proven = ledger.markFinalVideo(deliveredClips);
+      console.log(
+        `[VisualAudit] final concat carried ${deliveredScenes.size} scene video(s); ` +
+          `${proven} clip(s) proven in the delivered file out of ${deliveredClips.length} composed`
+      );
+
+      const summary = ledger.summary();
+      for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) console.log(line);
+      for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) console.log(line);
+      const reconciliation = ledger.reconcile();
+      for (const line of formatAuditReport(reconciliation)) console.log(line);
+      console.log(formatGlobalBudget());
+      console.log(
+        `[SourceLineage] video=${videoId} render=${ledger.renderId} ` +
+          `records=${ledger.size} events=${ledger.allEvents().length} ` +
+          `verified=${summary.verifiedRecords} unverified=${summary.unverifiedRecords}`
+      );
+    } catch (err) {
+      // The audit reports on the render; it must never be able to fail one.
+      console.warn("[VisualAudit] audit reporting failed (non-fatal):", (err as Error).message?.slice(0, 160));
     }
 
     // ── P6: Gather async reviews before quality gate ──────────────────────────
@@ -33793,7 +33987,9 @@ async function _runVideoPipelineInner(
 
     let editorScenes: EditorScene[] = [];
     try {
-      editorScenes = await buildEditorScenesFromPipeline(scenes, composedUsedClips);
+      editorScenes = await buildEditorScenesFromPipeline(scenes, composedUsedClips, (clipPath) =>
+        visualDedup.sourcingCache.lineage.providerFor(clipPath)
+      );
       await updateVideoScenes(videoId, editorScenes);
     } catch (err) {
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
