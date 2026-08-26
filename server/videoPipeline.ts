@@ -13912,11 +13912,41 @@ function resolveSceneBeats(
   );
 }
 
-function archivePrepareAttemptsPerBeat(fastMode: boolean, relaxed: boolean): number {
+/**
+ * How many of a beat's vetted candidates are actually prepared.
+ *
+ * RONDE 84 — this was the reason a beat almost never had a choice.
+ *
+ * The scan above builds a queue of up to `tryCap` candidates that already passed the beat
+ * minimum, the score floor and the geo/literal gates — six of them on a long video
+ * (min(archiveBeatTopCandidates=24, maxVisualCandidatesPerBeatTry=6)). This function then said
+ * how many of those six get downloaded and trimmed, and every branch answered 2, including the
+ * `fastMode ? 2 : 2` ternary whose two arms are the same number. Four vetted candidates were
+ * discarded unused on every beat.
+ *
+ * Measured on render 536 (18 scenes, 8-10 bucket): 594 "source video too short" rejections, 13
+ * of 18 scenes ending with a montage too short for their own duration, and not one
+ * [VisualSelection] line in the whole render — that line only prints when a beat has more than
+ * one candidate to compare, and no beat ever did.
+ *
+ * The wave loop that consumes this returns as soon as one candidate succeeds, so raising the cap
+ * costs nothing on a beat whose first candidate works. It only spends time where the beat would
+ * otherwise have come back empty — which is exactly the case this is meant to fix.
+ *
+ * Bounded by the scan's own cap rather than a second hardcoded number, so the two can no longer
+ * disagree silently. fastMode and relaxed keep exactly the 2 they have today: the 1-minute path
+ * has a tight wall-clock budget and is not what this round is about, and `relaxed` is already a
+ * widening retry running at concurrency 1.
+ */
+export function archivePrepareAttemptsPerBeat(fastMode: boolean, relaxed: boolean, tryCap: number): number {
   if (relaxed) return 2;
   if (fastMode && strictVoiceVisualMatchEnabled()) return 2;
-  return fastMode ? 2 : 2;
+  if (fastMode) return 2;
+  return Math.max(2, Math.min(tryCap, ARCHIVE_PREPARE_ATTEMPTS_MAX));
 }
+
+/** Ceiling on prepared candidates per beat, so a widened scan cap can never fan out unbounded. */
+export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;
 
 function archivePrepareConcurrency(fastMode: boolean, relaxed: boolean): number {
   if (relaxed) return 1;
@@ -23475,7 +23505,7 @@ export async function adoptArchiveBeatClip(
       relaxed ? topCandidates * 2 : topCandidates,
       relaxed ? ARCHIVE_VISION_TRY_RELAXED : archiveVisionTryStrict(dedup.perf.fastStockMode, dedup.videoLength)
     );
-    const prepareCap = archivePrepareAttemptsPerBeat(dedup.perf.fastStockMode, relaxed);
+    const prepareCap = archivePrepareAttemptsPerBeat(dedup.perf.fastStockMode, relaxed, tryCap);
     const prepConcurrency = archivePrepareConcurrency(dedup.perf.fastStockMode, relaxed);
     const prepLimit = pLimit(prepConcurrency);
     const targetVision = targetClipVisionScore();
