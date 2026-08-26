@@ -3,6 +3,7 @@
  */
 import { lookupGeoCoord } from "./worldGeoCoords";
 import { extractTitleGeoPlaceTags } from "./worldGeoSlugs";
+import { searchGateDecision } from "./searchQueryContract";
 
 const UA = { "User-Agent": "Fastvid/1.0 (video generation; geosearch)" };
 
@@ -20,6 +21,19 @@ export async function fetchWikimediaGeoImageTitles(
 ): Promise<string[]> {
   const coord = lookupGeoCoord(placeSlug);
   if (!coord) return [];
+  /**
+   * RONDE 91 (§4) — a coordinate is a content claim wearing a different coat.
+   *
+   * This request carries no words, so it looked exempt: no query string, nothing to validate. But
+   * the latitude and longitude are looked up FROM `placeSlug`, and that slug is derived from the
+   * video's title (fetchWikimediaTitlesForVideoGeo below). §8 is explicit that a title is not
+   * evidence — so a geosearch anchored on a title-derived place asks Commons for pictures of a
+   * place the script may never mention, which is exactly the claim the invariant forbids. It is
+   * gated on the place name, because that name is what the request actually asserts.
+   */
+  if (!searchGateDecision("wikimedia", placeSlug.replace(/[-_]+/g, " "), "wikimediaGeosearch").admitted) {
+    return [];
+  }
 
   const gscoord = `${coord.lat}|${coord.lon}`;
   const url =

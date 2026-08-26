@@ -22,6 +22,13 @@ import * as os from "os";
 import * as path from "path";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
+/**
+ * RONDE 91 (§4) — the scene candidate pool asks the same providers the beat path asks, and until
+ * this round it asked them without passing the gate. It could not: videoPipeline imports this
+ * module, so the gate could not be imported back out of it. searchQueryContract has no imports of
+ * its own, which is why the decision now lives there and every module can reach it.
+ */
+import { searchGateDecision } from "./searchQueryContract";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -188,6 +195,9 @@ async function searchPexelsCandidates(
   const seenIds = new Set<number>();
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("pexels", query, "scenePool:searchPexelsCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const perPage = Math.min(15, max - candidates.length + 5);
     const url =
@@ -258,6 +268,9 @@ async function searchPixabayCandidates(
   const seenIds = new Set<number>();
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("pixabay", query, "scenePool:searchPixabayCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const url =
       `https://pixabay.com/api/videos/` +
@@ -328,6 +341,9 @@ async function searchWikimediaCandidates(
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("wikimedia", query, "scenePool:searchWikimediaCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const searchUrl =
       `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
@@ -473,6 +489,9 @@ async function searchInternetArchiveCandidates(
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("internet_archive", query, "scenePool:searchInternetArchiveCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const searchUrl =
       `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies` +
@@ -587,6 +606,9 @@ async function searchEuropeanaCandidates(
   const authHeader = { Authorization: `ApiKey ${apiKey}`, "User-Agent": "Fastvid/1.0" };
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("europeana", query, "scenePool:searchEuropeanaCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
     searchUrl.searchParams.set("query", query);
@@ -704,6 +726,9 @@ export async function searchOpenverseCandidates(
   const UA = { "User-Agent": "Fastvid/1.0 (video generation; contact@fastvid.ai)" };
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("openverse", query, "scenePool:searchOpenverseCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const searchUrl = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&license_type=commercial,modification&page_size=${max}&format=json`;
     try {
@@ -775,6 +800,9 @@ export async function searchNasaCandidates(
   const UA = { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" };
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("nasa", query, "scenePool:searchNasaCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
     try {
@@ -879,6 +907,9 @@ export async function searchNaraCandidates(
   const headers = { "x-api-key": apiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" };
 
   for (const query of queries) {
+    // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
+    // repaired, widened or replaced. The pool simply has one candidate source fewer.
+    if (!searchGateDecision("nara", query, "scenePool:searchNaraCandidates").admitted) continue;
     if (candidates.length >= max) break;
     const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${max * 3}`;
     try {

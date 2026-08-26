@@ -27,6 +27,7 @@ import { admitProviderQuery, buildVerifiedQueryContextForBeat, typedQueryPrefix 
  */
 
 const PIPELINE_SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+const CONTRACT_SRC = fs.readFileSync(path.join(__dirname, "searchQueryContract.ts"), "utf8");
 const PLAN_SRC = fs.readFileSync(path.join(__dirname, "visualSearchPlan.ts"), "utf8");
 
 /** The provider searches this round had to bring inside the gate. */
@@ -63,15 +64,21 @@ describe("RONDE 89 §1/§19 — every provider search passes the gate", () => {
 
   it("TEST 2 — the gate and the cached search share one enforcement path", () => {
     // Two entry points, one set of rules: a divergence between them is how the last round's gap
-    // survived. Both mint or accept a ticket, both consult validateSearchQuery, both count.
+    // survived. RONDE 90 made that structural — both delegate to the same searchGateDecision,
+    // so "the same rules" is no longer a property two copies happen to share.
     for (const fnName of ["admitProviderQuery", "cachedProviderSearch"]) {
       const idx = PIPELINE_SRC.indexOf(`export ${fnName === "admitProviderQuery" ? "function" : "async function"} ${fnName}`);
       expect(idx, fnName).toBeGreaterThan(-1);
       const body = PIPELINE_SRC.slice(idx, idx + 3500);
-      expect(body, `${fnName} must validate`).toContain("validateSearchQuery(");
-      expect(body, `${fnName} must count`).toContain("searchGateAudit.record(");
-      expect(body, `${fnName} must honour strict mode`).toContain("searchGateStrict()");
+      expect(body, `${fnName} must go through the shared decision`).toContain("searchGateDecision(");
     }
+    // RONDE 91: the decision moved to searchQueryContract, so every module can reach it.
+    const gateIdx = CONTRACT_SRC.indexOf("function searchGateDecision(");
+    expect(gateIdx).toBeGreaterThan(-1);
+    const gate = CONTRACT_SRC.slice(gateIdx, CONTRACT_SRC.indexOf("\n}", gateIdx));
+    expect(gate, "the decision must validate").toContain("validateSearchQuery(");
+    expect(gate, "the decision must count").toContain("searchGateAudit.record(");
+    expect(gate, "the decision must honour strict mode").toContain("searchGateStrict()");
   });
 
   it("TEST 3 — no search-shaped network call is left outside the gate", () => {
@@ -168,13 +175,22 @@ describe("RONDE 89 §13 — the gate protects the providers from their own calle
     expect(PIPELINE_SRC).not.toMatch(/admitProviderQuery\([^)]*\) === null\) \{[^}]*query =/);
   });
 
-  it("TEST 11 — strict mode exists and defaults to off, which the report states", () => {
+  it("TEST 11 — strict mode is ON unless somebody explicitly turns it off (RONDE 90 §1)", () => {
+    // RONDE 89 shipped this default as OFF and said so in its report, because nothing in the
+    // pipeline could mint a verified query and turning it on would have blocked every search.
+    // RONDE 90 removed that reason: the beat's proof is ambient, so the gate can verify a bare
+    // string. A safety property that has to be switched on is off in production — the default
+    // is now the contract, and only an explicit "false" opts out of it.
     const prev = process.env.SEARCH_GATE_STRICT;
     try {
       delete process.env.SEARCH_GATE_STRICT;
-      expect(searchGateStrict()).toBe(false);
+      expect(searchGateStrict()).toBe(true);
       process.env.SEARCH_GATE_STRICT = "true";
       expect(searchGateStrict()).toBe(true);
+      process.env.SEARCH_GATE_STRICT = "";
+      expect(searchGateStrict()).toBe(true);
+      process.env.SEARCH_GATE_STRICT = "false";
+      expect(searchGateStrict()).toBe(false);
     } finally {
       if (prev === undefined) delete process.env.SEARCH_GATE_STRICT;
       else process.env.SEARCH_GATE_STRICT = prev;
@@ -288,7 +304,13 @@ describe("RONDE 89 §20 — lineage, ranking and concurrency untouched", () => {
     const idx = PIPELINE_SRC.indexOf("export function admitProviderQuery(");
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
     // It returns the query it was given, or null. No widening, no substitution, no repair.
-    expect(body).toContain("return ticket.query;");
+    expect(body).toContain("return decision.admitted ? decision.text : null;");
     expect(body).not.toMatch(/return ["'`]/);
+    // And the decision it delegates to hands back the text it was given, never a rewrite: the
+    // only two `text` values it can return are the caller's ticket query and the caller's string.
+    const gateIdx = CONTRACT_SRC.indexOf("function searchGateDecision(");
+    const gate = CONTRACT_SRC.slice(gateIdx, CONTRACT_SRC.indexOf("\n}", gateIdx));
+    expect(gate).toContain("const text = String(preVerified ? preVerified.query : (query ?? \"\"));");
+    expect(gate).not.toMatch(/text = (?!String\(preVerified)/);
   });
 });

@@ -38,15 +38,30 @@ describe("RONDE 17 — the director prompt is entity-anchored and subject-aware"
     expect(code).toContain("DOCUMENTARY SUBJECT:");
   });
 
-  it("the prompt forces specificity: named entities in the query, pronouns resolved", () => {
+  it("the prompt forces specificity: named entities in the query, no bare pronouns", () => {
     // The core quality rules that make images actually match.
     expect(src).toContain("BE SPECIFIC, not generic");
     expect(src).toContain("PERSON, PLACE, ORGANIZATION, EVENT or YEAR");
-    expect(src).toContain("Resolve pronouns and vague references");
+    expect(src).toContain("Never emit a query built on a bare pronoun");
   });
 
-  it("guards against hallucinated entities (only what the script/subject supports)", () => {
-    expect(src).toContain("never guess a name the script does not support");
+  it("RONDE 91 §3 — the pronoun rule no longer tells the model to substitute a name", () => {
+    // RONDE 17 asked the model to resolve "he"/"the leader"/"that year" to a named entity FROM
+    // THE DOCUMENTARY SUBJECT. That instruction is the title leak §8 forbids, written into the
+    // prompt: the subject is a claim about the video, not about this sentence, and a beat that
+    // says "she addressed the nation" does not become a beat about Eva Braun because the title
+    // mentions her. A pronoun now yields a described scene, not a borrowed name.
+    expect(src).not.toContain("Resolve pronouns and vague references");
+    expect(src).toContain("do NOT substitute a name from the documentary subject");
+  });
+
+  it("guards against hallucinated entities — every content word must be IN the sentence", () => {
+    // RONDE 17's wording ("never guess a name the script does not support") left "clearly
+    // implied" as an opening, and an implication is a guess with better manners. RONDE 91
+    // closes it: stated in this sentence, or discarded before it reaches a provider.
+    expect(src).not.toContain("clearly implied by the sentence/subject");
+    expect(src).toContain("EVERY content word in search_query must appear in THIS SENTENCE");
+    expect(src).toContain("a guess is discarded before it reaches a provider");
   });
 
   it("keeps the existing anti-abstract / anti-narration guarantees", () => {

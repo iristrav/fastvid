@@ -1,4 +1,24 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * RONDE 90 — this file calls provider fetchers directly, outside any beat.
+ *
+ * In production every provider search runs inside a beat's provenance scope
+ * (withSearchProvenance), and that scope is what lets the gate verify a query against what the
+ * script actually says. A direct call has no such scope, so strict mode refuses it — correctly,
+ * and by design: a query nobody can trace is exactly what RONDE 90 exists to stop.
+ *
+ * That refusal is not what this file is about. Its subject is what happens AFTER a query is
+ * admitted — the render-scoped query cache, the per-item licence gates, the dedup skips, the call
+ * ceilings. The gate's own behaviour, including the refusal above, is covered by
+ * ronde89ProviderGate and ronde90SearchProvenance; restating it in every assertion here would
+ * test the gate twice and these mechanics not at all.
+ */
+// Set at module scope, not in beforeAll: several suites here snapshot `process.env` into an
+// ORIGINAL_ENV constant while the file is being evaluated and restore it before every test, so a
+// value written later is wiped again before the first assertion runs.
+process.env.SEARCH_GATE_STRICT = "false";
+
 
 // Beeldkwaliteit vervolgpatch (Fase 1 + Fase 3/9) — GDELT TV news was the one provider that:
 //   (a) never checked/registered a pre-download dedup key (providerAssetAlreadyUsed), and

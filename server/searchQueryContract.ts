@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 /**
  * RONDE 88 — a search term is proven, or it is not sent.
  *
@@ -61,6 +63,18 @@ export type QueryToken = {
   type: QueryTokenType;
   source: QueryTokenSource;
   verified: boolean;
+  /**
+   * RONDE 90 (§3) — the text this term was read out of, and where in it.
+   *
+   * "It came from the beat" is a claim; `evidence` plus `[start,end)` is that claim made
+   * checkable. A term whose offsets do not slice back to the term itself did not come from the
+   * text it names, and the audit log says so instead of taking the source label at face value.
+   * Optional because a proven_entity (a caller fetching footage OF a named person) has no offset
+   * into any script — its evidence is the caller's own request.
+   */
+  evidence?: string;
+  start?: number;
+  end?: number;
 };
 
 /** The proven, typed content of one beat. Every list may be empty; empty means "the beat does not say". */
@@ -73,10 +87,23 @@ export type VerifiedQueryContext = {
   objects: QueryToken[];
   time: QueryToken[];
   years: QueryToken[];
+  /**
+   * RONDE 90 (§3) — the beat's own words, plus the scene text that corroborates them.
+   *
+   * This is the ground truth a content word is checked against. RONDE 89's gate could only ask
+   * "is this word one of the typed tokens?", which refused every legitimate word the extractors
+   * happen not to type — a beat about canals and cyclists proves "canal" and "cyclists" whether
+   * or not an extractor labelled them. A word that literally stands in the script is proven by
+   * the script; a word that does not is not, no matter which builder produced it.
+   */
+  evidence: string;
 };
 
-export function emptyQueryContext(): VerifiedQueryContext {
-  return { persons: [], places: [], countries: [], events: [], actions: [], objects: [], time: [], years: [] };
+export function emptyQueryContext(evidence = ""): VerifiedQueryContext {
+  return {
+    persons: [], places: [], countries: [], events: [], actions: [], objects: [], time: [], years: [],
+    evidence,
+  };
 }
 
 /** Only these sources may put a CONTENT word into a query. */
@@ -86,8 +113,39 @@ export function isProvenSource(source: QueryTokenSource): boolean {
   return PROVEN_SOURCES.has(source);
 }
 
-export function provenToken(term: string, type: QueryTokenType, source: QueryTokenSource = "beat_text"): QueryToken {
-  return { term: term.trim(), type, source, verified: isProvenSource(source) && term.trim().length > 0 };
+export function provenToken(
+  term: string,
+  type: QueryTokenType,
+  source: QueryTokenSource = "beat_text",
+  /** RONDE 90 (§3): the text this term is claimed to come from. Offsets are located, not asserted. */
+  evidence?: string
+): QueryToken {
+  const t = term.trim();
+  const token: QueryToken = { term: t, type, source, verified: isProvenSource(source) && t.length > 0 };
+  if (evidence) {
+    const at = evidence.toLowerCase().indexOf(t.toLowerCase());
+    token.evidence = evidence;
+    if (at >= 0) {
+      token.start = at;
+      token.end = at + t.length;
+    }
+  }
+  return token;
+}
+
+/**
+ * RONDE 90 (§3) — does this token's own evidence actually contain it, at the offsets it claims?
+ *
+ * A token with no evidence attached cannot be checked here and is not failed here; §11's check G
+ * is where an unbacked person is refused. This answers only: when a token DOES carry evidence,
+ * does that evidence hold up.
+ */
+export function tokenEvidenceHolds(token: QueryToken): boolean {
+  if (!token.evidence) return true;
+  if (token.start == null || token.end == null) {
+    return containsContiguous(token.evidence, token.term);
+  }
+  return token.evidence.slice(token.start, token.end).toLowerCase() === token.term.trim().toLowerCase();
 }
 
 // ─── Grammar: the closed classes ─────────────────────────────────────────────
@@ -128,6 +186,7 @@ export const FUNCTION_WORDS: ReadonlySet<string> = new Set([
   "will", "would", "shall", "should", "can", "could", "may", "might", "must",
   "not", "no", "nor", "only", "just", "even", "also", "too", "very", "quite",
   "own", "some", "any", "all", "both", "each", "every", "few", "many", "much", "more", "most",
+  "other", "others", "another", "same", "such", "there", "here",
   "when", "where", "why", "how", "then", "than", "as", "if", "because",
 ]);
 
@@ -137,6 +196,78 @@ export function isPronounToken(token: string): boolean {
 
 export function isFunctionWord(token: string): boolean {
   return FUNCTION_WORDS.has(token.trim().toLowerCase().replace(/[^\p{L}']/gu, ""));
+}
+
+/**
+ * RONDE 90 (§8/§11) — camera and format vocabulary. A closed class, like the function words.
+ *
+ * "aerial", "close up", "b-roll", "timelapse" and "establishing" say how a shot was taken, not
+ * what happened in the world. They make no claim a script could contradict, which is precisely
+ * why they are allowed without evidence — and why the list can be closed: production vocabulary
+ * is a finite craft vocabulary, unlike the open set of things a documentary can be ABOUT.
+ *
+ * Deliberately NOT on this list: every word that names a subject. "canal", "protest", "factory"
+ * and "skyline" describe the world and must be proven by the script like any other content word,
+ * even though a query builder is fond of appending them.
+ */
+export const PRODUCTION_VOCABULARY: ReadonlySet<string> = new Set([
+  "archival", "footage", "film", "video", "clip", "clips", "reel", "stock",
+  "documentary", "broll", "b-roll", "newsreel", "archive", "archives",
+  "aerial", "drone", "wide", "closeup", "close-up", "close", "up", "medium", "shot", "shots",
+  "establishing", "pan", "tilt", "tracking", "handheld", "static", "overhead", "topdown",
+  "timelapse", "time-lapse", "slowmotion", "slow-motion", "montage", "cutaway",
+  "hd", "4k", "1080p", "colour", "color", "black", "white", "monochrome", "restored",
+  // Words that describe the FOOTAGE rather than its subject. "historical footage of X" makes
+  // one claim about X (that it exists) and one about the film (that it is old); only the
+  // first needs proving, and X still has to prove itself.
+  "historical", "historic", "original", "vintage", "period", "old", "retro", "silent",
+  "newsreels", "rare", "authentic", "real", "raw", "unedited", "compilation",
+  "mediatype", "movies", "level", "street-level", "photo", "photos", "photograph", "image", "images",
+]);
+
+export function isProductionWord(token: string): boolean {
+  return PRODUCTION_VOCABULARY.has(token.trim().toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, ""));
+}
+
+/**
+ * RONDE 90 (§3) — the forms of an English word that count as the same word, for evidence only.
+ *
+ * A beat that says "canals" proves "canal"; one that says "bridge" proves "bridges". Refusing
+ * those would not make the pipeline more honest, only wrong in the other direction — the script
+ * really does say the thing.
+ *
+ * Every candidate is returned rather than one canonical stem, because a single stem does not
+ * commute: stripping "s" turns "bridges" into "bridge" while "bridge" stays itself, and the two
+ * then fail to match. Comparing the candidate SETS makes the relation symmetric, which is what
+ * "the same word" has to be.
+ *
+ * Strictly INFLECTIONAL: plurals and simple verb forms, nothing else, and never below four
+ * characters. "cycling" and "cyclists" stay different words here — they are related by
+ * derivation, not inflection, and proving one from the other is the kind of inference this round
+ * exists to refuse. A builder that appends "cyclists" to a beat about cycling is guessing, and
+ * the gate says so.
+ */
+export function evidenceStems(word: string): string[] {
+  const w = word.trim().toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
+  if (!w) return [];
+  const out = new Set<string>([w]);
+  const add = (s: string) => {
+    if (s.length >= 4) out.add(s);
+  };
+  for (const suffix of ["s", "es", "ed", "er", "ers", "ing", "ies"]) {
+    if (w.length - suffix.length >= 4 && w.endsWith(suffix)) {
+      add(w.slice(0, w.length - suffix.length));
+    }
+  }
+  // "cities" -> "city": the one spelling change common enough that ignoring it reads as a bug.
+  if (w.endsWith("ies") && w.length >= 5) add(w.slice(0, -3) + "y");
+  return [...out];
+}
+
+/** The shortest form of a word — the single canonical stem, where one value is needed. */
+export function evidenceStem(word: string): string {
+  const stems = evidenceStems(word);
+  return stems.length ? stems.reduce((a, b) => (b.length < a.length ? b : a)) : "";
 }
 
 /**
@@ -404,6 +535,20 @@ export function buildPrioritisedQueries(ctx: VerifiedQueryContext): PrioritisedQ
   if (p1 && p2 && !place) push(p1, p2);
   if (p1 && !place && !p2) push(p1);
   if (p2 && place) push(p2, place);
+  /**
+   * RONDE 90 (§5) — a THIRD name the beat states is asked about too.
+   *
+   * Measured: "Churchill, Roosevelt and Stalin met at Yalta" produced six queries and not one of
+   * them contained Stalin, because every combination stopped at two people. §5 does not say the
+   * two strongest names — it says no name a beat states may be lost. The third is asked on its
+   * own and with the place, never joined to the first two: "Churchill Roosevelt Stalin" reads as
+   * one search for a group portrait, which is a narrower question than the beat asked.
+   */
+  for (const extra of persons.slice(2)) {
+    if (extra.source !== "beat_text") continue;
+    if (place) push(extra, place);
+    else push(extra);
+  }
   if (alt && alt !== p1 && place) push(alt, place);
   if (alt && alt !== p1 && !place) push(alt);
 
@@ -477,13 +622,48 @@ export type QueryRejectReason =
   | "TITLE_INFERENCE_NOT_ALLOWED"
   | "LLM_GENERATED_TERM"
   | "PERSON_AFTER_PLACE"
-  | "EMPTY_QUERY";
+  | "EMPTY_QUERY"
+  /** RONDE 90 (§11 G): a person token whose evidence does not contain it. */
+  | "PERSON_WITHOUT_EVIDENCE"
+  /** RONDE 90 (§11 H): nothing but production vocabulary and function words — no subject at all. */
+  | "NO_CONTENT_ANCHOR"
+  /**
+   * RONDE 91 (§3): a term the visual-director plan introduced that its own sentence does not
+   * state. Distinct from UNVERIFIED_TERM so the log answers WHO guessed, not just THAT somebody
+   * did — a builder appending "aerial" and a language model inventing a bunker are different
+   * problems with different fixes.
+   */
+  | "LLM_UNPROVEN_CONTENT";
 
 export type QueryValidation = {
   ok: boolean;
   reason?: QueryRejectReason;
   offendingTerm?: string;
+  /**
+   * RONDE 90 (§13) — every query word that could not be traced, not just the first.
+   *
+   * The gate stops at the first failure, but the audit log names them all: a query rejected for
+   * one word when four are unprovable is a different problem from one that is a single word away
+   * from being sendable, and only the full list tells them apart.
+   */
+  blockedTerms?: string[];
 };
+
+/**
+ * RONDE 90 — the part of a cache key that is actually a search query.
+ *
+ * Three callers fold a request parameter into the string they hand the render-scoped query cache
+ * — `${query}#n${perPage}` for Flickr and NARA, `${query}#${licence}#n${n}` for YouTube — because
+ * replaying a 4-result payload for a later 12-result request would silently shrink the candidate
+ * list. That suffix is a cache discriminator, never sent to any provider, and validating it as
+ * content read "#creative_common#n5" as an unproven term and blocked a perfectly good query.
+ *
+ * `#` cannot occur in a query this pipeline builds, which is what makes it usable as the boundary.
+ */
+export function queryProper(query: string): string {
+  const hash = query.indexOf("#");
+  return hash === -1 ? query : query.slice(0, hash);
+}
 
 /**
  * The last gate before a query reaches a provider.
@@ -500,30 +680,41 @@ export function validateSearchQuery(
   query: string,
   ctx?: VerifiedQueryContext
 ): QueryValidation {
-  const q = (query ?? "").trim();
+  const q = queryProper(query ?? "").trim();
   if (!q) return { ok: false, reason: "EMPTY_QUERY" };
-
-  const technicalWords = new Set(
-    TECHNICAL_ARCHIVAL_TERM.toLowerCase().split(/\s+/).concat(["archival", "footage", "mediatype", "movies"])
-  );
 
   const words = q.split(/\s+/).map((w) => w.replace(/[^\p{L}\p{N}'’-]/gu, "")).filter(Boolean);
 
-  // A pronoun is never a legitimate search term, with or without a context.
+  // ── A. empty ── handled above.
+
+  // ── B. a pronoun is never a legitimate search term, with or without a context.
   for (const w of words) {
     if (isPronounToken(w) && /^\p{Lu}/u.test(w)) {
-      return { ok: false, reason: "FORBIDDEN_PRONOUN", offendingTerm: w };
+      return { ok: false, reason: "FORBIDDEN_PRONOUN", offendingTerm: w, blockedTerms: [w] };
     }
   }
   if (!ctx) return { ok: true };
 
+  // Everything the context proves, by stem, so "canals" in the query is proven by "canal".
   const proven = new Set<string>();
-  for (const list of [ctx.persons, ctx.places, ctx.countries, ctx.events, ctx.actions, ctx.objects, ctx.time, ctx.years]) {
+  const addProven = (term: string) => {
+    for (const w of term.toLowerCase().split(/\s+/)) {
+      const clean = w.replace(/[^\p{L}\p{N}'’-]/gu, "");
+      if (!clean) continue;
+      for (const form of evidenceStems(clean)) proven.add(form);
+    }
+  };
+  for (const list of allTokenLists(ctx)) {
     for (const token of list) {
-      if (!token.verified) continue;
-      for (const w of token.term.toLowerCase().split(/\s+/)) proven.add(w.replace(/[^\p{L}\p{N}'’-]/gu, ""));
+      if (token.verified) addProven(token.term);
     }
   }
+  // ── C (evidence). The script's own words prove themselves. An extractor that failed to type
+  // "canal" does not make the beat's mention of canals a guess.
+  for (const w of (ctx.evidence ?? "").split(/[^\p{L}\p{N}'’-]+/u)) {
+    if (w) addProven(w);
+  }
+
   const rejected = new Map<string, QueryTokenSource>();
   for (const list of [ctx.persons, ctx.places, ctx.countries, ctx.events, ctx.actions, ctx.objects]) {
     for (const token of list) {
@@ -532,21 +723,31 @@ export function validateSearchQuery(
     }
   }
 
+  // ── C/D/E. Every content word traceable; a term that IS traceable to a forbidden route is
+  // named by that route rather than lumped in with the anonymous ones.
+  const blocked: string[] = [];
+  let firstReason: QueryRejectReason | undefined;
+  let firstTerm: string | undefined;
+  let contentWords = 0;
   for (const raw of words) {
     const w = raw.toLowerCase();
-    if (technicalWords.has(w) || isFunctionWord(w)) continue;
-    if (proven.has(w)) continue;
+    if (isProductionWord(w) || isFunctionWord(w)) continue;
+    contentWords++;
+    if (evidenceStems(w).some((form) => proven.has(form))) continue;
     const source = rejected.get(w);
-    if (source === "title_inference") {
-      return { ok: false, reason: "TITLE_INFERENCE_NOT_ALLOWED", offendingTerm: raw };
+    const reason: QueryRejectReason =
+      source === "title_inference" ? "TITLE_INFERENCE_NOT_ALLOWED"
+        : source === "llm_generated" ? "LLM_GENERATED_TERM"
+          : "UNVERIFIED_TERM";
+    blocked.push(raw);
+    if (!firstReason) {
+      firstReason = reason;
+      firstTerm = raw;
     }
-    if (source === "llm_generated") {
-      return { ok: false, reason: "LLM_GENERATED_TERM", offendingTerm: raw };
-    }
-    return { ok: false, reason: "UNVERIFIED_TERM", offendingTerm: raw };
   }
+  if (firstReason) return { ok: false, reason: firstReason, offendingTerm: firstTerm, blockedTerms: blocked };
 
-  // Ordering: a proven person must not appear after a proven place.
+  // ── F. Ordering: a proven person must not appear after a proven place.
   const firstIndexOf = (list: QueryToken[]): number => {
     let best = -1;
     for (const token of list) {
@@ -559,9 +760,30 @@ export function validateSearchQuery(
   const personAt = firstIndexOf(ctx.persons);
   const placeAt = Math.max(firstIndexOf(ctx.places), firstIndexOf(ctx.countries));
   if (personAt >= 0 && placeAt >= 0 && placeAt < personAt) {
-    return { ok: false, reason: "PERSON_AFTER_PLACE", offendingTerm: words[personAt] };
+    return { ok: false, reason: "PERSON_AFTER_PLACE", offendingTerm: words[personAt], blockedTerms: [words[personAt]!] };
+  }
+
+  // ── G. A person the query names must be backed by evidence that actually contains that person.
+  for (const person of ctx.persons) {
+    if (!person.verified) continue;
+    const head = person.term.split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (!head || !words.some((w) => w.toLowerCase() === head)) continue;
+    if (!tokenEvidenceHolds(person)) {
+      return { ok: false, reason: "PERSON_WITHOUT_EVIDENCE", offendingTerm: person.term, blockedTerms: [person.term] };
+    }
+  }
+
+  // ── H. A query of nothing but camera vocabulary asks for "aerial footage" of the world in
+  // general. It is not wrong about anything, which is exactly the problem: it has no subject.
+  if (contentWords === 0) {
+    return { ok: false, reason: "NO_CONTENT_ANCHOR", offendingTerm: q, blockedTerms: [] };
   }
   return { ok: true };
+}
+
+/** Every typed list of a context, in the mandated priority order. */
+export function allTokenLists(ctx: VerifiedQueryContext): QueryToken[][] {
+  return [ctx.persons, ctx.places, ctx.countries, ctx.events, ctx.actions, ctx.objects, ctx.time, ctx.years];
 }
 
 // ─── Logging (§19) ───────────────────────────────────────────────────────────
@@ -602,6 +824,46 @@ export function formatSearchQueryRejected(meta: {
     `beat=${meta.beatIndex ?? "?"} query="${meta.query}" term="${meta.offendingTerm ?? ""}" ` +
     `termSource=${meta.termSource ?? "unknown"} verified=false reason=${meta.reason} ` +
     `route=${meta.route ?? "-"} provider=${meta.provider ?? "-"}`
+  );
+}
+
+/**
+ * RONDE 90 (§13) — one line per query decision, naming what was sent and what was refused.
+ *
+ * The two lines above answer "was this query allowed?". This one answers the question the round
+ * is actually about: which terms did the pipeline believe it could prove, which could it not, and
+ * on what grounds. A rejection that names one word hides how far the query was from sendable;
+ * `blockedTerms` shows the whole gap.
+ */
+export function formatSearchQueryAudit(meta: {
+  renderId?: string;
+  sceneIndex?: number;
+  beatIndex?: number;
+  query: string;
+  terms?: readonly string[];
+  blockedTerms?: readonly string[];
+  reason?: QueryRejectReason | LegacyRejectReason;
+  verified: boolean;
+  /**
+   * RONDE 91 (§11) — did this query reach the provider, yes or no.
+   *
+   * `verified` says whether the contract could prove the query; `status` says what was DONE
+   * about it. They are not the same field and conflating them made the log ambiguous in exactly
+   * the case that matters: an unverified query is BLOCKED under strict mode and ALLOWED with
+   * SEARCH_GATE_STRICT=false, and the line read identically either way.
+   */
+  status?: "ALLOWED" | "BLOCKED";
+  route?: string;
+  provider?: string;
+}): string {
+  return (
+    `[SearchQueryAudit] render=${meta.renderId ?? "-"} scene=${meta.sceneIndex ?? "?"} ` +
+    `beat=${meta.beatIndex ?? "?"} provider=${meta.provider ?? "-"} route=${meta.route ?? "-"} ` +
+    `query="${meta.query}" status=${meta.status ?? (meta.verified ? "ALLOWED" : "BLOCKED")} ` +
+    `verified=${meta.verified} ` +
+    `terms=${JSON.stringify([...(meta.terms ?? [])])} ` +
+    `blockedTerms=${JSON.stringify([...(meta.blockedTerms ?? [])])} ` +
+    `reason=${meta.reason ?? (meta.verified ? "OK" : "UNVERIFIED_TERM")}`
   );
 }
 
@@ -661,6 +923,32 @@ export function mintVerifiedQuery(
   return verdict.ok
     ? { query, tokens, verified: true, ...meta }
     : { query, tokens, verified: false, rejectReason: verdict.reason ?? "UNVERIFIED_TERM", ...meta };
+}
+
+/**
+ * RONDE 90 (§12) — the ONLY sanctioned answer to a refused query, and it is not a repair.
+ *
+ * Stripping the offending word out of a rejected query and sending the remainder is the silent
+ * repair this round forbids: the result still carries the provenance of the query it was cut
+ * down from, so it claims a proof it never had, and nothing downstream can tell it apart from a
+ * query that was right the first time.
+ *
+ * This does the opposite. The rejected query is DISCARDED. A new query is built from the
+ * context's verified tokens only, in the mandated priority order, with a NEW provenance object,
+ * and it goes back through validateSearchQuery like any other. If the context proves nothing, the
+ * answer is null — "no reliable query" is a correct outcome, not a failure to work around.
+ */
+export function rebuildFromVerifiedTokens(
+  ctx: VerifiedQueryContext | undefined,
+  meta: { route: string; renderId?: string; sceneIndex?: number; beatIndex?: number }
+): VerifiedSearchQuery | null {
+  if (!ctx) return null;
+  for (const candidate of buildPrioritisedQueries(ctx)) {
+    if (candidate.query === TECHNICAL_ARCHIVAL_TERM) continue;
+    const minted = mintVerifiedQuery(candidate.query, ctx, meta);
+    if (minted.verified) return minted;
+  }
+  return null;
 }
 
 /**
@@ -750,12 +1038,139 @@ export function formatSearchGateReport(audit: SearchGateAudit = searchGateAudit)
 /**
  * Is the gate refusing unverified queries outright?
  *
- * Default OFF, and that is a deliberate, reported limitation rather than a design choice. Turning
- * it on today would block every legacy call site that cannot yet supply a context — which is most
- * of them — and stop the pipeline from sourcing anything at all. With it off, those calls are
- * counted as bypassAttempts and named in the report, so the remaining work is visible and
- * measurable instead of assumed away.
+ * RONDE 90 (§1): ON unless somebody explicitly turns it off. RONDE 89 shipped it OFF because
+ * turning it on would have blocked every call site that could not supply a context — which was
+ * all of them, because nothing minted a verified query anywhere in the pipeline. That is now
+ * fixed at the source: the beat's proven context is ambient (withSearchProvenance), so the gate
+ * can verify a query the caller passed as a bare string.
+ *
+ * The default matters more than the flag. A safety property that has to be switched on is a
+ * safety property that is off in production, and "unproven content may not reach a provider" is
+ * not a mode — it is the contract. `SEARCH_GATE_STRICT=false` remains, for one purpose only: to
+ * measure what strict mode is blocking without having to ship a code change to find out.
  */
 export function searchGateStrict(): boolean {
-  return process.env.SEARCH_GATE_STRICT === "true";
+  return process.env.SEARCH_GATE_STRICT !== "false";
+}
+
+// ─── RONDE 90/91: the provenance scope and THE gate decision ─────────────────
+
+/**
+ * RONDE 90 (§2) — the beat's proven context, ambient for everything the beat fetches.
+ *
+ * RONDE 89 put every provider search behind one gate and then had to leave that gate permissive,
+ * because a gate can only check a query against the context that produced it and no call site
+ * could supply one. Threading a VerifiedQueryContext through the ~100 signatures between a beat
+ * and a provider fetch would have been a refactor of the whole file, and a signature a caller can
+ * forget to fill in is a gate a caller can forget to pass.
+ *
+ * The context is therefore scoped, not passed. Whoever begins sourcing a beat states what that
+ * beat proves; every provider search inside that scope — however deep, through whichever of the
+ * legacy query builders — is validated against it without knowing the scope exists. A search that
+ * runs outside any beat scope has no proof behind it, which is the honest reading of a query
+ * nobody can trace, and strict mode refuses it.
+ *
+ * AsyncLocalStorage rather than a field on RenderCtx: scenes are sourced concurrently within one
+ * render, and a mutable per-render slot would let one beat's context validate another beat's
+ * query — the exact class of cross-contamination this round exists to remove.
+ */
+const searchProvenanceStorage = new AsyncLocalStorage<VerifiedQueryContext>();
+
+/** The proven context of the beat currently being sourced, or undefined outside any beat scope. */
+export function getSearchProvenance(): VerifiedQueryContext | undefined {
+  return searchProvenanceStorage.getStore();
+}
+
+/** Run `fn` with `ctx` as the ambient proof for every provider search it makes. */
+export function withSearchProvenance<T>(ctx: VerifiedQueryContext | undefined, fn: () => T): T {
+  return ctx ? searchProvenanceStorage.run(ctx, fn) : fn();
+}
+
+/**
+ * RONDE 90 (§13) — should every ADMITTED query be logged, not only the refused ones?
+ *
+ * Off by default: a render asks providers thousands of questions and a line per question buries
+ * the ones that matter. Refusals are always logged, because a refusal is the thing that changed
+ * what the video shows. Turn this on to see the full decision trail.
+ */
+export function searchQueryAuditLogEnabled(): boolean {
+  return process.env.SEARCH_QUERY_AUDIT_LOG === "true";
+}
+
+/**
+ * RONDE 90 (§2/§18) — the one decision both entry points make, so they cannot drift apart.
+ *
+ * Three inputs decide the outcome, and only three:
+ *
+ *   · a VerifiedSearchQuery — the caller minted its own proof; it is taken at face value because
+ *     `verified` can only have been set by mintVerifiedQuery agreeing with the validator.
+ *   · a bare string INSIDE a beat's provenance scope — validated against what that beat actually
+ *     proves. This is the case RONDE 89 could not handle and the reason strict mode had to stay
+ *     off; it is now the common case.
+ *   · a bare string outside any scope — nothing backs it, so strict mode refuses it. Not because
+ *     the string looks wrong, but because nobody can say where it came from.
+ *
+ * There is deliberately no fourth outcome in which a refused query is trimmed and re-sent. §12:
+ * rebuildFromVerifiedTokens builds a NEW query from proven tokens with new provenance, and it is
+ * the caller's explicit choice to do so, never something that happens quietly inside the gate.
+ */
+export function searchGateDecision(
+  provider: string,
+  query: string | VerifiedSearchQuery,
+  route: string
+): { admitted: boolean; text: string } {
+  const ambient = getSearchProvenance();
+  const preVerified = isVerifiedSearchQuery(query) ? query : undefined;
+  const text = String(preVerified ? preVerified.query : (query ?? ""));
+  // A caller's own ticket already carries its proof; a bare string is judged against the beat it
+  // is running inside. The proof comes from where the search happens, not from the string.
+  const verdict = validateSearchQuery(text, preVerified ? undefined : ambient);
+  const ticket: VerifiedSearchQuery =
+    preVerified ??
+    (ambient ? mintVerifiedQuery(text, ambient, { route }) : legacyQueryTicket(text, route));
+
+  searchGateAudit.record("queriesBuilt", provider, ticket.route);
+
+  const audit = (status: "ALLOWED" | "BLOCKED", reason?: string) =>
+    formatSearchQueryAudit({
+      query: text,
+      provider,
+      route: ticket.route,
+      status,
+      verified: ticket.verified,
+      terms: ticket.tokens.filter((t) => t.verified).map((t) => t.term),
+      blockedTerms: verdict.blockedTerms,
+      reason: reason as never,
+      sceneIndex: ticket.sceneIndex,
+      beatIndex: ticket.beatIndex,
+    });
+
+  if (!verdict.ok) {
+    searchGateAudit.record("queriesRejected", provider, ticket.route, verdict.reason);
+    searchGateAudit.record("queriesBlocked", provider, ticket.route);
+    console.warn(
+      formatSearchQueryRejected({
+        query: text, provider, route: ticket.route,
+        reason: verdict.reason ?? "UNVERIFIED_TERM",
+        offendingTerm: verdict.offendingTerm,
+      })
+    );
+    console.warn(audit("BLOCKED", verdict.reason));
+    return { admitted: false, text };
+  }
+
+  if (!ticket.verified) {
+    searchGateAudit.record("bypassAttempts", provider, ticket.route, ticket.rejectReason);
+    if (searchGateStrict()) {
+      searchGateAudit.record("queriesBlocked", provider, ticket.route, ticket.rejectReason);
+      console.warn(audit("BLOCKED", ticket.rejectReason ?? "NO_SEARCH_CONTEXT"));
+      return { admitted: false, text };
+    }
+  } else {
+    searchGateAudit.record("queriesValidated", provider, ticket.route);
+  }
+
+  searchGateAudit.record("queriesSent", provider, ticket.route);
+  if (searchQueryAuditLogEnabled()) console.log(audit("ALLOWED"));
+  return { admitted: true, text };
 }

@@ -319,9 +319,20 @@ describe("RONDE 88 §6/§10/§17/§18 — no guessing anywhere", () => {
     expect(idx).toBeGreaterThan(-1);
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
     // RONDE 89 renamed the local to `text` when the gate began accepting a query OBJECT as well
-    // as a string. The property asserted — the gate validates before it sends — is unchanged.
-    expect(body).toContain("validateSearchQuery(text)");
-    expect(body).toContain("formatSearchQueryRejected(");
+    // as a string; RONDE 90 moved the decision itself into searchGateDecision so that
+    // admitProviderQuery and cachedProviderSearch cannot enforce different rules. The property
+    // asserted — the gate validates before it sends — is unchanged, so it is asserted where the
+    // validation now lives rather than dropped.
+    expect(body).toContain("searchGateDecision(provider, query, route)");
+    expect(body).toContain("if (!decision.admitted) return [] as unknown as T;");
+    // RONDE 91 moved the decision into searchQueryContract so scenePool and wikimediaGeoSearch
+    // reach the same one — videoPipeline imports both, so they could not import it from there.
+    const CONTRACT_SRC = fs.readFileSync(path.join(__dirname, "searchQueryContract.ts"), "utf8");
+    const gateIdx = CONTRACT_SRC.indexOf("function searchGateDecision(");
+    expect(gateIdx).toBeGreaterThan(-1);
+    const gate = CONTRACT_SRC.slice(gateIdx, CONTRACT_SRC.indexOf("\n}", gateIdx));
+    expect(gate).toContain("validateSearchQuery(");
+    expect(gate).toContain("formatSearchQueryRejected(");
   });
 
   it("TEST 15 — two renders of the same beat produce identical, independent queries", () => {

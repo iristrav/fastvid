@@ -644,65 +644,21 @@ export interface TypedRetrievalContext {
   object: string;
 }
 
-function buildCombinedTypedQueries(fields: {
-  person: string;
-  place: string;
-  time: string;
-  event: string;
-  object: string;
-  /** RONDE 77: the verb the beat describes. "" when it describes none — see extractActionCue. */
-  action?: string;
-  /** RONDE 78: the month-qualified period, when the beat names one. "" otherwise. */
-  period?: string;
-}): string[] {
-  const { person, place, time, event, object } = fields;
-  const action = (fields.action ?? "").trim();
-  const period = (fields.period ?? "").trim() === time ? "" : (fields.period ?? "").trim();
-  const join = (...parts: string[]): string => parts.filter((p) => p && p.trim()).join(" ").trim();
-  const out: string[] = [];
-  /**
-   * Adds a combination only when every part it names is present, and only when the parts do not
-   * repeat each other. RONDE 78: the event phrase can carry the place — "fall of France" on a
-   * beat whose place is "France" — and `place + event` would then read "France fall of France".
-   * A query that says the same word twice is not a better query.
-   */
-  const combine = (...parts: string[]): void => {
-    if (parts.some((p) => !p || !p.trim())) return;
-    const q = join(...parts);
-    if (!q) return;
-    const seen = new Set<string>();
-    for (const w of q.toLowerCase().split(/\s+/)) {
-      if (w === "of" || w === "the" || w === "and") continue;
-      if (seen.has(w)) return;
-      seen.add(w);
-    }
-    out.push(q);
-  };
+/*
+ * RONDE 91 (§2) — buildCombinedTypedQueries was removed here.
+ *
+ * It was the original combination engine: fourteen fixed person/place/time/event/action
+ * permutations, plus two that appended "archival footage". RONDE 88 replaced it with
+ * buildPrioritisedQueries, which enforces the mandated PERSON > PLACE/COUNTRY > EVENT > ACTION >
+ * OBJECT > TIME order and keeps every person a beat names; centralTypedQueries below has
+ * delegated there ever since, and buildHistoricalArchivalQueries goes through centralTypedQueries.
+ *
+ * The comment on centralTypedQueries claimed this function was "retained: it is still the
+ * combination engine for the multi-target archival query builder". A repo-wide scan found zero
+ * callers — the claim went stale the moment RONDE 88 rewired that builder. Two combination
+ * engines with different orderings is exactly what RONDE 88 §18 forbids, so the unused one goes.
+ */
 
-  combine(person, place, time);
-  combine(person, event, time);
-  combine(place, event, time);
-  combine(person, place);
-  combine(place, event);
-  combine(place, time);
-  combine(event, time);
-  combine(place, object, time);
-  // RONDE 77: the action variants. Only where the beat actually states a verb, and always after
-  // the entity combinations above — a verb narrows a search, it does not anchor one.
-  combine(person, action, time);
-  combine(place, action, time);
-  combine(person, place, action);
-  combine(place, action);
-  // RONDE 78: the month-qualified period, behind the year-only forms. An archive that indexes
-  // "April 1945" answers this one; one that indexes the year only already answered above.
-  combine(person, place, period);
-  combine(place, event, period);
-  combine(person, event, period);
-  // The strongest combination again, phrased for an archive rather than a search engine.
-  combine(person, place, "archival footage");
-  if (!person && place) combine(place, "archival footage");
-  return out;
-}
 
 /**
  * RONDE 78 — the beat's context, assembled once.
@@ -738,12 +694,11 @@ export function buildTypedRetrievalContext(
  * differently, which is precisely what §18 forbids: primary, fallback, rescue and backfill must
  * not each hold their own reading of the same sentence. buildPrioritisedQueries enforces the
  * mandated order (PERSON > PLACE/COUNTRY > EVENT > ACTION > OBJECT > TIME), keeps every person
- * the beat names, and — unlike buildCombinedTypedQueries below — produces queries for a beat that
- * names only people, which used to return nothing at all.
+ * the beat names, and — unlike the fixed permutation list it replaced — produces queries for a
+ * beat that names only people, which used to return nothing at all.
  *
- * buildCombinedTypedQueries is retained: it is still the combination engine for the multi-target
- * archival query builder further down this file, which works from intent targets rather than a
- * typed context.
+ * RONDE 91: the second engine that comment used to point at is gone — see the note above. There
+ * is now one combination engine in the codebase, and this is its only entry point.
  */
 export function centralTypedQueries(ctx: TypedRetrievalContext): string[] {
   const q = emptyQueryContext();

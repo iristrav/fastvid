@@ -311,6 +311,10 @@ import {
   searchGateStrict,
   type VerifiedSearchQuery,
   emptyQueryContext,
+  formatSearchQueryAudit,
+  getSearchProvenance,
+  searchGateDecision,
+  withSearchProvenance,
   formatSearchQueryRejected,
   isFunctionWord,
   isPronounToken,
@@ -318,6 +322,7 @@ import {
   validateSearchQuery,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
+export { getSearchProvenance, withSearchProvenance } from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
@@ -914,6 +919,20 @@ type SceneFetchScope = {
   deadlineAtMs: number;
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
+
+/*
+ * RONDE 91 (§4) — the provenance scope and the gate decision moved to searchQueryContract.
+ *
+ * They lived here because that is where the beat loop is. The re-scan found what that cost: eight
+ * provider searches in scenePool.ts and a Commons geosearch in wikimediaGeoSearch.ts never passed
+ * the gate, and they could not have — videoPipeline imports both of those modules, so importing
+ * the gate back out of it would close a cycle. A gate that some modules are structurally unable
+ * to reach is not one gate.
+ *
+ * searchQueryContract has no imports of its own, so every module can reach it. getSearchProvenance
+ * and withSearchProvenance are re-exported below because the beat loop here is still what sets the
+ * scope, and callers should not have to know the storage moved.
+ */
 
 // Once a scene/beat's fetch scope is abandoned (its withSceneFetchTimeout fired), every
 // exec()/execFileRaw() call in that scope starts throwing immediately (by design — see
@@ -2622,8 +2641,61 @@ export async function fetchBeatArchivalThenPexels(
   return null;
 }
 
-/** Primary beat path: archival (default) or YouTube-only when explicitly enabled. */
+/**
+ * RONDE 90 (§2) — what this beat proves, scoped around everything it fetches.
+ *
+ * personName and the scene's own person list arrive as scenePersons, never as forcePerson: a
+ * scene-level hint is a claim about the SCENE, and §7 is explicit that it only becomes a search
+ * term when the scene text states the connection. forcePerson means something narrower — the
+ * caller is fetching footage OF this person by definition — and no caller here is doing that.
+ */
+function beatSearchProvenance(
+  beat: { text?: string },
+  scene: { text?: string; personNames?: string[] },
+  personName = "",
+  scenePersons: string[] = []
+): VerifiedQueryContext {
+  return buildVerifiedQueryContextForBeat(beat.text ?? "", {
+    scenePersons: [personName, ...scenePersons, ...(scene.personNames ?? [])].filter(Boolean),
+    sceneText: scene.text ?? "",
+  });
+}
+
+/**
+ * Primary beat path: archival (default) or YouTube-only when explicitly enabled.
+ *
+ * RONDE 90: this is where a beat's proof is put in scope. Every provider search made anywhere
+ * beneath it — through fetchBeatArchivalThenPexels, the curated archive, Wikimedia, the stock
+ * fallback, any of the legacy query builders — is validated against THIS beat's context without
+ * a single one of those call sites having to pass it along. Eleven call sites reach this
+ * function; wrapping the function rather than the call sites is what makes that exhaustive
+ * instead of best-effort.
+ */
 async function beatPrimaryFetch(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  tag: string,
+  stockReason: string
+): Promise<string | null> {
+  return withSearchProvenance(
+    beatSearchProvenance(beat, scene, personName, scenePersons),
+    () =>
+      beatPrimaryFetchInner(
+        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
+        adoptOpts, scenePersons, tag, stockReason
+      )
+  );
+}
+
+async function beatPrimaryFetchInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -2710,22 +2782,26 @@ async function fetchBeatInternetStillsFirst(
   adoptOpts: VisualAdoptOptions,
   tag: string
 ): Promise<string | null> {
-  return fetchBeatScriptImageClip(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    clipFetchDur,
-    dedup,
-    scenePersons,
-    videoTitle,
-    {
-      ...adoptOpts,
-      requireBeatMatch: false,
-      scriptAnchored: false,
-      scriptImageFallback: true,
-    },
-    tag
+  // RONDE 90 (§2): reached directly as well as through beatPrimaryFetch, so it puts the beat's
+  // proof in scope itself rather than relying on who called it.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, "", scenePersons), () =>
+    fetchBeatScriptImageClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      {
+        ...adoptOpts,
+        requireBeatMatch: false,
+        scriptAnchored: false,
+        scriptImageFallback: true,
+      },
+      tag
+    )
   );
 }
 
@@ -3180,6 +3256,24 @@ function buildTopicRealMediaQuery(
  * Runs before licensed stock when minimize-stock is on.
  */
 async function tryBeatTopicRealFootage(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions,
+  videoTitle: string | undefined,
+  personName: string,
+  opts: { includeTopicYoutube?: boolean; fileTag?: string } = {}
+): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, personName), () =>
+    tryBeatTopicRealFootageInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, videoTitle, personName, opts)
+  );
+}
+
+async function tryBeatTopicRealFootageInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -10085,6 +10179,27 @@ async function fetchPersonCelebrityVideoClips(
   usedProviderKeys?: Set<string>,
   sourcingCache?: SourcingCache
 ): Promise<CelebrityClipCandidate[]> {
+  // RONDE 90 (§2): forcePerson is right here and only here — this function exists to fetch
+  // footage OF `personName`, so the person is the caller's own proven subject rather than an
+  // inference about the sentence. Everything else the queries add must still come from the beat.
+  return withSearchProvenance(buildVerifiedQueryContextForBeat(beatText, { forcePerson: personName }), () =>
+    fetchPersonCelebrityVideoClipsInner(personName, duration, workDir, sceneIndex, count, fileTag, beatIndex, beatText, fastMode, usedProviderKeys, sourcingCache)
+  );
+}
+
+async function fetchPersonCelebrityVideoClipsInner(
+  personName: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number,
+  fileTag: string,
+  beatIndex: number,
+  beatText = "",
+  fastMode = false,
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
+): Promise<CelebrityClipCandidate[]> {
   const results: CelebrityClipCandidate[] = [];
   const beatKeywords = buildPersonBeatRelevanceKeywords(personName, beatText);
   const scriptQueries = buildPersonCelebrityVideoQueries(personName, beatText, beatIndex);
@@ -13590,7 +13705,8 @@ function isNonPersonToken(token: string): boolean {
  * capitalised word with no such evidence stays what it was, a candidate the pipeline does not
  * claim to have identified.
  */
-function sentenceSupportsPerson(sentence: string, token: string): boolean {
+function sentenceSupportsPerson(sentence: string, token: string, depth = 0): boolean {
+  if (depth > 4) return false;
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (new RegExp(`\\b${escaped}'s\\b`, "i").test(sentence)) return true;
   const after = new RegExp(`\\b${escaped}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
@@ -13605,9 +13721,19 @@ function sentenceSupportsPerson(sentence: string, token: string): boolean {
    * This is grammar, not a guess: "X and Y <person-verb>" makes X and Y the same kind of thing,
    * and the evidence for one is the evidence for both. Only a coordinating conjunction counts,
    * and the partner must itself be capitalised and pass the same verb test.
+   *
+   * RONDE 90 (§5) — a comma coordinates a list exactly as "and" coordinates a pair.
+   *
+   * Measured: "Churchill, Roosevelt and Stalin met at Yalta" kept Roosevelt and Stalin and lost
+   * Churchill, because the only thing behind Churchill was a comma. §5 is absolute that no name a
+   * beat states may be dropped, and "A, B and C <verb>" is one list — the last member carries the
+   * verb for all of them. The recursion walks forward along the list only, so it terminates; the
+   * depth cap is belt-and-braces against a pathological sentence.
    */
-  const coordinated = new RegExp(`\\b${escaped}\\b\\s*,?\\s*(?:and|&)\\s+(\\p{Lu}[\\p{Ll}'’-]+)`, "u").exec(sentence);
-  if (coordinated?.[1]) return sentenceSupportsPerson(sentence, coordinated[1]);
+  const coordinated = new RegExp(
+    `\\b${escaped}\\b\\s*(?:,\\s*|,?\\s*(?:and|&)\\s+)(\\p{Lu}[\\p{Ll}'’-]+)`, "u"
+  ).exec(sentence);
+  if (coordinated?.[1]) return sentenceSupportsPerson(sentence, coordinated[1], depth + 1);
   const coordinatedBefore = new RegExp(`(\\p{Lu}[\\p{Ll}'’-]+)\\s*,?\\s*(?:and|&)\\s+${escaped}\\b`, "u").exec(sentence);
   if (coordinatedBefore?.[1]) {
     const partner = coordinatedBefore[1]!;
@@ -13820,7 +13946,15 @@ export function buildVerifiedQueryContextForBeat(
   opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
 ): VerifiedQueryContext {
   const text = (beatText ?? "").trim();
-  const ctx = emptyQueryContext();
+  /**
+   * RONDE 90 (§3) — the beat's own words plus the scene that contains them are the evidence.
+   *
+   * The video's TITLE is deliberately not here. §7/§9: a title is a claim about the video, not
+   * about this sentence, and admitting it as evidence is exactly how "Adolf Hitler France" was
+   * measured on a beat that names neither. A term the title supplies and the script does not is
+   * unproven, and stays unproven.
+   */
+  const ctx = emptyQueryContext([text, (opts.sceneText ?? "").trim()].filter(Boolean).join(" "));
   if (!text) return ctx;
 
   /**
@@ -13836,7 +13970,7 @@ export function buildVerifiedQueryContextForBeat(
     return idx < 0 ? Number.MAX_SAFE_INTEGER : idx;
   };
   for (const name of [...named].sort((a, b) => positionOf(a) - positionOf(b))) {
-    ctx.persons.push(provenToken(name, "person", "beat_text"));
+    ctx.persons.push(provenToken(name, "person", "beat_text", text));
   }
   /**
    * RONDE 88 (§7/§11) — a supplied person is proven only when something states the connection.
@@ -13858,7 +13992,7 @@ export function buildVerifiedQueryContextForBeat(
   if (forced && !ctx.persons.some((p) => p.term.toLowerCase() === forced.toLowerCase())) {
     ctx.persons.push(
       checkPersonName(forced, forced, "", { isKnownVerb: isKnownPersonActionVerb }).ok
-        ? provenToken(forced, "person", "proven_entity")
+        ? provenToken(forced, "person", "proven_entity", forced)
         : { term: forced, type: "person", source: "title_inference", verified: false }
     );
   }
@@ -13869,53 +14003,40 @@ export function buildVerifiedQueryContextForBeat(
     const inScene = Boolean(opts.sceneText) && checkPersonName(name, opts.sceneText!).ok;
     ctx.persons.push(
       inScene
-        ? provenToken(name, "person", "scene_text")
+        ? provenToken(name, "person", "scene_text", opts.sceneText ?? "")
         : { term: name, type: "person", source: "title_inference", verified: false }
     );
   }
 
   const place = extractVisualPlacePhrase(text);
-  if (place) ctx.places.push(provenToken(place, "place", "beat_text"));
+  if (place) ctx.places.push(provenToken(place, "place", "beat_text", text));
   const action = extractActionCue(text);
-  if (action) ctx.actions.push(provenToken(action, "action", "beat_text"));
+  if (action) ctx.actions.push(provenToken(action, "action", "beat_text", text));
   const typed = buildTypedRetrievalContext(text, {
     persons: ctx.persons.filter((p) => p.verified).map((p) => p.term),
     place,
     action,
   });
-  if (typed.event) ctx.events.push(provenToken(typed.event, "event", "beat_text"));
-  if (typed.object) ctx.objects.push(provenToken(typed.object, "object", "beat_text"));
-  if (typed.year) ctx.years.push(provenToken(typed.year, "year", "beat_text"));
-  if (typed.time && typed.time !== typed.year) ctx.time.push(provenToken(typed.time, "time", "beat_text"));
+  if (typed.event) ctx.events.push(provenToken(typed.event, "event", "beat_text", text));
+  if (typed.object) ctx.objects.push(provenToken(typed.object, "object", "beat_text", text));
+  if (typed.year) ctx.years.push(provenToken(typed.year, "year", "beat_text", text));
+  if (typed.time && typed.time !== typed.year) ctx.time.push(provenToken(typed.time, "time", "beat_text", text));
   return ctx;
 }
 
-/**
- * RONDE 88 (§16) — the last gate before a provider is asked anything.
+/*
+ * RONDE 91 (§1) — guardProviderQuery was removed here.
  *
- * Returns the query when it is safe to send and null when it is not, logging the refusal with the
- * term and the route that produced it. Called from cachedProviderSearch, which every provider
- * search in this file funnels through.
+ * RONDE 88 built it as "the last gate before a provider is asked anything". RONDE 89 then built
+ * the real gate (cachedProviderSearch / admitProviderQuery, both now searchGateDecision) and
+ * every provider was routed through that instead — but the old function was left behind, still
+ * exported, still holding a second, weaker copy of the decision: it validated, and it did not
+ * know about tickets, strict mode, the audit counters or the ambient beat context.
+ *
+ * A repo-wide scan found zero callers, static or dynamic. A second gate that nothing calls is
+ * not harmless: it is the obvious thing for a future call site to reach for, and it would have
+ * admitted queries the real gate refuses. ronde91SearchCleanup asserts it stays gone.
  */
-export function guardProviderQuery(
-  query: string,
-  provider: string,
-  ctx?: VerifiedQueryContext,
-  meta: { renderId?: string; sceneIndex?: number; beatIndex?: number; route?: string } = {}
-): string | null {
-  const verdict = validateSearchQuery(query, ctx);
-  if (verdict.ok) return query;
-  console.warn(
-    formatSearchQueryRejected({
-      ...meta,
-      query,
-      provider,
-      reason: verdict.reason ?? "UNVERIFIED_TERM",
-      offendingTerm: verdict.offendingTerm,
-    })
-  );
-  return null;
-}
 
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
 export function extractPersonNamesFromText(text: string): string[] {
@@ -15790,35 +15911,16 @@ export function admitProviderQuery(
   query: string | VerifiedSearchQuery,
   route = "legacy_fetcher"
 ): string | null {
-  const ticket: VerifiedSearchQuery = isVerifiedSearchQuery(query)
-    ? query
-    : legacyQueryTicket(String(query ?? ""), route);
-  searchGateAudit.record("queriesBuilt", provider, ticket.route);
-  const verdict = validateSearchQuery(ticket.query);
-  if (!verdict.ok) {
-    searchGateAudit.record("queriesRejected", provider, ticket.route, verdict.reason);
-    searchGateAudit.record("queriesBlocked", provider, ticket.route);
-    console.warn(
-      formatSearchQueryRejected({
-        query: ticket.query, provider, route: ticket.route,
-        reason: verdict.reason ?? "UNVERIFIED_TERM",
-        offendingTerm: verdict.offendingTerm,
-      })
-    );
-    return null;
-  }
-  if (!ticket.verified) {
-    searchGateAudit.record("bypassAttempts", provider, ticket.route, ticket.rejectReason);
-    if (searchGateStrict()) {
-      searchGateAudit.record("queriesBlocked", provider, ticket.route, ticket.rejectReason);
-      return null;
-    }
-  } else {
-    searchGateAudit.record("queriesValidated", provider, ticket.route);
-  }
-  searchGateAudit.record("queriesSent", provider, ticket.route);
-  return ticket.query;
+  const decision = searchGateDecision(provider, query, route);
+  return decision.admitted ? decision.text : null;
 }
+
+/*
+ * RONDE 91 (§4) — searchQueryAuditLogEnabled and searchGateDecision moved to searchQueryContract,
+ * so that scenePool and wikimediaGeoSearch reach the SAME decision rather than a second copy.
+ * admitProviderQuery and cachedProviderSearch below still call it; nothing about the decision
+ * itself changed.
+ */
 
 export async function cachedProviderSearch<T>(
   cache: SourcingCache | undefined,
@@ -15836,57 +15938,24 @@ export async function cachedProviderSearch<T>(
   route = "provider_search"
 ): Promise<T> {
   /**
-   * RONDE 88/89 — THE provider gate.
+   * RONDE 88/89/90 — THE provider gate.
    *
    * Every provider search in this file funnels through here, which makes it the one place a query
    * can be refused for all of them at once. RONDE 89's audit found eight fetchers that reached the
    * network without passing this point (b-roll, Wikimedia images v0 and v1, YouTube thumbnails,
    * SerpAPI, Openverse, Unsplash, the RapidAPI YouTube search); they are routed through it now.
    *
-   * Three outcomes, and only three:
-   *   · a VerifiedSearchQuery that the contract verified   -> sent
-   *   · anything the validator refuses                     -> blocked, logged, NOT sent
-   *   · a bare string or an unverified ticket              -> counted as a bypass attempt, and
-   *     blocked outright when SEARCH_GATE_STRICT=true
+   * RONDE 90 moved the decision itself into searchGateDecision, shared verbatim with
+   * admitProviderQuery, so the two entry points cannot enforce different contracts. Three
+   * outcomes, and only three:
+   *   · verified, by the caller's own ticket or against the ambient beat context   -> sent
+   *   · anything the validator refuses                                             -> not sent
+   *   · nothing backing it at all                                                  -> not sent
+   *     in strict mode (the default), counted as a bypass attempt either way
    */
-  const ticket: VerifiedSearchQuery = isVerifiedSearchQuery(query)
-    ? query
-    : legacyQueryTicket(String(query ?? ""), route);
-  const text = ticket.query;
-  searchGateAudit.record("queriesBuilt", provider, ticket.route);
-
-  const verdict = validateSearchQuery(text);
-  if (!verdict.ok) {
-    searchGateAudit.record("queriesRejected", provider, ticket.route, verdict.reason);
-    searchGateAudit.record("queriesBlocked", provider, ticket.route);
-    console.warn(
-      formatSearchQueryRejected({
-        query: text, provider, route: ticket.route,
-        reason: verdict.reason ?? "UNVERIFIED_TERM",
-        offendingTerm: verdict.offendingTerm,
-      })
-    );
-    return [] as unknown as T;
-  }
-
-  if (!ticket.verified) {
-    searchGateAudit.record("bypassAttempts", provider, ticket.route, ticket.rejectReason);
-    if (searchGateStrict()) {
-      searchGateAudit.record("queriesBlocked", provider, ticket.route, ticket.rejectReason);
-      console.warn(
-        formatSearchQueryRejected({
-          query: text, provider, route: ticket.route,
-          reason: "UNVERIFIED_TERM",
-          offendingTerm: ticket.rejectReason ?? "NO_SEARCH_CONTEXT",
-        })
-      );
-      return [] as unknown as T;
-    }
-  } else {
-    searchGateAudit.record("queriesValidated", provider, ticket.route);
-  }
-
-  searchGateAudit.record("queriesSent", provider, ticket.route);
+  const decision = searchGateDecision(provider, query, route);
+  const text = decision.text;
+  if (!decision.admitted) return [] as unknown as T;
   if (!cache) return search();
   const key = providerQueryCacheKey(provider, text);
   const m = providerMetrics(cache, provider);
@@ -19826,12 +19895,15 @@ async function fetchUniqueStockForBeat(
       ? 24_000
       : 32_000;
   try {
-    return await withTimeout(
-      fetchUniqueStockForBeatInner(
-        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
-      ),
-      wallMs,
-      `unique stock s${sceneIndex} b${beat.index}`
+    // RONDE 90 (§2): the beat's proof, in scope for every stock provider this path asks.
+    return await withSearchProvenance(beatSearchProvenance(beat, scene, personName), () =>
+      withTimeout(
+        fetchUniqueStockForBeatInner(
+          beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
+        ),
+        wallMs,
+        `unique stock s${sceneIndex} b${beat.index}`
+      )
     );
   } catch {
     return null;
@@ -20166,19 +20238,26 @@ async function recoverSceneClipsIfEmptyInner(
           searchQuery: fallbackTexts[fi]!,
           holdSec: recoverHoldSec,
         };
-        const fbClip = await fetchBeatArchivalThenPexels(
-          fb,
-          scene,
-          workDir,
-          scene.index,
-          recoverHoldSec,
-          dedup,
-          personName,
-          topicContext,
-          recoverAdopt,
-          scenePersons,
-          `recover_fb${fi}`,
-          "recover-fallback"
+        // RONDE 90 (§2): the only call to this function outside beatPrimaryFetch's scope. The
+        // fallback beat's OWN text is the proof here — `fb.text` is a real script sentence, not a
+        // synthesised one, so the recovery path is held to exactly the same standard as the
+        // primary path rather than being quietly exempt because it is a recovery.
+        const fbClip = await withSearchProvenance(
+          beatSearchProvenance(fb, scene, personName, scenePersons),
+          () => fetchBeatArchivalThenPexels(
+            fb,
+            scene,
+            workDir,
+            scene.index,
+            recoverHoldSec,
+            dedup,
+            personName,
+            topicContext,
+            recoverAdopt,
+            scenePersons,
+            `recover_fb${fi}`,
+            "recover-fallback"
+          )
         );
         if (!fbClip) continue;
         const key = clipContentKey(fbClip);
@@ -21084,6 +21163,24 @@ export async function fetchHistoricalBeatVideo(
   tag: string,
   opts: { skipYoutube?: boolean } = {}
 ): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    fetchHistoricalBeatVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, adoptOpts, tag, opts)
+  );
+}
+
+async function fetchHistoricalBeatVideoInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  intent: ReturnType<typeof buildMediaSearchIntent>,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  opts: { skipYoutube?: boolean } = {}
+): Promise<string | null> {
   // F3-49: skip the whole cascade outright if it already ran (and missed) for this exact beat
   // earlier this render — see historicalCascadeAttemptedBeats' doc comment on VisualDedupState.
   const cascadeKey = `s${sceneIndex}b${beat.index}`;
@@ -21304,6 +21401,29 @@ async function fetchHistoricalBeatRescue(
  * Falls through to the legacy waterfall when nothing passes adoption gates.
  */
 async function researchBeatClipUnified(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  beatQueries: string[],
+  scenePersons: string[],
+  primary: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  muskTopic: boolean,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number
+): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, primary, scenePersons), () =>
+    researchBeatClipUnifiedInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, beatQueries, scenePersons, primary, videoTitle, adoptOpts, tag, muskTopic, pexFetch, candidateOffset)
+  );
+}
+
+async function researchBeatClipUnifiedInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -22172,6 +22292,23 @@ async function fetchBeatClipFromScript(
 }
 
 async function fetchBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  spaceTopic: boolean,
+  personName: string,
+  videoTitle?: string
+): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, personName), () =>
+    fetchBeatClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, spaceTopic, personName, videoTitle)
+  );
+}
+
+async function fetchBeatClipInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -25193,6 +25330,22 @@ async function adoptInternetArchiveBeatClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    adoptInternetArchiveBeatClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)
+  );
+}
+
+async function adoptInternetArchiveBeatClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Internet Archive", scene.index, beat.index)) return false;
   if (!isGeoDocumentaryContext(beat.text, videoTitle)) return false;
@@ -25377,6 +25530,22 @@ async function adoptKlingBeatClip(
 
 /** Europeana — off unless ENABLE_EUROPEANA=true + EUROPEANA_API_KEY + EU title. */
 async function adoptEuropeanaBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    adoptEuropeanaBeatClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)
+  );
+}
+
+async function adoptEuropeanaBeatClipInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
