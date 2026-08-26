@@ -165,6 +165,15 @@ export type VisualLineageRecord = {
   mediaType: VisualLineageMediaType;
   /** The query that produced this candidate. */
   query?: string;
+  /**
+   * RONDE 95 (§2) — the gate route that ran that query.
+   *
+   * `query` says WHAT was asked; this says WHICH call site asked it, in the same vocabulary the
+   * [SearchGate] report uses (fetchWikimediaVideos, scenePool:searchPexelsCandidates, …). Without
+   * it a clip can be traced back to its words but not to the code that chose them, which is the
+   * half of the question that matters when a provider starts returning the wrong thing.
+   */
+  searchRoute?: string;
   /** The retrieval/ranking score it won on. */
   candidateScore?: number;
   /** Vision-gate verdict, 0–10. */
@@ -208,6 +217,8 @@ export type CreateLineageInput = {
   sourceUrl?: string;
   originalUrl?: string;
   query?: string;
+  /** RONDE 95 (§2): the gate route that ran the query — see VisualLineageRecord.searchRoute. */
+  searchRoute?: string;
   candidateScore?: number;
   visionScore?: number;
   selectedScore?: number;
@@ -377,6 +388,7 @@ export class VisualSourceLedger {
       currentFilename: basename,
       mediaType: input.mediaType ?? parent?.mediaType ?? "unknown",
       query: input.query ?? parent?.query,
+      searchRoute: input.searchRoute ?? parent?.searchRoute,
       candidateScore: input.candidateScore,
       visionScore: input.visionScore,
       selectedScore: input.selectedScore,
@@ -569,6 +581,18 @@ export class VisualSourceLedger {
     };
     this.events.push(event);
     this.emit?.(formatLineageEvent(event, this.renderId));
+    /**
+     * RONDE 95 (§3) — one line per milestone, always on.
+     *
+     * formatLineageEvent above prints EVERY event (trims, pads, overlays) and is behind a flag
+     * because a render produces thousands. This prints only the transitions the lifecycle question
+     * is about, so the trail from FOUND to RENDERED is readable in a normal production log without
+     * turning anything on. It is emitted from inside recordEvent deliberately: a status that is
+     * logged anywhere else could be logged without the event having happened, which is exactly the
+     * "fake success" §1 forbids.
+     */
+    const trace = ASSET_TRACE_STATUS[stage];
+    if (trace && event.status === "OK") console.log(formatAssetTrace(record, trace, event));
     if (event.status === "OK") {
       if (stage === "SELECTED") record.selectedAt ??= event.timestamp;
       else if (stage === "ADOPTED") record.adoptedAt ??= event.timestamp;
@@ -597,6 +621,46 @@ export class VisualSourceLedger {
    * to see. Inventing a record with a guessed provider so the count looks complete is the exact
    * behaviour this round removes.
    */
+  /**
+   * RONDE 95 (§4/§8) — asset A was chosen, asset B was delivered, and now that is on the record.
+   *
+   * REPLACED has been a declared lineage stage since RONDE 86 and was counted in every summary,
+   * but nothing in the pipeline ever recorded one: a scan found three references, all of them the
+   * declaration itself. Every fallback, rescue and heal swap therefore happened invisibly — the
+   * ledger showed asset A selected and asset B in the final video with nothing joining them, which
+   * is precisely the silent substitution §8 exists to catch.
+   *
+   * The event goes on the ORIGINAL, because the original is the thing that stopped being true. The
+   * replacement is named in the event so the pair can be read in either direction, and the reason
+   * is required rather than optional: "replaced" without a why is a fact nobody can act on.
+   *
+   * Returns false when the ledger does not know the original. That is a finding — something was
+   * replaced that was never recorded as chosen — and inventing a record to make the pair look
+   * complete would defeat the point.
+   */
+  recordReplacement(
+    originalPath: string,
+    replacementPath: string | null,
+    reason: string
+  ): boolean {
+    const original = this.resolve(originalPath);
+    if (!original) return false;
+    const replacement = replacementPath ? this.resolve(replacementPath) : null;
+    this.recordEvent(original.lineageId, "REPLACED", {
+      status: "REPLACED",
+      reason: `${reason} -> ${replacement?.lineageId ?? path.basename(replacementPath ?? "none")}`,
+      currentPath: originalPath,
+    });
+    console.log(
+      `[AssetTrace] assetId=${original.lineageId} status=REPLACED ` +
+        `provider=${original.provider ?? UNVERIFIED_PROVIDER} ` +
+        `scene=${original.sceneIndex} beat=${original.beatIndex} ` +
+        `originalAssetId=${original.lineageId} ` +
+        `replacementAssetId=${replacement?.lineageId ?? NOT_VERIFIED} reason=${reason}`
+    );
+    return true;
+  }
+
   recordRejection(clipPath: string, gate: string, contentKey?: string): boolean {
     const record = this.resolve(clipPath, contentKey);
     if (!record) return false;
@@ -944,6 +1008,127 @@ export function formatLineageEvent(event: VisualLineageEvent, renderId: string):
     `timestamp=${event.timestamp}`,
   ].filter(Boolean);
   return `[VisualLineageEvent] ${parts.join(" ")}`;
+}
+
+/**
+ * RONDE 95 (§3/§7) — the lifecycle statuses, and the lineage stages that earn them.
+ *
+ * Only these eight stages produce an [AssetTrace] line. The others (RANKED, TRIMMED, PADDED,
+ * OVERLAYED, TRANSFORMED, DOWNLOAD_STARTED, DOWNLOAD_FAILED, REMOVED) are real events and stay in
+ * the ledger, but they are steps WITHIN a status rather than a change of it — a clip that gets
+ * padded has not become more or less rendered.
+ *
+ * The mapping is one-way and total: a status can only appear because its stage was recorded, and
+ * each stage was recorded because the work happened. §7's chain — FOUND ≠ VALIDATED ≠ SELECTED ≠
+ * DOWNLOADED ≠ ASSIGNED ≠ RENDERED — is enforced by there being no other way to produce them.
+ */
+export const ASSET_TRACE_STATUS: Partial<Record<LineageStage, string>> = {
+  FOUND: "FOUND",
+  ELIGIBLE: "VALIDATED",
+  SELECTED: "SELECTED",
+  DOWNLOAD_SUCCEEDED: "DOWNLOADED",
+  ADOPTED: "ASSIGNED",
+  COMPOSED: "RENDER_INPUT",
+  FINAL_VIDEO: "RENDERED",
+};
+
+/** One line per lifecycle transition, carrying the identity that makes it traceable (§2). */
+export function formatAssetTrace(
+  record: VisualLineageRecord,
+  status: string,
+  event: VisualLineageEvent
+): string {
+  const parts = [
+    `assetId=${record.lineageId}`,
+    `status=${status}`,
+    `provider=${record.provider ?? UNVERIFIED_PROVIDER}`,
+    record.providerAssetId ? `providerAssetId=${record.providerAssetId}` : null,
+    `scene=${record.sceneIndex}`,
+    `beat=${record.beatIndex}`,
+    record.candidateId ? `candidateId=${record.candidateId}` : null,
+    record.query ? `query="${record.query}"` : null,
+    record.searchRoute ? `searchRoute=${record.searchRoute}` : null,
+    record.sourceUrl ? `sourceUrl=${record.sourceUrl}` : null,
+    `route=${record.route}`,
+    event.reason ? `reason=${event.reason}` : null,
+    event.gate ? `gate=${event.gate}` : null,
+  ].filter(Boolean);
+  return `[AssetTrace] ${parts.join(" ")}`;
+}
+
+/**
+ * RONDE 95 (§5) — the manifest: every asset the delivered file actually contains.
+ *
+ * Built from the FINAL_VIDEO events, which markFinalVideo sets only from the clips whose scene
+ * video was in the concat that produced the validated output. Nothing here is inferred from having
+ * been selected, adopted or composed — those are earlier and weaker facts, and three of them can
+ * be true of a clip that a heal pass replaced before the concat ran.
+ *
+ * Returns [] when the render never reached the point where FINAL_VIDEO is knowable. An empty
+ * manifest and a manifest of zero assets are different claims; the caller prints NOT_VERIFIED.
+ */
+export function formatRenderManifest(
+  records: readonly VisualLineageRecord[],
+  finalVideoVerified: boolean
+): string[] {
+  if (!finalVideoVerified) return [];
+  return records
+    .filter((r) => r.finalVideoAt != null)
+    .sort((a, b) => a.sceneIndex - b.sceneIndex || a.beatIndex - b.beatIndex)
+    .map((r) =>
+      [
+        `[RenderAsset] assetId=${r.lineageId}`,
+        `provider=${r.provider ?? UNVERIFIED_PROVIDER}`,
+        r.providerAssetId ? `providerAssetId=${r.providerAssetId}` : null,
+        `scene=${r.sceneIndex}`,
+        `beat=${r.beatIndex}`,
+        r.query ? `query="${r.query}"` : null,
+        r.searchRoute ? `searchRoute=${r.searchRoute}` : null,
+        r.sourceUrl ? `sourceUrl=${r.sourceUrl}` : null,
+        `file=${r.currentFilename}`,
+        "rendered=true",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+}
+
+/**
+ * RONDE 95 (§4) — assets the pipeline chose and the video does not contain.
+ *
+ * A clip that reached SELECTED or ADOPTED and has no FINAL_VIDEO event did not make it into the
+ * delivered file, and the interesting question is always which of the two it was:
+ *
+ *   · REPLACED  — a fallback or heal pass swapped it, and recordReplacement says for what and why
+ *   · dropped   — nothing says. That is the case worth finding: an asset that was chosen, possibly
+ *                 downloaded, and then quietly left out with no event to explain it.
+ *
+ * Reported, never thrown. This runs after the video exists.
+ */
+export function formatSelectedButNotRendered(
+  records: readonly VisualLineageRecord[],
+  events: readonly VisualLineageEvent[],
+  finalVideoVerified: boolean
+): string[] {
+  if (!finalVideoVerified) return [];
+  const replaced = new Map<string, string>();
+  for (const e of events) {
+    if (e.stage === "REPLACED") replaced.set(e.lineageId, e.reason ?? "no reason recorded");
+  }
+  const out: string[] = [];
+  for (const r of records) {
+    if (r.finalVideoAt != null) continue;
+    if (r.selectedAt == null && r.adoptedAt == null) continue;
+    const why = replaced.get(r.lineageId);
+    out.push(
+      `[AssetNotRendered] assetId=${r.lineageId} provider=${r.provider ?? UNVERIFIED_PROVIDER} ` +
+        `scene=${r.sceneIndex} beat=${r.beatIndex} ` +
+        `reachedSelected=${r.selectedAt != null} reachedAssigned=${r.adoptedAt != null} ` +
+        `outcome=${why ? "REPLACED" : "DROPPED_WITHOUT_EVENT"}` +
+        (why ? ` reason=${why}` : "")
+    );
+  }
+  return out;
 }
 
 /** The per-provider summary block, §F. */

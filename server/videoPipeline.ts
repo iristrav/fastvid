@@ -290,6 +290,8 @@ import {
   VisualSourceLedger,
   formatAssetUsageSummary,
   formatAuditReport,
+  formatRenderManifest,
+  formatSelectedButNotRendered,
   formatFunnelReport,
   formatLineageEvent,
   formatLineageLine,
@@ -34505,6 +34507,25 @@ async function _runVideoPipelineInner(
       for (const line of formatAssetUsageSummary(summary, ledger.finalVideoWasVerified)) {
         if (line.startsWith("[AssetUsageInconsistency]")) console.warn(line);
         else console.log(line);
+      }
+      /**
+       * RONDE 95 (§5) — the manifest, and its counterpart.
+       *
+       * [RenderAsset] lists what the delivered file actually contains, one line per asset, built
+       * from the FINAL_VIDEO events markFinalVideo set out of finalConcatInputs.
+       * [AssetNotRendered] lists what the pipeline chose and the file does NOT contain, saying for
+       * each whether a recorded replacement explains it or nothing does. The second list is the
+       * one worth reading: an asset that was selected, downloaded, and then dropped with no event
+       * is a hole in the pipeline, not in the report.
+       */
+      const allRecords = ledger.allRecords();
+      for (const line of formatRenderManifest(allRecords, ledger.finalVideoWasVerified)) {
+        console.log(line);
+      }
+      for (const line of formatSelectedButNotRendered(
+        allRecords, ledger.allEvents(), ledger.finalVideoWasVerified
+      )) {
+        console.warn(line);
       }
       // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
       // and how many calls arrived without a context and were counted as bypass attempts.
