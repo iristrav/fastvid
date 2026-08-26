@@ -2923,7 +2923,8 @@ async function fetchBeatAuthenticStills(
         workDir,
         sceneIndex,
         1,
-        `${tag}_still`
+        `${tag}_still`,
+        { dedup, beatIndex: beat.index }
       );
       addToPool(wikiPaths, q);
       if (wikiPaths.some(strongEnoughToStopPooling)) break;
@@ -3371,7 +3372,7 @@ async function tryBeatTopicRealFootageInner(
   }
 
   if (!dedup.personTopicLock) {
-    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
+    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`, { dedup, beatIndex: beat.index });
     clip = await adoptClip(
       wikiImg,
       dedup,
@@ -3461,7 +3462,8 @@ async function tryBeatTopicRealFootageInner(
       workDir,
       sceneIndex,
       1,
-      `${tag}_ytt`
+      `${tag}_ytt`,
+      { dedup, beatIndex: beat.index }
     );
     clip = await adoptClip(
       ytThumb,
@@ -6076,7 +6078,36 @@ export async function fetchPexelsClips(
         if (!videoFile?.link) return null;
 
         const rawPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}.mp4`),
+          "pexels",
+          String(video.id),
+          sourcingCache,
+          {
+            sceneIndex,
+            // StockBeatCtx carries the beat's TEXT, not its index; the record's beatText is
+            // where that belongs, and beatIndex stays unset rather than guessed.
+            beatText: stockBeatCtx?.beatText,
+            sourceUrl: videoFile.link,
+            mediaType: "video",
+            query: currentQuery,
+            searchRoute: "fetchPexelsClips",
+          }
+        );
 
         // Check media cache before downloading from Pexels CDN
         const fromMediaCache = await tryRestoreFromMediaCache(videoFile.link, rawPath);
@@ -6191,6 +6222,8 @@ export async function fetchPexelsClips(
         if (trimmed) {
           excludeVideoIds?.add(video.id);
           scheduleStockClipEmbedding(outPath);
+          // RONDE 96: see above — the trimmed file is on disk, so the download succeeded.
+          recordProviderDownloadOutcome(sourcingCache, outPath, true);
           return outPath;
         }
         return null;
@@ -6218,7 +6251,9 @@ async function fetchBrollClips(
   clipDuration: number,
   workDir: string,
   sceneIndex: number,
-  excludeVideoIds?: Set<number>
+  excludeVideoIds?: Set<number>,
+  /** RONDE 96: b-roll is Pexels too, and its clips belong in the same ledger as every other. */
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
@@ -6280,7 +6315,19 @@ async function fetchBrollClips(
           || video.video_files.filter(f => f.width <= 1920).sort((a, b) => b.width - a.width)[0];
         if (!videoFile?.link) continue;
         const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`),
+          "pexels",
+          String(video.id),
+          sourcingCache,
+          {
+            sceneIndex,
+            sourceUrl: videoFile.link,
+            mediaType: "video",
+            query,
+            searchRoute: "fetchBrollClips",
+          }
+        );
         try {
           // F3-05: streams straight to rawPath instead of buffering the whole clip in memory.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -6443,7 +6490,22 @@ export async function fetchPixabayClips(
         if (!videoFile?.url) continue;
 
         const rawPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}.mp4`);
+        // RONDE 96: Pixabay was not on the round's list of five, but the re-scan found it writing
+        // outside the ledger just as they were — same gap, same fix, same entry point.
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}.mp4`),
+          "pixabay",
+          String(video.id),
+          sourcingCache,
+          {
+            sceneIndex,
+            beatText: stockBeatCtx?.beatText,
+            sourceUrl: videoFile.url,
+            mediaType: "video",
+            query: currentQuery,
+            searchRoute: "fetchPixabayClips",
+          }
+        );
 
         try {
           // F3-05: streams straight to rawPath instead of buffering the whole clip in memory.
@@ -6743,6 +6805,8 @@ export async function fetchWikimediaImages(
      * no candidate is skipped and no scan window is widened.
      */
     excludeUrls?: Set<string>;
+    /** RONDE 96: so Commons images open a lineage record like every other provider's assets. */
+    dedup?: VisualDedupState;
   } = {}
 ): Promise<string[]> {
   const results: string[] = [];
@@ -6767,7 +6831,23 @@ export async function fetchWikimediaImages(
         if (!c.url || !c.contentType.startsWith("image/")) continue;
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`);
+        // RONDE 96: fetchWikimediaVideos has opened a record since RONDE 88; this sibling, which
+        // serves Commons IMAGES, never did. Same provider, same ledger. The file URL is Commons'
+        // own stable identity for the file — see the excludeUrls note on this function's opts.
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`),
+          "wikimedia",
+          c.url,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: c.url,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchWikimediaImages",
+          }
+        );
         const fromCache = await tryRestoreFromMediaCache(c.url, imgPath);
         if (!fromCache) {
           const dl = await downloadToFileStreaming(
@@ -6894,7 +6974,20 @@ export async function fetchWikimediaImages(
         // Download the image (check media cache first)
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`),
+          "wikimedia",
+          imageInfo.url,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: imageInfo.url,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchWikimediaImages",
+          }
+        );
         const fromWikiCache = await tryRestoreFromMediaCache(imageInfo.url, imgPath);
         if (!fromWikiCache) {
           const { response: imgResp, bytesWritten } = await downloadToFileStreaming(
@@ -7176,7 +7269,35 @@ async function fetchOpenverseImages(
         const assetTag =
           ((images[i]?.id?.trim() || imgUrl).replace(/[^a-zA-Z0-9]/g, "").slice(0, 24)) || String(i);
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.mp4`),
+          "openverse",
+          images[i]?.id?.trim() || imgUrl,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: imgUrl,
+            title: images[i]?.title,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchOpenverseImages",
+          }
+        );
 
         // Download image
         const imgResp = await withTimeout(
@@ -7203,6 +7324,10 @@ async function fetchOpenverseImages(
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
           opts.dedup?.usedImageUrls.add(urlKey);
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           console.log(`[Pipeline] Scene ${sceneIndex}: Openverse image added: ${images[i].title?.slice(0, 60) || imgUrl.slice(0, 60)}`);
         }
@@ -7270,7 +7395,34 @@ async function fetchUnsplashImages(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.mp4`),
+          "unsplash",
+          images[i].id?.trim() || urlKey,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            sourceUrl: imgUrl,
+            title: images[i].description ?? images[i].alt_description,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchUnsplashImages",
+          }
+        );
 
         const imgResp = await withTimeout(
           fetch(imgUrl),
@@ -7298,6 +7450,10 @@ async function fetchUnsplashImages(
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
           opts.dedup?.usedImageUrls.add(urlKey);
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           const label = images[i].alt_description || images[i].description || query;
           console.log(`[Pipeline] Scene ${sceneIndex}: Unsplash image added: ${label.slice(0, 60)}`);
@@ -7322,7 +7478,16 @@ async function fetchYouTubeThumbnails(
   workDir: string,
   sceneIndex: number,
   count: number = 3,
-  fileTag = ""
+  fileTag = "",
+  /**
+   * RONDE 96 — the only one of the five that had no way to reach the ledger.
+   *
+   * The other four already carried a SourcingCache, directly or through opts.dedup; this one took
+   * none, so its thumbnails could not have opened a lineage even if the code had wanted to.
+   * Optional, so every existing caller keeps working and the ones that have a cache start
+   * recording — a caller without one gets the same plain paths it got before.
+   */
+  opts: { dedup?: VisualDedupState; beatIndex?: number } = {}
 ): Promise<string[]> {
   // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
   // never repaired or substituted — the caller simply gets nothing.
@@ -7366,7 +7531,27 @@ async function fetchYouTubeThumbnails(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.mp4`);
+        /**
+         * RONDE 96 — a thumbnail's provider id is the video it belongs to.
+         *
+         * item.id.videoId is YouTube's own identifier, straight from the search response, so the
+         * clip can be traced back to a real video rather than to `yt_3.mp4`.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.mp4`),
+          "youtube",
+          item.id?.videoId,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: thumbUrl,
+            title: item.snippet?.title,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchYouTubeThumbnails",
+          }
+        );
 
         // Download thumbnail
         const imgResp = await withTimeout(
@@ -7406,6 +7591,10 @@ async function fetchYouTubeThumbnails(
         try { fs.unlinkSync(imgPath); } catch { /**/ }
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           console.log(`[Pipeline] Scene ${sceneIndex}: YouTube thumbnail added: "${item.snippet.title?.slice(0, 60)}"`);
         }
@@ -7497,7 +7686,43 @@ async function fetchSerpAPIImages(
       try {
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        /**
+         * RONDE 96 (§4) — SerpAPI is the one provider here with no asset id to keep.
+         *
+         * Its images_results rows carry `original`, `thumbnail` and `title`, and nothing else: no
+         * id, no stable key. So the identity used is the normalised source URL, which is the
+         * asset's own canonical location rather than something invented — not a hash, not the
+         * filename, not the loop index. The URL is what SerpAPI itself identifies the image by.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`),
+          "serpapi",
+          urlKey,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: imgUrl,
+            title: images[i].title,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchSerpAPIImages",
+          }
+        );
 
         const dl = await downloadToFileStreaming(
           imgUrl,
@@ -7543,6 +7768,10 @@ async function fetchSerpAPIImages(
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
           opts.dedup?.usedImageUrls.add(urlKey);
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           downloaded++;
           // Problem 1/2 (production render finding): SerpAPI already returns the source page's
@@ -12877,7 +13106,7 @@ async function fetchBeatScriptImageClip(
       if (process.env.YOUTUBE_API_KEY) {
         const thumbQ = queries[0] ?? beat.searchQuery;
         const ytPaths = await fetchYouTubeThumbnails(
-          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_yt`
+          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_yt`, { dedup, beatIndex: beat.index }
         );
         const clip = await adoptClip(
           ytPaths, dedup, sceneIndex, beat.index, beat.text, workDir, thumbQ, looseOpts
@@ -13008,7 +13237,7 @@ async function fetchBeatScriptImageForced(
       if (process.env.YOUTUBE_API_KEY) {
         const thumbQ = queries[0] ?? beat.searchQuery;
         const ytPaths = await fetchYouTubeThumbnails(
-          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_yt`
+          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_yt`, { dedup, beatIndex: beat.index }
         );
         const clip = await takeFirstValid(ytPaths);
         if (clip) {
@@ -15624,6 +15853,8 @@ export function tagPathWithProviderAsset(
     title?: string;
     mediaType?: "video" | "image" | "graphic" | "unknown";
     query?: string;
+    /** RONDE 96: the narration this asset is meant to illustrate, when the caller knows it. */
+    beatText?: string;
     /**
      * RONDE 95 (§2) — the gate route that produced this candidate.
      *
@@ -15646,6 +15877,7 @@ export function tagPathWithProviderAsset(
         videoId: cache.lineage.videoId,
         sceneIndex: meta?.sceneIndex ?? -1,
         beatIndex: meta?.beatIndex ?? -1,
+        beatText: meta?.beatText,
         candidateId: contentKey,
         contentKey,
         provider,
@@ -20047,7 +20279,8 @@ async function fetchUniqueStockForBeatInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      dedup.usedPexelsIds
+      dedup.usedPexelsIds,
+      dedup.sourcingCache
     );
     clip = await adoptClip(
       brollPaths,
@@ -21796,7 +22029,8 @@ async function researchBeatClipUnifiedInner(
           workDir,
           sceneIndex,
           1,
-          `${tag}_research`
+          `${tag}_research`,
+          { dedup, beatIndex: beat.index }
         );
         return toCandidates(imgs, primaryQ, "wikimedia_image", false);
       },
@@ -21878,7 +22112,8 @@ async function researchBeatClipUnifiedInner(
           workDir,
           sceneIndex,
           1,
-          `${tag}_research`
+          `${tag}_research`,
+          { dedup, beatIndex: beat.index }
         );
         return toCandidates(paths, thumbQ, "youtube_cc", false);
       },
@@ -22199,7 +22434,8 @@ async function fetchBeatClipFromScript(
         clipFetchDur,
         workDir,
         sceneIndex,
-        dedup.usedPexelsIds
+        dedup.usedPexelsIds,
+        dedup.sourcingCache
       );
       clip = await adoptClip(
         brollPaths,
@@ -22302,7 +22538,8 @@ async function fetchBeatClipFromScript(
       clipFetchDur,
       workDir,
       sceneIndex,
-      dedup.usedPexelsIds
+      dedup.usedPexelsIds,
+      dedup.sourcingCache
     );
     clip = await adoptClip(
       brollPaths,
@@ -26243,7 +26480,7 @@ async function rescueBeatVisualWhenEmpty(
     wikiQueries.push(...buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle));
     wikiQueries.push(beat.text.slice(0, 80));
     for (const q of Array.from(new Set(wikiQueries))) {
-      const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { beatIndex: beat.index });
+      const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { dedup, beatIndex: beat.index });
       if (wikiClips.length > 0) {
         const clip = wikiClips[0]!;
         if (clip && (await pushClip(clip, holdSec))) {
