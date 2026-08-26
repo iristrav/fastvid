@@ -35,7 +35,9 @@ const FORMERLY_BYPASSING = [
   "fetchBrollClips",
   "fetchWikimediaImages",
   "fetchWikimediaImagesV1",
-  "fetchYouTubeThumbnails",
+  // RONDE 97 removed fetchYouTubeThumbnails: it turned a YouTube search-result still into an mp4
+  // with a ken-burns pan and handed it on as footage. A route that no longer exists cannot bypass
+  // the gate, and ronde97YouTubeVideoOnly asserts it stays gone.
   "fetchSerpAPIImages",
   "fetchOpenverseImages",
   "fetchUnsplashImages",

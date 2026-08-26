@@ -25,9 +25,21 @@ const NEW_PROVIDERS = [
   { fn: "fetchPexelsClips", provider: "pexels", idExpr: "String(video.id)" },
   { fn: "fetchOpenverseImages", provider: "openverse", idExpr: 'images[i]?.id?.trim() || imgUrl' },
   { fn: "fetchUnsplashImages", provider: "unsplash", idExpr: "images[i].id?.trim() || urlKey" },
-  { fn: "fetchYouTubeThumbnails", provider: "youtube", idExpr: "item.id?.videoId" },
   { fn: "fetchSerpAPIImages", provider: "serpapi", idExpr: "urlKey" },
 ] as const;
+
+/**
+ * RONDE 97 removed fetchYouTubeThumbnails entirely.
+ *
+ * RONDE 96 had wired it into the ledger like the other four, which was the right thing to do while
+ * the route existed — it downloaded a YouTube search-result still, ran ffmpeg with `-loop 1 …
+ * zoompan` over it, and handed the resulting .mp4 to adoptClip as footage. Giving it provenance
+ * made that visible; RONDE 97 acted on what it showed and deleted the route. FastVid uses YouTube
+ * for video it can cut a fragment out of, and a still has no fragment.
+ *
+ * Its lineage tests move to ronde97YouTubeVideoOnly, which asserts the opposite property: that no
+ * such asset can be created at all.
+ */
 
 /** Every provider that downloads its own assets and must therefore open a record. */
 const ALL_DOWNLOADING_FETCHERS = [
@@ -35,7 +47,7 @@ const ALL_DOWNLOADING_FETCHERS = [
   "fetchEuropeanaVideos", "fetchNaraClips", "fetchNasaVideoClips", "fetchGdeltTvNewsClips",
   "fetchSepiaSearchVideos", "fetchVimeoCCVideos", "fetchMediaCccVideos", "fetchFlickrCCVideos",
   "fetchPexelsClips", "fetchOpenverseImages", "fetchUnsplashImages", "fetchSerpAPIImages",
-  "fetchYouTubeThumbnails", "downloadAndTrimPoolCandidate",
+  "downloadAndTrimPoolCandidate",
   // RONDE 96's own re-scan found four more the brief had not listed: Pixabay (which §8 does name),
   // Wikimedia IMAGES — a sibling of fetchWikimediaVideos that never opened a record — and the
   // Pexels b-roll path. Leaving them out would have made "every provider is covered" false.

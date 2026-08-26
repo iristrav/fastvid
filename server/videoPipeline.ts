@@ -3454,33 +3454,23 @@ async function tryBeatTopicRealFootageInner(
     }
   }
 
-  if (youtubeSourcingEnabled() && process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
-    const thumbQ = buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] || wikiQuery;
-    const ytThumb = await fetchYouTubeThumbnails(
-      thumbQ,
-      clipFetchDur,
-      workDir,
-      sceneIndex,
-      1,
-      `${tag}_ytt`,
-      { dedup, beatIndex: beat.index }
-    );
-    clip = await adoptClip(
-      ytThumb,
-      dedup,
-      sceneIndex,
-      beat.index,
-      beat.text,
-      workDir,
-      thumbQ,
-      loose
-    );
-    if (clip) {
-      dedup.stillPhotosThisScene++;
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube thumbnail`);
-      return clip;
-    }
-  }
+  /*
+   * A YouTube THUMBNAIL was never a YouTube video.
+   *
+   * fetchYouTubeThumbnails downloaded the still image YouTube shows on a search result, ran it
+   * through ffmpeg with `-loop 1 … zoompan`, and produced an .mp4: a slow pan across a promotional
+   * picture, handed to adoptClip exactly like real footage. The research ladder even labelled the
+   * result "youtube_cc" — the source label the genuine video route uses — so nothing downstream,
+   * including the audit, could tell a documentary clip from a thumbnail with a face and a caption
+   * burned into it.
+   *
+   * FastVid uses YouTube for footage it can cut a fragment out of. That is downloadYouTubeCCClip:
+   * a real stream, fetched by videoId, seeked to clipStart and trimmed. A thumbnail supports none
+   * of that — there is no fragment in a still, only a manufactured zoom.
+   *
+   * The route is removed rather than disabled: a flag would leave the same picture one environment
+   * variable away from the final video. ronde97YouTubeVideoOnly asserts it stays gone.
+   */
 
   if (perf.enableNasa && spaceTopic) {
     const nasaPaths = await fetchNasaVideoClips(
@@ -7468,145 +7458,26 @@ async function fetchUnsplashImages(
   return results;
 }
 
-// ─── 3c2b-yt. YouTube Data API Thumbnails ────────────────────────────────────
-// Uses YouTube Data API v3 to search for relevant videos and downloads their
-// high-quality thumbnails as image clips. This gives highly relevant visuals
-// that match the scene topic without requiring video downloads.
-async function fetchYouTubeThumbnails(
-  query: string,
-  duration: number,
-  workDir: string,
-  sceneIndex: number,
-  count: number = 3,
-  fileTag = "",
-  /**
-   * RONDE 96 — the only one of the five that had no way to reach the ledger.
-   *
-   * The other four already carried a SourcingCache, directly or through opts.dedup; this one took
-   * none, so its thumbnails could not have opened a lineage even if the code had wanted to.
-   * Optional, so every existing caller keeps working and the ones that have a cache start
-   * recording — a caller without one gets the same plain paths it got before.
-   */
-  opts: { dedup?: VisualDedupState; beatIndex?: number } = {}
-): Promise<string[]> {
-  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
-  // never repaired or substituted — the caller simply gets nothing.
-  if (admitProviderQuery("youtube", query, "fetchYouTubeThumbnails") === null) return [];
-  if (!youtubeSourcingEnabled()) return [];
-  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
-  if (!YOUTUBE_API_KEY) return [];
-  if (isYoutubeInCooldown()) return [];
-  fs.mkdirSync(workDir, { recursive: true });
-  const results: string[] = [];
-  try {
-    // Search YouTube for relevant videos (Creative Commons preferred, but also standard)
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${count * 3}&key=${YOUTUBE_API_KEY}`;
-    const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
-      searchUrl,
-      10000,
-      `YouTube search scene ${sceneIndex}`
-    ));
-    if (!searchResp.ok) {
-      if (searchResp.status === 429) {
-        markYoutubeRateLimited(parseRetryAfterMs(searchResp.headers?.get?.("retry-after")));
-      } else {
-        markYoutubeSearchResult(false);
-      }
-      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
-      return [];
-    }
-    markYoutubeSearchResult(true);
-    const payload = await searchResp.json() as { items?: Array<{ id: { videoId: string }; snippet: { title: string; thumbnails: { maxres?: { url: string }; high?: { url: string }; medium?: { url: string } } } }> };
-    const items = payload.items || [];
-    if (items.length === 0) return [];
-
-    for (let i = 0; i < Math.min(items.length, count * 2) && results.length < count; i++) {
-      try {
-        const item = items[i];
-        // Use highest quality thumbnail available
-        const thumbUrl = item.snippet.thumbnails?.maxres?.url ||
-                         item.snippet.thumbnails?.high?.url ||
-                         item.snippet.thumbnails?.medium?.url;
-        if (!thumbUrl) continue;
-
-        const tag = fileTag ? `${fileTag}_` : "";
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.jpg`);
-        /**
-         * RONDE 96 — a thumbnail's provider id is the video it belongs to.
-         *
-         * item.id.videoId is YouTube's own identifier, straight from the search response, so the
-         * clip can be traced back to a real video rather than to `yt_3.mp4`.
-         */
-        const outPath = tagPathWithProviderAsset(
-          path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.mp4`),
-          "youtube",
-          item.id?.videoId,
-          opts.dedup?.sourcingCache,
-          {
-            sceneIndex,
-            beatIndex: opts.beatIndex,
-            sourceUrl: thumbUrl,
-            title: item.snippet?.title,
-            mediaType: "image",
-            query,
-            searchRoute: "fetchYouTubeThumbnails",
-          }
-        );
-
-        // Download thumbnail
-        const imgResp = await withTimeout(
-          fetch(thumbUrl),
-          10000,
-          `YouTube thumbnail download scene ${sceneIndex}`
-        );
-        if (!imgResp.ok) continue;
-        const imgBuf = Buffer.from(await imgResp.arrayBuffer());
-        if (imgBuf.length < 5000) continue; // skip tiny/broken thumbnails
-        fs.writeFileSync(imgPath, imgBuf);
-
-        // Convert thumbnail to video clip with slow Ken Burns zoom effect. Routed through
-        // ffmpegSemaphore — this raw spawn() previously bypassed the shared concurrency gate
-        // that videoPipeline.ts's own exec() enforces everywhere else in this file.
-        //
-        // No outer withTimeout() here (there used to be one, at 30000ms): its timer started
-        // before ffmpegSemaphore.run()'s acquire() resolved, so queue-wait time counted against
-        // the budget, and it couldn't kill the real child anyway (the run() promise exposes no
-        // .childProcess). The inner 25000ms timer below is constructed AFTER the semaphore slot
-        // is held, so it only starts once the ffmpeg process is actually running, and it can
-        // kill it directly — that's the only timeout this call needs.
-        await ffmpegSemaphore.run(() => new Promise<void>(async (resolve, reject) => {
-          const { spawn } = await import('child_process');
-          const args = [
-            '-y', '-loop', '1', '-i', imgPath,
-            '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0006,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
-            '-t', String(duration),
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-            '-pix_fmt', 'yuv420p', '-an', outPath
-          ];
-          const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-          const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 25000);
-          child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
-          child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
-        }));
-        try { fs.unlinkSync(imgPath); } catch { /**/ }
-
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
-          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
-          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
-          // hWithProviderAsset opened.
-          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
-          results.push(outPath);
-          console.log(`[Pipeline] Scene ${sceneIndex}: YouTube thumbnail added: "${item.snippet.title?.slice(0, 60)}"`);
-        }
-      } catch (err) {
-        console.warn(`[Pipeline] YouTube thumbnail ${i} failed for scene ${sceneIndex}:`, (err as Error).message);
-      }
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] YouTube search failed for scene ${sceneIndex}:`, (err as Error).message);
-  }
-  return results;
-}
+/*
+ * ─── 3c2b-yt. YouTube Data API Thumbnails — REMOVED ──────────────────────────
+ *
+ * fetchYouTubeThumbnails lived here. It called the YouTube Data API, took the still image from
+ * each search result, and ran ffmpeg with `-loop 1 -i thumb.jpg … zoompan` to produce an .mp4 —
+ * a slow pan across a promotional picture, then handed to adoptClip like any other clip. Four
+ * ladders used it, and the research ladder returned its output under the "youtube_cc" source
+ * label, which is the label the genuine video route uses.
+ *
+ * So a thumbnail could reach finalConcatInputs, and once there nothing — not the compose gate,
+ * not the audit, not the [AssetUsageSummary] — could tell it apart from footage.
+ *
+ * FastVid uses YouTube for video it can cut a fragment out of. That route is intact and is the
+ * only one left: searchYoutubeVideoCandidates finds videos, downloadYouTubeCCClip fetches the
+ * real stream by videoId and trims it at clipStart, and fetchYouTubeCCClips opens the lineage
+ * with that videoId as the provider asset id. A still has no fragment to cut.
+ *
+ * Removed rather than flagged off: a flag leaves the same picture one environment variable away
+ * from the delivered video. ronde97YouTubeVideoOnly holds this grave shut.
+ */
 
 // ─── 3c2b. SerpAPI Google Images Search ────────────────────────────────────
 // Searches Google Images via SerpAPI for celebrity/person-specific photos.
@@ -13103,21 +12974,7 @@ async function fetchBeatScriptImageClip(
           return clip;
         }
       }
-      if (process.env.YOUTUBE_API_KEY) {
-        const thumbQ = queries[0] ?? beat.searchQuery;
-        const ytPaths = await fetchYouTubeThumbnails(
-          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_yt`, { dedup, beatIndex: beat.index }
-        );
-        const clip = await adoptClip(
-          ytPaths, dedup, sceneIndex, beat.index, beat.text, workDir, thumbQ, looseOpts
-        );
-        if (clip) {
-          console.log(
-            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: script image YouTube thumb (${thumbQ})`
-          );
-          return clip;
-        }
-      }
+      // The YouTube thumbnail tier was removed here — see the note on the fetcher's grave.
       return null;
     },
     beatScriptImageWallMs(dedup.perf),
@@ -13234,17 +13091,7 @@ async function fetchBeatScriptImageForced(
           }
         }
       }
-      if (process.env.YOUTUBE_API_KEY) {
-        const thumbQ = queries[0] ?? beat.searchQuery;
-        const ytPaths = await fetchYouTubeThumbnails(
-          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_yt`, { dedup, beatIndex: beat.index }
-        );
-        const clip = await takeFirstValid(ytPaths);
-        if (clip) {
-          console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: forced image YouTube thumb (${thumbQ})`);
-          return clip;
-        }
-      }
+      // The YouTube thumbnail tier was removed here — see the note on the fetcher's grave.
       return null;
     },
     beatScriptImageWallMs(dedup.perf) + 5_000,
@@ -22099,26 +21946,11 @@ async function researchBeatClipUnifiedInner(
     });
   }
 
-  if (!archivalFirst && process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
-    const thumbQ =
-      buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] ||
-      queries[0] ||
-      primaryQ;
-    tasks.push({
-      run: async () => {
-        const paths = await fetchYouTubeThumbnails(
-          thumbQ,
-          clipFetchDur,
-          workDir,
-          sceneIndex,
-          1,
-          `${tag}_research`,
-          { dedup, beatIndex: beat.index }
-        );
-        return toCandidates(paths, thumbQ, "youtube_cc", false);
-      },
-    });
-  }
+  // RONDE 97: the YouTube thumbnail task stood here, behind this same still-photo budget. It was
+  // the worst of the four call sites, because it returned its stills under the "youtube_cc" source
+  // label — so a ken-burns pan across a search-result picture was recorded as real YouTube footage
+  // and counted as such in the audit. The whole branch is gone, its query included: a still cannot
+  // be cut into a fragment, which is what FastVid uses YouTube for.
 
   const allowStock =
     !realOnly &&
