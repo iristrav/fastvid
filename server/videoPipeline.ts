@@ -284,7 +284,17 @@ import {
   formatEligibleNotAdoptedByProvider,
 } from "./beatOutcomeAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
-import { createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
+import { bindLineageLedger, createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
+import {
+  VisualSourceLedger,
+  formatFunnelReport,
+  formatLineageLine,
+} from "./visualSourceLineage";
+import {
+  formatGlobalBudget,
+  withGlobalMediaFetch,
+  withGlobalVisionGate,
+} from "./globalResourceBudget";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
@@ -4377,6 +4387,27 @@ export function scopedTimeoutMs(preferredMs: number, floorMs = 1_000): number {
 // behavior for the buffered path. Returns bytesWritten instead of a Buffer — callers that only
 // used the buffer for a minimum-size sanity check compare against bytesWritten instead.
 export async function downloadToFileStreaming(
+  url: string,
+  destPath: string,
+  timeoutMs: number,
+  label: string,
+  options: Record<string, unknown> = {},
+  maxBytes?: number
+): Promise<{ response: Awaited<ReturnType<typeof fetchWithTimeout>>; bytesWritten: number | null }> {
+  /**
+   * RONDE 86 — the process-wide media-fetch budget.
+   *
+   * This function is the single choke point every provider download funnels through, which makes
+   * it the one place a limit covers all of them. It does not narrow what a single render may do:
+   * the fan-out that reaches here on one render is the beat limiter times a small per-beat
+   * candidate count, comfortably under the budget — it bites only once a SECOND render is
+   * competing for the same socket pool and the same provider rate limits, which is exactly the
+   * case RONDE 83 did not cover. p-limit queues, so a download is delayed, never dropped.
+   */
+  return withGlobalMediaFetch(() => downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes));
+}
+
+async function downloadToFileStreamingInner(
   url: string,
   destPath: string,
   timeoutMs: number,
@@ -14315,9 +14346,9 @@ function markCuratedArchiveClipUsage(dedup: VisualDedupState, clipPath: string):
 
 export function createVisualDedupState(
   perf: PipelinePerfProfile,
-  topic?: { primaryPerson?: string; personTopicLock?: boolean }
+  topic?: { primaryPerson?: string; personTopicLock?: boolean; videoId?: number }
 ): VisualDedupState {
-  return {
+  const state: VisualDedupState = {
     usedPaths: new Set(),
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
@@ -14394,11 +14425,18 @@ export function createVisualDedupState(
     },
     strictRefillAttemptedScenes: new Set(),
     historicalCascadeAttemptedBeats: new Set(),
-    sourcingCache: createSourcingCache(),
+    sourcingCache: createSourcingCache(topic?.videoId),
     movingClipCount: 0,
     stillClipCount: 0,
     planRescueMissStreak: 0,
   };
+  // RONDE 86: every recordClipAdopt call in this file hands over `dedup.clipAdoptAudit`, so
+  // binding the ledger to that array once here wires lineage into all of them at once — and
+  // makes it impossible for a future adoption route to record an audit entry without one.
+  bindLineageLedger(state.clipAdoptAudit, state.sourcingCache.lineage);
+  // Same reasoning on the refusal side: recordClipReject is the one point every gate reports to.
+  state.clipRejectAudit.lineage = state.sourcingCache.lineage;
+  return state;
 }
 
 const STOCK_CATEGORY_LIMITS: Record<string, number> = {
@@ -15239,9 +15277,23 @@ export interface SourcingCache {
     assetCacheHits: number;
     queryCacheHits: number;
   };
+  /**
+   * RONDE 86: where every clip this render downloads actually came from, and how many candidates
+   * survived each funnel stage.
+   *
+   * Lives on the sourcing cache rather than beside it because this is the one object every
+   * provider path already threads — putCachedProviderAsset below is the single choke point at
+   * which a provider name, a provider asset id, a canonical URL and a local file path are all in
+   * hand at the same instant. Recording provenance anywhere later means recovering it from the
+   * filename, which is exactly what stopped working.
+   */
+  lineage: VisualSourceLedger;
 }
 
-export function createSourcingCache(): SourcingCache {
+let sourcingCacheSeq = 0;
+
+export function createSourcingCache(videoId?: number): SourcingCache {
+  sourcingCacheSeq += 1;
   return {
     queries: new Map(),
     assets: new Map(),
@@ -15254,6 +15306,12 @@ export function createSourcingCache(): SourcingCache {
       assetCacheHits: 0,
       queryCacheHits: 0,
     },
+    // The render id is only ever compared for equality and printed, so a process-local counter
+    // plus the start time is enough to keep two concurrent renders apart in one log stream.
+    lineage: new VisualSourceLedger({
+      renderId: `r${Date.now().toString(36)}-${sourcingCacheSeq}`,
+      videoId,
+    }),
   };
 }
 
@@ -15395,12 +15453,49 @@ export function putCachedProviderAsset(
   if (!cache || !id?.trim()) return;
   const key = providerAssetKey(provider, id);
   const prev = cache.assets.get(key);
-  cache.assets.set(key, {
+  const merged: ProviderAssetCacheEntry = {
     ...(prev ?? { provider, providerAssetId: id }),
     ...entry,
     provider,
     providerAssetId: id,
-  });
+  };
+  cache.assets.set(key, merged);
+  /**
+   * RONDE 86 — the moment provenance is knowable, it is recorded.
+   *
+   * `key` is the same string clipContentKey() recovers from the `__pid_` tag in the filename, so
+   * the ledger's content-key index and the pipeline's dedup identity agree by construction. Only
+   * recorded once a local file exists: an entry written for a metadata/license check alone has no
+   * clip to attribute yet, and inventing one would put phantom rows in the manifest.
+   */
+  if (merged.localPath) {
+    const existing = cache.lineage.resolve(merged.localPath, merged.contentKey ?? key);
+    if (!existing) cache.lineage.countFunnel("downloaded", provider);
+    if (existing) {
+      if (merged.canonicalUrl && !existing.originalUrl) existing.originalUrl = merged.canonicalUrl;
+      if (merged.storageUrl && !existing.sourceUrl) existing.sourceUrl = merged.storageUrl;
+      if (merged.providerText?.title && !existing.assetTitle) {
+        existing.assetTitle = merged.providerText.title;
+      }
+    } else {
+      cache.lineage.recordSelection({
+        renderId: cache.lineage.renderId,
+        videoId: cache.lineage.videoId,
+        sceneIndex: -1,
+        beatIndex: -1,
+        candidateId: key,
+        contentKey: merged.contentKey ?? key,
+        provider,
+        providerAssetId: id,
+        sourceUrl: merged.storageUrl,
+        originalUrl: merged.canonicalUrl,
+        localPath: merged.localPath,
+        mediaType: merged.durationSec != null && merged.durationSec > 0 ? "video" : "unknown",
+        assetTitle: merged.providerText?.title,
+        route: "primary",
+      });
+    }
+  }
 }
 
 /**
@@ -18236,6 +18331,250 @@ export function candidatePoolEarlyExitReady(
   return true;
 }
 
+/** Provider-authored text about a candidate, in the one shape every scorer below reads. */
+export type CandidateProviderText = {
+  title?: string;
+  description?: string;
+  tags?: string;
+  dateHint?: string;
+};
+
+/** Every RONDE 79 signal for one candidate, plus the sum the ranking sorts on. */
+export type BeatRankingSignals = {
+  tier: EntityMatchTier;
+  entity: number;
+  secondary: number;
+  event: number;
+  location: number;
+  object: number;
+  date: number;
+  place: number;
+  eventPhrase: number;
+  action: number;
+  modern: number;
+  negativeEvidence: number;
+  genericPenalty: number;
+  total: number;
+};
+
+/** The per-beat inputs that are identical for every candidate in a pool — resolved once. */
+export type BeatRankingContext = {
+  beatText: string;
+  primaryPerson?: string;
+  videoTitle?: string;
+  activeLocation?: string | null;
+  rankCtx: TypedRetrievalContext;
+  focus: BeatFocus;
+  secondaryEntities: string[];
+};
+
+export function buildBeatRankingContext(
+  beatText: string,
+  opts: { primaryPerson?: string; videoTitle?: string; activeLocation?: string | null } = {}
+): BeatRankingContext {
+  return {
+    beatText,
+    primaryPerson: opts.primaryPerson,
+    videoTitle: opts.videoTitle,
+    activeLocation: opts.activeLocation ?? null,
+    rankCtx: rankingContextForBeat(beatText),
+    focus: classifyBeatFocus(beatText, opts.primaryPerson, opts.videoTitle),
+    secondaryEntities: extractSecondaryEntities(beatText, opts.primaryPerson),
+  };
+}
+
+/**
+ * RONDE 86 — the RONDE 79 ranking, extracted so more than one path can use it.
+ *
+ * This is `adoptClip`'s `nextLevelScore`, moved out of its closure without a single term added,
+ * removed or reweighted. It was written for the web-provider path and lived where only that path
+ * could reach it, which is why the audit found the curated-archive route ranking its candidates
+ * on a keyword-tag score alone: the archive scan, the similar-match route and the topic-anchored
+ * route each ordered candidates by `pick.score` and then adopted whichever one first cleared the
+ * gates. Render 536 printed not one [VisualSelection] line, because the only code that produces
+ * one was on the other path.
+ *
+ * Taking it out of the closure means there is exactly one implementation of "how well does this
+ * candidate match this beat", and both paths now answer the question the same way.
+ */
+export function scoreCandidateAgainstBeat(
+  providerText: CandidateProviderText | undefined,
+  ctx: BeatRankingContext
+): BeatRankingSignals {
+  const pt = providerText;
+  const tier = classifyEntityMatchTier(ctx.primaryPerson, pt);
+  const entity = entityMatchTierScore(tier);
+  const secondary = secondaryEntityMatchScore(ctx.secondaryEntities, pt);
+  const event = eventMatchScore(ctx.beatText, pt);
+  const location = locationMatchScore(ctx.activeLocation, pt);
+  const object = objectMatchScore(ctx.beatText, pt);
+  const date = historicalDateAlignmentScore(pt, ctx.beatText, ctx.videoTitle);
+  const context = beatContextMatchScore(ctx.rankCtx, pt);
+  const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
+  // RONDE 79: place/event evidence counts as a positive signal for the focus penalties too.
+  const specific = Math.max(event, location, context.place, context.eventPhrase);
+  const negativeEvidence = beatFocusPenalty(ctx.focus, tier, event, specific, hasProviderText, object);
+  const genericPenalty = genericPersonPenalty(ctx.focus, tier, event, specific, object, hasProviderText);
+  return {
+    tier,
+    entity,
+    secondary,
+    event,
+    location,
+    object,
+    date,
+    place: context.place,
+    eventPhrase: context.eventPhrase,
+    action: context.action,
+    modern: context.modern,
+    negativeEvidence,
+    genericPenalty,
+    total:
+      date +
+      entity +
+      // RONDE 79: eventMatchScore's verb and eventPhraseMatchScore's phrase are the SAME evidence
+      // read at two resolutions — "battle" and "Battle of Berlin". Summing them paid twice for one
+      // caption, so the stronger reading is taken and the other discarded.
+      Math.max(event, context.eventPhrase) +
+      location +
+      object +
+      secondary +
+      context.place +
+      context.action +
+      context.modern +
+      negativeEvidence +
+      genericPenalty,
+  };
+}
+
+/**
+ * The provider-authored text a curated archive row carries, in the shape the scorers read.
+ *
+ * Everything here was written by whoever ingested the asset — the title, the tags, the source
+ * note, the recognised entities and topics. Nothing is invented, which is the same contract
+ * `providerText` has on the web-provider path.
+ */
+export function curatedAssetProviderText(asset: {
+  title?: string | null;
+  tags?: string[] | null;
+  sourceNote?: string | null;
+  entities?: string[] | null;
+  topics?: string[] | null;
+  originalQuery?: string | null;
+}): CandidateProviderText {
+  const tags = [
+    ...(asset.tags ?? []),
+    ...(asset.entities ?? []),
+    ...(asset.topics ?? []),
+  ].filter((t) => typeof t === "string" && t.trim().length > 0);
+  return {
+    title: asset.title?.trim() || undefined,
+    description: [asset.sourceNote, asset.originalQuery].filter(Boolean).join(". ").trim() || undefined,
+    tags: tags.length ? tags.join(", ") : undefined,
+  };
+}
+
+/** How wide a keyword-score band is treated as "the archive cannot tell these apart". */
+const CURATED_CONTEXT_BAND_WIDTH = 6;
+
+/**
+ * RONDE 86 — the curated archive's candidates, ordered by how well they match the beat.
+ *
+ * `pick.score` is a keyword/tag point sum on its own unbounded scale (render 536's ran 96–306);
+ * the RONDE 79 signals are a bounded, differently-shaped score. Adding the two would let whichever
+ * happened to be larger silently decide everything, so this reorders WITHIN score bands instead —
+ * the same discipline reorderForArchiveDiversity uses, and for the same reason: a candidate the
+ * archive scored materially higher must never be displaced, but when the archive's own score
+ * cannot separate a group, the beat's person/place/time/event/action evidence decides which of
+ * them is tried first.
+ *
+ * Stable within a band, so equal context scores keep the order the caller handed over — which is
+ * the CLIP pre-rank's and the archive-diversity pass's order, both of which stay meaningful.
+ */
+export function rankCuratedPicksByBeatContext<T extends { score: number; asset: Parameters<typeof curatedAssetProviderText>[0] }>(
+  picks: T[],
+  ctx: BeatRankingContext,
+  bandWidth = CURATED_CONTEXT_BAND_WIDTH
+): { ranked: T[]; scores: Map<T, BeatRankingSignals> } {
+  const scores = new Map<T, BeatRankingSignals>();
+  if (picks.length <= 1) return { ranked: picks, scores };
+  for (const pick of picks) {
+    scores.set(pick, scoreCandidateAgainstBeat(curatedAssetProviderText(pick.asset), ctx));
+  }
+  const out: T[] = [];
+  let i = 0;
+  while (i < picks.length) {
+    const bandTop = picks[i]!.score;
+    let j = i + 1;
+    while (j < picks.length && picks[j]!.score >= bandTop - bandWidth) j++;
+    const band = picks.slice(i, j);
+    if (band.length > 1) {
+      const order = new Map(band.map((p, idx) => [p, idx]));
+      band.sort((a, b) => {
+        const diff = (scores.get(b)?.total ?? 0) - (scores.get(a)?.total ?? 0);
+        return diff !== 0 ? diff : (order.get(a) ?? 0) - (order.get(b) ?? 0);
+      });
+    }
+    out.push(...band);
+    i = j;
+  }
+  return { ranked: out, scores };
+}
+
+/**
+ * The [VisualSelection] line for a curated pool, in the same format the web-provider path emits.
+ *
+ * Only printed when there is genuinely a choice to explain — one candidate is not a selection.
+ * That is the same condition adoptClip applies, and the reason render 536's log had none of
+ * these lines: no beat on the curated path ever had a pool to compare.
+ */
+export function logCuratedVisualSelection<T extends { score: number; archiveName?: string; asset: { id: number; title?: string | null } }>(
+  ranked: T[],
+  scores: Map<T, BeatRankingSignals>,
+  ctx: BeatRankingContext,
+  sceneIndex: number,
+  beatIndex: number
+): void {
+  if (ranked.length <= 1) return;
+  const fmt = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+  const top = ranked[0]!;
+  const s = scores.get(top);
+  if (!s) return;
+  const name = (p: T) => `${p.asset.id}${p.asset.title ? `:${p.asset.title.slice(0, 32)}` : ""}`;
+  console.log(
+    `[VisualSelection] scene=${sceneIndex} beat=${beatIndex} pool=${ranked.length} ` +
+      `winner=${name(top)} focus=${ctx.focus} primaryEntity=${fmt(s.entity)}(${s.tier}) ` +
+      `secondaryEntity=${fmt(s.secondary)} event=${fmt(s.event)} location=${fmt(s.location)} ` +
+      `object=${fmt(s.object)} date=${fmt(s.date)} place=${fmt(s.place)} ` +
+      `eventPhrase=${fmt(s.eventPhrase)} action=${fmt(s.action)} modern=${fmt(s.modern)} ` +
+      `archiveScore=${top.score} negativeEvidence=${fmt(s.negativeEvidence)} ` +
+      `genericPenalty=${fmt(s.genericPenalty)} finalScore=${fmt(s.total)}`
+  );
+  const runnerUp = ranked[1]!;
+  const r = scores.get(runnerUp);
+  if (!r) return;
+  console.log(
+    `[VisualSelection] scene=${sceneIndex} beat=${beatIndex} runner-up=${name(runnerUp)} ` +
+      `score=${fmt(r.total)} vs winner score=${fmt(s.total)} margin=${fmt(s.total - r.total)} ` +
+      `reason=${
+        [
+          s.entity !== r.entity ? "entity" : null,
+          s.secondary !== r.secondary ? "secondaryEntity" : null,
+          s.event !== r.event ? "event" : null,
+          s.location !== r.location ? "location" : null,
+          s.object !== r.object ? "object" : null,
+          s.date !== r.date ? "date" : null,
+          s.place !== r.place ? "place" : null,
+          s.eventPhrase !== r.eventPhrase ? "eventPhrase" : null,
+          s.action !== r.action ? "action" : null,
+          s.genericPenalty !== r.genericPenalty ? "genericPenalty" : null,
+        ]
+          .filter(Boolean)
+          .join(",") || "archive keyword score only"
+      }`
+  );
+}
+
 /** Map narration sentence → Pexels search from script text only. */
 function deriveBeatStockQuery(
   beatText: string,
@@ -18445,42 +18784,19 @@ async function adoptClip(
   // Point 3/4 (final multi-candidate visual selection patch — contextual beat type + sharper
   // generic-image penalty): the beat's dominant focus is the same for every candidate in this
   // pool, so it's classified once outside the per-path closure below.
-  const beatFocus = classifyBeatFocus(beatText, opts.primaryPerson, opts.videoTitle);
-  const secondaryEntities = extractSecondaryEntities(beatText, opts.primaryPerson);
   // RONDE 79: the beat's own retrieval context, assembled once for the whole pool. This is the
   // same object RONDE 78 builds the provider queries from, so the sort scores candidates against
   // exactly the question that was asked.
-  const rankCtx = rankingContextForBeat(beatText);
-  const nextLevelScore = (p: string): number => {
-    const pt = dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined;
-    const tier = classifyEntityMatchTier(opts.primaryPerson, pt);
-    const eventScore = eventMatchScore(beatText, pt);
-    const locationScore = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
-    const objectScore = objectMatchScore(beatText, pt);
-    const secondaryScore = secondaryEntityMatchScore(secondaryEntities, pt);
-    const context = beatContextMatchScore(rankCtx, pt);
-    const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
-    // RONDE 79: place/event evidence counts as a positive signal for the focus penalties too.
-    // Without this a candidate that names the beat's place but not its EVENT_CUE_RE verb was
-    // still called generic and docked twice for it.
-    const specificScore = Math.max(eventScore, locationScore, context.place, context.eventPhrase);
-    return (
-      historicalDateAlignmentScore(pt, beatText, opts.videoTitle) +
-      entityMatchTierScore(tier) +
-      // RONDE 79: eventMatchScore's verb and eventPhraseMatchScore's phrase are the SAME
-      // evidence read at two resolutions — "battle" and "Battle of Berlin". Summing them paid
-      // twice for one caption, so the stronger reading is taken and the other discarded.
-      Math.max(eventScore, context.eventPhrase) +
-      locationScore +
-      objectScore +
-      secondaryScore +
-      context.place +
-      context.action +
-      context.modern +
-      beatFocusPenalty(beatFocus, tier, eventScore, specificScore, hasProviderText, objectScore) +
-      genericPersonPenalty(beatFocus, tier, eventScore, specificScore, objectScore, hasProviderText)
-    );
-  };
+  // RONDE 86: assembled through the shared builder, and scored through the shared scorer, so this
+  // path and the curated-archive path answer "how well does this match" with the same code.
+  const rankingCtx = buildBeatRankingContext(beatText, {
+    primaryPerson: opts.primaryPerson,
+    videoTitle: opts.videoTitle,
+    activeLocation: dedup.assetDirectorActiveLocation,
+  });
+  const beatFocus = rankingCtx.focus;
+  const nextLevelScore = (p: string): number =>
+    scoreCandidateAgainstBeat(dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined, rankingCtx).total;
   // RONDE 71: the same score terms as before, in the same order, computed once per candidate
   // instead of twice per comparison. Nothing was added to or removed from the sum.
   const candidateScore = (p: string): number =>
@@ -18510,28 +18826,28 @@ async function adoptClip(
     // explain WHY the winner won, not just what it scored — no new scoring system, just the same
     // signals nextLevelScore already sums, computed once per candidate for logging.
     const breakdown = (p: string) => {
-      const pt = dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined;
-      const tier = classifyEntityMatchTier(opts.primaryPerson, pt);
-      const entity = entityMatchTierScore(tier);
-      const secondary = secondaryEntityMatchScore(secondaryEntities, pt);
-      const event = eventMatchScore(beatText, pt);
-      const location = locationMatchScore(dedup.assetDirectorActiveLocation, pt);
-      const object = objectMatchScore(beatText, pt);
-      const date = historicalDateAlignmentScore(pt, beatText, opts.videoTitle);
-      const context = beatContextMatchScore(rankCtx, pt);
+      // RONDE 86: the same shared scorer the sort above uses, so the explanation can no longer
+      // drift away from the decision it is explaining.
+      const s = scoreCandidateAgainstBeat(dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined, rankingCtx);
       const visual =
         scoreVisualRelevance(`${sourceQuery} ${path.basename(p)} ${beatText}`, keywords) +
         scoreVisualRelevance(beatText, tokenizeForRelevance(sourceQuery));
       const narration = scoreBeatNarrationMatch(beatText, sourceQuery, p) * 4;
-      const hasProviderText = Boolean(pt && (pt.title || pt.description || pt.tags));
-      const specific = Math.max(event, location, context.place, context.eventPhrase);
-      const negativeEvidence = beatFocusPenalty(beatFocus, tier, event, specific, hasProviderText, object);
-      const genericPenalty = genericPersonPenalty(beatFocus, tier, event, specific, object, hasProviderText);
-      const finalScore =
-        date + entity + secondary + Math.max(event, context.eventPhrase) + location + object +
-        context.place + context.action + context.modern + visual + narration +
-        negativeEvidence + genericPenalty;
-      return { tier, entity, secondary, event, location, object, date, context, visual, narration, negativeEvidence, genericPenalty, finalScore };
+      return {
+        tier: s.tier,
+        entity: s.entity,
+        secondary: s.secondary,
+        event: s.event,
+        location: s.location,
+        object: s.object,
+        date: s.date,
+        context: { place: s.place, eventPhrase: s.eventPhrase, action: s.action, modern: s.modern },
+        visual,
+        narration,
+        negativeEvidence: s.negativeEvidence,
+        genericPenalty: s.genericPenalty,
+        finalScore: s.total + visual + narration,
+      };
     };
     const topPath = sortedPaths[0]!;
     const top = breakdown(topPath);
@@ -18873,6 +19189,20 @@ async function adoptClip(
       const markAdopted = (finalPath: string): string => {
         providerMetrics(dedup.sourcingCache, providerOfKey).adoptedCount++;
         noteBeatAdopted(dedup.beatOutcomeAudit, sceneIndex, beatIndex, providerOfKey, path.basename(finalPath));
+        // RONDE 86: `finalPath` is `p` after the segment trim and/or the fair-use transform have
+        // renamed it. Linking the two is what lets the compose manifest find this candidate's
+        // provenance under a name that did not exist when it was downloaded.
+        dedup.sourcingCache.lineage.linkDerivedPath(finalPath, p);
+        dedup.sourcingCache.lineage.recordAdoption(finalPath, {
+          sceneIndex,
+          beatIndex,
+          contentKey,
+          provider: providerOfKey,
+          query: sourceQuery || undefined,
+          visionScore10: visionResult.worstScore10 ?? undefined,
+          route: "primary",
+        });
+        dedup.sourcingCache.lineage.countFunnel("adopted", providerOfKey);
         return finalPath;
       };
       dedup.usedCategories.set(category, (dedup.usedCategories.get(category) ?? 0) + 1);
@@ -22855,7 +23185,17 @@ async function beatClipPassesVisionGate(
   // path.basename(clipPath) — this call funnels every rescue/adoption route (Openverse,
   // Wikimedia, Pexels, Pixabay, Internet Archive, YouTube CC, curated archive) through one
   // evaluateClipVisionGate call, so this one contentKey fix covers all of them at once.
-  const result = await evaluateClipVisionGate(
+  /**
+   * RONDE 86 — the process-wide judgement budget.
+   *
+   * The comment above is the reason this is the right place: every rescue and adoption route
+   * funnels through this one call, so one gate here covers all of them. RONDE 83 bounded how many
+   * of these a single render starts; nothing bounded two renders doing it at the same time, and
+   * a vision call that comes back "unavailable" because a provider rate-limited it is reported as
+   * a refusal — so exceeding the limit silently lowers the quality of every verdict rather than
+   * just slowing the render down. A render may WAIT here; it is never refused a judgement.
+   */
+  const result = await withGlobalVisionGate(() => evaluateClipVisionGate(
     clipPath,
     beat.text,
     videoTitle,
@@ -22869,7 +23209,7 @@ async function beatClipPassesVisionGate(
     queryEmb,
     isFastShortVideoLength(dedup.videoLength),
     clipContentKey(clipPath)
-  );
+  ));
   // A cache hit is the SAME earlier CLIP judgment being returned again, not a fresh evaluation
   // of this candidate — recording it as another "vision_gate" reject would count one real
   // verdict as if N different candidates had each been looked at and rejected.
@@ -22936,6 +23276,32 @@ async function preparePooledArchiveClip(
       }
     );
     dedup.preparedArchiveClips.set(cacheKey, clipPath);
+    /**
+     * RONDE 86: the curated archive is a provider like any other, and this is its download step.
+     *
+     * Without this the own-archive route had no lineage record at all — the manifest fell back to
+     * reading "curated" out of the filename, which is a content FAMILY and not a source, and the
+     * archive row id it came from was nowhere in the report.
+     */
+    dedup.sourcingCache.lineage.recordSelection({
+      renderId: dedup.sourcingCache.lineage.renderId,
+      videoId: dedup.sourcingCache.lineage.videoId,
+      sceneIndex: scene.index,
+      beatIndex: beat.index,
+      candidateId: `archive:${picked.asset.id}`,
+      contentKey: clipContentKey(clipPath),
+      provider: picked.archiveName?.trim() || "own_archive",
+      providerAssetId: String(picked.asset.id),
+      sourceUrl: picked.asset.storageUrl ?? undefined,
+      localPath: clipPath,
+      mediaType: picked.asset.mediaType === "video" ? "video" : "image",
+      query: beat.text?.slice(0, 160),
+      score: picked.score,
+      archiveAssetId: picked.asset.id,
+      assetTitle: picked.asset.title ?? undefined,
+      route: "primary",
+    });
+    dedup.sourcingCache.lineage.countFunnel("downloaded", picked.archiveName?.trim() || "own_archive");
     // Register annotation metadata so AssetDirector can score this clip semantically
     if (picked.asset.annotationJson) {
       dedup.clipAnnotationMeta.set(clipPath, {
@@ -23141,6 +23507,29 @@ async function adoptBestSimilarBeatClip(
       `[Pipeline] Scene ${scene.index} beat ${beat.index}: similar-match — geen archive kandidaten, extern zoeken`
     );
     return adoptSimilarExternal();
+  }
+
+  /**
+   * RONDE 86 — the rescue route ranks on the same evidence as the primary one.
+   *
+   * This function is the archive's similar-match and topic-anchored fallback, and it walked
+   * `ranked` in keyword-score order taking the first candidate that passed the vision gate. That
+   * is the "first candidate through the gate wins" shape: two candidates the archive scored
+   * within a point of each other were decided by which happened to be earlier in the list, with
+   * the beat's person, place, period and event evidence never consulted.
+   *
+   * Same banded reorder as the primary path, so a materially better keyword match is still tried
+   * first and only genuinely tied candidates are resolved on context.
+   */
+  {
+    const rescueCtx = buildBeatRankingContext(beat.text, {
+      primaryPerson: dedup.primaryPerson || undefined,
+      videoTitle,
+      activeLocation: dedup.assetDirectorActiveLocation,
+    });
+    const contextRanked = rankCuratedPicksByBeatContext(ranked, rescueCtx);
+    ranked = contextRanked.ranked;
+    logCuratedVisualSelection(ranked, contextRanked.scores, rescueCtx, scene.index, beat.index);
   }
 
   const similarFloor = adoptOpts?.visionFloor ?? archiveSimilarMatchVisionFloor();
@@ -23441,6 +23830,17 @@ export async function adoptArchiveBeatClip(
     );
     if (padded) effectiveClip = padded;
     const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    /**
+     * RONDE 86 — the two renames that used to end a clip's provenance.
+     *
+     * padShortClipWithNext republishes its input as `pad_combined_sNbM_<ts>.mp4`, which carries
+     * no provider tag and no asset id, and the text overlay writes a third file again. Render
+     * 536's manifest reported 27 of 66 clips as source=unknown for exactly this reason. Linking
+     * both hops means the ledger resolves the final montage path back to the candidate the beat
+     * actually chose, whatever it ended up being called.
+     */
+    dedup.sourcingCache.lineage.linkDerivedPath(effectiveClip, clipPath);
+    dedup.sourcingCache.lineage.linkDerivedPath(withText, effectiveClip);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
@@ -23517,6 +23917,27 @@ export async function adoptArchiveBeatClip(
     // Phase 10: within score-tied bands, try less-used archives first — never reorders
     // across a score band, so match quality never trades off against diversity.
     ranked = reorderForArchiveDiversity(ranked, dedup.usedArchiveNames);
+    /**
+     * RONDE 86 — the beat's own evidence finally gets a vote on this path.
+     *
+     * Everything above this line orders candidates by the archive's keyword/tag score, a CLIP
+     * pre-rank and archive diversity. None of those is the RONDE 79 ranking, which is why render
+     * 536 — a render whose every clip came from the curated archive — produced not one
+     * [VisualSelection] line and adopted whichever candidate first cleared the gates.
+     *
+     * Applied last, and only WITHIN keyword-score bands, so it decides between candidates the
+     * archive's own score cannot separate and never displaces one it scored materially higher.
+     */
+    const curatedRankCtx = buildBeatRankingContext(beat.text, {
+      primaryPerson: dedup.primaryPerson || undefined,
+      videoTitle,
+      activeLocation: dedup.assetDirectorActiveLocation,
+    });
+    {
+      const contextRanked = rankCuratedPicksByBeatContext(ranked, curatedRankCtx);
+      ranked = contextRanked.ranked;
+      logCuratedVisualSelection(ranked, contextRanked.scores, curatedRankCtx, scene.index, beat.index);
+    }
     console.log(
       `[Pipeline] Scene ${scene.index} zin ${beat.index}: archive-zoek "${beat.text.slice(0, 55).trim()}…" → ${ranked.length} kandidaat(en)`
     );
@@ -23542,8 +23963,25 @@ export async function adoptArchiveBeatClip(
     const targetVision = targetClipVisionScore();
     const queue: CuratedCandidatePick[] = [];
     let scanned = 0;
+    const funnel = dedup.sourcingCache.lineage;
+    const funnelProvider = (p: CuratedCandidatePick) => p.archiveName?.trim() || "own_archive";
+    for (const p of ranked) funnel.countFunnel("retrieved", funnelProvider(p));
     for (const picked of ranked) {
       if (scanned >= tryCap) break;
+      /**
+       * RONDE 86 (§F, search performance) — stop vetting candidates nobody will ever prepare.
+       *
+       * The wave loop below prepares at most `prepareCap` entries from the FRONT of this queue
+       * and never reaches further, so every candidate this loop vets past that number is
+       * assetPassesBeatMinimum + archiveAssetPreflight + a geo/literal gate run for a candidate
+       * that is discarded unread. On a long video tryCap is 24 against a prepareCap of 6, so
+       * three quarters of the gate work in this loop was dead.
+       *
+       * This changes no verdict and no ordering — the queue's first `prepareCap` entries are
+       * byte-identical to what the old loop produced, because the loop is deterministic and
+       * front-to-back. It only stops early.
+       */
+      if (queue.length >= prepareCap) break;
       if (videosOnly && picked.asset.mediaType !== "video") continue;
       if (!relaxed && !assetPassesBeatMinimum(picked.asset, beat.text, picked.score, topScore, picked.semantic, videoVisualTopic, dedup.segmentGeoLock, literalGateTags, videoTitle)) {
         continue;
@@ -23574,6 +24012,12 @@ export async function adoptArchiveBeatClip(
       }
       scanned++;
       queue.push(picked);
+      funnel.countFunnel("eligible", funnelProvider(picked));
+      // Ranked and selected are the same event on this path: the queue IS the ranking, in order,
+      // and everything in it is prepared. Counting both keeps the funnel's stage list complete
+      // rather than leaving a gap a reader has to interpret.
+      funnel.countFunnel("ranked", funnelProvider(picked));
+      funnel.countFunnel("selected", funnelProvider(picked));
     }
 
     const tryRankedPick = async (picked: CuratedCandidatePick, scanIdx: number): Promise<boolean> => {
@@ -29181,6 +29625,19 @@ export async function composeSceneVideoInner(
         `[FINAL_VISUAL_MANIFEST] scene=${scene.index} beat=${entry?.beatIndex ?? "?"} source=${source} ` +
           `origin=${origin} fallback=${fallback} clip=${basename}`
       );
+      /**
+       * RONDE 86 — the same clip, resolved through the derivation chain rather than its name.
+       *
+       * Printed alongside the manifest line rather than replacing it: the two disagreeing is
+       * itself the measurement that says whether the lineage wiring is complete, and silently
+       * swapping one for the other would hide a regression instead of exposing it.
+       */
+      const lineageRecord = composeOptions.dedup.sourcingCache.lineage.resolve(clipPath, key);
+      console.log(formatLineageLine(lineageRecord, clipPath, source));
+      composeOptions.dedup.sourcingCache.lineage.countFunnel(
+        "composed",
+        lineageRecord?.provider ?? source
+      );
     }
   }
 
@@ -30867,7 +31324,7 @@ async function _runVideoPipelineInner(
         `video APIs ${premiumAiVideoFallbackEnabled() ? "on" : "off (set ENABLE_AI_VIDEO_FALLBACK=true to enable)"}`
       );
     }
-    const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked });
+    const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked, videoId });
     visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
@@ -32808,7 +33265,37 @@ async function _runVideoPipelineInner(
       archiveOnly: curatedArchiveOnlyVisuals(),
       fastShort: isFastShortVideoLength(videoLength),
       sceneCriticalFailed,
+      // RONDE 86: the report now reads the same ledger the compose manifest does, so the two
+      // cannot disagree about which provider a clip came from.
+      resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
     });
+    // RONDE 86: the whole retrieval funnel, per provider and in total, in one block. Render 536
+    // lost 2632 of 2671 candidates before the download step and nothing could say at which stage
+    // or to which provider — this is that number, broken out.
+    //
+    // The external providers already count their own search results in ProviderSourcingMetrics
+    // (resultCount / eligibleCount / adoptedCount), so those are folded in here rather than
+    // re-instrumented at a dozen fetch sites. Folded, not overwritten: a provider the ledger
+    // already counted keeps the ledger's number, so nothing is ever double-counted.
+    {
+      const funnel = visualDedup.sourcingCache.lineage;
+      const summary = funnel.funnelSummary();
+      for (const [provider, m] of visualDedup.sourcingCache.metrics) {
+        const known = summary.byProvider[provider];
+        if (!known?.retrieved) funnel.countFunnel("retrieved", provider, m.resultCount);
+        if (!known?.eligible) funnel.countFunnel("eligible", provider, m.eligibleCount);
+        if (!known?.downloaded) funnel.countFunnel("downloaded", provider, m.downloadCount);
+        if (!known?.adopted) funnel.countFunnel("adopted", provider, m.adoptedCount);
+      }
+    }
+    for (const line of formatFunnelReport(visualDedup.sourcingCache.lineage.funnelSummary())) {
+      console.log(line);
+    }
+    console.log(formatGlobalBudget());
+    console.log(
+      `[SourceLineage] video=${videoId} render=${visualDedup.sourcingCache.lineage.renderId} ` +
+        `clipsWithProvenance=${visualDedup.sourcingCache.lineage.size}`
+    );
     // RONDE 8 (render 518): a scene whose montage came up short scored 100/100 because the filler
     // is not a fallback clip. Same registration pattern as the silent-voiceover notes below.
     //

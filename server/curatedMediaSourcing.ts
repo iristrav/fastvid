@@ -2725,6 +2725,29 @@ export async function fetchCuratedArchiveBeatClip(
         `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated asset ${picked.asset.id} failed:`,
         (err as Error).message
       );
+      /**
+       * RONDE 86 — an asset that cannot be prepared is out for the rest of the render.
+       *
+       * Every throw prepareCuratedArchiveClip can produce is a property of the ASSET, not of this
+       * beat: "source video too short" (trimVideoClip), "trimmed clip too short", "Ken Burns clip
+       * too short", "Styled still clip too short", a download that 404s, a file ffprobe cannot
+       * decode. None of them get a different answer on the next beat. Without registering the
+       * failure the same broken asset was re-selected, re-downloaded and re-rejected on every
+       * beat that scored it well — render 536 logged 594 "source video too short" rejections
+       * across 37 distinct assets, an average of sixteen identical failures per asset.
+       *
+       * preparePooledArchiveClip (videoPipeline.ts) — the sister route into exactly the same
+       * prepare function — has always done this. This one did not, which is the whole bug: which
+       * of the two routes a beat happened to take decided whether the render learned anything.
+       *
+       * Registering in the used-sets rather than in a separate "failed" set is deliberate: those
+       * sets are already consulted by every selection path (searchCuratedCandidatesForBeat's pool
+       * filter, listCuratedArchiveCandidates' excludeIds, the eligibility loop above, and
+       * archiveAssetPreflight), so one line here reaches all of them. The cost of being wrong is
+       * one unusable asset skipped for one render; the cost of not doing it is measured above.
+       */
+      usedAssetIds.add(picked.asset.id);
+      if (picked.asset.storageUrl) usedStorageUrls.add(picked.asset.storageUrl);
       return null;
     }
   };

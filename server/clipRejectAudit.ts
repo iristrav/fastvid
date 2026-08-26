@@ -25,6 +25,7 @@
  * Observability only. No reject reason, gate or threshold is defined or changed here.
  */
 import * as path from "path";
+import type { VisualSourceLedger } from "./visualSourceLineage";
 
 export type ClipRejectEntry = {
   sceneIndex: number;
@@ -48,6 +49,15 @@ export type ClipRejectAudit = {
    * audit reads, so a late beat can no longer report a rejection count of zero it did not earn.
    */
   perBeat: Map<string, Map<string, number>>;
+  /**
+   * RONDE 86: the render's lineage ledger, so a rejection is also a funnel event.
+   *
+   * Attached rather than passed at every call site: this function is the single point every gate
+   * in the pipeline reports a refusal to, which makes it the one place the funnel's `rejected`
+   * stage can be counted completely and attributed to the gate that produced it. Optional, so an
+   * audit created outside a render (tests, tools) behaves exactly as before.
+   */
+  lineage?: VisualSourceLedger;
 };
 
 /** Detail entries kept. Counting is unbounded; only the named examples are limited. */
@@ -70,6 +80,12 @@ export function recordClipReject(
   source?: string
 ): void {
   audit.recorded++;
+  // RONDE 86: the same refusal, counted in the retrieval funnel and attributed to its gate. The
+  // provider comes from the ledger when it knows this clip and from the reject reason otherwise,
+  // so a rejection is never filed under a provider the render only guessed at.
+  if (audit.lineage) {
+    audit.lineage.countRejection(audit.lineage.providerFor(clipPath) ?? "unknown", reason);
+  }
 
   // The count comes first and has no cap. Whatever happens to the detail below, the funnel
   // audit's per-beat number is complete.

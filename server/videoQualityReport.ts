@@ -191,6 +191,17 @@ export function buildVideoQualityReport(
     archiveOnly?: boolean;
     fastShort?: boolean;
     sceneCriticalFailed?: number[];
+    /**
+     * RONDE 86: the render's own record of where each clip came from.
+     *
+     * `inferClipSourceFromPath` below reads a provider out of a FILENAME, and by the time a clip
+     * reaches this report it has been trimmed, padded and overlaid — render 536's own compose
+     * manifest could not name the source of 27 of its 66 clips for exactly that reason, and this
+     * report was counting the same 27 as `unknown` while `bySource` drove the score. When a
+     * resolver is supplied it is asked first and the filename is the fallback, so the report and
+     * the compose manifest can no longer disagree about what a clip is.
+     */
+    resolveSource?: (clipPath: string) => string | null | undefined;
   }
 ): VideoQualityReport {
   const bySource: Record<string, number> = {};
@@ -207,7 +218,8 @@ export function buildVideoQualityReport(
   const unique = [...new Set(clipPaths.filter(Boolean))];
 
   for (const clipPath of unique) {
-    const source = inferClipSourceFromPath(clipPath);
+    const recorded = opts?.resolveSource?.(clipPath)?.trim().toLowerCase();
+    const source = recorded && recorded !== "unknown" ? recorded : inferClipSourceFromPath(clipPath);
     bySource[source] = (bySource[source] ?? 0) + 1;
     const mix = classifyClipMixKind(clipPath);
     byMixKind[mix]++;

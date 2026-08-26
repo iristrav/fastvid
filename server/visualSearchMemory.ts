@@ -124,6 +124,180 @@ export async function recordVisualSearchMemory(input: RecordVisualSearchMemoryIn
   }
 }
 
+// ─── RONDE 86: bounded, batched persistence ──────────────────────────────────
+//
+// recordVisualSearchMemory above is one round trip per call, and both writers below used to fire
+// it as `void recordVisualSearchMemory(...)` in a loop. Render 536 recorded 248 dead ends that
+// way: 248 un-awaited inserts released into the event loop at once, against a mysql2 pool with
+// connectionLimit = MAX_CONCURRENT_JOBS + 10 and queueLimit = 100. It logged 113 "Queue limit
+// reached" errors, and that was ONE render — a second concurrent render doubles the burst while
+// the pool stays the same size.
+//
+// Nothing about what is remembered changes here. The same rows are written with the same upsert
+// semantics; they are just de-duplicated in memory first, batched into multi-row statements, and
+// drained through a small fixed number of connections instead of all at once.
+
+/** How many upserts may be in flight against the pool at any moment, across all renders. */
+function searchMemoryConcurrency(): number {
+  const raw = process.env.SEARCH_MEMORY_DB_CONCURRENCY?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 16) return n;
+  }
+  return 2;
+}
+
+/** Rows per multi-row INSERT … ON DUPLICATE KEY UPDATE. */
+function searchMemoryBatchSize(): number {
+  const raw = process.env.SEARCH_MEMORY_BATCH_SIZE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 500) return n;
+  }
+  return 50;
+}
+
+/**
+ * Ceiling on the pending queue.
+ *
+ * A backlog this long already means the DB is not keeping up, and holding more of it in memory
+ * helps nobody — search memory is an optimisation, and dropping the tail of a burst costs one
+ * render a few dead-end hints while an unbounded queue costs the process its heap.
+ */
+const SEARCH_MEMORY_QUEUE_MAX = 5_000;
+
+type PendingWrite = RecordVisualSearchMemoryInput & { hash: string };
+
+const pendingWrites: PendingWrite[] = [];
+/** dedupeKeyHash values already queued or written this process — the in-memory dedup. */
+const queuedHashes = new Set<string>();
+let draining: Promise<void> | null = null;
+let droppedForBackpressure = 0;
+
+/** Test/shutdown hook — resolves once everything queued so far has been written. */
+export async function flushVisualSearchMemory(): Promise<void> {
+  await (draining ?? Promise.resolve());
+  // A drain started while the previous one was finishing has its own promise.
+  if (pendingWrites.length > 0) await (draining ?? Promise.resolve());
+}
+
+/** Test hook — forgets the dedup set and any queued work. Never called by the pipeline. */
+export function resetVisualSearchMemoryQueue(): void {
+  pendingWrites.length = 0;
+  queuedHashes.clear();
+  droppedForBackpressure = 0;
+}
+
+/** How many writes are waiting, and how many were dropped because the queue was full. */
+export function visualSearchMemoryQueueStats(): { pending: number; dropped: number; deduped: number } {
+  return { pending: pendingWrites.length, dropped: droppedForBackpressure, deduped: queuedHashes.size };
+}
+
+/**
+ * Queues one memory row instead of writing it immediately.
+ *
+ * Returns true when the row was accepted (it is new and there was room), false when it was a
+ * duplicate of something already queued or the queue was full. Never throws and never awaits the
+ * database — the caller is on the render's hot path.
+ */
+export function enqueueVisualSearchMemory(input: RecordVisualSearchMemoryInput): boolean {
+  const entity = canonicalEntityKey(input.entity ?? "");
+  const query = (input.query ?? "").trim().slice(0, 512);
+  const source = (input.source ?? "").trim().slice(0, 64);
+  if (!entity || !query || !source) return false;
+  const hash = dedupeKeyHash(entity, source, query);
+  // The same (entity, source, query) collapses into one row in the database regardless, so
+  // sending it twice is pure pool pressure for no additional information. Render 536's 248 dead
+  // ends contained repeats across scenes for exactly this reason.
+  if (queuedHashes.has(hash)) return false;
+  if (pendingWrites.length >= SEARCH_MEMORY_QUEUE_MAX) {
+    droppedForBackpressure += 1;
+    return false;
+  }
+  queuedHashes.add(hash);
+  pendingWrites.push({ ...input, entity, query, source, hash });
+  startDrain();
+  return true;
+}
+
+function startDrain(): void {
+  if (draining) return;
+  draining = drainSearchMemoryQueue().finally(() => {
+    draining = null;
+    // Anything queued while the last batch was in flight gets its own pass.
+    if (pendingWrites.length > 0) startDrain();
+  });
+}
+
+async function drainSearchMemoryQueue(): Promise<void> {
+  try {
+    const db = await getDb();
+    if (!db) {
+      // No database in this environment (tests, local runs without DATABASE_URL). Drop the queue
+      // rather than growing it forever waiting for a connection that is never coming.
+      pendingWrites.length = 0;
+      return;
+    }
+    const concurrency = searchMemoryConcurrency();
+    const batchSize = searchMemoryBatchSize();
+    while (pendingWrites.length > 0) {
+      const wave: Array<Promise<void>> = [];
+      for (let i = 0; i < concurrency && pendingWrites.length > 0; i++) {
+        const batch = pendingWrites.splice(0, batchSize);
+        wave.push(writeSearchMemoryBatch(db, batch));
+      }
+      // Bounded by construction: at most `concurrency` statements are outstanding, so the pool
+      // never sees more than that from this module no matter how many renders are running.
+      await Promise.all(wave);
+    }
+  } catch (err) {
+    console.warn("[SearchMemory] drain failed:", (err as Error).message?.slice(0, 120));
+  }
+}
+
+type SearchMemoryDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
+
+async function writeSearchMemoryBatch(db: SearchMemoryDb, batch: PendingWrite[]): Promise<void> {
+  if (batch.length === 0) return;
+  // Rows whose upsert has extra per-row fields (a success verdict, an asset id, a score) cannot
+  // share one statement's SET clause, so they go one at a time — there are only ever a handful of
+  // those. The dead-end rows, which are the burst, all share the same SET and batch cleanly.
+  const plain = batch.filter((r) => !r.success && r.assetId == null && r.qualityScore == null);
+  const individual = batch.filter((r) => !plain.includes(r));
+  try {
+    if (plain.length > 0) {
+      await db
+        .insert(visualSearchMemory)
+        .values(
+          plain.map((r) => ({
+            entity: r.entity,
+            entityType: r.entityType,
+            topic: r.topic?.trim().slice(0, 256) || undefined,
+            query: r.query,
+            source: r.source,
+            sourceUrl: r.sourceUrl,
+            success: 0,
+            usageCount: 1,
+            dedupeKeyHash: r.hash,
+          }))
+        )
+        .onDuplicateKeyUpdate({
+          set: {
+            usageCount: sql`${visualSearchMemory.usageCount} + 1`,
+            lastUsedAt: new Date(),
+            // Deliberately no `success` here: a miss must never downgrade a proven-working
+            // combination, which is the same rule recordVisualSearchMemory has always applied.
+          },
+        });
+    }
+  } catch (err) {
+    console.warn("[SearchMemory] batch insert failed:", (err as Error).message?.slice(0, 120));
+  }
+  for (const row of individual) {
+    await recordVisualSearchMemory(row);
+  }
+}
+
 /** Provider name out of a contentKey like "internet_archive:white-lives-matter-montana". */
 export function providerFromContentKey(contentKey: string): string {
   const head = contentKey.split(":")[0]?.trim().toLowerCase() ?? "";
@@ -162,7 +336,9 @@ export function recordAdoptedClipSource(input: AdoptedClipSource): void {
   // No provider means a locally-produced clip (a still we rendered, an AI frame). There is no
   // "where to look next time" to record, so silence is the honest answer.
   if (!source || !subject || !query) return;
-  void recordVisualSearchMemory({
+  // RONDE 86: queued rather than fired. Same row, same upsert — it now shares the module's
+  // bounded writer with the dead-end burst instead of racing it for pool connections.
+  enqueueVisualSearchMemory({
     entity: subject,
     entityType: input.subjectType,
     query,
@@ -202,6 +378,7 @@ export function recordSearchMisses(input: {
   const subject = input.subject?.trim();
   if (!subject) return;
   let misses = 0;
+  let queued = 0;
   for (const key of input.searchedKeys) {
     const sep = key.indexOf("|");
     if (sep <= 0) continue;
@@ -210,18 +387,27 @@ export function recordSearchMisses(input: {
     if (!source || !query) continue;
     if ((input.adoptedByProvider.get(source) ?? 0) > 0) continue;
     misses++;
-    void recordVisualSearchMemory({
+    // RONDE 86: this loop is the burst. It used to release one un-awaited insert per iteration —
+    // 248 of them on render 536, against a pool whose queueLimit is 100, which is where that
+    // render's 113 "Queue limit reached" errors came from. The rows are identical; only the way
+    // they reach the database changed.
+    if (enqueueVisualSearchMemory({
       entity: subject,
       entityType: input.subjectType,
       query,
       source,
       success: false,
-    });
+    })) {
+      queued++;
+    }
   }
   if (misses > 0) {
+    const stats = visualSearchMemoryQueueStats();
     console.log(
-      `[SearchMemory] "${canonicalEntityKey(subject)}": recorded ${misses} dead end(s) — ` +
-        `sources that returned nothing usable this render`
+      `[SearchMemory] "${canonicalEntityKey(subject)}": recorded ${queued} of ${misses} dead end(s) — ` +
+        `sources that returned nothing usable this render` +
+        (queued < misses ? ` (${misses - queued} already known this process)` : "") +
+        (stats.dropped > 0 ? ` [${stats.dropped} dropped for backpressure]` : "")
     );
   }
 }

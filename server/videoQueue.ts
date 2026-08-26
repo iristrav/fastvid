@@ -22,6 +22,7 @@ import {
   updateVideoStatus,
 } from "./db";
 import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./queue/activeJobsCounter";
+import { formatGlobalBudget, maxConcurrentRenders } from "./globalResourceBudget";
 
 export type EnqueueCheckResult =
   | { ok: true }
@@ -110,7 +111,17 @@ export async function processQueueTick(): Promise<void> {
   tickInFlight = true;
   try {
     const config = readQueueConfig();
-    while (activeJobsCount() < config.maxJobsPerWorker) {
+    /**
+     * RONDE 86: how many renders this PROCESS may run at once, said explicitly.
+     *
+     * maxJobsPerWorker was doing this job by accident — it defaults to 1, which is the only
+     * reason concurrent renders have not been a problem in production yet. Raising it to scale
+     * queue throughput would have silently multiplied every per-render limiter on the box.
+     * maxConcurrentRenders() defaults to exactly maxJobsPerWorker, so nothing changes for an
+     * existing deployment; MAX_CONCURRENT_RENDERS now names the decision and can be set lower.
+     */
+    const renderCap = Math.min(config.maxJobsPerWorker, maxConcurrentRenders());
+    while (activeJobsCount() < renderCap) {
       const globalActive = await countGlobalProcessingVideos();
       if (globalActive >= config.maxConcurrentJobs) break;
 
@@ -123,8 +134,11 @@ export async function processQueueTick(): Promise<void> {
       incrementActiveJobs();
       console.log(
         `[VideoQueue] Claimed video ${claimed.id} for user ${claimed.userId} ` +
-          `(local ${activeJobsCount()}/${config.maxJobsPerWorker}, global ${globalActive + 1}/${config.maxConcurrentJobs})`
+          `(local ${activeJobsCount()}/${renderCap}, global ${globalActive + 1}/${config.maxConcurrentJobs})`
       );
+      // RONDE 86: what the shared budgets look like at the moment a second render starts — the
+      // measurement the concurrency audits had to reason about from source alone.
+      console.log(formatGlobalBudget());
 
       // Watchdog: release worker slot after 3 hours even if the Promise hangs.
       // Prevents a stuck FFmpeg call from blocking all subsequent renders indefinitely.

@@ -3,6 +3,7 @@
  */
 import * as path from "path";
 import { recordGoodClipAdoption } from "./clipGoodCache";
+import type { VisualSourceLedger } from "./visualSourceLineage";
 
 export type ClipAdoptEntry = {
   sceneIndex: number;
@@ -35,6 +36,26 @@ export function createClipAdoptAudit(): ClipAdoptEntry[] {
   return [];
 }
 
+/**
+ * RONDE 86 — the audit array and the lineage ledger are two views of one event.
+ *
+ * Every adoption in the pipeline already flows through recordClipAdopt, and every call site
+ * hands it `dedup.clipAdoptAudit`. Binding the render's ledger to that array means the lineage
+ * is written at all ~20 of those sites without any of them changing, and — more importantly —
+ * without a future adoption route being able to record an audit entry and forget the lineage.
+ * A WeakMap keyed on the array keeps the ledger's lifetime exactly the render's: when the
+ * VisualDedupState goes, so does the entry.
+ */
+const ledgerByAudit = new WeakMap<ClipAdoptEntry[], VisualSourceLedger>();
+
+export function bindLineageLedger(audit: ClipAdoptEntry[], ledger: VisualSourceLedger): void {
+  ledgerByAudit.set(audit, ledger);
+}
+
+export function lineageLedgerFor(audit: ClipAdoptEntry[]): VisualSourceLedger | undefined {
+  return ledgerByAudit.get(audit);
+}
+
 export function recordClipAdopt(
   audit: ClipAdoptEntry[],
   sceneIndex: number,
@@ -47,6 +68,35 @@ export function recordClipAdopt(
   assetId?: number,
   visionScore10?: number
 ): void {
+  // Deliberately BEFORE the MAX_ENTRIES guard. That cap exists to bound a log array that is
+  // summarised for a report; the lineage is the record of what is in the finished video, and a
+  // long render must not stop recording provenance at clip 120.
+  const ledger = ledgerByAudit.get(audit);
+  const route = adoptRouteForSource(source);
+  if (ledger) {
+    // A beat filled by the rescue ladder or by a colour card is not the same event as a beat
+    // filled by the route that was supposed to fill it, and the funnel has to be able to say
+    // which happened — render 536's report could name neither.
+    const provider = ledger.providerFor(clipPath) ?? source;
+    if (route === "fallback") ledger.countFunnel("fallback", provider);
+    else if (route === "rescue" || route === "backfill") ledger.countFunnel("rescue", provider);
+  }
+  ledger?.recordAdoption(clipPath, {
+    sceneIndex,
+    beatIndex,
+    sourceLabel: source,
+    assetTitle: assetTitle?.trim() || undefined,
+    archiveAssetId: typeof assetId === "number" ? assetId : undefined,
+    visionScore10:
+      typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
+    query: beatText?.slice(0, 160) || undefined,
+    route,
+    // Only used when the ledger has never seen this clip — an adoption route that produced its
+    // file without going through putCachedProviderAsset. The source label is then the most
+    // specific true thing available, which still beats reading the filename.
+    provider: source,
+  });
+
   if (audit.length >= MAX_ENTRIES) return;
   const entry: ClipAdoptEntry = {
     sceneIndex,
@@ -62,6 +112,24 @@ export function recordClipAdopt(
   };
   audit.push(entry);
   recordGoodClipAdoption(entry, assetId);
+}
+
+/**
+ * Which of the ledger's routes an adopt-audit source label describes.
+ *
+ * The labels are the pipeline's own vocabulary and already encode this: "rescue_*" is the rescue
+ * ladder, "fallback"/"rescue_placeholder" is a colour card, and everything else is a beat filled
+ * by the route that was supposed to fill it.
+ */
+export function adoptRouteForSource(source: string): "primary" | "fallback" | "rescue" | "backfill" | "graphic" {
+  const s = (source ?? "").trim().toLowerCase();
+  if (s === "fallback" || s === "rescue_placeholder") return "fallback";
+  if (s.startsWith("rescue_")) return "rescue";
+  if (s === "guaranteed" || s.startsWith("backfill") || s === "rescue_extend" || s === "extend") {
+    return "backfill";
+  }
+  if (s === "motion_graphic" || s === "graphic" || s === "mgfx") return "graphic";
+  return "primary";
 }
 
 /** Summarize adopt audit for qualityReport — sourcing mix per beat. */

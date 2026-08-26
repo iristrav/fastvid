@@ -149,16 +149,28 @@ describe("RONDE 28b — remembering the dead ends", () => {
     vi.doMock("./db", () => ({
       getDb: async () => ({
         insert: () => ({
-          values: (v: Record<string, unknown>) => {
-            rows.push(v);
+          // RONDE 86: dead ends are written as one multi-row INSERT … ON DUPLICATE KEY UPDATE
+          // instead of one statement per row — 248 un-awaited single-row inserts against a pool
+          // with queueLimit=100 is what produced render 536's 113 "Queue limit reached" errors.
+          // The ROWS are what these tests are about, so they are flattened here; every assertion
+          // below about which rows are written, and with what values, is unchanged.
+          values: (v: Record<string, unknown> | Record<string, unknown>[]) => {
+            if (Array.isArray(v)) rows.push(...v);
+            else rows.push(v);
             return { onDuplicateKeyUpdate: async () => undefined };
           },
         }),
       }),
     }));
-    return { mod: await import("./visualSearchMemory"), rows };
+    const mod = await import("./visualSearchMemory");
+    // The queue de-duplicates across calls for the life of the process, so each test starts clean.
+    mod.resetVisualSearchMemoryQueue();
+    return { mod, rows };
   }
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const settle = async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  };
 
   it("writes a dead end for a provider that contributed nothing", async () => {
     const { mod, rows } = await loadWithFakeDb();
@@ -348,10 +360,15 @@ describe("RONDE 28 — recording happens at every adoption, not just at archivin
     // Window sized to the whole acceptance block rather than a tight byte count — RONDE 29
     // added the moving/still counters between the marker and this call, and a snug slice made
     // an unrelated insertion look like the hook had moved.
-    const after = pipelineSrc.slice(at, at + 3000);
+    // RONDE 86 widened this again for the same reason: the lineage/funnel recording added to
+    // markAdopted sits between the marker and `const mustFairUse`, and a snug slice would make an
+    // unrelated insertion look like the hook had moved. The relationship being asserted — the
+    // hook is inside the acceptance block, before the fair-use transform — is unchanged.
+    const after = pipelineSrc.slice(at, at + 4000);
     expect(after).toContain("recordAdoptedClipSource(");
     expect(after).toContain("contentKey,");
     // The hook must still sit inside the acceptance block, not somewhere later in the file.
+    expect(after.indexOf("const mustFairUse")).toBeGreaterThan(-1);
     expect(after.indexOf("recordAdoptedClipSource(")).toBeLessThan(after.indexOf("const mustFairUse"));
   });
 
@@ -373,8 +390,15 @@ describe("RONDE 28 — recording happens at every adoption, not just at archivin
       memorySrc.indexOf("export function recordAdoptedClipSource("),
       memorySrc.indexOf("Prior successful queries/sources"),
     );
-    expect(fn).toContain("void recordVisualSearchMemory(");
+    // RONDE 86: the row is QUEUED rather than fired. That is a stronger version of the same
+    // guarantee — enqueueVisualSearchMemory is synchronous and touches no connection at all,
+    // where `void recordVisualSearchMemory(...)` started a database round trip and merely
+    // discarded the promise. Still nothing to await, still nothing that can fail the render.
+    expect(fn).toContain("enqueueVisualSearchMemory({");
     expect(fn).toContain("): void {");
+    const start = memorySrc.indexOf("export function recordAdoptedClipSource(");
+    const body = memorySrc.slice(start, memorySrc.indexOf("\n}", start));
+    expect(body, "the hot path must not await the database").not.toContain("await ");
   });
 });
 
