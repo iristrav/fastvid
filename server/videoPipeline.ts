@@ -3817,7 +3817,9 @@ async function downloadFunnelCandidate(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  holdSec: number
+  holdSec: number,
+  /** RONDE 88: threaded so the funnel path records provenance like every other download route. */
+  sourcingCache?: SourcingCache
 ): Promise<string | null> {
   try {
     if (candidate.archivePick) {
@@ -3831,7 +3833,7 @@ async function downloadFunnelCandidate(
       return clip && fs.existsSync(clip) ? clip : null;
     }
     if (candidate.poolCandidate) {
-      return downloadAndTrimPoolCandidate(candidate.poolCandidate, workDir, sceneIndex, beatIndex, holdSec);
+      return downloadAndTrimPoolCandidate(candidate.poolCandidate, workDir, sceneIndex, beatIndex, holdSec, sourcingCache);
     }
     return null;
   } catch (err) {
@@ -3856,7 +3858,9 @@ export async function downloadAndTrimPoolCandidate(
   workDir: string,
   sceneIndex: number,
   beatIndex: number,
-  holdSec: number
+  holdSec: number,
+  /** RONDE 88: the render's sourcing cache, so this download opens a lineage like every other. */
+  sourcingCache?: SourcingCache
 ): Promise<string | null> {
   const safeId = candidate.assetId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
   const isVideo = candidate.mediaType === "video";
@@ -3870,7 +3874,9 @@ export async function downloadAndTrimPoolCandidate(
   const outPath = tagPathWithProviderAsset(
     path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`),
     candidate.source,
-    candidate.assetId
+    candidate.assetId,
+    sourcingCache,
+    { sceneIndex, beatIndex, title: candidate.title, mediaType: candidate.mediaType }
   );
 
   const _dtT0 = Date.now();
@@ -8802,7 +8808,9 @@ async function fetchWikimediaVideos(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}wikivid_${i}.mp4`),
           "wikimedia",
-          title
+          title,
+          sourcingCache,
+          { sceneIndex, sourceUrl: imageInfo.url, title, mediaType: "video" }
         );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly — this
@@ -8978,7 +8986,9 @@ async function fetchFlickrCCVideos(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}flickr_${i}.mp4`),
           "flickr",
-          photo.id
+          photo.id,
+          sourcingCache,
+          { sceneIndex, title: photo.title, mediaType: "image" }
         );
         // Fase 4: real Flickr-authored title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "flickr", photo.id, {
@@ -9219,7 +9229,9 @@ async function fetchSepiaSearchVideos(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}septube_${downloaded}.mp4`),
           "sepiasearch",
-          hit.uuid
+          hit.uuid,
+          sourcingCache,
+          { sceneIndex, sourceUrl: downloadUrl, title: hit.title, mediaType: "video" }
         );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9484,7 +9496,9 @@ export async function fetchGdeltTvNewsClips(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}gdelt_${downloaded}.mp4`),
           "gdelt_tv",
-          segmentId
+          segmentId,
+          sourcingCache,
+          { sceneIndex, mediaType: "video" }
         );
         providerMetrics(sourcingCache, "gdelt_tv").downloadCount++;
         const ok = await trimArchiveStreamToClip(
@@ -9690,7 +9704,9 @@ export async function fetchEuropeanaVideos(
           const outPath = tagPathWithProviderAsset(
             path.join(workDir, `scene_${sceneIndex}_${tag}euro_${downloaded}.mp4`),
             "europeana",
-            recordId
+            recordId,
+            sourcingCache,
+            { sceneIndex, sourceUrl: mediaUrl, mediaType: "video" }
           );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9834,7 +9850,9 @@ async function fetchVimeoCCVideos(
           const outPath = tagPathWithProviderAsset(
             path.join(workDir, `scene_${sceneIndex}_${tag}vimeo_${downloaded}.mp4`),
             "vimeo",
-            uri
+            uri,
+            sourcingCache,
+            { sceneIndex, mediaType: "video" }
           );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9953,7 +9971,9 @@ async function fetchMediaCccVideos(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}ccc_${downloaded}.mp4`),
           "media_ccc",
-          videoRec.recording_url
+          videoRec.recording_url,
+          sourcingCache,
+          { sceneIndex, sourceUrl: videoRec.recording_url, mediaType: "video" }
         );
         // Fase 4: real media.ccc-authored talk title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "media_ccc", videoRec.recording_url, {
@@ -10268,7 +10288,9 @@ export async function fetchNasaVideoClips(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_nasa_${fetched}.mp4`),
           "nasa",
-          nasaId
+          nasaId,
+          sourcingCache,
+          { sceneIndex, mediaType: "video" }
         );
         // Fase 4: real NASA-authored title, independent of our search query. Uses the raw field
         // (not the `title` local, which falls back to nasaId when absent) so this never stores
@@ -10382,7 +10404,9 @@ export async function fetchNaraClips(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_nara_${fetched}.mp4`),
           "nara",
-          videoUrl
+          videoUrl,
+          sourcingCache,
+          { sceneIndex, sourceUrl: videoUrl, title: record?.title, mediaType: "video" }
         );
         // Fase 4: real NARA-authored record title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "nara", videoUrl, {
@@ -10814,7 +10838,9 @@ export async function fetchInternetArchiveClips(
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}.mp4`),
           "internet_archive",
-          doc.identifier
+          doc.identifier,
+          sourcingCache,
+          { sceneIndex, title: doc.title, mediaType: "video" }
         );
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
@@ -11971,7 +11997,9 @@ export async function fetchYouTubeCCClips(
             const outPath = tagPathWithProviderAsset(
               path.join(workDir, `scene_${sceneIndex}_${pass.fileTag}_${fetched}.mp4`),
               "youtube_cc",
-              videoId
+              videoId,
+              sourcingCache,
+              { sceneIndex, title, mediaType: "video" }
             );
             // Fase 4: real YouTube-authored title/description, independent of our search query —
             // adoptClip's generic providerText lookup (see above) picks this up for both
@@ -15172,11 +15200,90 @@ export function providerAssetKey(provider: string, id: string): string {
  *  clipContentKey's existing file:${size}:${basename} heuristic, per the documented fallback
  *  chain (stable provider ID → canonical URL → existing content-key heuristic).
  */
-export function tagPathWithProviderAsset(outPath: string, provider: string, id: string | undefined): string {
+export function tagPathWithProviderAsset(
+  outPath: string,
+  provider: string,
+  id: string | undefined,
+  /**
+   * RONDE 88 — the render's sourcing cache, so the lineage is opened HERE.
+   *
+   * RONDE 87 recorded external provenance inside putCachedProviderAsset, gated on the cache entry
+   * carrying a `localPath`. Nothing in the codebase ever writes that field: all eighteen callers
+   * pass metadata only. The branch was dead, so every external provider — Wikimedia, Internet
+   * Archive, YouTube CC, Pexels, SepiaSearch, NARA, Europeana, NASA, LoC, Flickr — produced no
+   * lineage record at all and would have reported as UNVERIFIED in its own audit. Only the curated
+   * archive, which opens its record from the DB row, was ever covered.
+   *
+   * This function is the correct place and always was: it is called by every downloader at the
+   * one instant the provider NAME, the provider's own ASSET ID and the destination PATH are all in
+   * hand, straight from that provider's API response. Nothing is read from a filename.
+   *
+   * Optional so the pure string behaviour is unchanged for any caller that has no cache (tests,
+   * tools). Recorded BEFORE the download runs, matching the curated path, so a failed download has
+   * a record to attach its reason to instead of vanishing into a bare count.
+   */
+  cache?: SourcingCache,
+  meta?: {
+    sceneIndex?: number;
+    beatIndex?: number;
+    sourceUrl?: string;
+    title?: string;
+    mediaType?: "video" | "image" | "graphic" | "unknown";
+    query?: string;
+  }
+): string {
   if (!id?.trim()) return outPath;
   const key = providerAssetKey(provider, id).replace(":", "-");
   const ext = path.extname(outPath);
-  return `${outPath.slice(0, -ext.length)}__pid_${key}${ext}`;
+  const tagged = `${outPath.slice(0, -ext.length)}__pid_${key}${ext}`;
+  if (cache?.lineage) {
+    const contentKey = providerAssetKey(provider, id);
+    if (!cache.lineage.resolve(tagged, contentKey)) {
+      const record = cache.lineage.createLineage({
+        videoId: cache.lineage.videoId,
+        sceneIndex: meta?.sceneIndex ?? -1,
+        beatIndex: meta?.beatIndex ?? -1,
+        candidateId: contentKey,
+        contentKey,
+        provider,
+        providerAssetId: id,
+        sourceUrl: meta?.sourceUrl,
+        localPath: tagged,
+        mediaType: meta?.mediaType ?? "unknown",
+        query: meta?.query,
+        assetTitle: meta?.title,
+        route: "primary",
+      });
+      cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
+    }
+  }
+  return tagged;
+}
+
+/**
+ * RONDE 88: the download that `tagPathWithProviderAsset` opened a lineage for either produced the
+ * file or it did not, and both are facts worth recording against the asset.
+ *
+ * Called by each downloader once it knows the outcome. A no-op when the ledger never saw the path
+ * — which is itself visible, as a candidate that reached a download without being recorded.
+ */
+export function recordProviderDownloadOutcome(
+  cache: SourcingCache | undefined,
+  taggedPath: string,
+  ok: boolean,
+  reason?: string
+): void {
+  if (!cache?.lineage) return;
+  const record = cache.lineage.resolve(taggedPath);
+  if (!record) return;
+  if (ok) {
+    cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
+  } else {
+    cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_FAILED", {
+      status: "FAILED",
+      reason: normalizeFailureReason(reason),
+    });
+  }
 }
 
 // ─── Render-scoped sourcing cache (query cache + provider asset cache) ─────
@@ -15491,52 +15598,26 @@ export function putCachedProviderAsset(
   };
   cache.assets.set(key, merged);
   /**
-   * RONDE 86 — the moment provenance is knowable, it is recorded.
+   * RONDE 88 — this function ENRICHES a lineage record; it does not create one.
    *
-   * `key` is the same string clipContentKey() recovers from the `__pid_` tag in the filename, so
-   * the ledger's content-key index and the pipeline's dedup identity agree by construction. Only
-   * recorded once a local file exists: an entry written for a metadata/license check alone has no
-   * clip to attribute yet, and inventing one would put phantom rows in the manifest.
+   * RONDE 86/87 made it the recorder, gated on `merged.localPath`. That was wrong twice over.
+   * Nothing in the codebase ever writes `localPath` — all eighteen callers pass metadata only — so
+   * the branch was dead and every external provider went unrecorded. And even had it worked, this
+   * function is called for metadata and licence checks on assets that are never downloaded, so it
+   * is the wrong moment: it would have filed rows for candidates that produced no clip.
+   *
+   * tagPathWithProviderAsset is the right moment and is now the only creator — provider, asset id
+   * and destination path in one call, before the download. What is genuinely useful here is the
+   * provider-authored title and canonical URL, which usually arrive AFTER the tag was stamped. So
+   * this fills those in on a record that already exists, and creates nothing.
    */
-  if (merged.localPath) {
-    const existing = cache.lineage.resolve(merged.localPath, merged.contentKey ?? key);
-    if (existing) {
-      if (merged.canonicalUrl && !existing.originalUrl) existing.originalUrl = merged.canonicalUrl;
-      if (merged.storageUrl && !existing.sourceUrl) existing.sourceUrl = merged.storageUrl;
-      if (merged.providerText?.title && !existing.assetTitle) {
-        existing.assetTitle = merged.providerText.title;
-      }
-    } else {
-      /**
-       * RONDE 87 — this is where a provider becomes a PROVEN fact.
-       *
-       * `provider` and `id` are this function's own arguments, handed over by the fetcher that
-       * just talked to that provider's API. Nothing here is read off a filename or a URL shape.
-       * That is why createLineage may take the provider at face value at this one call site and
-       * mark the record VERIFIED — and why every other site downstream reads the record instead
-       * of setting a provider of its own.
-       */
-      const record = cache.lineage.createLineage({
-        videoId: cache.lineage.videoId,
-        sceneIndex: -1,
-        beatIndex: -1,
-        candidateId: key,
-        contentKey: merged.contentKey ?? key,
-        provider,
-        providerAssetId: id,
-        sourceUrl: merged.storageUrl,
-        originalUrl: merged.canonicalUrl,
-        localPath: merged.localPath,
-        mediaType: merged.durationSec != null && merged.durationSec > 0 ? "video" : "unknown",
-        assetTitle: merged.providerText?.title,
-        route: "primary",
-      });
-      // The bytes are on disk by the time a localPath is cached, so the download is a completed
-      // fact. The start event is written alongside it rather than inferred later: a SUCCEEDED with
-      // no START is one of the inconsistencies reconcile() looks for.
-      cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
-      cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
-    }
+  // Optional-chained: this function is exported and several callers hand it a hand-built cache
+  // object with no ledger on it. Provenance is a best-effort enrichment here, never a requirement.
+  const known = cache.lineage?.resolve(`unused:${key}`, merged.contentKey ?? key);
+  if (known) {
+    if (merged.canonicalUrl && !known.originalUrl) known.originalUrl = merged.canonicalUrl;
+    if (merged.storageUrl && !known.sourceUrl) known.sourceUrl = merged.storageUrl;
+    if (merged.providerText?.title && !known.assetTitle) known.assetTitle = merged.providerText.title;
   }
 }
 
@@ -27630,7 +27711,7 @@ async function fetchSceneVisualsInner(
           const batchResults = await Promise.all(
             batch.map(async (candidate) => ({
               candidate,
-              clipPath: await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec),
+              clipPath: await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec, dedup.sourcingCache),
             }))
           );
           for (const { candidate, clipPath } of batchResults) {
@@ -28006,7 +28087,7 @@ async function fetchSceneVisualsInner(
         let _poolFailReasons: string[] = [];
         for (const candidate of poolCandidates) {
           const _cT0 = Date.now();
-          poolClip = await downloadAndTrimPoolCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec);
+          poolClip = await downloadAndTrimPoolCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec, dedup.sourcingCache);
           if (poolClip) break;
           const reason = `${candidate.source}:${candidate.assetId.slice(0,20)} failed in ${Date.now()-_cT0}ms`;
           _poolFailReasons.push(reason);

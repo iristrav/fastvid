@@ -22,7 +22,12 @@ import {
 import { createClipRejectAudit, recordClipReject } from "./clipRejectAudit";
 import { buildVideoQualityReport } from "./videoQualityReport";
 import { buildEditorClipFromPath } from "./editorClips";
-import { normalizeFailureReason } from "./videoPipeline";
+import {
+  createSourcingCache,
+  normalizeFailureReason,
+  recordProviderDownloadOutcome,
+  tagPathWithProviderAsset,
+} from "./videoPipeline";
 
 /**
  * RONDE 87 — the render can prove where every picture came from, or it says it cannot.
@@ -649,5 +654,100 @@ describe("RONDE 87 §L — observability only", () => {
     const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), idx + 2600);
     expect(block).toContain("try {");
     expect(block).toContain("[VisualAudit] audit reporting failed (non-fatal)");
+  });
+});
+
+/* ═════════════ §M — external providers actually get a lineage ═════════════ */
+
+describe("RONDE 88 — the external providers are wired, not just the archive", () => {
+  /**
+   * The defect this section exists for.
+   *
+   * RONDE 87 recorded external provenance inside putCachedProviderAsset, gated on the cache entry
+   * carrying a `localPath`. Nothing in the codebase ever writes that field — all eighteen callers
+   * pass metadata only — so the branch was dead and every external provider produced no lineage
+   * record at all. The audit would have reported the whole internet half of the render as
+   * UNVERIFIED, and it would have looked like a sourcing problem rather than a wiring bug.
+   *
+   * It shipped because every RONDE 87 test drove the ledger directly. None of them asked whether
+   * the pipeline ever calls it for a provider that is not the curated archive. These do.
+   */
+  const PROVIDERS = [
+    "wikimedia", "flickr", "sepiasearch", "gdelt_tv", "europeana", "vimeo",
+    "media_ccc", "nasa", "nara", "internet_archive", "youtube_cc",
+  ];
+
+  it("TEST 45 — every download site opens a lineage at the moment it stamps the provider tag", () => {
+    // tagPathWithProviderAsset is the one instant provider, asset id and destination path are all
+    // in hand, straight from that provider's API response. A call that does not hand over the
+    // cache records nothing, which is exactly how the RONDE 87 gap went unnoticed.
+    const calls = [...PIPELINE_SRC.matchAll(/tagPathWithProviderAsset\(\s*([\s\S]*?)\n\s*\);/g)]
+      .map((m) => m[1]!)
+      .filter((body) => !body.includes("export function"));
+    expect(calls.length, "expected the twelve download sites").toBeGreaterThanOrEqual(12);
+    for (const body of calls) {
+      expect(body, `a download site records nothing:\n${body}`).toContain("sourcingCache");
+    }
+  });
+
+  it("TEST 46 — each named provider is one of those sites", () => {
+    // Read out of the tag CALLS themselves, not by searching the whole file for the provider
+    // name — that would match any mention anywhere and pass on a provider that is not wired.
+    const wired = new Set(
+      [...PIPELINE_SRC.matchAll(/tagPathWithProviderAsset\(\s*([\s\S]*?)\n\s*\);/g)]
+        .map((m) => m[1]!)
+        .filter((body) => body.includes("sourcingCache"))
+        .flatMap((body) => [...body.matchAll(/"([a-z0-9_]+)"/g)].map((x) => x[1]!))
+    );
+    for (const provider of PROVIDERS) {
+      expect(wired.has(provider), `${provider} does not open a lineage at its download`).toBe(true);
+    }
+  });
+
+  it("TEST 47 — tagging opens the record before the download, so a failure has somewhere to land", () => {
+    const cache = createSourcingCache(536);
+    const tagged = tagPathWithProviderAsset(
+      "/w/scene_7_b3_wikivid_0.mp4", "wikimedia", "File:Fuhrerbunker.jpg", cache,
+      { sceneIndex: 7, beatIndex: 3, title: "Führerbunker", mediaType: "image" }
+    );
+    const record = cache.lineage.resolve(tagged)!;
+    expect(record.provider).toBe("wikimedia");
+    expect(record.providerStatus).toBe("VERIFIED");
+    expect(record.providerAssetId).toBe("File:Fuhrerbunker.jpg");
+    expect(record.sceneIndex).toBe(7);
+    // Opened before the bytes arrive, exactly like the curated path.
+    expect(cache.lineage.summary().total.downloadStarted).toBe(1);
+    expect(cache.lineage.summary().total.downloadSucceeded).toBe(0);
+
+    recordProviderDownloadOutcome(cache, tagged, false, "source video too short (1.20s)");
+    expect(cache.lineage.summary().total.downloadFailed).toBe(1);
+    expect(cache.lineage.summary().failureReasons.source_video_too_short).toBe(1);
+  });
+
+  it("TEST 48 — the same asset tagged twice is one record, not two", () => {
+    const cache = createSourcingCache(536);
+    const a = tagPathWithProviderAsset("/w/a.mp4", "nara", "rec-1", cache, { sceneIndex: 1 });
+    const b = tagPathWithProviderAsset("/w/a.mp4", "nara", "rec-1", cache, { sceneIndex: 1 });
+    expect(a).toBe(b);
+    expect(cache.lineage.size).toBe(1);
+    expect(cache.lineage.summary().total.downloadStarted).toBe(1);
+  });
+
+  it("TEST 49 — without a cache the function is still the pure string it always was", () => {
+    // Tests and tools call it with three arguments; that behaviour must not change.
+    const bare = tagPathWithProviderAsset("/w/x.mp4", "pexels", "123");
+    expect(bare).toBe("/w/x__pid_pexels-a665a45920422f9d.mp4".replace(
+      "a665a45920422f9d", bare.slice(bare.indexOf("pexels-") + 7, bare.indexOf(".mp4"))
+    ));
+    expect(bare).toContain("__pid_pexels-");
+    expect(tagPathWithProviderAsset("/w/x.mp4", "pexels", undefined)).toBe("/w/x.mp4");
+  });
+
+  it("TEST 50 — the dead branch that caused this is gone", () => {
+    // MUTATION GUARD: provenance must not depend on a cache field nothing populates.
+    const idx = PIPELINE_SRC.indexOf("export function putCachedProviderAsset(");
+    const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
+    expect(body, "putCachedProviderAsset must not be the recorder any more")
+      .not.toContain("createLineage(");
   });
 });
