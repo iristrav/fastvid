@@ -177,7 +177,12 @@ describe("RONDE 77 §D — action becomes a query, after the entities and never 
 
   it("BEAT 1 — person + place + action exists, behind person + place + time", () => {
     const qs = typedQueryPrefix(BEAT_1);
-    expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker 1945");
+    // RONDE 88 §4: the bare name+place now leads and the year-qualified form follows at
+    // position 2. That brief states the ordering with a worked example ("Hitler Poland",
+    // then "Hitler Poland 1939"). What RONDE 73/77 established — the typed combination
+    // leads and carries the year — still holds across the first two queries.
+    expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker");
+    expect(qs[1]).toBe("Adolf Hitler Fuhrerbunker 1945");
     expect(qs).toContain("Adolf Hitler Fuhrerbunker dictated");
     expect(qs).toContain("Adolf Hitler dictated 1945");
   });
@@ -198,7 +203,8 @@ describe("RONDE 77 §D — action becomes a query, after the entities and never 
     expect(archivalQueries(BEAT_1)).toContain("Adolf Hitler Fuhrerbunker dictated");
     expect(archivalQueries(BEAT_4)).toContain("Churchill France addressed");
     // And the entity combination still leads on that path, exactly as RONDE 73 measured it.
-    expect(archivalQueries(BEAT_1)[0]).toBe("Adolf Hitler Fuhrerbunker 1945");
+    expect(archivalQueries(BEAT_1).slice(0, 2))
+      .toEqual(["Adolf Hitler Fuhrerbunker", "Adolf Hitler Fuhrerbunker 1945"]);
     expect(archivalQueries(BEAT_3)[0]).toBe("Reichstag 1945");
   });
 
@@ -285,7 +291,7 @@ describe("RONDE 77 §E — a missing action leaves no gap", () => {
 
 describe("RONDE 77 §F — buildBeatVisualQueryList asks the typed question first", () => {
   const cases: Array<[string, string]> = [
-    [BEAT_1, "Adolf Hitler Fuhrerbunker 1945"],
+    [BEAT_1, "Adolf Hitler Fuhrerbunker"],
     [BEAT_2, "Brandenburg Gate Battle of Berlin"],
     [BEAT_3, "Reichstag 1945"],
     [BEAT_4, "Churchill France"],
@@ -315,10 +321,14 @@ describe("RONDE 77 §F — buildBeatVisualQueryList asks the typed question firs
   it("the scene's person is context, and the beat's own answer outranks it", () => {
     // BEAT_3 is about Soviet soldiers. The scene's protagonist is Hitler, and before this round
     // his bare name was query #1 for this beat. Both angles now go, in the honest order.
+    // RONDE 88 §7/§11 REVERSES the second half of this. scenePersons is assembled from the scene
+    // AND from the video's title, so on a beat that names nobody it is an inference — and this
+    // beat is about Soviet soldiers, not about Hitler. The scene's person no longer enters the
+    // beat's typed queries without the scene text proving the connection. The first assertion,
+    // which is what this test is really about, is unchanged.
     const qs = buildBeatVisualQueryList(BEAT_3, SCENE, TITLE, ["Adolf Hitler"], 4);
     expect(qs[0]).toBe("Reichstag 1945");
-    expect(qs[1]).toBe("Adolf Hitler Reichstag 1945");
-    expect(qs).toContain("Adolf Hitler");
+    expect(qs.slice(0, 3).join(" | ")).not.toContain("Adolf Hitler Reichstag");
   });
 
   it("a beat with nothing typed to say adds nothing — the list is untouched", () => {
@@ -376,13 +386,19 @@ describe("RONDE 77 §G — added to the list, never swapped into it", () => {
 describe("RONDE 77 §H — buildPersonCelebrityVideoQueries leads with the typed combination", () => {
   it("the typed combination leads", () => {
     // BEAT_1 names the same person the caller asked for, so both answers agree.
-    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_1, 0)[0])
-      .toBe("Adolf Hitler Fuhrerbunker 1945");
+    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_1, 0).slice(0, 2))
+      .toEqual(["Adolf Hitler Fuhrerbunker", "Adolf Hitler Fuhrerbunker 1945"]);
     // BEAT_3 names nobody, so the caller's person is the only one there is.
-    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_3, 0)[0])
-      .toBe("Reichstag 1945");
-    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_3, 0)[1])
-      .toBe("Adolf Hitler Reichstag 1945");
+    // RONDE 88 §1: a PROVEN person leads. BEAT_3 names nobody, and an explicit celebrity fetch
+    // for Adolf Hitler is proven context about that person, so his name now leads this beat's
+    // list rather than following the place. Both angles are still asked.
+    const b3 = buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_3, 0);
+    expect(b3[0]).toBe("Adolf Hitler Reichstag");
+    // RONDE 88: buildPersonCelebrityVideoQueries takes only the FIRST TWO typed queries
+    // (videoPipeline.ts, `.slice(0, 2)`) and fills the rest with its own person variants, so a
+    // third typed query cannot appear in this list by construction. The place+year question is
+    // still asked — on the typed prefix itself, which is where the contract lives.
+    expect(typedQueryPrefix(BEAT_3, { forcePerson: "Adolf Hitler" })).toContain("Reichstag 1945");
   });
 
   it("RONDE 78 — the person the BEAT names is not displaced by the person requested", () => {
@@ -458,7 +474,9 @@ describe("RONDE 77 §J — the central lever cannot re-enter its own caller", ()
     ]) {
       expect(body, `typedQueryPrefix must not call ${forbidden}`).not.toContain(forbidden);
     }
-    expect(body).toContain("combinedTypedQueriesForBeat(");
+    // RONDE 88: the combination step moved into searchQueryContract, which is dependency-free and
+    // therefore cannot re-enter any query builder either — the property this test guards.
+    expect(body).toContain("buildPrioritisedQueries(");
   });
 
   it("the two builders it was wired into terminate", () => {
@@ -528,7 +546,11 @@ describe("RONDE 77 §K — nothing here touches how a candidate is scored", () =
     // The action parameter defaults to "", and a defaulted action must add nothing at all.
     const withoutAction = combinedTypedQueriesForBeat(BEAT_3, [], "Reichstag");
     const withAction = combinedTypedQueriesForBeat(BEAT_3, [], "Reichstag", "raised");
-    expect(withoutAction).toEqual(["Reichstag 1945", "Reichstag flag 1945", "Reichstag archival footage"]);
+    // RONDE 88 reordered this family and added the place+object+time form; the RONDE 73 members
+    // are all still present, which is what this test exists to hold.
+    for (const q of ["Reichstag 1945", "Reichstag flag 1945", "Reichstag archival footage"]) {
+      expect(withoutAction).toContain(q);
+    }
     for (const q of withoutAction) expect(withAction).toContain(q);
     expect(withAction.length).toBeGreaterThan(withoutAction.length);
   });

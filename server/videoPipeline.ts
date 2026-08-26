@@ -300,6 +300,17 @@ import {
   withGlobalMediaFetch,
   withGlobalVisionGate,
 } from "./globalResourceBudget";
+import {
+  buildPrioritisedQueries,
+  checkPersonName,
+  emptyQueryContext,
+  formatSearchQueryRejected,
+  isFunctionWord,
+  isPronounToken,
+  provenToken,
+  validateSearchQuery,
+  type VerifiedQueryContext,
+} from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
@@ -12220,7 +12231,15 @@ function cleanPersonNameCandidate(candidate: string): string[] {
 }
 
 /** Extract a person name from prompts/titles like "Rumors about Kylie Jenner". */
-export function extractPrimaryPersonFromText(text?: string): string {
+export function extractPrimaryPersonFromText(
+  text?: string,
+  /**
+   * RONDE 88 (§11): the script body, when the caller has it. A Title Case input yields a name
+   * only when that name also appears here — a title is not evidence that a person is in a beat.
+   * Omitted (the legacy callers) means Title Case input yields nothing, which is the safe answer.
+   */
+  corroboration = ""
+): string {
   if (!text?.trim()) return "";
   const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
   const aboutMatch = cleaned.match(/\babout\s+([A-Za-z][\w'-]+(?:\s+[A-Za-z][\w'-]+){0,2})/i);
@@ -12237,7 +12256,20 @@ export function extractPrimaryPersonFromText(text?: string): string {
     // A full name only when ≥2 clean tokens survive — a single leftover token ("Hitler" from
     // "Why Hitler Lost") is a surname anchor, not a name; see extractPersonSurnameAnchor.
     const tokens = cleanPersonNameCandidate(candidate);
-    if (tokens.length >= 2) return tokens.join(" ");
+    if (tokens.length < 2) continue;
+    /**
+     * RONDE 88 (§8/§11) — the same structural check the script scan uses.
+     *
+     * This function is usually handed a TITLE, and a title capitalises every word, so its
+     * capitalisation proves nothing about which words are names. Measured before this line:
+     * "Why Hitler Married Eva Braun Just Before The End" → "Eva Braun Just", and
+     * "Inside The Final Hours Of Adolf Hitler" → "Of Adolf". checkPersonName splits on function
+     * words and, for Title Case input, requires the name to be corroborated by the caller's
+     * proven text — a title alone is not evidence that anybody is in any beat.
+     */
+    const name = tokens.join(" ");
+    if (!checkPersonName(name, text, corroboration, { isKnownVerb: isKnownPersonActionVerb }).ok) continue;
+    return name;
   }
   return "";
 }
@@ -12271,8 +12303,8 @@ export function resolvePersonFromSurnameAnchor(anchor: string, names: string[]):
   return names.find((n) => n.toLowerCase().split(/\s+/).pop() === a) ?? "";
 }
 
-function extractPrimaryPersonFromTitle(title?: string): string {
-  return extractPrimaryPersonFromText(title);
+function extractPrimaryPersonFromTitle(title?: string, corroboration = ""): string {
+  return extractPrimaryPersonFromText(title, corroboration);
 }
 
 function isPersonCelebrityTopic(topicContext?: string): boolean {
@@ -13456,7 +13488,35 @@ const PERSON_ACTION_VERBS = new Set([
   "signs","gave","gives","took","takes","received","receives","sent","sends","summoned",
   "celebrated","celebrates","watched","watches","listened","waited","waits","walked","walks",
   "sat","stood","turned","looked","looks","smiled","laughed","wept","shouted","whispered",
+  // RONDE 88 — the verbs a HISTORICAL documentary actually uses about its subject.
+  //
+  // Measured gap: "Hitler invaded Poland in 1939" produced PERSON=[] and the query "Poland
+  // invaded", because "invaded" was nowhere on this list. The list already is the pipeline's
+  // person-evidence vocabulary; these are the same kind of word, for the genre this product is
+  // built for. Every one takes a human subject.
+  "invaded","invades","conquered","conquers","attacked","attacks","defeated","defeats",
+  "surrendered","surrenders","captured","captures","liberated","liberates","occupied","occupies",
+  "bombed","bombs","besieged","launched","launches","seized","seizes","annexed","annexes",
+  "crossed","crosses","marched","marches","advanced","advances","withdrew","withdraws",
+  "negotiated","negotiates","betrayed","betrays","purged","purges","executed","executes",
+  "founded","founds","built","builds","discovered","discovers","published","publishes",
+  "studied","studies","researched","taught","teaches","painted","paints","composed","composes",
 ]);
+
+/**
+ * RONDE 88 — is this token a verb the pipeline already recognises?
+ *
+ * Used only to judge Title Case text, where capitalisation proves nothing about any word. Reads
+ * the existing PERSON_ACTION_VERBS vocabulary rather than introducing a second list, and also
+ * accepts the regular past-tense morphology that vocabulary is built from, so a title verb nobody
+ * listed ("Frobnicated") is still refused as a name token.
+ */
+function isKnownPersonActionVerb(token: string): boolean {
+  const t = token.trim().toLowerCase();
+  if (!t) return false;
+  if (PERSON_ACTION_VERBS.has(t)) return true;
+  return t.length >= 6 && t.endsWith("ed");
+}
 
 /** Lower-cased place vocabulary the pipeline already carries, for O(1) lookup. */
 const GEO_SLUG_SET = new Set(ALL_GEO_SLUGS.map((s) => s.toLowerCase()));
@@ -13496,7 +13556,27 @@ function sentenceSupportsPerson(sentence: string, token: string): boolean {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (new RegExp(`\\b${escaped}'s\\b`, "i").test(sentence)) return true;
   const after = new RegExp(`\\b${escaped}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
-  return Boolean(after?.[1] && PERSON_ACTION_VERBS.has(after[1].toLowerCase()));
+  if (after?.[1] && PERSON_ACTION_VERBS.has(after[1].toLowerCase())) return true;
+  /**
+   * RONDE 88 (§2) — coordination carries the evidence across.
+   *
+   * Measured: "Churchill and Roosevelt met at Casablanca" kept only Roosevelt. The verb "met"
+   * sits behind the SECOND name, so the first one had nothing directly after it but "and" and
+   * was dropped — and the beat then searched for one of the two men it names.
+   *
+   * This is grammar, not a guess: "X and Y <person-verb>" makes X and Y the same kind of thing,
+   * and the evidence for one is the evidence for both. Only a coordinating conjunction counts,
+   * and the partner must itself be capitalised and pass the same verb test.
+   */
+  const coordinated = new RegExp(`\\b${escaped}\\b\\s*,?\\s*(?:and|&)\\s+(\\p{Lu}[\\p{Ll}'’-]+)`, "u").exec(sentence);
+  if (coordinated?.[1]) return sentenceSupportsPerson(sentence, coordinated[1]);
+  const coordinatedBefore = new RegExp(`(\\p{Lu}[\\p{Ll}'’-]+)\\s*,?\\s*(?:and|&)\\s+${escaped}\\b`, "u").exec(sentence);
+  if (coordinatedBefore?.[1]) {
+    const partner = coordinatedBefore[1]!;
+    const partnerAfter = new RegExp(`\\b${partner}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
+    if (partnerAfter?.[1] && PERSON_ACTION_VERBS.has(partnerAfter[1].toLowerCase())) return true;
+  }
+  return false;
 }
 
 /**
@@ -13677,28 +13757,126 @@ export function extractActionCue(beatText: string): string {
  */
 export function typedQueryPrefix(
   beatText: string,
-  opts: { scenePersons?: string[]; forcePerson?: string } = {}
+  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
 ): string[] {
+  return buildPrioritisedQueries(buildVerifiedQueryContextForBeat(beatText, opts)).map((q) => q.query);
+}
+
+/**
+ * RONDE 88 — the beat's PROVEN typed context, with provenance on every term.
+ *
+ * Three measured defects are closed here, and each one is a rule of §1–§13:
+ *
+ *   · Every person the beat names is kept, in order. "Churchill and Roosevelt met at Casablanca"
+ *     produced only "Roosevelt Casablanca"; Churchill was silently dropped by persons[0].
+ *   · A supplied person — from the scene, or from the video's title — is admitted ONLY when the
+ *     beat's own text or the scene text proves the connection. §7 and §11: a title is not evidence
+ *     that a person appears in a sentence. "Eva Braun Just France" and "Adolf Hitler France" were
+ *     both measured on a beat naming neither of them.
+ *   · A term that cannot be proven is still RECORDED, marked unverified with the route that
+ *     produced it, so validateSearchQuery can name it in the rejection rather than the query
+ *     silently going out one word lighter.
+ */
+export function buildVerifiedQueryContextForBeat(
+  beatText: string,
+  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
+): VerifiedQueryContext {
   const text = (beatText ?? "").trim();
-  if (!text) return [];
-  const place = extractVisualPlacePhrase(text);
-  const action = extractActionCue(text);
-  const family = (persons: string[]): string[] =>
-    combinedTypedQueriesForBeat(text, persons, place, action);
+  const ctx = emptyQueryContext();
+  if (!text) return ctx;
 
-  const own = family(extractPersonNamesFromText(text));
-  const supplied =
-    toQueryString(opts.forcePerson ?? "") ||
-    ((opts.scenePersons ?? []).map((p) => toQueryString(p)).find(Boolean) ?? "");
-  if (!supplied) return [...new Set(own)];
-
-  const contextual = family([supplied]);
-  const woven: string[] = [];
-  for (let i = 0; i < Math.max(own.length, contextual.length); i += 1) {
-    if (own[i]) woven.push(own[i]!);
-    if (contextual[i]) woven.push(contextual[i]!);
+  /**
+   * RONDE 88 (§13) — persons in the order the beat states them.
+   *
+   * extractPersonNamesFromText returns full names before bare surnames, so "Hitler met Eva Braun"
+   * came back as ["Eva Braun", "Hitler"] and the first query read "Eva Braun Hitler". The order
+   * of a query's names is the order the sentence puts them in.
+   */
+  const named = extractPersonNamesFromText(text);
+  const positionOf = (name: string): number => {
+    const idx = text.toLowerCase().indexOf(name.toLowerCase());
+    return idx < 0 ? Number.MAX_SAFE_INTEGER : idx;
+  };
+  for (const name of [...named].sort((a, b) => positionOf(a) - positionOf(b))) {
+    ctx.persons.push(provenToken(name, "person", "beat_text"));
   }
-  return [...new Set(woven)];
+  /**
+   * RONDE 88 (§7/§11) — a supplied person is proven only when something states the connection.
+   *
+   * forcePerson and scenePersons are NOT the same claim, and conflating them was the bug:
+   *
+   *   forcePerson  the caller is explicitly fetching footage OF this person — a celebrity
+   *                fetch for Adolf Hitler is about Adolf Hitler by definition. That is the
+   *                caller's own proven context, not an inference about the sentence.
+   *   scenePersons a list assembled from the scene AND from the video's title. A title is not
+   *                evidence that anybody appears in any given sentence, which is how
+   *                "Eva Braun Just France" and "Adolf Hitler France" were both measured on a
+   *                beat that names neither. Admitted only when the scene text says so.
+   *
+   * A name that fails checkPersonName is refused on either route — a caller cannot launder a
+   * sentence fragment into a query by passing it as forcePerson.
+   */
+  const forced = toQueryString(opts.forcePerson ?? "");
+  if (forced && !ctx.persons.some((p) => p.term.toLowerCase() === forced.toLowerCase())) {
+    ctx.persons.push(
+      checkPersonName(forced, forced, "", { isKnownVerb: isKnownPersonActionVerb }).ok
+        ? provenToken(forced, "person", "proven_entity")
+        : { term: forced, type: "person", source: "title_inference", verified: false }
+    );
+  }
+  for (const raw of opts.scenePersons ?? []) {
+    const name = toQueryString(raw);
+    if (!name) continue;
+    if (ctx.persons.some((p) => p.term.toLowerCase() === name.toLowerCase())) continue;
+    const inScene = Boolean(opts.sceneText) && checkPersonName(name, opts.sceneText!).ok;
+    ctx.persons.push(
+      inScene
+        ? provenToken(name, "person", "scene_text")
+        : { term: name, type: "person", source: "title_inference", verified: false }
+    );
+  }
+
+  const place = extractVisualPlacePhrase(text);
+  if (place) ctx.places.push(provenToken(place, "place", "beat_text"));
+  const action = extractActionCue(text);
+  if (action) ctx.actions.push(provenToken(action, "action", "beat_text"));
+  const typed = buildTypedRetrievalContext(text, {
+    persons: ctx.persons.filter((p) => p.verified).map((p) => p.term),
+    place,
+    action,
+  });
+  if (typed.event) ctx.events.push(provenToken(typed.event, "event", "beat_text"));
+  if (typed.object) ctx.objects.push(provenToken(typed.object, "object", "beat_text"));
+  if (typed.year) ctx.years.push(provenToken(typed.year, "year", "beat_text"));
+  if (typed.time && typed.time !== typed.year) ctx.time.push(provenToken(typed.time, "time", "beat_text"));
+  return ctx;
+}
+
+/**
+ * RONDE 88 (§16) — the last gate before a provider is asked anything.
+ *
+ * Returns the query when it is safe to send and null when it is not, logging the refusal with the
+ * term and the route that produced it. Called from cachedProviderSearch, which every provider
+ * search in this file funnels through.
+ */
+export function guardProviderQuery(
+  query: string,
+  provider: string,
+  ctx?: VerifiedQueryContext,
+  meta: { renderId?: string; sceneIndex?: number; beatIndex?: number; route?: string } = {}
+): string | null {
+  const verdict = validateSearchQuery(query, ctx);
+  if (verdict.ok) return query;
+  console.warn(
+    formatSearchQueryRejected({
+      ...meta,
+      query,
+      provider,
+      reason: verdict.reason ?? "UNVERIFIED_TERM",
+      offendingTerm: verdict.offendingTerm,
+    })
+  );
+  return null;
 }
 
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
@@ -13729,6 +13907,16 @@ export function extractPersonNamesFromText(text: string): string[] {
       const joined = seg.join(" ");
       if (seg.length < 2 || joined.length < 5) continue;
       if (PERSON_NAME_SKIP_PHRASES.has(joined.toLowerCase())) continue;
+      /**
+       * RONDE 88 (§8) — the structural check, in front of the historical blocklist.
+       *
+       * TITLE_NON_NAME_WORDS above splits on words somebody remembered to add. It did not carry
+       * "just", "of" or "purged", which is how "Eva Braun Just", "Of Adolf" and "Stalin Purged"
+       * were measured reaching providers. checkPersonName refuses on grammar instead: no function
+       * word inside a name, every token name-shaped, the whole name contiguous in this very text,
+       * and — for Title Case input, where capitalisation proves nothing — corroboration required.
+       */
+      if (!checkPersonName(joined, text, "", { isKnownVerb: isKnownPersonActionVerb }).ok) continue;
       // RONDE 72: a run naming a thing is not a person. One head noun is decisive — "Eiffel
       // Tower" carries "tower", "British Spitfire" carries "spitfire".
       if (seg.some(isThingToken)) continue;
@@ -13759,6 +13947,16 @@ export function extractPersonNamesFromText(text: string): string[] {
       if (TITLE_NON_NAME_WORDS.has(token.toLowerCase())) continue;
       if (PERSON_NAME_SKIP_PHRASES.has(token.toLowerCase())) continue;
       if (isNonPersonToken(token)) continue;
+      /**
+       * RONDE 88 (§9) — a pronoun is never a person.
+       *
+       * Measured before this line existed: "She addressed the nation after the fall of France"
+       * produced PERSON=["She"], and the beat's first provider query was "She France". The
+       * single-token branch only asked whether the sentence showed the token ACTING like a
+       * person, and "addressed" is on the person-verb list, so a capitalised pronoun at the start
+       * of a sentence passed every check. Function words are refused for the same reason.
+       */
+      if (isPronounToken(token) || isFunctionWord(token)) continue;
       if (!sentenceSupportsPerson(sentence, token)) continue;
       found.add(token);
     }
@@ -15544,6 +15742,29 @@ export async function cachedProviderSearch<T>(
   query: string,
   search: () => Promise<T>
 ): Promise<T> {
+  /**
+   * RONDE 88 (§16/§17) — every provider search in this file funnels through here, which makes it
+   * the one place a query can be refused for all of them at once.
+   *
+   * Without a per-beat context the validator can only apply the checks that need none: an empty
+   * query, and a capitalised pronoun. That is deliberate rather than lenient — "She France" was a
+   * real measured query, and refusing what is provably wrong is worth more than pretending the
+   * rest was checked. The queries built through buildVerifiedQueryContextForBeat carry their
+   * context and get the full check before they ever reach a fetcher.
+   */
+  const verdict = validateSearchQuery(query);
+  if (!verdict.ok) {
+    console.warn(
+      formatSearchQueryRejected({
+        query,
+        provider,
+        reason: verdict.reason ?? "UNVERIFIED_TERM",
+        offendingTerm: verdict.offendingTerm,
+        route: "provider_search",
+      })
+    );
+    return [] as unknown as T;
+  }
   if (!cache) return search();
   const key = providerQueryCacheKey(provider, query);
   const m = providerMetrics(cache, provider);

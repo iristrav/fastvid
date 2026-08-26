@@ -2,6 +2,7 @@
  * Universal media research engine — Laag 1 (intent) + Laag 3 (ranking).
  * Laag 2 (multi-source fetch) and Laag 4 (montage) live in videoPipeline.ts.
  */
+import { buildPrioritisedQueries, emptyQueryContext, provenToken } from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 import path from "path";
 import { invokeLLM } from "./_core/llm";
@@ -728,19 +729,32 @@ export function buildTypedRetrievalContext(
   };
 }
 
-/** The query family for one already-assembled context. The single combination point. */
+/**
+ * The query family for one already-assembled context. The single combination point.
+ *
+ * RONDE 88 — there is now exactly ONE builder, and this delegates to it.
+ *
+ * Two builders existed for a few hours during that round and they ordered their output
+ * differently, which is precisely what §18 forbids: primary, fallback, rescue and backfill must
+ * not each hold their own reading of the same sentence. buildPrioritisedQueries enforces the
+ * mandated order (PERSON > PLACE/COUNTRY > EVENT > ACTION > OBJECT > TIME), keeps every person
+ * the beat names, and — unlike buildCombinedTypedQueries below — produces queries for a beat that
+ * names only people, which used to return nothing at all.
+ *
+ * buildCombinedTypedQueries is retained: it is still the combination engine for the multi-target
+ * archival query builder further down this file, which works from intent targets rather than a
+ * typed context.
+ */
 export function centralTypedQueries(ctx: TypedRetrievalContext): string[] {
-  return buildCombinedTypedQueries({
-    person: ctx.person,
-    place: ctx.place,
-    // The year anchors the entity combinations; the month-qualified period is a variant behind
-    // them. Swapping these would rewrite every query RONDE 73 and RONDE 75 pinned.
-    time: ctx.year,
-    period: ctx.time,
-    event: ctx.event,
-    object: ctx.object,
-    action: ctx.action,
-  });
+  const q = emptyQueryContext();
+  if (ctx.person) q.persons.push(provenToken(ctx.person, "person"));
+  if (ctx.place) q.places.push(provenToken(ctx.place, "place"));
+  if (ctx.event) q.events.push(provenToken(ctx.event, "event"));
+  if (ctx.action) q.actions.push(provenToken(ctx.action, "action"));
+  if (ctx.object) q.objects.push(provenToken(ctx.object, "object"));
+  if (ctx.year) q.years.push(provenToken(ctx.year, "year"));
+  if (ctx.time && ctx.time !== ctx.year) q.time.push(provenToken(ctx.time, "time"));
+  return buildPrioritisedQueries(q).map((x) => x.query);
 }
 
 /**

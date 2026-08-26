@@ -97,7 +97,9 @@ function wikiVideoQueries(beat: string, fastMode = false): string[] {
 
 describe("RONDE 75 — the typed query is #1 on both paths", () => {
   const cases: Array<[string, string, string[]]> = [
-    [BEAT_1, "Adolf Hitler Fuhrerbunker 1945", ["Adolf Hitler", "Fuhrerbunker", "1945"]],
+    // RONDE 88 §4: the bare name+place leads, the year-qualified form follows at position 2.
+    // Both still lead the list, and all three terms still reach the provider.
+    [BEAT_1, "Adolf Hitler Fuhrerbunker", ["Adolf Hitler", "Fuhrerbunker", "1945"]],
     // RONDE 78 named the event rather than reducing it to its verb: "battle" -> "Battle of Berlin".
     [BEAT_2, "Brandenburg Gate Battle of Berlin", ["Brandenburg Gate", "Battle of Berlin"]],
     [BEAT_3, "Reichstag 1945", ["Reichstag", "1945"]],
@@ -126,7 +128,9 @@ describe("RONDE 75 — the typed query is #1 on both paths", () => {
         (q) => q.includes("Adolf Hitler") && q.includes("Fuhrerbunker") && q.includes("1945")
       );
       expect(combined).toBeDefined();
-      expect(qs.indexOf(combined!)).toBe(0);
+      // Position 1 rather than 0 since RONDE 88 — "Adolf Hitler Fuhrerbunker" leads it.
+      expect(qs.indexOf(combined!)).toBe(1);
+      expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker");
     }
   });
 

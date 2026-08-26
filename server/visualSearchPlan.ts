@@ -317,9 +317,12 @@ Return JSON:
 {
   "intent": "one sentence: what should the viewer see? (e.g. 'Roman emperor addressing the Senate')",
   "reasoning": "2–3 sentences explaining which search terms best represent this visually and why",
-  "styles": [{"query": "painting", "confidence": 0.8, "reason": "historical era"}],  // visual media types, max 6
-  "fallback": [{"query": "empty harbor", "confidence": 0.4, "reason": "visual metaphor for trade collapse"}]  // metaphorical equivalents, max 8
-}`,
+  "styles": [{"query": "painting", "confidence": 0.8, "reason": "historical era"}]  // visual media types, max 6
+}
+
+RONDE 88: do NOT invent subjects. Every term you return must be a MEDIA TYPE or
+VISUAL STYLE (painting, engraving, newsreel, black and white photograph). Never a
+place, person, event or object that is not already in the narration above.`,
         },
       ],
       preferProvider: "groq",
@@ -481,7 +484,15 @@ export function searchPlanRounds(plan: VisualSearchPlan): Array<{
         ...plan.styles.map((s) => scored(s, 0.4, "visual style")),
       ],
     },
-    { label: "visual-equiv", items: plan.fallback },
+    /**
+     * RONDE 88 (§10) — the "visual-equiv" round is REMOVED.
+     *
+     * It carried plan.fallback, which the LLM prompt used to request explicitly as "metaphorical
+     * equivalents" — its own example was "empty harbor" for "trade collapse". Those words are not
+     * in the script by construction, and the round was consumed with visionFloor: 0, so an
+     * invented subject faced no picture check either. The field remains on the type so plans
+     * stored before this round still parse; nothing reads it into a query any more.
+     */
   ];
 
   return rounds.map(({ label, items }) => {

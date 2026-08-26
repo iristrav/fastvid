@@ -160,7 +160,7 @@ describe("RONDE 73 §D3 — person, place and time in one query", () => {
     );
     expect(combined, "person + place + time must exist as ONE query").toBeDefined();
     // And it leads: the archive is asked the specific question first.
-    expect(queries[0]).toBe("Adolf Hitler Fuhrerbunker 1945");
+    expect(queries[0]).toBe("Adolf Hitler Fuhrerbunker");
   });
 
   it("BEAT 2 — Brandenburg Gate and the battle survive into the family", () => {
