@@ -3992,7 +3992,7 @@ export async function downloadAndTrimPoolCandidate(
     candidate.source,
     candidate.assetId,
     sourcingCache,
-    { sceneIndex, beatIndex, title: candidate.title, mediaType: candidate.mediaType }
+    { sceneIndex, beatIndex, title: candidate.title, mediaType: candidate.mediaType, searchRoute: `scenePool:${candidate.source}` }
   );
 
   const _dtT0 = Date.now();
@@ -8955,7 +8955,7 @@ async function fetchWikimediaVideos(
           "wikimedia",
           title,
           sourcingCache,
-          { sceneIndex, sourceUrl: imageInfo.url, title, mediaType: "video" }
+          { sceneIndex, sourceUrl: imageInfo.url, title, mediaType: "video", searchRoute: "fetchWikimediaVideos" }
         );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly — this
@@ -9144,7 +9144,7 @@ async function fetchFlickrCCVideos(
           "flickr",
           photo.id,
           sourcingCache,
-          { sceneIndex, title: photo.title, mediaType: "image" }
+          { sceneIndex, title: photo.title, mediaType: "image", searchRoute: "fetchFlickrCCVideos" }
         );
         // Fase 4: real Flickr-authored title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "flickr", photo.id, {
@@ -9388,7 +9388,7 @@ async function fetchSepiaSearchVideos(
           "sepiasearch",
           hit.uuid,
           sourcingCache,
-          { sceneIndex, sourceUrl: downloadUrl, title: hit.title, mediaType: "video" }
+          { sceneIndex, sourceUrl: downloadUrl, title: hit.title, mediaType: "video", searchRoute: "fetchSepiaSearchVideos" }
         );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9656,7 +9656,7 @@ export async function fetchGdeltTvNewsClips(
           "gdelt_tv",
           segmentId,
           sourcingCache,
-          { sceneIndex, mediaType: "video" }
+          { sceneIndex, mediaType: "video", searchRoute: "fetchGdeltTvNewsClips" }
         );
         providerMetrics(sourcingCache, "gdelt_tv").downloadCount++;
         const ok = await trimArchiveStreamToClip(
@@ -9865,7 +9865,7 @@ export async function fetchEuropeanaVideos(
             "europeana",
             recordId,
             sourcingCache,
-            { sceneIndex, sourceUrl: mediaUrl, mediaType: "video" }
+            { sceneIndex, sourceUrl: mediaUrl, mediaType: "video", searchRoute: "fetchEuropeanaVideos" }
           );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -10012,7 +10012,7 @@ async function fetchVimeoCCVideos(
             "vimeo",
             uri,
             sourcingCache,
-            { sceneIndex, mediaType: "video" }
+            { sceneIndex, mediaType: "video", searchRoute: "fetchVimeoCCVideos" }
           );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -10134,7 +10134,7 @@ async function fetchMediaCccVideos(
           "media_ccc",
           videoRec.recording_url,
           sourcingCache,
-          { sceneIndex, sourceUrl: videoRec.recording_url, mediaType: "video" }
+          { sceneIndex, sourceUrl: videoRec.recording_url, mediaType: "video", searchRoute: "fetchMediaCccVideos" }
         );
         // Fase 4: real media.ccc-authored talk title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "media_ccc", videoRec.recording_url, {
@@ -10473,7 +10473,7 @@ export async function fetchNasaVideoClips(
           "nasa",
           nasaId,
           sourcingCache,
-          { sceneIndex, mediaType: "video" }
+          { sceneIndex, mediaType: "video", searchRoute: "fetchNasaVideoClips" }
         );
         // Fase 4: real NASA-authored title, independent of our search query. Uses the raw field
         // (not the `title` local, which falls back to nasaId when absent) so this never stores
@@ -10590,7 +10590,7 @@ export async function fetchNaraClips(
           "nara",
           videoUrl,
           sourcingCache,
-          { sceneIndex, sourceUrl: videoUrl, title: record?.title, mediaType: "video" }
+          { sceneIndex, sourceUrl: videoUrl, title: record?.title, mediaType: "video", searchRoute: "fetchNaraClips" }
         );
         // Fase 4: real NARA-authored record title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "nara", videoUrl, {
@@ -11029,7 +11029,7 @@ export async function fetchInternetArchiveClips(
           "internet_archive",
           doc.identifier,
           sourcingCache,
-          { sceneIndex, title: doc.title, mediaType: "video" }
+          { sceneIndex, title: doc.title, mediaType: "video", searchRoute: "fetchInternetArchiveClips" }
         );
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
@@ -12192,7 +12192,7 @@ export async function fetchYouTubeCCClips(
               "youtube_cc",
               videoId,
               sourcingCache,
-              { sceneIndex, title, mediaType: "video" }
+              { sceneIndex, title, mediaType: "video", searchRoute: "fetchYouTubeCCClips" }
             );
             // Fase 4: real YouTube-authored title/description, independent of our search query —
             // adoptClip's generic providerText lookup (see above) picks this up for both
@@ -15624,6 +15624,15 @@ export function tagPathWithProviderAsset(
     title?: string;
     mediaType?: "video" | "image" | "graphic" | "unknown";
     query?: string;
+    /**
+     * RONDE 95 (§2) — the gate route that produced this candidate.
+     *
+     * Every downloader knows its own name; none of them passed it on, so a clip could be traced
+     * back to the words it was found by but not to the call site that chose them. The label is the
+     * same one the [SearchGate] report uses, so a provider whose results go wrong can be followed
+     * from the summary line to the exact fetcher and then to the individual assets it produced.
+     */
+    searchRoute?: string;
   }
 ): string {
   if (!id?.trim()) return outPath;
@@ -15645,6 +15654,7 @@ export function tagPathWithProviderAsset(
         localPath: tagged,
         mediaType: meta?.mediaType ?? "unknown",
         query: meta?.query,
+        searchRoute: meta?.searchRoute,
         assetTitle: meta?.title,
         route: "primary",
       });
@@ -30148,19 +30158,60 @@ export async function composeSceneVideoInner(
   }
   const validClips: string[] = [];
   const seenKeys = new Set<string>();
+  /**
+   * RONDE 95 (§1) — the clips this scene chose and this stage is dropping.
+   *
+   * A clip can leave the scene here for two reasons — it failed the compose gate, or an identical
+   * one is already in — and until now both were a console.warn and nothing else. The ledger showed
+   * the clip ADOPTED and then simply absent from FINAL_VIDEO, with no event saying why, which is
+   * indistinguishable from an instrumentation hole.
+   *
+   * They are collected rather than recorded immediately because the right event depends on what
+   * happens next: if a substitute takes the scene over, each of these was REPLACED by it; if the
+   * scene keeps other clips, each was merely REMOVED. The difference matters — one is a swap the
+   * audit must be able to follow, the other is a scene trimming its own surplus.
+   */
+  const droppedClips: Array<{ path: string; reason: string }> = [];
+  const lineage = composeOptions?.dedup?.sourcingCache?.lineage;
   for (const clipPath of existingClips) {
     if (!(await montageClipPassesComposeGate(clipPath, scene.index, validClips.length))) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping bad clip ${path.basename(clipPath)}`);
+      droppedClips.push({ path: clipPath, reason: "compose_gate_failed" });
       continue;
     }
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key)) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping duplicate clip ${path.basename(clipPath)}`);
+      droppedClips.push({ path: clipPath, reason: "duplicate_content_key" });
       continue;
     }
     seenKeys.add(key);
     validClips.push(clipPath);
   }
+
+  /**
+   * RONDE 95 (§1) — one call, whatever substituted for the dropped clips.
+   *
+   * `substitute` is null when nothing took their place, which is the REMOVED case. Recording
+   * happens exactly once per dropped clip: `recorded` guards the three branches below, any of
+   * which can run for the same scene, so a rescue followed by a guaranteed fill cannot file two
+   * REPLACED events for one asset.
+   */
+  let dropsRecorded = false;
+  const settleDroppedClips = (substitute: string | null, reason: string): void => {
+    if (dropsRecorded || !lineage || droppedClips.length === 0) return;
+    dropsRecorded = true;
+    for (const dropped of droppedClips) {
+      if (substitute) {
+        lineage.recordReplacement(dropped.path, substitute, `${reason}:${dropped.reason}`);
+      } else {
+        lineage.recordEventForPath(dropped.path, "REMOVED", {
+          status: "REMOVED",
+          reason: dropped.reason,
+        });
+      }
+    }
+  };
 
   if (
     validClips.length === 0 &&
@@ -30170,7 +30221,13 @@ export async function composeSceneVideoInner(
     (await isValidVideoFile(rescueStockClip))
   ) {
     validClips.push(rescueStockClip);
+    settleDroppedClips(rescueStockClip, "rescue_stock_clip");
   }
+
+  // The scene still has clips of its own, so anything dropped above was surplus or unusable — a
+  // removal, not a swap. Guarded by the same `dropsRecorded` flag, so a scene that DID substitute
+  // has already filed its replacements and this is a no-op.
+  if (validClips.length > 0) settleDroppedClips(null, "removed");
 
   if (validClips.length === 0) {
     if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
@@ -30184,6 +30241,9 @@ export async function composeSceneVideoInner(
         );
         if (await montageClipPassesComposeGate(clip, scene.index, i)) {
           validClips.push(clip);
+          // RONDE 95 (§1): a generated placeholder standing in for the scene's real clips is the
+          // most important replacement to be able to see, not the least.
+          settleDroppedClips(clip, "guaranteed_fill");
           // Round 17: this proactive guaranteed-fill path (composeSceneVideo finding zero usable
           // clips from upstream search) previously never called recordClipAdopt, so it was
           // invisible to both assertVisualCoverageExportGate's fallbackBeats/beatsFilled ratio

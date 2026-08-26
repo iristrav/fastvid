@@ -892,6 +892,66 @@ export class VisualSourceLedger {
         });
       }
 
+      /**
+       * RONDE 95 (§4) — the stage order, as findings rather than assumptions.
+       *
+       * The funnel narrows in one direction: a clip is adopted because it was selected, and it
+       * reaches the final video because it was adopted. A record that holds a later stage without
+       * the one before it means an event was filed for work that never happened, or a step ran
+       * without being recorded. Both are holes, and both were invisible until now — the summary
+       * counted each stage independently, so a clip could be ADOPTED with no SELECTED and nothing
+       * anywhere said so.
+       *
+       * Warnings, not errors: a rescue clip legitimately skips SELECTED, having been chosen by a
+       * different route. What matters is that the skip is visible and countable rather than
+       * silently absorbed into a total.
+       */
+      if (has(id, "ADOPTED") && !has(id, "SELECTED")) {
+        warnings.push({
+          code: "ADOPTED_WITHOUT_SELECTED",
+          message: `${record.currentFilename} was adopted with no SELECTED event`,
+          lineageId: id,
+        });
+      }
+      if (has(id, "FINAL_VIDEO") && !has(id, "ADOPTED")) {
+        warnings.push({
+          code: "RENDERED_WITHOUT_ADOPTED",
+          message: `${record.currentFilename} reached the final video with no ADOPTED event`,
+          lineageId: id,
+        });
+      }
+      if (has(id, "DOWNLOAD_SUCCEEDED") && !has(id, "FOUND")) {
+        errors.push({
+          code: "DOWNLOADED_WITHOUT_LINEAGE",
+          message: `${record.currentFilename} was downloaded with no FOUND event`,
+          lineageId: id,
+        });
+      }
+      /**
+       * RONDE 95 (§4) — an asset that was chosen, was not delivered, and says nothing about why.
+       *
+       * REPLACED, REMOVED and REJECTED are the three honest endings. A record that has none of
+       * them, never reached FINAL_VIDEO, and was selected or adopted simply disappeared, which is
+       * the case the round exists to surface. Only checked once the render has actually proven its
+       * final video — before that, "not in the final video" is not yet a fact.
+       */
+      if (
+        this.finalVideoProven &&
+        !has(id, "FINAL_VIDEO") &&
+        (has(id, "SELECTED") || has(id, "ADOPTED")) &&
+        !stagesByLineage.get(id)?.has("REPLACED") &&
+        !stagesByLineage.get(id)?.has("REMOVED") &&
+        // A rejection is a STATUS on whichever stage the gate maps to, not a stage of its own —
+        // see recordRejection — so it is looked for as one.
+        ![...(stagesByLineage.get(id)?.values() ?? [])].some((st) => st.includes("REJECTED"))
+      ) {
+        warnings.push({
+          code: "VANISHED_WITHOUT_OUTCOME",
+          message: `${record.currentFilename} was chosen and is not in the final video, with no REPLACED/REMOVED/REJECTED event`,
+          lineageId: id,
+        });
+      }
+
       // Rule 6: a derived file must carry the record it came from.
       const isDerived = [...(stagesByLineage.get(id)?.keys() ?? [])].some(
         (s) => s === "TRIMMED" || s === "PADDED" || s === "OVERLAYED" || s === "TRANSFORMED"
