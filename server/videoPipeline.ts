@@ -33910,6 +33910,34 @@ async function _runVideoPipelineInner(
           `${proven} clip(s) proven in the delivered file out of ${deliveredClips.length} composed`
       );
 
+      /**
+       * RONDE 88 — the two columns that are provider facts rather than per-asset events.
+       *
+       * `searches` and `results` belong to a PROVIDER: one search returns 140 rows, and opening a
+       * lineage record for each would file thousands of phantom candidates that never produced a
+       * clip. The external providers have counted these all along in ProviderSourcingMetrics
+       * (searchCount / resultCount), and the curated path reports its own through countSearch —
+       * so the external ones are folded in here rather than re-instrumented at a dozen fetch
+       * sites. Folded, never overwritten: a provider the ledger already counted keeps its own
+       * number, so the two channels cannot double-count each other.
+       */
+      {
+        const already = ledger.summary().byProvider;
+        for (const [provider, m] of visualDedup.sourcingCache.metrics) {
+          if (already[provider]?.searches) continue;
+          for (let i = 0; i < m.searchCount; i++) {
+            ledger.countSearch(provider, i === 0 ? m.resultCount : 0);
+          }
+        }
+        // Same reasoning for the completed downloads. Every external provider already increments
+        // downloadCount on a successful fetch; the curated path reports its own through real
+        // DOWNLOAD_SUCCEEDED events, so it is skipped here and never counted twice.
+        for (const [provider, m] of visualDedup.sourcingCache.metrics) {
+          const known = already[provider]?.downloadSucceeded ?? 0;
+          if (known > 0 || m.downloadCount <= 0) continue;
+          ledger.countProviderDownloads(provider, m.downloadCount);
+        }
+      }
       const summary = ledger.summary();
       for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) console.log(line);
       for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) console.log(line);

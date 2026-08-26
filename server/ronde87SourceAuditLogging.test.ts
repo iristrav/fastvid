@@ -651,7 +651,7 @@ describe("RONDE 87 §L — observability only", () => {
 
   it("TEST 44 — the audit can never fail a render", () => {
     const idx = PIPELINE_SRC.indexOf("const deliveredScenes = new Set(finalConcatInputs");
-    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), idx + 2600);
+    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), idx + 3600);
     expect(block).toContain("try {");
     expect(block).toContain("[VisualAudit] audit reporting failed (non-fatal)");
   });
@@ -749,5 +749,35 @@ describe("RONDE 88 — the external providers are wired, not just the archive", 
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
     expect(body, "putCachedProviderAsset must not be the recorder any more")
       .not.toContain("createLineage(");
+  });
+});
+
+describe("RONDE 88 — the provider-fact columns fill for external providers too", () => {
+  it("TEST 51 — searches/results and completed downloads fold in without double-counting", () => {
+    const l = new VisualSourceLedger({ renderId: "r88" });
+    // A provider that reports through its own counters (every external fetch path).
+    l.countSearch("internet_archive", 1042);
+    l.countProviderDownloads("internet_archive", 6);
+    // A provider that reports through real events (the curated archive).
+    const curated = l.createLineage({
+      sceneIndex: 0, beatIndex: 0, candidateId: "a:1", contentKey: "curated:1",
+      provider: "bundesarchiv", localPath: "/w/c.mp4",
+    });
+    l.recordEvent(curated.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
+    l.recordEvent(curated.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
+
+    const s = l.summary();
+    expect(s.byProvider.internet_archive!.searches).toBe(1);
+    expect(s.byProvider.internet_archive!.results).toBe(1042);
+    expect(s.byProvider.internet_archive!.downloadSucceeded).toBe(6);
+    expect(s.byProvider.bundesarchiv!.downloadSucceeded).toBe(1);
+    // Six folded plus one event — not seven plus six.
+    expect(s.total.downloadSucceeded).toBe(7);
+  });
+
+  it("TEST 52 — the render folds the provider counters in, and skips providers it already counted", () => {
+    expect(PIPELINE_SRC).toContain("if (already[provider]?.searches) continue;");
+    expect(PIPELINE_SRC).toContain("if (known > 0 || m.downloadCount <= 0) continue;");
+    expect(PIPELINE_SRC).toContain("ledger.countProviderDownloads(provider, m.downloadCount)");
   });
 });

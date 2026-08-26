@@ -321,6 +321,8 @@ export class VisualSourceLedger {
   private readonly derivedFrom = new Map<string, string>();
   /** Per-provider search/result counters, which are not per-asset and so cannot be events. */
   private readonly searchCounts = new Map<string, { searches: number; results: number }>();
+  /** Provider-reported completed downloads, for fetch paths that count rather than emit events. */
+  private readonly providerDownloads = new Map<string, number>();
   /** (lineageId, stage) already counted — the guard against double counting one event. */
   private readonly countedStages = new Set<string>();
   private seq = 0;
@@ -628,6 +630,20 @@ export class VisualSourceLedger {
    * therefore cannot be lineage events. Kept separate from the event-derived counters and clearly
    * labelled as such in the summary, so nothing is double-counted between the two.
    */
+  /**
+   * Completed downloads a provider reported through its own counter rather than through events.
+   *
+   * Same channel and same reasoning as countSearch: these are provider facts the fetch layer has
+   * always tracked, and folding them in beats re-instrumenting a dozen fetch sites. A provider
+   * that reports real DOWNLOAD_SUCCEEDED events is never folded, so the two cannot double-count.
+   */
+  countProviderDownloads(provider: string, n: number): void {
+    if (!Number.isFinite(n) || n <= 0) return;
+    const key = normalizeProvider(provider) ?? UNVERIFIED_PROVIDER;
+    const entry = this.providerDownloads.get(key) ?? 0;
+    this.providerDownloads.set(key, entry + n);
+  }
+
   countSearch(provider: string, results = 0): void {
     const key = normalizeProvider(provider) ?? UNVERIFIED_PROVIDER;
     const entry = this.searchCounts.get(key) ?? { searches: 0, results: 0 };
@@ -691,6 +707,13 @@ export class VisualSourceLedger {
       c.results += s.results;
       total.searches += s.searches;
       total.results += s.results;
+    }
+    for (const [provider, n] of this.providerDownloads) {
+      const c = counts(provider);
+      c.downloadStarted += n;
+      c.downloadSucceeded += n;
+      total.downloadStarted += n;
+      total.downloadSucceeded += n;
     }
 
     const seen = new Set<string>();
