@@ -223,6 +223,17 @@ export const PRODUCTION_VOCABULARY: ReadonlySet<string> = new Set([
   "historical", "historic", "original", "vintage", "period", "old", "retro", "silent",
   "newsreels", "rare", "authentic", "real", "raw", "unedited", "compilation",
   "mediatype", "movies", "level", "street-level", "photo", "photos", "photograph", "image", "images",
+  /**
+   * RONDE 93 — provider QUERY-LANGUAGE keywords, not content.
+   *
+   * Archive.org takes Lucene-style field queries: `title:(Winston Churchill) AND mediatype:movies`,
+   * `collection:tvnews`, `subject:"Churchill"`. RONDE 90 admitted "mediatype" and "movies" and
+   * stopped there, so the audit read "title", "subject", "collection" and "tvnews" as unproven
+   * SUBJECTS and blocked every field query the archive route builds — a whole provider's syntax
+   * refused for saying which index to search rather than what to search for. These name a field,
+   * never a thing in the world, which is what keeps this a closed class.
+   */
+  "title", "subject", "collection", "tvnews", "identifier", "creator", "date", "and", "or", "not",
 ]);
 
 export function isProductionWord(token: string): boolean {
@@ -683,7 +694,16 @@ export function validateSearchQuery(
   const q = queryProper(query ?? "").trim();
   if (!q) return { ok: false, reason: "EMPTY_QUERY" };
 
-  const words = q.split(/\s+/).map((w) => w.replace(/[^\p{L}\p{N}'’-]/gu, "")).filter(Boolean);
+  /**
+   * RONDE 93 — punctuation SEPARATES words; it does not disappear inside them.
+   *
+   * The old form split on whitespace and then stripped punctuation from each piece, so
+   * `title:(Winston` collapsed to the single token `titleWinston` — a word no script contains,
+   * and every Archive.org field query was refused for it. Splitting on the punctuation instead
+   * yields `title`, `Winston`, which is what the query actually says. The apostrophe and hyphen
+   * stay inside a token, because "Churchill's" and "Marie-Curie" are one word each.
+   */
+  const words = q.split(/[^\p{L}\p{N}'’-]+/u).filter(Boolean);
 
   // ── A. empty ── handled above.
 

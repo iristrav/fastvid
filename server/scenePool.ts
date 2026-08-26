@@ -28,7 +28,12 @@ import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
  * module, so the gate could not be imported back out of it. searchQueryContract has no imports of
  * its own, which is why the decision now lives there and every module can reach it.
  */
-import { searchGateDecision } from "./searchQueryContract";
+import {
+  emptyQueryContext,
+  getSearchProvenance,
+  searchGateDecision,
+  withSearchProvenance,
+} from "./searchQueryContract";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1186,7 +1191,33 @@ async function withTimeoutFetch(
 
 // ─── Main: buildSceneCandidatePool ───────────────────────────────────────────
 
+/**
+ * RONDE 93 (§1/§7) — the scene's own words, as the proof for the pool's searches.
+ *
+ * The audit traced every `LEGACY_QUERY_BUILDER` in the log to one place: legacyQueryTicket, minted
+ * by the gate when a provider search runs with NO ambient provenance. It never meant "an old query
+ * builder ran" — there is no such builder left in this codebase. It meant "this search happened
+ * outside any scope that could say where its words came from", and the scene candidate pool was
+ * the largest source of them: it runs once per SCENE, above the beat loop, so none of RONDE 90's
+ * eleven beat scopes covered it.
+ *
+ * The pool's queries come from the scene (visualCue, pexelsQueries, brollQueries), so the scene's
+ * text is the right evidence for them — the same class of evidence a beat scope uses, and no
+ * broader: buildVerifiedQueryContextForBeat already folds sceneText into every beat context.
+ *
+ * A beat scope that is already active WINS, because it is the more specific claim. This only fills
+ * the gap where there is none.
+ */
 export async function buildSceneCandidatePool(
+  req: BuildPoolRequest
+): Promise<SceneCandidatePool> {
+  if (getSearchProvenance()) return buildSceneCandidatePoolInner(req);
+  return withSearchProvenance(emptyQueryContext(req.sceneText ?? ""), () =>
+    buildSceneCandidatePoolInner(req)
+  );
+}
+
+async function buildSceneCandidatePoolInner(
   req: BuildPoolRequest
 ): Promise<SceneCandidatePool> {
   const {

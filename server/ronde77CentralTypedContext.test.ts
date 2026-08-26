@@ -419,21 +419,42 @@ describe("RONDE 77 §H — buildPersonCelebrityVideoQueries leads with the typed
   it("a beat with no place adds no typed query — the rotation is untouched", () => {
     expect(extractVisualPlacePhrase(PRONOUN_BEAT)).toBe("");
     const qs = buildPersonCelebrityVideoQueries("Adolf Hitler", PRONOUN_BEAT, 0);
-    expect(qs.length).toBe(7);
+    // RONDE 93: five, not seven. buildPersonMediaQueries used to append "interview", "speech",
+    // "news conference" and "red carpet" to every person unconditionally, and those four are the
+    // reason "Adolf Hitler red carpet" was measured going out to a provider. The rotation itself
+    // is untouched — what shrank is the number of guesses it rotates through.
+    expect(qs.length).toBe(5);
     expect(qs[0]).toBe("Adolf Hitler gave");
   });
 });
 
 describe("RONDE 77 §I — the rotation and the existing query set survive", () => {
-  it("every query the builder produced before is still produced", () => {
+  it("RONDE 93 — the builder no longer invents a media event for every person", () => {
+    /**
+     * This test used to require the opposite: that "Adolf Hitler interview" and "Adolf Hitler
+     * speech" appear for EVERY beat, whatever it said. That requirement is the defect — a real
+     * render produced "Adolf Hitler red carpet", "Adolf Hitler talk show", "Adolf Hitler makeup
+     * brand" and "Adolf celebrity news" from these same constants, none of which any script had
+     * asked for.
+     *
+     * The terms are not gone; they are earned. scriptEventSearchQueries emits "interview" for a
+     * beat that mentions one, and nothing for a beat that does not.
+     */
     for (const beat of [BEAT_1, BEAT_2, BEAT_3, BEAT_4]) {
       const qs = buildPersonCelebrityVideoQueries("Adolf Hitler", beat, 0);
       const typed = typedQueryPrefix(beat, { forcePerson: "Adolf Hitler" }).slice(0, 2);
       const nonTyped = qs.filter((q) => !typed.includes(q));
-      // 7 is the cap this builder has always had, and it still returns a full seven.
-      expect(nonTyped.length, `"${beat.slice(0, 28)}"`).toBe(7);
-      for (const media of ["Adolf Hitler interview", "Adolf Hitler speech"]) {
-        expect(qs, `${media} dropped for "${beat.slice(0, 28)}"`).toContain(media);
+      expect(nonTyped.length, `"${beat.slice(0, 28)}"`).toBeGreaterThan(0);
+      for (const invented of ["red carpet", "talk show", "makeup brand", "celebrity news"]) {
+        expect(qs.join(" | "), `"${invented}" invented for "${beat.slice(0, 28)}"`).not.toContain(invented);
+      }
+      // Every remaining query is drawn from the beat or the caller's own person — never from a
+      // constant. (A beat that names a second person legitimately yields a query about them.)
+      const evidence = `${beat} Adolf Hitler`.toLowerCase();
+      for (const q of qs) {
+        for (const word of q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 3)) {
+          expect(evidence, `"${word}" in "${q}" is not in the beat`).toContain(word.slice(0, 5));
+        }
       }
     }
   });
@@ -443,7 +464,10 @@ describe("RONDE 77 §I — the rotation and the existing query set survive", () 
     const at = (i: number) =>
       buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_1, i).filter((q) => !typed.includes(q));
     expect(at(0)).not.toEqual(at(3));
-    expect(new Set([...at(0), ...at(3)]).size).toBeGreaterThan(at(0).length);
+    // RONDE 93: the rotation still gives consecutive beats a different leading angle. With four
+    // invented suffixes removed the pool it rotates through is smaller, so two offsets can now
+    // cover the same set — the order differing is what stops two beats fetching one clip.
+    expect(at(0)[0]).not.toBe(at(3)[0]);
   });
 
   it("the result never contains a duplicate", () => {

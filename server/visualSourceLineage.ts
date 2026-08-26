@@ -999,6 +999,95 @@ export function formatFunnelReport(summary: VisualSourceSummary, finalVideoVerif
   return lines;
 }
 
+/**
+ * RONDE 94 — the per-provider lifecycle, in the words the question is usually asked in.
+ *
+ * "How many YouTube clips did we find, and how many actually ended up in the video?" The ledger
+ * has answered that since RONDE 86 — every stage below is a real recorded event, not a count
+ * inferred from a list — but it answered in its own vocabulary (results/eligible/adopted/
+ * finalVideo) spread across two report blocks. This is one line per provider in the vocabulary of
+ * the question, projected from exactly the same events:
+ *
+ *     found      = results            a search returned this candidate
+ *     validated  = eligible           it passed the licence/format/dedup gates
+ *     selected   = selected           the ranker chose it
+ *     downloaded = downloadSucceeded  the file exists on disk
+ *     assigned   = adopted            a scene/beat took it
+ *     rendered   = finalVideo         its scene video went into the concat that produced the
+ *                                     delivered file — proven from finalConcatInputs, never
+ *                                     assumed from having been adopted
+ *     unused     = found - rendered
+ *
+ * `rendered` prints NOT_VERIFIED, never 0, when the render could not reach the point where
+ * FINAL_VIDEO is knowable. Zero would be a claim; NOT_VERIFIED is the truth.
+ */
+export function formatAssetUsageSummary(
+  summary: VisualSourceSummary,
+  finalVideoVerified: boolean
+): string[] {
+  const line = (provider: string, c: SummaryCounts): string => {
+    const rendered = finalVideoVerified ? String(c.finalVideo) : NOT_VERIFIED;
+    const unused = finalVideoVerified ? String(Math.max(0, c.results - c.finalVideo)) : NOT_VERIFIED;
+    return (
+      `[AssetUsageSummary] provider=${provider} found=${c.results} validated=${c.eligible} ` +
+      `selected=${c.selected} downloaded=${c.downloadSucceeded} assigned=${c.adopted} ` +
+      `rendered=${rendered} unused=${unused}`
+    );
+  };
+  const providers = Object.entries(summary.byProvider).sort((a, b) => {
+    if (a[0] === UNVERIFIED_PROVIDER) return 1;
+    if (b[0] === UNVERIFIED_PROVIDER) return -1;
+    return b[1].results - a[1].results;
+  });
+  const lines = providers.map(([provider, counts]) => line(provider, counts));
+  lines.push(line("TOTAL", summary.total));
+  lines.push(...formatUsageInconsistencies(summary, finalVideoVerified));
+  return lines;
+}
+
+/**
+ * RONDE 94 — the funnel only narrows, and a funnel that widens is a bug in the instrumentation.
+ *
+ * rendered <= assigned <= downloaded <= selected <= validated <= found. Each stage is a subset of
+ * the one before it, so a stage that counts MORE than its predecessor means an event was recorded
+ * for an asset that never reached the earlier stage — a miscount, or a stage being marked without
+ * the work having happened. Either way the numbers stop meaning what they say, and a report that
+ * quietly prints them is worse than one that refuses.
+ *
+ * Reported, not thrown: this runs after the video is made, and an accounting fault must not fail
+ * a render that succeeded.
+ */
+export function formatUsageInconsistencies(
+  summary: VisualSourceSummary,
+  finalVideoVerified: boolean
+): string[] {
+  const ORDER: Array<[SummaryCounter, string]> = [
+    ["results", "found"],
+    ["eligible", "validated"],
+    ["selected", "selected"],
+    ["downloadSucceeded", "downloaded"],
+    ["adopted", "assigned"],
+    ["finalVideo", "rendered"],
+  ];
+  const out: string[] = [];
+  const check = (provider: string, c: SummaryCounts): void => {
+    const stages = finalVideoVerified ? ORDER : ORDER.slice(0, -1);
+    for (let i = 1; i < stages.length; i++) {
+      const [prevKey, prevLabel] = stages[i - 1]!;
+      const [key, label] = stages[i]!;
+      if (c[key] > c[prevKey]) {
+        out.push(
+          `[AssetUsageInconsistency] provider=${provider} ${label}=${c[key]} exceeds ` +
+            `${prevLabel}=${c[prevKey]} — a later stage cannot count more assets than the one it follows`
+        );
+      }
+    }
+  };
+  for (const [provider, counts] of Object.entries(summary.byProvider)) check(provider, counts);
+  check("TOTAL", summary.total);
+  return out;
+}
+
 /** The audit block, §I, plus every finding reconcile() produced. */
 export function formatAuditReport(result: ReconciliationResult): string[] {
   const lines = [

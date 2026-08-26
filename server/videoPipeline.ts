@@ -288,6 +288,7 @@ import { bindLineageLedger, createClipAdoptAudit, recordClipAdopt } from "./clip
 import {
   UNVERIFIED_PROVIDER,
   VisualSourceLedger,
+  formatAssetUsageSummary,
   formatAuditReport,
   formatFunnelReport,
   formatLineageEvent,
@@ -3224,8 +3225,9 @@ function buildTopicDocumentaryYoutubeQueries(
     ...new Set(
       [
         `${topic} documentary footage`,
+        // RONDE 93 (§6): "news report" and "documentary footage" describe the FOOTAGE; an
+        // "interview" is an event, and the topic alone is no evidence that one took place.
         `${topic} news report`,
-        `${topic} interview`,
         topic,
         beat.searchQuery,
         scene.pexelsQuery,
@@ -4806,8 +4808,10 @@ function scenesFromMarkdownScript(script: string, maxScenes: number, topicContex
       personNames: beatPersons,
       literalVisualCue: undefined,
       highlightWords: [],
+      // RONDE 93 (§6): the subject itself. "interview" and "news" were appended to every scene
+      // regardless of what it says, and the gate refuses both on a beat that mentions neither.
       brollQueries: primary
-        ? [`${primary} interview`, `${primary} news`].filter((q) => q.length >= 3 && !isBlockedStockQuery(q)).slice(0, 2)
+        ? [primary].filter((q) => q.length >= 3 && !isBlockedStockQuery(q))
         : [],
       statCallout: "",
       aiImagePrompt: `Cinematic ${primaryQuery}, documentary lighting, photorealistic`,
@@ -6025,7 +6029,8 @@ export async function fetchPexelsClips(
           }
           markPexelsSearchResult(true);
           return await searchResp.json() as PexelsSearchData;
-        }
+        },
+        "fetchPexelsClips"
       );
       if (!searchData) continue;
       // Phase 20 metrics fix: real search-result count, independent of cache-hit/download/accept.
@@ -6404,7 +6409,8 @@ export async function fetchPixabayClips(
           }
           markPixabaySearchResult(true);
           return await searchResp.json() as PixabaySearchData;
-        }
+        },
+        "fetchPixabayClips"
       );
       if (!searchData) continue;
       // Phase 20 metrics fix: real search-result count, independent of cache-hit/download/accept.
@@ -8898,7 +8904,8 @@ async function fetchWikimediaVideos(
         }
         markWikimediaSearchResult(true);
         return await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
-      }
+      },
+      "fetchWikimediaVideos"
     );
     if (!searchData) return [];
     providerMetrics(sourcingCache, "wikimedia").resultCount += searchData.query?.search?.length ?? 0;
@@ -8992,19 +8999,29 @@ async function fetchWikimediaVideos(
 function buildPersonArchiveVideoQueries(person: string, beatIndex: number, beatText = ""): string[] {
   const personName = coercePersonName(person);
   if (!personName) return [];
-  const first = personName.split(/\s+/)[0] ?? personName;
   const scriptQs = beatText
     ? scriptEventSearchQueries(beatText, [personName]).map((q) =>
         textMentionsPersonName(q, personName) ? q : `${personName} ${q}`.trim()
       )
     : [];
+  /**
+   * RONDE 93 (§6) — the archive's own field syntax, plus what the BEAT says. Nothing else.
+   *
+   * "Adolf Hitler television" and "Adolf celebrity news" were measured going out of here. They
+   * were unconditional: every person got `interview`, `television` and `<firstname> celebrity
+   * news` appended whether or not the script said anything of the kind — a template written for
+   * influencer documentaries, applied to a man who died in 1945. `${first} celebrity news` is
+   * worse than wrong; it searches on a bare given name.
+   *
+   * scriptEventSearchQueries above already supplies event terms, and it supplies them ONLY when
+   * the beat's own words trigger them — "interview" for a beat about an interview, "protest" for
+   * a beat about a protest. That is the same term, earned instead of assumed, so the capability
+   * survives and the guessing does not.
+   */
   const rawVariants = [
     ...scriptQs,
     `title:(${personName}) AND mediatype:movies`,
     `collection:tvnews AND ${personName}`,
-    `${personName} interview`,
-    `${personName} television`,
-    `${first} celebrity news`,
     `subject:"${personName}"`,
   ];
   const variants = uniqueCoercedQueries(rawVariants, 4);
@@ -9066,7 +9083,8 @@ async function fetchFlickrCCVideos(
           stat?: string;
           photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
         };
-      }
+      },
+      "fetchFlickrCCVideos"
     );
     if (!searchData) return [];
     if (searchData.stat !== "ok") return [];
@@ -9253,7 +9271,8 @@ async function fetchSepiaSearchVideos(
               }
               markSepiaSearchResult(true);
               return await searchResp.json() as { data?: SepiaHit[] };
-            }
+            },
+            "fetchSepiaSearchVideos"
           );
           if (!data) return [];
           providerMetrics(sourcingCache, "sepiasearch").resultCount += data.data?.length ?? 0;
@@ -9567,7 +9586,8 @@ export async function fetchGdeltTvNewsClips(
               } catch {
                 return null;
               }
-            }
+            },
+            "fetchGdeltTvNewsClips"
           );
           gdeltAnyResponse = true;
           return (data?.clips ?? []).map((clip) => ({ clip, query }));
@@ -9737,7 +9757,8 @@ export async function fetchEuropeanaVideos(
           }
           markEuropeanaSearchResult(true);
           return await searchResp.json() as { items?: EuropeanaItem[] };
-        }
+        },
+        "fetchEuropeanaVideos"
       );
       if (!searchData) continue;
       providerMetrics(sourcingCache, "europeana").resultCount += searchData.items?.length ?? 0;
@@ -9942,7 +9963,8 @@ async function fetchVimeoCCVideos(
           }
           markVimeoSearchResult(true);
           return await searchResp.json() as { data?: VimeoHit[] };
-        }
+        },
+        "fetchVimeoCCVideos"
       );
       if (!searchData) continue;
       providerMetrics(sourcingCache, "vimeo").resultCount += searchData.data?.length ?? 0;
@@ -10075,7 +10097,8 @@ async function fetchMediaCccVideos(
         }
         markMediaCccSearchResult(true);
         return await searchResp.json() as { events?: MediaCccEvent[] };
-      }
+      },
+      "fetchMediaCccVideos"
     );
     if (!data) return [];
     const events = data.events ?? [];
@@ -10392,7 +10415,8 @@ export async function fetchNasaVideoClips(
         }
         markNasaSearchResult(true);
         return await searchResp.json() as { collection?: { items?: NasaItem[] } };
-      }
+      },
+      "fetchNasaVideoClips"
     );
     if (!data) return [];
     const items = data.collection?.items ?? [];
@@ -10538,7 +10562,8 @@ export async function fetchNaraClips(
         }
         markNaraSearchResult(true);
         return await searchResp.json() as { body?: { hits?: { hits?: NaraHit[] } } };
-      }
+      },
+      "fetchNaraClips"
     );
     if (!data) return [];
     const hits = data.body?.hits?.hits ?? [];
@@ -10835,7 +10860,8 @@ export async function fetchInternetArchiveClips(
         }
         markInternetArchiveSearchResult(true);
         return await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
-      }
+      },
+      "fetchInternetArchiveClips"
     );
     if (!searchData) continue;
     providerMetrics(sourcingCache, "internet_archive").resultCount += searchData.response?.docs?.length ?? 0;
@@ -11918,7 +11944,8 @@ export async function searchYoutubeVideoCandidates(
       }
       markYoutubeSearchResult(true);
       return (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
-    }
+    },
+    "searchYoutubeVideoCandidates"
   );
   // RONDE 10: the official search 429s on quota after a few renders. When it yields nothing AND
   // this is the fair-use path (never strict-CC — RapidAPI can't confirm a CC license), fall back
@@ -12466,21 +12493,23 @@ function isPersonCelebrityTopic(topicContext?: string): boolean {
   return Boolean(extractPrimaryPersonFromText(topicContext));
 }
 
+/**
+ * RONDE 93 (§6) — the third unconditional source of media suffixes, and the last one.
+ *
+ * `interview`, `speech`, `news conference` and `red carpet` were appended to every person here
+ * too, on top of buildPersonArchiveVideoQueries and buildPersonStockVideoQueries doing the same.
+ * Three builders guessing the same four words about anybody the script happens to name.
+ *
+ * What remains is the name itself, and the beat's OWN visual cue when it has one — `visualCue`
+ * comes from extractInlineVisualCues on the beat text, so it is the script speaking. The event
+ * terms are not lost: scriptEventSearchQueries supplies each of them the moment the beat gives a
+ * reason to.
+ */
 function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
   const p = coercePersonName(person);
   if (!p) return [];
   const cue = toQueryString(visualCue).split(/\s+/).slice(0, 3).join(" ");
-  return uniqueCoercedQueries(
-    [
-      p,
-      `${p} interview`,
-      `${p} speech`,
-      `${p} news conference`,
-      `${p} red carpet`,
-      cue ? `${p} ${cue}` : `${p} documentary`,
-    ],
-    1
-  );
+  return uniqueCoercedQueries([p, cue ? `${p} ${cue}` : `${p} archival footage`], 1);
 }
 
 interface CelebrityClipCandidate {
@@ -12685,14 +12714,15 @@ function buildPersonSerpQuery(
   if (scriptQs.length) {
     return scriptQs[(sceneIndex + beatIndex) % scriptQs.length];
   }
-  const variants = [
-    `${person} face portrait close up`,
-    `${person} interview talking head`,
-    `${person} red carpet full body`,
-    `${person} met gala dress`,
-    `${person} makeup brand launch`,
-    `${person} paparazzi event`,
-  ];
+  /**
+   * RONDE 93 (§6) — the script said nothing, so neither does this.
+   *
+   * Six variants used to fire here when scriptEventSearchQueries came back empty: red carpet,
+   * met gala, makeup brand launch, paparazzi. A beat that gives no event cue is a beat that
+   * gives no reason to search for a gala, and rotating through six guesses does not turn one of
+   * them into an answer. What is left asks for the person, which is the only thing proven.
+   */
+  const variants = [`${person} face portrait close up`, `${person} portrait`, person];
   return variants[(sceneIndex * 5 + beatIndex) % variants.length];
 }
 
@@ -15231,11 +15261,14 @@ function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void 
   const first = anchor.split(/\s+/)[0] ?? anchor;
   const safe = (raw: unknown): string => {
     const trimmed = toQueryString(raw);
+    // RONDE 93 (§6): an off-topic cue is replaced by the PERSON, not by an interview nobody
+    // mentioned. This function exists to stop a celebrity scene searching for flamingos; the
+    // full name is the correction, and it is the one term that is actually proven here.
     if (!trimmed || PERSON_OFFTOPIC_VISUAL_RE.test(trimmed)) {
-      return `${first} interview`;
+      return anchor;
     }
     if (/\b(wildlife|bird|zoo|animal|flamingo|ocean|dolphin)\b/i.test(trimmed)) {
-      return `${first} interview`;
+      return anchor;
     }
     const lower = trimmed.toLowerCase();
     if (!lower.includes(first.toLowerCase()) && !/\b(celebrity|interview|fashion|makeup|red carpet)\b/i.test(lower)) {
@@ -15245,11 +15278,13 @@ function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void 
   };
   if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
   scene.pexelsQuery = anchor;
-  scene.visualCue = safe(scene.visualCue) || `${anchor} interview`;
-  scene.pexelsQueries = [...new Set([anchor, `${anchor} interview`, `${first} celebrity`, ...(scene.pexelsQueries ?? []).map(safe)])]
+  // RONDE 93 (§6): the anchor is the person the scene is about — proven. "interview",
+  // "celebrity" and "fashion" were three more constants appended to every one of them.
+  scene.visualCue = safe(scene.visualCue) || anchor;
+  scene.pexelsQueries = [...new Set([anchor, first, ...(scene.pexelsQueries ?? []).map(safe)])]
     .filter((q) => q.length >= 3 && !PERSON_OFFTOPIC_VISUAL_RE.test(q))
     .slice(0, 4);
-  scene.brollQueries = [`${first} fashion`, `${first} interview`].filter((q) => !isBlockedStockQuery(q));
+  scene.brollQueries = [anchor, first].filter((q) => !isBlockedStockQuery(q));
   if (!scene.personNames?.length) scene.personNames = [anchor];
 }
 
@@ -21055,8 +21090,9 @@ async function fetchPersonBeatClip(
   if (canUseLicensedStockBeat(dedup)) {
     clip = await tryStockSources(
       [{
-        query: `${personName} interview`,
-        fetch: pexFetch(`${personName} interview`, `${tag}_person_vid`, candidateOffset, 2),
+        // RONDE 93 (§6): the person, not an interview the beat never mentioned.
+        query: personName,
+        fetch: pexFetch(personName, `${tag}_person_vid`, candidateOffset, 2),
       }],
       dedup,
       sceneIndex,
@@ -22672,12 +22708,22 @@ function buildPersonStockVideoQueries(
   scene: Scene,
   videoTitle?: string
 ): string[] {
+  /**
+   * RONDE 93 (§6) — "Adolf Hitler red carpet" and "Adolf Hitler makeup brand" came from here.
+   *
+   * Four suffixes were appended to EVERY person, unconditionally: interview, red carpet, talk
+   * show, makeup brand. The comment above says "VidRush person-docs", and for an influencer video
+   * they are reasonable defaults; there is nothing in the function that ever asked whether the
+   * documentary was about an influencer. Applied to a historical figure they are not merely
+   * useless, they are grotesque.
+   *
+   * scriptEventSearchQueries keeps every one of these terms available — it emits "red carpet" for
+   * a beat that mentions a premiere or a gala, "interview" for a beat that mentions one. The
+   * difference is that the beat has to say so.
+   */
   const persons = [personName];
   const out = [
-    `${personName} interview`,
-    `${personName} red carpet`,
-    `${personName} talk show`,
-    `${personName} makeup brand`,
+    personName,
     ...buildPersonCelebrityVideoQueries(personName, beat.text, beat.index).slice(0, 5),
     ...scriptEventSearchQueries(beat.text, persons),
   ].filter((q) => {
@@ -34454,6 +34500,12 @@ async function _runVideoPipelineInner(
       const summary = ledger.summary();
       for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) console.log(line);
       for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) console.log(line);
+      // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
+      // rendered — plus a refusal to print a funnel that widens.
+      for (const line of formatAssetUsageSummary(summary, ledger.finalVideoWasVerified)) {
+        if (line.startsWith("[AssetUsageInconsistency]")) console.warn(line);
+        else console.log(line);
+      }
       // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
       // and how many calls arrived without a context and were counted as bypass attempts.
       for (const line of formatSearchGateReport()) console.log(line);

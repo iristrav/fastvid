@@ -430,11 +430,15 @@ describe("RONDE 78 §E — the existing fallbacks all still reach the provider",
     }
   });
 
-  it("the celebrity rotation and its media queries survive", () => {
+  it("RONDE 93 — the celebrity rotation survives; its invented media queries do not", () => {
+    // The rotation is what stops consecutive beats about one person fetching the same clip, and
+    // it is untouched. What it rotates through no longer includes four suffixes appended to every
+    // person on earth — see ronde93SearchProvenanceCoverage for why.
     for (const beat of ALL) {
       const qs = buildPersonCelebrityVideoQueries("Adolf Hitler", beat, 0);
-      for (const media of ["Adolf Hitler interview", "Adolf Hitler speech"]) {
-        expect(qs, `${media} dropped for "${beat.slice(0, 26)}"`).toContain(media);
+      expect(qs.length, `nothing built for "${beat.slice(0, 26)}"`).toBeGreaterThan(0);
+      for (const invented of ["red carpet", "talk show", "makeup brand", "celebrity news"]) {
+        expect(qs.join(" | "), `"${invented}" invented`).not.toContain(invented);
       }
       expect(new Set(qs).size).toBe(qs.length);
     }

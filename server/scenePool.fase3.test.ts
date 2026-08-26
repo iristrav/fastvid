@@ -422,7 +422,10 @@ describe("buildSceneCandidatePool — FASE 3 new-source integration", () => {
     }) as unknown as typeof fetch;
     const pool = await buildSceneCandidatePool({
       sceneIndex: 0,
-      sceneText: "test",
+      // RONDE 93: the pool now searches inside a scope built from its own sceneText, exactly as
+      // production does — the pool's queries come from the scene. A fixture whose scene text does
+      // not contain its own query is not a lighter test, it is a scene that never existed.
+      sceneText: "test query",
       primaryQuery: "test query",
       skipPexels: true,
       skipPixabay: true,
@@ -442,7 +445,10 @@ describe("buildSceneCandidatePool — FASE 3 new-source integration", () => {
     global.fetch = fetchSpy as unknown as typeof fetch;
     await buildSceneCandidatePool({
       sceneIndex: 0,
-      sceneText: "test",
+      // RONDE 93: the pool now searches inside a scope built from its own sceneText, exactly as
+      // production does — the pool's queries come from the scene. A fixture whose scene text does
+      // not contain its own query is not a lighter test, it is a scene that never existed.
+      sceneText: "test query",
       primaryQuery: "test query",
       skipPexels: true,
       skipPixabay: true,
