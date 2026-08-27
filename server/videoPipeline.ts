@@ -372,6 +372,7 @@ import {
 import { formatBeatVisualProblems } from "./beatVisualStatus";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
+import { isNameParticleToken } from "./searchQueryContract";
 import { formatSceneSearchBudget, sceneSearchBudgetMs } from "./sceneSearchBudget";
 import {
   formatYoutubeLicenseLine,
@@ -379,6 +380,11 @@ import {
   youtubeLicenseDecision,
   type YoutubeUsageEntry,
 } from "./youtubeLicenseStatus";
+import {
+  formatArchiveLearningIndexed,
+  formatArchiveRetrieval,
+  formatNoStrongMatch,
+} from "./archiveLearningLog";
 import {
   buildClosingTail,
   closingTailSeconds,
@@ -419,6 +425,7 @@ import {
   type FunnelCandidate,
   type RetrievalFunnelResult,
   type ScoredFunnelCandidate,
+  BEAT_ARCHIVE_STOP_THRESHOLD,
 } from "./retrievalFunnel";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
@@ -14436,12 +14443,21 @@ export function extractPersonNamesFromText(text: string): string[] {
        * and — for Title Case input, where capitalisation proves nothing — corroboration required.
        */
       if (!checkPersonName(joined, text, "", { isKnownVerb: isKnownPersonActionVerb }).ok) continue;
-      // RONDE 72: a run naming a thing is not a person. One head noun is decisive — "Eiffel
-      // Tower" carries "tower", "British Spitfire" carries "spitfire".
-      if (seg.some(isThingToken)) continue;
+      /**
+       * RONDE 72: a run naming a thing is not a person. One head noun is decisive — "Eiffel
+       * Tower" carries "tower", "British Spitfire" carries "spitfire".
+       *
+       * RONDE 125: a name particle is exempt, because several of them are also ordinary nouns.
+       * "bin" is the clearest case — measured, "Mohammed bin Salman" was refused here as a thing,
+       * on the container. "bar", "al" and "den" have the same problem. A particle only ever
+       * appears BETWEEN two of a name's own words (checkPersonName enforces that), so exempting
+       * it cannot let a thing through: the head noun that would name one is still checked.
+       */
+      const significant = seg.filter((t) => !isNameParticleToken(t));
+      if (significant.some(isThingToken)) continue;
       // Place names are only decisive when the WHOLE run is one. "New York" is a place;
       // "George Washington" is a person whose surname happens to also name places.
-      if (seg.every(isPlaceToken)) continue;
+      if (significant.length > 0 && significant.every(isPlaceToken)) continue;
       found.add(joined);
     }
   }
@@ -29161,6 +29177,48 @@ async function fetchSceneVisualsInner(
               `title="${bcTitle || "unknown"}" ` +
               `beat="${(beat.text ?? "").replace(/\s+/g, " ").trim().slice(0, 60) || "unknown"}"`
             );
+            /**
+             * RONDE 125 — the same facts, said in the one sentence the audit asked for.
+             *
+             * [FunnelBeatCalib] above is a calibration line: it prints the score so the
+             * thresholds can be tuned. It does not say whether this beat REUSED what the archive
+             * already had or went out and searched again, and that is the question "does FastVid
+             * get faster with every video" actually turns on.
+             *
+             * Nothing here is computed: the score, the strategy, the candidate list and the beat
+             * text were all in hand a line ago. No query, no fetch, no embedding call.
+             */
+            const reused = gapStrategy === "archive_only";
+            const scoredCandidates = funnelResult.candidates.filter(
+              (c) => c.archivePick?.asset?.id != null
+            );
+            const knownSuccessful = scoredCandidates.filter(
+              (c) => (c.archivePick?.asset?.editorialScore ?? 50) > 50
+            ).length;
+            console.log(
+              formatArchiveRetrieval({
+                sceneIndex: scene.index,
+                beatIndex: beat.index,
+                query: (beat.text ?? "").replace(/\s+/g, " ").trim(),
+                candidates: scoredCandidates.length,
+                bestScore: bestArchiveScore ?? null,
+                stopThreshold: BEAT_ARCHIVE_STOP_THRESHOLD,
+                knownSuccessful,
+                outcome: reused ? "reuse" : "external",
+                strategy: gapStrategy,
+              })
+            );
+            if (!reused) {
+              console.log(
+                formatNoStrongMatch({
+                  sceneIndex: scene.index,
+                  beatIndex: beat.index,
+                  query: (beat.text ?? "").replace(/\s+/g, " ").trim(),
+                  bestScore: bestArchiveScore ?? null,
+                  stopThreshold: BEAT_ARCHIVE_STOP_THRESHOLD,
+                })
+              );
+            }
           }
           // 4. Order candidates: archive leads unless aggressive mode
           funnelCandidates = orderCandidatesForBeatGap(funnelResult.candidates, gapStrategy);

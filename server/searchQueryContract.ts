@@ -314,10 +314,49 @@ export function blocksPersonName(token: string): boolean {
 }
 
 /** A single name token: a capital followed by lowercase letters. "Braun" yes, "BRAUN" no, "of" no. */
-const NAME_TOKEN_RE = /^\p{Lu}[\p{Ll}'’‐-―-]+$/u;
+const NAME_TOKEN_RE = /^\p{Lu}[\p{Ll}\p{M}'’‐-―-]+$/u;
+
+/**
+ * RONDE 125 — the shapes this refused that are ordinary names.
+ *
+ * The pattern above requires everything after the first capital to be lower case, so a name with
+ * a capital after a hyphen or an apostrophe was "not_name_shaped". Measured against the real
+ * checker, before this:
+ *
+ *     Jean-Luc  → false        Mary-Kate → false
+ *     el-Sisi   → false        O'Neill   → false
+ *
+ * A capital is allowed ONLY immediately after a hyphen or an apostrophe, never mid-word, so
+ * "McDonald" and "BRAUN" are refused exactly as before. The lower-case half of a hyphenated
+ * particle ("el-Sisi") is admitted for the same reason: it is part of one written name.
+ */
+const HYPHENATED_NAME_TOKEN_RE =
+  /^(?:\p{Lu}['’]|(?:de|del|della|der|den|des|di|do|dos|du|da|van|von|vom|zu|ten|ter|la|le|les|bin|ibn|bint|al|el|ben|bar|abu|af|av)-)?\p{Lu}[\p{Ll}\p{M}]+(?:(?:['’]\p{Lu}|[-‐―]\p{Lu}?)[\p{Ll}\p{M}]+)*$/u;
 
 export function isNameShapedToken(token: string): boolean {
-  return NAME_TOKEN_RE.test(token.trim());
+  const t = token.trim();
+  return NAME_TOKEN_RE.test(t) || HYPHENATED_NAME_TOKEN_RE.test(t);
+}
+
+/**
+ * RONDE 125 — the lower-case words that belong inside a surname.
+ *
+ * "Charles de Gaulle" failed `not_name_shaped` on "de", and "Vincent van Gogh" on "van". These
+ * are name particles, not function words: they carry no meaning of their own in the middle of a
+ * name. A particle is only ever accepted BETWEEN two capitalised tokens — never first, never
+ * last — which is what stops "de" becoming a name by itself.
+ *
+ * Kept as its own list rather than folded into isNameShapedToken so the positional rule can be
+ * enforced by the caller that knows the position.
+ */
+const NAME_PARTICLE_SET = new Set([
+  "de", "del", "della", "der", "den", "des", "di", "do", "dos", "du", "da",
+  "van", "von", "vom", "zu", "ten", "ter", "la", "le", "les",
+  "bin", "ibn", "bint", "al", "el", "ben", "bar", "abu", "af", "av",
+]);
+
+export function isNameParticleToken(token: string): boolean {
+  return NAME_PARTICLE_SET.has(token.trim().toLowerCase());
 }
 
 /**
@@ -382,9 +421,23 @@ export function checkPersonName(
   if (!name) return { ok: false, reason: "too_few_tokens" };
   const tokens = name.split(" ");
   if (tokens.length < 2) return { ok: false, reason: "too_few_tokens" };
-  if (tokens.length > 3) return { ok: false, reason: "too_many_tokens" };
-  for (const token of tokens) {
+  // RONDE 125: a particle is not one of the name's own words for counting purposes — "Ludwig van
+  // Beethoven" and "Abdel Fattah el-Sisi" are three-part names, and the old cap of 3 turned
+  // "Mohammed bin Salman" into too_many_tokens the moment particles were admitted at all.
+  const significantTokens = tokens.filter((t) => !isNameParticleToken(t));
+  if (significantTokens.length > 3) return { ok: false, reason: "too_many_tokens" };
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
     if (isPronounToken(token)) return { ok: false, reason: "pronoun" };
+    /**
+     * RONDE 125: a particle is accepted only BETWEEN two of the name's own words. First or last,
+     * it is an ordinary word again and the old refusals apply — so "de" alone is still not a
+     * name, and neither is "Hermann de".
+     */
+    if (isNameParticleToken(token)) {
+      if (i === 0 || i === tokens.length - 1) return { ok: false, reason: "function_word" };
+      continue;
+    }
     if (blocksPersonName(token)) return { ok: false, reason: "function_word" };
     if (!isNameShapedToken(token)) return { ok: false, reason: "not_name_shaped" };
   }

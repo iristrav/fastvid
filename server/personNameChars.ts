@@ -75,11 +75,71 @@ const NAME_APOSTROPHE = "['’]";
  * needs no such rule — nothing attaches a possessive with one.
  */
 export const NAME_TOKEN =
-  `(?:${NAME_UPPER}${NAME_APOSTROPHE})?${NAME_UPPER}${NAME_REST}+` +
+  // RONDE 125: `el-Sisi`, `al-Assad` — a particle bound to the name with a hyphen, which is part
+  // of the name rather than a separate word.
+  `(?:${NAME_UPPER}${NAME_APOSTROPHE}|(?:de|del|della|der|den|des|di|do|dos|du|da|van|von|vom|zu|ten|ter|la|le|les|bin|ibn|bint|al|el|ben|bar|abu|af|av)-)?` +
+  `${NAME_UPPER}${NAME_REST}+` +
   `(?:(?:${NAME_APOSTROPHE}${NAME_UPPER}|-${NAME_UPPER}?)${NAME_REST}+)*`;
 
 /**
- * A run of capitalised tokens.
+ * RONDE 125 — the word boundary that hid every non-ASCII name.
+ *
+ * RONDE 123 fixed the character CLASS and the fix worked for "Hermann Göring" — because "Hermann"
+ * begins with an ASCII H. It did nothing for "Łukasz Fabiański", "İsmet İnönü" or "Иосиф Сталин",
+ * and the reason is one token in the pattern that nobody had reason to suspect: `\b`.
+ *
+ * JavaScript's `\b` is defined on ASCII word characters — `[A-Za-z0-9_]` — and the `u` flag does
+ * NOT change that. So `\bŁ` is not a boundary at all, and a name STARTING with a non-ASCII letter
+ * is invisible to the pattern however good the character class behind it is. Measured:
+ *
+ *     /\bŁ/.test(" Łukasz")   →  false
+ *     /\bG/.test(" Göring")   →  true
+ *
+ *     "Łukasz Fabiański saved"  with \b  →  null
+ *                               with these lookarounds  →  ["Łukasz Fabiański"]
+ *
+ * These lookarounds say the same thing `\b` was meant to say, for every alphabet: the character
+ * before the run is not a letter, mark, digit or underscore, and neither is the one after it.
+ */
+export const NAME_BOUNDARY_LEFT = "(?<![\\p{L}\\p{M}\\p{N}_])";
+export const NAME_BOUNDARY_RIGHT = "(?![\\p{L}\\p{M}\\p{N}_])";
+
+/**
+ * RONDE 125 — the lower-case words that live INSIDE a surname.
+ *
+ * "Charles de Gaulle" and "Vincent van Gogh" were not near-misses: they produced NOTHING, because
+ * a run of capitalised tokens breaks at "de" and each half is then a single token, below the
+ * two-token minimum. The measurement, before this list existed:
+ *
+ *     "The famous French president Charles de Gaulle"  →  []
+ *     "Vincent van Gogh painted Starry Night"          →  ["Starry Night", "Gogh"]
+ *
+ * — the second one being worse than nothing, since it named a painting as a person and reduced
+ * the painter to his surname.
+ *
+ * Deliberately a short, closed list of true name particles rather than "any lower-case word": the
+ * whole point of a capitalised run is that the capitals carry the evidence, and letting arbitrary
+ * lower-case words through would let "Hermann of the Reich" become a name. Nothing here is a word
+ * that carries meaning on its own in the middle of a name.
+ */
+export const NAME_PARTICLES = [
+  // Romance and Germanic
+  "de", "del", "della", "der", "den", "des", "di", "do", "dos", "du", "da",
+  "van", "von", "vom", "zu", "ten", "ter", "la", "le", "les",
+  // Arabic and Hebrew
+  "bin", "ibn", "bint", "al", "el", "ben", "bar", "abu",
+  // Nordic
+  "af", "av",
+] as const;
+
+const PARTICLE_ALT = `(?:${NAME_PARTICLES.join("|")})`;
+
+/**
+ * A run of capitalised tokens, particles included.
+ *
+ * The particle may appear between two capitalised tokens ("Charles de Gaulle") or attached to one
+ * with a hyphen ("Abdel Fattah el-Sisi") — the second form is handled inside NAME_TOKEN. A run may
+ * never START or END with a particle, which is what keeps "de" from becoming a name on its own.
  *
  * @param minExtra how many tokens must follow the first. `1` is the two-or-more-word form the
  *   full-name patterns use; `0` allows a single token where the caller wants one.
@@ -94,7 +154,15 @@ export function nameRunPattern(minExtra: number, maxExtra?: number): string {
           ? "+"
           : `{${minExtra},}`
       : `{${minExtra},${maxExtra}}`;
-  return `\\b(${NAME_TOKEN}(?:\\s+${NAME_TOKEN})${quantifier})\\b`;
+  const sep = `\\s+(?:${PARTICLE_ALT}\\s+)*`;
+  return (
+    `${NAME_BOUNDARY_LEFT}(${NAME_TOKEN}(?:${sep}${NAME_TOKEN})${quantifier})${NAME_BOUNDARY_RIGHT}`
+  );
+}
+
+/** Is this lower-case word a name particle rather than an ordinary word? */
+export function isNameParticle(token: string): boolean {
+  return (NAME_PARTICLES as readonly string[]).includes(token.trim().toLowerCase());
 }
 
 /** A fresh regex for a run of capitalised tokens. Fresh, because /g regexes carry lastIndex. */
@@ -104,7 +172,11 @@ export function nameRunRegex(minExtra: number, maxExtra?: number): RegExp {
 
 /** A single capitalised token of at least `minLength` characters. */
 export function singleNameTokenRegex(minLength = 3): RegExp {
-  return new RegExp(`\\b${NAME_UPPER}${NAME_REST}{${Math.max(1, minLength - 1)},}\\b`, "gu");
+  // RONDE 125: same ASCII-`\b` trap as the run pattern — see NAME_BOUNDARY_LEFT.
+  return new RegExp(
+    `${NAME_BOUNDARY_LEFT}${NAME_UPPER}${NAME_REST}{${Math.max(1, minLength - 1)},}${NAME_BOUNDARY_RIGHT}`,
+    "gu"
+  );
 }
 
 /** The token pattern on its own, for callers that want to match one name rather than a run. */
