@@ -103,8 +103,32 @@ const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.3; // 30% pixel change = real editorial cut
 const DEFAULT_SCDET_THRESHOLD = 5.0; // scdet 0–100 scale; 5 catches real cuts, ignores flicker
-/** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
+/**
+ * Interval size used ONLY where there is no scene information at all — see splitLongRanges.
+ *
+ * RONDE 98: this used to be applied to every range, detected or not, with the comment "Always
+ * split any range longer than maxClipDurationSec". A genuine 38-second shot — one continuous
+ * scene, no cuts anywhere in it, confirmed by two rescan passes — came out as seven clips of 5.4
+ * seconds. The archive then held seven rows for one scene, and a beat that wanted the whole thing
+ * could only have a seventh of it.
+ *
+ * A scene ends where the picture changes, not where a timer expires.
+ */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
+
+/**
+ * The absolute ceiling on a single clip, and the only duration limit that still applies to a
+ * DETECTED scene.
+ *
+ * It exists for one reason: a source whose shot detection returns nothing usable — a corrupt file,
+ * a static camera on a wall, a stream whose duration probe lies — must not produce one clip the
+ * length of the whole video. It is deliberately far above any editorial length, so that reaching
+ * it means something went wrong rather than that a scene was long.
+ *
+ * Ninety seconds is not a claim about how long a shot should be. It is the point past which "one
+ * continuous scene" stops being the likeliest explanation.
+ */
+const DEFAULT_SCENE_SAFETY_MAX_SEC = 90;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.12; // merge near-duplicate detections
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
@@ -245,6 +269,22 @@ export function maxClipDurationSec(): number {
     if (!isNaN(n) && n >= 3 && n <= 120) return n;
   }
   return DEFAULT_MAX_CLIP_DURATION_SEC;
+}
+
+/**
+ * RONDE 98 — the safety ceiling for a scene the detector DID find.
+ *
+ * Applied after detection and after the rescan passes, so a range that reaches it has already been
+ * examined twice for interior cuts and none were found. Splitting it is the pipeline admitting it
+ * cannot tell where this scene ends, which is a different statement from "clips are six seconds".
+ */
+export function sceneSafetyMaxSec(): number {
+  const raw = process.env.ARCHIVE_SCENE_SAFETY_MAX_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 10 && n <= 600) return n;
+  }
+  return DEFAULT_SCENE_SAFETY_MAX_SEC;
 }
 
 /** Split any range exceeding maxDur into equal sub-intervals. */
@@ -1499,19 +1539,46 @@ export async function splitVideoBySceneChanges(
       );
       ranges = splitLongRanges([{ start: 0, end: effectiveDur }]);
       ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
+    } else if (ranges.length <= 1 && cuts.length === 0) {
+      console.warn(
+        `[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — falling back to fixed intervals`
+      );
     } else if (ranges.length <= 1) {
-      console.warn(`[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — will split on max duration`);
+      // RONDE 98: one range and real cuts behind it means the whole video is one scene. That is a
+      // finding, not a failure, and it stays one clip.
+      console.log(
+        `[ArchiveSplit] ${effectiveDur.toFixed(1)}s video is a single continuous scene — kept as one clip`
+      );
     }
 
-    // Always split any range longer than maxClipDurationSec into equal sub-intervals.
-    // This catches shots without hard cuts (dissolves, fades, long uncut scenes).
+    /**
+     * RONDE 98 — a detected scene is kept whole; only the safety ceiling still applies.
+     *
+     * This step used to read "Always split any range longer than maxClipDurationSec", six seconds,
+     * applied to every range whether or not the detector had found its boundaries. A 38-second
+     * shot with no cuts in it — confirmed by scdet, by the scene filter, and by two rescan passes
+     * that went looking for interior cuts and found none — was cut into seven equal pieces anyway.
+     * The archive stored seven rows for one scene, and nothing downstream could tell they belonged
+     * together.
+     *
+     * The detector's answer is now the answer. What remains is sceneSafetyMaxSec: a range that
+     * survives detection AND both rescan passes and is still longer than that is not a long scene,
+     * it is a detection that failed, and splitting it is the honest fallback rather than the rule.
+     *
+     * `cuts.length === 0` means the detector found nothing anywhere in the video, so there is no
+     * scene information to preserve and the interval split is all there is — that path is
+     * unchanged.
+     */
     const beforeMaxDur = ranges.length;
-    ranges = splitLongRanges(ranges);
+    const sceneAware = cuts.length > 0;
+    const splitCeiling = sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec();
+    ranges = splitLongRanges(ranges, splitCeiling);
     ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
     ranges = capClipRanges(ranges, maxArchiveClips());
     if (ranges.length !== beforeMaxDur) {
       console.log(
-        `[ArchiveSplit] max-duration split: ${beforeMaxDur} → ${ranges.length} clip(s) (max ${maxClipDurationSec()}s each)`
+        `[ArchiveSplit] ${sceneAware ? "safety-ceiling" : "fixed-interval"} split: ` +
+          `${beforeMaxDur} → ${ranges.length} clip(s) (ceiling ${splitCeiling}s)`
       );
       // Re-scan the interval-split clips to find real cut boundaries inside them.
       if (hasBudget()) {
@@ -1708,8 +1775,14 @@ export async function splitVideoBySceneChanges(
       console.warn(`[ArchiveSplit] partial extract: ${segments.length}/${extractRanges.length} clips — continuing`);
     }
 
-    // enforceSingleSceneClipSegments disabled — with low thresholds + splitLongRanges,
-    // clips are already ≤10s and re-scanning creates false-positive sub-3s fragments.
+    // enforceSingleSceneClipSegments disabled — the low detection thresholds plus the two rescan
+    // passes above already resolve interior cuts, and re-scanning the extracted files creates
+    // false-positive sub-3s fragments.
+    //
+    // RONDE 98: this comment used to say "clips are already ≤10s", which was true only because
+    // splitLongRanges capped everything at six seconds. That cap no longer applies to a detected
+    // scene, so a clip here can legitimately be much longer — the reason for leaving the extra
+    // pass off is the false positives, not the length.
     console.log(`[ArchiveSplit] returning ${segments.length} clip(s)`);
 
     const cleanup = () => {

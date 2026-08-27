@@ -18,6 +18,7 @@ import {
   indexArchiveClipEmbedding,
   loadStoredClipEmbedding,
   loadStoredFrameEmbeddings,
+  prefetchArchiveClipEmbeddings,
 } from "./archiveClipEmbedding";
 
 export type StoredClipAudit = {
@@ -144,6 +145,9 @@ export async function auditArchiveClip(
     issues.push("missing_title_and_tags");
   }
 
+  // Warm the durable store before the synchronous read decides to re-index: after a restart the
+  // local embedding file is gone (ephemeral disk) even though the asset was indexed weeks ago.
+  await prefetchArchiveClipEmbeddings([assetId]);
   let frameEmbeddings = loadStoredFrameEmbeddings(assetId);
   if (frameEmbeddings.length === 0) {
     await indexArchiveClipEmbedding(assetId, localVideoPath);
@@ -291,6 +295,7 @@ export function scheduleAuditForAsset(assetId: number): void {
       if (!asset || asset.mediaType !== "video") return;
       const local = resolveArchiveAssetLocalPath(asset);
       if (!local) return;
+      await prefetchArchiveClipEmbeddings([assetId]);
       if (!loadStoredClipEmbedding(assetId)) {
         await indexArchiveClipEmbedding(assetId, local);
       }

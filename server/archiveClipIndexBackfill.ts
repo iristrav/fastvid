@@ -5,7 +5,18 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { listActiveVideoArchiveAssetsBatch } from "./db";
-import { clipEmbeddingIndexEnabled, indexArchiveClipEmbedding, loadStoredClipEmbedding } from "./archiveClipEmbedding";
+import {
+  clipEmbeddingIndexEnabled,
+  indexArchiveClipEmbedding,
+  loadStoredClipEmbedding,
+} from "./archiveClipEmbedding";
+import {
+  claimAssetForClipIndexing,
+  countAssetsMissingClipEmbedding,
+  listAssetsMissingClipEmbedding,
+  releaseClipIndexClaim,
+  type ClipBackfillCandidate,
+} from "./archiveClipEmbeddingStore";
 import { LOCAL_UPLOADS_DIR, resolveLocalVideoPath } from "./storageLocal";
 import { storageGetSignedUrl } from "./storage";
 
@@ -144,7 +155,36 @@ function markIndexFailure(assetId: number): void {
   recentIndexFailures.set(assetId, Date.now() + INDEX_FAIL_COOLDOWN_MS);
 }
 
-/** Index CLIP embeddings for archive videos that lack a stored index (non-blocking batches). */
+/**
+ * Fetch (if needed) and index one asset. Shared by both work-list strategies below.
+ * Returns "indexed" | "skipped" — a failure is recorded durably inside
+ * indexArchiveClipEmbedding, so it is never retried in the next process.
+ */
+async function indexOneAsset(asset: ClipBackfillCandidate): Promise<"indexed" | "skipped"> {
+  const local = resolveArchiveAssetLocalPath(asset);
+  const videoPath = local ?? (await downloadAssetForBackfill(asset));
+  if (!videoPath) return "skipped";
+  const ok = await indexArchiveClipEmbedding(asset.id, videoPath, { quiet: true });
+  if (ok) return "indexed";
+  markIndexFailure(asset.id);
+  return "skipped";
+}
+
+/**
+ * Index CLIP embeddings for archive videos that lack a stored index (non-blocking batches).
+ *
+ * RONDE 99 — this used to walk every active video asset from a module-level id cursor and ask
+ * the local filesystem, per asset, whether it already had an embedding. Both halves of that
+ * were wrong once the process restarts: the cursor is a plain variable that resets to 0, and
+ * the filesystem index lives on ephemeral container disk. The Railway logs showed the result —
+ * `skipped 0` on every batch, the same 289 asset ids indexed in two separate runs, and an id
+ * range that restarted *below* the previous run's high-water mark.
+ *
+ * With a database the work list now comes from the database: which assets have no indexed row.
+ * There is no cursor to lose, no re-scan of finished work, and a claim per asset so two
+ * replicas cannot index the same file at the same time. Without a database (local dev, tests)
+ * the old cursor scan is still there, unchanged, as the fallback.
+ */
 export async function backfillMissingClipEmbeddings(
   maxAssets = backfillBatchSize(),
   options?: { ignoreActiveJobCap?: boolean }
@@ -168,6 +208,13 @@ export async function backfillMissingClipEmbeddings(
   }
   backfillPauseAnnounced = false;
   const effectiveBatch = maxAssets;
+
+  // Ask the database for work that is genuinely outstanding. A slightly larger fetch than the
+  // batch leaves room for assets that turn out to be unfetchable (missing file, too large).
+  const workList = await listAssetsMissingClipEmbedding(Math.min(300, effectiveBatch * 3));
+  if (workList) {
+    return runWorkListBackfill(workList, effectiveBatch, activeJobs, options);
+  }
 
   let indexed = 0;
   let skipped = 0;
@@ -203,22 +250,8 @@ export async function backfillMissingClipEmbeddings(
         continue;
       }
       missing++;
-      const local = resolveArchiveAssetLocalPath(asset);
-      let videoPath = local;
-      if (!videoPath) {
-        // Asset is on R2/remote storage — download to a temp file for indexing.
-        videoPath = await downloadAssetForBackfill(asset);
-      }
-      if (!videoPath) {
-        skipped++;
-        continue;
-      }
-      const ok = await indexArchiveClipEmbedding(asset.id, videoPath, { quiet: true });
-      if (ok) indexed++;
-      else {
-        markIndexFailure(asset.id);
-        skipped++;
-      }
+      if ((await indexOneAsset(asset)) === "indexed") indexed++;
+      else skipped++;
       if (indexed >= effectiveBatch) break;
     }
     backfillAssetCursor = cursor;
@@ -226,7 +259,71 @@ export async function backfillMissingClipEmbeddings(
 
   if (indexed > 0 || missing > 0) {
     console.log(
-      `[ClipEmbedding] Backfill batch: indexed ${indexed}, skipped ${skipped}, still missing ~${Math.max(0, missing - indexed)}` +
+      `[ClipEmbedding] Backfill batch (no index DB): indexed ${indexed}, skipped ${skipped}, ` +
+        `unindexed in this scan ${Math.max(0, missing - indexed)}` +
+        (activeJobs > 0 ? ` (worker has ${activeJobs} active job(s), batch capped)` : "")
+    );
+  }
+  return { indexed, skipped, missing };
+}
+
+/**
+ * DB-driven backfill: every asset in `workList` is known to be missing an embedding, so there
+ * is nothing to re-check and nothing to skip for being already done.
+ *
+ * The claim is what makes this safe with more than one replica. Two workers polling at the same
+ * time get overlapping work lists — without a claim they would both download and CLIP-index the
+ * same file. claimAssetForClipIndexing() is an INSERT on a primary key, so exactly one wins.
+ */
+async function runWorkListBackfill(
+  workList: ClipBackfillCandidate[],
+  effectiveBatch: number,
+  activeJobs: number,
+  options?: { ignoreActiveJobCap?: boolean }
+): Promise<{ indexed: number; skipped: number; missing: number }> {
+  const { workerLocalActiveJobs } = await import("./videoQueue");
+  let indexed = 0;
+  let skipped = 0;
+  let claimedByOthers = 0;
+  const missing = workList.length;
+
+  for (const asset of workList) {
+    if (indexed >= effectiveBatch) break;
+    // Re-check every iteration, not just once at the top — a render can start mid-batch (worker
+    // just claimed a queued video), and continuing to burn CPU on background indexing competes
+    // with it for the same small box's ffmpeg/CPU budget instead of yielding right away.
+    if (!options?.ignoreActiveJobCap && workerLocalActiveJobs() > 0) {
+      console.log("[ClipEmbedding] Backfill yielding mid-batch — render job became active");
+      break;
+    }
+    if (shouldSkipRecentIndexFailure(asset.id)) {
+      skipped++;
+      continue;
+    }
+    if (!(await claimAssetForClipIndexing(asset.id))) {
+      claimedByOthers++;
+      continue;
+    }
+    const outcome = await indexOneAsset(asset);
+    if (outcome === "indexed") {
+      indexed++;
+    } else {
+      skipped++;
+      // indexArchiveClipEmbedding records real failures itself; this covers the cases it never
+      // saw (no local file, download refused) so the claim does not sit there until it expires.
+      await releaseClipIndexClaim(asset.id);
+    }
+  }
+
+  if (indexed > 0 || skipped > 0 || claimedByOthers > 0) {
+    const remaining = await countAssetsMissingClipEmbedding();
+    console.log(
+      `[ClipEmbedding] Backfill batch: indexed ${indexed}, skipped ${skipped}` +
+        (claimedByOthers > 0 ? `, claimed elsewhere ${claimedByOthers}` : "") +
+        // A real count from the database, not `missing - indexed`. The old arithmetic reported
+        // "still missing ~0" whenever a batch finished its own scan, which read as "the archive
+        // is fully indexed" while thousands of assets were still untouched.
+        (remaining == null ? "" : `, archive still missing ${remaining}`) +
         (activeJobs > 0 ? ` (worker has ${activeJobs} active job(s), batch capped)` : "")
     );
   }

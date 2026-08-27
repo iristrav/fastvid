@@ -5,7 +5,7 @@ import fs from "fs";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
 import { strictVoiceVisualMatchEnabled, isFastShortVideoLength } from "./sourcingPolicy";
-import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
+import { loadStoredFrameEmbeddings, prefetchArchiveClipEmbeddings } from "./archiveClipEmbedding";
 import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
   LOCAL_FRAME_FRACTIONS,
@@ -386,6 +386,9 @@ async function scoreClipAcrossFrames(
   const tag = `s${sceneIndex}b${beatIndex} clip=${path.basename(clipPath)}`;
 
   const assetId = curatedClipPathAssetId(clipPath);
+  // loadStoredFrameEmbeddings is synchronous and reads the durable store's in-process cache;
+  // warm it first or a restarted worker sees no embeddings for an asset indexed long ago.
+  if (assetId != null) await prefetchArchiveClipEmbeddings([assetId]);
   const storedEmbeddings =
     assetId != null
       ? loadStoredFrameEmbeddings(assetId)
@@ -717,6 +720,9 @@ export async function scoreAdoptedClipQuality(
   if (framePaths.length === 0) return null;
 
   const assetId = curatedClipPathAssetId(clipPath);
+  // loadStoredFrameEmbeddings is synchronous and reads the durable store's in-process cache;
+  // warm it first or a restarted worker sees no embeddings for an asset indexed long ago.
+  if (assetId != null) await prefetchArchiveClipEmbeddings([assetId]);
   const storedEmbeddings =
     assetId != null
       ? loadStoredFrameEmbeddings(assetId)

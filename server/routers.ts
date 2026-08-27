@@ -86,7 +86,7 @@ import { recognizeCelebritiesForAsset, recognizeCelebritiesBulk } from "./archiv
 import { isRekognitionEnabled } from "./rekognitionCelebrity";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
-import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
+import { trimArchiveAsset } from "./archiveTrimToScene";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
@@ -1959,9 +1959,21 @@ export const appRouter = router({
         return { deleted: toDelete.length };
       }),
 
+    /**
+     * RONDE 98 — trim an archive clip to a chosen range.
+     *
+     * `startSec`/`endSec` are the real inputs. `cutAtSec`/`cutTimeSec` are the original single-cut
+     * API and still work, meaning "keep 0 → cut"; they are what the admin UI used to send when the
+     * only thing it could do was shorten from the end.
+     *
+     * With no range at all it still falls back to the first detected scene cut, which is what the
+     * procedure's name refers to.
+     */
     trimToSingleScene: adminProcedure
       .input(z.object({
         assetId: z.number().int(),
+        startSec: z.number().min(0).optional(),
+        endSec: z.number().min(0).optional(),
         cutAtSec: z.number().optional(),
         cutTimeSec: z.number().optional(),
       }))
@@ -1969,19 +1981,34 @@ export const appRouter = router({
         const asset = await getMediaArchiveAssetById(input.assetId);
         if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
         if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.NOT_FOUND, "Asset is not a video");
-        let cutSec = input.cutAtSec ?? input.cutTimeSec;
-        if (!cutSec) {
+
+        const legacyCut = input.cutAtSec ?? input.cutTimeSec;
+        let startSec = input.startSec ?? 0;
+        let endSec = input.endSec ?? legacyCut;
+
+        if (endSec == null && startSec <= 0) {
           const audit = await auditArchiveAssetScene(asset).catch(() => null);
           const firstCut = audit?.cutTimesSec?.[0];
           if (!firstCut || firstCut <= 0.5) return { trimmed: false, reason: "No reliable scene cut detected" };
-          cutSec = firstCut;
+          endSec = firstCut;
+          startSec = 0;
         }
-        if (cutSec <= 0.5) return { trimmed: false, reason: "Cut too close to start" };
-        const { newDurationSec } = await trimArchiveAssetToFirstScene(
-          asset as import("../drizzle/schema").MediaArchiveAsset,
-          cutSec
-        );
-        return { trimmed: true, newDurationSec };
+
+        try {
+          const result = await trimArchiveAsset(
+            asset as import("../drizzle/schema").MediaArchiveAsset,
+            { startSec, endSec }
+          );
+          return {
+            trimmed: true,
+            newDurationSec: result.newDurationSec,
+            startSec: result.startSec,
+            endSec: result.endSec,
+          };
+        } catch (err) {
+          // Range mistakes are the operator's to correct, not a 500 to swallow.
+          return { trimmed: false, reason: (err as Error).message?.slice(0, 200) ?? "Trim failed" };
+        }
       }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {

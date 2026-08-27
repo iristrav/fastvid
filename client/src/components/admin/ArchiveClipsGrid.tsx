@@ -291,7 +291,14 @@ function AssetPreviewModal({
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState<number>(asset.durationSec ?? 0);
-  const [trimAt, setTrimAt] = useState<number | null>(null);
+  /**
+   * RONDE 98 — a start AND an end.
+   *
+   * There was one marker, `trimAt`, and it only ever meant "cut everything after this". A clip
+   * whose usable footage began three seconds in could not be fixed at all.
+   */
+  const [trimStart, setTrimStart] = useState<number | null>(null);
+  const [trimEnd, setTrimEnd] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
   // Use live video duration; fall back to DB value while video hasn't loaded yet.
@@ -330,26 +337,57 @@ function AssetPreviewModal({
     };
   }, [asset.id]);
 
-  function markTrimPoint() {
+  /** The player's current position, or null when it cannot be read. */
+  function playheadSec(): number | null {
     const v = getVideo();
-    if (v) {
-      const t = v.currentTime;
-      const dur = (v.duration && isFinite(v.duration)) ? v.duration : duration;
-      if (t > 0.1 && (dur <= 0 || t < dur - 0.1)) setTrimAt(t);
-    }
+    if (!v) return null;
+    const t = v.currentTime;
+    const dur = v.duration && isFinite(v.duration) ? v.duration : duration;
+    if (t < 0 || (dur > 0 && t > dur)) return null;
+    return t;
   }
 
+  function markStart() {
+    const t = playheadSec();
+    if (t == null) return;
+    if (trimEnd != null && t >= trimEnd - 0.5) {
+      toast.error("Startpunt moet minstens een halve seconde vóór het eindpunt liggen");
+      return;
+    }
+    setTrimStart(t);
+  }
+
+  function markEnd() {
+    const t = playheadSec();
+    if (t == null) return;
+    if (t <= (trimStart ?? 0) + 0.5) {
+      toast.error("Eindpunt moet minstens een halve seconde ná het startpunt liggen");
+      return;
+    }
+    setTrimEnd(t);
+  }
+
+  const hasTrimRange = trimStart != null || trimEnd != null;
+
   async function applyTrim() {
-    if (trimAt == null) return;
-    if (!confirm(`Clip bijknippen tot ${trimAt.toFixed(2)}s? Dit overschrijft het origineel.`)) return;
+    if (!hasTrimRange) return;
+    const from = trimStart ?? 0;
+    const to = trimEnd ?? duration;
+    if (!confirm(`Clip bijknippen naar ${from.toFixed(2)}s – ${to.toFixed(2)}s? Dit overschrijft het origineel.`)) {
+      return;
+    }
     setTrimming(true);
     try {
-      const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: trimAt });
+      const result = await trimMutation.mutateAsync({
+        assetId: asset.id,
+        startSec: trimStart ?? 0,
+        ...(trimEnd != null ? { endSec: trimEnd } : {}),
+      });
       if (!result.trimmed) {
         toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
         return;
       }
-      toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
+      toast.success(`Bijgeknipt naar ${result.newDurationSec?.toFixed(2)}s`);
       onTrimmed?.(result.newDurationSec!);
       onClose();
     } catch (e) {
@@ -413,43 +451,69 @@ function AssetPreviewModal({
 
         {asset.mediaType === "video" && (
           <div className="px-4 py-3 border-t border-white/10 space-y-2">
-            {/* trim marker bar — only show if duration is known */}
+            {/* RONDE 98: the bar shows the KEPT range, shaded between the two markers, so what the
+                operator is about to save is visible before they save it. */}
             {duration > 0 && <div className="relative h-2 bg-white/10 rounded-full cursor-pointer"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                 const t = frac * duration;
-                if (t > 0.1 && t < duration - 0.1) setTrimAt(t);
+                const v = getVideo();
+                if (v) v.currentTime = t;
               }}
+              title="Klik om naar dit punt te springen"
             >
+              {/* kept range */}
+              <div
+                className="absolute top-0 h-full bg-emerald-500/40 rounded-full"
+                style={{
+                  left: `${((trimStart ?? 0) / duration) * 100}%`,
+                  width: `${(((trimEnd ?? duration) - (trimStart ?? 0)) / duration) * 100}%`,
+                }}
+              />
               {/* playhead */}
               <div
                 className="absolute top-0 h-full bg-white/30 rounded-full"
                 style={{ width: `${(currentTime / duration) * 100}%` }}
               />
-              {/* trim marker */}
-              {trimAt != null && (
+              {trimStart != null && (
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 w-1 h-4 bg-emerald-300 rounded-full"
+                  style={{ left: `${(trimStart / duration) * 100}%` }}
+                />
+              )}
+              {trimEnd != null && (
                 <div
                   className="absolute top-1/2 -translate-y-1/2 w-1 h-4 bg-red-400 rounded-full"
-                  style={{ left: `${(trimAt / duration) * 100}%` }}
+                  style={{ left: `${(trimEnd / duration) * 100}%` }}
                 />
               )}
             </div>}
 
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-500 tabular-nums w-16">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500 tabular-nums w-24">
                 {currentTime.toFixed(2)}s / {duration > 0 ? `${duration.toFixed(1)}s` : "?"}
               </span>
               <button
-                onClick={markTrimPoint}
+                onClick={markStart}
                 className="px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
-                title="Zet bijknippunt op huidige positie"
+                title="Begin van de bewaarde clip op de huidige positie"
               >
-                <Scissors className="w-3 h-3" /> Markeer hier ({currentTime.toFixed(2)}s)
+                <Scissors className="w-3 h-3" /> Begin hier
               </button>
-              {trimAt != null && (
+              <button
+                onClick={markEnd}
+                className="px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
+                title="Einde van de bewaarde clip op de huidige positie"
+              >
+                <Scissors className="w-3 h-3" /> Einde hier
+              </button>
+              {hasTrimRange && (
                 <>
-                  <span className="text-xs text-red-300">✂ tot {trimAt.toFixed(2)}s</span>
+                  <span className="text-xs text-emerald-300 tabular-nums">
+                    bewaar {(trimStart ?? 0).toFixed(2)}s – {(trimEnd ?? duration).toFixed(2)}s
+                    {duration > 0 && ` (${((trimEnd ?? duration) - (trimStart ?? 0)).toFixed(2)}s)`}
+                  </span>
                   <button
                     onClick={applyTrim}
                     disabled={trimming}
@@ -458,7 +522,10 @@ function AssetPreviewModal({
                     {trimming ? <Loader2 className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3" />}
                     Bijknippen toepassen
                   </button>
-                  <button onClick={() => setTrimAt(null)} className="text-xs text-slate-500 hover:text-slate-300">
+                  <button
+                    onClick={() => { setTrimStart(null); setTrimEnd(null); }}
+                    className="text-xs text-slate-500 hover:text-slate-300"
+                  >
                     Annuleren
                   </button>
                 </>
