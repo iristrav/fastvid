@@ -184,6 +184,22 @@ export const mediaArchiveAssets = mysqlTable(
   isActive: int("isActive").default(1).notNull(),
   /** Cached overlay-filter verdict: null = not yet checked, 0 = clean, 1 = baked edit text detected. */
   hasBakedEditText: int("hasBakedEditText"),
+  /**
+   * RONDE 118 — when the asset's preview was last proven readable. Null = never checked.
+   *
+   * Same convention as hasBakedEditText above: a nullable column where null means "no verdict
+   * yet", so every row that predates the check keeps its current behaviour until a sweep looks
+   * at it, rather than being retroactively declared broken.
+   */
+  previewCheckedAt: timestamp("previewCheckedAt"),
+  /**
+   * Why the preview is unusable, e.g. "no_preview_frame". Null = no known problem.
+   *
+   * isActive is what actually keeps an asset out of candidate selection — this says WHY, so an
+   * operator opening the archive can tell a deactivated-because-broken asset from one that was
+   * switched off deliberately.
+   */
+  previewIssue: varchar("previewIssue", { length: 64 }),
   /** Full editorial annotation produced by the clip annotator at ingest time.
    *  Null = not yet annotated. Never re-computed unless annotationVersion changes. */
   annotationJson: json("annotationJson").$type<import("./annotationTypes").ClipAnnotation>(),

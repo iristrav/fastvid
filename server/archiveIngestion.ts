@@ -18,6 +18,8 @@ import path from "path";
 import { createHash } from "crypto";
 import { storagePut } from "./storage";
 import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMediaArchives } from "./db";
+import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewCheck";
+import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
 import { cachedClipHasBakedEditText } from "./archiveClipFilter";
 import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
@@ -252,6 +254,23 @@ async function ingestExternalClipToArchiveInner(
     }
     const contentTags = Array.from(new Set([...(metadata.tags ?? []), ...recognizedPersonTags]));
 
+    /**
+     * RONDE 118 — prove the preview before anything is stored or registered.
+     *
+     * Ingested assets arrive from the open internet, so a truncated download or a container with
+     * no decodable picture is the normal failure here, not the exotic one. `localPath` is the
+     * real downloaded file, which makes this the cheapest and most honest place to ask.
+     */
+    const preview = await verifyArchivePreview({
+      localPath,
+      mediaType: metadata.mediaType,
+      extractFrame: extractFrameAtFraction,
+    });
+    if (!preview.ok) {
+      console.warn(formatPreviewRefusal(`"${metadata.title.slice(0, 60)}"`, preview));
+      return null;
+    }
+
     const data = await fs.promises.readFile(localPath);
     const { key, url } = await storagePut(storageKey, data, metadata.mimeType);
 
@@ -282,6 +301,8 @@ async function ingestExternalClipToArchiveInner(
       // that verdict now. Without it the asset lands with hasBakedEditText=null and the very first
       // render that considers it pays a fresh vision call to rediscover what we already know.
       hasBakedEditText: 0,
+      // RONDE 118: verified a few lines above, before the bytes were even stored.
+      previewCheckedAt: new Date(),
     };
 
     const assetId = await createMediaArchiveAsset(insertData);

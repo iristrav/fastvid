@@ -1934,6 +1934,28 @@ export const appRouter = router({
         return repairArchiveAssetDurations({ archiveId: input.archiveId, ids: input.ids });
       }),
 
+    /**
+     * RONDE 118 — check existing assets and deactivate the ones without a readable preview.
+     *
+     * Same shape as repairDurations above: bounded, resumable, and it never deletes. isActive=0
+     * is what keeps an asset out of candidate selection; previewIssue records why.
+     */
+    verifyPreviews: adminProcedure
+      .input(
+        z.object({
+          archiveId: z.number().int(),
+          ids: z.array(z.number().int()).optional(),
+          limit: z.number().int().min(1).max(1000).optional(),
+          onlyUnchecked: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const archive = await getMediaArchiveById(input.archiveId);
+        if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+        const { sweepArchivePreviews } = await import("./archivePreviewSweep");
+        return sweepArchivePreviews(input);
+      }),
+
     /** Search keywords that fell back to Pexels/Pixabay — surfaces missing archive topics. */
     listContentGaps: adminProcedure
       .input(z.object({ limit: z.number().int().min(1).max(200).optional() }))

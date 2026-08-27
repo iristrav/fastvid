@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
+import { execSync } from "child_process";
 import os from "os";
 import path from "path";
 
@@ -47,7 +48,19 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "f326-ingest-test-"));
     clipPath = path.join(tmpDir, "clip.mp4");
-    fs.writeFileSync(clipPath, Buffer.alloc(200_000, 1)); // > 50KB quality gate
+    /**
+     * SUPERSEDED BY RONDE 118: this was `Buffer.alloc(200_000, 1)` — 200 KB of the byte 0x01,
+     * sized only to clear the file-size gate. Ingestion now proves a readable preview before it
+     * writes a row, and those bytes are not a video, so a fake file can no longer stand in for
+     * one. A real three-second clip, which is what the ingestion path was always meant to
+     * receive. It is encoded 640×480 at a fixed bitrate so it also lands well clear of the 50 KB
+     * quality gate the old placeholder buffer was sized for — both gates are still exercised, and
+     * the too-small case below keeps its own dedicated fixture.
+     */
+    execSync(
+      `ffmpeg -y -f lavfi -i "testsrc=size=640x480:rate=25:duration=4" ` +
+        `-c:v libx264 -pix_fmt yuv420p -b:v 1200k "${clipPath}" 2>/dev/null`
+    );
   });
 
   afterEach(() => {
@@ -168,6 +181,30 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     expect(findMediaArchiveAssetBySourceUrlHashMock).not.toHaveBeenCalled();
     expect(createMediaArchiveAssetMock).not.toHaveBeenCalled();
   });
+
+  it("RONDE 118 — a big-enough file that is not a decodable video is refused, before upload or insert", async () => {
+    /**
+     * The exact fixture this file used until now: 200 KB of the byte 0x01 with an .mp4 name. It
+     * clears the size gate — that gate only weighs the file — and it was ingested as a perfectly
+     * ordinary archive asset, which is what produced "Preview mislukt" in the grid. Its preview
+     * is now proven before a row exists, so the same bytes are turned away.
+     */
+    const fakePath = path.join(tmpDir, "fake.mp4");
+    fs.writeFileSync(fakePath, Buffer.alloc(200_000, 1));
+    const result = await ingestExternalClipToArchive(fakePath, {
+      title: "Looks like a video, is not one",
+      tags: [],
+      sourceNote: "wikimedia:File_Fake.mp4",
+      mediaType: "video",
+      mimeType: "video/mp4",
+      sourceUrl: "https://commons.wikimedia.org/wiki/File:Fake.mp4",
+    });
+    expect(result).toBeNull();
+    // Nothing reached storage and nothing reached the table — the refusal is before both.
+    expect(storagePutMock).not.toHaveBeenCalled();
+    expect(createMediaArchiveAssetMock).not.toHaveBeenCalled();
+    expect(indexArchiveAssetEmbeddingMock).not.toHaveBeenCalled();
+  }, 30_000);
 
   it("RONDE 9 — stock footage (Pexels/Pixabay) is refused outright, before any upload or insert", async () => {
     for (const sourceNote of ["pexels:555", "pixabay:777"]) {
