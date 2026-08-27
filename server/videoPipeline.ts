@@ -79,6 +79,7 @@ import {
 import {
   createGateFiringStats,
   findSilentGates,
+  summarizeDemotedGates,
   formatGateFiringSummary,
   getActiveGateFiringStats,
   recordGateVerdict,
@@ -367,6 +368,10 @@ import {
   type BeatVisualContext,
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
+import {
+  createPipelineReportCollector,
+  type PipelineGlance,
+} from "./renderPipelineReport";
 import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -34571,6 +34576,16 @@ async function _runVideoPipelineInner(
     }
 
     const allClipPaths = composedUsedClips.flat().filter(Boolean);
+    /**
+     * RONDE 106 — collect the render's own reports so they can be stored with the video.
+     *
+     * Created here because everything worth keeping is emitted from this point on. The emitters
+     * are unchanged; each one now hands its line to the collector on the way to the console.
+     */
+    const pipelineReport = createPipelineReportCollector(
+      videoId,
+      visualDedup.sourcingCache.lineage.renderId
+    );
     const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
       pipelineSec: Math.round((Date.now() - t0) / 1000),
       stockBeatsUsed: visualDedup.stockBeatsUsed,
@@ -34729,14 +34744,28 @@ async function _runVideoPipelineInner(
       }
       const gateStats = getActiveGateFiringStats();
       if (gateStats) {
-        console.log(`[Quality] Video ${videoId}: gate firing — ${formatGateFiringSummary(gateStats)}`);
+        console.log(
+          pipelineReport.add("gates", `[GateFiring] ${formatGateFiringSummary(gateStats)}`)
+        );
+        /**
+         * RONDE 105/106: the gates RONDE 103 and 104 demoted on purpose are reported as
+         * information rather than as an alarm, so the admin can see how often they WOULD have
+         * fired without being told to go and fix something that is working as designed.
+         */
+        for (const row of summarizeDemotedGates(gateStats)) {
+          pipelineReport.add(
+            "gates",
+            `[GateDemoted] ${row.gate} asked=${row.asked} fired=${row.fired} — ` +
+              `bewust geen veto meer (RONDE 103/104)`
+          );
+        }
         const silent = findSilentGates(gateStats);
         if (silent.length > 0) {
           const detail = silent.map((g) => `${g.gate} (${g.asked}×)`).join(", ");
           qualityReport.warnings.push(
             `silent gate(s): ${detail} — asked repeatedly, rejected nothing; verify the check can still fire`
           );
-          console.warn(`[Quality] Video ${videoId}: silent gate(s) — ${detail}`);
+          console.warn(pipelineReport.add("gates", `[GateSilent] ${detail}`));
         }
       }
     }
@@ -34786,9 +34815,35 @@ async function _runVideoPipelineInner(
         );
       }
     }
+    /**
+     * RONDE 106 — the pipeline's account of itself is stored with the video.
+     *
+     * The warnings and the timings were already here; what was missing is everything the render
+     * printed about HOW it got there. Written in the same merge so a video can never end up with
+     * a quality report and no explanation of it.
+     */
+    pipelineReport.addAll("warnings", qualityReport.warnings);
+    pipelineReport.addAll(
+      "timing",
+      Object.entries(pipelineStepTiming.toReport() as Record<string, unknown>).map(
+        ([step, ms]) => `[Step] ${step}=${typeof ms === "number" ? `${Math.round(ms)}ms` : String(ms)}`
+      )
+    );
     await mergeVideoMetadata(videoId, {
       qualityReport,
       pipelineStepTiming: pipelineStepTiming.toReport(),
+      pipelineReport: pipelineReport.build(),
+      pipelineGlance: {
+        qualityStatus: qualityReport.qualityStatus,
+        score: qualityReport.score,
+        beats: qualityReport.beatVisuals?.beats,
+        verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual,
+        finalClips: qualityReport.totalClips,
+        unverifiedClips: qualityReport.bySource?.[UNVERIFIED_PROVIDER] ?? 0,
+        gateAttempts: judgementTally(visualDedup.beatImageGate).attempts,
+        gateAnswered: judgementTally(visualDedup.beatImageGate).answered,
+        warnings: qualityReport.warnings.length,
+      } satisfies PipelineGlance,
     }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
@@ -35076,11 +35131,25 @@ async function _runVideoPipelineInner(
         }
       }
       const summary = ledger.summary();
-      for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) console.log(line);
-      for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) console.log(line);
+      /**
+       * RONDE 106 — the render's account of itself is kept, not only printed.
+       *
+       * Every emitter below already composed a report meant to be read; all of it went to stdout
+       * and nowhere else, so "why does this video look like this" could only be answered by
+       * someone with that render's Railway log still open. `pipelineReport.add` remembers each
+       * line as it is printed — same lines, same order, nothing re-instrumented — and the block
+       * is stored with the video at the end.
+       */
+      for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
       // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
       // rendered — plus a refusal to print a funnel that widens.
       for (const line of formatAssetUsageSummary(summary, ledger.finalVideoWasVerified)) {
+        pipelineReport.add("sourcing", line);
         if (line.startsWith("[AssetUsageInconsistency]")) console.warn(line);
         else console.log(line);
       }
@@ -35113,7 +35182,7 @@ async function _runVideoPipelineInner(
       for (const line of formatRenderManifest(
         allRecords, ledger.finalVideoWasVerified, verdictForRecord
       )) {
-        console.log(line);
+        console.log(pipelineReport.add("clips", line));
       }
       /**
        * RONDE 105 (§16) — the block that answers the whole question in one place: how many beats,
@@ -35137,30 +35206,34 @@ async function _runVideoPipelineInner(
           qualityStatus: qualityReport.qualityStatus,
           score: qualityReport.score,
         })) {
+          pipelineReport.add("summary", line);
           if (line.includes("SOURCE_COUNT_MISMATCH")) console.warn(line);
           else console.log(line);
         }
         // One line per beat that is not finished, so "13 beats without their own picture" can be
         // read as thirteen named beats rather than a number to be trusted.
         for (const line of formatBeatVisualProblems(qualityReport.beatVisualProblems ?? [])) {
-          console.warn(line);
+          console.warn(pipelineReport.add("beats", line));
         }
       }
       for (const line of formatSelectedButNotRendered(
         allRecords, ledger.allEvents(), ledger.finalVideoWasVerified
       )) {
-        console.warn(line);
+        console.warn(pipelineReport.add("dropped", line));
       }
       // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
       // and how many calls arrived without a context and were counted as bypass attempts.
-      for (const line of formatSearchGateReport()) console.log(line);
+      for (const line of formatSearchGateReport()) console.log(pipelineReport.add("search", line));
       const reconciliation = ledger.reconcile();
-      for (const line of formatAuditReport(reconciliation)) console.log(line);
+      for (const line of formatAuditReport(reconciliation)) console.log(pipelineReport.add("sourcing", line));
       console.log(formatGlobalBudget());
       console.log(
-        `[SourceLineage] video=${videoId} render=${ledger.renderId} ` +
-          `records=${ledger.size} events=${ledger.allEvents().length} ` +
-          `verified=${summary.verifiedRecords} unverified=${summary.unverifiedRecords}`
+        pipelineReport.add(
+          "sourcing",
+          `[SourceLineage] video=${videoId} render=${ledger.renderId} ` +
+            `records=${ledger.size} events=${ledger.allEvents().length} ` +
+            `verified=${summary.verifiedRecords} unverified=${summary.unverifiedRecords}`
+        )
       );
     } catch (err) {
       // The audit reports on the render; it must never be able to fail one.

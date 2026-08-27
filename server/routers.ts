@@ -1208,7 +1208,50 @@ export const appRouter = router({
       userId: z.number().optional(),
       limit: z.number().default(50),
       offset: z.number().default(0),
-    })).query(async ({ input }) => searchVideos(input)),
+    })).query(async ({ input }) => {
+      /**
+       * RONDE 106 — the list stays light; the report lives one click away.
+       *
+       * The stored pipeline report is up to nine sections of a few hundred lines, and this query
+       * returns a hundred rows. Sending every report to render a table would make the admin slow
+       * for the one number a person is scanning for. The small `pipelineGlance` rides along —
+       * that is what it exists for — and `getVideoPipeline` fetches the full account for the one
+       * video that turns out to be worth opening.
+       */
+      const rows = await searchVideos(input);
+      return rows.map((row) => {
+        const meta = row.metadata as Record<string, unknown> | null;
+        if (!meta || typeof meta !== "object" || !("pipelineReport" in meta)) return row;
+        const { pipelineReport: _omitted, ...rest } = meta;
+        return { ...row, metadata: rest };
+      });
+    }),
+    /**
+     * RONDE 106 — everything the render recorded about one video.
+     *
+     * Stored by the pipeline at the end of the render (see renderPipelineReport.ts) rather than
+     * reconstructed here: this reads back what actually happened, and returns null for a video
+     * that was rendered before this existed or never finished.
+     */
+    getVideoPipeline: adminProcedure
+      .input(z.object({ videoId: z.number() }))
+      .query(async ({ input }) => {
+        const video = await getVideoById(input.videoId);
+        if (!video) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
+        const meta = (video.metadata ?? null) as Record<string, unknown> | null;
+        return {
+          videoId: input.videoId,
+          status: video.status,
+          title: video.title ?? null,
+          prompt: video.prompt ?? null,
+          createdAt: video.createdAt ?? null,
+          errorMessage: video.errorMessage ?? null,
+          pipelineReport: (meta?.pipelineReport as unknown) ?? null,
+          pipelineGlance: (meta?.pipelineGlance as unknown) ?? null,
+          qualityReport: (meta?.qualityReport as unknown) ?? null,
+          pipelineStepTiming: (meta?.pipelineStepTiming as unknown) ?? null,
+        };
+      }),
     getUser: adminProcedure.input(z.object({ userId: z.number() })).query(async ({ input }) => {
       const user = await getUserById(input.userId);
       if (!user) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");

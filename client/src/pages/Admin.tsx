@@ -84,8 +84,195 @@ type VideoRow = {
   userEmail?: string | null;
 };
 
+/**
+ * RONDE 106 — the few pipeline numbers worth having in a table row.
+ *
+ * The render stores a `pipelineGlance` next to its full report precisely so this cell does not
+ * have to parse, or download, the whole account of a render to show one badge. Everything else is
+ * in the Pipeline tab of the detail modal.
+ */
+type PipelineGlance = {
+  qualityStatus?: string;
+  score?: number;
+  beats?: number;
+  verifiedOwnVisual?: number;
+  finalClips?: number;
+  unverifiedClips?: number;
+  gateAttempts?: number;
+  gateAnswered?: number;
+  warnings?: number;
+};
+
+function readGlance(metadata: unknown): PipelineGlance | null {
+  if (!metadata) return null;
+  try {
+    const meta = typeof metadata === "string" ? JSON.parse(metadata) : metadata;
+    const g = (meta as { pipelineGlance?: PipelineGlance })?.pipelineGlance;
+    return g && typeof g === "object" ? g : null;
+  } catch {
+    return null;
+  }
+}
+
+const PIPELINE_STATUS_STYLE: Record<string, string> = {
+  VERIFIED: "text-green-400 bg-green-500/10 border-green-500/20",
+  PARTIALLY_VERIFIED: "text-amber-400 bg-amber-500/10 border-amber-500/20",
+  INSUFFICIENT_VERIFICATION: "text-red-400 bg-red-500/10 border-red-500/20",
+};
+
+const PIPELINE_STATUS_SHORT: Record<string, string> = {
+  VERIFIED: "geverifieerd",
+  PARTIALLY_VERIFIED: "deels",
+  INSUFFICIENT_VERIFICATION: "ongeverifieerd",
+};
+
+function PipelineGlanceCell({ metadata }: { metadata: unknown }) {
+  const g = readGlance(metadata);
+  if (!g) return <span className="text-xs text-slate-600">—</span>;
+  const status = g.qualityStatus ?? "";
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        {status && (
+          <span
+            className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium border whitespace-nowrap ${
+              PIPELINE_STATUS_STYLE[status] ?? "text-slate-400 bg-white/5 border-white/10"
+            }`}
+          >
+            {PIPELINE_STATUS_SHORT[status] ?? status}
+          </span>
+        )}
+        {typeof g.score === "number" && (
+          <span className="text-[10px] font-mono text-slate-400">{g.score}/100</span>
+        )}
+      </div>
+      <p className="text-[10px] font-mono text-slate-500 whitespace-nowrap">
+        {g.verifiedOwnVisual ?? 0}/{g.beats ?? 0} beats · {g.finalClips ?? 0} clips
+        {g.gateAttempts != null && ` · gate ${g.gateAnswered ?? 0}/${g.gateAttempts}`}
+      </p>
+      {(g.warnings ?? 0) > 0 && (
+        <p className="text-[10px] text-amber-400/80">{g.warnings} waarschuwing(en)</p>
+      )}
+    </div>
+  );
+}
+
+/** One collected section of the render's report. */
+function PipelineSection({ title, lines }: { title: string; lines: string[] }) {
+  const [open, setOpen] = useState(lines.length <= 12);
+  if (lines.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-white/8 bg-white/3 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-white/5 transition-colors"
+      >
+        <span className="text-xs font-semibold text-white">{title}</span>
+        <span className="text-[10px] font-mono text-slate-500">
+          {lines.length} regel(s) {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <pre className="px-3 pb-3 text-[10px] leading-relaxed text-slate-300 font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+          {lines.join("\n")}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The whole pipeline of one video, as the render itself recorded it.
+ *
+ * Reads back what was stored — it does not re-derive anything, so what is shown here is exactly
+ * what the render did, including for a video whose numbers are bad.
+ */
+function VideoPipelineTab({ videoId }: { videoId: number }) {
+  const { data, isLoading } = trpc.admin.getVideoPipeline.useQuery({ videoId });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+      </div>
+    );
+  }
+  const report = data?.pipelineReport as
+    | {
+        renderId?: string;
+        startedAt?: string;
+        finishedAt?: string;
+        sections?: Record<string, string[]>;
+        truncated?: Record<string, number>;
+      }
+    | null
+    | undefined;
+
+  if (!report?.sections) {
+    return (
+      <div className="text-center py-10 space-y-2">
+        <p className="text-sm text-slate-400">Geen pipeline-rapport voor deze video.</p>
+        <p className="text-xs text-slate-600">
+          Video&apos;s die vóór deze functie zijn gerenderd, of renders die niet zijn afgerond,
+          hebben er geen.
+        </p>
+        {data?.errorMessage && (
+          <p className="text-xs text-red-400/80 font-mono pt-2">{data.errorMessage}</p>
+        )}
+      </div>
+    );
+  }
+
+  const glance = data?.pipelineGlance as PipelineGlance | null;
+  const order = [
+    ["summary", "Samenvatting"],
+    ["beats", "Beats zonder goedgekeurd eigen beeld"],
+    ["clips", "Clips in de uiteindelijke video"],
+    ["dropped", "Gekozen maar niet gerenderd"],
+    ["sourcing", "Bronnen en funnel"],
+    ["search", "Zoekopdrachten"],
+    ["gates", "Gates"],
+    ["timing", "Tijd per stap"],
+    ["warnings", "Waarschuwingen"],
+  ] as const;
+
+  return (
+    <div className="space-y-3">
+      {glance && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {[
+            ["Status", PIPELINE_STATUS_SHORT[glance.qualityStatus ?? ""] ?? glance.qualityStatus ?? "—"],
+            ["Score", glance.score != null ? `${glance.score}/100` : "—"],
+            ["Beats geverifieerd", `${glance.verifiedOwnVisual ?? 0}/${glance.beats ?? 0}`],
+            ["Gate beantwoord", `${glance.gateAnswered ?? 0}/${glance.gateAttempts ?? 0}`],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-lg bg-white/5 px-2 py-1.5">
+              <p className="text-[10px] text-slate-500">{label}</p>
+              <p className="text-xs text-white font-mono">{value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-slate-600 font-mono">
+        render={report.renderId ?? "?"}
+        {report.finishedAt ? ` · ${new Date(report.finishedAt).toLocaleString()}` : ""}
+      </p>
+      {order.map(([key, title]) => (
+        <div key={key}>
+          <PipelineSection title={title} lines={report.sections?.[key] ?? []} />
+          {(report.truncated?.[key] ?? 0) > 0 && (
+            <p className="text-[10px] text-amber-400/70 px-1 pt-1">
+              {report.truncated?.[key]} regel(s) afgekapt — het rapport is begrensd.
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => void }) {
-  const [tab, setTab] = useState<"video" | "info" | "script" | "metadata">(
+  const [tab, setTab] = useState<"video" | "info" | "script" | "metadata" | "pipeline">(
     video.videoUrl ? "video" : "info"
   );
   // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
@@ -115,6 +302,8 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
     { id: "info" as const, label: "Info" },
     { id: "script" as const, label: "Script" },
     { id: "metadata" as const, label: "Metadata" },
+    // RONDE 106: what the render did, read back from what it recorded about itself.
+    { id: "pipeline" as const, label: "Pipeline" },
   ];
 
   return (
@@ -218,6 +407,7 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
               )}
             </div>
           )}
+          {tab === "pipeline" && <VideoPipelineTab videoId={video.id} />}
           {tab === "metadata" && (
             <div>
               {parsedMeta ? (
@@ -483,6 +673,7 @@ function VideosTable() {
                 <th className="text-left px-4 py-3">Video</th>
                 <th className="text-left px-4 py-3">Length</th>
                 <th className="text-left px-4 py-3">Status</th>
+                <th className="text-left px-4 py-3">Pipeline</th>
                 <th className="text-left px-4 py-3">User</th>
                 <th className="text-left px-4 py-3">Created</th>
                 <th className="text-right px-4 py-3">Actions</th>
@@ -505,6 +696,9 @@ function VideosTable() {
                     <VideoStatusCell video={video as VideoRow} />
                   </td>
                   <td className="px-4 py-3">
+                    <PipelineGlanceCell metadata={video.metadata} />
+                  </td>
+                  <td className="px-4 py-3">
                     <p className="text-xs text-slate-300">{video.userName ?? "Unknown"}</p>
                     <p className="text-xs text-slate-500 font-mono">#{video.userId}{video.userEmail ? " · " + video.userEmail : ""}</p>
                   </td>
@@ -523,7 +717,7 @@ function VideosTable() {
               ))}
               {(!videos || videos.length === 0) && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <Search className="w-8 h-8 text-slate-600 mx-auto mb-3" />
                     <p className="text-slate-500 text-sm">No videos found</p>
                     {(searchQuery || statusFilter !== "all") && (
