@@ -402,10 +402,41 @@ function markOpenAiQuotaExhausted(body: string): void {
   }
 }
 
-function shouldFallbackToNextProvider(status: number, body: string): boolean {
+/**
+ * RONDE 116 — "this request is bigger than my per-minute allowance".
+ *
+ * Groq answers an oversize prompt with 413, not 429:
+ *
+ *   413 Payload Too Large – Request too large for model `openai/gpt-oss-120b` … service tier
+ *   `on_demand` on tokens per minute (TPM): Limit 8000, Requested 17076
+ *
+ * That is a statement about GROQ's tier, not about the request. Gemini has no 8k-per-minute cap
+ * and would have served the same prompt. Classifying it separately from 429 matters because the
+ * two need opposite handling: a 429 is worth waiting out, while re-sending an oversize payload to
+ * the same provider is guaranteed to fail again no matter how long you wait.
+ */
+export function isCapacityTooLargeError(status: number, body: string): boolean {
+  if (status !== 413) return false;
+  const lower = body.toLowerCase();
+  return (
+    lower.includes("too large") ||
+    lower.includes("tokens per minute") ||
+    lower.includes("tpm") ||
+    lower.includes("reduce your message size")
+  );
+}
+
+/** Exported for RONDE 116's regression test: this is the predicate the provider chain consults. */
+export function shouldFallbackToNextProvider(status: number, body: string): boolean {
   if (isRateLimitError(status)) return true;
   if (isOpenAiQuotaError(status, body)) return true;
   if (status === 404) return true; // model not found → try next provider
+  /**
+   * RONDE 116: 413 was in none of the buckets above, so it fell past this check to `throw
+   * lastError` — ending the whole call at the first provider while a provider that could serve
+   * the request sat unused in the chain. Confirmed in production against Groq's 8000 TPM tier.
+   */
+  if (isCapacityTooLargeError(status, body)) return true;
   return status >= 500 && status < 600;
 }
 
@@ -839,14 +870,33 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       if (provider === "groq" && isRateLimitError(response.status)) {
         markGroqCooldown(errorText);
       }
+      /**
+       * RONDE 116 — stop re-discovering the same ceiling.
+       *
+       * A TPM rejection means Groq cannot take a request of this size right now. Without a
+       * cooldown every remaining large call in the render pays a full round trip to learn the
+       * same thing — the exact pattern already documented and fixed for Gemini's 404s ("16
+       * identical 404s across one render's log"). Short, because a TPM window is a minute.
+       */
+      if (provider === "groq" && isCapacityTooLargeError(response.status, errorText)) {
+        const waitSec = parseRetryAfterSeconds(errorText) ?? 60;
+        groqCooldownUntilMs = Math.max(groqCooldownUntilMs, Date.now() + waitSec * 1000);
+        console.warn(
+          `[LLM] Groq TPM ceiling hit (${payload.model}) — request too large for this tier; ` +
+            `falling through to the next provider and cooling Groq down for ${waitSec}s`
+        );
+      }
       if (provider === "openai") {
         markOpenAiQuotaExhausted(errorText);
       }
 
       const retryAfterSec = parseRetryAfterSeconds(errorText);
       const skipProviderRetries =
-        provider === "groq" &&
-        (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
+        // RONDE 116: an oversize payload is not a wait-and-retry condition — the same bytes will
+        // be exactly as oversize in ninety seconds. Move on rather than sleeping for nothing.
+        isCapacityTooLargeError(response.status, errorText) ||
+        (provider === "groq" &&
+          (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120)));
 
       if (
         isRateLimitError(response.status) &&
