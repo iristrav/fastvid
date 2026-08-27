@@ -11,10 +11,10 @@ import { readQueueConfig, shouldRunQueueWorker } from "@shared/videoQueue";
 import type { Video } from "../drizzle/schema";
 import {
   claimQueuedVideo,
+  countActiveVideosByUsers,
   countGlobalProcessingVideos,
-  countProcessingVideosByUsers,
   countUserInFlightVideos,
-  countUserProcessingVideos,
+  getUserQueuePosition,
   getVideoById,
   getVideoQueuePosition,
   listQueuedVideosOrdered,
@@ -25,37 +25,69 @@ import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./que
 import { formatGlobalBudget, maxConcurrentRenders } from "./globalResourceBudget";
 
 export type EnqueueCheckResult =
-  | { ok: true }
+  | { ok: true; inFlight: number; limit: number }
   | { ok: false; code: number; message: string };
 
+/** The number of videos one user may have running-plus-waiting at the same time. */
+export function userQueueDepthLimit(): number {
+  return readQueueConfig().maxQueuedJobsPerUser;
+}
+
+/**
+ * RONDE 109 — asking for a video while one is running parks it instead of refusing it.
+ *
+ * The old rule was "more than zero in flight is too many", so the second click of an evening got
+ * "You already have a video in progress. Wait until it is finished before starting a new one" and
+ * nothing was created. The user had to sit and watch for the render to end before they could ask
+ * for the next one — the machine's scheduling problem handed to the person.
+ *
+ * Now the limit is a real depth (five by default) and everything under it is accepted and queued.
+ * Only the depth is raised: maxActiveJobsPerUser still decides how many of those may RUN, and it
+ * is still one, so the videos go one after the other exactly as before — the difference is that
+ * the queue holds the rest instead of the person.
+ *
+ * A video parked in `awaiting_approval` occupies one of the five and holds the ones behind it,
+ * because the video ahead genuinely is not finished — it is waiting on the person, not on a
+ * worker. Approving or rejecting it releases the line.
+ *
+ * This is read-then-write with no lock, so two clicks landing in the same instant can both see
+ * four and both be admitted. That was true of the old check too (both would see zero). The
+ * overshoot is at most one or two, nothing is started early — the picker still runs one at a
+ * time — and it settles as soon as anything finishes, so a transaction would buy nothing.
+ */
 export async function assertUserCanEnqueueVideo(
   userId: number,
   exceptVideoId?: number
 ): Promise<EnqueueCheckResult> {
+  const limit = userQueueDepthLimit();
   const inFlight = await countUserInFlightVideos(userId, exceptVideoId);
-  if (inFlight > 0) {
+  if (inFlight >= limit) {
     return {
       ok: false,
       code: APP_ERROR.VIDEO_IN_PROGRESS,
-      message: "You already have a video in progress. Wait until it is finished before starting a new one",
+      message:
+        `You already have ${inFlight} videos lined up (${limit} is the maximum). ` +
+        `They run one after the other — wait for one to finish before adding another`,
     };
   }
 
-  return { ok: true };
+  return { ok: true, inFlight, limit };
 }
 
 export async function enqueueVideoJob(
   videoId: number,
   progressStep: string
-): Promise<{ queuePosition: number }> {
+): Promise<{ queuePosition: number; userQueuePosition: number }> {
   await updateVideoStatus(videoId, "queued", {
     progressStep,
     progressPercent: 0,
     errorMessage: "",
   });
   const queuePosition = (await getVideoQueuePosition(videoId)) ?? 1;
+  // The person's own line, not the platform's — see getUserQueuePosition.
+  const userQueuePosition = (await getUserQueuePosition(videoId)) ?? 1;
   nudgeQueueWorker();
-  return { queuePosition };
+  return { queuePosition, userQueuePosition };
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -80,10 +112,14 @@ async function pickNextQueuedVideo(): Promise<Video | undefined> {
   const queued = await listQueuedVideosOrdered(100);
   if (!queued.length) return undefined;
 
-  // Fetch per-user active counts in one query instead of N individual queries
+  // Fetch per-user active counts in one query instead of N individual queries.
+  // RONDE 109: counts awaiting_approval too, so the brief mid-render window in that status cannot
+  // be mistaken for an idle user and start a second render alongside the first.
   const uniqueUserIds = Array.from(new Set(queued.map((v) => v.userId)));
-  const activeByUser = await countProcessingVideosByUsers(uniqueUserIds);
+  const activeByUser = await countActiveVideosByUsers(uniqueUserIds);
 
+  // `queued` is ordered oldest-first platform-wide, so a user's own videos are visited in the
+  // order they asked for them: the next one starts by itself the moment the previous one ends.
   for (const candidate of queued) {
     const userActive = activeByUser.get(candidate.userId) ?? 0;
     if (userActive >= config.maxActiveJobsPerUser) continue;
@@ -249,7 +285,8 @@ export function startVideoQueueWorker(): void {
 
   console.log(
     `[VideoQueue] Worker started — global max ${config.maxConcurrentJobs}, ` +
-      `${config.maxJobsPerWorker}/process, ${config.maxActiveJobsPerUser}/user, ` +
+      `${config.maxJobsPerWorker}/process, ${config.maxActiveJobsPerUser} running + ` +
+      `${config.maxQueuedJobsPerUser} in flight per user, ` +
       `poll every ${config.pollIntervalMs}ms, stuck check every ${STUCK_CHECK_INTERVAL_MS / 60_000}min`
   );
 
@@ -278,4 +315,4 @@ export function throwEnqueueError(check: Extract<EnqueueCheckResult, { ok: false
   throw appTrpcError("TOO_MANY_REQUESTS", check.code, check.message);
 }
 
-export { getVideoQueuePosition };
+export { getUserQueuePosition, getVideoQueuePosition };

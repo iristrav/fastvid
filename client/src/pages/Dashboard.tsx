@@ -295,8 +295,17 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
               currentStatus === "queued" ? (
-              <div className="w-full h-full flex flex-col items-center justify-center gap-4 px-6 py-5">
+              <div className="w-full h-full flex flex-col items-center justify-center gap-3 px-6 py-5">
                 <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                {/* RONDE 109: a queued video is READY, not stuck. Say where it stands in the
+                    person's own line and that nothing is expected of them. */}
+                {(pollData?.userQueuePosition ?? 0) > 1 && (
+                  <p className="text-[11px] text-amber-300/90 text-center leading-snug">
+                    Ready and waiting · #{pollData!.userQueuePosition} of yours
+                    <br />
+                    <span className="text-slate-400">Starts automatically</span>
+                  </p>
+                )}
                 <GenerationProgressBar
                   compact
                   progressPercent={progressPercent}
@@ -817,11 +826,17 @@ export default function Dashboard() {
   });
   const generateMutation = trpc.video.generate.useMutation({
     onSuccess: (data) => {
+      // RONDE 109: a video asked for while another is running is no longer refused — it is parked
+      // next to the running one and starts by itself the moment that one finishes. The wording
+      // says that, so the queued card is not mistaken for something that failed to start.
+      const waiting = data.userQueuePosition ?? 1;
       toast.success(data.message ?? "Video generation started!", {
         description:
-          data.queuePosition && data.queuePosition > 1
-            ? "We will start processing as soon as your turn comes up."
-            : "Your video will be ready in a few minutes. No action needed.",
+          waiting > 1
+            ? `It is ready and waiting — it starts automatically when the video before it finishes. You can line up ${data.queueLimit ?? 5} at a time.`
+            : data.queuePosition && data.queuePosition > 1
+              ? "We will start processing as soon as your turn comes up."
+              : "Your video will be ready in a few minutes. No action needed.",
       });
       setPrompt("");
       setTimeout(() => refetch(), 2000);

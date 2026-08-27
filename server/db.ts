@@ -2,7 +2,12 @@ import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from 
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
-import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES, readQueueConfig } from "@shared/videoQueue";
+import {
+  PIPELINE_PROCESSING_STATUSES,
+  USER_ACTIVE_VIDEO_STATUSES,
+  USER_IN_FLIGHT_VIDEO_STATUSES,
+  readQueueConfig,
+} from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
@@ -284,6 +289,7 @@ export async function getVideosByUserId(userId: number) {
 
 const PROCESSING_STATUS_LIST = [...PIPELINE_PROCESSING_STATUSES];
 const USER_IN_FLIGHT_STATUS_LIST = [...USER_IN_FLIGHT_VIDEO_STATUSES];
+const USER_ACTIVE_STATUS_LIST = [...USER_ACTIVE_VIDEO_STATUSES];
 
 export async function countUserInFlightVideos(userId: number, exceptVideoId?: number): Promise<number> {
   const db = await getDb();
@@ -337,6 +343,26 @@ export async function countProcessingVideosByUsers(
   return new Map(rows.map((r) => [r.userId, Number(r.count)]));
 }
 
+/**
+ * RONDE 109 — userId → "has a render underway" count, for the queue picker.
+ *
+ * Same shape as countProcessingVideosByUsers, one status wider: it also counts
+ * `awaiting_approval`. See USER_ACTIVE_VIDEO_STATUSES for why — a full run sits in that status
+ * for a second or two mid-render, and a picker tick landing in that window would otherwise read
+ * the user as idle and start their next queued video alongside the one already running.
+ */
+export async function countActiveVideosByUsers(userIds: number[]): Promise<Map<number, number>> {
+  if (!userIds.length) return new Map();
+  const db = await getDb();
+  if (!db) return new Map();
+  const rows = await db
+    .select({ userId: videos.userId, count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(inArray(videos.userId, userIds), inArray(videos.status, USER_ACTIVE_STATUS_LIST)))
+    .groupBy(videos.userId);
+  return new Map(rows.map((r) => [r.userId, Number(r.count)]));
+}
+
 export async function countUserQueuedVideos(userId: number): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
@@ -380,6 +406,33 @@ export async function getVideoQueuePosition(videoId: number): Promise<number | n
     .from(videos)
     .where(
       and(
+        eq(videos.status, "queued"),
+        sql`(${videos.createdAt} < ${video.createdAt} OR (${videos.createdAt} = ${video.createdAt} AND ${videos.id} < ${videoId}))`
+      )
+    );
+  return Number(row?.count ?? 0) + 1;
+}
+
+/**
+ * RONDE 109 — 1-based position among THIS USER's own queued videos.
+ *
+ * getVideoQueuePosition above is the platform-wide FIFO position, which is the honest number for
+ * "when will a worker get to this" but a confusing one to show a person: "position 7" when they
+ * queued three videos reads as a fault. Their own line is the thing they can reason about, so the
+ * dashboard shows this one and the global position stays available for the admin.
+ */
+export async function getUserQueuePosition(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const video = await getVideoById(videoId);
+  if (!video || video.status !== "queued") return null;
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(
+      and(
+        eq(videos.userId, video.userId),
         eq(videos.status, "queued"),
         sql`(${videos.createdAt} < ${video.createdAt} OR (${videos.createdAt} = ${video.createdAt} AND ${videos.id} < ${videoId}))`
       )

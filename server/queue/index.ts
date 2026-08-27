@@ -26,12 +26,14 @@ if (useBullMq && !process.env.REDIS_URL) {
 // source of truth regardless of which backend is triggering job execution.
 export const assertUserCanEnqueueVideo = dbQueue.assertUserCanEnqueueVideo;
 export const getVideoQueuePosition = dbQueue.getVideoQueuePosition;
+export const getUserQueuePosition = dbQueue.getUserQueuePosition;
+export const userQueueDepthLimit = dbQueue.userQueueDepthLimit;
 export const throwEnqueueError = dbQueue.throwEnqueueError;
 
 export async function enqueueVideoJob(
   videoId: number,
   progressStep: string
-): Promise<{ queuePosition: number }> {
+): Promise<{ queuePosition: number; userQueuePosition: number }> {
   if (useBullMq) {
     const { enqueueVideoJob: bullmqEnqueue } = await import("./bullmqQueue");
     return bullmqEnqueue(videoId, progressStep);

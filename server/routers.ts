@@ -106,8 +106,10 @@ import { runModularVideoPipeline } from "./pipeline/orchestrator";
 import {
   assertUserCanEnqueueVideo,
   enqueueVideoJob,
+  getUserQueuePosition,
   getVideoQueuePosition,
   throwEnqueueError,
+  userQueueDepthLimit,
 } from "./queue";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 import {
@@ -1067,13 +1069,23 @@ export const appRouter = router({
       });
       if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
 
-      const { queuePosition } = await enqueueVideoJob(videoId, coverageNote);
+      const { queuePosition, userQueuePosition } = await enqueueVideoJob(videoId, coverageNote);
+      /**
+       * RONDE 109: the number the person is told is their OWN position, not the platform's.
+       * userQueuePosition 1 means nothing of theirs is ahead of it — either it starts now, or it
+       * is only waiting on other people's renders, which is not something they can act on.
+       */
       return {
         videoId,
         queuePosition,
-        message: queuePosition > 1
-          ? `Video queued — position ${queuePosition}`
-          : "Video generation started",
+        userQueuePosition,
+        queueLimit: userQueueDepthLimit(),
+        message:
+          userQueuePosition > 1
+            ? `Video queued — ${userQueuePosition} of yours waiting`
+            : queuePosition > 1
+              ? `Video queued — position ${queuePosition}`
+              : "Video generation started",
       };
     }),
     approveScript: protectedProcedure.input(z.object({
@@ -1154,6 +1166,10 @@ export const appRouter = router({
       let video = await recoverVideoCompletionState(raw);
       video = await failPipelineIfStalled(video);
       const queuePosition = video.status === "queued" ? await getVideoQueuePosition(video.id) : null;
+      // RONDE 109: with a five-deep queue the card needs to say which of the person's OWN videos
+      // this is, otherwise a platform-wide "position 7" reads as something being wrong.
+      const userQueuePosition =
+        video.status === "queued" ? await getUserQueuePosition(video.id) : null;
       return {
         status: video.status,
         title: video.title,
@@ -1167,6 +1183,7 @@ export const appRouter = router({
         generationStartedAt: video.generationStartedAt,
         videoType: video.videoType,
         queuePosition,
+        userQueuePosition,
       };
     }),
   }),

@@ -7,7 +7,9 @@ describe("video queue config", () => {
     expect(config.maxConcurrentJobs).toBe(25);
     expect(config.maxJobsPerWorker).toBe(1);
     expect(config.maxActiveJobsPerUser).toBe(1);
-    expect(config.maxQueuedJobsPerUser).toBe(1);
+    // SUPERSEDED by RONDE 109: was 1, which is why a second video was refused outright. The queue
+    // is now five deep per user; how many RUN at once is maxActiveJobsPerUser, still 1.
+    expect(config.maxQueuedJobsPerUser).toBe(5);
     expect(config.pollIntervalMs).toBe(5000);
   });
 
