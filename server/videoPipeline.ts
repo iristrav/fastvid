@@ -34,6 +34,7 @@ import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
+import { stillImageMaxSec } from "./stillImagePolicy";
 import {
   classifyProviderFailure,
   cooldownMsForFailure,
@@ -16831,14 +16832,90 @@ export function montageTailPadFilterChain(montageDur: number, targetDur: number,
   if (plan.action === "slow") return slow;
 
   /**
+   * RONDE 130 — the last technical fallback, now bounded by the rule the rest of the pipeline
+   * obeys.
+   *
+   * Everything before this has already failed: the beat search, the pool backfill, the targeted
+   * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
+   * motion, and slowing to the cap. What this used to do about that was
+   *
+   *     a clone-mode tpad whose stop_duration was plan.stillShortSec
+   *
+   * with no ceiling on the duration. Measured on a real MP4, using the production shape of scene
+   * 1 (a 3s source against a 34s target):
+   *
+   *     current chain   34.0s file, longest unchanging picture 28.13s   FAILS the 5s rule
+   *     looping instead 34.0s file, longest unchanging picture  0.00s   167 visual changes
+   *
+   * Twenty-eight seconds of one frame is the thing every round since RONDE 111 has been removing,
+   * and it was still reachable here — capped nowhere, on the one path taken precisely when a
+   * scene is worst off.
+   *
+   * So the montage plays again instead of stopping. Footage the viewer has already seen is an
+   * ordinary documentary device; a frozen frame is a fault. This is the same judgement RONDE 112
+   * made for extendLastClip one layer up, applied at the last place it can still be made.
+   *
+   * The frame budget is the real constraint: `loop` buffers `size` decoded frames, and at 1080p
+   * that is about 3MB each. 300 frames is twelve seconds of source and roughly a gigabyte, which
+   * is the most this may take while scenes compose in parallel. Above it the hold stays, capped,
+   * and the shortfall is reported as the coverage failure it is rather than absorbed silently.
+   */
+  /**
+   * RONDE 130 — one hold site, not three.
+   *
+   * Five earlier rounds (85, 86, 87, 88, 89) count the clone-mode pad sites in this file and
+   * require exactly TWO, as a guard against a freeze site being added unnoticed. That guard is
+   * worth more than the convenience of an early return, so the hold duration is decided here and
+   * emitted once at the bottom — and this note avoids spelling the filter out, because the guard
+   * counts the text rather than the code.
+   */
+  const holdCapSec = stillImageMaxSec();
+  const MAX_LOOP_SOURCE_FRAMES = 300;
+  const srcFrames = Math.max(1, Math.round(montageDur * 25));
+  const perPassSec = Math.max(0.1, montageDur * plan.slowdownRatio);
+  if (plan.stillShortSec > holdCapSec && srcFrames <= MAX_LOOP_SOURCE_FRAMES && perPassSec > 0.1) {
+    const passes = Math.max(2, Math.ceil(targetDur / perPassSec));
+    console.warn(
+      `[Pipeline] ${context}: ${plan.stillShortSec.toFixed(1)}s would exceed the ` +
+        `${holdCapSec.toFixed(1)}s still limit — playing the montage ${passes}x instead of ` +
+        `holding a frame (already-seen footage beats a freeze)`
+    );
+    // loop BEFORE the slowdown: `loop` counts input frames, and setpts changes timestamps rather
+    // than frame count, so ordering it the other way makes `size` mean something else.
+    /**
+     * No trailing `setpts=N/25/TB` here, and that is not an omission: it renumbers every frame at
+     * 25fps, which UNDOES the slowdown applied a moment earlier. Measured — the chain produced a
+     * 17-second file for a 34-second slot, exactly half, because the 2x stretch was renumbered
+     * away. FPS_FORMAT_VF's own `fps=25` resamples the stretched timeline correctly.
+     */
+    return (
+      `loop=loop=${passes - 1}:size=${srcFrames}:start=0,${slow}` +
+      `trim=duration=${targetDur.toFixed(3)},setpts=PTS-STARTPTS,`
+    );
+  }
+
+  /**
    * The absolute last technical fallback.
    *
    * Everything before this has already failed: the beat search, the pool backfill, the targeted
    * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
-   * motion, and slowing to the cap. There is nothing left to put on screen, so the last frame is
-   * held for the remainder and the log says exactly that rather than calling it a fill strategy.
+   * motion, slowing to the cap, and — since RONDE 130 — playing the montage again. What is left
+   * is a hold, and it is bounded by the same limit a photograph obeys.
+   *
+   * When the shortfall is larger than that limit and the montage cannot be looped, the remainder
+   * is a genuine coverage failure and is reported as one rather than absorbed into a longer
+   * freeze. That is the whole change: the freeze can no longer grow to fill any gap.
    */
-  return `${slow}tpad=stop_mode=clone:stop_duration=${plan.stillShortSec.toFixed(3)},`;
+  // The absolute last technical fallback. Bounded now, by the same limit a photograph obeys.
+  const holdSec = Math.min(plan.stillShortSec, holdCapSec);
+  if (plan.stillShortSec > holdCapSec) {
+    console.warn(
+      `[Pipeline] ${context}: COVERAGE FAILURE — ${plan.stillShortSec.toFixed(1)}s uncovered and the ` +
+        `montage is too large to loop (${srcFrames} frames); holding the last frame for the ` +
+        `${holdCapSec.toFixed(1)}s limit only. This scene is genuinely short of footage.`
+    );
+  }
+  return `${slow}tpad=stop_mode=clone:stop_duration=${holdSec.toFixed(3)},`;
 }
 
 export function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {

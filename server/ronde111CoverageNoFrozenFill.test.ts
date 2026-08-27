@@ -126,7 +126,21 @@ describe("RONDE 111 — a large shortfall is NOT absorbed by slowing", () => {
   it("the emitted filter slows to the cap and holds only the remainder", () => {
     const chain = montageTailPadFilterChain(2, 20, "big shortfall");
     expect(chain).toContain("setpts=2.000000*PTS");
-    expect(chain).toContain("tpad=stop_mode=clone:stop_duration=16.000");
+    /**
+     * SUPERSEDED BY RONDE 130 — the claim this line made is still true; what happens to the
+     * remainder is not.
+     *
+     * It was written to prove the slowdown stops at the 2x cap instead of absorbing a large
+     * shortfall, and that half is asserted above and below, unchanged. What it also encoded was a
+     * SIXTEEN-SECOND hold — and RONDE 130 measured what that looks like in the finished MP4:
+     * 28.13s of unchanging picture for the production case. The montage plays again now instead,
+     * which is the same judgement RONDE 112 made for extendLastClip one layer up.
+     *
+     * A shortfall inside the still limit is still a plain hold; that case has its own test in
+     * ronde130VisualIntegrity.
+     */
+    expect(chain).toContain("loop=loop=");
+    expect(chain).not.toContain("tpad=stop_mode=clone");
   });
 
   it("the report says how short it was and that this is a last resort", () => {
