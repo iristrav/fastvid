@@ -2665,6 +2665,39 @@ function beatSearchProvenance(
 }
 
 /**
+ * Put this beat's proof in scope — unless a caller further up already did.
+ *
+ * RONDE 100B. RONDE 90 wrapped the primary sourcing ladders and left the fallback, rescue,
+ * refill and fill ladders alone, on the assumption that everything reached a provider through a
+ * primary path. The production render disproved it: 425 provider searches ran with no ambient
+ * scope at all (the SearchGate reports them as LEGACY_QUERY_BUILDER, which is only ever minted
+ * when getSearchProvenance() returns undefined). Pexels 242, Wikimedia 64, Pixabay 62,
+ * SerpAPI 45, Unsplash 12 — and every one of those routes is also reached WITH a scope from a
+ * primary caller, which is why the same fetcher shows both behaviours in one render.
+ *
+ * So the scope is opened at the leaves instead of at the entry points: the functions that
+ * actually call a provider. Whichever ladder reaches them — primary, fallback, rescue, refill,
+ * scene-level, emergency — the beat is proven by the time a query is built.
+ *
+ * The guard is what makes that safe to do everywhere. Nesting a second scope inside a primary
+ * ladder's scope would replace a context built with the caller's person names and scene text
+ * with a thinner one built from the same beat, quietly narrowing what the beat can prove. Same
+ * rule, and the same reason, as buildSceneCandidatePool in scenePool.ts.
+ */
+function withBeatProvenance<T>(
+  beat: SceneBeat,
+  scene: Scene,
+  fn: () => Promise<T>,
+  opts?: { personName?: string; scenePersons?: string[] }
+): Promise<T> {
+  if (getSearchProvenance()) return fn();
+  return withSearchProvenance(
+    beatSearchProvenance(beat, scene, opts?.personName ?? "", opts?.scenePersons ?? []),
+    fn
+  );
+}
+
+/**
  * Primary beat path: archival (default) or YouTube-only when explicitly enabled.
  *
  * RONDE 90: this is where a beat's proof is put in scope. Every provider search made anywhere
@@ -2810,6 +2843,24 @@ async function fetchBeatInternetStillsFirst(
 
 /** Real still photos (Wiki/SerpAPI/Openverse) before licensed stock. */
 async function fetchBeatAuthenticStills(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  tag: string,
+  historicalDoc: boolean
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatAuthenticStillsInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, scenePersons, tag, historicalDoc), { personName, scenePersons });
+}
+
+async function fetchBeatAuthenticStillsInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -3748,6 +3799,21 @@ async function runBeatClipFetch(
 
 /** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */
 async function resolveBeatClipFast(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => resolveBeatClipFastInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, adoptOpts), { scenePersons });
+}
+
+async function resolveBeatClipFastInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -4979,7 +5045,10 @@ function mapRawScene(
     ),
   ];
   const subject = extractBeatSubject(hint, personNames);
-  const primaryQuery = subject || "documentary";
+  // RONDE 100B: no subject means no query. This was `subject || "documentary"`, and the literal
+  // word travelled from here into scene.pexelsQuery and scene.visualCue, which the stock
+  // fallback hands to Pexels and Pixabay verbatim.
+  const primaryQuery = subject;
   const allQueries = scriptStockSearchQueries(hint, personNames);
   const brollQueries: string[] = [];
   const sectionTitle =
@@ -7688,6 +7757,20 @@ async function padShortClipWithNext(
   dedup: VisualDedupState,
   semanticProfile?: BeatSemanticProfile
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => padShortClipWithNextInner(clipPath, holdSec, beat, scene, workDir, videoTitle, dedup, semanticProfile));
+}
+
+async function padShortClipWithNextInner(
+  clipPath: string,
+  holdSec: number,
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  semanticProfile?: BeatSemanticProfile
+): Promise<string | null> {
   const firstDur = await probeVideoDurationSec(clipPath);
   if (holdSec - firstDur < 0.3) return null; // already close enough
 
@@ -8272,6 +8355,18 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
 
 /** Rotate golden Musk queries; never grey or duplicate clips. */
 async function fetchMuskGoldenStockBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchMuskGoldenStockBeatInner(beat, scene, workDir, sceneIndex, dedup, adoptOpts));
+}
+
+async function fetchMuskGoldenStockBeatInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -12877,6 +12972,22 @@ async function fetchBeatScriptImageClip(
   adoptOpts: VisualAdoptOptions,
   tag: string
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatScriptImageClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, adoptOpts, tag), { scenePersons });
+}
+
+async function fetchBeatScriptImageClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string
+): Promise<string | null> {
   const forced = Boolean(adoptOpts.scriptImageFallback);
   if (!forced && !canUseGlobalStillPhoto(dedup)) return null;
   if (!forced) {
@@ -12992,6 +13103,21 @@ async function fetchBeatScriptImageClip(
 
 /** Last-resort: accept first valid Serp/Wikimedia/YouTube-thumb still (no strict adopt gates). */
 async function fetchBeatScriptImageForced(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle: string | undefined,
+  tag: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatScriptImageForcedInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, tag), { scenePersons });
+}
+
+async function fetchBeatScriptImageForcedInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -13360,6 +13486,23 @@ const STOP_WORDS = new Set([
   "too","very","s","t","can","will","just","don","should","now","de","het","een","van","op","en",
   "maar","ook","wordt","werd","heeft","had","zijn","was","er","naar","met","door","over","als","dat",
   "om","uit","aan","bij","te","in","nog","zo","al","want","dan","maar","wel","geen","toch","niet",
+  /**
+   * RONDE 100B — intensifiers and discourse adverbs, the same class this list already holds.
+   *
+   * "But here's what truly followed the aftermath" sent the single word "truly" to Pexels as a
+   * search subject. It got there through extractBeatSubject's positional fallback, which takes
+   * the first words of four letters or more that are not stop words — and "truly" was not on the
+   * list, while "very", "just", "only", "even", "still", "also" and "too" already were.
+   *
+   * The SearchGate cannot catch this one and should not try: the word really is in the beat, so
+   * it is properly proven. What it is not is a subject. Nothing named here can appear in a shot,
+   * which is exactly the property the words above it share — this extends a closed grammatical
+   * class rather than starting an open blocklist of things we happen to dislike.
+   */
+  "truly","really","actually","simply","literally","basically","essentially","certainly",
+  "definitely","probably","perhaps","maybe","however","therefore","meanwhile","instead",
+  "suddenly","eventually","ultimately","apparently","obviously","clearly","indeed","rather",
+  "echt","werkelijk","eigenlijk","gewoon","natuurlijk","misschien","daarom","ondertussen",
 ]);
 
 /**
@@ -13585,9 +13728,20 @@ export function scriptStockSearchQueries(
     .split(/\W+/)
     .filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
   if (titleWords.length > 0) return [titleWords.slice(0, 3).join(" ")];
-  // Truly empty context (no beat text, no scene text, no title, no person) — safe minimal
-  // fallback, unchanged from before.
-  return ["documentary"];
+  /**
+   * RONDE 100B — nothing left, so ask for nothing.
+   *
+   * This used to return ["documentary"]. No beat text, no scene text, no title and no person
+   * means there is no subject; "documentary" is not that subject, it is a word describing the
+   * genre of the video being made. Production sent it to Pexels dozens of times in one render
+   * and it is exactly the kind of plausible-looking invention this whole line of work exists to
+   * stop: a query that cannot be wrong because it is not about anything.
+   *
+   * An empty list is the honest answer. Every consumer already drops empty/short queries
+   * (filterQueryStrings, buildBeatVisualQueryList's length filter, and the gate's EMPTY_QUERY
+   * check), so this asks one fewer provider rather than asking for the wrong thing.
+   */
+  return [];
 }
 
 function isGenericNatureStockWord(word: string): boolean {
@@ -13601,7 +13755,8 @@ function stockQueryFromBeatScript(
   sceneText = "",
   videoTitle?: string
 ): string {
-  return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "documentary";
+  // RONDE 100B: "" when the script proves no subject — see scriptStockSearchQueries.
+  return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "";
 }
 
 /** Licensed Pexels/Pixabay/b-roll — not authentic archival footage. */
@@ -14235,29 +14390,47 @@ export function extractPersonNamesFromText(text: string): string[] {
   return Array.from(found);
 }
 
-/** Real-world events spoken on this beat → stock/YouTube search phrases. */
+/**
+ * Real-world events spoken on this beat → stock/YouTube search phrases.
+ *
+ * RONDE 100B rewrote what this emits. Every line used to be a mapping from a trigger to a
+ * DIFFERENT word: a beat saying "premiere" asked providers for "red carpet", "scandal" asked for
+ * "news conference", "billion" asked for "business news". The trigger was evidence; the output
+ * was not, and none of those words appear anywhere in the script. The SearchGate then rejected
+ * them as UNVERIFIED_TERM — the builder was manufacturing work for the gate to throw away, and
+ * on the renders where a scope was missing they went out to providers unchecked.
+ *
+ * Now the beat's own word is the query. `\b(a|b|c)\b` tells us which of the alternatives the
+ * narration actually used, and that is what gets asked for. Two entries are gone rather than
+ * rewritten, because neither had a visual word to fall back on: "scandal|controversy|backlash"
+ * pointed at a press conference nobody mentioned, and "billion|million|deal|acquisition|ipo"
+ * pointed at generic business news. A sum of money is not footage.
+ *
+ * The person prefix stays: `persons` is derived from this same beat, so it is proven.
+ */
 function scriptEventSearchQueries(beatText: string, persons: string[]): string[] {
   const t = beatText.toLowerCase();
   const primary = persons[0] ?? "";
-  const p = (suffix: string) => (primary ? `${primary} ${suffix}`.trim() : suffix);
   const out: string[] = [];
 
-  if (/\b(interview|interviews|spoke with|talked to)\b/.test(t)) out.push(p("interview"));
-  if (/\b(keynote|speech|presentation|address)\b/.test(t)) out.push(p("keynote speech"));
-  if (/\b(red carpet|premiere|gala|awards?)\b/.test(t)) out.push(p("red carpet"));
-  if (/\b(launch|unveil|unveiled|announcement|revealed|debut)\b/.test(t)) out.push(p("product launch"));
-  if (/\b(trial|court|lawsuit|verdict|sentencing)\b/.test(t)) out.push(p("court trial"));
-  if (/\b(wedding|married|engagement|divorce)\b/.test(t)) out.push(p("wedding"));
-  if (/\b(protest|demonstration|rally)\b/.test(t)) out.push(p("protest"));
-  if (/\b(concert|performance|tour)\b/.test(t)) out.push(p("concert"));
-  if (/\b(scandal|controversy|backlash)\b/.test(t)) out.push(p("news conference"));
-  if (/\b(billion|million|\$\d|deal|acquisition|ipo)\b/.test(t)) out.push(p("business news"));
-  if (/\b(rocket launch|falcon|starship|spacex)\b/.test(t)) {
-    out.push("SpaceX rocket launch");
-  }
-  if (/\b(tesla|cybertruck|gigafactory)\b/.test(t)) {
-    out.push(/\btesla\b/.test(t) ? "Tesla event" : "Tesla factory");
-  }
+  /** Push what the beat SAID, optionally anchored to the person the beat named. */
+  const spoken = (re: RegExp) => {
+    const m = t.match(re);
+    const said = m?.[1]?.trim();
+    if (!said) return;
+    out.push(primary ? `${primary} ${said}` : said);
+  };
+
+  spoken(/\b(interviews?)\b/);
+  spoken(/\b(keynote|speech|presentation|address)\b/);
+  spoken(/\b(red carpet|premiere|gala|awards?)\b/);
+  spoken(/\b(launch|unveiling|announcement|debut)\b/);
+  spoken(/\b(trial|court|lawsuit|verdict|sentencing)\b/);
+  spoken(/\b(wedding|engagement|divorce)\b/);
+  spoken(/\b(protest|demonstration|rally)\b/);
+  spoken(/\b(concert|performance|tour)\b/);
+  spoken(/\b(rocket launch|falcon|starship|spacex)\b/);
+  spoken(/\b(tesla|cybertruck|gigafactory)\b/);
 
   return [...new Set(out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)))];
 }
@@ -15026,103 +15199,109 @@ type RealEntityRule = {
   youtubeQueries: string[];
 };
 
+/**
+ * RONDE 100B — the entity's NAME is proven by the mention; its activities are not.
+ *
+ * These lists used to append an activity to every name: "Kylie Jenner red carpet", "Kylie Jenner
+ * makeup launch", "Elon Musk Tesla keynote", "Tesla Model 3 production line", "Titanic sinking
+ * 1912 documentary" — and stockQueries carried bare genre words like "celebrity", "fashion",
+ * "car", "brain", "technology". A beat that says "Kylie Jenner" proves that Kylie Jenner is the
+ * subject. It does not prove a red carpet, a makeup launch, or an interview; those were chosen
+ * by this table, not by the script, and a provider asked for a red carpet will happily return
+ * one whatever the narration was about.
+ *
+ * What remains is the entity's own proper name — including full product names like "Falcon 9"
+ * and "RMS Titanic", which are names rather than invented topics. When the narration DOES
+ * describe an activity, scriptEventSearchQueries supplies that word from the beat itself, and
+ * the two combine on the evidence instead of on a guess.
+ *
+ * mentionRe and clipMustMatchRe are untouched: they filter candidates, they do not build
+ * queries, and loosening or tightening a filter is a separate question from inventing a term.
+ */
 const REAL_ENTITY_RULES: RealEntityRule[] = [
   {
     id: "kylie",
     mentionRe: /\b(kylie\s+jenner|kylie\b|jenner\b)/i,
     clipMustMatchRe: /\b(kylie|jenner|kardashian|celebrity|influencer|makeup|fashion)\b/i,
-    stockQueries: ["kylie", "celebrity", "fashion"],
-    youtubeQueries: [
-      "Kylie Jenner interview",
-      "Kylie Jenner red carpet",
-      "Kylie Jenner makeup launch",
-    ],
+    stockQueries: ["Kylie Jenner"],
+    youtubeQueries: ["Kylie Jenner"],
   },
   {
     id: "musk",
     mentionRe: /\b(elon\s+musk|musk)\b/i,
     clipMustMatchRe: /\b(musk|elon|tesla|spacex)\b/i,
-    stockQueries: ["tesla", "spacex"],
-    youtubeQueries: [
-      "Elon Musk interview",
-      "Elon Musk Tesla keynote",
-      "Elon Musk SpaceX presentation",
-    ],
+    stockQueries: ["Elon Musk"],
+    youtubeQueries: ["Elon Musk"],
   },
   {
     id: "tesla",
     mentionRe: /\btesla\b/i,
     clipMustMatchRe: /\btesla\b/i,
-    stockQueries: ["tesla"],
-    youtubeQueries: ["Tesla Gigafactory tour", "Tesla Model 3 production line", "Tesla Cybertruck unveiling"],
+    stockQueries: ["Tesla"],
+    youtubeQueries: ["Tesla"],
   },
   {
     id: "spacex",
     mentionRe: /\bspacex\b/i,
     clipMustMatchRe: /\b(spacex|falcon|starship)\b/i,
-    stockQueries: ["spacex", "rocket"],
-    youtubeQueries: ["SpaceX Falcon 9 rocket launch", "SpaceX Starship launch test flight", "Falcon 9 landing booster"],
+    stockQueries: ["SpaceX"],
+    youtubeQueries: ["SpaceX"],
   },
   {
     id: "falcon9",
     mentionRe: /\bfalcon\s*9\b/i,
     clipMustMatchRe: /\b(falcon|spacex)\b/i,
-    stockQueries: ["rocket", "spacex"],
-    youtubeQueries: ["SpaceX Falcon 9 rocket launch", "Falcon 9 landing booster drone ship"],
+    stockQueries: ["Falcon 9"],
+    youtubeQueries: ["Falcon 9"],
   },
   {
     id: "starship",
     mentionRe: /\bstarship\b/i,
     clipMustMatchRe: /\b(starship|spacex)\b/i,
-    stockQueries: ["spacex", "rocket"],
-    youtubeQueries: ["SpaceX Starship launch test flight", "Starship hop test Boca Chica"],
+    stockQueries: ["Starship"],
+    youtubeQueries: ["Starship"],
   },
   {
     id: "cybertruck",
     mentionRe: /\bcybertruck\b/i,
     clipMustMatchRe: /\b(tesla|cybertruck)\b/i,
-    stockQueries: ["tesla", "car"],
-    youtubeQueries: ["Tesla Cybertruck unveiling", "Tesla Cybertruck driving"],
+    stockQueries: ["Cybertruck"],
+    youtubeQueries: ["Tesla Cybertruck"],
   },
   {
     id: "gigafactory",
     mentionRe: /\bgigafactory\b/i,
     clipMustMatchRe: /\b(tesla|gigafactory)\b/i,
-    stockQueries: ["factory", "tesla"],
-    youtubeQueries: ["Tesla Gigafactory tour", "Tesla factory Berlin Gigafactory"],
+    stockQueries: ["Gigafactory"],
+    youtubeQueries: ["Tesla Gigafactory"],
   },
   {
     id: "model3",
     mentionRe: /\bmodel\s*[3y]\b/i,
     clipMustMatchRe: /\b(tesla|model)\b/i,
-    stockQueries: ["tesla", "car"],
-    youtubeQueries: ["Tesla Model 3 production", "Tesla Model Y factory"],
+    stockQueries: ["Tesla Model 3", "Tesla Model Y"],
+    youtubeQueries: ["Tesla Model 3", "Tesla Model Y"],
   },
   {
     id: "starlink",
     mentionRe: /\bstarlink\b/i,
     clipMustMatchRe: /\b(starlink|spacex|satellite)\b/i,
-    stockQueries: ["satellite", "rocket"],
-    youtubeQueries: ["SpaceX Starlink launch", "Falcon 9 Starlink mission"],
+    stockQueries: ["Starlink"],
+    youtubeQueries: ["SpaceX Starlink"],
   },
   {
     id: "neuralink",
     mentionRe: /\bneuralink\b/i,
     clipMustMatchRe: /\b(neuralink|brain|neuroscience)\b/i,
-    stockQueries: ["brain", "technology"],
-    youtubeQueries: ["Neuralink presentation", "brain implant research laboratory"],
+    stockQueries: ["Neuralink"],
+    youtubeQueries: ["Neuralink"],
   },
   {
     id: "titanic",
     mentionRe: /\b(rms\s+titanic|titanic)\b/i,
     clipMustMatchRe: /\b(titanic|rms|liner|iceberg|southampton|1912|shipwreck|white\s+star)\b/i,
-    stockQueries: ["RMS Titanic", "Titanic ship 1912"],
-    youtubeQueries: [
-      "RMS Titanic archival footage",
-      "Titanic sinking 1912 documentary",
-      "Titanic maiden voyage Southampton 1912",
-      "Titanic iceberg collision original",
-    ],
+    stockQueries: ["RMS Titanic", "Titanic"],
+    youtubeQueries: ["RMS Titanic", "Titanic"],
   },
 ];
 
@@ -15873,6 +16052,15 @@ export interface ProviderSourcingMetrics {
 export interface SourcingCache {
   /** `${provider}|${normalized query}` → parsed search payload from the first execution. */
   queries: Map<string, unknown>;
+  /**
+   * RONDE 100B — providers whose work FastVid cut short this render.
+   *
+   * A scope abort is the pipeline running out of budget, not the provider failing. The circuit
+   * breakers have distinguished the two since RONDE 68 (isScopeAbortError); the search memory
+   * did not, so a cancelled provider was remembered as one that "returned nothing usable" and
+   * excluded from the next render on the same subject.
+   */
+  budgetCancelledProviders: Set<string>;
   /** providerAssetKey(provider, id) → what this render already learned about that asset. */
   assets: Map<string, ProviderAssetCacheEntry>;
   /** provider → counters. */
@@ -15907,6 +16095,7 @@ export function createSourcingCache(videoId?: number): SourcingCache {
   sourcingCacheSeq += 1;
   return {
     queries: new Map(),
+    budgetCancelledProviders: new Set(),
     assets: new Map(),
     metrics: new Map(),
     visionHitBaseline: visionGateCacheHits(),
@@ -16092,7 +16281,15 @@ export async function cachedProviderSearch<T>(
   }
   m.queryCacheMisses++;
   const t0 = Date.now();
-  const payload = await search();
+  let payload: T;
+  try {
+    payload = await search();
+  } catch (err) {
+    // RONDE 100B: remember that this provider was cut off, so the search memory does not read a
+    // cancellation as "this source has nothing" — see SourcingCache.budgetCancelledProviders.
+    if (isScopeAbortError(err)) cache.budgetCancelledProviders.add(provider.trim().toLowerCase());
+    throw err;
+  }
   m.searchCount++;
   m.searchLatencyMs += Date.now() - t0;
   cache.queries.set(key, payload);
@@ -20985,6 +21182,21 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchLastResortRealClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts), { personName });
+}
+
+async function fetchLastResortRealClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
   // Bound each beat's archive attempt so one slow lookup can't eat the whole sequential
   // compose-stage budget — falls through to the stock chain below on timeout.
   let ownArchiveClip: string | null = null;
@@ -21104,6 +21316,24 @@ async function fetchLastResortRealClip(
 
 /** Real footage of a named person (Pexels video → YouTube → max 1 still). */
 async function fetchPersonBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number,
+  tag: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchPersonBeatClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, pexFetch, candidateOffset, tag), { personName });
+}
+
+async function fetchPersonBeatClipInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -22827,6 +23057,22 @@ async function fetchBeatPersonStockVideo(
   adoptOpts: VisualAdoptOptions,
   reason: string
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatPersonStockVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, reason), { personName });
+}
+
+async function fetchBeatPersonStockVideoInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  reason: string
+): Promise<string | null> {
   if (!coercePersonName(personName)) return null;
   const personAdopt: VisualAdoptOptions = {
     ...adoptOpts,
@@ -22891,6 +23137,22 @@ async function fetchBeatPersonStockVideo(
 
 /** Pexels/Pixabay when online search exceeds 1 minute or finds nothing. */
 async function fetchBeatStockFallback(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  reason: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatStockFallbackInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, reason), { personName });
+}
+
+async function fetchBeatStockFallbackInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -23256,6 +23518,21 @@ async function resolveBeatClipFastTurbo(
  * Turbo path for 1–2 min videos: real video first (YouTube → stock, ≤1min), still only as last resort.
  */
 async function resolveBeatClipTurbo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  beatAdoptOpts: VisualAdoptOptions
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => resolveBeatClipTurboInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts), { personName });
+}
+
+async function resolveBeatClipTurboInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -25158,6 +25435,21 @@ async function adoptWikimediaBeatClip(
   semanticProfile?: BeatSemanticProfile,
   opts?: { videoOnly?: boolean; stillsOnly?: boolean }
 ): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => adoptWikimediaBeatClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, opts));
+}
+
+async function adoptWikimediaBeatClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  opts?: { videoOnly?: boolean; stillsOnly?: boolean }
+): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Wikimedia", scene.index, beat.index)) return false;
   if (isWikimediaInCooldown()) return false;
@@ -25851,6 +26143,21 @@ async function adoptStockBeatClipFallback(
   semanticProfile?: BeatSemanticProfile,
   stockOpts?: { visionFloor?: number; adoptSource?: string }
 ): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => adoptStockBeatClipFallbackInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, stockOpts));
+}
+
+async function adoptStockBeatClipFallbackInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  stockOpts?: { visionFloor?: number; adoptSource?: string }
+): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Pexels/Pixabay", scene.index, beat.index)) return false;
   if (!archivePexelsFallbackEnabled()) return false;
@@ -26060,6 +26367,20 @@ async function adoptStockBeatClipFallback(
 
 /** Geo-anchored stock when archive is geo-blocked — relaxed vision, never skip beat. */
 async function adoptEmergencyGeoStockClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => adoptEmergencyGeoStockClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile));
+}
+
+async function adoptEmergencyGeoStockClipInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -34306,14 +34627,20 @@ async function _runVideoPipelineInner(
     const missTopic = get_activeVideoTopic();
     if (missTopic) {
       const adoptedByProvider = new Map<string, number>();
+      // RONDE 100B: what each provider actually returned, so a source that answered is not
+      // written off as a dead end because a later stage ran out of budget.
+      const resultsByProvider = new Map<string, number>();
       for (const [provider, m] of visualDedup.sourcingCache.metrics) {
         adoptedByProvider.set(provider.trim().toLowerCase(), m.acceptedCount);
+        resultsByProvider.set(provider.trim().toLowerCase(), m.resultCount);
       }
       recordSearchMisses({
         subject: missTopic.primaryPerson || missTopic.videoTitle,
         subjectType: missTopic.primaryPerson ? "person" : "topic",
         searchedKeys: visualDedup.sourcingCache.queries.keys(),
         adoptedByProvider,
+        resultsByProvider,
+        budgetCancelledProviders: visualDedup.sourcingCache.budgetCancelledProviders,
       });
     }
 

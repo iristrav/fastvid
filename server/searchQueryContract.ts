@@ -234,6 +234,22 @@ export const PRODUCTION_VOCABULARY: ReadonlySet<string> = new Set([
    * never a thing in the world, which is what keeps this a closed class.
    */
   "title", "subject", "collection", "tvnews", "identifier", "creator", "date", "and", "or", "not",
+  /**
+   * RONDE 100B — the same closed class, one provider further on.
+   *
+   * GDELT's TV API takes `"<person>" station:CNN`, where `station` names which broadcaster's
+   * index to search. RONDE 93 admitted archive.org's field syntax and stopped there, so the
+   * validator read `station`, `CNN`, `FOXNEWS`, `MSNBC` and `BBCNEWS` as unproven subjects and
+   * refused every GDELT query ever built: production logged built=176, validated=0, rejected=176
+   * — an entire provider dark because it said where to look rather than what to look for.
+   *
+   * Verified before adding, per the brief: buildGdeltTvQueries emits `station:${station}` from
+   * GDELT_TV_STATIONS, and fetchGdeltTvNewsClips passes the whole string to the GDELT endpoint as
+   * `query=`. The four names are that API's own station identifiers; no other provider uses them.
+   * A station is a channel, not a claim about the world, which is what keeps this class closed —
+   * and the person or event in the same query still has to prove itself as before.
+   */
+  "station", "cnn", "foxnews", "msnbc", "bbcnews",
 ]);
 
 export function isProductionWord(token: string): boolean {
@@ -1182,7 +1198,19 @@ export function searchGateDecision(
   if (!ticket.verified) {
     searchGateAudit.record("bypassAttempts", provider, ticket.route, ticket.rejectReason);
     if (searchGateStrict()) {
-      searchGateAudit.record("queriesBlocked", provider, ticket.route, ticket.rejectReason);
+      /**
+       * RONDE 100B — count the reason once, on the counter that owns it.
+       *
+       * This passed the reason a second time, so one scope-less query bumped
+       * LEGACY_QUERY_BUILDER twice. Production reported bypassAttempts=425 and
+       * LEGACY_QUERY_BUILDER=850: the same 425 queries, counted double, which made the reason
+       * look larger than UNVERIFIED_TERM (390) when it was in fact comparable.
+       *
+       * The validator branch above already gets this right — queriesRejected carries the reason,
+       * queriesBlocked does not — and this now matches it. Deliberately done AFTER the scopes
+       * that removed the bypasses themselves: halving a number is not fixing it.
+       */
+      searchGateAudit.record("queriesBlocked", provider, ticket.route);
       console.warn(audit("BLOCKED", ticket.rejectReason ?? "NO_SEARCH_CONTEXT"));
       return { admitted: false, text };
     }

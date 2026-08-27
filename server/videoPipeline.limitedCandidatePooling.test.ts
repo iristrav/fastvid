@@ -42,8 +42,28 @@ function minimalCtx(overrides: Partial<AssetDirectorContext> = {}): AssetDirecto
   };
 }
 
+/**
+ * Read one function's source out of videoPipeline.ts.
+ *
+ * RONDE 100B put a provenance wrapper in front of every function that reaches a provider, so a
+ * name like `fetchBeatAuthenticStills` now resolves to a three-line wrapper and the body these
+ * tests are about lives in `fetchBeatAuthenticStillsInner`. Follow the wrapper rather than
+ * assert against it — and check on the way through that it really is only a wrapper, so the
+ * indirection can never be used to hide a second implementation from these tests.
+ */
 function extractFunctionSource(fnName: string): string {
   const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+  if (src.includes(`async function ${fnName}Inner(`)) {
+    const wrapper = sliceFunction(src, fnName);
+    if (!wrapper.includes("withBeatProvenance") || !wrapper.includes(`${fnName}Inner(`)) {
+      throw new Error(`${fnName} is not a plain provenance wrapper — inspect it directly`);
+    }
+    return sliceFunction(src, `${fnName}Inner`);
+  }
+  return sliceFunction(src, fnName);
+}
+
+function sliceFunction(src: string, fnName: string): string {
   const marker = `async function ${fnName}(`;
   const startIdx = src.indexOf(marker);
   if (startIdx === -1) throw new Error(`function ${fnName} not found in videoPipeline.ts`);

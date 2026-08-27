@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+import path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { rankCandidatesWithContext, type AssetDirectorContext, type CandidateMeta } from "./assetDirector";
 
@@ -177,9 +179,35 @@ describe("Fix 3 — query-generation fallback no longer collapses straight to 'd
     expect(queries).toEqual(["Elon Musk"]);
   });
 
-  it("Test 13 — fully empty context -> safe minimal fallback, no crash", async () => {
+  it("Test 13 — fully empty context -> no query at all, no crash", async () => {
+    /**
+     * SUPERSEDED BY RONDE 100B, deliberately.
+     *
+     * This asserted ["documentary"] as the "safe minimal fallback". It is not safe: the word
+     * describes the genre of the video being made, not anything in it, and production sent it to
+     * Pexels dozens of times in a single render. With no beat text, no scene text, no title and
+     * no person there is no subject, and the honest answer is to ask for nothing rather than to
+     * ask for a word that cannot be wrong because it is not about anything.
+     */
     const { scriptStockSearchQueries } = await freshPipeline();
     expect(() => scriptStockSearchQueries("", [], "", undefined)).not.toThrow();
-    expect(scriptStockSearchQueries("", [], "", undefined)).toEqual(["documentary"]);
+    expect(scriptStockSearchQueries("", [], "", undefined)).toEqual([]);
+  });
+
+  it("Test 14 — no query builder falls back to the literal word", async () => {
+    const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    // An LLM prompt may still describe the video as a documentary — that is a true statement
+    // about the video being made. What may not survive is a QUERY fallback handing the word to a
+    // provider as if it were the subject. So this checks the three shapes that did exactly that.
+    const codeLines = src
+      .split("\n")
+      .filter((l) => {
+        const t = l.trim();
+        return t && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
+      })
+      .join("\n");
+    expect(codeLines).not.toContain('const primaryQuery = subject || "documentary"');
+    expect(codeLines).not.toContain('return ["documentary"]');
+    expect(codeLines).not.toContain('videoTitle)[0] ?? "documentary"');
   });
 });

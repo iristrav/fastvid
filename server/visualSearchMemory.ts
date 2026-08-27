@@ -374,11 +374,29 @@ export function recordSearchMisses(input: {
   searchedKeys: Iterable<string>;
   /** provider → clips adopted from it this render. */
   adoptedByProvider: Map<string, number>;
+  /**
+   * RONDE 100B — provider → candidates the provider actually returned this render.
+   *
+   * A query that came back with results is not a dead end, whatever happened afterwards. The
+   * production render made the distinction unavoidable: Internet Archive ran 13 searches and
+   * returned 311 candidates, then every download was cancelled by the enclosing scene budget, so
+   * it adopted nothing — and all 13 queries were written down as "this source has nothing".
+   * Twenty-two of twenty-two sources were condemned that way in one render, none of them for
+   * anything they did wrong. The next render on the same subject then starts with them disabled.
+   *
+   * Attribution stays per-provider because that is the granularity the metrics have. It is the
+   * conservative direction, and the same one this function already chose elsewhere: recording a
+   * working query as dead costs far more than recording nothing.
+   */
+  resultsByProvider?: Map<string, number>;
+  /** provider → true when at least one of its calls was cancelled by an enclosing budget. */
+  budgetCancelledProviders?: ReadonlySet<string>;
 }): void {
   const subject = input.subject?.trim();
   if (!subject) return;
   let misses = 0;
   let queued = 0;
+  let spared = 0;
   for (const key of input.searchedKeys) {
     const sep = key.indexOf("|");
     if (sep <= 0) continue;
@@ -386,6 +404,9 @@ export function recordSearchMisses(input: {
     const query = key.slice(sep + 1).trim();
     if (!source || !query) continue;
     if ((input.adoptedByProvider.get(source) ?? 0) > 0) continue;
+    // The provider answered, or FastVid cut it off. Neither is evidence about the query.
+    if ((input.resultsByProvider?.get(source) ?? 0) > 0) { spared++; continue; }
+    if (input.budgetCancelledProviders?.has(source)) { spared++; continue; }
     misses++;
     // RONDE 86: this loop is the burst. It used to release one un-awaited insert per iteration —
     // 248 of them on render 536, against a pool whose queueLimit is 100, which is where that
@@ -401,12 +422,13 @@ export function recordSearchMisses(input: {
       queued++;
     }
   }
-  if (misses > 0) {
+  if (misses > 0 || spared > 0) {
     const stats = visualSearchMemoryQueueStats();
     console.log(
       `[SearchMemory] "${canonicalEntityKey(subject)}": recorded ${queued} of ${misses} dead end(s) — ` +
         `sources that returned nothing usable this render` +
         (queued < misses ? ` (${misses - queued} already known this process)` : "") +
+        (spared > 0 ? ` [${spared} spared: answered or cancelled by budget]` : "") +
         (stats.dropped > 0 ? ` [${stats.dropped} dropped for backpressure]` : "")
     );
   }

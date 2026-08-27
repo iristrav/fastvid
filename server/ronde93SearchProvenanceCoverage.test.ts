@@ -162,13 +162,32 @@ describe("RONDE 93 §6 — the name is proven, the event was invented", () => {
     }
   });
 
-  it("TEST 11 — the event terms survive where the beat earns them", () => {
-    // scriptEventSearchQueries is the evidence-triggered path and stays untouched: a beat that
-    // mentions a premiere still asks for a red carpet.
+  it("TEST 11 — the event terms survive, but only as the word the beat actually said", () => {
+    /**
+     * SUPERSEDED BY RONDE 100B, deliberately.
+     *
+     * RONDE 93 let this path map a trigger to a different word — a beat mentioning a premiere
+     * asked providers for "red carpet" — on the grounds that the trigger was evidence. The
+     * production render showed what that costs: the OUTPUT is what reaches the provider, and
+     * "red carpet" appears nowhere in the script, so the SearchGate rejected it as
+     * UNVERIFIED_TERM. The rule is now the stricter one: emit the alternative the narration
+     * actually used, and drop the entries that had no spoken word to fall back on.
+     */
     const idx = PIPELINE_SRC.indexOf("function scriptEventSearchQueries(");
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
-    expect(body).toContain('red carpet|premiere|gala|awards');
-    expect(body).toContain('interview|interviews|spoke with|talked to');
+
+    // The evidence patterns are still here — a beat about a premiere still triggers a query.
+    expect(body).toContain("red carpet|premiere|gala|awards");
+    expect(body).toContain("protest|demonstration|rally");
+
+    // But nothing may push a fixed string any more: the match itself is the query.
+    expect(body).toContain("const said = m?.[1]?.trim();");
+    expect(body).not.toMatch(/out\.push\(p\("/);
+
+    // The two entries whose output named a topic nobody mentioned are gone entirely.
+    expect(body).not.toContain("news conference");
+    expect(body).not.toContain("business news");
+    expect(body).not.toContain("scandal|controversy|backlash");
   });
 
   it("TEST 12 — a beat that mentions an interview still proves the word", () => {
