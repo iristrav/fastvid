@@ -222,7 +222,11 @@ describe("RONDE 67 — 'said no' and 'could not look' are different numbers now"
      */
     expect(src).toContain("beat image gate — attempts=${t.attempts} ");
     expect(src).toContain("answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch})");
-    expect(src).toContain("unavailable=${t.failed} never_asked=${t.skipped}");
+    // SUPERSEDED BY RONDE 119: the counter this label names is `judgementsFailed`, which now
+    // means only what it says — a provider answered and the judgement itself failed. Provider
+    // exhaustion (Groq's spent day, an out-of-capacity chain) moved to `never_asked`, so calling
+    // this one "unavailable" pointed at the wrong number.
+    expect(src).toContain("failed=${t.failed} never_asked=${t.skipped}");
     expect(src).toContain("ONGEZIEN aangenomen");
   });
 

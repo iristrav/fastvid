@@ -357,7 +357,11 @@ describe("RONDE 105 TEST 7/8/9 — reprieved, unknown and never_asked stay thems
     }).join("\n");
     expect(lines).toContain("unknown=1");
     expect(lines).toContain("never_asked=1");
-    expect(lines).toContain("gate_unavailable=1");
+    // SUPERSEDED BY RONDE 119: the counter this label names is `judgementsFailed`, which now
+    // means only what it says — a provider answered and the judgement itself failed. Provider
+    // exhaustion (Groq's spent day, an out-of-capacity chain) moved to `never_asked`, so calling
+    // this one "unavailable" pointed at the wrong number.
+    expect(lines).toContain("gate_failed=1");
     expect(lines).toContain("gate_never_asked=1");
     expect(lines).toContain("gate_answered=0");
   });

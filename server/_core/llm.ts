@@ -91,6 +91,15 @@ export type InvokeResult = {
   id: string;
   created: number;
   model: string;
+  /**
+   * RONDE 119 — which provider actually produced this answer.
+   *
+   * The chain can move on twice before something replies, and until now the result carried no
+   * trace of that: a caller logging a verdict could name the model string but not the provider
+   * that served it, so "Groq is exhausted, did Gemini really pick it up?" was unanswerable from a
+   * production log. Optional because a caller that does not care must not have to change.
+   */
+  provider?: LlmProvider;
   choices: Array<{
     index: number;
     message: {
@@ -492,6 +501,33 @@ export function isCapacityTooLargeError(status: number, body: string): boolean {
   );
 }
 
+/**
+ * RONDE 119 — "this provider had no capacity for the request" versus "this provider answered and
+ * the answer was no good".
+ *
+ * The production line that started this round:
+ *
+ *   LLM invoke failed (groq, model=openai/gpt-oss-20b): 429 … tokens per day (TPD):
+ *   Limit 200000, Used 199683, Requested 3630.
+ *
+ * The vision gate booked that as a FAILED judgement. It is not one: no model looked at the frame.
+ * A render whose model is broken and a render whose account is out of tokens need opposite work,
+ * and RONDE 105/115 built the counters to keep them apart — this is the predicate that lets the
+ * chain say which of the two it hit.
+ *
+ * Deliberately narrow. A 400, a 500, a timeout, a truncated body and a malformed answer all stay
+ * genuine failures: the provider was reachable and something else went wrong, and calling that
+ * "unavailable" would hide a broken prompt behind a quota story.
+ */
+export function isProviderCapacityFailure(status: number, body: string): boolean {
+  if (isRateLimitError(status)) return true; // 429 — TPD, TPM and RPM all land here
+  if (isOpenAiQuotaError(status, body)) return true; // 402 insufficient_quota / billing
+  if (isCapacityTooLargeError(status, body)) return true; // 413 — request over the tier's TPM
+  // A model the account cannot reach is the same fact as no capacity: nothing judged anything.
+  if (status === 404) return true;
+  return false;
+}
+
 /** Exported for RONDE 116's regression test: this is the predicate the provider chain consults. */
 export function shouldFallbackToNextProvider(status: number, body: string): boolean {
   if (isRateLimitError(status)) return true;
@@ -557,6 +593,73 @@ export class LlmUnavailableError extends Error {
 /** True when the call never reached a provider, so no attempt was actually made. */
 export function isLlmPreflightRefusal(err: unknown): boolean {
   return err instanceof LlmUnavailableError || (err as { preflight?: boolean })?.preflight === true;
+}
+
+/**
+ * RONDE 119 — every provider in the chain was out of capacity.
+ *
+ * A separate class from LlmUnavailableError on purpose. That one means "nothing was sent"; this
+ * one means "a provider was contacted and told us it has nothing to give" — a 429 on the day's
+ * tokens, a 413 over the tier's per-minute ceiling, an exhausted OpenAI quota. The OUTCOME is the
+ * same (no answer) and both belong on the never-judged side of the counters, but the two are
+ * different facts and RONDE 115's preflight predicate must keep meaning exactly what it meant.
+ *
+ * It carries the per-provider reasons so a log line can name all of them at once instead of the
+ * one that happened to be last.
+ */
+export class LlmProviderUnavailableError extends Error {
+  readonly providerUnavailable = true as const;
+  constructor(
+    message: string,
+    readonly providers: ReadonlyArray<{ provider: LlmProvider; status: number; detail: string }> = []
+  ) {
+    super(message);
+    this.name = "LlmProviderUnavailableError";
+  }
+}
+
+/**
+ * True when no answer came back because no provider had capacity — including the pre-flight case,
+ * where the chain was empty before a socket was opened.
+ *
+ * This is the predicate a caller that counts judgements should use: it is exactly the set of
+ * outcomes that must NOT be recorded as a failed model judgement.
+ */
+export function isLlmProviderUnavailable(err: unknown): boolean {
+  if (isLlmPreflightRefusal(err)) return true;
+  return (
+    err instanceof LlmProviderUnavailableError ||
+    (err as { providerUnavailable?: boolean })?.providerUnavailable === true
+  );
+}
+
+/**
+ * The provider's own HTTP answer, kept with the error.
+ *
+ * Gemini speaks a different API and is called from a different function, so its failures used to
+ * arrive at the chain as a bare Error whose only evidence was a message string. Classifying by
+ * substring would rot the first time a message is reworded; these fields are the response itself.
+ */
+type ProviderHttpError = Error & { llmProvider: LlmProvider; llmStatus: number; llmBody: string };
+
+function providerHttpError(
+  provider: LlmProvider,
+  status: number,
+  body: string,
+  message: string
+): ProviderHttpError {
+  const err = new Error(message) as ProviderHttpError;
+  err.llmProvider = provider;
+  err.llmStatus = status;
+  err.llmBody = body;
+  return err;
+}
+
+/** Was this thrown error a provider saying it had no capacity? */
+function isCapacityError(err: unknown): boolean {
+  const e = err as Partial<ProviderHttpError>;
+  if (typeof e?.llmStatus !== "number") return false;
+  return isProviderCapacityFailure(e.llmStatus, e.llmBody ?? "");
 }
 
 const assertApiKey = () => {
@@ -689,7 +792,8 @@ async function invokeGemini(
     // repeat the same wasted round trip.
     if (isGeminiModelNotFoundError(response.status, lastErrorText)) {
       geminiModelUnavailable = true;
-      throw new Error(`Gemini API error ${response.status}: ${lastErrorText}`);
+      throw providerHttpError("gemini", response.status, lastErrorText,
+        `Gemini API error ${response.status}: ${lastErrorText}`);
     }
     // Free-tier RPM (429/RESOURCE_EXHAUSTED) is a short-lived burst limit, not exhaustion of the
     // daily quota — worth one or two short retries before giving up on this call entirely.
@@ -704,7 +808,10 @@ async function invokeGemini(
       // render skip straight to the next provider instead of each re-discovering the same limit.
       geminiCooldownUntilMs = Date.now() + 60_000;
     }
-    throw new Error(`Gemini API error ${response.status}: ${lastErrorText}`);
+    // RONDE 119: the status and body travel with the error, so the chain can tell "out of quota"
+    // from "answered badly" without reading the sentence.
+    throw providerHttpError("gemini", response.status, lastErrorText,
+      `Gemini API error ${response.status}: ${lastErrorText}`);
   }
   throw new Error(`Gemini API error: ${lastErrorText}`);
 }
@@ -809,6 +916,20 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         "GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY (OpenAI) so calls can fall " +
         "through, or wait for Groq's daily quota to reset."
       );
+    } else if (hasVision && groqKey) {
+      /**
+       * RONDE 119 — say what is actually missing.
+       *
+       * Groq is removed from every vision chain a few lines above (its vision models 404), so a
+       * vision call with only a Groq key configured arrives here with the key plainly set and got
+       * told "LLM API key is not configured". That is the same wrong signpost RONDE 117 removed
+       * from the daily-quota branch, on the route the picture editor actually uses.
+       */
+      throw new LlmUnavailableError(
+        "No vision-capable provider is available: Groq is excluded from image calls and no other " +
+        "provider is usable right now. Set GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY " +
+        "(OpenAI) so image judgements can be made."
+      );
     } else {
       // Every provider is keyless, cooled down or quota-exhausted — again, nothing is sent.
       throw new LlmUnavailableError(
@@ -819,6 +940,56 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   let lastError: Error | null = null;
+  /**
+   * RONDE 119 — why each provider dropped out, so the final throw can say which kind of failure
+   * this was rather than only what the last one said.
+   */
+  const capacityBlocked: Array<{ provider: LlmProvider; status: number; detail: string }> = [];
+  /** True once a provider fails for a reason that is NOT lack of capacity. */
+  let sawRealFailure = false;
+  const noteCapacityBlock = (provider: LlmProvider, status: number, body: string) => {
+    capacityBlocked.push({ provider, status, detail: body.slice(0, 160) });
+  };
+
+  /**
+   * RONDE 119 — the throw that told the caller the wrong thing.
+   *
+   * Both exits used to hand back the raw `lastError`: a plain Error reading
+   *
+   *   LLM invoke failed (groq, model=openai/gpt-oss-20b): 429 … tokens per day (TPD) …
+   *
+   * A caller cannot tell that apart from "the model answered rubbish", so the vision gate counted
+   * a spent Groq day as a failed picture judgement — forty-four times over, in a render where no
+   * model had looked at anything at all.
+   *
+   * When EVERY provider that dropped out did so for lack of capacity, the answer is that the
+   * chain was unavailable, and it is thrown as such with all the reasons attached. If any provider
+   * failed for another reason, that failure is the honest headline and is thrown unchanged, so a
+   * genuine outage can never be dressed up as a quota problem.
+   */
+  function finalError(): Error {
+    if (capacityBlocked.length > 0 && !sawRealFailure) {
+      const summary = capacityBlocked
+        .map((b) => `${b.provider} ${b.status}`)
+        .join(", ");
+      const err = new LlmProviderUnavailableError(
+        `No LLM provider had capacity for this request (${summary}). ` +
+          `Last response: ${lastError?.message ?? "unknown"}`,
+        capacityBlocked
+      );
+      console.warn(`[LLM] chain exhausted — every provider out of capacity: ${summary}`);
+      return err;
+    }
+    return (
+      lastError ??
+      new Error(
+        groqKeyFromEnv() && geminiKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown() && isGeminiInCooldown()
+          ? "LLM invoke failed: Gemini and Groq daily quotas exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
+          : "LLM invoke failed: no provider available"
+      )
+    );
+  }
+
   const maxTokens = params.maxTokens ?? params.max_tokens;
 
   for (let i = 0; i < chain.length; i++) {
@@ -837,10 +1008,17 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
           const { recordLlmUsage } = await import("./llmBudget");
           recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
         }
-        return result;
+        return { ...result, provider: "gemini" };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         console.warn(`[LLM] Gemini failed:`, lastError.message);
+        // RONDE 119: a 429/404 from Gemini is the same class of fact as Groq's spent day — the
+        // model never judged anything. Anything else is a real failure and stays one.
+        if (isCapacityError(err)) {
+          noteCapacityBlock("gemini", (err as { llmStatus: number }).llmStatus, (err as { llmBody?: string }).llmBody ?? "");
+        } else {
+          sawRealFailure = true;
+        }
         continue;
       }
     }
@@ -910,6 +1088,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         console.warn(`[LLM] ${provider} network/timeout failure:`, lastError.message);
+        // A network fault is not a capacity fact — the provider never got to say anything about
+        // its quota, so this stays a real failure.
+        sawRealFailure = true;
         break;
       }
 
@@ -930,19 +1111,36 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           console.warn(`[LLM] ${provider} returned malformed JSON:`, lastError.message);
+          // The provider answered; the answer was unusable. That is a real failure.
+          sawRealFailure = true;
           break;
         }
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
           recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
         }
-        return result;
+        return { ...result, provider };
       }
 
       const errorText = await response.text();
-      lastError = new Error(
+      lastError = providerHttpError(
+        provider,
+        response.status,
+        errorText,
         `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
       );
+      /**
+       * RONDE 119 — record WHY this provider is dropping out, right where the answer is in hand.
+       *
+       * `isProviderCapacityFailure` is deliberately narrow: a 429 (TPD/TPM/RPM), a 413 over the
+       * tier's ceiling, an exhausted OpenAI quota, or a model this account cannot reach. Those are
+       * "no capacity". A 400, a 500 or a malformed body are not, and stay failures.
+       */
+      if (isProviderCapacityFailure(response.status, errorText)) {
+        noteCapacityBlock(provider, response.status, errorText);
+      } else {
+        sawRealFailure = true;
+      }
 
       // Groq 404: configured vision model no longer available — retry once with fallback model.
       if (provider === "groq" && response.status === 404 && hasVision && payload.model !== GROQ_VISION_FALLBACK_MODEL) {
@@ -1006,13 +1204,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         break;
       }
 
-      throw lastError;
+      throw finalError();
     }
   }
 
-  throw lastError ?? new Error(
-    groqKeyFromEnv() && geminiKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown() && isGeminiInCooldown()
-      ? "LLM invoke failed: Gemini and Groq daily quotas exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
-      : "LLM invoke failed: no provider available"
-  );
+  throw finalError();
 }

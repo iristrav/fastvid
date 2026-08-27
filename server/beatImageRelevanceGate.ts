@@ -35,7 +35,7 @@
  */
 
 import fs from "fs";
-import { invokeLLM, isLlmPreflightRefusal } from "./_core/llm";
+import { invokeLLM, isLlmPreflightRefusal, isLlmProviderUnavailable } from "./_core/llm";
 import { imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 
@@ -52,6 +52,15 @@ export type BeatImageJudgement = {
    * cannot be told apart from a fresh look, and that is exactly how a stale verdict hides.
    */
   cached?: boolean;
+  /**
+   * RONDE 119: which provider actually produced this verdict.
+   *
+   * The chain can move past two providers before one answers, and a log line that names only the
+   * verdict cannot say whether the picture editor on duty was Gemini or OpenAI — which is exactly
+   * the question a render with an exhausted Groq raises. Absent on a cached or unknown verdict:
+   * no provider produced those.
+   */
+  provider?: string;
 };
 
 const RESPONSE_SCHEMA = {
@@ -118,6 +127,14 @@ export type BeatImageGateState = {
    * a summary can say "44x LLM API key is not configured" in a single line.
    */
   noVerdictReasons: Map<string, number>;
+  /**
+   * RONDE 119 — which provider gave each verdict, counted.
+   *
+   * One line at the end of a render answers "who was actually judging the pictures". Before this,
+   * a render that fell through from Groq to Gemini to OpenAI looked identical in the summary to
+   * one where the first provider answered everything.
+   */
+  verdictsByProvider: Map<string, number>;
   /**
    * `contentKey|beatIdentity` -> verdict.
    *
@@ -198,6 +215,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsSkipped: 0,
     youtubeJudgementsUsed: 0,
     noVerdictReasons: new Map(),
+    verdictsByProvider: new Map(),
   };
 }
 
@@ -428,11 +446,18 @@ export async function judgeBeatImage(params: {
       return unknown("answer had no verdict");
     }
 
+    const provider = response.provider;
     const judgement: BeatImageJudgement = {
       verdict: parsed.belongs ? "fits" : "does_not_fit",
       depicts: (parsed.depicts ?? "").slice(0, 160),
       reason: (parsed.reason ?? "").slice(0, 160),
+      ...(provider ? { provider } : {}),
     };
+    // RONDE 119: the provider that answered is counted here, at the one point where a verdict is
+    // known to have come off the wire rather than out of a cache.
+    if (provider) {
+      state.verdictsByProvider.set(provider, (state.verdictsByProvider.get(provider) ?? 0) + 1);
+    }
     // RONDE 105: an answer is recorded as the answer it was. `does_not_fit` is a successful
     // judgement with an unwelcome result, not a failure — conflating the two is how a render
     // whose sourcing is wrong reads the same as a render whose model is down.
@@ -478,6 +503,27 @@ export async function judgeBeatImage(params: {
       state.judgementAttempts--;
       return declined(`gate could not ask: ${(err as Error).message?.slice(0, 90)}`);
     }
+    /**
+     * RONDE 119 — a provider with no capacity did not judge the picture badly. It did not judge.
+     *
+     * From production:
+     *
+     *   LLM invoke failed (groq, model=openai/gpt-oss-20b): 429 … on tokens per day (TPD):
+     *   Limit 200000, Used 199683, Requested 3630.
+     *
+     * That reached a provider, so it is not the pre-flight case above — and it landed here, in
+     * `judgementsFailed`, where it read as "the vision model was asked and could not answer".
+     * The account was simply out of tokens for the day; no model looked at any frame.
+     *
+     * The two need opposite work — one is a model or prompt problem, the other is a quota or
+     * routing problem — so this takes the attempt back and books it on the never-judged side,
+     * with its own reason so it can never be confused with a missing key either. `judgementsFailed`
+     * now means what it says: a provider answered and the judgement itself failed.
+     */
+    if (isLlmProviderUnavailable(err)) {
+      state.judgementAttempts--;
+      return declined(`provider unavailable (no capacity): ${(err as Error).message?.slice(0, 90)}`);
+    }
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
     // so a render whose verdicts were mostly unobtainable can say so.
     state.judgementsFailed++;
@@ -495,4 +541,18 @@ export function formatNoVerdictReasons(state: BeatImageGateState, max = 3): stri
   const rows = [...state.noVerdictReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, max);
   if (rows.length === 0) return "";
   return `[BeatImageGate] no verdict: ${rows.map(([r, n]) => `${n}x ${r}`).join(" | ")}`;
+}
+
+/**
+ * RONDE 119 — the single line that says who did the judging.
+ *
+ * With a provider chain that silently falls through, "the gate returned 40 verdicts" leaves open
+ * whether they came from the model this render was configured to use or from the second fallback
+ * behind it. That is not a detail: the providers are different models with different judgement,
+ * and a render that quietly ran on the last one in the chain should say so.
+ */
+export function formatVerdictProviders(state: BeatImageGateState): string {
+  const rows = [...state.verdictsByProvider.entries()].sort((a, b) => b[1] - a[1]);
+  if (rows.length === 0) return "";
+  return `[BeatImageGate] verdicts by provider: ${rows.map(([p, n]) => `${n}x ${p}`).join(" | ")}`;
 }

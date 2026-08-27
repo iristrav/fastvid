@@ -353,6 +353,7 @@ import {
   MAX_JUDGEMENTS_PER_BEAT,
   judgementTally,
   formatNoVerdictReasons,
+  formatVerdictProviders,
   maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
@@ -35056,13 +35057,19 @@ async function _runVideoPipelineInner(
           console.log(
             `[Quality] Video ${videoId}: beat image gate — attempts=${t.attempts} ` +
               `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
-              `unavailable=${t.failed} never_asked=${t.skipped} (youtube ${g.youtubeJudgementsUsed})`
+              `failed=${t.failed} never_asked=${t.skipped} (youtube ${g.youtubeJudgementsUsed})`
           );
           // RONDE 115: and WHY, in one line — the fact that was previously spread over one log
           // line per clip and therefore invisible.
           {
             const why = formatNoVerdictReasons(g);
             if (why) console.warn(why);
+          }
+          // RONDE 119: and WHO answered. A chain that fell through to its last provider used to
+          // look exactly like one where the configured provider answered everything.
+          {
+            const who = formatVerdictProviders(g);
+            if (who) console.log(who);
           }
           if (t.inconsistent) {
             qualityReport.warnings.push(
@@ -35626,6 +35633,10 @@ async function _runVideoPipelineInner(
         {
           const why = formatNoVerdictReasons(visualDedup.beatImageGate);
           if (why) pipelineReport.add("summary", why);
+        }
+        {
+          const who = formatVerdictProviders(visualDedup.beatImageGate);
+          if (who) pipelineReport.add("summary", who);
         }
         for (const line of formatFinalVisualReport({
           finalVideoVerified: ledger.finalVideoWasVerified,

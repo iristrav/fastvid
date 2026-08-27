@@ -134,7 +134,11 @@ describe("RONDE 103 — what the central gate decides", () => {
     expect(d.verdict).toBe("unknown");
     expect(state.judgementsFailed).toBe(1);
     // The distinction RONDE 67 asked for and RONDE 103 keeps: "said no" vs "could not look".
-    expect(formatRelevanceSummary(state, ledger)).toContain("unavailable=1");
+    // SUPERSEDED BY RONDE 119: the counter this label names is `judgementsFailed`, which now
+    // means only what it says — a provider answered and the judgement itself failed. Provider
+    // exhaustion (Groq's spent day, an out-of-capacity chain) moved to `never_asked`, so calling
+    // this one "unavailable" pointed at the wrong number.
+    expect(formatRelevanceSummary(state, ledger)).toContain("failed=1");
     expect(formatRelevanceSummary(state, ledger)).toContain("fits=0");
   });
 

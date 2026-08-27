@@ -1231,7 +1231,7 @@ export function formatFinalVisualReport(input: {
     `  coverage_generated=${input.coverage.generated ?? 0}`,
     `  gate_attempts=${input.attempts}`,
     `  gate_answered=${input.answered}`,
-    `  gate_unavailable=${input.unavailable}`,
+    `  gate_failed=${input.unavailable}`,
     `  gate_never_asked=${input.neverAsked}`,
     `  final_clips=${rendered.length}`,
     ...sourceLines,
