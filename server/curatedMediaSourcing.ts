@@ -5,6 +5,7 @@ import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
 import { stitchSourceFloorSec } from "./coverageFillPlan";
+import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled } from "./stillImagePolicy";
 import {
   extractVisualSearchTags,
   extractSceneSearchTags,
@@ -1562,6 +1563,24 @@ async function convertImageToKenBurns(
   beatIndex: number,
   styleContext?: CuratedClipStyleContext
 ): Promise<void> {
+  /**
+   * RONDE 128 — a photograph is a shot, not a slide.
+   *
+   * `duration` is whatever the beat asked for, and it had no ceiling: the measured render put a
+   * single archive still on screen for tens of seconds. Five seconds is a shot length; past that
+   * the pipeline has to find another picture, and the caller reports a coverage gap if it cannot.
+   *
+   * Capped HERE, at the one function that turns an image into a clip, rather than at each of its
+   * callers — a cap a caller has to remember to apply is a cap that eventually gets forgotten.
+   */
+  const cap = stillImageMaxSec();
+  if (duration > cap) {
+    console.log(
+      `[StillPlan] s${sceneIndex}b${beatIndex}: still capped at ${cap.toFixed(1)}s ` +
+        `(asked ${duration.toFixed(1)}s) — the rest of this beat needs another picture`
+    );
+    duration = cap;
+  }
   const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
   if (styled) {
     await exec(
@@ -1624,7 +1643,13 @@ async function convertImageToKenBurns(
         throw err;
       }
     }
-  } else {
+  } else if (stillKenBurnsEnabled()) {
+    /**
+     * The previous behaviour, kept behind ENABLE_STILL_KEN_BURNS so RONDE 128 is reversible in
+     * production without a redeploy. Off by default from that round on — see stillImagePolicy.ts
+     * for why a five-second cap makes the motion unnecessary rather than the motion making the
+     * length bearable.
+     */
     const fps = 25;
     const totalFrames = Math.max(50, Math.round(duration * fps));
     const zoomEnd =
@@ -1649,6 +1674,27 @@ async function convertImageToKenBurns(
         `x='${xExpr}':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
         `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`,
+      EXEC_TIMEOUT_ENCODE_MS
+    );
+  } else {
+    /**
+     * RONDE 128 — the whole picture, in the middle, at its own shape.
+     *
+     * What this replaces did three things to every archive photograph: scaled it PAST the frame
+     * (`force_original_aspect_ratio=increase` on a 1.12x canvas), cropped the overflow away, and
+     * then zoomed and panned across what was left. A documentary shows an archive photograph
+     * whole; it does not enlarge it and slide around inside it.
+     *
+     * `decrease` is the single word that turns cover into contain — the image scales until it
+     * fits and never past it — and the pad offsets centre what is left over. No crop, because
+     * after a contain scale there is nothing outside the frame to cut. No zoompan at all.
+     */
+    const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
+    const contain = containCenterFilter({ widthPx: VIDEO_WIDTH, heightPx: VIDEO_HEIGHT });
+    await exec(
+      `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
+        `-vf "${contain},fps=25,format=yuv420p" ` +
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an "${outPath}"`,
       EXEC_TIMEOUT_ENCODE_MS
     );
   }
