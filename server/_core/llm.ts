@@ -339,6 +339,34 @@ export function isGroqInCooldown(): boolean {
   return Date.now() < groqCooldownUntilMs;
 }
 
+/**
+ * RONDE 117 — set when Groq's cooldown is a DAILY exhaustion rather than a burst limit.
+ *
+ * The distinction matters in exactly one place: the all-providers-blocked recovery in invokeLLM
+ * wipes the cooldown and forces one more Groq attempt, on the reasoning that a cooldown is a soft
+ * guard. That is true of a per-minute limit and false of a spent daily budget — there the retry
+ * cannot succeed AND the wipe erases the cooldown, so the next call repeats the whole discovery.
+ */
+let groqDailyExhaustedUntilMs = 0;
+export function isGroqDailyExhausted(): boolean {
+  return Date.now() < groqDailyExhaustedUntilMs;
+}
+
+/**
+ * Clear the per-process provider cool-offs.
+ *
+ * These are module-level on purpose — a cooldown that reset per call would not be a cooldown —
+ * which makes them leak between tests in one file. Exported for that, and named so nothing is
+ * tempted to call it from the pipeline.
+ */
+export function __resetProviderCooldownsForTests(): void {
+  groqCooldownUntilMs = 0;
+  groqDailyExhaustedUntilMs = 0;
+  geminiCooldownUntilMs = 0;
+  geminiModelUnavailable = false;
+  openAiQuotaExhausted = false;
+}
+
 function isGroqDailyQuotaError(body: string): boolean {
   const lower = body.toLowerCase();
   return (
@@ -348,16 +376,54 @@ function isGroqDailyQuotaError(body: string): boolean {
   );
 }
 
-function markGroqCooldown(errorText: string): void {
-  if (!isGroqDailyQuotaError(errorText) && !isRateLimitError(429)) return;
-  const waitSec = parseRetryAfterSeconds(errorText);
-  const cooldownMs =
-    waitSec != null && waitSec > 0
-      ? waitSec * 1000
-      : isGroqDailyQuotaError(errorText)
-        ? 60 * 60 * 1000
-        : 5 * 60 * 1000;
+/** How long Groq is left alone once its DAILY token budget is gone. */
+const GROQ_DAILY_COOLDOWN_MS = 60 * 60 * 1000;
+/** Default cool-off for a burst (per-minute) limit that carried no retry hint. */
+const GROQ_BURST_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * RONDE 117 — a daily exhaustion is not a burst, and Groq's retry hint does not know the
+ * difference.
+ *
+ * From production:
+ *
+ *   429 – Rate limit reached for model `openai/gpt-oss-20b` … on tokens per day (TPD):
+ *   Limit 200000, Used 199683, Requested 3630. Please try again in 23m51.216s.
+ *
+ * 317 tokens left of the day's 200 000. "Try again in 23m51s" is Groq's rolling-window estimate:
+ * after that window a trickle frees up, enough for the next call to burn it and fail again, all
+ * day. The old arithmetic preferred that hint over everything else —
+ *
+ *   waitSec != null && waitSec > 0 ? waitSec * 1000 : (daily ? 1h : 5min)
+ *
+ * — and Groq puts a hint in every one of these bodies, so the `daily ? 1h` branch, written for
+ * exactly this case, was unreachable. A spent day got a 24-minute cool-off.
+ *
+ * The hint is still used, as a FLOOR rather than a ceiling: never shorter than Groq asked for,
+ * and never shorter than an hour when the DAY is what ran out.
+ *
+ * Exported for RONDE 117's regression test — this is the arithmetic that was unreachable.
+ */
+export function markGroqCooldown(status: number, errorText: string): void {
+  // The caller's status is what makes this a rate-limit response. The previous version asked
+  // `!isRateLimitError(429)` — a literal 429 === 429, always true, so `!true` was false and the
+  // guard never fired. It only read as one.
+  const daily = isGroqDailyQuotaError(errorText);
+  if (!isRateLimitError(status) && !daily) return;
+  const hintMs = Math.max(0, (parseRetryAfterSeconds(errorText) ?? 0) * 1000);
+  const cooldownMs = daily
+    ? Math.max(hintMs, GROQ_DAILY_COOLDOWN_MS)
+    : hintMs > 0
+      ? hintMs
+      : GROQ_BURST_COOLDOWN_MS;
   groqCooldownUntilMs = Math.max(groqCooldownUntilMs, Date.now() + cooldownMs);
+  if (daily) {
+    groqDailyExhaustedUntilMs = Math.max(groqDailyExhaustedUntilMs, Date.now() + cooldownMs);
+    console.warn(
+      `[LLM] Groq daily token budget exhausted — standing down for ` +
+        `${Math.round(cooldownMs / 60_000)}min (Groq's own hint was ${Math.round(hintMs / 1000)}s)`
+    );
+  }
 }
 
 /** OpenAI quota exhausted — skip for remainder of process lifetime. */
@@ -721,10 +787,28 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     // All providers blocked (cooldown / quota). A cooldown is a soft rate-limit guard, not a
     // hard failure — retry ignoring it rather than give up entirely.
     const groqKey = groqKeyFromEnv();
-    if (!hasVision && groqKey) {
+    /**
+     * RONDE 117 — ignoring a cooldown is a gamble, and a spent DAILY budget is the one case where
+     * it cannot pay off.
+     *
+     * A per-minute limit clears by itself, so one more attempt may well succeed and is worth the
+     * round trip. A day's tokens do not come back within the render. Worse, the reset below sets
+     * groqCooldownUntilMs to 0 — so the cooldown that was protecting every later call is erased,
+     * and each one repeats the whole discovery (primary fails, fallback fails, Groq fails) for
+     * the rest of the day.
+     */
+    if (!hasVision && groqKey && !isGroqDailyExhausted()) {
       console.warn("[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown.");
       groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["groq"];
+    } else if (groqKey && isGroqDailyExhausted()) {
+      // Say what is actually wrong. "API key is not configured" sent the last investigation to
+      // the wrong place, and the key is plainly set.
+      throw new LlmUnavailableError(
+        "Groq's daily token budget is spent and no other provider is available. Set " +
+        "GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY (OpenAI) so calls can fall " +
+        "through, or wait for Groq's daily quota to reset."
+      );
     } else {
       // Every provider is keyless, cooled down or quota-exhausted — again, nothing is sent.
       throw new LlmUnavailableError(
@@ -868,7 +952,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       }
 
       if (provider === "groq" && isRateLimitError(response.status)) {
-        markGroqCooldown(errorText);
+        markGroqCooldown(response.status, errorText);
       }
       /**
        * RONDE 116 — stop re-discovering the same ceiling.
