@@ -2685,8 +2685,14 @@ function beatSearchProvenance(
  * rule, and the same reason, as buildSceneCandidatePool in scenePool.ts.
  */
 function withBeatProvenance<T>(
-  beat: SceneBeat,
-  scene: Scene,
+  /**
+   * Structural rather than SceneBeat/Scene: beatSearchProvenance only reads `text` and
+   * `personNames`, and the second audit turned up a provider caller that carries the beat's TEXT
+   * without the objects — generateGuaranteedBeatClip, which takes (sceneIndex, beatText). It has
+   * what the proof needs; requiring the full types would have left it the last route out.
+   */
+  beat: { text?: string },
+  scene: { text?: string; personNames?: string[] },
   fn: () => Promise<T>,
   opts?: { personName?: string; scenePersons?: string[] }
 ): Promise<T> {
@@ -7994,7 +8000,34 @@ export function isPlaceholderGuaranteedTier(tier: GuaranteedClipTier | undefined
   return tier !== "topical" && tier !== "wikimedia";
 }
 
+/**
+ * RONDE 100B, second audit — the guaranteed ladder reaches Wikimedia too.
+ *
+ * The first audit listed the fetchers it knew about and missed fetchWikimediaImages entirely, so
+ * this route never showed up: generateGuaranteedBeatClip asks Wikimedia for one more real image
+ * before it gives up and draws a card. Thirteen callers reach it, including composeSceneVideoInner
+ * and _runVideoPipelineInner — none of them inside a beat scope.
+ *
+ * It carries the beat's TEXT rather than the beat and scene objects, which is enough: the proof
+ * is built from the narration. When beatText is empty there is no proof and the gate refuses the
+ * query, which is the correct outcome rather than a missing one.
+ */
 export async function generateGuaranteedBeatClip(
+  sceneIndex: number,
+  slotIndex: number,
+  duration: number,
+  workDir: string,
+  beatText?: string,
+  usedAssetIds?: Set<number>,
+  usedStorageUrls?: Set<string>,
+  tierOut?: GuaranteedTierOut,
+): Promise<string> {
+  return withBeatProvenance({ text: beatText ?? "" }, {}, () =>
+    generateGuaranteedBeatClipInner(sceneIndex, slotIndex, duration, workDir, beatText, usedAssetIds, usedStorageUrls, tierOut)
+  );
+}
+
+async function generateGuaranteedBeatClipInner(
   sceneIndex: number,
   slotIndex: number,
   duration: number,
@@ -23330,6 +23363,23 @@ async function fetchBeatAuthenticVideo(
   personName: string,
   tag: string
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatAuthenticVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, videoTitle, adoptOpts, scenePersons, personName, tag), { personName, scenePersons });
+}
+
+async function fetchBeatAuthenticVideoInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  personName: string,
+  tag: string
+): Promise<string | null> {
   const topicHay = [videoTitle, scene.text, beat.text].filter(Boolean).join(" ");
   const historicalDoc = isHistoricalDocumentary(topicHay) && !dedup.personTopicLock;
   const intent = buildMediaSearchIntent({
@@ -26495,6 +26545,20 @@ async function adoptEmergencyGeoStockClipInner(
  * Ladder: similar archive (lower floor) → stock → relaxed archive → AI → neutral placeholder.
  */
 async function rescueBeatVisualWhenEmpty(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => rescueBeatVisualWhenEmptyInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile));
+}
+
+async function rescueBeatVisualWhenEmptyInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,

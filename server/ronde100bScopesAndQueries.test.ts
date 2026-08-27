@@ -81,6 +81,22 @@ const SCOPED_LEAVES = [
   "adoptWikimediaBeatClip",
   "adoptStockBeatClipFallback",
   "adoptEmergencyGeoStockClip",
+  // Found by the SECOND audit (RONDE 100B §15), not the first:
+  "fetchBeatAuthenticVideo",   // → tryBeatRealYouTubeFootage → fetchYouTubeCCClips
+  "rescueBeatVisualWhenEmpty", // → fetchWikimediaImages
+];
+
+/** Same contract, but this one carries only the beat's TEXT — see withBeatProvenance. */
+const TEXT_ONLY_LEAVES = ["generateGuaranteedBeatClip"];
+
+/** The whole provider surface. The first audit asked about five of these and came back clean. */
+const PROVIDER_FETCHERS = [
+  "fetchPexelsClips", "fetchPixabayClips", "fetchWikimediaVideos", "fetchWikimediaImages",
+  "fetchSerpAPIImages", "fetchUnsplashImages", "fetchInternetArchiveClips",
+  "fetchEuropeanaVideos", "fetchOpenverseImages", "fetchNasaVideoClips", "fetchNaraClips",
+  "fetchGdeltTvNewsClips", "fetchSepiaSearchVideos", "fetchFlickrCCVideos",
+  "fetchVimeoCCVideos", "fetchMediaCccVideos", "fetchYouTubeCCClips",
+  "searchYoutubeVideoCandidates", "searchWebWideVideoClips",
 ];
 
 /* ═══════════ §3/§4 — every provider route now has provenance ═══════════ */
@@ -107,7 +123,8 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
   it("TEST 3 — the wrapper is a wrapper: no provider call inside it", () => {
     const providers = [
       "fetchPexelsClips(", "fetchPixabayClips(", "fetchWikimediaVideos(",
-      "fetchSerpAPIImages(", "fetchUnsplashImages(", "cachedProviderSearch(",
+      "fetchSerpAPIImages(", "fetchUnsplashImages(", "fetchWikimediaImages(",
+      "fetchYouTubeCCClips(", "cachedProviderSearch(",
     ];
     for (const fn of SCOPED_LEAVES) {
       const wrapper = bodyOf(PIPELINE_SRC, fn);
@@ -142,6 +159,16 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
     }
   });
 
+  it("TEST 5a — the text-only leaf is scoped from the narration it does have", () => {
+    for (const fn of TEXT_ONLY_LEAVES) {
+      const wrapper = bodyOf(PIPELINE_SRC, fn);
+      expect(wrapper, `${fn} has no provenance wrapper`).toContain("withBeatProvenance(");
+      expect(wrapper).toContain(`${fn}Inner(`);
+      // No beat/scene objects here — the proof comes from beatText.
+      expect(wrapper).toContain("{ text: beatText");
+    }
+  });
+
   it("TEST 5b — every direct provider call now sits inside a scoped body", () => {
     /**
      * The structural check behind the whole round: find each call to a provider fetcher and name
@@ -169,24 +196,61 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
     };
 
     const offenders: string[] = [];
-    for (const fetcher of [
-      "fetchPexelsClips", "fetchPixabayClips", "fetchWikimediaVideos",
-      "fetchSerpAPIImages", "fetchUnsplashImages",
-    ]) {
+    /**
+     * The FIRST audit listed five fetchers and came back clean. The second audit widened the list
+     * and immediately found three more routes — fetchWikimediaImages was not on the original list
+     * at all, and fetchYouTubeCCClips was reachable through fetchBeatAuthenticVideo. The list is
+     * the whole provider surface now, so a new fetcher cannot hide by not being asked about.
+     */
+    for (const fetcher of PROVIDER_FETCHERS) {
+      void [
+      "fetchPexelsClips", "fetchPixabayClips", "fetchWikimediaVideos", "fetchWikimediaImages",
+      "fetchSerpAPIImages", "fetchUnsplashImages", "fetchInternetArchiveClips",
+      "fetchEuropeanaVideos", "fetchOpenverseImages", "fetchNasaVideoClips", "fetchNaraClips",
+      "fetchGdeltTvNewsClips", "fetchSepiaSearchVideos", "fetchFlickrCCVideos",
+      "fetchVimeoCCVideos", "fetchMediaCccVideos", "fetchYouTubeCCClips",
+      "searchYoutubeVideoCandidates", "searchWebWideVideoClips",
+      ];
       const re = new RegExp(`(?<![\\w.])${fetcher}\\s*\\(`, "g");
       let m: RegExpExecArray | null;
       while ((m = re.exec(PIPELINE_SRC))) {
         const line = PIPELINE_SRC.slice(0, m.index).split("\n").length;
         const host = enclosing(line);
-        if (host === fetcher || host.endsWith("Inner") || host === "fetchBrollClips") continue;
+        // A helper is safe when every one of ITS callers is a scoped body — pinned below.
+        const safeHelpers = new Set([
+          "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
+          "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
+        ]);
+        // One provider fetcher calling another (fetchYouTubeCCClips → searchYoutubeVideoCandidates)
+        // says nothing about scope: what matters is how the OUTER one is reached, and every
+        // fetcher in this list is checked for exactly that.
+        if (host === fetcher || host.endsWith("Inner") || safeHelpers.has(host)) continue;
+        if (PROVIDER_FETCHERS.includes(host)) continue;
         offenders.push(`${fetcher} called from ${host} (line ${line})`);
       }
     }
     expect(offenders, `unscoped provider callers:\n${offenders.join("\n")}`).toEqual([]);
 
-    // And fetchBrollClips' own callers, all of which are scoped bodies.
-    for (const caller of ["fetchUniqueStockForBeatInner", "fetchBeatClipFromScript", "fetchBeatClipInner"]) {
-      expect(PIPELINE_SRC, `${caller} is gone`).toContain(`function ${caller}(`);
+    // And every safe helper's own callers must themselves be scoped bodies. This is the check
+    // that turns "surely it is always reached from a scoped path" into something enforced.
+    for (const helper of [
+      "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
+      "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
+    ]) {
+      const re = new RegExp(`(?<![\\w.])${helper}\\s*\\(`, "g");
+      let m: RegExpExecArray | null;
+      const hosts = new Set<string>();
+      while ((m = re.exec(PIPELINE_SRC))) {
+        const line = PIPELINE_SRC.slice(0, m.index).split("\n").length;
+        const h = enclosing(line);
+        if (h !== helper) hosts.add(h);
+      }
+      const helpers = new Set([
+        "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
+        "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
+      ]);
+      const unscoped = [...hosts].filter((h) => !h.endsWith("Inner") && !helpers.has(h));
+      expect(unscoped, `${helper} is reachable unscoped from ${unscoped.join(", ")}`).toEqual([]);
     }
     expect(bodyOf(PIPELINE_SRC, "fetchBeatClipFromScript")).not.toContain("withBeatProvenance");
     expect(bodyOf(PIPELINE_SRC, "fetchBeatClipInner")).toContain("fetchBeatClipFromScript(");

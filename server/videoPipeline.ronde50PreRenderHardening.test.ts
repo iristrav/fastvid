@@ -58,7 +58,23 @@ function blockAt(src: string, from: number): string {
   throw new Error("unbalanced block");
 }
 
+/**
+ * RONDE 100B's second audit put a provenance wrapper in front of generateGuaranteedBeatClip, so
+ * the ladder this file inspects moved into `...Inner`. Follow the wrapper — and verify it really
+ * is only a wrapper, so the indirection cannot hide a second implementation from these tests.
+ */
 function functionBody(src: string, name: string): string {
+  if (src.includes(`async function ${name}Inner(`)) {
+    const wrapper = sliceBody(src, name);
+    if (!wrapper.includes("withBeatProvenance") || !wrapper.includes(`${name}Inner(`)) {
+      throw new Error(`${name} is not a plain provenance wrapper — inspect it directly`);
+    }
+    return sliceBody(src, `${name}Inner`);
+  }
+  return sliceBody(src, name);
+}
+
+function sliceBody(src: string, name: string): string {
   const marker = [`export async function ${name}(`, `async function ${name}(`].find((m) =>
     src.includes(m)
   );
