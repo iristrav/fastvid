@@ -273,6 +273,7 @@ import {
   VisualSourceLedger,
   formatAssetUsageSummary,
   formatAuditReport,
+  formatFinalVisualReport,
   formatRenderManifest,
   formatSelectedButNotRendered,
   formatFunnelReport,
@@ -349,6 +350,7 @@ import {
   createBeatImageGateState,
   beatImageRelevanceGateEnabled,
   MAX_JUDGEMENTS_PER_BEAT,
+  judgementTally,
   maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
@@ -364,6 +366,7 @@ import {
   type BeatRelevanceLedger,
   type BeatVisualContext,
 } from "./beatVisualRelevance";
+import { formatBeatVisualProblems } from "./beatVisualStatus";
 import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -11474,7 +11477,7 @@ async function youtubeClipPassesImageGate(
     ).catch(() => false);
     if (got) framePaths.push(framePath);
   }
-  const spentBefore = gate.judgementsUsed;
+  const spentBefore = gate.judgementAttempts;
   const judgement = await judgeBeatImage({
     framePaths,
     beatText: scriptGuided.beatText,
@@ -11493,7 +11496,7 @@ async function youtubeClipPassesImageGate(
   });
   // Only a call that actually cost something counts against YouTube's slice — a cached verdict
   // for a video already judged on an earlier beat is free.
-  if (gate.judgementsUsed > spentBefore) gate.youtubeJudgementsUsed++;
+  if (gate.judgementAttempts > spentBefore) gate.youtubeJudgementsUsed++;
   for (const p of framePaths) {
     try { fs.unlinkSync(p); } catch { /* ignore */ }
   }
@@ -34579,6 +34582,9 @@ async function _runVideoPipelineInner(
       // RONDE 86/87: the report reads the ledger and nothing else. A clip whose origin cannot be
       // proven comes back null here and is counted as UNVERIFIED — never re-derived from its name.
       resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
+      // RONDE 105: the relevance ledger, so the report can tell a beat whose picture was approved
+      // from one whose picture nobody looked at. Without it every beat reads as never_asked.
+      relevanceLedger: visualDedup.beatRelevance,
     });
     // RONDE 8 (render 518): a scene whose montage came up short scored 100/100 because the filler
     // is not a fallback clip. Same registration pattern as the silent-voiceover notes below.
@@ -34630,29 +34636,46 @@ async function _runVideoPipelineInner(
       // as the other sends the next round of work in the wrong direction.
       {
         const g = visualDedup.beatImageGate;
-        if (g.judgementsUsed > 0 || g.judgementsFailed > 0 || g.judgementsSkipped > 0) {
-          const line =
-            `beat image gate — judged=${g.judgementsUsed} unavailable=${g.judgementsFailed}` +
-            ` never_asked=${g.judgementsSkipped} (youtube ${g.youtubeJudgementsUsed})`;
-          console.log(`[Quality] Video ${videoId}: ${line}`);
-          if (g.judgementsFailed >= Math.max(3, g.judgementsUsed * 0.25)) {
+        const t = judgementTally(g);
+        /**
+         * RONDE 105 — the counters are printed as a partition, not as numbers to combine.
+         *
+         * What stood here computed `failed / (used + failed)` and called it "could not fetch N of
+         * M". `used` counted ATTEMPTS and `failed` counted the failures among them, so the
+         * denominator double-counted every failure: a render where the model answered nothing
+         * (attempts 44, failed 44) reported "44 of 88", which reads as half. It was all of them,
+         * and the video shipped with a picture editor that had approved not one frame.
+         */
+        if (t.attempts > 0 || t.skipped > 0) {
+          console.log(
+            `[Quality] Video ${videoId}: beat image gate — attempts=${t.attempts} ` +
+              `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
+              `unavailable=${t.failed} never_asked=${t.skipped} (youtube ${g.youtubeJudgementsUsed})`
+          );
+          if (t.inconsistent) {
             qualityReport.warnings.push(
-              `beeldgate kon ${g.judgementsFailed} van ${g.judgementsUsed + g.judgementsFailed} ` +
-                `oordelen niet ophalen — die clips zijn ONGEZIEN aangenomen`
+              `beeldgate-tellers kloppen niet: ${t.attempts} pogingen ≠ ${t.fits}+${t.mismatch}+${t.failed}`
+            );
+          }
+          if (t.attempts > 0 && t.answered === 0) {
+            qualityReport.warnings.push(
+              `beeldgate gaf GEEN ENKEL oordeel: ${t.attempts} pogingen, ${t.failed} mislukt — ` +
+                `elke clip in deze video is ONGEZIEN aangenomen`
+            );
+          } else if (t.failed >= Math.max(3, t.attempts * 0.25)) {
+            qualityReport.warnings.push(
+              `beeldgate kon ${t.failed} van ${t.attempts} pogingen niet beantwoorden — ` +
+                `die clips zijn ONGEZIEN aangenomen`
             );
           }
           /**
-           * RONDE 103 — a decline is not a pass.
-           *
-           * `judgementsSkipped` counts the asks this gate never attempted: the render budget was
-           * spent, the per-beat ceiling was reached, no frame could be read. Every one of those
-           * adopted a clip nobody looked at, and until this counter existed they were reported as
-           * nothing at all — a render that examined its first scene and then ran blind for the
-           * rest scored exactly the same as one that looked at everything.
+           * RONDE 103 — a decline is not a pass. `never_asked` counts the asks this gate never
+           * attempted: budget spent, per-beat ceiling reached, no readable frame. Kept separate
+           * from `unavailable` because the two have different causes and different fixes.
            */
-          if (g.judgementsSkipped >= Math.max(3, g.judgementsUsed * 0.25)) {
+          if (t.skipped >= Math.max(3, t.attempts * 0.25)) {
             qualityReport.warnings.push(
-              `beeldgate is ${g.judgementsSkipped} keer niet eens bevraagd (budget op, of geen ` +
+              `beeldgate is ${t.skipped} keer niet eens bevraagd (budget op, of geen ` +
                 `leesbaar beeld) — die clips zijn ONGEZIEN aangenomen`
             );
           }
@@ -35072,8 +35095,56 @@ async function _runVideoPipelineInner(
        * is a hole in the pipeline, not in the report.
        */
       const allRecords = ledger.allRecords();
-      for (const line of formatRenderManifest(allRecords, ledger.finalVideoWasVerified)) {
+      /**
+       * RONDE 105 — every rendered asset now carries what the content decider said about it.
+       *
+       * The ledger records where a clip came from; the relevance ledger records whether it
+       * belongs. Both were already written down and neither line printed the other, so a manifest
+       * could list fifteen well-attributed clips that nobody had looked at. The lookup goes by
+       * beat, which is exact: RONDE 103 stores the beat context alongside every decision.
+       */
+      const verdictForRecord = (r: { sceneIndex: number; beatIndex: number }) => {
+        for (const { ctx, decision } of visualDedup.beatRelevance.byClipPath.values()) {
+          if (ctx.sceneIndex !== r.sceneIndex || ctx.beatIndex !== r.beatIndex) continue;
+          return { verdict: decision.verdict, cached: decision.cached, reprieved: decision.reprieved };
+        }
+        return null;
+      };
+      for (const line of formatRenderManifest(
+        allRecords, ledger.finalVideoWasVerified, verdictForRecord
+      )) {
         console.log(line);
+      }
+      /**
+       * RONDE 105 (§16) — the block that answers the whole question in one place: how many beats,
+       * how many verified, what the gate managed, what is actually in the file and where each
+       * clip came from. Built from records that already exist; it counts nothing twice and it
+       * says so when the per-provider counts do not add up to the clip count.
+       */
+      {
+        const tally = judgementTally(visualDedup.beatImageGate);
+        for (const line of formatFinalVisualReport({
+          finalVideoVerified: ledger.finalVideoWasVerified,
+          records: allRecords,
+          beats: qualityReport.beatVisuals?.beats ?? 0,
+          verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual ?? 0,
+          verification: qualityReport.beatVisuals?.byVerification ?? {},
+          coverage: qualityReport.beatVisuals?.byCoverage ?? {},
+          attempts: tally.attempts,
+          answered: tally.answered,
+          unavailable: tally.failed,
+          neverAsked: tally.skipped,
+          qualityStatus: qualityReport.qualityStatus,
+          score: qualityReport.score,
+        })) {
+          if (line.includes("SOURCE_COUNT_MISMATCH")) console.warn(line);
+          else console.log(line);
+        }
+        // One line per beat that is not finished, so "13 beats without their own picture" can be
+        // read as thirteen named beats rather than a number to be trusted.
+        for (const line of formatBeatVisualProblems(qualityReport.beatVisualProblems ?? [])) {
+          console.warn(line);
+        }
       }
       for (const line of formatSelectedButNotRendered(
         allRecords, ledger.allEvents(), ledger.finalVideoWasVerified
@@ -35166,19 +35237,27 @@ async function _runVideoPipelineInner(
       if (!spot.ok) {
         console.warn(`[Pipeline] Post-render spot-check (async): ${spot.warnings.join("; ")}`);
       }
-      qualityReport.score = computeMeritQualityScore({
-        totalClips: qualityReport.totalClips,
-        archiveCount: qualityReport.archiveCount,
-        stockCount: qualityReport.stockCount,
-        fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
-        offTopicCount: qualityReport.offTopicSuspects.length,
-        geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
-        adoptAudit: visualDedup.clipAdoptAudit,
-        archiveOnly: curatedArchiveOnlyVisuals(),
-        fastShort: isFastShortVideoLength(videoLength),
-        byMixKind: qualityReport.byMixKind,
-        postRenderOk: spot.ok,
-      });
+      {
+        // RONDE 105: the re-score after the post-render check reads the SAME beat truth
+        // the report was built from, so the number and its status cannot drift apart.
+        const rescored = computeMeritQualityScore({
+          beatVisuals: qualityReport.beatVisuals,
+          totalClips: qualityReport.totalClips,
+          archiveCount: qualityReport.archiveCount,
+          stockCount: qualityReport.stockCount,
+          fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
+          offTopicCount: qualityReport.offTopicSuspects.length,
+          geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
+          adoptAudit: visualDedup.clipAdoptAudit,
+          archiveOnly: curatedArchiveOnlyVisuals(),
+          fastShort: isFastShortVideoLength(videoLength),
+          byMixKind: qualityReport.byMixKind,
+          postRenderOk: spot.ok,
+        });
+        qualityReport.score = rescored.score;
+        qualityReport.qualityStatus = rescored.status;
+        qualityReport.qualityReason = rescored.reason;
+      }
     } else {
       if (postRenderSpotCheckEnabledForVideo(videoLength)) {
         await touchVideoProgress(videoId);
@@ -35196,19 +35275,27 @@ async function _runVideoPipelineInner(
         if (!spot.ok) {
           console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
         }
-        qualityReport.score = computeMeritQualityScore({
-          totalClips: qualityReport.totalClips,
-          archiveCount: qualityReport.archiveCount,
-          stockCount: qualityReport.stockCount,
-          fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
-          offTopicCount: qualityReport.offTopicSuspects.length,
-          geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
-          adoptAudit: visualDedup.clipAdoptAudit,
-          archiveOnly: curatedArchiveOnlyVisuals(),
-          fastShort: isFastShortVideoLength(videoLength),
-          byMixKind: qualityReport.byMixKind,
-          postRenderOk: spot.ok,
-        });
+        {
+          // RONDE 105: the re-score after the post-render check reads the SAME beat truth
+          // the report was built from, so the number and its status cannot drift apart.
+          const rescored = computeMeritQualityScore({
+            beatVisuals: qualityReport.beatVisuals,
+            totalClips: qualityReport.totalClips,
+            archiveCount: qualityReport.archiveCount,
+            stockCount: qualityReport.stockCount,
+            fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
+            offTopicCount: qualityReport.offTopicSuspects.length,
+            geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
+            adoptAudit: visualDedup.clipAdoptAudit,
+            archiveOnly: curatedArchiveOnlyVisuals(),
+            fastShort: isFastShortVideoLength(videoLength),
+            byMixKind: qualityReport.byMixKind,
+            postRenderOk: spot.ok,
+          });
+          qualityReport.score = rescored.score;
+          qualityReport.qualityStatus = rescored.status;
+          qualityReport.qualityReason = rescored.reason;
+        }
       }
       // RONDE 25: the upload spawns no child process, so it is invisible to the watchdog's idle
       // detector (whose only other signal is trackChild). Final videos run to hundreds of MB, and

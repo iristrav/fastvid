@@ -190,7 +190,7 @@ describe("RONDE 104 #5 — the durable verdict store", () => {
      */
     const src = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     const lookup = src.indexOf("const stored = await lookupVerdict(seenKey)");
-    const budget = src.indexOf("state.judgementsUsed >= maxBeatImageJudgementsPerRender()");
+    const budget = src.indexOf("state.judgementAttempts >= maxBeatImageJudgementsPerRender()");
     expect(lookup).toBeGreaterThan(-1);
     expect(budget).toBeGreaterThan(-1);
     expect(lookup).toBeLessThan(budget);
@@ -235,7 +235,11 @@ describe("RONDE 104 #5 — the durable verdict store", () => {
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     expect(gate).toContain("this map is render-scoped; the VERDICTS in it are not");
     // Spend still lives on the per-render state and is created fresh with it.
-    expect(gate).toContain("judgementsUsed: 0,");
+    // RONDE 105 split the single "used" counter into a partition; the render-scoped half of
+    // the RONDE 58 rule is now these four, all created fresh with the state.
+    expect(gate).toContain("judgementAttempts: 0,");
+    expect(gate).toContain("judgementsFits: 0,");
+    expect(gate).toContain("judgementsMismatch: 0,");
     expect(gate).toContain("export function createBeatImageGateState()");
     // The store must not touch render budget in CODE. Its prose explains what it is NOT, so the
     // comments are stripped before asking — an assertion that reads documentation is not a test.
@@ -247,7 +251,7 @@ describe("RONDE 104 #5 — the durable verdict store", () => {
         return t && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
       })
       .join("\n");
-    for (const forbidden of ["judgementsUsed", "BeatImageGateState", "maxBeatImageJudgements"]) {
+    for (const forbidden of ["judgementAttempts", "BeatImageGateState", "maxBeatImageJudgements"]) {
       expect(storeCode, `the store touches render budget via ${forbidden}`).not.toContain(forbidden);
     }
   });
@@ -289,7 +293,7 @@ describe("RONDE 104 #6 — the YouTube pre-pool verdict is written down", () => 
     const body = RELEVANCE.slice(idx, RELEVANCE.indexOf("\n}", idx));
     expect(body).toContain('allowed: judgement.verdict !== "does_not_fit"');
     // No model call, no frame extraction, no budget spend.
-    for (const forbidden of ["judgeBeatImage", "sampleFrames", "judgementsUsed", "await "]) {
+    for (const forbidden of ["judgeBeatImage", "sampleFrames", "judgementAttempts", "await "]) {
       expect(body, `recorder does ${forbidden}`).not.toContain(forbidden);
     }
   });

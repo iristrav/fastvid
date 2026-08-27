@@ -134,7 +134,7 @@ describe("RONDE 103 — what the central gate decides", () => {
   it("RC-2 — a decline is COUNTED, not silent", async () => {
     // Budget spent: the gate never asks, and before RONDE 103 nothing recorded that it hadn't.
     const spent = createBeatImageGateState();
-    spent.judgementsUsed = 10_000;
+    spent.judgementAttempts = 10_000;
     const d = await ask({ state: spent });
     expect(d.allowed).toBe(true);
     expect(d.verdict).toBe("unknown");
@@ -168,7 +168,7 @@ describe("RONDE 103 — one beat cannot spend the render's budget", () => {
     for (let i = 0; i < ceiling + 3; i++) {
       await ask({ contentKey: `archive:${i}`, clipPath: path.join(dir, `c${i}.mp4`) });
     }
-    expect(state.judgementsUsed).toBe(ceiling);
+    expect(state.judgementAttempts).toBe(ceiling);
     expect(state.judgementsSkipped).toBeGreaterThan(0);
   });
 
@@ -463,9 +463,11 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
   });
 
   it("the render summary reports declines, so a render that stopped looking says so", () => {
-    expect(SRC).toContain("never_asked=${g.judgementsSkipped}");
+    // RONDE 105 renamed the counters into a partition; the rule — a decline is counted and named
+    // separately from a failure — is unchanged and now reads off the tally.
+    expect(SRC).toContain("never_asked=${t.skipped}");
     expect(SRC).toContain("formatRelevanceSummary(g, visualDedup.beatRelevance)");
-    expect(SRC).toContain("beeldgate is ${g.judgementsSkipped} keer niet eens bevraagd");
+    expect(SRC).toContain("beeldgate is ${t.skipped} keer niet eens bevraagd");
   });
 });
 

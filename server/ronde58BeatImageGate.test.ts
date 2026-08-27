@@ -149,7 +149,7 @@ describe("RONDE 58 — bounded cost", () => {
       await judge({ contentKey: "same-clip", state });
     }
     expect(mock).toHaveBeenCalledTimes(1);
-    expect(state.judgementsUsed).toBe(1);
+    expect(state.judgementAttempts).toBe(1);
   });
 
   it("a render-wide ceiling stops it spending without bound", async () => {

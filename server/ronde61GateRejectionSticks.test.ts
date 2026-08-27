@@ -160,7 +160,7 @@ describe("RONDE 61 — YouTube no longer eats the render's judgements", () => {
 
   it("the state tracks YouTube's spend separately from the render's", () => {
     const state = createBeatImageGateState();
-    expect(state.judgementsUsed).toBe(0);
+    expect(state.judgementAttempts).toBe(0);
     expect(state.youtubeJudgementsUsed).toBe(0);
   });
 
@@ -177,8 +177,8 @@ describe("RONDE 61 — YouTube no longer eats the render's judgements", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const idx = src.indexOf("async function youtubeClipPassesImageGate(");
     const block = src.slice(idx, idx + 2600);
-    expect(block).toContain("const spentBefore = gate.judgementsUsed;");
-    expect(block).toContain("if (gate.judgementsUsed > spentBefore) gate.youtubeJudgementsUsed++;");
+    expect(block).toContain("const spentBefore = gate.judgementAttempts;");
+    expect(block).toContain("if (gate.judgementAttempts > spentBefore) gate.youtubeJudgementsUsed++;");
   });
 });
 

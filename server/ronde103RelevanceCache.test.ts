@@ -95,7 +95,7 @@ describe("RONDE 103 phase 3 — the cache key", () => {
     expect(await judge("archive:99", BERLIN, state)).toBe("fits");
     expect(await judge("archive:99", BERLIN, state)).toBe("fits");
     expect(invoke.fn).toHaveBeenCalledTimes(1);
-    expect(state.judgementsUsed).toBe(1);
+    expect(state.judgementAttempts).toBe(1);
   });
 
   it("TEST 2 — the same clip on a DIFFERENT beat is judged again", async () => {
@@ -134,10 +134,10 @@ describe("RONDE 103 phase 3 — the cache key", () => {
   it("TEST 5 — a cached verdict costs nothing", async () => {
     answers(false);
     await judge("k", BERLIN, state);
-    const spentAfterFirst = state.judgementsUsed;
+    const spentAfterFirst = state.judgementAttempts;
     await judge("k", BERLIN, state);
     await judge("k", BERLIN, state);
-    expect(state.judgementsUsed).toBe(spentAfterFirst);
+    expect(state.judgementAttempts).toBe(spentAfterFirst);
   });
 
   it("TEST 6 — two beats with the SAME narration share a verdict; that is the equivalence class", async () => {

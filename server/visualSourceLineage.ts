@@ -1129,14 +1129,31 @@ export function formatAssetTrace(
  */
 export function formatRenderManifest(
   records: readonly VisualLineageRecord[],
-  finalVideoVerified: boolean
+  finalVideoVerified: boolean,
+  /**
+   * RONDE 105 — what the content decider said about each rendered asset.
+   *
+   * The manifest already answered "what is in the delivered file and where did it come from".
+   * The question it could not answer was "and did anybody check that it belongs" — which is the
+   * one that matters most now that the vision model is the only content decider. Supplied as a
+   * lookup rather than a new record field so the ledger keeps its single responsibility and the
+   * relevance data keeps living where RONDE 103 put it.
+   *
+   * Optional: a caller without it gets exactly the pre-RONDE-105 line.
+   */
+  verdictFor?: (record: VisualLineageRecord) => {
+    verdict: string;
+    cached: boolean;
+    reprieved: boolean;
+  } | null
 ): string[] {
   if (!finalVideoVerified) return [];
   return records
     .filter((r) => r.finalVideoAt != null)
     .sort((a, b) => a.sceneIndex - b.sceneIndex || a.beatIndex - b.beatIndex)
-    .map((r) =>
-      [
+    .map((r) => {
+      const v = verdictFor?.(r) ?? null;
+      return [
         `[RenderAsset] assetId=${r.lineageId}`,
         `provider=${r.provider ?? UNVERIFIED_PROVIDER}`,
         r.providerAssetId ? `providerAssetId=${r.providerAssetId}` : null,
@@ -1146,11 +1163,96 @@ export function formatRenderManifest(
         r.searchRoute ? `searchRoute=${r.searchRoute}` : null,
         r.sourceUrl ? `sourceUrl=${r.sourceUrl}` : null,
         `file=${r.currentFilename}`,
+        // A rendered asset with no verdict is not "fine" — it is unexamined, and the manifest
+        // says so in the same word the counters use.
+        `verdict=${v ? (v.reprieved ? "reprieved_after_refusal" : v.verdict) : "never_asked"}`,
+        `cached=${v ? v.cached : false}`,
+        `reprieved=${v ? v.reprieved : false}`,
         "rendered=true",
       ]
         .filter(Boolean)
-        .join(" ")
+        .join(" ");
+    });
+}
+
+/**
+ * RONDE 105 (§16) — the one block that answers every question about the delivered file.
+ *
+ * A render used to print its evidence in six places: source counts here, beat warnings in the
+ * quality report, vision counters in the pipeline, the manifest below. Reading them together took
+ * knowing which line meant what, and the production render that shipped `100/100 (Excellent)` on
+ * an unexamined montage is what that costs. This is the summary a person actually reads.
+ *
+ * Every number comes from a record that already exists. Nothing here judges, counts a provider
+ * twice, or invents a category — `source_unknown` is the ledger's own UNVERIFIED bucket, and the
+ * per-provider counts are required to add up to `final_clips`.
+ */
+export function formatFinalVisualReport(input: {
+  finalVideoVerified: boolean;
+  records: readonly VisualLineageRecord[];
+  beats: number;
+  verifiedOwnVisual: number;
+  verification: Record<string, number>;
+  coverage: Record<string, number>;
+  attempts: number;
+  answered: number;
+  unavailable: number;
+  neverAsked: number;
+  qualityStatus: string;
+  score: number;
+}): string[] {
+  const rendered = input.records.filter((r) => r.finalVideoAt != null);
+  const byProvider = new Map<string, number>();
+  for (const r of rendered) {
+    const key = (r.provider ?? "").trim().toLowerCase() || UNVERIFIED_PROVIDER.toLowerCase();
+    byProvider.set(key, (byProvider.get(key) ?? 0) + 1);
+  }
+  const unknownCount =
+    (byProvider.get(UNVERIFIED_PROVIDER.toLowerCase()) ?? 0) + (byProvider.get("unknown") ?? 0);
+  const sourceLines = [...byProvider.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([p, n]) => `  source_${p}=${n}`);
+  const totalAttributed = [...byProvider.values()].reduce((a, b) => a + b, 0);
+
+  const lines = [
+    "[FinalVisualReport]",
+    `  final_video_verified=${input.finalVideoVerified}`,
+    `  beats=${input.beats}`,
+    `  verified_own_visual=${input.verifiedOwnVisual}`,
+    `  verified_fit=${input.verification.verified_fit ?? 0}`,
+    `  verified_mismatch=${input.verification.verified_mismatch ?? 0}`,
+    `  reprieved=${input.verification.reprieved_after_refusal ?? 0}`,
+    `  unknown=${input.verification.unknown ?? 0}`,
+    `  never_asked=${input.verification.never_asked ?? 0}`,
+    `  coverage_own_footage=${input.coverage.own_footage ?? 0}`,
+    `  coverage_held_frame=${input.coverage.held_frame ?? 0}`,
+    `  coverage_graphic=${input.coverage.graphic ?? 0}`,
+    `  coverage_placeholder=${input.coverage.placeholder ?? 0}`,
+    `  coverage_generated=${input.coverage.generated ?? 0}`,
+    `  gate_attempts=${input.attempts}`,
+    `  gate_answered=${input.answered}`,
+    `  gate_unavailable=${input.unavailable}`,
+    `  gate_never_asked=${input.neverAsked}`,
+    `  final_clips=${rendered.length}`,
+    ...sourceLines,
+    `  unverified_final_clips=${unknownCount}`,
+    `  quality_status=${input.qualityStatus}`,
+    `  quality_score=${input.score}`,
+  ];
+  /**
+   * §14's cross-check, stated by the render rather than left to the reader.
+   *
+   * The old report showed Archive 7, Wikimedia 1, Stock 1 next to "Clips 15" and nobody could see
+   * that six clips were missing from the breakdown, because the breakdown was a filename reading
+   * of three buckets out of many. These counts come from the ledger and must sum to the clip
+   * count; when they do not, that is the finding.
+   */
+  if (totalAttributed !== rendered.length) {
+    lines.push(
+      `  SOURCE_COUNT_MISMATCH: providers sum to ${totalAttributed}, final clips ${rendered.length}`
     );
+  }
+  return lines;
 }
 
 /**

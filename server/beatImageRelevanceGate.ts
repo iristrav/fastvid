@@ -135,12 +135,30 @@ export type BeatImageGateState = {
    * stays as the render's own hot cache in front of it.
    */
   seen: Map<string, BeatImageJudgement>;
-  judgementsUsed: number;
-  /** Of those, how many went to YouTube candidates — capped separately. */
-  youtubeJudgementsUsed: number;
   /**
-   * RONDE 67: how many judgements the model could not deliver — a 429, a timeout, a malformed
-   * answer, a refused image.
+   * RONDE 105 — five counters that cannot be added up wrongly.
+   *
+   * There used to be three, and the middle one was a trap. `judgementsUsed` incremented on every
+   * ATTEMPT and `judgementsFailed` incremented again when that attempt came back unusable, so a
+   * render where the model answered nothing reported used=44 failed=44 — and the quality report
+   * printed "44 of 88 could not be fetched", which reads as half. It was all of them. A whole
+   * render was assembled with no picture editor and the summary said the gate was doing fine.
+   *
+   * The fix is not a better sentence, it is counters that partition. The invariant is exact and
+   * `judgementTally` asserts it:
+   *
+   *     judgementAttempts === judgementsFits + judgementsMismatch + judgementsFailed
+   *
+   * so "how many real answers did we get" is a subtraction that cannot be got wrong, and an
+   * attempt is never mistakable for a success.
+   */
+  judgementAttempts: number;
+  /** The model looked and said the picture belongs. The only outcome that is good news. */
+  judgementsFits: number;
+  /** The model looked and said it does not belong. An answer — just not the one we wanted. */
+  judgementsMismatch: number;
+  /**
+   * RONDE 67: attempts the model could not answer — a 429, a timeout, a malformed reply.
    *
    * Render 533 logged 16 `Gemini API error 429` and 5 `groq 400 Bad Request` while this gate was
    * refusing 34 clips, and nothing in the quality report told the two apart. "The gate looked and
@@ -149,25 +167,60 @@ export type BeatImageGateState = {
    */
   judgementsFailed: number;
   /**
-   * RONDE 103: asks this gate declined to even attempt — the render budget was spent, there was
-   * no readable frame, no narration, or the gate is switched off.
+   * RONDE 103: asks this gate declined to even attempt — the render budget was spent, the
+   * per-beat ceiling was reached, there was no readable frame, no narration, or the gate is off.
    *
-   * These were invisible before. `judgementsUsed` counts calls that were made and
-   * `judgementsFailed` counts calls that came back unusable, so a render that spent its budget on
-   * scene 0 and then adopted forty unexamined clips reported "60 judged, 0 unavailable" — a
-   * perfect score for a render where most of the timeline was never looked at. Counting the
-   * declines is what lets the end-of-render summary say so.
+   * Deliberately NOT folded into `judgementsFailed`. "We asked and got nothing back" and "we
+   * never asked" have different causes and different fixes, and RONDE 105 keeps them apart in
+   * every place the render reports on itself.
    */
   judgementsSkipped: number;
+  /** Of the attempts, how many went to YouTube candidates — capped separately. */
+  youtubeJudgementsUsed: number;
 };
 
 export function createBeatImageGateState(): BeatImageGateState {
   return {
     seen: new Map(),
-    judgementsUsed: 0,
-    youtubeJudgementsUsed: 0,
+    judgementAttempts: 0,
+    judgementsFits: 0,
+    judgementsMismatch: 0,
     judgementsFailed: 0,
     judgementsSkipped: 0,
+    youtubeJudgementsUsed: 0,
+  };
+}
+
+/** What the gate actually managed to decide, with the partition made explicit. */
+export type JudgementTally = {
+  attempts: number;
+  fits: number;
+  mismatch: number;
+  failed: number;
+  skipped: number;
+  /** attempts - failed. A real answer, whichever way it went. */
+  answered: number;
+  /** True when the counters do not partition — a bug in the gate, reported rather than hidden. */
+  inconsistent: boolean;
+};
+
+/**
+ * Read the counters as one coherent set.
+ *
+ * Every consumer goes through this rather than adding fields together at the call site, because
+ * adding fields together at the call site is exactly how "44 of 88" happened.
+ */
+export function judgementTally(state: BeatImageGateState): JudgementTally {
+  const { judgementAttempts: attempts, judgementsFits: fits } = state;
+  const { judgementsMismatch: mismatch, judgementsFailed: failed, judgementsSkipped: skipped } = state;
+  return {
+    attempts,
+    fits,
+    mismatch,
+    failed,
+    skipped,
+    answered: attempts - failed,
+    inconsistent: attempts !== fits + mismatch + failed,
   };
 }
 
@@ -292,7 +345,7 @@ export async function judgeBeatImage(params: {
     return fromStore;
   }
 
-  if (state.judgementsUsed >= maxBeatImageJudgementsPerRender()) {
+  if (state.judgementAttempts >= maxBeatImageJudgementsPerRender()) {
     return declined("render judgement budget spent");
   }
 
@@ -312,7 +365,7 @@ export async function judgeBeatImage(params: {
   }
   if (dataUrls.length === 0) return declined("frames not usable as images");
 
-  state.judgementsUsed++;
+  state.judgementAttempts++;
   const timeoutMs = params.timeoutMs ?? 12_000;
   try {
     const response = await Promise.race([
@@ -365,6 +418,11 @@ export async function judgeBeatImage(params: {
       depicts: (parsed.depicts ?? "").slice(0, 160),
       reason: (parsed.reason ?? "").slice(0, 160),
     };
+    // RONDE 105: an answer is recorded as the answer it was. `does_not_fit` is a successful
+    // judgement with an unwelcome result, not a failure — conflating the two is how a render
+    // whose sourcing is wrong reads the same as a render whose model is down.
+    if (judgement.verdict === "fits") state.judgementsFits++;
+    else state.judgementsMismatch++;
     state.seen.set(seenKey, judgement);
     /**
      * RONDE 104: only a real answer is written down. `unknown` means the gate could not get one,

@@ -211,13 +211,26 @@ describe("RONDE 67 — 'said no' and 'could not look' are different numbers now"
 
   it("the quality report separates the two, and warns when the verdicts were mostly unobtainable", () => {
     const src = PIPELINE();
-    expect(src).toContain("beat image gate — judged=${g.judgementsUsed} unavailable=${g.judgementsFailed}");
+    /**
+     * SUPERSEDED BY RONDE 105, deliberately — the rule got sharper.
+     *
+     * RONDE 67's rule is that "the gate looked and said no" and "the gate could not look" are
+     * different numbers. That holds. What was wrong was the arithmetic around them: `judgementsUsed`
+     * counted ATTEMPTS and `judgementsFailed` counted the failures among them, so the report
+     * divided by used+failed and printed "44 of 88" for a render where the model had answered
+     * nothing at all. The counters now partition, and the line prints the partition.
+     */
+    expect(src).toContain("beat image gate — attempts=${t.attempts} ");
+    expect(src).toContain("answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch})");
+    expect(src).toContain("unavailable=${t.failed} never_asked=${t.skipped}");
     expect(src).toContain("ONGEZIEN aangenomen");
   });
 
   it("the warning does not fire on a render where the model was merely slow once or twice", () => {
     const src = PIPELINE();
     // Needs at least 3 failures AND a quarter of the total before it is worth saying.
-    expect(src).toContain("g.judgementsFailed >= Math.max(3, g.judgementsUsed * 0.25)");
+    expect(src).toContain("t.failed >= Math.max(3, t.attempts * 0.25)");
+    // ...and a render where NOTHING was answered gets its own, louder line.
+    expect(src).toContain("t.attempts > 0 && t.answered === 0");
   });
 });

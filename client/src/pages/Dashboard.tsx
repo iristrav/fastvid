@@ -34,7 +34,7 @@ import { formatGenerationDuration } from "@shared/pipelineProgress";
 import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
 import {
   qualityScoreColor,
-  qualityScoreLabel,
+  qualityStatusLabel,
   readQualityReportFromMetadata,
 } from "@shared/videoQuality";
 import { GenerationProgressBar, useSmoothedProgressPercent } from "@/components/GenerationProgressBar";
@@ -389,7 +389,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
             {currentStatus === "completed" && qualityReport && (
               <span
                 className={`font-semibold px-1.5 py-0.5 rounded ${qualityScoreColor(qualityReport.score)} bg-white/5`}
-                title={qualityScoreLabel(qualityReport.score)}
+                title={qualityStatusLabel(qualityReport)}
               >
                 {qualityReport.score}/100
               </span>
@@ -538,7 +538,7 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                 <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                   <CheckCircle2 className={`w-4 h-4 ${qualityScoreColor(qualityReport.score)}`} />
                   Visual quality — {qualityReport.score}/100
-                  <span className="text-xs font-normal text-slate-500">({qualityScoreLabel(qualityReport.score)})</span>
+                  <span className="text-xs font-normal text-slate-500">({qualityStatusLabel(qualityReport)})</span>
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   {qualityReport.archiveCount != null && (

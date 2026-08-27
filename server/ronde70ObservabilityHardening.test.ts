@@ -564,7 +564,7 @@ describe("RONDE 70 §10 — observability only", () => {
     }
     // And the gate measures that delta off the state's own counters, exactly as before.
     const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
-    expect(mod).toContain("judged: state.judgementsUsed - before.used");
+    expect(mod).toContain("judged: state.judgementAttempts - before.attempts");
     expect(mod).toContain("failed: state.judgementsFailed - before.failed");
     // judgeBeatImage's own signature is untouched.
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");

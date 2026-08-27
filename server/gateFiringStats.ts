@@ -89,12 +89,50 @@ export function summarizeGateFiring(stats: GateFiringStats): GateFiringRow[] {
  */
 export const SILENT_GATE_MIN_ASKED = 20;
 
-/** Gates that were asked plenty and never once said no — the shape of the RONDE 26 bug. */
+/**
+ * RONDE 105 — gates that are SUPPOSED to be silent.
+ *
+ * This detector looks for the RONDE 26 shape: asked constantly, never once said no. That is the
+ * signature of a veto that cannot fire. It is also, exactly, the signature of a veto that was
+ * deliberately taken away — and RONDE 103/104 took two away on purpose:
+ *
+ *   · `vision_gate`        CLIP's content verdicts are measurably inverted on archive material
+ *                          (RONDE 58: a white-lives-matter sticker scored 0.2226 against a signed
+ *                          photograph of Hitler at 0.2116 on the same beat), so it ranks and no
+ *                          longer refuses.
+ *   · `off_topic_protest`  reads a provider title or a filename, not the frame. In front of a
+ *                          model that looks at the picture it can only take material away.
+ *
+ * Both still record a verdict, because how often they WOULD have fired is worth knowing. Alarming
+ * on them would tell a reader to "verify the check can still fire" about two checks designed not
+ * to — a false alarm that trains people to ignore the real ones.
+ *
+ * `baked_text` is deliberately NOT on this list. It reads the pixels and it may still refuse, so
+ * a silent baked_text is a genuine finding.
+ */
+export const INTENTIONALLY_NON_FIRING_GATES: ReadonlySet<string> = new Set([
+  "vision_gate",
+  "off_topic_protest",
+]);
+
+/**
+ * Gates that were asked plenty and never once said no — the shape of the RONDE 26 bug.
+ *
+ * Gates listed in INTENTIONALLY_NON_FIRING_GATES are excluded: they are demoted by design, and
+ * reporting a design decision as a suspected defect is noise.
+ */
 export function findSilentGates(
   stats: GateFiringStats,
   minAsked: number = SILENT_GATE_MIN_ASKED
 ): GateFiringRow[] {
-  return summarizeGateFiring(stats).filter((r) => r.asked >= minAsked && r.fired === 0);
+  return summarizeGateFiring(stats).filter(
+    (r) => r.asked >= minAsked && r.fired === 0 && !INTENTIONALLY_NON_FIRING_GATES.has(r.gate)
+  );
+}
+
+/** The demoted gates and how often they would have fired. Reported as information, never as an alarm. */
+export function summarizeDemotedGates(stats: GateFiringStats): GateFiringRow[] {
+  return summarizeGateFiring(stats).filter((r) => INTENTIONALLY_NON_FIRING_GATES.has(r.gate));
 }
 
 /** `baked_text=3/64 vision_gate=12/58 modern_mismatch=0/41` — fired/asked per gate. */

@@ -651,9 +651,11 @@ describe("RONDE 87 §L — observability only", () => {
 
   it("TEST 44 — the audit can never fail a render", () => {
     const idx = PIPELINE_SRC.indexOf("const deliveredScenes = new Set(finalConcatInputs");
-    // RONDE 94 added the AssetUsageSummary lines inside this same try, so the window has to
-    // reach past them to the catch it is asserting about.
-    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), idx + 6200);
+    // RONDE 94 added the AssetUsageSummary lines inside this same try, and RONDE 105 added the
+    // [FinalVisualReport] block and the per-beat problem lines, so the window has to reach past
+    // them to the catch it is asserting about. The rule is unchanged: everything the audit prints
+    // sits inside a try whose catch is non-fatal.
+    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), idx + 9000);
     expect(block).toContain("try {");
     expect(block).toContain("[VisualAudit] audit reporting failed (non-fatal)");
   });
