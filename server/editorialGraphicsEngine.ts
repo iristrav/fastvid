@@ -49,7 +49,10 @@ const TIMEOUT_MS = 30_000;
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
+import { burnedInTextAllowed } from "./onScreenTextPolicy";
 export function editorialGraphicsEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   return process.env.EDITORIAL_GRAPHICS_ENGINE_ENABLED !== "false";
 }
 

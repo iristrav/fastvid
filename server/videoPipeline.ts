@@ -368,6 +368,7 @@ import {
   type BeatVisualContext,
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
+import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import {
   SUBJECT_FALLBACK_ROUTE,
   formatNoSubjectLine,
@@ -35197,6 +35198,7 @@ async function _runVideoPipelineInner(
      * The single most useful thing to know about a video that looks frozen, and until now it
      * existed only as console output on whichever worker happened to render it.
      */
+    pipelineReport.add("summary", describeOnScreenTextPolicy());
     pipelineReport.addAll("warnings", visualDedup.coverageDecisions);
     /**
      * RONDE 112 — the clips that were refused for LENGTH, named separately.
@@ -35321,7 +35323,9 @@ async function _runVideoPipelineInner(
     }
 
         // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
+    // RONDE 113: a chapter card is a full frame of text. Same rule as every other text engine.
     const useChapterCards =
+      burnedInTextAllowed() &&
       process.env.ENABLE_CHAPTER_CARDS === "true" && !isShortVideoLength(videoLength);
     const orderedClips: string[] = [];
     let chapterCardCount = 0;

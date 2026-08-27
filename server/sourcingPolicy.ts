@@ -1,5 +1,6 @@
 /** Production sourcing policy — archive-first visuals; ElevenLabs for voice. */
 
+import { burnedInTextAllowed } from "./onScreenTextPolicy";
 import fs from "fs";
 import os from "os";
 import { normalizeVideoLength, targetVideoDurationMinutes } from "../shared/videoLengths";
@@ -177,11 +178,15 @@ export function googleTtsFallbackEnabled(): boolean {
 
 /** Burn typewriter keywords on clips — default OFF (footage + voice only). Set ENABLE_FACELESS_SUBTITLES=true to enable. */
 export function facelessSubtitlesEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   return process.env.ENABLE_FACELESS_SUBTITLES === "true";
 }
 
 /** Extra on-screen overlays (stat pills, film grain, motion graphics cards). Default OFF. */
 export function extraOnScreenTextEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   return process.env.ENABLE_EXTRA_ONSCREEN_TEXT === "true";
 }
 
@@ -192,6 +197,8 @@ export function yearsOnlyOnScreen(): boolean {
 
 /** Year/stat labels burned on footage — default OFF. Set ENABLE_SCREEN_LABELS=true to enable. */
 export function screenLabelsEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   return process.env.ENABLE_SCREEN_LABELS === "true";
 }
 
@@ -1171,6 +1178,8 @@ export function archiveCrossVideoCooldownVideos(): number {
 
 /** FFmpeg-generated text cards, maps, and diagram beats (no external API). */
 export function motionGraphicsInVideosEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   if (yearsOnlyOnScreen()) return false;
   return process.env.ENABLE_MOTION_GRAPHICS !== "false";
 }

@@ -257,6 +257,9 @@ export function textOverlayStyle(): TextOverlayStyle {
   return "documentary";
 }
 
+import { burnedInTextAllowed } from "../onScreenTextPolicy";
 export function textOverlayEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   return process.env.TEXT_OVERLAY === "true";
 }
