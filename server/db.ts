@@ -1299,7 +1299,15 @@ export async function updateMediaArchive(id: number, data: Partial<InsertMediaAr
 export async function deleteMediaArchive(id: number) {
   const db = await getDb();
   if (!db) return;
-  await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.archiveId, id));
+  /**
+   * RONDE 127 — the third delete route, with the same foreign keys in front of it.
+   *
+   * Deleting a whole archive deleted its assets with a bare DELETE, so it failed for exactly the
+   * same reason as the per-asset button: an embedding row or a search-memory row still pointed at
+   * one of them. Routed through the one implementation that clears the children first.
+   */
+  const assets = await getMediaArchiveAssets(id);
+  if (assets.length > 0) await deleteMediaArchiveAssets(assets.map((a) => a.id));
   await db.delete(mediaArchives).where(eq(mediaArchives.id, id));
 }
 
@@ -1461,10 +1469,25 @@ export async function findMediaArchiveAssetBySourceUrlHash(sourceUrlHash: string
   return rows[0] ?? null;
 }
 
+/**
+ * RONDE 127 — the single-asset delete never got RONDE 12's fix.
+ *
+ * From the admin:
+ *
+ *     Failed query: delete from `media_archive_assets` where `id` = ?  params: 57330
+ *
+ * Two tables carry a foreign key to media_archive_assets — media_archive_asset_embeddings.assetId
+ * and visual_search_memory.assetId — so MySQL refuses the DELETE while any child row still points
+ * at the asset. RONDE 12 found exactly this and fixed it, but only in the BULK path; there were
+ * three delete routes and this one kept its bare DELETE. An asset that had ever been embedded
+ * (which is every ingested asset — archiveIngestion indexes on write) or that any search memory
+ * pointed at was therefore undeletable from the admin's per-row button.
+ *
+ * It delegates now rather than repeating the cleanup, so the two paths cannot drift apart again —
+ * the drift is what caused this.
+ */
 export async function deleteMediaArchiveAsset(id: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.id, id));
+  await deleteMediaArchiveAssets([id]);
 }
 
 // ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────

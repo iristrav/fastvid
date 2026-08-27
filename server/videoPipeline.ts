@@ -33,6 +33,7 @@ import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
+import { personNameForGap } from "./archiveGapNames";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -26523,8 +26524,26 @@ async function adoptStockBeatClipFallbackInner(
   console.warn(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock fallback (${queries.slice(0, 3).join(", ")})`
   );
-  for (const q of queries.slice(0, 3)) {
-    void recordArchiveContentGap(q, beat.text);
+  /**
+   * RONDE 127 — record the PERSON this gap is about, not the query that missed.
+   *
+   * This used to write the raw stock-fallback query, so the admin's "Gevraagde beelden die
+   * missen" filled with phrases like "berlin street 1930s documentary". What that page is for is
+   * deciding what to upload, and for a documentary archive that is a question about people: it
+   * either has footage of Hermann Göring or it does not.
+   *
+   * A gap that names nobody is not recorded at all — an empty list is more useful than a list of
+   * search phrases.
+   */
+  {
+    const beatPersons = extractPersonNamesFromText(beat.text ?? "");
+    const recorded = new Set<string>();
+    for (const q of queries.slice(0, 3)) {
+      const person = personNameForGap({ keyword: q, candidates: beatPersons });
+      if (!person || recorded.has(person)) continue;
+      recorded.add(person);
+      void recordArchiveContentGap(person, beat.text);
+    }
   }
 
   for (let qi = 0; qi < queries.length; qi++) {
