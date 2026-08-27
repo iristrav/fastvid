@@ -23,6 +23,7 @@ import {
   closingTailZoomExpr,
   formatClosingTailPlan,
   planClosingTail,
+  trailingBlackTrimReachesClosingTail,
 } from "./closingTail";
 
 let tmpDir: string;
@@ -278,5 +279,159 @@ describe("RONDE 121 — a closing touch that cannot break a finished film", () =
     expect(line).toContain("[ClosingTail]");
     expect(line).toContain("3.0s");
     expect(line).toMatch(/same at the last frame as the first/);
+  });
+});
+
+/* ═══════════ 5. RONDE 122 — the trimmer must leave the slot alone ═══════════ */
+
+describe("RONDE 122 — a dark closing image is not leftover black", () => {
+  /**
+   * The final stage looks for a dark run reaching the end of the film and cuts back to where the
+   * picture stopped. RONDE 121 put something deliberate there, and documentaries end on dark
+   * images constantly — a bunker interior, a night shot, a fade already in the source. blackdetect
+   * cannot tell those from leftover black, so without this the trimmer would remove exactly the
+   * three seconds that were just added.
+   */
+  it("THE DANGER IS REAL: blackdetect reports a dark tail as black running to the end", async () => {
+    // A genuinely dark closing scene — not synthetic black, a very dark picture.
+    const darkScene = path.join(tmpDir, "dark_scene.mp4");
+    execSync(
+      `ffmpeg -y -f lavfi -i "color=c=0x050505:size=640x360:rate=25:duration=3" ` +
+        `-f lavfi -i "sine=frequency=200:duration=3" ` +
+        `-c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "${darkScene}" 2>/dev/null`
+    );
+    const built = await buildClosingTail({
+      lastScenePath: darkScene,
+      outputPath: path.join(tmpDir, "darktail.mp4"),
+      framePath: path.join(tmpDir, "darkframe.jpg"),
+      ffmpegBin: "ffmpeg",
+      run: async (cmd) => run(cmd),
+      lastSceneDurationSec: 3,
+      widthPx: 640,
+      heightPx: 360,
+      fileExists: exists,
+    });
+    expect(built).not.toBeNull();
+
+    const listFile = path.join(tmpDir, "darklist.txt");
+    fs.writeFileSync(listFile, `file '${darkScene}'\nfile '${built!.path}'\n`);
+    const joined = path.join(tmpDir, "darkjoined.mp4");
+    await run(
+      `ffmpeg -y -f concat -safe 0 -i "${listFile}" -vsync cfr -c:v libx264 -preset veryfast ` +
+        `-crf 23 -c:a aac -b:a 192k "${joined}"`
+    );
+
+    // The exact detector the pipeline runs, with the exact thresholds.
+    const detect = execSync(
+      `ffmpeg -i "${joined}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null - 2>&1 || true`,
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
+    );
+    const ends = [...detect.matchAll(/black_end:([\d.]+)/g)].map((m) => parseFloat(m[1]));
+    const videoDur = Number(probe(joined, "stream=duration").split("\n")[0]);
+    expect(ends.length).toBeGreaterThan(0);
+
+    // It really does see black running to the very end — the tail included.
+    const lastBlackEnd = ends[ends.length - 1]!;
+    expect(lastBlackEnd).toBeGreaterThan(videoDur - 0.3);
+
+    // ...and that is precisely when the trim must be refused.
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: lastBlackEnd,
+        videoDurationSec: videoDur,
+        closingTailSec: built!.plan.tailSec,
+      })
+    ).toBe(true);
+  }, 180_000);
+
+  it("black that ends BEFORE the hold is still trimmed — the trimmer keeps its job", () => {
+    // 74s film, 3s hold: the hold starts at 71s. A dark run ending at 60s is genuine leftover.
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: 60,
+        videoDurationSec: 74,
+        closingTailSec: 3,
+      })
+    ).toBe(false);
+  });
+
+  it("with no hold appended, nothing is protected and the old behaviour stands", () => {
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: 74,
+        videoDurationSec: 74,
+        closingTailSec: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("a longer hold is protected over its whole length, not over three seconds", () => {
+    // CLOSING_TAIL_SEC=8: a dark run starting at 67s of a 74s film is inside the hold.
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: 74,
+        videoDurationSec: 74,
+        closingTailSec: 8,
+      })
+    ).toBe(true);
+    // ...and 65s is still before it.
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: 65,
+        videoDurationSec: 74,
+        closingTailSec: 8,
+      })
+    ).toBe(false);
+  });
+
+  it("the boundary has a frame of slack rather than an exact comparison", () => {
+    // The concat join is not sample-exact; a run ending a hair before the hold is still before it.
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: 71.02,
+        videoDurationSec: 74,
+        closingTailSec: 3,
+      })
+    ).toBe(false);
+    expect(
+      trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: 71.4,
+        videoDurationSec: 74,
+        closingTailSec: 3,
+      })
+    ).toBe(true);
+  });
+
+  it("the pipeline measures the REAL hold from its own file, not from the env", () => {
+    /**
+     * CLOSING_TAIL_SEC could have changed between the concat and this stage, and the hold may have
+     * failed to build entirely. The segment on disk is the only honest record of what was actually
+     * appended — and when it is absent, the trimmer behaves exactly as it always did.
+     */
+    const src = fs.readFileSync(path.join(process.cwd(), "server", "videoPipeline.ts"), "utf8");
+    expect(src).toContain("fastvid_${videoId}_tail.mp4");
+    expect(src).toContain("const probedTail = await probeVideoDurationSec(tailPath);");
+    expect(src).toContain("trailingBlackTrimReachesClosingTail({");
+    expect(src).toContain("trailing-black trim skipped");
+  });
+
+  it("the guard is INSIDE the trim condition, not merely logged next to it", () => {
+    /**
+     * Computing `blackReachesTail` and printing a line about it changes nothing on its own — the
+     * cut is made by the `if` below it, and the verdict has to be a term in that condition. A
+     * mutation that removed exactly this one line left every other test in this file green, which
+     * is why the wiring gets an assertion of its own.
+     */
+    const src = fs.readFileSync(path.join(process.cwd(), "server", "videoPipeline.ts"), "utf8");
+    const condition = src.slice(
+      src.indexOf("const blackReachesTail = trailingBlackTrimReachesClosingTail({"),
+      src.indexOf("trimTo = Math.max(1, lastBlackStart - 0.02)")
+    );
+    expect(condition).not.toBe("");
+    expect(condition).toContain("!blackReachesTail &&");
+    // ...and it guards the trim itself, ahead of the checks that were already there.
+    expect(condition.indexOf("!blackReachesTail &&")).toBeLessThan(
+      condition.indexOf("lastBlackStart >= probedBeforeTrim * 0.72")
+    );
   });
 });

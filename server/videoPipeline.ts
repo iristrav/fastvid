@@ -371,7 +371,12 @@ import {
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
-import { buildClosingTail, closingTailSeconds, formatClosingTailPlan } from "./closingTail";
+import {
+  buildClosingTail,
+  closingTailSeconds,
+  formatClosingTailPlan,
+  trailingBlackTrimReachesClosingTail,
+} from "./closingTail";
 import {
   SUBJECT_FALLBACK_ROUTE,
   formatNoSubjectLine,
@@ -32357,6 +32362,37 @@ async function ensureFinalVideoDuration(
 ): Promise<string> {
   let working = inputPath;
   const trimmed = path.join(workDir, `fastvid_${videoId}_trimtail.mp4`);
+
+  /**
+   * RONDE 122 — the closing hold is not trailing black to be tidied away.
+   *
+   * This trimmer exists for a real problem: a scene that ends on black leaves a dead patch at the
+   * end of the film, and it cuts back to where the picture stops. It decides that by asking
+   * `blackdetect` where the last dark run begins, which was safe as long as everything at the end
+   * of the file was accidental.
+   *
+   * RONDE 121 put something deliberate there. The closing hold is the film's own last image, and
+   * documentaries end on dark images all the time — a bunker interior, a night shot, a fade in the
+   * source footage. `blackdetect` cannot tell "the picture the editor chose to end on" from
+   * "leftover black", so on any dark ending it would report the tail as a black run reaching the
+   * end of the file, and this would cut off exactly the three seconds that were just added.
+   *
+   * The tail's own file is the evidence that one was appended — the concat writes it under this
+   * same videoId, and its duration is the real length rather than what the env asked for, so a
+   * CLOSING_TAIL_SEC of 5 is protected as five. When it is absent (the tail failed to build, or is
+   * switched off) this whole block is skipped and the trimmer behaves exactly as it always did.
+   */
+  let closingTailSec = 0;
+  try {
+    const tailPath = path.join(workDir, `fastvid_${videoId}_tail.mp4`);
+    if (fs.existsSync(tailPath)) {
+      const probedTail = await probeVideoDurationSec(tailPath);
+      if (probedTail > 0) closingTailSec = probedTail;
+    }
+  } catch {
+    // No tail information is the same as no tail: the trimmer keeps its original behaviour.
+  }
+
   try {
     const detectCmd =
       `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null -`;
@@ -32374,8 +32410,27 @@ async function ensureFinalVideoDuration(
       const lastBlackStart = starts[starts.length - 1];
       const lastBlackEnd = ends[ends.length - 1];
       const probedBeforeTrim = workingDurationSec;
+      /**
+       * RONDE 122: where the closing hold begins, and the line this trimmer may not cross.
+       *
+       * A trailing black run only counts as leftover if it starts BEFORE the tail. Anything from
+       * here on is the deliberate closing image, however dark it happens to be.
+       */
+      const blackReachesTail = trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: lastBlackEnd,
+        videoDurationSec: probedBeforeTrim,
+        closingTailSec,
+      });
+      if (blackReachesTail) {
+        console.log(
+          `[ClosingTail] trailing-black trim skipped — the last ${closingTailSec.toFixed(1)}s are ` +
+            `the closing hold, not leftover black (blackdetect saw ${lastBlackStart.toFixed(2)}s–` +
+            `${lastBlackEnd.toFixed(2)}s of a ${probedBeforeTrim.toFixed(1)}s film)`
+        );
+      }
       // Only trim trailing black in the last ~25% — avoid chopping mid-video on dark grading.
       if (
+        !blackReachesTail &&
         probedBeforeTrim > 0 &&
         lastBlackStart >= probedBeforeTrim * 0.72 &&
         lastBlackEnd >= trimTo - 0.25 &&

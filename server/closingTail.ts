@@ -122,6 +122,38 @@ export function planClosingTail(params: {
   return { tailSec, totalFrames, videoFilter };
 }
 
+/**
+ * RONDE 122 — may the trailing-black trimmer cut here?
+ *
+ * The final stage looks for a dark run reaching the end of the film and cuts back to where the
+ * picture stopped. That was safe while everything at the end of the file was accidental. The
+ * closing hold is not: it is the film's own last image, and documentaries end on dark images all
+ * the time — a bunker interior, a night shot, a fade already present in the source.
+ *
+ * `blackdetect` cannot tell those apart. On any dark ending it reports a black run that reaches
+ * the end of the file, and the trimmer would cut off exactly the three seconds RONDE 121 added.
+ *
+ * The rule is narrow: a black run counts as leftover only while it ENDS before the closing hold
+ * begins. Reach into the hold and the trim is refused entirely — never shortened to the hold's
+ * start, because a run that spans both is one dark image continuing into its own freeze-frame, and
+ * cutting at its start would take the hold with it.
+ *
+ * Split out as a predicate rather than left inline so this can be tested against real blackdetect
+ * output instead of by reading the pipeline.
+ */
+export function trailingBlackTrimReachesClosingTail(params: {
+  lastBlackEndSec: number;
+  videoDurationSec: number;
+  closingTailSec: number;
+}): boolean {
+  const { lastBlackEndSec, videoDurationSec, closingTailSec } = params;
+  if (!(closingTailSec > 0) || !(videoDurationSec > 0)) return false;
+  const tailStartsAt = videoDurationSec - closingTailSec;
+  // A frame's worth of slack: blackdetect reports to the millisecond and the concat join is not
+  // sample-exact, so a run ending a hair after the boundary is still a run that ended before it.
+  return lastBlackEndSec > tailStartsAt + 0.05;
+}
+
 /** One line in the pipeline's own log voice. */
 export function formatClosingTailPlan(plan: ClosingTailPlan, widthPx: number, heightPx: number): string {
   const px = closingTailEndVelocityPx(plan.totalFrames, heightPx);
