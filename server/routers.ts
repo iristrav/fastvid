@@ -2029,7 +2029,21 @@ export const appRouter = router({
         let startSec = input.startSec ?? 0;
         let endSec = input.endSec ?? legacyCut;
 
-        if (endSec == null && startSec <= 0) {
+        /**
+         * RONDE 108 — auto-detect only when nobody said where to cut.
+         *
+         * The condition used to be `endSec == null && startSec <= 0`, and `startSec` defaults to
+         * 0 — so an operator who marked ONLY a start point at the very beginning of the clip had
+         * their explicit instruction thrown away and replaced with a scene audit, which then
+         * usually came back "No reliable scene cut detected". A message about scene detection, for
+         * someone who never asked for scene detection: the button was there, they used it, and it
+         * told them something that had nothing to do with what they did.
+         *
+         * The honest test is whether the REQUEST carried a range at all. `input.startSec` present
+         * means the operator placed that marker deliberately, including at 0.
+         */
+        const operatorGaveRange = input.startSec != null || input.endSec != null;
+        if (!operatorGaveRange && endSec == null) {
           const audit = await auditArchiveAssetScene(asset).catch(() => null);
           const firstCut = audit?.cutTimesSec?.[0];
           if (!firstCut || firstCut <= 0.5) return { trimmed: false, reason: "No reliable scene cut detected" };

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
+import { MIN_TRIMMED_CLIP_SEC, validateTrimRange } from "@shared/archiveTrim";
 import {
   Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch, Ban, Scissors,
 } from "lucide-react";
@@ -300,6 +301,13 @@ function AssetPreviewModal({
   const [trimStart, setTrimStart] = useState<number | null>(null);
   const [trimEnd, setTrimEnd] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
+  /**
+   * RONDE 108: whether the preview is actually playable, which is what makes the trim controls
+   * meaningful. Set from the video element's own readiness rather than guessed from the row —
+   * `mediaAvailable` can say yes about a file the browser then refuses to decode.
+   */
+  const [canPlay, setCanPlay] = useState(asset.mediaAvailable !== false);
+  useEffect(() => setCanPlay(asset.mediaAvailable !== false), [asset.id, asset.mediaAvailable]);
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
   // Use live video duration; fall back to DB value while video hasn't loaded yet.
   const duration = videoDuration > 0 ? videoDuration : (asset.durationSec ?? 0);
@@ -314,74 +322,124 @@ function AssetPreviewModal({
     // attached listeners must be tracked here and removed by THIS effect's own cleanup —
     // otherwise they silently accumulate on the video element across asset switches.
     let attachedVideo: HTMLVideoElement | null = null;
-    let onTime: (() => void) | null = null;
-    let onDur: (() => void) | null = null;
+    /** Every listener this effect attaches, so the cleanup cannot forget one. */
+    const attached: Array<[string, EventListener]> = [];
     const interval = setInterval(() => {
       const v = getVideo();
-      if (v) {
-        onTime = () => setCurrentTime(v.currentTime);
-        onDur = () => { if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration); };
-        v.addEventListener("timeupdate", onTime);
-        v.addEventListener("durationchange", onDur);
-        if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration);
-        attachedVideo = v;
-        clearInterval(interval);
-      }
+      if (!v) return;
+      const noteDuration = () => {
+        if (v.duration && isFinite(v.duration)) {
+          setVideoDuration(v.duration);
+          // A clip that reports a real duration is a clip the browser can seek in, which is
+          // exactly the condition the trim controls need.
+          setCanPlay(true);
+        }
+      };
+      attached.push(
+        ["timeupdate", () => setCurrentTime(v.currentTime)],
+        ["durationchange", noteDuration],
+        ["loadedmetadata", noteDuration],
+        // RONDE 108: a file the browser refuses to decode retracts the trim controls rather than
+        // leaving scissors over a placeholder.
+        ["error", () => setCanPlay(false)]
+      );
+      for (const [type, fn] of attached) v.addEventListener(type, fn);
+      noteDuration();
+      attachedVideo = v;
+      clearInterval(interval);
     }, 100);
     return () => {
       clearInterval(interval);
-      if (attachedVideo && onTime && onDur) {
-        attachedVideo.removeEventListener("timeupdate", onTime);
-        attachedVideo.removeEventListener("durationchange", onDur);
-      }
+      if (!attachedVideo) return;
+      for (const [type, fn] of attached) attachedVideo.removeEventListener(type, fn);
     };
   }, [asset.id]);
 
-  /** The player's current position, or null when it cannot be read. */
-  function playheadSec(): number | null {
+  /**
+   * RONDE 108 — the player's position, or the reason it cannot be read.
+   *
+   * This used to return `null` and both mark buttons did `if (t == null) return;` — so when the
+   * preview had not loaded, or the media was missing, clicking "Begin hier" did literally nothing
+   * and said nothing. That is the whole of "de knop is er, maar hij werkt niet": a control that
+   * refuses in silence is indistinguishable from a control that is broken.
+   */
+  function playheadSec(): { ok: true; sec: number } | { ok: false; reason: string } {
     const v = getVideo();
-    if (!v) return null;
+    if (!v) return { ok: false, reason: "De video is nog niet geladen — wacht tot de preview speelt" };
+    if (v.readyState < 1) {
+      return { ok: false, reason: "De video is nog aan het laden — probeer het zo opnieuw" };
+    }
     const t = v.currentTime;
     const dur = v.duration && isFinite(v.duration) ? v.duration : duration;
-    if (t < 0 || (dur > 0 && t > dur)) return null;
-    return t;
+    if (!(dur > 0)) return { ok: false, reason: "De lengte van deze clip is onbekend" };
+    if (t < 0 || t > dur) return { ok: false, reason: "De afspeelpositie ligt buiten de clip" };
+    return { ok: true, sec: t };
   }
 
-  function markStart() {
-    const t = playheadSec();
-    if (t == null) return;
-    if (trimEnd != null && t >= trimEnd - 0.5) {
-      toast.error("Startpunt moet minstens een halve seconde vóór het eindpunt liggen");
+  /** Marking pauses: the mark belongs at the frame the operator was looking at, not four ahead. */
+  function markAt(which: "start" | "end") {
+    const read = playheadSec();
+    if (!read.ok) {
+      toast.error("Kan het punt niet bepalen", { description: read.reason });
       return;
     }
-    setTrimStart(t);
-  }
-
-  function markEnd() {
-    const t = playheadSec();
-    if (t == null) return;
-    if (t <= (trimStart ?? 0) + 0.5) {
-      toast.error("Eindpunt moet minstens een halve seconde ná het startpunt liggen");
+    getVideo()?.pause();
+    const t = read.sec;
+    if (which === "start") {
+      if (trimEnd != null && t >= trimEnd - MIN_TRIMMED_CLIP_SEC) {
+        toast.error(`Startpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s vóór het eindpunt liggen`);
+        return;
+      }
+      setTrimStart(t);
+      return;
+    }
+    if (t <= (trimStart ?? 0) + MIN_TRIMMED_CLIP_SEC) {
+      toast.error(`Eindpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s ná het startpunt liggen`);
       return;
     }
     setTrimEnd(t);
   }
 
+  const markStart = () => markAt("start");
+  const markEnd = () => markAt("end");
+
   const hasTrimRange = trimStart != null || trimEnd != null;
+  /**
+   * RONDE 108 — the same rule the server uses, asked before anything is sent.
+   *
+   * The panel used to offer "Bijknippen toepassen" for any marked range, including ones the
+   * server was always going to refuse (a range that is the whole clip, a range shorter than half
+   * a second). The operator clicked, waited, and got a message about a range they could not see
+   * was wrong. Now the button says so up front, and the server still checks independently — a UI
+   * check is a courtesy, never a guarantee.
+   */
+  const trimVerdict = validateTrimRange(
+    { startSec: trimStart ?? 0, ...(trimEnd != null ? { endSec: trimEnd } : {}) },
+    duration
+  );
 
   async function applyTrim() {
     if (!hasTrimRange) return;
-    const from = trimStart ?? 0;
-    const to = trimEnd ?? duration;
+    if (!trimVerdict.ok) {
+      toast.error("Dit bereik kan niet", { description: trimVerdict.reason });
+      return;
+    }
+    const from = trimVerdict.startSec;
+    const to = trimVerdict.endSec;
     if (!confirm(`Clip bijknippen naar ${from.toFixed(2)}s – ${to.toFixed(2)}s? Dit overschrijft het origineel.`)) {
       return;
     }
     setTrimming(true);
     try {
+      /**
+       * Both bounds, always. Sending only a start let the server fall back to its scene-detect
+       * path, which then reported "No reliable scene cut detected" at an operator who had marked
+       * a point by hand. The range that was validated is the range that is sent.
+       */
       const result = await trimMutation.mutateAsync({
         assetId: asset.id,
-        startSec: trimStart ?? 0,
-        ...(trimEnd != null ? { endSec: trimEnd } : {}),
+        startSec: from,
+        endSec: to,
       });
       if (!result.trimmed) {
         toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
@@ -449,7 +507,24 @@ function AssetPreviewModal({
           <LazyArchiveMedia asset={asset} mode="preview" className="w-full h-full overflow-hidden" />
         </div>
 
-        {asset.mediaType === "video" && (
+        {/**
+          * RONDE 108 — do not offer scissors over a clip that cannot be played.
+          *
+          * The panel's only condition was `mediaType === "video"`, so an asset whose file is
+          * missing or whose format the browser refuses still got a full set of trim controls
+          * laid over an error placeholder. Every one of them was dead, and nothing said why.
+          */}
+        {asset.mediaType === "video" && !canPlay && (
+          <div className="px-4 py-3 border-t border-white/10">
+            <p className="text-xs text-amber-300">
+              Bijknippen kan niet: {mediaIssueLabel(asset.mediaIssue ?? undefined) ?? "de preview kan niet worden afgespeeld"}.
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Upload de clip opnieuw als MP4, dan kan hij hier worden bijgeknipt.
+            </p>
+          </div>
+        )}
+        {asset.mediaType === "video" && canPlay && (
           <div className="px-4 py-3 border-t border-white/10 space-y-2">
             {/* RONDE 98: the bar shows the KEPT range, shaded between the two markers, so what the
                 operator is about to save is visible before they save it. */}
@@ -510,18 +585,26 @@ function AssetPreviewModal({
               </button>
               {hasTrimRange && (
                 <>
-                  <span className="text-xs text-emerald-300 tabular-nums">
+                  <span
+                    className={`text-xs tabular-nums ${trimVerdict.ok ? "text-emerald-300" : "text-amber-300"}`}
+                  >
                     bewaar {(trimStart ?? 0).toFixed(2)}s – {(trimEnd ?? duration).toFixed(2)}s
                     {duration > 0 && ` (${((trimEnd ?? duration) - (trimStart ?? 0)).toFixed(2)}s)`}
                   </span>
                   <button
                     onClick={applyTrim}
-                    disabled={trimming}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 disabled:opacity-50"
+                    disabled={trimming || !trimVerdict.ok}
+                    title={trimVerdict.ok ? "Bijknippen en het origineel overschrijven" : trimVerdict.reason}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {trimming ? <Loader2 className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3" />}
                     Bijknippen toepassen
                   </button>
+                  {/* The reason is shown, not only hidden in a tooltip — a greyed-out button with
+                      no explanation is the same dead end as a silent one. */}
+                  {!trimVerdict.ok && (
+                    <span className="text-xs text-amber-300/90">{trimVerdict.reason}</span>
+                  )}
                   <button
                     onClick={() => { setTrimStart(null); setTrimEnd(null); }}
                     className="text-xs text-slate-500 hover:text-slate-300"
@@ -593,7 +676,16 @@ function AssetCard({
           asset={asset}
           sceneAudit={sceneAudit}
           onClose={() => setPreviewOpen(false)}
-          onTrimmed={() => onRefresh()}
+          /**
+           * RONDE 108 — hand the trim up, with the length it actually became.
+           *
+           * This used to call `onRefresh()` and drop the duration on the floor, so the parent's
+           * `onTrimmed` never ran — and that handler is what clears the stale scene audit. The
+           * clip was really trimmed, and the card went on showing "multi_scene" with the scissors
+           * button still on it. From the operator's side that is indistinguishable from nothing
+           * having happened, which is how this was reported.
+           */
+          onTrimmed={(newDurationSec) => onTrimmed(asset.id, newDurationSec)}
         />
       )}
       <div
@@ -765,13 +857,21 @@ function AssetCard({
                       const cut = sceneAudit.cutTimesSec![0];
                       if (!confirm(`Clip bijknippen naar eerste scène (0–${cut.toFixed(1)}s)?`)) return;
                       try {
-                        const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: cut });
+                        const result = await trimMutation.mutateAsync({
+                          assetId: asset.id,
+                          // Both bounds: an explicit range the server cannot re-interpret as a
+                          // request to go and detect a scene cut itself.
+                          startSec: 0,
+                          endSec: cut,
+                        });
                         if (!result.trimmed) {
                           toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
                           return;
                         }
-                        onRefresh();
-                        toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
+                        // Same hand-up as the modal: the parent clears the scene audit, so the
+                        // card stops advertising a cut that no longer exists.
+                        onTrimmed(asset.id, result.newDurationSec ?? cut);
+                        toast.success(`Bijgeknipt naar ${(result.newDurationSec ?? cut).toFixed(2)}s`);
                       } catch (e) {
                         toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
                       }

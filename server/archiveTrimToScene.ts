@@ -29,18 +29,23 @@ import { updateMediaArchiveAsset } from "./db";
 import { ffmpegBin } from "./localClipVision";
 import { probeVideoDurationSec } from "./archiveVideoSplitter";
 import { ffmpegThreadFlag } from "./sourcingPolicy";
+import { validateTrimRange, type ArchiveTrimRange } from "@shared/archiveTrim";
 
 const exec = promisify(execCb);
 
 /** Shortest clip worth keeping — below this the result is a flash frame, not a scene. */
-export const MIN_TRIMMED_CLIP_SEC = 0.5;
-
-export type ArchiveTrimRange = {
-  /** Seconds into the source where the kept footage begins. 0 keeps the head. */
-  startSec?: number;
-  /** Seconds into the source where the kept footage ends. Omitted keeps the tail. */
-  endSec?: number;
-};
+/**
+ * RONDE 108: the range rule moved to @shared/archiveTrim so the archive UI can ask it too.
+ *
+ * It was server-only, so the trim panel offered its button for ranges the server was always going
+ * to refuse — the operator clicked and got a message about a range they could not see was wrong.
+ * Re-exported here so every existing importer of this module keeps working unchanged.
+ */
+export {
+  MIN_TRIMMED_CLIP_SEC,
+  validateTrimRange,
+  type ArchiveTrimRange,
+} from "@shared/archiveTrim";
 
 export type ArchiveTrimResult = {
   assetId: number;
@@ -50,34 +55,6 @@ export type ArchiveTrimResult = {
   storageKey: string;
   storageUrl: string;
 };
-
-/**
- * Validate a requested range against the clip's own duration.
- *
- * Returns the reason as a string rather than throwing, because every one of these is an operator
- * mistake the UI should show, not a server fault.
- */
-export function validateTrimRange(
-  range: ArchiveTrimRange,
-  sourceDurationSec: number
-): { ok: true; startSec: number; endSec: number } | { ok: false; reason: string } {
-  const start = Math.max(0, range.startSec ?? 0);
-  const end = range.endSec ?? sourceDurationSec;
-  if (!(end > 0)) return { ok: false, reason: "End point must be greater than zero" };
-  if (end <= start) return { ok: false, reason: "End point must come after the start point" };
-  if (end - start < MIN_TRIMMED_CLIP_SEC) {
-    return { ok: false, reason: `Trimmed clip would be shorter than ${MIN_TRIMMED_CLIP_SEC}s` };
-  }
-  if (sourceDurationSec > 0 && start >= sourceDurationSec - 0.05) {
-    return { ok: false, reason: "Start point is at or past the end of the clip" };
-  }
-  // A trim that changes nothing is refused rather than silently re-encoding the file: it would
-  // move the asset to a new storage key for no reason.
-  if (sourceDurationSec > 0 && start <= 0.05 && end >= sourceDurationSec - 0.05) {
-    return { ok: false, reason: "That range is the whole clip — nothing to trim" };
-  }
-  return { ok: true, startSec: start, endSec: Math.min(end, sourceDurationSec || end) };
-}
 
 /**
  * Cut the asset down to [startSec, endSec) and store the result as the asset's own file.

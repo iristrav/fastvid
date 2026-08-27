@@ -170,7 +170,10 @@ describe("RONDE 98 §5 — Bijknippen keeps a chosen range, and it sticks", () =
   it("TEST 15 — an end before the start is refused with a reason, not a crash", () => {
     const v = validateTrimRange({ startSec: 10, endSec: 4 }, 30);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.reason).toMatch(/after the start/i);
+    // SUPERSEDED by RONDE 108: the rule moved to @shared/archiveTrim so the archive panel can ask
+    // it BEFORE sending, and its reasons are now the sentence the operator reads on screen — so
+    // they are in Dutch, like the rest of that panel. The RULE is unchanged; only the language is.
+    if (!v.ok) expect(v.reason).toMatch(/ná het startpunt/i);
   });
 
   it("TEST 16 — a range shorter than the minimum is refused", () => {
@@ -182,7 +185,8 @@ describe("RONDE 98 §5 — Bijknippen keeps a chosen range, and it sticks", () =
   it("TEST 17 — trimming to the whole clip is refused rather than re-encoded for nothing", () => {
     const v = validateTrimRange({ startSec: 0, endSec: 30 }, 30);
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.reason).toMatch(/whole clip/i);
+    // SUPERSEDED by RONDE 108 — same reason as TEST 15: the reason is operator-facing text now.
+    if (!v.ok) expect(v.reason).toMatch(/hele clip/i);
   });
 
   it("TEST 18 — THE BUG: both storage columns are written, not just the URL", () => {
@@ -261,23 +265,48 @@ describe("RONDE 98 — the flow end to end", () => {
   });
 
   it("TEST 26 — the UI offers a start AND an end, not one cut point", () => {
-    expect(UI_SRC).toContain("function markStart()");
-    expect(UI_SRC).toContain("function markEnd()");
+    /**
+     * SUPERSEDED BY RONDE 108, deliberately — the rule is the same, the shape got safer.
+     *
+     * markStart and markEnd were two functions that each did `if (t == null) return;`: a silent
+     * refusal when the playhead could not be read, which is exactly how "de knop werkt niet" was
+     * reported. They are one function now, and every refusal names its reason.
+     */
+    expect(UI_SRC).toContain('function markAt(which: "start" | "end")');
+    expect(UI_SRC).toContain('const markStart = () => markAt("start");');
+    expect(UI_SRC).toContain('const markEnd = () => markAt("end");');
     expect(UI_SRC).toContain("const [trimStart, setTrimStart]");
     expect(UI_SRC).toContain("const [trimEnd, setTrimEnd]");
     expect(UI_SRC).not.toContain("const [trimAt, setTrimAt]");
   });
 
   it("TEST 27 — the UI sends the range to the server, not a browser-only preview", () => {
-    expect(UI_SRC).toContain("startSec: trimStart ?? 0");
-    expect(UI_SRC).toContain("endSec: trimEnd");
-    expect(UI_SRC).toContain("trimMutation.mutateAsync");
-    // And it refreshes the grid from the server afterwards.
+    /**
+     * RONDE 108 tightened this. It used to assert `startSec: trimStart ?? 0`, which after this
+     * round still matched — but from the VALIDATION call, not from the request. The request now
+     * carries the validated bounds, so both are pinned explicitly.
+     */
+    const send = UI_SRC.indexOf("const result = await trimMutation.mutateAsync({");
+    expect(send).toBeGreaterThan(-1);
+    const request = UI_SRC.slice(send, send + 300);
+    expect(request).toContain("startSec: from,");
+    expect(request).toContain("endSec: to,");
+    // And it hands the result up so the grid refreshes and the stale scene audit is cleared.
     expect(UI_SRC).toContain("onTrimmed?.(result.newDurationSec!)");
+    expect(UI_SRC).toContain("onTrimmed={(newDurationSec) => onTrimmed(asset.id, newDurationSec)}");
   });
 
   it("TEST 28 — the operator cannot save a start at or past the end", () => {
-    expect(UI_SRC).toContain("Startpunt moet minstens een halve seconde vóór het eindpunt liggen");
-    expect(UI_SRC).toContain("Eindpunt moet minstens een halve seconde ná het startpunt liggen");
+    /**
+     * RONDE 108: the half-second is no longer written into the message — it comes from
+     * MIN_TRIMMED_CLIP_SEC in @shared/archiveTrim, the same constant the server validates with,
+     * so the two can no longer drift apart.
+     */
+    expect(UI_SRC).toContain(
+      "toast.error(`Startpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s vóór het eindpunt liggen`)"
+    );
+    expect(UI_SRC).toContain(
+      "toast.error(`Eindpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s ná het startpunt liggen`)"
+    );
   });
 });
