@@ -373,7 +373,7 @@ export function __resetProviderCooldownsForTests(): void {
   groqDailyExhaustedUntilMs = 0;
   geminiCooldownUntilMs = 0;
   geminiModelUnavailable = false;
-  openAiQuotaExhausted = false;
+  openAiCooldownUntilMs = 0;
 }
 
 function isGroqDailyQuotaError(body: string): boolean {
@@ -435,8 +435,36 @@ export function markGroqCooldown(status: number, errorText: string): void {
   }
 }
 
-/** OpenAI quota exhausted — skip for remainder of process lifetime. */
-let openAiQuotaExhausted = false;
+/**
+ * RONDE 120 — OpenAI's cool-off, which used to be "forever".
+ *
+ * From the worker log, three seconds into render 543 — the FIRST LLM call of the process:
+ *
+ *   [LLM] OpenAI quota exhausted — skipping OpenAI for remainder of process lifetime.
+ *   [LLM] openai failed (429) — falling back to gemini
+ *
+ * OpenAI is the configured provider on that worker (provider=openai, gpt-4o, key present). One
+ * 429 and it was gone for the whole process — a Railway worker that stays up for days. Everything
+ * after that ran on two free tiers: Groq, whose day ran out fourteen seconds later, and Gemini,
+ * whose free tier is twenty requests per day. The render died at "Planning visuals", 25%.
+ *
+ * A permanent flag was defensible when it was the only guard against burning money on a dead
+ * account. But it is the strictest treatment in the file applied to the only PAID provider: Groq
+ * gets an hour, Gemini a minute, OpenAI got the rest of time. Topping up the account could not
+ * bring it back without a redeploy.
+ *
+ * So it expires. Half an hour for a spent quota — one wasted round trip every thirty minutes is
+ * nothing next to a worker that cannot make a video until someone notices and restarts it — and a
+ * short one for an ordinary burst, which OpenAI never had at all before this.
+ */
+let openAiCooldownUntilMs = 0;
+export function isOpenAiInCooldown(): boolean {
+  return Date.now() < openAiCooldownUntilMs;
+}
+/** How long OpenAI is left alone once it reports the account's quota is spent. */
+const OPENAI_QUOTA_COOLDOWN_MS = 30 * 60 * 1000;
+/** Cool-off for an ordinary OpenAI rate limit — previously none at all. */
+const OPENAI_BURST_COOLDOWN_MS = 60 * 1000;
 
 function parseRetryAfterSeconds(body: string): number | null {
   const minSec = body.match(/try again in (\d+)m(\d+(?:\.\d+)?)s/i);
@@ -470,10 +498,28 @@ function isOpenAiQuotaError(status: number, body: string): boolean {
   );
 }
 
-function markOpenAiQuotaExhausted(body: string): void {
-  if (isOpenAiQuotaError(429, body) || isOpenAiQuotaError(402, body)) {
-    openAiQuotaExhausted = true;
-    console.warn("[LLM] OpenAI quota exhausted — skipping OpenAI for remainder of process lifetime.");
+/**
+ * RONDE 120 — cool OpenAI down for a while, rather than for good.
+ *
+ * The retry hint is a FLOOR, never a ceiling, for the same reason as RONDE 117: the provider's own
+ * "try again in Ns" describes a rolling window, and a spent account's window frees a trickle that
+ * the next call burns immediately.
+ *
+ * Exported so the regression test can drive it with the verbatim production body.
+ */
+export function markOpenAiCooldown(status: number, body: string): void {
+  const quota = isOpenAiQuotaError(429, body) || isOpenAiQuotaError(402, body);
+  if (!quota && !isRateLimitError(status)) return;
+  const hintMs = Math.max(0, (parseRetryAfterSeconds(body) ?? 0) * 1000);
+  const cooldownMs = quota
+    ? Math.max(hintMs, OPENAI_QUOTA_COOLDOWN_MS)
+    : Math.max(hintMs, OPENAI_BURST_COOLDOWN_MS);
+  openAiCooldownUntilMs = Math.max(openAiCooldownUntilMs, Date.now() + cooldownMs);
+  if (quota) {
+    console.warn(
+      `[LLM] OpenAI quota spent — standing down for ${Math.round(cooldownMs / 60_000)}min ` +
+        `(it is retried automatically after that; no redeploy needed)`
+    );
   }
 }
 
@@ -525,6 +571,18 @@ export function isProviderCapacityFailure(status: number, body: string): boolean
   if (isCapacityTooLargeError(status, body)) return true; // 413 — request over the tier's TPM
   // A model the account cannot reach is the same fact as no capacity: nothing judged anything.
   if (status === 404) return true;
+  /**
+   * RONDE 120 — 403, from the same worker log:
+   *
+   *   [LLM] Gemini failed: Gemini API error 403: { code: 403,
+   *     message: "Your project has been denied access. Please contact support.",
+   *     status: "PERMISSION_DENIED" }
+   *
+   * The provider refused to serve the request. Whatever the cause — a blocked project, a key
+   * without rights, a region restriction — no model looked at anything, which is exactly the
+   * condition this predicate exists to name.
+   */
+  if (status === 403) return true;
   return false;
 }
 
@@ -533,6 +591,15 @@ export function shouldFallbackToNextProvider(status: number, body: string): bool
   if (isRateLimitError(status)) return true;
   if (isOpenAiQuotaError(status, body)) return true;
   if (status === 404) return true; // model not found → try next provider
+  /**
+   * RONDE 120: a refused request must move on rather than end the call.
+   *
+   * 403 was in none of these buckets, so an OpenAI-compatible provider answering PERMISSION_DENIED
+   * stopped the chain dead at `throw` with the other providers untouched — the same shape of bug
+   * RONDE 116 found for 413. Gemini escaped it only because it is called from a different function
+   * that continues on any error.
+   */
+  if (status === 403) return true;
   /**
    * RONDE 116: 413 was in none of the buckets above, so it fell past this check to `throw
    * lastError` — ending the whole call at the first provider while a provider that could serve
@@ -546,7 +613,7 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown() && !geminiModelUnavailable;
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
-  const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
+  const openAiAvailable = Boolean(openAiKeyFromEnv()) && !isOpenAiInCooldown();
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
@@ -700,13 +767,79 @@ export function isGeminiInCooldown(): boolean {
 // the same render (and every later render in the same worker process) re-discovers the identical
 // 404 before falling back, each one wasting a full request/response round trip first. Confirmed in
 // production: 16 identical 404s across one render's log. Same permanent-until-process-restart
-// pattern already used for openAiQuotaExhausted below.
+// pattern already used for the OpenAI cool-off below.
 let geminiModelUnavailable = false;
 export function isGeminiModelUnavailable(): boolean {
   return geminiModelUnavailable;
 }
 function isGeminiModelNotFoundError(status: number, body: string): boolean {
   return status === 404 && body.toUpperCase().includes("NOT_FOUND");
+}
+
+/**
+ * RONDE 120 — Gemini's DAY is gone, not its minute.
+ *
+ * Verbatim from the worker log, the answer that ended render 543:
+ *
+ *   429 RESOURCE_EXHAUSTED — "Quota exceeded for metric:
+ *   generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20,
+ *   model: gemini-3.6-flash. Please retry in 29.141733906s."
+ *   quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: "20"
+ *
+ * Twenty requests per DAY, and the body's own advice is to retry in 29 seconds. Every 429 got the
+ * same 60-second cool-off, so a spent day was re-discovered a minute later, and a minute after
+ * that, for the rest of the day — with two 4s/8s in-call retries burning twelve seconds of wall
+ * clock each time before the chain even moved on.
+ *
+ * This is RONDE 117's Groq arithmetic applied to the provider it was not applied to. The
+ * distinction is the quotaId, not the status: a per-minute Gemini limit still gets its minute.
+ */
+function isGeminiDailyQuotaError(body: string): boolean {
+  const lower = body.toLowerCase();
+  return (
+    lower.includes("perday") ||
+    lower.includes("per day") ||
+    lower.includes("free_tier_requests") ||
+    lower.includes("requestsperdayperprojectpermodel")
+  );
+}
+
+/** How long Gemini is left alone once its DAILY request quota is gone. */
+const GEMINI_DAILY_COOLDOWN_MS = 60 * 60 * 1000;
+/** Cool-off for a Gemini burst (per-minute) limit — unchanged from before RONDE 120. */
+const GEMINI_BURST_COOLDOWN_MS = 60 * 1000;
+/**
+ * Cool-off for a refused project (403 PERMISSION_DENIED).
+ *
+ * Deliberately minutes, not an hour: the same worker log shows Gemini answering 403 twice and then
+ * serving real quota errors seconds later, so the denial was not permanent. Long enough to stop
+ * every call re-discovering it, short enough that a transient refusal costs one render, not a day.
+ */
+const GEMINI_DENIED_COOLDOWN_MS = 5 * 60 * 1000;
+
+/** Exported for RONDE 120's regression test: the arithmetic that treated a day as a minute. */
+export function markGeminiCooldown(status: number, body: string): void {
+  const daily = status === 429 && isGeminiDailyQuotaError(body);
+  const denied = status === 403;
+  if (status !== 429 && !denied) return;
+  const hintMs = Math.max(0, (parseRetryAfterSeconds(body) ?? 0) * 1000);
+  const cooldownMs = daily
+    ? Math.max(hintMs, GEMINI_DAILY_COOLDOWN_MS)
+    : denied
+      ? GEMINI_DENIED_COOLDOWN_MS
+      : Math.max(hintMs, GEMINI_BURST_COOLDOWN_MS);
+  geminiCooldownUntilMs = Math.max(geminiCooldownUntilMs, Date.now() + cooldownMs);
+  if (daily) {
+    console.warn(
+      `[LLM] Gemini daily request quota spent — standing down for ` +
+        `${Math.round(cooldownMs / 60_000)}min (Gemini's own hint was ${Math.round(hintMs / 1000)}s)`
+    );
+  } else if (denied) {
+    console.warn(
+      `[LLM] Gemini refused the request (403 PERMISSION_DENIED) — standing down for ` +
+        `${Math.round(cooldownMs / 60_000)}min instead of retrying it on every call`
+    );
+  }
 }
 
 /** Call Google's Generative Language API — different format from OpenAI-compatible APIs.
@@ -797,17 +930,20 @@ async function invokeGemini(
     }
     // Free-tier RPM (429/RESOURCE_EXHAUSTED) is a short-lived burst limit, not exhaustion of the
     // daily quota — worth one or two short retries before giving up on this call entirely.
-    if (response.status === 429 && attempt < 2) {
+    //
+    // RONDE 120: unless the DAY is what ran out. Those two retries cost twelve seconds of wall
+    // clock and cannot succeed — the quota resets tomorrow, not in eight seconds — so a spent day
+    // moves on to the next provider immediately.
+    if (response.status === 429 && attempt < 2 && !isGeminiDailyQuotaError(lastErrorText)) {
       const waitSec = 4 * (attempt + 1);
       console.warn(`[LLM] Gemini rate limit (attempt ${attempt + 1}/3) — retry in ${waitSec}s`);
       await sleep(waitSec * 1000);
       continue;
     }
-    if (response.status === 429) {
-      // Retries exhausted this call — cool down briefly so the next several calls in this
-      // render skip straight to the next provider instead of each re-discovering the same limit.
-      geminiCooldownUntilMs = Date.now() + 60_000;
-    }
+    // Cool down so the next several calls in this render skip straight to the next provider
+    // instead of each re-discovering the same limit. RONDE 120: how long depends on WHICH limit —
+    // an hour for a spent day, a minute for a burst, five minutes for a refused project.
+    markGeminiCooldown(response.status, lastErrorText);
     // RONDE 119: the status and body travel with the error, so the chain can tell "out of quota"
     // from "answered badly" without reading the sentence.
     throw providerHttpError("gemini", response.status, lastErrorText,
@@ -1169,7 +1305,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         );
       }
       if (provider === "openai") {
-        markOpenAiQuotaExhausted(errorText);
+        markOpenAiCooldown(response.status, errorText);
       }
 
       const retryAfterSec = parseRetryAfterSeconds(errorText);

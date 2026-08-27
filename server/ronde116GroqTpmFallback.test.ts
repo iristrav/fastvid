@@ -69,7 +69,24 @@ describe("RONDE 116 — 413 is recognised as a provider capacity ceiling", () =>
     // burning the whole chain on it would turn one bug into four failed requests.
     expect(shouldFallbackToNextProvider(400, '{"error":{"message":"bad tool schema"}}')).toBe(false);
     expect(shouldFallbackToNextProvider(401, "unauthorized")).toBe(false);
-    expect(shouldFallbackToNextProvider(403, "forbidden")).toBe(false);
+    /**
+     * SUPERSEDED BY RONDE 120: 403 moved to the fall-through side, on production evidence.
+     *
+     * This line was written to keep the fall-through set from creeping wider than it had to be,
+     * and 403 was grouped with 400/401 as "the caller's fault". The worker log for render 543
+     * showed what it actually looks like:
+     *
+     *   Gemini API error 403: { message: "Your project has been denied access.",
+     *                           status: "PERMISSION_DENIED" }
+     *
+     * That is a statement about THIS provider, not about the request — the identical request was
+     * served by another provider one second later. Stopping the chain there left working providers
+     * unused, which is the same bug this file was opened to fix for 413.
+     *
+     * 400 and 401 keep their old answer, and that is the half of this assertion that still guards
+     * the original concern: a malformed request must not be re-sent to four providers in turn.
+     */
+    expect(shouldFallbackToNextProvider(403, "forbidden")).toBe(true);
     // ...and the ones that were already fall-throughs still are.
     expect(shouldFallbackToNextProvider(429, "rate limit")).toBe(true);
     expect(shouldFallbackToNextProvider(404, "model not found")).toBe(true);
