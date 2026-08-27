@@ -22,6 +22,7 @@ import * as os from "os";
 import * as path from "path";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
+import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicenseStatus";
 /**
  * RONDE 91 (§4) — the scene candidate pool asks the same providers the beat path asks, and until
  * this round it asked them without passing the gate. It could not: videoPipeline imports this
@@ -549,7 +550,22 @@ async function searchInternetArchiveCandidates(
           const licenseUrlRaw = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
           const rawRights = metaData.metadata?.rights;
           const rights = (Array.isArray(rawRights) ? rawRights[0] : rawRights)?.trim();
-          if (!isAllowedInternetArchiveLicensePool(licenseUrlRaw, rights)) continue;
+          /**
+           * RONDE 124 — the second copy of the same gate.
+           *
+           * The brief asked for the WHOLE chain rather than the first hit, and this is the other
+           * place a `youtube-*` item is refused. `youtubeLicenseStatus` has no pipeline imports,
+           * so using it here does not create the cycle this file's own comment warns about.
+           */
+          const poolLicense = youtubeLicenseDecision({
+            identifier: doc.identifier,
+            licenseUrl: licenseUrlRaw,
+            rights,
+          });
+          if (poolLicense.youtubeVideoId) {
+            console.log(`[ScenePool] ${formatYoutubeLicenseLine(poolLicense)}`);
+          }
+          if (!poolLicense.allowed) continue;
 
           const videoFiles = (metaData.files ?? []).filter(f =>
             ["h.264", "MPEG4", "MP4", "Ogg Video", "WebM"].includes(f.format)

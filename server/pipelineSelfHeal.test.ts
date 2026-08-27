@@ -150,14 +150,30 @@ describe("pipelineSelfHeal", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       enforceQualityExportGate(331, report, "1", finalOk);
+      /**
+       * SUPERSEDED BY RONDE 124: the field names changed, deliberately; what this test guards
+       * did not.
+       *
+       * It was written because a 42 was being reported as a 70 with nothing to say so, and it
+       * asserts that both numbers and both availability ratios appear together with a disclaimer.
+       * All four still do. `rawScore=`/`healedScore=` became `raw=`/`availabilityAdjusted=`
+       * because "healed" reads as "repaired" — the picture quality was never repaired, only the
+       * export decision — and because RONDE 124 puts the same two names on the stored report,
+       * where they now have to match.
+       */
       const healedLine = warnSpy.mock.calls
         .map((args) => args.join(" "))
-        .find((line) => line.includes("rawScore=42"));
+        .find((line) => line.includes("raw=42"));
       expect(healedLine).toBeDefined();
-      expect(healedLine).toMatch(/healedScore=\d+\/100/);
+      expect(healedLine).toMatch(/availabilityAdjusted=\d+\/100/);
       expect(healedLine).toContain("fallbackRatio=");
       expect(healedLine).toContain("realClipRatio=");
-      expect(healedLine).toContain("not actual visual quality");
+      expect(healedLine).toContain("NOT a measurement");
+
+      // RONDE 124: and the raw number now survives ON the report, not only in a log line.
+      expect(report.rawVisualQualityScore).toBe(42);
+      expect(report.availabilityAdjustedScore).toBe(report.score);
+      expect(report.score).toBeGreaterThan(42);
     } finally {
       warnSpy.mockRestore();
     }

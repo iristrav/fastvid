@@ -203,7 +203,16 @@ describe("RONDE 95 §2 — provider and route travel together", () => {
     ] as const) {
       const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
       expect(idx, `${fn} missing`).toBeGreaterThan(-1);
-      const body = PIPELINE_SRC.slice(idx, idx + 14000);
+      /**
+       * SUPERSEDED BY RONDE 124 — the window, not the rule.
+       *
+       * This slice is a stand-in for "inside this function", and RONDE 124 added the licence
+       * classification block to fetchInternetArchiveClips, pushing its `searchRoute:` past the
+       * 14000-character mark. Nothing about what this test guards changed: each downloader must
+       * still pass its OWN route rather than inheriting a default. Widened rather than loosened —
+       * the assertion is still anchored to this one function.
+       */
+      const body = PIPELINE_SRC.slice(idx, idx + 17000);
       expect(body, `${fn} does not pass its own searchRoute`).toContain(`searchRoute: "${route}"`);
     }
   });

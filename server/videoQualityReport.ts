@@ -87,6 +87,25 @@ export type VideoQualityReport = {
   hasSilentVoiceover?: boolean;
   score: number;
   /**
+   * RONDE 124 — the two numbers that were being collapsed into one.
+   *
+   * `score` is the EXPORT score: what the render is allowed to ship with, after the
+   * export-availability policy has had its say. That policy exists for a real reason (a finished
+   * video with real archive footage should not be blocked), but it is a statement about
+   * availability, not about whether the pictures match the narration.
+   *
+   * Until this round it overwrote `score` in place, and the pre-policy number survived only in a
+   * console line. Video 544 shipped as `score=85` when what the quality inputs actually measured
+   * was 10 — held frames, unverified provenance, a scene covered by one clip. Anything reading
+   * the stored report saw 85 and nothing else.
+   *
+   * Both are kept now. `rawVisualQualityScore` is what the quality inputs measured, and no policy
+   * may ever raise it; `availabilityAdjustedScore` is what the policy raised it to, present only
+   * when the policy actually fired. When they differ, that difference is the finding.
+   */
+  rawVisualQualityScore?: number;
+  availabilityAdjustedScore?: number;
+  /**
    * RONDE 105 — what the score is allowed to claim.
    *
    * A number on its own cannot say "nobody checked this". `status` can, and every reader that

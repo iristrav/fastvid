@@ -374,6 +374,12 @@ import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextP
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { formatSceneSearchBudget, sceneSearchBudgetMs } from "./sceneSearchBudget";
 import {
+  formatYoutubeLicenseLine,
+  formatYoutubeUsageReport,
+  youtubeLicenseDecision,
+  type YoutubeUsageEntry,
+} from "./youtubeLicenseStatus";
+import {
   buildClosingTail,
   closingTailSeconds,
   formatClosingTailPlan,
@@ -11151,15 +11157,44 @@ export async function fetchInternetArchiveClips(
         const licenseUrl = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
         const rawRights = metaData.metadata?.rights;
         const rights = (Array.isArray(rawRights) ? rawRights[0] : rawRights)?.trim();
-        if (!isAllowedInternetArchiveLicense(licenseUrl, rights)) {
+        /**
+         * RONDE 124 — the same gate, but it now says WHICH of two things it found.
+         *
+         * `isAllowedInternetArchiveLicense` returned one boolean, so an -nc/-nd licence (the
+         * rightsholder saying no) and an empty metadata field (nobody filled it in) came out
+         * identical. This render's log is 56 lines of the second kind, all of them YouTube
+         * mirrors:
+         *
+         *     Archive item youtube-cS2JdEghHDo has no usable license
+         *     (licenseurl=none, rights=none) — skipping
+         *
+         * VERIFIED behaves exactly as `true` did and REJECTED exactly as `false` did. The only
+         * new path is UNVERIFIED on a `youtube-*` identifier with ALLOW_UNVERIFIED_YOUTUBE=true,
+         * which lets the item continue to the download, the preview check and the vision gate —
+         * all unchanged — while every report it appears in says the rights are unproven.
+         */
+        const licenseDecision = youtubeLicenseDecision({
+          identifier: doc.identifier,
+          licenseUrl,
+          rights,
+        });
+        const ytMetrics = providerMetrics(sourcingCache, "youtube_archive");
+        if (licenseDecision.youtubeVideoId) {
+          if (licenseDecision.status === "VERIFIED") ytMetrics.licenseVerified++;
+          else if (licenseDecision.status === "UNVERIFIED") ytMetrics.licenseUnverified++;
+          else ytMetrics.licenseRejected++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: ${formatYoutubeLicenseLine(licenseDecision)}`);
+        }
+        if (!licenseDecision.allowed) {
           // Cache the rejection (Phase 6) so a later cascade that resurfaces this identifier
-          // skips it above without repeating the metadata call. The gate itself is unchanged.
+          // skips it above without repeating the metadata call.
           putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
             licenseAllowed: false,
           });
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} has no usable license ` +
-            `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}) — skipping`
+            `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}, ` +
+            `status=${licenseDecision.status}) — skipping`
           );
           continue;
         }
@@ -16104,6 +16139,12 @@ export interface ProviderAssetCacheEntry {
  *  awaits, nothing that can fail or block the render. Surfaced once at the end of a render
  *  through the existing PipelineStepTiming console summary. */
 export interface ProviderSourcingMetrics {
+  /** RONDE 124 — licence classification counts (see ./youtubeLicenseStatus). */
+  licenseVerified: number;
+  licenseUnverified: number;
+  licenseRejected: number;
+  /** How many of this provider's assets reached the finished video. */
+  usedCount: number;
   searchCount: number;
   searchLatencyMs: number;
   resultCount: number;
@@ -16224,6 +16265,9 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
     searchCount: 0, searchLatencyMs: 0, resultCount: 0, queryCacheHits: 0, queryCacheMisses: 0,
     metadataCount: 0, metadataCacheHits: 0, assetCacheMisses: 0,
     licenseCalls: 0, licenseCacheHits: 0, licenseRejectedCacheHits: 0,
+    // RONDE 124: the three licence outcomes, kept apart so a report can say how much material
+    // was refused outright versus merely unproven.
+    licenseVerified: 0, licenseUnverified: 0, licenseRejected: 0, usedCount: 0,
     downloadCount: 0, downloadCacheHits: 0,
     duplicateSkipped: 0, acceptedCount: 0,
     eligibleCount: 0, adoptedCount: 0,
