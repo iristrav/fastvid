@@ -146,10 +146,27 @@ describe("RONDE 108 #1 — nothing refuses in silence any more", () => {
   });
 
   it("the minimum gap between the two marks comes from the shared rule, not a literal", () => {
-    const idx = GRID.indexOf('function markAt(which: "start" | "end")');
+    /**
+     * SUPERSEDED by RONDE 110 in ONE respect: the guard moved out of markAt into applyMark, which
+     * every control that moves a marker now goes through (the click, the nudges, the typed field).
+     * The rule is unchanged and still comes from the shared constant — only the function that
+     * holds it has a name now. Asserted on that function, because markAt's body only MENTIONS the
+     * constant in a comment and an assertion that reads documentation proves nothing.
+     */
+    const idx = GRID.indexOf('function applyMark(which: "start" | "end", raw: number)');
+    expect(idx).toBeGreaterThan(-1);
     const body = GRID.slice(idx, idx + 1200);
-    expect(body).toContain("MIN_TRIMMED_CLIP_SEC");
-    expect(body).not.toContain("- 0.5)");
+    const code = body
+      .split("\n")
+      .filter((l) => {
+        const t = l.trim();
+        return t && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
+      })
+      .join("\n");
+    expect(code).toContain("MIN_TRIMMED_CLIP_SEC");
+    expect(code).not.toContain("- 0.5)");
+    // markAt still exists and still pauses first — it just delegates the range rule.
+    expect(GRID).toContain('applyMark(which, read.sec);');
   });
 });
 

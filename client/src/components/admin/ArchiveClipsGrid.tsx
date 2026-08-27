@@ -278,6 +278,107 @@ function LazyArchiveMedia({
   );
 }
 
+/**
+ * RONDE 110 — one end of a trim range, with every way to move it in one row.
+ *
+ * The head and the tail get the identical set of controls, because they are the identical job.
+ * Sizes are in seconds throughout: an archive clip is a few seconds long, so a tenth of a second
+ * is the useful unit and a whole second is the coarse one.
+ */
+function TrimMarkRow({
+  label,
+  markSet,
+  value,
+  duration,
+  accent,
+  onSetFromPlayhead,
+  onNudge,
+  onType,
+  onSeek,
+  onClear,
+}: {
+  label: string;
+  /** False while this end is still implicit (the clip's own head or tail). */
+  markSet: boolean;
+  value: number;
+  duration: number;
+  accent: "emerald" | "red";
+  onSetFromPlayhead: () => void;
+  onNudge: (deltaSec: number) => void;
+  onType: (sec: number) => void;
+  onSeek: () => void;
+  onClear?: () => void;
+}) {
+  // Local text state so a half-typed "1." is not thrown away on every keystroke.
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? value.toFixed(2);
+  const dot = accent === "emerald" ? "bg-emerald-300" : "bg-red-400";
+
+  function commit(raw: string) {
+    setDraft(null);
+    const n = parseFloat(raw.replace(",", "."));
+    if (!isFinite(n)) {
+      toast.error(`${label}: "${raw}" is geen aantal seconden`);
+      return;
+    }
+    onType(n);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="flex items-center gap-1.5 w-20 shrink-0">
+        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+        <span className="text-xs text-slate-400">{label}</span>
+      </span>
+      <input
+        value={shown}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit((e.target as HTMLInputElement).value);
+          if (e.key === "Escape") setDraft(null);
+        }}
+        className="w-20 bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white tabular-nums"
+        title={`${label} in seconden${duration > 0 ? ` (0 – ${duration.toFixed(2)})` : ""}`}
+      />
+      <span className="text-[11px] text-slate-600">s</span>
+      {[-1, -0.1, 0.1, 1].map((d) => (
+        <button
+          key={d}
+          onClick={() => onNudge(d)}
+          className="px-1.5 py-1 text-[11px] rounded bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white tabular-nums"
+          title={`${label} ${d > 0 ? "later" : "eerder"} met ${Math.abs(d)}s`}
+        >
+          {d > 0 ? `+${d}` : d}
+        </button>
+      ))}
+      <button
+        onClick={onSetFromPlayhead}
+        className="px-2 py-1 text-[11px] rounded bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1"
+        title={`${label} op de huidige afspeelpositie zetten`}
+      >
+        <Scissors className="w-3 h-3" /> Hier
+      </button>
+      <button
+        onClick={onSeek}
+        className="px-2 py-1 text-[11px] rounded bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white"
+        title={`Naar het ${label.toLowerCase()}punt springen`}
+      >
+        Ga heen
+      </button>
+      {markSet && onClear && (
+        <button
+          onClick={onClear}
+          className="px-1.5 py-1 text-[11px] rounded text-slate-500 hover:text-slate-300"
+          title={`${label}punt wissen`}
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AssetPreviewModal({
   asset,
   sceneAudit,
@@ -292,6 +393,13 @@ function AssetPreviewModal({
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState<number>(asset.durationSec ?? 0);
+  /**
+   * RONDE 110 — where to stop when previewing the kept range, or null when playing normally.
+   *
+   * A ref rather than state: the timeupdate listener is attached once, so it would close over a
+   * stale state value forever. It reads the ref's current value on every tick instead.
+   */
+  const previewStopRef = useRef<number | null>(null);
   /**
    * RONDE 98 — a start AND an end.
    *
@@ -336,7 +444,16 @@ function AssetPreviewModal({
         }
       };
       attached.push(
-        ["timeupdate", () => setCurrentTime(v.currentTime)],
+        ["timeupdate", () => {
+          setCurrentTime(v.currentTime);
+          // RONDE 110: stop where the kept range ends, so "Bekijk selectie" shows the result
+          // rather than playing on into footage that is about to be thrown away.
+          const stopAt = previewStopRef.current;
+          if (stopAt != null && v.currentTime >= stopAt) {
+            v.pause();
+            previewStopRef.current = null;
+          }
+        }],
         ["durationchange", noteDuration],
         ["loadedmetadata", noteDuration],
         // RONDE 108: a file the browser refuses to decode retracts the trim controls rather than
@@ -376,6 +493,33 @@ function AssetPreviewModal({
     return { ok: true, sec: t };
   }
 
+  /**
+   * RONDE 110 — one guarded setter, used by every control that moves a marker.
+   *
+   * There used to be exactly one way to place a mark: park the playhead and click. That is fine
+   * for a rough cut and useless for the two seconds of slate at the head of a clip, where the
+   * operator wants "start at 2.4" and gets whatever frame the player happened to stop on. The
+   * nudge buttons and the typed field move the same marks, so the min-gap rule has to live
+   * somewhere all of them pass through rather than in the click handler.
+   */
+  function applyMark(which: "start" | "end", raw: number): boolean {
+    const t = Math.max(0, duration > 0 ? Math.min(raw, duration) : raw);
+    if (which === "start") {
+      if (trimEnd != null && t >= trimEnd - MIN_TRIMMED_CLIP_SEC) {
+        toast.error(`Startpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s vóór het eindpunt liggen`);
+        return false;
+      }
+      setTrimStart(t);
+      return true;
+    }
+    if (t <= (trimStart ?? 0) + MIN_TRIMMED_CLIP_SEC) {
+      toast.error(`Eindpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s ná het startpunt liggen`);
+      return false;
+    }
+    setTrimEnd(t);
+    return true;
+  }
+
   /** Marking pauses: the mark belongs at the frame the operator was looking at, not four ahead. */
   function markAt(which: "start" | "end") {
     const read = playheadSec();
@@ -384,26 +528,51 @@ function AssetPreviewModal({
       return;
     }
     getVideo()?.pause();
-    const t = read.sec;
-    if (which === "start") {
-      if (trimEnd != null && t >= trimEnd - MIN_TRIMMED_CLIP_SEC) {
-        toast.error(`Startpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s vóór het eindpunt liggen`);
-        return;
-      }
-      setTrimStart(t);
-      return;
-    }
-    if (t <= (trimStart ?? 0) + MIN_TRIMMED_CLIP_SEC) {
-      toast.error(`Eindpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s ná het startpunt liggen`);
-      return;
-    }
-    setTrimEnd(t);
+    previewStopRef.current = null;
+    // The min-gap rule between the two marks lives in applyMark, which every control goes
+    // through — see MIN_TRIMMED_CLIP_SEC there.
+    applyMark(which, read.sec);
   }
 
   const markStart = () => markAt("start");
   const markEnd = () => markAt("end");
 
   const hasTrimRange = trimStart != null || trimEnd != null;
+  /**
+   * RONDE 110 — the range as it stands, with the ends the operator has not touched filled in.
+   *
+   * Both ends are always a real number here, so the head and the tail are edited the same way. An
+   * untouched start is 0 and an untouched end is the clip's length: that is what "keep everything"
+   * means, and it is what the trim would do.
+   */
+  const rangeStart = trimStart ?? 0;
+  const rangeEnd = trimEnd ?? duration;
+
+  /** Seek without disturbing a preview that is not running. */
+  function seekTo(sec: number) {
+    const v = getVideo();
+    if (!v) {
+      toast.error("Kan niet springen", { description: "De video is nog niet geladen" });
+      return;
+    }
+    previewStopRef.current = null;
+    v.currentTime = Math.max(0, duration > 0 ? Math.min(sec, duration) : sec);
+  }
+
+  /** Play exactly what will be kept, so the cut is seen before it overwrites the original. */
+  function previewKeptRange() {
+    const v = getVideo();
+    if (!v) {
+      toast.error("Kan de selectie niet afspelen", { description: "De video is nog niet geladen" });
+      return;
+    }
+    v.currentTime = rangeStart;
+    previewStopRef.current = rangeEnd > rangeStart ? rangeEnd : null;
+    void v.play().catch(() => {
+      previewStopRef.current = null;
+      toast.error("Afspelen geblokkeerd door de browser");
+    });
+  }
   /**
    * RONDE 108 — the same rule the server uses, asked before anything is sent.
    *
@@ -532,24 +701,44 @@ function AssetPreviewModal({
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                const t = frac * duration;
-                const v = getVideo();
-                if (v) v.currentTime = t;
+                seekTo(frac * duration);
               }}
               title="Klik om naar dit punt te springen"
             >
-              {/* kept range */}
+              {/**
+                * RONDE 110 — what gets DROPPED is shaded, and the playhead is a line.
+                *
+                * The playhead used to be a filled bar from 0 to the current position, drawn over
+                * the kept range — so as soon as you played past your own start marker, the marker
+                * and the kept region disappeared under it and there was nothing to aim at. The
+                * discarded head and tail are now the dark parts and the playhead is one thin
+                * line, so both marks stay visible wherever the player is.
+                */}
               <div
                 className="absolute top-0 h-full bg-emerald-500/40 rounded-full"
                 style={{
-                  left: `${((trimStart ?? 0) / duration) * 100}%`,
-                  width: `${(((trimEnd ?? duration) - (trimStart ?? 0)) / duration) * 100}%`,
+                  left: `${(rangeStart / duration) * 100}%`,
+                  width: `${((rangeEnd - rangeStart) / duration) * 100}%`,
                 }}
               />
-              {/* playhead */}
+              {rangeStart > 0 && (
+                <div
+                  className="absolute top-0 left-0 h-full bg-black/50 rounded-l-full"
+                  style={{ width: `${(rangeStart / duration) * 100}%` }}
+                  title={`${rangeStart.toFixed(2)}s wordt weggeknipt aan het begin`}
+                />
+              )}
+              {rangeEnd < duration && (
+                <div
+                  className="absolute top-0 right-0 h-full bg-black/50 rounded-r-full"
+                  style={{ width: `${((duration - rangeEnd) / duration) * 100}%` }}
+                  title={`${(duration - rangeEnd).toFixed(2)}s wordt weggeknipt aan het einde`}
+                />
+              )}
+              {/* playhead — a line, so it never hides a marker */}
               <div
-                className="absolute top-0 h-full bg-white/30 rounded-full"
-                style={{ width: `${(currentTime / duration) * 100}%` }}
+                className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/80"
+                style={{ left: `${(currentTime / duration) * 100}%` }}
               />
               {trimStart != null && (
                 <div
@@ -565,31 +754,63 @@ function AssetPreviewModal({
               )}
             </div>}
 
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-slate-500 tabular-nums w-24">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-500 tabular-nums">
                 {currentTime.toFixed(2)}s / {duration > 0 ? `${duration.toFixed(1)}s` : "?"}
               </span>
               <button
-                onClick={markStart}
-                className="px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
-                title="Begin van de bewaarde clip op de huidige positie"
+                onClick={previewKeptRange}
+                className="px-2.5 py-1 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
+                title="Speel precies af wat er bewaard blijft"
               >
-                <Scissors className="w-3 h-3" /> Begin hier
+                <Play className="w-3 h-3" /> Bekijk selectie
               </button>
-              <button
-                onClick={markEnd}
-                className="px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
-                title="Einde van de bewaarde clip op de huidige positie"
-              >
-                <Scissors className="w-3 h-3" /> Einde hier
-              </button>
+            </div>
+
+            {/**
+              * RONDE 110 — the head and the tail are edited the same way, side by side.
+              *
+              * Both ends were already trimmable, but the only way to place either mark was to park
+              * the playhead and click. That is fine for a rough cut and no use at all for the two
+              * seconds of slate at the head of a clip, where what is wanted is "start at 2.4" and
+              * what is offered is "wherever the player stopped". Each end now has its own row: a
+              * typed value, nudges, a jump to the mark, and a clear.
+              */}
+            <div className="space-y-1.5">
+              <TrimMarkRow
+                label="Begin"
+                markSet={trimStart != null}
+                value={rangeStart}
+                duration={duration}
+                accent="emerald"
+                onSetFromPlayhead={markStart}
+                onNudge={(delta) => applyMark("start", rangeStart + delta)}
+                onType={(sec) => applyMark("start", sec)}
+                onSeek={() => seekTo(rangeStart)}
+                onClear={trimStart != null ? () => setTrimStart(null) : undefined}
+              />
+              <TrimMarkRow
+                label="Einde"
+                markSet={trimEnd != null}
+                value={rangeEnd}
+                duration={duration}
+                accent="red"
+                onSetFromPlayhead={markEnd}
+                onNudge={(delta) => applyMark("end", rangeEnd + delta)}
+                onType={(sec) => applyMark("end", sec)}
+                onSeek={() => seekTo(rangeEnd)}
+                onClear={trimEnd != null ? () => setTrimEnd(null) : undefined}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
               {hasTrimRange && (
                 <>
                   <span
                     className={`text-xs tabular-nums ${trimVerdict.ok ? "text-emerald-300" : "text-amber-300"}`}
                   >
-                    bewaar {(trimStart ?? 0).toFixed(2)}s – {(trimEnd ?? duration).toFixed(2)}s
-                    {duration > 0 && ` (${((trimEnd ?? duration) - (trimStart ?? 0)).toFixed(2)}s)`}
+                    bewaar {rangeStart.toFixed(2)}s – {rangeEnd.toFixed(2)}s
+                    {duration > 0 && ` (${(rangeEnd - rangeStart).toFixed(2)}s)`}
                   </span>
                   <button
                     onClick={applyTrim}
@@ -612,6 +833,12 @@ function AssetPreviewModal({
                     Annuleren
                   </button>
                 </>
+              )}
+              {!hasTrimRange && (
+                <span className="text-[11px] text-slate-500">
+                  Zet een begin- en/of eindpunt om deze clip bij te knippen. Alles tussen de twee
+                  punten blijft bewaard.
+                </span>
               )}
             </div>
           </div>
