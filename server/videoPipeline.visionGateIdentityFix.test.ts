@@ -203,17 +203,33 @@ describe("Vision Gate final hardening — Test C: a real adopted clip is never r
   });
 });
 
-describe("Vision Gate root-cause fix round 2 — Test 9: off_topic_visual rejects are now individually logged", () => {
-  it("logs scene, beat, provider, query, and title before recording an off_topic_visual reject", () => {
-    // Anchored on the reject itself, not on the first occurrence of the reason string —
-    // RONDE 29 added a recordGateVerdict("off_topic_visual", …) counter that now appears
-    // earlier in the file, and a bare indexOf would land on that instead.
-    const idx = fullSource.indexOf('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual"');
+describe("Vision Gate root-cause fix round 2 — Test 9: off_topic_visual verdicts are individually logged", () => {
+  /**
+   * SUPERSEDED BY RONDE 114 in ONE respect: there is no off_topic_visual reject any more.
+   *
+   * The gate reads a provider TITLE, so it was demoted to a flag alongside `vision_gate`
+   * (RONDE 103) and `off_topic_protest` (RONDE 104) — a metadata check standing in front of a
+   * model that looks at the frame can only take material away. What this test actually protects
+   * is unchanged and still worth protecting: when the gate has an opinion, the line carries
+   * enough to reconstruct it from logs alone (scene, beat, provider, query, title). It is now
+   * asserted on the flag line rather than on a reject that no longer exists.
+   */
+  it("logs scene, beat, provider, query and title when off_topic_visual has an opinion", () => {
+    const idx = fullSource.indexOf("provider title shares nothing with ");
     expect(idx).toBeGreaterThan(-1);
-    const before = fullSource.slice(Math.max(0, idx - 700), idx);
-    expect(before).toContain("off_topic_visual provider=");
-    expect(before).toContain("query=");
-    expect(before).toContain("title=");
+    // The scene/beat prefix opens the template literal, so the window reaches back past the match.
+    const line = fullSource.slice(Math.max(0, idx - 200), idx + 600);
+    expect(line).toContain("Scene ${sceneIndex} beat ${beatIndex}");
+    expect(line).toContain("provider=");
+    expect(line).toContain("query=");
+    expect(line).toContain("title=");
+    expect(line).toContain("flagged, not rejected");
+  });
+
+  it("and nothing rejects on it any more", () => {
+    expect(fullSource).not.toContain(
+      'recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual"'
+    );
   });
 });
 

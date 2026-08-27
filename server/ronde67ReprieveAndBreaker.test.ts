@@ -37,7 +37,7 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
     const src = PIPELINE();
     const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 14000);
+    const block = src.slice(idx, idx + 15500);
     expect(block).toContain("requeuedAfterRefusal.add(p);");
     expect(block).toContain("finalPaths.push(p);");
     // The gate is not applied a second time to a clip that has already been refused.
@@ -95,7 +95,7 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
     const src = PIPELINE();
     const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
-    const block = src.slice(idx, idx + 14000);
+    const block = src.slice(idx, idx + 15500);
     expect(block).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });
 

@@ -102,6 +102,12 @@ export const SILENT_GATE_MIN_ASKED = 20;
  *                          longer refuses.
  *   · `off_topic_protest`  reads a provider title or a filename, not the frame. In front of a
  *                          model that looks at the picture it can only take material away.
+ *   · `off_topic_visual`   RONDE 114. Same reasoning, same shape, missed twice: it refuses a
+ *                          candidate whose provider TITLE shares no token with the beat, and it
+ *                          sat directly in front of the decider at both of its call sites. Real
+ *                          archive titles share nothing constantly — "Bundesarchiv Bild
+ *                          183-S33882" is the catalogue form of the German federal archive's
+ *                          Hitler photographs.
  *
  * Both still record a verdict, because how often they WOULD have fired is worth knowing. Alarming
  * on them would tell a reader to "verify the check can still fire" about two checks designed not
@@ -113,6 +119,7 @@ export const SILENT_GATE_MIN_ASKED = 20;
 export const INTENTIONALLY_NON_FIRING_GATES: ReadonlySet<string> = new Set([
   "vision_gate",
   "off_topic_protest",
+  "off_topic_visual",
 ]);
 
 /**

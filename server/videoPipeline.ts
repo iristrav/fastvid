@@ -19903,19 +19903,35 @@ async function adoptClip(
         // Only an ask when there IS a provider title to judge — this check is a documented
         // no-op without one, and counting those would make a broken gate look busy.
         if (providerTitle) recordGateVerdict("off_topic_visual", belowRelevanceFloor);
+        /**
+         * RONDE 114 — this reads a provider TITLE, so it flags and no longer refuses.
+         *
+         * RONDE 103 took the veto off `vision_gate` and RONDE 104 off `off_topic_protest`, both
+         * for the same stated reason: a check that reads metadata instead of the frame can only
+         * take material away once a model that looks at the picture is standing behind it. This
+         * one was missed, and it sat three lines above that very model.
+         *
+         * What it actually rejects is a title sharing ZERO tokens with the beat. Real archive
+         * titles do that constantly — "Bundesarchiv Bild 183-S33882" is the literal catalogue
+         * form of the German federal archive's Hitler photographs, and a foreign-language or
+         * accession-number title is the norm rather than the exception. Every one of those was
+         * discarded before the decider ever saw the frame.
+         *
+         * The signal is unchanged and still recorded, so how often it WOULD have fired stays
+         * measurable — the same treatment its two demoted siblings got.
+         */
         if (belowRelevanceFloor) {
-          // Production finding: this reject reason had no accompanying log line anywhere, so an
-          // off_topic_visual reject in a coverage-gate summary could never be reconstructed from
+          // Production finding: this reason had no accompanying log line anywhere, so an
+          // off_topic_visual verdict in a coverage-gate summary could never be reconstructed from
           // logs (unlike vision_gate, which logs via evaluateClipVisionGate). Minimal targeted
-          // logging — same shape as the other reject-reason warnings in this loop — using data
+          // logging — same shape as the other reason warnings in this loop — using data
           // already in scope (no new lookups).
-          console.warn(
-            `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(p)}" ` +
-              `off_topic_visual provider=${contentKey.split(":")[0] || "unknown"} query="${sourceQuery.slice(0, 60)}" ` +
-              `title="${(providerTitle ?? "").slice(0, 60)}"`
+          console.log(
+            `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: provider title shares nothing with ` +
+              `the beat for "${path.basename(p)}" — flagged, not rejected; the relevance gate decides ` +
+              `(provider=${contentKey.split(":")[0] || "unknown"} query="${sourceQuery.slice(0, 60)}" ` +
+              `title="${(providerTitle ?? "").slice(0, 60)}")`
           );
-          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual", sourceQuery);
-          continue;
         }
       }
       if (opts.scriptImageFallback) {
@@ -24832,9 +24848,14 @@ async function adoptBestSimilarBeatClip(
         similarProviderTitle, similarQuery, beat.text, videoTitle
       );
       if (similarProviderTitle) recordGateVerdict("off_topic_visual", similarBelowFloor);
+      // RONDE 114: flagged, not rejected — see the note at adoptClip's copy of this floor. The
+      // vision gate is called on the very next line; letting a title veto in front of it is the
+      // pattern RONDE 103/104 removed from the two gates either side of this one.
       if (similarBelowFloor) {
-        recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "off_topic_visual", similarQuery);
-        continue;
+        console.log(
+          `[Pipeline] s${scene.index}b${beat.index}: provider title shares nothing with the beat ` +
+            `for ${path.basename(clip)} — flagged, not rejected; the relevance gate decides`
+        );
       }
     }
 
