@@ -371,6 +371,7 @@ import {
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
+import { buildClosingTail, closingTailSeconds, formatClosingTailPlan } from "./closingTail";
 import {
   SUBJECT_FALLBACK_ROUTE,
   formatNoSubjectLine,
@@ -32442,10 +32443,55 @@ export async function concatenateScenesWithMusic(
   }
 
   const allClips = [...validScenePaths];
+
+  /**
+   * RONDE 121 — three seconds of picture after the last word.
+   *
+   * Appended here, as one more segment in the concat list, rather than by lengthening the last
+   * scene. That keeps it out of every stage that reasons about scenes: the beat coverage, the
+   * vision gate, the overlay scheduler and the per-scene voice trim all still see exactly the
+   * scenes they saw before, and the tail is a thing that happens after them.
+   *
+   * It is deliberately the LAST thing added and the first thing dropped: `buildClosingTail`
+   * returns null on any problem and the concat proceeds without it. A closing hold must never be
+   * able to cost a finished render.
+   */
+  const tailSec = closingTailSeconds();
+  let closingTailSec = 0;
+  if (tailSec > 0 && allClips.length > 0) {
+    const lastScene = allClips[allClips.length - 1]!;
+    const lastSceneDur = await probeVideoDurationSec(lastScene);
+    if (lastSceneDur > 0.2) {
+      const built = await buildClosingTail({
+        lastScenePath: lastScene,
+        outputPath: path.join(workDir, `fastvid_${videoId}_tail.mp4`),
+        framePath: path.join(workDir, `fastvid_${videoId}_tailframe.jpg`),
+        ffmpegBin: FFMPEG_BIN,
+        run: (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label),
+        lastSceneDurationSec: lastSceneDur,
+        tailSec,
+        widthPx: VIDEO_WIDTH,
+        heightPx: VIDEO_HEIGHT,
+        encodeArgs: `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast"} -crf ${fastShort ? 22 : 18}`,
+        fileExists: (p) => {
+          try { return fs.existsSync(p) && fs.statSync(p).size > 1000; } catch { return false; }
+        },
+      });
+      if (built) {
+        allClips.push(built.path);
+        closingTailSec = built.plan.tailSec;
+        console.log(formatClosingTailPlan(built.plan, VIDEO_WIDTH, VIDEO_HEIGHT));
+      } else {
+        console.warn("[ClosingTail] could not be built — the video ends on the last word, as before");
+      }
+    }
+  }
+
   const listContent = allClips.map(p => `file '${p}'`).join("\n");
   fs.writeFileSync(listFile, listContent, "utf-8");
 
-  const totalWithCards = totalDuration;
+  // The music track has to cover the tail too, or the last three seconds fall silent.
+  const totalWithCards = totalDuration + closingTailSec;
 
   const concatPreset = fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
   const concatCrf = fastShort ? 22 : 18;
