@@ -230,6 +230,17 @@ export class BudgetTracker {
   }
 
   /** Record FFmpeg process wall-clock time. Call from execRaw completion. */
+  /**
+   * RONDE 129 — how much of the render's clock is left.
+   *
+   * The tracker already knows this (it computes it for stageEnd and logSummary); nothing could
+   * ASK it. A retry that will be cut off by the deadline costs its wait and its work and delivers
+   * nothing, so the decision to retry needs this number.
+   */
+  remainingMs(): number {
+    return Math.max(0, this.budget.totalMs - (Date.now() - this.renderStartMs));
+  }
+
   addFfmpegBusyMs(ms: number):  void { this.ffmpegBusyMs  += ms; }
   /** Record outbound network wait (download/upload time). */
   addNetworkWaitMs(ms: number): void { this.networkWaitMs += ms; }

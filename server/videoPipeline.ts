@@ -34,6 +34,13 @@ import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
+import {
+  classifyProviderFailure,
+  cooldownMsForFailure,
+  formatProviderCooldown,
+  formatRetryGuard,
+  shouldRetryAfterFailure,
+} from "./providerFailureClass";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -1020,6 +1027,30 @@ function isWikimediaInCooldown(): boolean {
   return Date.now() < wikimediaCooldownUntilMs;
 }
 
+/**
+ * RONDE 129 — a 429 does not have to happen three times to be believed.
+ *
+ * The streak breaker below needs three consecutive failures, which is right for an ambiguous
+ * one: a timeout might have been bad luck. A 429 is not ambiguous — the server has said in words
+ * that it is being asked too often — and waiting for two more means sending two more requests
+ * into a server that already refused. Scenes are searched in parallel, so those two can be in
+ * flight before the first is even counted, which is the shape the production log shows.
+ *
+ * Deliberately separate from markWikimediaSearchResult: this applies a stand-down, it does not
+ * count a failure. The callers already count, and counting in both places would trip the breaker
+ * a request early.
+ *
+ * Only Wikimedia stands down. Every other provider carries on, which is the point.
+ */
+function markWikimediaRateLimited(status?: number): void {
+  const kind = classifyProviderFailure({ status });
+  const rateCooldownMs = cooldownMsForFailure(kind);
+  if (rateCooldownMs <= 0) return;
+  wikimediaCooldownUntilMs = Math.max(wikimediaCooldownUntilMs, Date.now() + rateCooldownMs);
+  wikimediaFailureStreak = 0;
+  console.warn(formatProviderCooldown("wikimedia", kind, rateCooldownMs));
+}
+
 function markWikimediaSearchResult(success: boolean): void {
   if (success) {
     wikimediaFailureStreak = 0;
@@ -1057,6 +1088,14 @@ function logWikimediaHttpFailure(
   sceneIndex: number,
   resp: { status: number; statusText?: string }
 ): void {
+  /**
+   * RONDE 129: the STATUS reaches the breaker as well as the log — but only to apply an immediate
+   * rate-limit stand-down, never to count a failure. Every caller of this already calls
+   * markWikimediaSearchResult(false) itself, and counting here too would trip the three-strike
+   * breaker after two requests instead of three. RONDE 69's note above still holds: this function
+   * does not change the counting.
+   */
+  markWikimediaRateLimited(typeof resp.status === "number" ? resp.status : undefined);
   const status = typeof resp.status === "number" ? resp.status : 0;
   const reason = typeof resp.statusText === "string" && resp.statusText.trim()
     ? ` ${resp.statusText.trim()}`
@@ -8431,17 +8470,59 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
         break;
       } catch (err) {
         lastErr = err;
-        if (retry < FALLBACK_RETRIES - 1) {
+        /**
+         * RONDE 129 — "transient" was the word for every failure, including the one that cannot
+         * possibly go away.
+         *
+         * From production:
+         *
+         *     fallback attempt 1 failed (transient) — retry 1/3 in 3.6s: Video generation cancelled
+         *     fallback attempt 1 failed (transient) — retry 2/3 in 7.1s: Video generation cancelled
+         *
+         * `throwIfVideoGenerationCancelled` throws that when the render has been called off, and
+         * the cancel flag stays set — so this slept four seconds and asked again for something
+         * guaranteed to fail, three times, for each command variant, on a render that had already
+         * been told to stop. The classifier answers the question the word "transient" was
+         * standing in for.
+         */
+        const wait = jitteredDelay((retry + 1) * 4_000);
+        const decision = shouldRetryAfterFailure({
+          kind: classifyProviderFailure({ err }),
+          attempt: retry,
+          maxAttempts: FALLBACK_RETRIES,
+          waitMs: wait,
+          // The command's own ceiling — the withSceneFetchTimeout above.
+          estimatedCostMs: 45_000,
+          remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),
+        });
+        if (!decision.retry) {
+          if (decision.reason !== "ATTEMPTS_EXHAUSTED") {
+            console.warn(
+              formatRetryGuard({
+                operation: `colorFallback s${sceneIndex} variant ${i + 1}`,
+                attempt: retry,
+                maxAttempts: FALLBACK_RETRIES,
+                decision,
+                remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),
+                estimatedCostMs: 45_000,
+              })
+            );
+          }
+          // A cancellation must end the whole ladder, not just this variant: every remaining
+          // command would throw the same thing.
+          if (decision.kind === "CANCELLED" || decision.kind === "BUDGET_EXCEEDED") throw err;
+        }
+        if (decision.retry) {
           const forkPressure = isForkPressureError(err);
-          const wait = jitteredDelay((retry + 1) * 4_000);
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed ` +
-            `(${forkPressure ? "fork pressure" : "transient"}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${(wait / 1000).toFixed(1)}s: ` +
+            `(${forkPressure ? "fork pressure" : decision.kind.toLowerCase()}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${(wait / 1000).toFixed(1)}s: ` +
             `${(err as Error).message?.slice(0, 150)}`
           );
           await sleep(wait);
           continue;
         }
+        // No retry: report this variant's failure in full and move to the next command.
         const e = err as { message?: string; stderr?: string; code?: string };
         const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
         console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
