@@ -371,6 +371,8 @@ import {
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
+import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
+import { formatSceneSearchBudget, sceneSearchBudgetMs } from "./sceneSearchBudget";
 import {
   buildClosingTail,
   closingTailSeconds,
@@ -12605,7 +12607,8 @@ export function extractPrimaryPersonFromText(
   corroboration = ""
 ): string {
   if (!text?.trim()) return "";
-  const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
+  // RONDE 123: `\w` is ASCII, so this used to hand the pattern "G ring" for "Göring".
+  const cleaned = stripToNameSafeText(text);
   const aboutMatch = cleaned.match(/\babout\s+([A-Za-z][\w'-]+(?:\s+[A-Za-z][\w'-]+){0,2})/i);
   if (aboutMatch?.[1]) {
     const aboutTokens = cleanPersonNameCandidate(aboutMatch[1]);
@@ -12613,7 +12616,7 @@ export function extractPrimaryPersonFromText(
   }
   const kylieMatch = cleaned.match(/\b(kylie\s+jenner)\b/i);
   if (kylieMatch?.[1]) return "Kylie Jenner";
-  const nameMatches = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b/g) ?? [];
+  const nameMatches = cleaned.match(nameRunRegex(1, 2)) ?? [];
   const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
   for (const candidate of nameMatches) {
     if (skip.has(candidate.toLowerCase())) continue;
@@ -12647,8 +12650,9 @@ export function extractPrimaryPersonFromText(
  */
 export function extractPersonSurnameAnchor(text?: string): string {
   if (!text?.trim()) return "";
-  const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
-  const runs = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g) ?? [];
+  // RONDE 123: `\w` is ASCII, so this used to hand the pattern "G ring" for "Göring".
+  const cleaned = stripToNameSafeText(text);
+  const runs = cleaned.match(nameRunRegex(0, 3)) ?? [];
   for (const run of runs) {
     const tokens = cleanPersonNameCandidate(run);
     if (tokens.length === 1 && tokens[0].length >= 3) return tokens[0];
@@ -14361,7 +14365,9 @@ export function buildVerifiedQueryContextForBeat(
 export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
   const found = new Set<string>();
-  const fullNames = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g) ?? [];
+  // RONDE 123: `[a-z]` cannot read `ö`, so this run broke AT the diacritic and the two halves
+  // were matched as separate names — see personNameChars.ts for the measurement.
+  const fullNames = text.match(nameRunRegex(1)) ?? [];
   for (const name of fullNames) {
     const n = name.trim();
     if (n.length < 5 || PERSON_NAME_SKIP_PHRASES.has(n.toLowerCase())) continue;
@@ -14417,7 +14423,7 @@ export function extractPersonNamesFromText(text: string): string[] {
   // acting as a person. "Berlin was under bombardment" and "Dunkirk had fallen" stay places:
   // "was" and "had" are not person verbs, and both words are in the geo vocabulary anyway.
   for (const sentence of text.split(/(?<=[.!?])\s+/)) {
-    const singles = sentence.match(/\b[A-Z][a-z]{2,}\b/g) ?? [];
+    const singles = sentence.match(singleNameTokenRegex(3)) ?? [];
     for (const token of singles) {
       if (found.has(token)) continue;
       // Already covered by a full name in this text ("Hitler" beside "Adolf Hitler").
@@ -27311,7 +27317,33 @@ async function backfillComposeMontageIfShort(
   montageBeats?: SceneBeat[]
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
-  if (isFastShortVideoLength(dedup.videoLength)) return;
+  /**
+   * RONDE 123 — this used to be `if (isFastShortVideoLength(...)) return;`.
+   *
+   * That one line switched off the whole of RONDE 111 and RONDE 112 for short videos: the search
+   * for short stitchable clips, the subject fallback, and the re-use of the scene's own footage in
+   * motion. Everything below it is the ladder a scene climbs before it is allowed to hold a frame,
+   * and for a one-minute video none of it ran.
+   *
+   * Video 544 is what that looks like. Every scene logged `Compose montage backfill: 0ms`, and
+   * scene 1 — 38.1 seconds of narration, one 2.8-second clip — went straight from the search phase
+   * to the compose-time last resort:
+   *
+   *     [Coverage] Scene 1 single-clip montage: short 34.40s (would need 10.88x)
+   *     → slowed to the 2x cap, 30.92s STILL UNCOVERED → held frame (last resort)
+   *
+   * The 2x cap held, exactly as RONDE 111 requires. But the rungs that exist so the ladder rarely
+   * reaches that rung had been skipped entirely, and the render ended with the held frames and the
+   * two frozen segments its own QA then reported.
+   *
+   * The original reason for the skip was time: a one-minute video has a ten-minute wall clock and
+   * these rounds cost searches. That reason is answered by bounding the work rather than removing
+   * it — `fastShort` below caps the number of extra searches instead of refusing them, so a short
+   * render pays for a handful of attempts and still gets the subject fallback and the moving
+   * re-use before anything freezes. Holding a frame is not cheaper than a search; it is the
+   * outcome the searches exist to avoid.
+   */
+  const fastShort = isFastShortVideoLength(dedup.videoLength);
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
@@ -27371,7 +27403,10 @@ async function backfillComposeMontageIfShort(
   );
 
   if (coverage < minCoverage) {
-    for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
+    // RONDE 123: bounded rather than skipped on the fast path — a short render pays for a
+    // few attempts instead of going straight to a held frame.
+    const roundAAttempts = fastShort ? 3 : 8;
+    for (let attempt = 0; attempt < roundAAttempts && coverage < minCoverage; attempt++) {
       const beatIdx = pickVoiceBackfillBeatIndex(
         beatInputs,
         outDur,
@@ -33522,7 +33557,12 @@ async function _runVideoPipelineInner(
                       },
                       audioPaths[i], prefetchPools, prefetchFunnels
                     ),
-                    perf.sceneVisualTimeoutMs,
+                    sceneSearchBudgetMs({
+                      flatMs: perf.sceneVisualTimeoutMs,
+                      // Beats are derived later (buildSceneBeats), so duration is the honest
+                      // signal available at the moment this budget has to be set.
+                      sceneDurationSec: scene.duration,
+                    }),
                     `Scene ${scene.index} visuals`
                   ),
                   scene.index
@@ -34121,7 +34161,10 @@ async function _runVideoPipelineInner(
                   prefetchPools,
                   prefetchFunnels
                 ),
-                perf.sceneVisualTimeoutMs,
+                sceneSearchBudgetMs({
+                  flatMs: perf.sceneVisualTimeoutMs,
+                  sceneDurationSec: scene.duration,
+                }),
                 `Scene ${scene.index} visuals`
               ),
             scene.index
