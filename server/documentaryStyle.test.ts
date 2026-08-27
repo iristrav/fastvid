@@ -133,14 +133,37 @@ describe("documentaryStyle", () => {
       expect(vf).not.toContain("max(zoom-");
     });
 
+    /**
+     * SUPERSEDED BY RONDE 111, in the curve's TAIL only.
+     *
+     * Phase 10's pure sin(PI/2*t) reaches its target with zero velocity — its derivative at t=1 is
+     * cos(PI/2) = 0 — so every photo ended on a picture that had stopped moving. Measured on a
+     * six-second still: 2.87 px/frame in the first second, 0.30 px/frame in the last. RONDE 111
+     * blends 35% of that curve with 65% linear, which keeps a visible ease-out (1.20x average
+     * velocity at the start, 0.65x at the end) without ever reaching zero.
+     *
+     * Start point, end point and total travel are all unchanged, which is what these assert.
+     */
     it("zoom-in starts at 1.0 and eases toward zoomEnd", () => {
       const vf = buildKenBurnsTail(4, 1.2, "center", "zoom-in");
-      expect(vf).toContain("z='(1.0000+(0.2000000)*sin(PI/2*min(on/");
+      expect(vf).toContain("z='(1.0000+(0.2000000)*(0.35*sin(PI/2*min(on/");
     });
 
     it("zoom-out starts at zoomEnd and eases toward 1.0 (negative delta)", () => {
       const vf = buildKenBurnsTail(4, 1.2, "center", "zoom-out");
-      expect(vf).toContain("z='(1.2000+(-0.2000000)*sin(PI/2*min(on/");
+      expect(vf).toContain("z='(1.2000+(-0.2000000)*(0.35*sin(PI/2*min(on/");
+    });
+
+    it("RONDE 111 — the progress term still runs exactly 0 → 1, so nothing is reframed", () => {
+      const share = 0.35;
+      const progress = (t: number) => share * Math.sin((Math.PI / 2) * t) + (1 - share) * t;
+      expect(progress(0)).toBeCloseTo(0, 10);
+      expect(progress(1)).toBeCloseTo(1, 10);
+      // ...and it never stops, which is the whole point of the change.
+      const velocity = (t: number) =>
+        share * (Math.PI / 2) * Math.cos((Math.PI / 2) * t) + (1 - share);
+      expect(velocity(1)).toBeGreaterThan(0.6);
+      expect(velocity(0)).toBeGreaterThan(velocity(1));
     });
 
     it("pan-left/pan-right ease the same total pixel distance a linear pan would have covered", () => {
@@ -149,8 +172,9 @@ describe("documentaryStyle", () => {
       const expectedDistance = panStep * totalFrames;
       const left = buildKenBurnsTail(4, 1.02, "center", "pan-left");
       const right = buildKenBurnsTail(4, 1.02, "center", "pan-right");
-      expect(left).toContain(`-${expectedDistance}*sin(PI/2*min(on/`);
-      expect(right).toContain(`+${expectedDistance}*sin(PI/2*min(on/`);
+      // RONDE 111: same total distance, same direction — only the velocity curve's tail moved.
+      expect(left).toContain(`-${expectedDistance}*(0.35*sin(PI/2*min(on/`);
+      expect(right).toContain(`+${expectedDistance}*(0.35*sin(PI/2*min(on/`);
     });
 
     it("center variant has no pan term regardless of easing", () => {

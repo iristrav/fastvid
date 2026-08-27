@@ -43,8 +43,12 @@ describe("Camera Renderer (Phase 7)", () => {
       const [panLeft] = renderCameraMovement(instruction("pan_left", 0.9), 4, DIMS_16_9);
       const [panRight] = renderCameraMovement(instruction("pan_right", 0.9), 4, DIMS_16_9);
       // Phase 10: pan distance is still linear-total, but eased via the sine progress term.
-      expect(panLeft.filter).toMatch(/-\d+\*sin\(PI\/2\*min\(on\//);
-      expect(panRight.filter).toMatch(/\+\d+\*sin\(PI\/2\*min\(on\//);
+      // SUPERSEDED by RONDE 111 in the tail only: ken_burns movements route into
+      // documentaryStyle's buildKenBurnsTail, whose eased curve is now blended 35% sine / 65%
+      // linear so a photo never stops moving before its last frame. Same distance, same
+      // direction, same sine term — it just no longer stands alone.
+      expect(panLeft.filter).toMatch(/-\d+\*\(0\.35\*sin\(PI\/2\*min\(on\//);
+      expect(panRight.filter).toMatch(/\+\d+\*\(0\.35\*sin\(PI\/2\*min\(on\//);
       // pan_left/pan_right zoomEnd is fixed at 1.02 regardless of intensity — expressed as
       // a 1.0 base plus a 0.02 delta under the new eased zoom expression.
       expect(panLeft.filter).toContain("0.0200000");

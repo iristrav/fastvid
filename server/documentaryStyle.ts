@@ -179,8 +179,31 @@ export function resolveStillKenBurnsVariant(sceneIndex: number, beatIndex: numbe
  *  pattern for the dormant engine's new camera movements (Phase 7) — duplicated here as a
  *  standalone expression rather than imported, since documentaryStyle.ts is live production
  *  code with no dependency on that dormant, feature-flagged directory. */
+/**
+ * RONDE 111 — the share of the eased curve that is allowed to decelerate.
+ *
+ * Pure `sin(PI/2 * t)` reaches its target with zero velocity: its derivative at t=1 is
+ * cos(PI/2) = 0. On a six-second still that measures as
+ *
+ *     first second   crop window travels 71.8 px   (2.87 px/frame)
+ *     middle         43.8 px                       (1.75 px/frame)
+ *     LAST second     7.5 px                       (0.30 px/frame)
+ *
+ * and under about one pixel per frame the eye reads stillness. So every photo in every video
+ * ended on a still — a small freeze, arriving from the opposite direction to the montage one.
+ *
+ * Blending the eased curve with a linear one fixes the endpoint without giving back the constant
+ * velocity that made stills look machine-made in the first place (the Phase 10 finding this
+ * easing exists for). With EASE_SHARE = 0.35 the velocity runs from 1.20x the average at the
+ * start to 0.65x at the end: still a visible ease, never a stop.
+ */
+const KEN_BURNS_EASE_SHARE = 0.35;
+
 function easeOutProgress(totalFrames: number): string {
-  return `sin(PI/2*min(on/${totalFrames},1))`;
+  const eased = KEN_BURNS_EASE_SHARE.toFixed(2);
+  const linear = (1 - KEN_BURNS_EASE_SHARE).toFixed(2);
+  const t = `min(on/${totalFrames},1)`;
+  return `(${eased}*sin(PI/2*${t})+${linear}*${t})`;
 }
 
 /** Ken Burns zoompan — zoom 100%→120%, optional pan left/right.

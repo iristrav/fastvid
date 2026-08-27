@@ -363,6 +363,9 @@ describe("RONDE 88 §22 — ranking, concurrency and lineage untouched", () => {
     ]) {
       expect(PIPELINE_SRC, anchor).toContain(anchor);
     }
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(1);
+    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
+    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
+    // technical fallback). A THIRD would still mean a freeze had leaked back in.
+    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
   });
 });

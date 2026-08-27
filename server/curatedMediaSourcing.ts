@@ -4,6 +4,7 @@
 import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
+import { stitchSourceFloorSec } from "./coverageFillPlan";
 import {
   extractVisualSearchTags,
   extractSceneSearchTags,
@@ -1541,6 +1542,15 @@ export type CuratedClipStyleContext = StillStyleContext & {
   rawCache?: Map<number, string>;
   /** Lighter FFmpeg trim for 1-min fast path. */
   fastTrim?: boolean;
+  /**
+   * RONDE 111 — override the slot length the source floor is measured against.
+   *
+   * Defaults to the requested duration, which is the right answer almost everywhere. A caller
+   * that KNOWS the clip is going to be concatenated (the montage coverage backfill) can lower it
+   * explicitly, so several short on-topic clips can be stitched instead of the scene falling back
+   * to slowed frames. See stitchSourceFloorSec.
+   */
+  minSourceSec?: number;
 };
 
 /** Ken Burns motion — visible pan/zoom for full beat duration (avoids frozen stills). */
@@ -1695,8 +1705,27 @@ async function trimVideoClip(
 ): Promise<void> {
   const sourceDur = await probeMediaDurationSec(inPath);
   const minDur = archiveVisualMinClipSec();
-  if (sourceDur > 0 && sourceDur < VIDRUSH_MIN_SOURCE_VIDEO_SEC) {
-    throw new Error(`source video too short (${sourceDur.toFixed(2)}s)`);
+  /**
+   * RONDE 111 — never demand more source than this slot is going to use.
+   *
+   * This was a flat 2.8s for every request. Render 536 refused 594 clips against it in one video,
+   * while thirteen of that render's eighteen scenes ended up too short for their own voice track
+   * and were padded with slowed frames. Some of those refusals were a 2.2-second clip turned away
+   * from a 1.5-second gap: a safeguard about whether a clip can carry a beat ON ITS OWN, applied
+   * to a slot where it would have been concatenated between two others.
+   *
+   * stitchSourceFloorSec keeps 2.8s wherever the slot is long enough to want it — so the ordinary
+   * beat path is untouched — and lowers it to the slot's own length, never below the point where
+   * a clip stops being an edit and becomes a flash frame.
+   */
+  const minSource = stitchSourceFloorSec(
+    styleContext?.minSourceSec ?? duration,
+    VIDRUSH_MIN_SOURCE_VIDEO_SEC
+  );
+  if (sourceDur > 0 && sourceDur < minSource) {
+    throw new Error(
+      `source video too short (${sourceDur.toFixed(2)}s < ${minSource.toFixed(2)}s for a ${duration.toFixed(2)}s slot)`
+    );
   }
   const take = sourceDur > 0 ? Math.max(minDur, Math.min(duration, sourceDur)) : Math.max(minDur, duration);
   let startSec = styleContext?.trimStartSec;
@@ -1751,8 +1780,10 @@ async function trimVideoClip(
   );
 
   const outDur = await probeMediaDurationSec(outPath);
-  if (outDur < VIDRUSH_MIN_SOURCE_VIDEO_SEC) {
-    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${VIDRUSH_MIN_SOURCE_VIDEO_SEC.toFixed(2)}s)`);
+  // RONDE 111: the same slot-relative floor as the source check above — a 1.5s result for a 1.5s
+  // gap is exactly right, and rejecting it sent the scene back to slowed frames instead.
+  if (outDur < minSource) {
+    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${minSource.toFixed(2)}s)`);
   }
   if (outDur < take * 0.8) {
     // Short of the requested duration but still usable — accept it and let

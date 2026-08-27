@@ -644,7 +644,10 @@ describe("RONDE 87 §L — observability only", () => {
     expect(PIPELINE_SRC).toContain("return withGlobalMediaFetch(() => downloadToFileStreamingInner(");
     // RONDE 84 candidate depth and RONDE 85's moving filler.
     expect(PIPELINE_SRC).toContain("export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;");
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(1);
+    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
+    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
+    // technical fallback). A THIRD would still mean a freeze had leaked back in.
+    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
     // RONDE 86 search-performance cap.
     expect(PIPELINE_SRC).toContain("if (queue.length >= prepareCap) break;");
   });

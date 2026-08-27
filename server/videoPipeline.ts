@@ -369,6 +369,13 @@ import {
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
 import {
+  MAX_COVERAGE_SLOWDOWN,
+  MIN_STITCHABLE_SOURCE_SEC,
+  coverageFloorSec,
+  formatCoverageFillPlan,
+  planCoverageFill,
+} from "./coverageFillPlan";
+import {
   createPipelineReportCollector,
   type PipelineGlance,
 } from "./renderPipelineReport";
@@ -14877,6 +14884,14 @@ export interface VisualDedupState {
   /** Successfully adopted clips per beat (for geo export gate). */
   clipAdoptAudit: ClipAdoptEntry[];
   /**
+   * RONDE 111: one line per scene that came up short of footage, and what was done about it.
+   *
+   * Collected here rather than printed and forgotten, because "why does this scene look frozen"
+   * is asked days later about a specific video — the same reason RONDE 106 moved the render's
+   * other reports out of stdout. Rendered into the pipeline report's warnings section.
+   */
+  coverageDecisions: string[];
+  /**
    * RONDE 58: verdicts and spend for the vision gate that looks at the frame and says whether it
    * belongs under this narration. Render-scoped so two concurrent renders cannot read each
    * other's verdicts or spend each other's budget.
@@ -15134,6 +15149,7 @@ export function createVisualDedupState(
     clipRejectAudit: createClipRejectAudit(),
     beatOutcomeAudit: createBeatOutcomeAudit(),
     clipAdoptAudit: createClipAdoptAudit(),
+    coverageDecisions: [],
     beatImageGate: createBeatImageGateState(),
     beatRelevance: createBeatRelevanceLedger(),
     beatImageRejectedIds: new Set<string>(),
@@ -16602,10 +16618,19 @@ function montageClipInputs(clips: string[]): string {
  * shot the narration is describing stays on screen AND stays in motion. Slowing is not a repeat,
  * so it is also the one filler compatible with strictNoVisualRepeat.
  *
- * The ratio is uncapped on purpose. Capping it would leave a remainder, and the only things that
- * could fill that remainder are the two this round exists to remove. A large ratio is logged
- * loudly instead: it means the scene is short of footage, which is the thing actually worth
- * fixing — see ensureArchiveMontageVoiceCoverage and RONDE 84's candidate depth.
+ * RONDE 111 caps the ratio at MAX_COVERAGE_SLOWDOWN.
+ *
+ * RONDE 85 left it uncapped on purpose, reasoning that a cap would leave a remainder and the only
+ * things that could fill a remainder were the two it existed to remove. The reasoning was right
+ * about the remainder and wrong about the cure: measured against real ffmpeg, a 10x stretch holds
+ * each picture 0.59s — under two new pictures per second, with no interpolation anywhere in the
+ * chain to invent the frames in between. That is a slideshow of held frames reached through a
+ * different filter, and the render's own freezedetect (2.5s threshold) never reported it.
+ *
+ * So slowing is a finishing touch, not a source of footage. Past the cap the answer has to come
+ * from real pictures, which is why the coverage backfill now spends its extra searches on exactly
+ * the scenes that would land here — see ensureArchiveMontageVoiceCoverage. A held frame is what
+ * remains when that has genuinely run out, and it says so.
  *
  * MONTAGE_TAIL_PAD=freeze restores RONDE 26's held frame and =grey the original rectangle,
  * either without a redeploy.
@@ -16617,24 +16642,31 @@ export function montageTailPadFilterChain(montageDur: number, targetDur: number,
     console.warn(`[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — grey pad`);
     return `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`;
   }
-  if (mode === "freeze" || montageDur <= 0.05) {
-    // The ratio is meaningless without a real montage duration to stretch, so a zero-length
-    // montage keeps the old behaviour rather than dividing by it.
+  const plan = planCoverageFill(montageDur, targetDur);
+  if (mode === "freeze") {
     console.warn(
-      `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — holding last frame`
+      `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — holding last frame (MONTAGE_TAIL_PAD=freeze)`
     );
     return `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},`;
   }
-  const ratio = targetDur / montageDur;
-  console.warn(
-    `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — ` +
-      `slowing ${ratio.toFixed(2)}x to fill (no frozen frame)` +
-      (ratio > 2 ? " — SCENE IS SHORT OF FOOTAGE" : "")
-  );
+  if (plan.action === "none") return "";
+  console.warn(`${formatCoverageFillPlan(context, plan)}`);
+
   // Ahead of FPS_FORMAT_VF's fps=25, which then resamples the stretched timeline back to a
   // constant frame rate. FPS_FORMAT_VF's trailing setpts=PTS-STARTPTS only rebases the origin,
   // so it preserves the spacing this filter just changed.
-  return `setpts=${ratio.toFixed(6)}*PTS,`;
+  const slow = plan.slowdownRatio > 1 ? `setpts=${plan.slowdownRatio.toFixed(6)}*PTS,` : "";
+  if (plan.action === "slow") return slow;
+
+  /**
+   * The absolute last technical fallback.
+   *
+   * Everything before this has already failed: the beat search, the pool backfill, the targeted
+   * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
+   * motion, and slowing to the cap. There is nothing left to put on screen, so the last frame is
+   * held for the remainder and the log says exactly that rather than calling it a fill strategy.
+   */
+  return `${slow}tpad=stop_mode=clone:stop_duration=${plan.stillShortSec.toFixed(3)},`;
 }
 
 export function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
@@ -28318,10 +28350,149 @@ async function ensureArchiveMontageVoiceCoverage(
   }
 
   coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
-  if (coverage < minCoverage) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: montage short ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — continuing (self-heal)`
+  if (coverage >= minCoverage) return;
+
+  /**
+   * RONDE 111 — the rounds that only run when the scene would otherwise be slowed past the cap.
+   *
+   * Everything above aims at full coverage and stops when it runs out of ideas. What it never
+   * knew is that falling short is not one outcome but two: a small shortfall is absorbed by
+   * slowing the montage, which looks like slow motion; a large one used to be absorbed by slowing
+   * it arbitrarily far, which looks like a slideshow of frozen pictures.
+   *
+   * coverageFloorSec is the line between them. Below it, extra searching is worth its wall clock
+   * because the alternative is a visibly broken scene, so two more rounds run — and only there,
+   * so a scene that is 1.5 seconds short costs nothing extra.
+   *
+   * Both rounds go through the SAME beat → search-query → vision-relevance chain as every other
+   * clip. Nothing is added to a scene because it is the right length; it is added because it fits
+   * a specific beat and passed the same gate.
+   */
+  /** Log it and keep it — the pipeline report is where this question gets asked days later. */
+  const note = (line: string, warn = true) => {
+    const text = `[Coverage] Scene ${scene.index}: ${line}`;
+    if (warn) console.warn(text);
+    else console.log(text);
+    dedup.coverageDecisions.push(text);
+  };
+
+  const floor = coverageFloorSec(scene.duration);
+  if (coverage >= floor) {
+    note(
+      `${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — ` +
+        `within the ${MAX_COVERAGE_SLOWDOWN}x slow-motion budget, no extra search`
     );
+    return;
+  }
+
+  note(
+    `${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — ` +
+      `below the ${floor.toFixed(1)}s floor, would need ` +
+      `${(scene.duration / Math.max(0.05, coverage)).toFixed(1)}x slow motion — searching short clips`
+  );
+
+  /**
+   * Round A — ask for SHORT holds.
+   *
+   * The searches above ask for a full beat's worth of footage, so trimVideoClip measures every
+   * candidate against the standalone floor and a perfectly good two-second shot of the right
+   * subject is refused. Asking for two seconds makes the floor two seconds (see
+   * stitchSourceFloorSec), so those same candidates come back — several of them, stitched, which
+   * is what a montage is.
+   */
+  const shortHold = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(2.5, scene.duration / 4));
+  const beatInputsShort = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
+  let shortClipsAdded = 0;
+  for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
+    const beatIdx = pickVoiceBackfillBeatIndex(
+      beatInputsShort, scene.duration, clipBeatIndices, beatDurations, montageXfadeSec()
+    );
+    const beat = beats[beatIdx] ?? beats[0];
+    if (!beat) break;
+    const before = clips.length;
+    try {
+      await ensureBeatVisualFilled(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        (clipPath: string, sec = shortHold) => pushSceneClip(clipPath, sec, beat.index),
+        semanticProfiles.get(beat.index),
+        shortHold
+      );
+    } catch {
+      continue;
+    }
+    if (clips.length > before) {
+      shortClipsAdded += clips.length - before;
+      console.log(
+        `[Coverage] Scene ${scene.index} b${beat.index}: short clip accepted ` +
+          `(${shortHold.toFixed(1)}s slot) — coverage now ${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`
+      );
+    }
+  }
+  if (shortClipsAdded > 0) {
+    note(
+      `${shortClipsAdded} short clip(s) stitched in on their own beats — ` +
+        `${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`,
+      false
+    );
+  }
+
+  if (coverage >= floor) {
+    note("back above the floor on real footage — no held frame", false);
+    return;
+  }
+
+  /**
+   * Round B — re-use this scene's OWN footage, in motion.
+   *
+   * Nothing new could be found for any beat. The remaining choice is between showing a picture
+   * from this scene again and showing a frozen one, and a shot that returns is an ordinary
+   * documentary device while a frozen frame is a fault. extendLastClip loops the footage under a
+   * slow zoom, so the picture keeps moving; it is the same helper the per-beat rescue ladder
+   * already uses, and it records itself as `rescue_extend`, never as a verified fit.
+   */
+  const source = dedup.lastRealClip;
+  if (!source) {
+    note("no real clip to re-use either — compose will hold a frame");
+    return;
+  }
+  for (let attempt = 0; attempt < 3 && coverage < floor; attempt++) {
+    const need = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(6, floor - coverage + 0.5));
+    try {
+      const extended = await extendLastClip(source, need, scene.index, 900 + attempt, workDir);
+      if (!extended) break;
+      const before = clips.length;
+      // Bypasses the content-key dedup on purpose: this IS the same footage, deliberately, and
+      // the alternative at this point is a held frame.
+      clips.push(extended);
+      beatDurations.push(need);
+      clipBeatIndices.push(beats[0]?.index ?? 0);
+      coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
+      recordClipAdopt(
+        dedup.clipAdoptAudit, scene.index, beats[0]?.index ?? 0, beats[0]?.text ?? "",
+        extended, "rescue_extend", undefined, dedup.segmentGeoLock
+      );
+      note(
+        `re-used own footage in motion for ${need.toFixed(1)}s (no new candidates found) — ` +
+          `coverage ${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`
+      );
+      if (clips.length === before) break;
+    } catch (err) {
+      console.warn(`[Coverage] Scene ${scene.index}: re-use failed:`, (err as Error).message?.slice(0, 80));
+      break;
+    }
+  }
+
+  if (coverage < floor) {
+    note(
+      `STILL ${(scene.duration - coverage).toFixed(1)}s short after every search and re-use — ` +
+        `compose will slow to ${MAX_COVERAGE_SLOWDOWN}x and hold a frame for the remainder`
+    );
+  } else {
+    note(`back above the floor after re-use — ${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`, false);
   }
 }
 
@@ -34823,6 +34994,13 @@ async function _runVideoPipelineInner(
      * a quality report and no explanation of it.
      */
     pipelineReport.addAll("warnings", qualityReport.warnings);
+    /**
+     * RONDE 111 — why a scene came up short of footage, and what was done about it.
+     *
+     * The single most useful thing to know about a video that looks frozen, and until now it
+     * existed only as console output on whichever worker happened to render it.
+     */
+    pipelineReport.addAll("warnings", visualDedup.coverageDecisions);
     pipelineReport.addAll(
       "timing",
       Object.entries(pipelineStepTiming.toReport() as Record<string, unknown>).map(

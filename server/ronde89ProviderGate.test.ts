@@ -299,7 +299,10 @@ describe("RONDE 89 §20 — lineage, ranking and concurrency untouched", () => {
     ]) {
       expect(PIPELINE_SRC, anchor).toContain(anchor);
     }
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(1);
+    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
+    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
+    // technical fallback). A THIRD would still mean a freeze had leaked back in.
+    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
   });
 
   it("TEST 22 — the gate never rewrites a query, only admits or refuses it", () => {
