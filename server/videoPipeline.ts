@@ -352,6 +352,7 @@ import {
   beatImageRelevanceGateEnabled,
   MAX_JUDGEMENTS_PER_BEAT,
   judgementTally,
+  formatNoVerdictReasons,
   maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
@@ -35057,6 +35058,12 @@ async function _runVideoPipelineInner(
               `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
               `unavailable=${t.failed} never_asked=${t.skipped} (youtube ${g.youtubeJudgementsUsed})`
           );
+          // RONDE 115: and WHY, in one line — the fact that was previously spread over one log
+          // line per clip and therefore invisible.
+          {
+            const why = formatNoVerdictReasons(g);
+            if (why) console.warn(why);
+          }
           if (t.inconsistent) {
             qualityReport.warnings.push(
               `beeldgate-tellers kloppen niet: ${t.attempts} pogingen ≠ ${t.fits}+${t.mismatch}+${t.failed}`
@@ -35616,6 +35623,10 @@ async function _runVideoPipelineInner(
        */
       {
         const tally = judgementTally(visualDedup.beatImageGate);
+        {
+          const why = formatNoVerdictReasons(visualDedup.beatImageGate);
+          if (why) pipelineReport.add("summary", why);
+        }
         for (const line of formatFinalVisualReport({
           finalVideoVerified: ledger.finalVideoWasVerified,
           records: allRecords,

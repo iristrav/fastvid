@@ -438,9 +438,33 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   return out;
 }
 
+/**
+ * RONDE 115 — the marker that separates "no provider was ever contacted" from "a provider failed".
+ *
+ * invokeLLM can refuse before it opens a socket: no key configured anywhere, every provider in
+ * cooldown or quota-exhausted, or the daily spend budget already spent. Those are the same
+ * OUTCOME as a provider error for the caller — no answer — but they are a different FACT, and a
+ * caller that counts them together reports a model outage where there was none.
+ *
+ * The knowledge lives here because this is the module that produces these throws. A caller
+ * matching on message substrings would rot the moment one of them is reworded.
+ */
+export class LlmUnavailableError extends Error {
+  readonly preflight = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmUnavailableError";
+  }
+}
+
+/** True when the call never reached a provider, so no attempt was actually made. */
+export function isLlmPreflightRefusal(err: unknown): boolean {
+  return err instanceof LlmUnavailableError || (err as { preflight?: boolean })?.preflight === true;
+}
+
 const assertApiKey = () => {
   if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv()) {
-    throw new Error(
+    throw new LlmUnavailableError(
       "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio) or GROQ_API_KEY " +
       "(free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
@@ -637,7 +661,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
   const { isLlmBudgetExceeded, llmDailyBudgetUsd } = await import("./llmBudget");
   if (await isLlmBudgetExceeded()) {
-    throw new Error(
+    // Pre-flight: nothing is sent, so a caller must not record this as a provider failure.
+    throw new LlmUnavailableError(
       `LLM daily spend budget ($${llmDailyBudgetUsd()}) reached — refusing further calls until the ` +
       `UTC day rolls over. Override with LLM_DAILY_BUDGET_USD, or set LLM_BUDGET_ENFORCE=false to disable.`
     );
@@ -670,7 +695,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["groq"];
     } else {
-      throw new Error(
+      // Every provider is keyless, cooled down or quota-exhausted — again, nothing is sent.
+      throw new LlmUnavailableError(
         "LLM API key is not configured. Set GROQ_API_KEY or GEMINI_API_KEY on Railway (free), " +
         "or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
       );

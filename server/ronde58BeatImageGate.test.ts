@@ -22,7 +22,14 @@ import {
  * every way this can break adopts the clip anyway. A model outage must never empty a montage.
  */
 
-vi.mock("./_core/llm", () => ({ invokeLLM: vi.fn() }));
+// RONDE 115: the gate now asks llm.ts whether a throw was a PRE-FLIGHT refusal (no key,
+// every provider cooled down, budget spent) rather than a provider failure. The real
+// predicate is used, not a stub — these tests are about provider failures and must keep
+// landing in `failed`, which is exactly what the real predicate says about them.
+vi.mock("./_core/llm", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  invokeLLM: vi.fn(),
+}));
 
 const llm = async () => (await import("./_core/llm")).invokeLLM as unknown as ReturnType<typeof vi.fn>;
 

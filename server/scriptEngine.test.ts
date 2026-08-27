@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-vi.mock("./_core/llm", () => ({ invokeLLM: vi.fn() }));
+vi.mock("./_core/llm", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  invokeLLM: vi.fn(),
+}));
 
 import { invokeLLM } from "./_core/llm";
 import {

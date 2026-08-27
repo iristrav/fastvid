@@ -25,7 +25,14 @@ import { beatIdentityKey, type BeatVisualContext } from "./beatVisualRelevance";
 import { __resetVerdictStoreForTests } from "./beatRelevanceVerdictStore";
 
 const invoke = vi.hoisted(() => ({ fn: vi.fn() }));
-vi.mock("./_core/llm", () => ({ invokeLLM: invoke.fn }));
+// RONDE 115: the gate now asks llm.ts whether a throw was a PRE-FLIGHT refusal (no key,
+// every provider cooled down, budget spent) rather than a provider failure. The real
+// predicate is used, not a stub — these tests are about provider failures and must keep
+// landing in `failed`, which is exactly what the real predicate says about them.
+vi.mock("./_core/llm", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  invokeLLM: invoke.fn,
+}));
 vi.mock("./archiveClipFilter", () => ({
   prepareImageForVision: async (buf: Buffer) => ({ buffer: buf, mimeType: "image/jpeg" }),
   imageMimeToDataUrl: () => "data:image/jpeg;base64,AA",

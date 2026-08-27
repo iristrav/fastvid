@@ -35,7 +35,7 @@
  */
 
 import fs from "fs";
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, isLlmPreflightRefusal } from "./_core/llm";
 import { imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 
@@ -109,6 +109,15 @@ export function beatImageRelevanceGateEnabled(): boolean {
  * spend each other's budget or read each other's verdicts.
  */
 export type BeatImageGateState = {
+  /**
+   * RONDE 115 — why the gate produced no verdict, counted by reason.
+   *
+   * The reason was already returned to the caller and logged per clip, but a render that could
+   * not get a single verdict prints forty-four separate lines and no total, so the ONE fact that
+   * matters — they all say the same thing — is the one nobody could see. Keyed by the message so
+   * a summary can say "44x LLM API key is not configured" in a single line.
+   */
+  noVerdictReasons: Map<string, number>;
   /**
    * `contentKey|beatIdentity` -> verdict.
    *
@@ -188,6 +197,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsFailed: 0,
     judgementsSkipped: 0,
     youtubeJudgementsUsed: 0,
+    noVerdictReasons: new Map(),
   };
 }
 
@@ -303,7 +313,12 @@ export async function judgeBeatImage(params: {
   timeoutMs?: number;
 }): Promise<BeatImageJudgement> {
   const { framePaths, beatText, videoTitle, sceneText, contentKey, state } = params;
-  const unknown = (reason: string): BeatImageJudgement => ({ verdict: "unknown", depicts: "", reason });
+  const unknown = (reason: string): BeatImageJudgement => {
+    // RONDE 115: every route out of here without a verdict is counted by its reason, so a render
+    // that got none can say WHY in one line instead of forty-four identical ones.
+    state.noVerdictReasons.set(reason, (state.noVerdictReasons.get(reason) ?? 0) + 1);
+    return { verdict: "unknown", depicts: "", reason };
+  };
   /** A decline: the gate never looked. Counted so the render summary cannot claim it did. */
   const declined = (reason: string): BeatImageJudgement => {
     state.judgementsSkipped++;
@@ -437,9 +452,47 @@ export async function judgeBeatImage(params: {
     }
     return judgement;
   } catch (err) {
+    /**
+     * RONDE 115 — a question that was never asked is not a question that failed.
+     *
+     * invokeLLM refuses before it opens a socket when no provider key is configured, when every
+     * provider is in cooldown or quota-exhausted, or when the daily spend budget is already
+     * spent. `judgementAttempts` was incremented above, before the call, so all three landed here
+     * and were counted as `judgementsFailed` — and the render summary then read
+     *
+     *     attempts=44 answered=0 unavailable=44
+     *
+     * which says "the model was asked forty-four times and could not answer once": a model
+     * outage. The actual condition can be that no provider was ever contacted at all. Those two
+     * need entirely different work, and reporting the second as the first is how a whole line of
+     * investigation goes to the wrong place.
+     *
+     * RONDE 105 built this partition for exactly this distinction and put a bucket in it for
+     * "the gate never asked". A pre-flight refusal belongs in that bucket, so the attempt is
+     * taken back and the judgement is recorded as never asked. The invariant
+     * `attempts === fits + mismatch + failed` holds either way.
+     *
+     * The OUTCOME is unchanged: still `unknown`, still fail-open, never `fits`.
+     */
+    if (isLlmPreflightRefusal(err)) {
+      state.judgementAttempts--;
+      return declined(`gate could not ask: ${(err as Error).message?.slice(0, 90)}`);
+    }
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
     // so a render whose verdicts were mostly unobtainable can say so.
     state.judgementsFailed++;
     return unknown(`judgement failed: ${(err as Error).message?.slice(0, 80)}`);
   }
+}
+
+/**
+ * RONDE 115 — the single line that says why a render got no verdicts.
+ *
+ * Sorted by how often each reason occurred and capped, because the useful signal in a render with
+ * forty-four failures is that forty-four of them say the same thing.
+ */
+export function formatNoVerdictReasons(state: BeatImageGateState, max = 3): string {
+  const rows = [...state.noVerdictReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, max);
+  if (rows.length === 0) return "";
+  return `[BeatImageGate] no verdict: ${rows.map(([r, n]) => `${n}x ${r}`).join(" | ")}`;
 }
