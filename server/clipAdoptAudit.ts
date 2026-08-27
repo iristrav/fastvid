@@ -153,7 +153,13 @@ export function adoptRouteForSource(source: string): "primary" | "fallback" | "r
   const s = (source ?? "").trim().toLowerCase();
   if (s === "fallback" || s === "rescue_placeholder") return "fallback";
   if (s.startsWith("rescue_")) return "rescue";
-  if (s === "guaranteed" || s.startsWith("backfill") || s === "rescue_extend" || s === "extend") {
+  if (
+    s === "guaranteed" || s.startsWith("backfill") || s === "rescue_extend" || s === "extend" ||
+    // RONDE 112: real footage, but not of what the beat claimed — the beat was filled by
+    // something other than the route that was supposed to fill it, which is what "backfill"
+    // means here. Calling it "primary" would report a match that was never made.
+    s === "subject_fallback"
+  ) {
     return "backfill";
   }
   if (s === "motion_graphic" || s === "graphic" || s === "mgfx") return "graphic";

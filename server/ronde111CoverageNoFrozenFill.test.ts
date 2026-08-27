@@ -145,7 +145,8 @@ describe("RONDE 111 — a large shortfall is NOT absorbed by slowing", () => {
     // 8s: 2.5x → would hold a frame, so it earns the extra rounds.
     expect(8).toBeLessThan(coverageFloorSec(20));
     expect(PIPELINE).toContain("const floor = coverageFloorSec(scene.duration);");
-    expect(PIPELINE).toContain("within the ${MAX_COVERAGE_SLOWDOWN}x slow-motion budget, no extra search");
+    // RONDE 112 restated this line in the report's key=value shape; the rule is unchanged.
+    expect(PIPELINE).toContain("within the ${MAX_COVERAGE_SLOWDOWN}x budget, no extra search needed");
   });
 });
 
@@ -232,7 +233,8 @@ describe("RONDE 111 — when no new candidate exists, the scene's own footage mo
   });
 
   it("with no real clip at all it says so instead of pretending it filled the scene", () => {
-    expect(PIPELINE).toContain('note("no real clip to re-use either — compose will hold a frame");');
+    // RONDE 112 gave every held-frame exit a machine-readable reason. Same exit, named.
+    expect(PIPELINE).toContain("resolution=held_frame reason=no_real_clip_to_reuse");
   });
 });
 
@@ -276,8 +278,11 @@ describe("RONDE 111 — the held frame is the last resort and is labelled as one
   });
 
   it("the last line before compose says what compose is about to do", () => {
+    // RONDE 112: now with the numbers rather than the sentence — the applied slow-motion factor
+    // and the seconds that will actually be held.
+    expect(PIPELINE).toContain("resolution=held_frame reason=exhausted");
     expect(PIPELINE).toContain(
-      "compose will slow to ${MAX_COVERAGE_SLOWDOWN}x and hold a frame for the remainder"
+      "slowdown=${plan.slowdownRatio.toFixed(2)}x held=${plan.stillShortSec.toFixed(1)}s"
     );
   });
 });

@@ -369,6 +369,13 @@ import {
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems } from "./beatVisualStatus";
 import {
+  SUBJECT_FALLBACK_ROUTE,
+  formatNoSubjectLine,
+  formatSubjectFallbackEmptyLine,
+  formatSubjectFallbackLine,
+  resolveBeatSubject,
+} from "./beatSubjectFallback";
+import {
   MAX_COVERAGE_SLOWDOWN,
   MIN_STITCHABLE_SOURCE_SEC,
   coverageFloorSec,
@@ -14892,6 +14899,13 @@ export interface VisualDedupState {
    */
   coverageDecisions: string[];
   /**
+   * RONDE 112: beats the subject fallback has already been tried on.
+   *
+   * It runs the full search cascade a second time for one beat, so it gets exactly one attempt —
+   * both rescue ladders can reach it and neither should pay for the other's miss.
+   */
+  subjectFallbackBeats: Set<string>;
+  /**
    * RONDE 58: verdicts and spend for the vision gate that looks at the frame and says whether it
    * belongs under this narration. Render-scoped so two concurrent renders cannot read each
    * other's verdicts or spend each other's budget.
@@ -15150,6 +15164,7 @@ export function createVisualDedupState(
     beatOutcomeAudit: createBeatOutcomeAudit(),
     clipAdoptAudit: createClipAdoptAudit(),
     coverageDecisions: [],
+    subjectFallbackBeats: new Set<string>(),
     beatImageGate: createBeatImageGateState(),
     beatRelevance: createBeatRelevanceLedger(),
     beatImageRejectedIds: new Set<string>(),
@@ -26824,6 +26839,18 @@ async function rescueBeatVisualWhenEmptyInner(
     }
   }
 
+  /**
+   * RONDE 112 — the last INHOUDELIJKE attempt, before anything technical.
+   *
+   * Everything above has asked for the beat's full claim and come back empty. What follows this
+   * used to be re-using the previous shot and then a colour card: both of them answers of the
+   * form "we have no picture". Footage of the beat's own subject is a better answer and it is a
+   * real one, so it goes first.
+   */
+  if (await trySubjectFallbackForBeat(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+
   // Try extending the last real clip before falling back to color
   if (dedup.lastRealClip) {
     try {
@@ -26902,6 +26929,125 @@ async function rescueBeatVisualWhenEmptyInner(
 }
 
 /** Never leave a beat empty — Wikimedia → archive → stock → AI → emergency geo → last-resort stock → Kling → color. */
+/**
+ * RONDE 112 — find footage of what the beat is ABOUT, when footage of what it SAYS does not exist.
+ *
+ * The beat "Hitler died in his bunker in 1945" has three specifics — the bunker, the year, the
+ * death — and an archive may hold none of them while holding plenty of Hitler. A shot of Hitler
+ * under that line is what an editor would cut; the alternatives left at this point in the ladder
+ * are the previous shot held longer or a colour card.
+ *
+ * Everything here reuses what already exists, and deliberately so:
+ *
+ *   · the SUBJECT comes from signals the chain already extracted (the beat's semantic profile,
+ *     the video's person lock, the pipeline's own name extractor). No new NER, no LLM.
+ *   · the SEARCH is ensureBeatVisualFilled — the same cascade, the same providers, the same
+ *     ranking — run against a beat whose text is the subject.
+ *   · the DECISION is still the vision gate, unchanged and still the only content decider. It is
+ *     asked a narrower question, and the narrower question is written into the derived beat's
+ *     text so the gate is judging exactly what is being claimed.
+ *
+ * The result is recorded as `subject_fallback`, which is a coverage kind of its own: real footage,
+ * of the right subject, NOT verified as a fit for the beat's whole sentence. It must never be
+ * counted as a verified own visual, and beatVisualStatus enforces that.
+ */
+async function trySubjectFallbackForBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (dedup.subjectFallbackBeats.has(`${scene.index}:${beat.index}`)) return false;
+  dedup.subjectFallbackBeats.add(`${scene.index}:${beat.index}`);
+
+  const subject = resolveBeatSubject({
+    beatText: beat.text,
+    entities: semanticProfile?.entities,
+    primaryPerson: dedup.primaryPerson,
+    namesInBeat: extractPersonNamesFromText(beat.text),
+  });
+  if (!subject) {
+    // A real outcome, not a skipped step: this beat names nothing specific enough to search for,
+    // and picking a word out of the sentence anyway is what this fallback exists to avoid.
+    const line = formatNoSubjectLine(scene.index, beat.index, beat.text);
+    console.warn(line);
+    dedup.coverageDecisions.push(line);
+    return false;
+  }
+
+  /**
+   * The derived beat.
+   *
+   * Same coordinates, so provenance, the geo lock and the audits all still see the beat they
+   * belong to. Different TEXT, because the claim being made has genuinely narrowed and the vision
+   * gate reads this text to decide. Writing the full sentence here and then accepting a portrait
+   * would be the gate approving something nobody asked it about.
+   */
+  const subjectBeat: SceneBeat = {
+    ...beat,
+    text: subject.subject,
+    searchQuery: subject.subject,
+    powerWord: subject.subject,
+    keywords: [subject.subject],
+    visualDescription: subject.subject,
+  };
+
+  let adopted: string | null = null;
+  const capture = async (clipPath: string, sec?: number): Promise<boolean> => {
+    const ok = await pushClip(clipPath, sec ?? holdSec);
+    if (ok) adopted = clipPath;
+    return ok;
+  };
+
+  try {
+    await ensureBeatVisualFilled(
+      subjectBeat, scene, workDir, videoTitle, dedup, capture, undefined, holdSec
+    );
+  } catch (err) {
+    console.warn(
+      `[SubjectFallback] s${scene.index}b${beat.index} search failed:`,
+      (err as Error).message?.slice(0, 100)
+    );
+  }
+
+  if (!adopted) {
+    const line = formatSubjectFallbackEmptyLine(scene.index, beat.index, subject);
+    console.warn(line);
+    dedup.coverageDecisions.push(line);
+    return false;
+  }
+
+  const clipPath: string = adopted;
+  recordClipAdopt(
+    dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clipPath,
+    SUBJECT_FALLBACK_ROUTE, undefined, dedup.segmentGeoLock
+  );
+  /**
+   * The source comes from the lineage ledger, which is the only thing that actually knows.
+   *
+   * Not inferClipSourceFromPath — that is a labelled guess whose own doc comment says a caller
+   * almost certainly wants the ledger instead. And not curatedStorageUrlForClip: RONDE 34 counts
+   * that helper's call sites as "every place that marks an asset used", and this is a log line.
+   */
+  const line = formatSubjectFallbackLine({
+    sceneIndex: scene.index,
+    beatIndex: beat.index,
+    beatText: beat.text,
+    subject,
+    basename: path.basename(clipPath),
+    assetId: curatedClipPathAssetId(clipPath),
+    provider:
+      dedup.sourcingCache.lineage.providerFor(clipPath, clipContentKey(clipPath)) ?? undefined,
+  });
+  console.log(line);
+  dedup.coverageDecisions.push(line);
+  return true;
+}
+
 async function ensureBeatVisualFilled(
   beat: SceneBeat,
   scene: Scene,
@@ -28377,19 +28523,24 @@ async function ensureArchiveMontageVoiceCoverage(
   };
 
   const floor = coverageFloorSec(scene.duration);
+  /**
+   * RONDE 112 — the header line, in the shape the report needs it.
+   *
+   * needed / available / shortfall / the slow-motion factor that would be required. Every later
+   * line in this scene is a step away from this one number, so it is stated once, explicitly,
+   * rather than left to be reconstructed from a percentage.
+   */
+  const header =
+    `needed=${scene.duration.toFixed(1)}s available=${coverage.toFixed(1)}s ` +
+    `short=${(scene.duration - coverage).toFixed(1)}s ` +
+    `would_need=${(scene.duration / Math.max(0.05, coverage)).toFixed(1)}x ` +
+    `cap=${MAX_COVERAGE_SLOWDOWN}x clips=${clips.length}`;
   if (coverage >= floor) {
-    note(
-      `${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — ` +
-        `within the ${MAX_COVERAGE_SLOWDOWN}x slow-motion budget, no extra search`
-    );
+    note(`${header} — within the ${MAX_COVERAGE_SLOWDOWN}x budget, no extra search needed`);
     return;
   }
 
-  note(
-    `${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — ` +
-      `below the ${floor.toFixed(1)}s floor, would need ` +
-      `${(scene.duration / Math.max(0.05, coverage)).toFixed(1)}x slow motion — searching short clips`
-  );
+  note(`${header} — BELOW the ${floor.toFixed(1)}s floor, searching short clips`);
 
   /**
    * Round A — ask for SHORT holds.
@@ -28403,6 +28554,8 @@ async function ensureArchiveMontageVoiceCoverage(
   const shortHold = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(2.5, scene.duration / 4));
   const beatInputsShort = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
   let shortClipsAdded = 0;
+  /** RONDE 112: how many extra searches this scene actually cost, for the report. */
+  let extraSearches = 0;
   for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
     const beatIdx = pickVoiceBackfillBeatIndex(
       beatInputsShort, scene.duration, clipBeatIndices, beatDurations, montageXfadeSec()
@@ -28410,6 +28563,7 @@ async function ensureArchiveMontageVoiceCoverage(
     const beat = beats[beatIdx] ?? beats[0];
     if (!beat) break;
     const before = clips.length;
+    extraSearches++;
     try {
       await ensureBeatVisualFilled(
         beat,
@@ -28432,16 +28586,50 @@ async function ensureArchiveMontageVoiceCoverage(
       );
     }
   }
-  if (shortClipsAdded > 0) {
-    note(
-      `${shortClipsAdded} short clip(s) stitched in on their own beats — ` +
-        `${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`,
-      false
+  note(
+    `extra_searches=${extraSearches} short_clips_added=${shortClipsAdded} ` +
+      `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`,
+    shortClipsAdded === 0
+  );
+
+  if (coverage >= floor) {
+    note("resolution=real_footage — no subject fallback, no held frame", false);
+    return;
+  }
+
+  /**
+   * RONDE 112 — Round A2: footage of what the shortest beats are ABOUT.
+   *
+   * Round A asked for the beats' full claims and came back empty. Before anything technical, ask
+   * for their subjects: an archive with nothing of "the bunker in 1945" may still hold plenty of
+   * Hitler, and a shot of Hitler under that line beats the previous shot held longer.
+   *
+   * Same cascade, same providers, same vision gate — see trySubjectFallbackForBeat. A beat that
+   * names no reliable subject is skipped rather than searched for a random word.
+   */
+  for (let attempt = 0; attempt < 4 && coverage < floor; attempt++) {
+    const beatIdx = pickVoiceBackfillBeatIndex(
+      beatInputsShort, scene.duration, clipBeatIndices, beatDurations, montageXfadeSec()
     );
+    const beat = beats[beatIdx] ?? beats[0];
+    if (!beat) break;
+    const before = clips.length;
+    extraSearches++;
+    const hit = await trySubjectFallbackForBeat(
+      beat, scene, workDir, videoTitle, dedup,
+      (clipPath: string, sec = shortHold) => pushSceneClip(clipPath, sec, beat.index),
+      shortHold,
+      semanticProfiles.get(beat.index)
+    );
+    if (!hit || clips.length === before) break;
   }
 
   if (coverage >= floor) {
-    note("back above the floor on real footage — no held frame", false);
+    note(
+      `resolution=subject_fallback extra_searches=${extraSearches} ` +
+        `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — no held frame`,
+      false
+    );
     return;
   }
 
@@ -28456,7 +28644,10 @@ async function ensureArchiveMontageVoiceCoverage(
    */
   const source = dedup.lastRealClip;
   if (!source) {
-    note("no real clip to re-use either — compose will hold a frame");
+    note(
+      `resolution=held_frame reason=no_real_clip_to_reuse extra_searches=${extraSearches} ` +
+        `short=${(scene.duration - coverage).toFixed(1)}s`
+    );
     return;
   }
   for (let attempt = 0; attempt < 3 && coverage < floor; attempt++) {
@@ -28487,12 +28678,18 @@ async function ensureArchiveMontageVoiceCoverage(
   }
 
   if (coverage < floor) {
+    const plan = planCoverageFill(coverage, scene.duration);
     note(
-      `STILL ${(scene.duration - coverage).toFixed(1)}s short after every search and re-use — ` +
-        `compose will slow to ${MAX_COVERAGE_SLOWDOWN}x and hold a frame for the remainder`
+      `resolution=held_frame reason=exhausted extra_searches=${extraSearches} ` +
+        `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s ` +
+        `slowdown=${plan.slowdownRatio.toFixed(2)}x held=${plan.stillShortSec.toFixed(1)}s`
     );
   } else {
-    note(`back above the floor after re-use — ${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`, false);
+    note(
+      `resolution=own_footage_reused extra_searches=${extraSearches} ` +
+        `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`,
+      false
+    );
   }
 }
 
@@ -35001,6 +35198,30 @@ async function _runVideoPipelineInner(
      * existed only as console output on whichever worker happened to render it.
      */
     pipelineReport.addAll("warnings", visualDedup.coverageDecisions);
+    /**
+     * RONDE 112 — the clips that were refused for LENGTH, named separately.
+     *
+     * They are already in rejectSummary with every other reason, where they are one row among
+     * twenty. They are also the direct cause of the shortfalls the lines above describe, so the
+     * coverage story is incomplete without them next to it.
+     */
+    {
+      const rejects = qualityReport.rejectSummary ?? {};
+      const tooShort =
+        (rejects.source_video_too_short ?? 0) +
+        (rejects.trimmed_clip_too_short ?? 0) +
+        (rejects.ken_burns_clip_too_short ?? 0) +
+        (rejects.styled_still_too_short ?? 0);
+      if (tooShort > 0) {
+        pipelineReport.add(
+          "warnings",
+          `[Coverage] clips refused for length across this render: ${tooShort} ` +
+            `(source=${rejects.source_video_too_short ?? 0} ` +
+            `trimmed=${rejects.trimmed_clip_too_short ?? 0} ` +
+            `still=${(rejects.ken_burns_clip_too_short ?? 0) + (rejects.styled_still_too_short ?? 0)})`
+        );
+      }
+    }
     pipelineReport.addAll(
       "timing",
       Object.entries(pipelineStepTiming.toReport() as Record<string, unknown>).map(

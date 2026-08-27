@@ -284,6 +284,19 @@ export function computeMeritQualityScore(params: {
     const standIns =
       t.byCoverage.held_frame + t.byCoverage.graphic + t.byCoverage.generated + t.byCoverage.none;
     score -= Math.min(30, standIns * 5);
+    /**
+     * RONDE 112 — subject-fallback footage costs less than a stand-in, and more than nothing.
+     *
+     * Two facts have to both survive in the number. The beat did NOT get a picture verified
+     * against its own claim, so it cannot be free. And the picture is real footage of the right
+     * subject, which is a different and much better outcome than a held frame, a graphic or a
+     * colour card — so it cannot cost the same 5.
+     *
+     * 3 is the largest weight strictly below the stand-in weight, and the cap is scaled the same
+     * way (12 against 30). Neither number is tuned for a target score; they encode that ordering
+     * and nothing else.
+     */
+    score -= Math.min(12, t.byCoverage.subject_only * 3);
     // A shot used over the decider's objection is a known risk, and says so in the number too.
     score -= Math.min(15, t.byVerification.reprieved_after_refusal * 5);
     score -= Math.min(10, t.byVerification.verified_mismatch * 5);

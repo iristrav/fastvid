@@ -49,6 +49,17 @@ export type BeatCoverage =
   | "own_footage"
   /** The previous clip was held longer because there was no new one. */
   | "held_frame"
+  /**
+   * RONDE 112 — real footage of the beat's main subject, adopted when nothing matching the beat's
+   * full claim existed. "Hitler" under "Hitler died in his bunker in 1945".
+   *
+   * Its own kind rather than own_footage, because the two claims are genuinely different: the
+   * vision gate was asked whether the picture shows the SUBJECT, and it never saw the rest of the
+   * sentence. Calling that a verified own visual would be the report claiming a check that was
+   * not performed. It is also emphatically not a stand-in — the picture is real, it is on
+   * subject, and it is far better than the held frame it replaced.
+   */
+  | "subject_only"
   /** A motion graphic or text card standing in for footage. */
   | "graphic"
   /** A colour card. No picture at all. */
@@ -99,6 +110,7 @@ const COVERAGE_BY_SOURCE: ReadonlyMap<string, BeatCoverage> = new Map<string, Be
   ["fallback", "placeholder"],
   ["rescue_placeholder", "placeholder"],
   ["rescue_extend", "held_frame"],
+  ["subject_fallback", "subject_only"],
   ["rescue_graphic", "graphic"],
   ["graphic", "graphic"],
   ["motion_graphic", "graphic"],
@@ -201,7 +213,8 @@ export type BeatVisualTally = {
 
 export function tallyBeatVisualStatuses(statuses: readonly BeatVisualStatus[]): BeatVisualTally {
   const byCoverage: Record<BeatCoverage, number> = {
-    own_footage: 0, held_frame: 0, graphic: 0, placeholder: 0, generated: 0, none: 0,
+    own_footage: 0, subject_only: 0, held_frame: 0, graphic: 0, placeholder: 0, generated: 0,
+    none: 0,
   };
   const byVerification: Record<BeatVerification, number> = {
     verified_fit: 0, verified_mismatch: 0, reprieved_after_refusal: 0, unknown: 0, never_asked: 0,
