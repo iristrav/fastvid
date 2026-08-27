@@ -60,14 +60,23 @@ function blockAt(src: string, from: number): string {
 
 /**
  * RONDE 100B's second audit put a provenance wrapper in front of generateGuaranteedBeatClip, so
- * the ladder this file inspects moved into `...Inner`. Follow the wrapper — and verify it really
- * is only a wrapper, so the indirection cannot hide a second implementation from these tests.
+ * the ladder this file inspects moved into `...Inner`. Follow the wrapper — and verify it cannot
+ * hide a second implementation from these tests.
+ *
+ * RONDE 103 gave that wrapper a second job: the ladder's two REAL rungs (`topical`, `wikimedia`)
+ * fetch genuine imagery and now face the same relevance gate every other route faces, and the
+ * tier the ladder returned is the only place that distinction is known. So "plain wrapper" is no
+ * longer the right test — a wrapper may delegate and may judge, but it may not build a ladder of
+ * its own. What this checks is exactly that: it delegates, and it assigns no tier itself.
  */
 function functionBody(src: string, name: string): string {
   if (src.includes(`async function ${name}Inner(`)) {
     const wrapper = sliceBody(src, name);
     if (!wrapper.includes("withBeatProvenance") || !wrapper.includes(`${name}Inner(`)) {
-      throw new Error(`${name} is not a plain provenance wrapper — inspect it directly`);
+      throw new Error(`${name} does not delegate to ${name}Inner under provenance — inspect it directly`);
+    }
+    if (/tierOut\.tier = "/.test(wrapper) || /\btier\.tier = "/.test(wrapper)) {
+      throw new Error(`${name}'s wrapper assigns a tier — that is a second ladder, not a wrapper`);
     }
     return sliceBody(src, `${name}Inner`);
   }
@@ -80,7 +89,30 @@ function sliceBody(src: string, name: string): string {
   );
   if (!marker) throw new Error(`${name} not found`);
   const start = src.indexOf(marker);
-  return blockAt(src, src.indexOf(")", start));
+  /**
+   * RONDE 103: walk the parameter list by BALANCE, not to its first `)`.
+   *
+   * `src.indexOf(")", start)` finds the first close paren after the name, which stops inside the
+   * first parameter that has parentheses of its own — a doc comment, a default, an inline
+   * function type. blockAt then matches the next `{`, which is that parameter's object type
+   * rather than the function's body, and the test reads a few lines of a type declaration while
+   * appearing to read the implementation. That is a test that passes for the wrong reason.
+   */
+  const paramsAt = start + marker.length - 1;
+  let depth = 0;
+  let closeParen = -1;
+  for (let i = paramsAt; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")") {
+      depth--;
+      if (depth === 0) {
+        closeParen = i;
+        break;
+      }
+    }
+  }
+  if (closeParen < 0) throw new Error(`${name} has an unbalanced parameter list`);
+  return blockAt(src, closeParen);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

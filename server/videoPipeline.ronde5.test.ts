@@ -101,7 +101,17 @@ describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => 
     // toScore slices, and the gate loop walks it in that same order.
     expect(block).toContain("downloadedClips.push({ candidate, clipPath });");
     expect(block).toContain("scored.push({ candidate, clipPath, visionResult });");
-    expect(block).toContain('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", candidate.title);');
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately.
+     *
+     * RONDE 5's rule is that FIX 6's batching changed the download ORDER and nothing else — the
+     * scored order and the audit had to come out the same. That rule holds. What changed is the
+     * audit itself: CLIP no longer records a content reject anywhere, because RONDE 58 measured
+     * its verdicts on this material to be inverted. The funnel keeps its score for ranking (which
+     * is what `scored` is for) and the relevance gate below decides whether the winner belongs.
+     */
+    expect(block).not.toContain('"vision_gate", candidate.title');
+    expect(block).toContain("CLIP ranks");
   });
 
   it("winner selection (FIX 1) is untouched", () => {

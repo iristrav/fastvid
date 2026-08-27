@@ -461,7 +461,44 @@ export type PrioritisedQuery = {
   tokens: QueryToken[];
   /** 1 is the strongest combination this beat supports. */
   priority: number;
+  /**
+   * RONDE 103 (phases 9–13) — how specific this question is, 4 (most) down to 1 (least).
+   *
+   *   4  a concrete event WITH its context ......... "Hitler Berlin bunker 1945"
+   *   3  the event itself ......................... "Battle of Berlin"
+   *   2  an entity with context ................... "Hitler Berlin", "Reichstag 1945"
+   *   1  the bare entity ......................... "Hitler", "Berlin archival footage"
+   *
+   * Derived from the token TYPES that are already in the query rather than from a second builder:
+   * the levels are a reading of what the beat proved, not a new source of terms. Nothing here can
+   * introduce a word, so a labelled query is exactly as provable as the unlabelled one was.
+   *
+   * What the level is FOR is the descent rule. Asking every question a beat supports costs a
+   * render 1600 provider calls to fill twenty slots, and the broad ones are where the wrong
+   * pictures come from — a level-1 "Berlin" returns anything ever shot in Berlin. Walking down
+   * from 4 and stopping at the first level that yields a clip the relevance gate accepts asks the
+   * narrow questions first and the broad ones only when the narrow ones came back empty.
+   */
+  level: 1 | 2 | 3 | 4;
 };
+
+/**
+ * The specificity level of one combination, read off the token types it contains.
+ *
+ * `technical` never counts toward specificity — "archival footage" is a phrasing for an archive,
+ * not something the beat says about the world.
+ */
+function queryLevel(tokens: QueryToken[]): 1 | 2 | 3 | 4 {
+  const types = new Set(tokens.filter((t) => t.type !== "technical").map((t) => t.type));
+  const hasEvent = types.has("event");
+  const entities = ["person", "place", "country", "object"].filter((t) => types.has(t as QueryTokenType));
+  const hasContext = types.has("year") || types.has("time") || types.has("place") || types.has("country");
+  if (hasEvent && (entities.length > 0 || types.has("year") || types.has("time"))) return 4;
+  if (hasEvent) return 3;
+  // Two entities are context for each other — "Hitler Berlin" narrows as hard as "Hitler 1945".
+  if (entities.length > 1 || (entities.length > 0 && hasContext) || types.has("action")) return 2;
+  return 1;
+}
 
 /** The one technical term this contract permits in a content query. */
 export const TECHNICAL_ARCHIVAL_TERM = "archival footage";
@@ -511,7 +548,7 @@ export function buildPrioritisedQueries(ctx: VerifiedQueryContext): PrioritisedQ
     const key = query.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ query, tokens, priority: out.length + 1 });
+    out.push({ query, tokens, priority: out.length + 1, level: queryLevel(tokens) });
   };
 
   const p1 = persons[0];
@@ -639,6 +676,42 @@ export function buildPrioritisedQueries(ctx: VerifiedQueryContext): PrioritisedQ
   else if (place) push(place, technical);
 
   return out;
+}
+
+/**
+ * RONDE 103 (phases 9–13) — the beat's questions, grouped by how specific they are.
+ *
+ * Returns the levels present in this beat, most specific first, each with its own queries in the
+ * priority order `buildPrioritisedQueries` established. A level that this beat cannot support is
+ * simply absent — there is no padding and no invented rung, because a beat that names nobody has
+ * no level-1 person question to ask and pretending otherwise is how "documentary" got sent to
+ * Pexels forty times.
+ *
+ * The caller walks the rungs and stops at the first one that produced a clip the relevance gate
+ * accepted. Nothing here performs a search or decides anything; it only says which questions
+ * belong together and in what order they should be asked.
+ */
+export function buildBeatSearchLadder(
+  ctx: VerifiedQueryContext
+): Array<{ level: 1 | 2 | 3 | 4; queries: PrioritisedQuery[] }> {
+  const all = buildPrioritisedQueries(ctx);
+  const out: Array<{ level: 1 | 2 | 3 | 4; queries: PrioritisedQuery[] }> = [];
+  for (const level of [4, 3, 2, 1] as const) {
+    const queries = all.filter((q) => q.level === level);
+    if (queries.length > 0) out.push({ level, queries });
+  }
+  return out;
+}
+
+/** One line per rung, so a render's descent is readable in the log. */
+export function formatSearchLadder(
+  ladder: Array<{ level: 1 | 2 | 3 | 4; queries: PrioritisedQuery[] }>
+): string[] {
+  return ladder.map(
+    (rung) =>
+      `[SearchLadder] level ${rung.level}: ${rung.queries.length} question(s) — ` +
+      rung.queries.map((q) => `"${q.query}"`).slice(0, 4).join(", ")
+  );
 }
 
 // ─── The validator every provider search passes through ──────────────────────

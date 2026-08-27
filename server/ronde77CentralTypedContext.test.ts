@@ -6,6 +6,7 @@ import {
   buildPersonCelebrityVideoQueries,
   extractActionCue,
   extractVisualPlacePhrase,
+  typedQueryLead,
   typedQueryPrefix,
 } from "./videoPipeline";
 import {
@@ -290,11 +291,27 @@ describe("RONDE 77 §E — a missing action leaves no gap", () => {
 /* ═════════════ §F/§G — the first central lever ═════════════ */
 
 describe("RONDE 77 §F — buildBeatVisualQueryList asks the typed question first", () => {
+  /**
+   * SUPERSEDED BY RONDE 103 for two of the four, deliberately.
+   *
+   * RONDE 77 §F's rule is that the TYPED question leads this list rather than the geo-stock
+   * phrase, and that rule is untouched — the test below that bans "hitler bunker" and
+   * "france aerial video" from position 1 still passes unchanged.
+   *
+   * What changed is which typed question leads. The list has two slots and they now descend the
+   * ladder: the narrowest question the beat supports first, the next-narrowest second. BEAT_1 and
+   * BEAT_4 both state an EVENT, so their level-4 question leads and the level-2 question that
+   * used to lead moves to slot 2 — it is still asked, immediately after. BEAT_2 and BEAT_3 prove
+   * no event, so their lead is unchanged.
+   *
+   * "Churchill fall of France" instead of "Churchill France" is the whole point in one line: the
+   * first asks about the thing the sentence is about, the second asks about a man and a country.
+   */
   const cases: Array<[string, string]> = [
-    [BEAT_1, "Adolf Hitler Fuhrerbunker"],
+    [BEAT_1, "Adolf Hitler Fuhrerbunker political testament"],
     [BEAT_2, "Brandenburg Gate Battle of Berlin"],
     [BEAT_3, "Reichstag 1945"],
-    [BEAT_4, "Churchill France"],
+    [BEAT_4, "Churchill fall of France"],
   ];
 
   for (const [beat, first] of cases) {
@@ -303,6 +320,13 @@ describe("RONDE 77 §F — buildBeatVisualQueryList asks the typed question firs
       expect(buildBeatVisualQueryList(beat, SCENE, TITLE, ["Adolf Hitler"], 4)[0]).toBe(first);
     });
   }
+
+  it("RONDE 103 — the question that used to lead is still asked, one place down", () => {
+    // The descent must not cost coverage: slot 2 is the next rung, not a second variant of the
+    // first. A beat whose narrow question finds nothing still has its broader one.
+    expect(buildBeatVisualQueryList(BEAT_1, SCENE, TITLE, [], 2)).toContain("Adolf Hitler Fuhrerbunker");
+    expect(buildBeatVisualQueryList(BEAT_4, SCENE, TITLE, [], 2)).toContain("Churchill France");
+  });
 
   it("the geo-stock phrase is no longer the primary query on this path", () => {
     const banned: Array<[string, string]> = [
@@ -350,7 +374,16 @@ describe("RONDE 77 §G — added to the list, never swapped into it", () => {
     // has fewer queries to give is not read as an eviction.
     for (const beat of beats) {
       for (const [persons, max] of [[[], 2], [["Adolf Hitler"], 4]] as Array<[string[], number]>) {
-        const typed = typedQueryPrefix(beat, { scenePersons: persons }).slice(0, 2);
+        /**
+         * SUPERSEDED BY RONDE 103, deliberately — the rule is unchanged, the measurement is fixed.
+         *
+         * This used to be `typedQueryPrefix(...).slice(0, 2)`: a SECOND definition of "which two
+         * queries are the typed ones", written here rather than read from the code under test. It
+         * drifted the moment the pipeline started leading with the narrower rung — the guard kept
+         * passing while measuring a different pair from the one actually sent. §G's rule (typed
+         * entries are ADDED to the cap, never swapped into it) is untouched.
+         */
+        const typed = typedQueryLead(beat, persons);
         const supply = buildBeatVisualQueryList(beat, SCENE, TITLE, persons, 99)
           .filter((q) => !typed.includes(q)).length;
         const qs = buildBeatVisualQueryList(beat, SCENE, TITLE, persons, max);

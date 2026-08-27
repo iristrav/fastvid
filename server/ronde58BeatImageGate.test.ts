@@ -187,7 +187,19 @@ describe("RONDE 58 — the wiring", () => {
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
     const block = src.slice(idx, idx + 4600);
-    expect(block).toContain("judgeBeatImage({");
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately.
+     *
+     * This asserted `judgeBeatImage({` — the funnel calling the vision model directly. RONDE 103
+     * made that a bypass by definition: the funnel held its own copy of the frame sampling, the
+     * cleanup and the cache key, and it was the copy that keyed verdicts on the picture alone, so
+     * a clip approved on beat 1 was never re-examined on beat 7. The call now goes through the
+     * pipeline's single content decider, which is a STRONGER version of what this test guards —
+     * the funnel still judges the candidate about to be adopted, and now it cannot judge it
+     * differently from every other route.
+     */
+    expect(block).toContain("checkBeatRelevance({");
+    expect(block).toContain('route: `funnel:${winner.candidate.source}`,');
     // Bounded per beat, and a rejected winner steps down to the next-best rather than to nothing.
     expect(block).toContain("look < MAX_JUDGEMENTS_PER_BEAT");
     expect(block).toContain("dedup.usedFunnelCandidateIds.add(winner.candidate.id);");
@@ -208,12 +220,24 @@ describe("RONDE 58 — the wiring", () => {
   });
 
   it("the frames it judges are cleaned up", () => {
-    const src = SRC();
-    // RONDE 62 added two more copies of this gate (the adoption path and YouTube); anchor on
-    // the funnel's, which is the one this file is about.
-    const idx = src.indexOf("judgeBeatImage({", src.indexOf("let winner = pickBestFunnelCandidate("));
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately — and made harder to break.
+     *
+     * The cleanup used to be inlined at three call sites, and this test checked one of them. It
+     * now lives once, in the central gate, so the assertion moved with it. That is strictly
+     * stronger: a fourth route cannot be added with the cleanup forgotten, because there is no
+     * longer a place to forget it.
+     */
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    const idx = mod.indexOf("function discardFrames(");
     expect(idx).toBeGreaterThan(-1);
-    expect(src.slice(idx, idx + 900)).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
+    expect(mod.slice(idx, idx + 400)).toMatch(/for \(const p of framePaths\)[\s\S]{0,120}fs\.unlinkSync\(p\)/);
+    // And the gate discards them on every exit, not only the happy one.
+    expect(mod).toContain("discardFrames(framePaths);");
+    // The funnel no longer owns a copy it could forget to clean up.
+    const src = SRC();
+    const funnel = src.slice(src.indexOf("let winner = pickBestFunnelCandidate("), src.indexOf("let winner = pickBestFunnelCandidate(") + 4600);
+    expect(funnel).not.toContain("fs.unlinkSync");
   });
 
   it("a rejection is recorded in the audit, so the reason survives the render", () => {

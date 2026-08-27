@@ -6,6 +6,7 @@ import {
   extractPersonNamesFromText,
   extractVisualPlacePhrase,
   scriptStockSearchQueries,
+  typedQueryLadder,
   typedQueryPrefix,
 } from "./videoPipeline";
 import {
@@ -283,11 +284,22 @@ describe("RONDE 78 §C — beat person before scene person", () => {
       typedQueryPrefix(BEAT_4, { scenePersons: ["Adolf Hitler"] }),
       typedQueryPrefix(BEAT_4, { forcePerson: "Adolf Hitler" }),
       buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_4, 0),
-      buildBeatVisualQueryList(BEAT_4, SCENE, TITLE, ["Adolf Hitler"], 4),
     ]) {
       expect(qs[0]).toBe("Churchill France");
       expect(qs[0]).not.toContain("Adolf Hitler");
     }
+    /**
+     * SUPERSEDED BY RONDE 103 for this one builder, deliberately.
+     *
+     * §C's rule — the beat's own person leads, a supplied one never displaces them — is what this
+     * test is about, and it holds on every builder. buildBeatVisualQueryList now descends the
+     * ladder, so its lead is the beat's EVENT question rather than its entity question. Churchill
+     * still leads the string; Hitler still does not appear.
+     */
+    const list = buildBeatVisualQueryList(BEAT_4, SCENE, TITLE, ["Adolf Hitler"], 4);
+    expect(list[0]).toBe("Churchill fall of France");
+    expect(list[0]).not.toContain("Adolf Hitler");
+    expect(list[0]!.startsWith("Churchill")).toBe(true);
   });
 
   it("RONDE 88 — a SCENE person needs the scene text; an explicitly requested person does not", () => {
@@ -367,7 +379,21 @@ describe("RONDE 78 §D — the context reaches the provider query, not just the 
     });
 
     it(`BEAT VISUAL QUERY LIST (Pexels/Pixabay/stock) — "${beat.slice(0, 30)}…"`, () => {
-      expect(buildBeatVisualQueryList(beat, SCENE, TITLE, [], 2)[0]).toBe(first);
+      /**
+       * SUPERSEDED BY RONDE 103, deliberately — for this builder only.
+       *
+       * §D's rule is that the beat's typed context reaches the PROVIDER, not just the extractor.
+       * That is what the `mustAppear` check above measures and it is unchanged on all three
+       * paths. This one builder now descends the ladder, so the narrowest question the beat
+       * supports leads and the entity question follows in slot 2. `first` is still the lead for
+       * the two beats that prove no event, and still in the list for the two that do.
+       */
+      const qs = buildBeatVisualQueryList(beat, SCENE, TITLE, [], 2);
+      expect(qs).toContain(first);
+      const ladder = typedQueryLadder(beat);
+      expect(qs[0]).toBe(ladder[0]?.queries[0] ?? first);
+      // Whatever leads, it is a typed question and not the geo-stock phrase.
+      expect(typedQueryPrefix(beat)).toContain(qs[0]);
     });
   }
 

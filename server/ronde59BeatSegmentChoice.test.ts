@@ -160,15 +160,27 @@ describe("RONDE 59 — the judge looks across the clip, not at one instant", () 
   });
 
   it("the pipeline extracts one frame per fraction and cleans all of them up", () => {
-    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 3200);
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately.
+     *
+     * RONDE 59's rule — sample across the clip, never one instant of it, and clean every frame up
+     * — is unchanged and now applies to every route at once, because the sampling lives in the
+     * central gate instead of being copied into the funnel, the adoption path and YouTube. The
+     * assertion follows the code; the rule it guards is the same one, enforced in one place.
+     */
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    const idx = mod.indexOf("async function sampleFrames(");
+    expect(idx).toBeGreaterThan(-1);
+    const block = mod.slice(idx, idx + 900);
     expect(block).toContain("f < JUDGEMENT_FRAME_FRACTIONS.length");
     expect(block).toContain("JUDGEMENT_FRAME_FRACTIONS[f]!");
-    expect(block).toContain("framePaths,");
-    expect(block).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
-    // The single fixed frame it used to judge on is gone.
-    expect(block).not.toContain("extractFrameAtFraction(winner.clipPath, framePath, 0.45");
+    expect(mod).toMatch(/for \(const p of framePaths\)[\s\S]{0,120}fs\.unlinkSync\(p\)/);
+    // The single fixed frame it used to judge on is gone, and so is the funnel's private copy.
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const funnelIdx = src.indexOf("let winner = pickBestFunnelCandidate(");
+    const funnel = src.slice(funnelIdx, funnelIdx + 3200);
+    expect(funnel).not.toContain("extractFrameAtFraction(winner.clipPath, framePath, 0.45");
+    expect(funnel).not.toContain("JUDGEMENT_FRAME_FRACTIONS[f]!");
   });
 });
 

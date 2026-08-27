@@ -217,24 +217,56 @@ describe("Vision Gate root-cause fix round 2 — Test 9: off_topic_visual reject
   });
 });
 
-describe("Vision Gate root-cause fix — Test C: cache hit no longer double-counted as a fresh reject", () => {
-  it("beatClipPassesVisionGate only records a vision_gate reject when the verdict was NOT from cache", () => {
+describe("Vision Gate root-cause fix — Test C: CLIP cannot record a content reject at all", () => {
+  /**
+   * SUPERSEDED BY RONDE 103, deliberately — the invariant is now structural.
+   *
+   * This guarded "a CLIP cache hit must not be recorded as a fresh vision_gate reject": one real
+   * verdict was being counted as N candidates each having been looked at and refused. The guard
+   * was right and the accounting fix was right, but it treated the symptom. RONDE 58 had already
+   * measured that CLIP's content verdicts on archive material are INVERTED — a
+   * white-lives-matter sticker scored 0.2226 against a signed photograph of Hitler at 0.2116 on
+   * the same beat — so the question is not how to count those rejects honestly, it is why a judge
+   * whose ordering is backwards has a veto.
+   *
+   * It does not any more. CLIP still runs, still scores, and still ranks candidates; it no longer
+   * refuses one. That makes miscounting a cache hit impossible rather than merely guarded
+   * against, which is why these tests now assert the absence of the reject rather than its
+   * conditions.
+   */
+  it("beatClipPassesVisionGate records no vision_gate reject — CLIP ranks, it does not decide", () => {
     const src = extractFunctionSource("beatClipPassesVisionGate");
-    const idx = src.indexOf('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate"');
-    expect(idx).toBeGreaterThan(-1);
-    const before = src.slice(Math.max(0, idx - 200), idx);
-    expect(before).toContain("!result.pass && !result.fromCache");
+    expect(src).not.toContain('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate"');
+    // The score is still computed and still travels with the result.
+    expect(src).toContain("await withGlobalVisionGate(() => evaluateClipVisionGate(");
+    expect(src).toContain("worstScore10: result.worstScore10");
+    // What decides is the relevance gate, and its refusal IS recorded.
+    expect(src).toContain("const relevance = await checkBeatRelevance({");
+    expect(src).toContain('"beat_image_gate", queryLabel);');
+    // A CLIP fail is logged as a ranking signal, so the demotion is visible rather than silent.
+    expect(src).toContain("ranking signal only");
   });
 
-  it("adoptClip's vision-gate call site (the other funnel) also skips recordClipReject on a cache hit", () => {
-    const idx = fullSource.indexOf('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery)');
-    expect(idx).toBeGreaterThan(-1);
-    const before = fullSource.slice(Math.max(0, idx - 400), idx);
-    expect(before).toContain("!visionResult.fromCache");
+  it("adoptClip's vision-gate call site records no vision_gate reject either", () => {
+    const start = fullSource.indexOf("async function adoptClip(");
+    expect(start).toBeGreaterThan(-1);
+    const body = fullSource.slice(start, fullSource.indexOf("\nasync function fetchUniqueStockForBeat(", start));
+    expect(body).not.toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery)');
+    // The relevance gate is what can still cost a candidate its place here.
+    expect(body).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery)');
   });
 
-  it("adoptClip calls evaluateClipVisionGate directly (not the boolean-only clipPassesVisionGate wrapper) so fromCache is observable", () => {
+  it("adoptClip calls evaluateClipVisionGate directly (not the boolean-only clipPassesVisionGate wrapper) so the score is observable", () => {
     const idx = fullSource.indexOf("const visionResult = await evaluateClipVisionGate(");
     expect(idx).toBeGreaterThan(-1);
+    // The score is what it is kept for: it lands on the candidate's lineage record.
+    expect(fullSource).toContain("eligibleRecord.visionScore ??= visionResult.worstScore10 ?? undefined;");
+  });
+
+  it("RONDE 103 — no CLIP call site anywhere still rejects a clip on content", () => {
+    // The three sites RONDE 101 named: adoptClip, beatClipPassesVisionGate, the funnel. Not one
+    // of them may turn a CLIP verdict into a rejection any more.
+    const rejects = fullSource.match(/recordClipReject\([^)]*"vision_gate"/g) ?? [];
+    expect(rejects).toHaveLength(0);
   });
 });

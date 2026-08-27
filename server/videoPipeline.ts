@@ -304,6 +304,7 @@ import {
   withGlobalVisionGate,
 } from "./globalResourceBudget";
 import {
+  buildBeatSearchLadder,
   buildPrioritisedQueries,
   checkPersonName,
   formatSearchGateReport,
@@ -380,6 +381,17 @@ import {
   maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
+import {
+  beatIdentityKey,
+  checkBeatRelevance,
+  composeBarrierAllows,
+  createBeatRelevanceLedger,
+  formatRelevanceSummary,
+  inheritBeatRelevance,
+  reprieveBeatClip,
+  type BeatRelevanceLedger,
+  type BeatVisualContext,
+} from "./beatVisualRelevance";
 import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
@@ -8021,10 +8033,47 @@ export async function generateGuaranteedBeatClip(
   usedAssetIds?: Set<number>,
   usedStorageUrls?: Set<string>,
   tierOut?: GuaranteedTierOut,
+  /**
+   * RONDE 103 phase 7 — the guaranteed ladder reaches real pictures, so it is judged too.
+   *
+   * The ladder's first two rungs (`topical`, `wikimedia`) fetch genuine imagery and put it under
+   * this beat's narration; those are claims about the world and get the same gate every other
+   * route gets. Its last two (`text_overlay`, `color_fallback`) draw a card that depicts nothing,
+   * and asking a vision model whether a grey rectangle belongs under a line of narration is
+   * money spent to learn nothing.
+   *
+   * The check sits here, on the tier the ladder actually returned, rather than at the twelve
+   * call sites — a new caller cannot forget it, and the choice of which tiers are exempt is
+   * stated once. A refused clip is NOT swapped for something else: this function's whole contract
+   * is that it always returns a path, so the refusal is recorded on the ledger and the compose
+   * barrier is what acts on it.
+   */
+  relevance?: { dedup: VisualDedupState; scene?: { text?: string }; videoTitle?: string },
 ): Promise<string> {
-  return withBeatProvenance({ text: beatText ?? "" }, {}, () =>
-    generateGuaranteedBeatClipInner(sceneIndex, slotIndex, duration, workDir, beatText, usedAssetIds, usedStorageUrls, tierOut)
+  const tier: GuaranteedTierOut = tierOut ?? {};
+  const clip = await withBeatProvenance({ text: beatText ?? "" }, {}, () =>
+    generateGuaranteedBeatClipInner(sceneIndex, slotIndex, duration, workDir, beatText, usedAssetIds, usedStorageUrls, tier)
   );
+  if (relevance && clip) {
+    await checkBeatRelevance({
+      clipPath: clip,
+      contentKey: clipContentKey(clip),
+      ctx: {
+        sceneIndex,
+        beatIndex: slotIndex,
+        beatText: beatText ?? "",
+        sceneText: relevance.scene?.text,
+        videoTitle: asVideoTitleString(relevance.videoTitle) || undefined,
+      },
+      workDir,
+      state: relevance.dedup.beatImageGate,
+      ledger: relevance.dedup.beatRelevance,
+      route: `guaranteed:${tier.tier ?? "unknown"}`,
+      placeholder: isPlaceholderGuaranteedTier(tier.tier),
+      onSpend: (spent) => noteVisionSpend(relevance.dedup, sceneIndex, slotIndex, spent),
+    });
+  }
+  return clip;
 }
 
 async function generateGuaranteedBeatClipInner(
@@ -8212,7 +8261,8 @@ async function appendGuaranteedSceneClips(
     try {
       const tierOut: GuaranteedTierOut = {};
       const clip = await generateGuaranteedBeatClip(
-        scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90), undefined, undefined, tierOut
+        scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90), undefined, undefined, tierOut,
+        dedup ? { dedup, scene } : undefined
       );
       const key = clipContentKey(clip);
       if (!clips.some((c) => clipContentKey(c) === key)) {
@@ -11502,27 +11552,15 @@ async function fetchRapidApiYoutubeMeta(
  * gate switched off, no narration, no extractable frame, a model outage, the budget spent —
  * returns true and adopts exactly as before.
  */
-/**
- * RONDE 70: attribute one judgement's outcome to the beat that asked for it.
- *
- * BeatImageGateState counts render-wide, which answers "how much did the gate spend" but not
- * "which beat was assembled without a picture editor". The state's own counters are read either
- * side of the call and the delta is attributed — so a cached verdict, which spends nothing,
- * correctly counts as nothing, and judgeBeatImage's signature and behaviour are untouched.
- */
-function noteVisionDelta(
-  dedup: VisualDedupState,
-  sceneIndex: number,
-  beatIndex: number,
-  before: { used: number; failed: number }
-): void {
-  const g = dedup.beatImageGate;
-  const judged = g.judgementsUsed - before.used;
-  const failed = g.judgementsFailed - before.failed;
-  for (let i = 0; i < judged; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "judged");
-  for (let i = 0; i < failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
-}
 
+/**
+ * RONDE 103: this is now a thin adapter onto the pipeline's single content decider.
+ *
+ * It used to hold its own copy of the frame sampling, the judgement call, the cleanup and the
+ * logging — one of three such copies, which is how they drifted apart and how two of the three
+ * came to key their cache on the picture alone. The behaviour is unchanged from the caller's
+ * side; the decision is simply made in one place now. See ./beatVisualRelevance.
+ */
 async function beatClipPassesImageGate(
   clipPath: string,
   contentKey: string,
@@ -11533,41 +11571,23 @@ async function beatClipPassesImageGate(
   beatIndex: number,
   dedup: VisualDedupState
 ): Promise<boolean> {
-  if (!beatImageRelevanceGateEnabled() || !beatText?.trim()) return true;
-
-  const framePaths: string[] = [];
-  for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
-    const framePath = path.join(workDir, `birx_s${sceneIndex}b${beatIndex}_${f}.jpg`);
-    const got = await extractFrameAtFraction(
-      clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
-    ).catch(() => false);
-    if (got) framePaths.push(framePath);
-  }
-  const visionBefore = {
-    used: dedup.beatImageGate.judgementsUsed,
-    failed: dedup.beatImageGate.judgementsFailed,
-  };
-  const judgement = await judgeBeatImage({
-    framePaths,
-    beatText,
-    videoTitle: asVideoTitleString(opts.videoTitle) || undefined,
-    sceneText: opts.sceneText,
+  const decision = await checkBeatRelevance({
+    clipPath,
     contentKey,
+    ctx: {
+      sceneIndex,
+      beatIndex,
+      beatText,
+      sceneText: opts.sceneText,
+      videoTitle: asVideoTitleString(opts.videoTitle) || undefined,
+    },
+    workDir,
     state: dedup.beatImageGate,
+    ledger: dedup.beatRelevance,
+    route: "adopt",
+    onSpend: (spent) => noteVisionSpend(dedup, sceneIndex, beatIndex, spent),
   });
-  noteVisionDelta(dedup, sceneIndex, beatIndex, visionBefore);
-  for (const fp of framePaths) {
-    try { fs.unlinkSync(fp); } catch { /* ignore */ }
-  }
-
-  if (judgement.verdict === "does_not_fit") {
-    console.log(
-      `[BeatImageGate] adopt s${sceneIndex}b${beatIndex} does_not_fit ` +
-        `clip=${path.basename(clipPath)} depicts="${judgement.depicts}" reason="${judgement.reason}"`
-    );
-    return false;
-  }
-  return true;
+  return decision.allowed;
 }
 
 async function youtubeClipPassesImageGate(
@@ -11599,6 +11619,15 @@ async function youtubeClipPassesImageGate(
     beatText: scriptGuided.beatText,
     videoTitle: scriptGuided.videoTitle,
     contentKey: clipContentKey(clipPath),
+    // RONDE 103: this check runs before a clip is in any beat's pool, so it has narration but no
+    // beat slot. Deriving the identity from the narration it DOES have keeps it in its own cache
+    // bucket rather than sharing one with every beat that later judges the same video.
+    beatIdentity: beatIdentityKey({
+      sceneIndex,
+      beatIndex: -1,
+      beatText: scriptGuided.beatText,
+      videoTitle: scriptGuided.videoTitle,
+    }),
     state: gate,
   });
   // Only a call that actually cost something counts against YouTube's slice — a cached verdict
@@ -13721,12 +13750,26 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
   // Entities first, then concrete nouns, then the beat's own year if it stated one.
   const ranked = [...proper, ...common].slice(0, 3);
   if (ranked.length === 0) {
-    // Nothing concrete survived. Fall back to the old positional behaviour rather than
-    // returning nothing — a weak query still beats no query, and scriptStockSearchQueries'
-    // sceneText/videoTitle cascade below only runs on an empty subject.
-    const words = clean.split(/\W+/).filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
-    const unique = [...new Set(words.map((w) => w.toLowerCase()))];
-    return unique.slice(0, 3).join(" ") || clean.split(/\s+/).slice(0, 2).join(" ");
+    /**
+     * RONDE 103 (phase 10) — nothing concrete survived, so this beat has no subject.
+     *
+     * What stood here was the positional heuristic RONDE 71 replaced, kept as a fallback: the
+     * first three words of four letters or more that are not stop words, and failing that the
+     * first two words of the sentence. RONDE 71 measured what that produces — "berlin under
+     * constant", "final birthday twentieth", "hitler received military" — and the fact that it
+     * only runs when the good extractor found nothing does not make it better. It makes it worse:
+     * a beat whose every concrete word was filtered out is exactly the beat whose leftovers are
+     * grammar.
+     *
+     * Returning "" is the honest answer, and it is not the end of the line. Both callers already
+     * treat an empty subject as "ask the scene, then the title, then ask nothing" — a cascade
+     * that goes to real text rather than to the first two words of this sentence. This is the
+     * same reasoning that removed "documentary" in RONDE 100B, applied one level further in.
+     *
+     * Deliberately NOT another stop word: the failure was never a missing entry in a list. It was
+     * a rule that picks by position instead of by meaning, and the fix is to stop picking.
+     */
+    return "";
   }
   // The year rides along only when there is room and it is not already in the words.
   if (year && ranked.length < 3) ranked.push(year);
@@ -14223,6 +14266,61 @@ export function typedQueryPrefix(
 }
 
 /**
+ * RONDE 103 (phases 9–13) — the two typed questions this beat leads with.
+ *
+ * Exported because the RONDE 77 §G mutation guard has to measure the same two. It used to compute
+ * them itself, as `typedQueryPrefix(...).slice(0, 2)`, and a second definition of "which queries
+ * are the typed ones" is exactly the kind of duplicate that drifts silently: the test kept
+ * passing while measuring a different pair from the one the pipeline sent.
+ *
+ * One question per RUNG, descending. Taking both slots off the top rung would ask two narrow
+ * variants of the same question and drop the broader one entirely — that is not a descent, and a
+ * beat whose narrow question finds nothing would be left with no fallback on this path. A beat
+ * that supports only one rung still fills both slots from it, exactly as before.
+ */
+export function typedQueryLead(beatText: string, scenePersons: string[] = []): string[] {
+  const ladder = typedQueryLadder(beatText, { scenePersons });
+  const out: string[] = [];
+  for (const rung of ladder) {
+    const pick = rung.queries.find((q) => !out.includes(q));
+    if (pick) out.push(pick);
+    if (out.length >= 2) break;
+  }
+  if (out.length < 2 && ladder[0]) {
+    for (const q of ladder[0].queries) {
+      if (out.length >= 2) break;
+      if (!out.includes(q)) out.push(q);
+    }
+  }
+  return out;
+}
+
+/**
+ * RONDE 103 (phases 9–13) — the same questions, asked narrowest first.
+ *
+ * `typedQueryPrefix` returns them in the RONDE 90 priority order, where names lead. That rule is
+ * about which terms lead the STRING and it is not weakened here: this reorders the LIST, level 4
+ * down to level 1, keeping the priority order inside each level exactly as it was.
+ *
+ * The difference it makes is which question a caller that takes only the first two actually asks.
+ * On "Hitler directed the defence of Berlin from the bunker in 1945" the priority list leads with
+ * "Hitler Berlin" — a question that returns anything ever shot in Berlin with Hitler in it —
+ * while the beat also supports "Hitler Berlin bunker 1945". Asking the second one first is how a
+ * beat gets the picture it is actually about, and it is also most of the answer to why a render
+ * spent 1667 provider queries to fill twenty slots: the broad questions return the most and fit
+ * the least, so every one of their results costs a download and a judgement to throw away.
+ */
+export function typedQueryLadder(
+  beatText: string,
+  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
+): Array<{ level: 1 | 2 | 3 | 4; queries: string[] }> {
+  return buildBeatSearchLadder(buildVerifiedQueryContextForBeat(beatText, opts)).map((rung) => ({
+    level: rung.level,
+    queries: rung.queries.map((q) => q.query),
+  }));
+}
+
+/**
  * RONDE 88 — the beat's PROVEN typed context, with provenance on every term.
  *
  * Three measured defects are closed here, and each one is a rule of §1–§13:
@@ -14537,7 +14635,14 @@ export function buildBeatVisualQueryList(
   // at — seven call sites reach the providers through this one list, and every one of them was
   // asking with the anchor word alone. "Adolf Hitler" and "berlin city skyline" both still go,
   // one place further down; the cap grows by exactly what was added so nothing is evicted.
-  const typed = typedQueryPrefix(beatText, { scenePersons }).slice(0, 2);
+  /**
+   * RONDE 103 (phases 9–13): the narrowest question the beat supports leads, then the next
+   * narrowest. Two queries as before — the change is WHICH two, not how many. A beat that proves
+   * an event now spends its two slots on "Hitler Berlin bunker 1945" and "Battle of Berlin"
+   * rather than on "Hitler Berlin" and "Hitler", which is the difference between asking about
+   * this shot and asking about the whole war.
+   */
+  const typed = typedQueryLead(beatText, scenePersons);
   // Person context (e.g. "Adolf Hitler") is resolved once per scene/video, not per beat — many
   // beats refer to the subject with a pronoun ("he", "his") instead of repeating the name, so
   // without this a beat like "He then gave the order..." never even tries a person-name query,
@@ -14876,6 +14981,14 @@ export interface VisualDedupState {
    */
   beatImageGate: BeatImageGateState;
   /**
+   * RONDE 103: what the single content decider decided, per clip path.
+   *
+   * Same lifetime and the same reasoning as beatImageGate above — one render, no leakage. This is
+   * what makes a decision survive the hand-off between the route that made it and the compose
+   * barrier that enforces it. See ./beatVisualRelevance.
+   */
+  beatRelevance: BeatRelevanceLedger;
+  /**
    * RONDE 61: funnel candidates the beat-image gate has REFUSED. Separate from
    * usedFunnelCandidateIds, which is a soft variety preference the picker restores when
    * everything has been used — this one is never restored.
@@ -15120,6 +15233,7 @@ export function createVisualDedupState(
     beatOutcomeAudit: createBeatOutcomeAudit(),
     clipAdoptAudit: createClipAdoptAudit(),
     beatImageGate: createBeatImageGateState(),
+    beatRelevance: createBeatRelevanceLedger(),
     beatImageRejectedIds: new Set<string>(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
@@ -16804,10 +16918,34 @@ async function assertSceneVisualInventory(
 async function montageClipPassesComposeGate(
   clipPath: string,
   sceneIndex: number,
-  clipIndex: number
+  clipIndex: number,
+  /**
+   * RONDE 103 phase 17 — the last barrier.
+   *
+   * This function is the widest chokepoint the pipeline has: eighteen call sites, and every clip
+   * that reaches a composed scene passes one of them. That makes it the right place to ask the
+   * one question no route can answer for itself — did anything object to this clip, and was that
+   * objection overruled on purpose?
+   *
+   * The ledger is optional because four of the eighteen call sites are inside compose paths that
+   * were handed bare file paths and have no VisualDedupState to read. Those keep the old
+   * behaviour rather than being given a fabricated one; see composeBarrierAllows for what an
+   * unknown path is allowed to do.
+   */
+  relevance?: BeatRelevanceLedger
 ): Promise<boolean> {
   const GATE_TIMEOUT_MS = 25_000;
   const base = path.basename(clipPath);
+
+  if (relevance) {
+    const barrier = composeBarrierAllows(relevance, clipPath, clipContentKey(clipPath));
+    if (!barrier.allow) {
+      console.warn(
+        `[ComposeBarrier] s${sceneIndex} clip ${clipIndex}: BLOCKED ${base} — ${barrier.reason}`
+      );
+      return false;
+    }
+  }
 
   let resolved = false;
   const work = (async (): Promise<boolean> => {
@@ -20029,11 +20167,17 @@ async function adoptClip(
         // arrives under a different cascade's filename.
         contentKey
       );
-      if (!visionResult.pass) {
-        if (!visionResult.fromCache) {
-          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
-        }
-        continue;
+      /**
+       * RONDE 103 — CLIP ranks, it does not decide. Same reasoning as in
+       * beatClipPassesVisionGate: this gate's content verdicts are measurably inverted on archive
+       * material, so `!pass` is logged as a ranking signal and the relevance gate below decides.
+       * The score itself is unchanged and still lands on the lineage record.
+       */
+      if (!visionResult.pass && !visionResult.skipped) {
+        console.log(
+          `[VisionGate] s${sceneIndex}b${beatIndex} CLIP would have rejected ` +
+            `${path.basename(p)} (score=${visionResult.worstScore10 ?? "?"}) — ranking signal only`
+        );
       }
       // RONDE 62: look at the picture here too.
       //
@@ -20057,9 +20201,13 @@ async function adoptClip(
         continue;
       }
       if (gateReprieved.has(p)) {
-        console.log(
-          `[BeatImageGate] reprieve s${sceneIndex}b${beatIndex} ${path.basename(p)} — ` +
-            `refused, but every alternative failed too; a real picture beats a placeholder`
+        // RONDE 103 phase 15: recorded as an override, not relabelled as a pass. The verdict on
+        // the ledger stays `does_not_fit` so the render can be asked how many of its shots were
+        // used over the picture editor's objection, and answer.
+        reprieveBeatClip(
+          dedup.beatRelevance,
+          p,
+          "refused, but every alternative failed too; a real picture beats a placeholder"
         );
       }
       // contentKey was computed and checked at the top of this iteration (see the comment
@@ -20780,11 +20928,16 @@ async function recoverSceneClipsIfEmptyInner(
   return { clips, beatDurations };
 }
 
-async function composeReadySceneClips(clips: string[], sceneIndex: number): Promise<string[]> {
+async function composeReadySceneClips(
+  clips: string[],
+  sceneIndex: number,
+  /** RONDE 103 phase 17: all three callers hold the render state, so the barrier applies here too. */
+  relevance?: BeatRelevanceLedger
+): Promise<string[]> {
   const out: string[] = [];
   for (const clipPath of clips) {
     if (!clipPath || isPipelineFallbackClip(clipPath)) continue;
-    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length))) continue;
+    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length, relevance))) continue;
     const key = clipContentKey(clipPath);
     if (out.some((c) => clipContentKey(c) === key)) continue;
     out.push(clipPath);
@@ -20839,7 +20992,7 @@ async function rescueFastShortComposeClips(
   const collected: string[] = [];
   const pushClip = async (clipPath: string, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length))) return false;
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length, dedup.beatRelevance))) return false;
     const key = clipContentKey(clipPath);
     if (collected.some((c) => clipContentKey(c) === key)) return false;
     collected.push(clipPath);
@@ -20950,7 +21103,7 @@ async function finalizeLocalClipCacheForScene(
   const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
 
   const applyReady = async (clips: string[], source: SceneVisualsResult): Promise<SceneVisualsResult> => {
-    const ready = await composeReadySceneClips(clips, scene.index);
+    const ready = await composeReadySceneClips(clips, scene.index, dedup.beatRelevance);
     const durations =
       source.beatDurations?.slice(0, ready.length) ??
       ready.map(() => beatSec);
@@ -21057,7 +21210,7 @@ async function ensureFastShortScenesReadyForCompose(
       continue;
     }
 
-    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index);
+    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index, visualDedup.beatRelevance);
     if (ready.length > 0) {
       sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
       continue;
@@ -21083,7 +21236,7 @@ async function ensureFastShortScenesReadyForCompose(
           : 35_000,
         `Scene ${scene.index} pre-compose recovery`
       );
-      ready = await composeReadySceneClips(recovered.clips, scene.index);
+      ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance);
       if (ready.length > 0) {
         sceneVisualResults[si] = { ...recovered, clips: ready };
       }
@@ -24296,10 +24449,106 @@ async function beatClipPassesVisionGate(
     // Same reasoning as the reject audit above: only a FRESH verdict is a real ask.
     recordGateVerdict("vision_gate", !result.pass);
   }
-  if (!result.pass && !result.fromCache) {
-    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
+  /**
+   * RONDE 103 — CLIP ranks. It does not decide.
+   *
+   * This used to be `if (!result.pass) reject`, and that is the line that put a
+   * white-lives-matter roadside sticker under the Battle of Berlin. RONDE 58 measured CLIP's
+   * content verdicts on exactly this material and found them inverted: the sticker scored 0.2226
+   * and a signed photograph of Hitler 0.2116 on the same beat, so the threshold that deletes one
+   * deletes the right one. A judge whose ordering is backwards cannot be given a veto.
+   *
+   * The score is still computed and still used — it orders candidates before this point and it
+   * goes on the lineage record — so nothing that CLIP is genuinely good at is lost. What changes
+   * is who answers "does this belong": the model that has seen the frame and read the narration.
+   */
+  const clipScoreOnly = !result.pass && !result.skipped;
+  if (clipScoreOnly) {
+    console.log(
+      `[VisionGate] s${scene.index}b${beat.index} CLIP would have rejected ` +
+        `${path.basename(clipPath)} (score=${result.worstScore10 ?? "?"}) — ranking signal only, ` +
+        `the beat relevance gate decides`
+    );
   }
-  return result;
+  const relevance = await checkBeatRelevance({
+    clipPath,
+    contentKey: clipContentKey(clipPath),
+    ctx: beatVisualContext(beat, scene, videoTitle),
+    workDir,
+    state: dedup.beatImageGate,
+    ledger: dedup.beatRelevance,
+    route: queryLabel ? `gate:${queryLabel.slice(0, 24)}` : "gate",
+    onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
+  });
+  if (!relevance.allowed) {
+    recordGateVerdict("beat_image_gate", true);
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "beat_image_gate", queryLabel);
+    return { pass: false, worstScore10: result.worstScore10, skipped: false, fromCache: relevance.cached };
+  }
+  if (!relevance.cached && relevance.verdict !== "unknown") recordGateVerdict("beat_image_gate", false);
+  // `pass` is now the relevance verdict's, not CLIP's. The score travels with it unchanged.
+  return { pass: true, worstScore10: result.worstScore10, skipped: result.skipped, fromCache: result.fromCache };
+}
+
+/**
+ * RONDE 103 phase 4 — the beat context, built in one place from the objects that already have it.
+ *
+ * Every route that reaches the relevance gate has a `beat` and a `scene`; what they did not have
+ * was an agreed shape to hand on. Building it here rather than at each call site means the judge
+ * is asked the same question about the same beat no matter which route arrived at it — which is
+ * also what makes the cache key stable across routes.
+ */
+function beatVisualContext(
+  beat: { text?: string; index?: number },
+  scene: { text?: string; index?: number },
+  videoTitle: string | undefined
+): BeatVisualContext {
+  return {
+    sceneIndex: scene.index ?? 0,
+    beatIndex: beat.index ?? 0,
+    beatText: beat.text ?? "",
+    sceneText: scene.text,
+    videoTitle: asVideoTitleString(videoTitle) || undefined,
+  };
+}
+
+/**
+ * RONDE 103, second audit — the acceptance point refuses what the gate refused.
+ *
+ * Every named adopt/rescue route reaches the relevance gate, and the sweep confirms it. But a
+ * list of routes is not a proof that no route was missed, and the four `pushSceneClip` closures
+ * are where a clip actually becomes a beat's clip — the narrowest place that is true. Asking here
+ * means a route added later cannot push a clip this render has already refused, whatever it did
+ * or did not call on the way.
+ *
+ * It refuses only a `does_not_fit` nobody reprieved. A clip the gate has never seen passes: this
+ * cannot judge, and pretending otherwise would empty montages on the routes that build their own
+ * files. That gap is counted rather than assumed away — see barrierCoverage.
+ */
+function beatClipRefusedByRelevanceGate(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): boolean {
+  const barrier = composeBarrierAllows(dedup.beatRelevance, clipPath, clipContentKey(clipPath));
+  if (barrier.allow) return false;
+  console.warn(
+    `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +
+      `${path.basename(clipPath)} — ${barrier.reason}`
+  );
+  return true;
+}
+
+/** RONDE 103: attribute one gate call's spend to the beat that asked for it. */
+function noteVisionSpend(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  spent: { judged: number; failed: number; skipped: number }
+): void {
+  for (let i = 0; i < spent.judged; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "judged");
+  for (let i = 0; i < spent.failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
 }
 
 async function loadArchiveCandidatePool(
@@ -24495,6 +24744,24 @@ async function pushMotionGraphicBeatClipIfAny(
   );
   if (!mgfxClip) return false;
   dedup.motionGraphicsUsed++;
+  /**
+   * RONDE 103 phase 7, second audit — a motion graphic is a card, not a claim about the world.
+   *
+   * tryRenderMotionGraphicBeatClip draws the beat's OWN text and figures onto a background; there
+   * is no footage in it and no subject it could be wrong about, so "does this picture belong
+   * under this narration" has no answer to give. It is registered as a placeholder rather than
+   * left unregistered, so the compose barrier can tell "deliberately exempt" from "nobody looked".
+   */
+  await checkBeatRelevance({
+    clipPath: mgfxClip,
+    contentKey: clipContentKey(mgfxClip),
+    ctx: beatVisualContext(beat, scene, videoTitle),
+    workDir,
+    state: dedup.beatImageGate,
+    ledger: dedup.beatRelevance,
+    route: "motion_graphic",
+    placeholder: true,
+  });
   return await pushClip(mgfxClip, holdSec);
 }
 
@@ -24504,8 +24771,22 @@ async function applyVideoBeatTextOverlay(
   scene: Scene,
   workDir: string,
   holdSec: number,
-  fastMode = false
+  fastMode = false,
+  /**
+   * RONDE 103 phase 17 — carry the relevance decision across the rename.
+   *
+   * This is the one shared step between "the gate judged this clip" and "the compose barrier
+   * checks this clip", and it writes a new file. Content identity carries the decision for
+   * anything with real provenance; a clip whose only identity is its size and name (the `file:`
+   * family) needs the hand-off written down explicitly, and this is where it happens for every
+   * route at once rather than at thirteen call sites.
+   */
+  relevance?: BeatRelevanceLedger
 ): Promise<string> {
+  const carry = (out: string): string => {
+    if (relevance) inheritBeatRelevance(relevance, clipPath, out);
+    return out;
+  };
   if (deferFacelessSubtitlesToCompose() && facelessSubtitlesEnabled()) {
     return clipPath;
   }
@@ -24521,7 +24802,7 @@ async function applyVideoBeatTextOverlay(
     );
     return clipPath;
   }
-  return burnFacelessTextOnVideoClip(
+  return carry(await burnFacelessTextOnVideoClip(
     clipPath,
     beat.text,
     scene.index,
@@ -24530,7 +24811,7 @@ async function applyVideoBeatTextOverlay(
     holdSec,
     FFMPEG_BIN,
     (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label)
-  );
+  ));
 }
 
 /**
@@ -24716,7 +24997,7 @@ async function adoptBestSimilarBeatClip(
       beatQueryEmb
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
-    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index))) continue;
+    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index, dedup.beatRelevance))) continue;
 
     // The same three relevance gates adoptClip applies. This route reaches pushClip directly
     // instead of going through adoptClip, so until now it got the CLIP vision gate but skipped
@@ -24836,7 +25117,7 @@ async function adoptBestSimilarBeatClip(
       beatQueryEmb
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
-    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index))) continue;
+    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index, dedup.beatRelevance))) continue;
 
     const vision =
       preScore != null && preScore >= targetClipVisionScore()
@@ -24975,7 +25256,7 @@ export async function adoptArchiveBeatClip(
       clipPath, sec, beat, scene, workDir, videoTitle, dedup, semanticProfile
     );
     if (padded) effectiveClip = padded;
-    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
     /**
      * RONDE 86/87 — the two renames that used to end a clip's provenance.
      *
@@ -24989,7 +25270,7 @@ export async function adoptArchiveBeatClip(
      */
     dedup.sourcingCache.lineage.linkDerivedPath(effectiveClip, clipPath, "PADDED");
     dedup.sourcingCache.lineage.linkDerivedPath(withText, effectiveClip, "OVERLAYED");
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
       );
@@ -25508,8 +25789,8 @@ async function adoptWikimediaBeatClipInner(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     return await pushClip(withText, sec);
   };
 
@@ -25562,14 +25843,14 @@ async function adoptWikimediaBeatClipInner(
     console.log(`[Hang] adoptWikiPath BEFORE applyVideoBeatTextOverlay s${_si}b${_bi}`);
     const _ot0 = Date.now();
     const withText = await withTimeout(
-      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode),
+      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance),
       30_000, `applyVideoBeatTextOverlay s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] applyVideoBeatTextOverlay TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return clipPath; });
     console.log(`[Hang] adoptWikiPath AFTER applyVideoBeatTextOverlay s${_si}b${_bi} elapsed=${Date.now()-_ot0}ms`);
     console.log(`[Hang] adoptWikiPath BEFORE montageClipPassesComposeGate s${_si}b${_bi}`);
     const _gt0 = Date.now();
     const gatePass = await withTimeout(
-      montageClipPassesComposeGate(withText, scene.index, beat.index),
+      montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance),
       20_000, `montageClipPassesComposeGate s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
     console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
@@ -25835,8 +26116,8 @@ async function adoptInternetArchiveBeatClipInner(
       "internet_archive"
     );
     if (!vision.pass) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
@@ -25951,8 +26232,8 @@ async function adoptKlingBeatClip(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       return true;
@@ -26046,8 +26327,8 @@ async function adoptEuropeanaBeatClipInner(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
@@ -26160,8 +26441,8 @@ async function adoptAiBeatClip(
   ) {
     return false;
   }
-  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
-  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
+  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
   if (await pushClip(withText, holdSec)) {
     recordClipAdopt(
       dedup.clipAdoptAudit,
@@ -26243,8 +26524,8 @@ async function adoptStockBeatClipFallbackInner(
       stockVisionFloor
     );
     if (!vision.pass) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (!(await pushClip(withText, sec))) return false;
     recordClipAdopt(
       dedup.clipAdoptAudit,
@@ -26462,8 +26743,8 @@ async function adoptEmergencyGeoStockClipInner(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -26806,7 +27087,8 @@ async function rescueBeatVisualWhenEmptyInner(
       undefined,
       undefined,
       undefined,
-      tierOut
+      tierOut,
+      { dedup, scene, videoTitle }
     );
     if (!placeholder) continue;
     if (await pushClip(placeholder, holdSec)) {
@@ -26895,7 +27177,22 @@ async function ensureBeatVisualFilled(
       videoTitle,
       { requireBeatMatch: false }
     );
-    if (lastResort && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
+    /**
+     * RONDE 103, second audit — the last-resort clip is a real picture, so it is judged like one.
+     *
+     * Found by the sweep, not by the list: every named adopt* route reaches the gate, and this
+     * one is not an adopt* route. fetchLastResortRealClip has five return paths and only two of
+     * them (its two adoptClip calls) were gated — an own-archive hit, a YouTube hit and a topical
+     * hit reached the timeline with nothing having looked at them. The check goes here, at the
+     * point the clip becomes this beat's clip, so it covers all five regardless of which one
+     * answered.
+     */
+    const lastResortFits =
+      !lastResort ||
+      (await beatClipPassesVisionGate(
+        lastResort, beat, scene, workDir, videoTitle, dedup, semanticProfile, "last_resort"
+      )).pass;
+    if (lastResort && lastResortFits && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
       markLicensedStockBeatUsed(dedup);
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -26942,7 +27239,8 @@ async function ensureBeatVisualFilled(
       beat.text,
       undefined,
       undefined,
-      tierOut
+      tierOut,
+      { dedup, scene, videoTitle }
     );
     if (await pushClip(beatClip, holdSec)) {
       recordClipAdopt(
@@ -27090,6 +27388,10 @@ async function backfillComposeMontageIfShort(
   const xfade = montageXfadeSec();
 
   const pushClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
+    // RONDE 103, second audit: this is an acceptance point like the four pushSceneClip closures,
+    // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
+    // later must not be able to push a clip this render has already refused.
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -27330,7 +27632,8 @@ async function fillBeatVisual(
       if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
       const guaranteedTierOut: GuaranteedTierOut = {};
       const guaranteed = await generateGuaranteedBeatClip(
-        scene.index, beat.index, holdSec, workDir, beat.text, undefined, undefined, guaranteedTierOut
+        scene.index, beat.index, holdSec, workDir, beat.text, undefined, undefined, guaranteedTierOut,
+        { dedup, scene, videoTitle }
       );
       if (guaranteed && (await pushClip(guaranteed, holdSec))) {
         // Audit-gap fix (same class as Round 17 + follow-up fixes): this emergency-finish
@@ -27678,6 +27981,7 @@ async function fetchArchiveSentenceMontage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) {
@@ -27886,6 +28190,7 @@ async function refillSceneStrictVoiceMatch(
     holdSec: number,
     beatIndex: number
   ): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) return false;
@@ -28213,6 +28518,7 @@ async function ensureArchiveMontageVoiceCoverage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -28541,6 +28847,7 @@ async function fetchSceneVisualsInner(
   };
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
@@ -28776,8 +29083,20 @@ async function fetchSceneVisualsInner(
             isFastShortVideoLength(dedup.videoLength),
             clipContentKey(clipPath)
           );
-          if (!visionResult.pass && !visionResult.fromCache) {
-            recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", candidate.title);
+          /**
+           * RONDE 103 — CLIP ranks here, it does not decide.
+           *
+           * The funnel is the one place CLIP's score genuinely earns its keep: `scored` is what
+           * pickBestFunnelCandidate orders, so a better score really does mean a candidate gets
+           * looked at first. Recording a reject on top of that was the content decision, and it
+           * is the one being removed — a candidate CLIP dislikes now simply sorts lower and the
+           * relevance gate below decides whether the winner belongs.
+           */
+          if (!visionResult.pass && !visionResult.skipped) {
+            console.log(
+              `[VisionGate] s${scene.index}b${beat.index} CLIP ranks ` +
+                `${path.basename(clipPath)} low (score=${visionResult.worstScore10 ?? "?"}) — not a reject`
+            );
           }
           scored.push({ candidate, clipPath, visionResult });
         }
@@ -28804,42 +29123,20 @@ async function fetchSceneVisualsInner(
         // beat. Every failure mode returns "unknown", which adopts exactly as before.
         if (winner && beatImageRelevanceGateEnabled()) {
           for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++) {
-            // RONDE 59: sample across the clip, not one instant of it. A cut can change shot
-            // part-way through, and the frame that happens to sit at 45% is not necessarily
-            // what the viewer sees.
-            const framePaths: string[] = [];
-            for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
-              const framePath = path.join(
-                workDir,
-                `bir_s${scene.index}b${beat.index}_${look}_${f}.jpg`
-              );
-              const got = await extractFrameAtFraction(
-                winner.clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
-              ).catch(() => false);
-              if (got) framePaths.push(framePath);
-            }
-            const visionBefore = {
-              used: dedup.beatImageGate.judgementsUsed,
-              failed: dedup.beatImageGate.judgementsFailed,
-            };
-            const judgement = await judgeBeatImage({
-              framePaths,
-              beatText: beat.text,
-              videoTitle,
-              sceneText: scene.text,
+            // RONDE 103: the same central decider every other route uses. The frame sampling,
+            // the cleanup and the cache key used to be this loop's own copy of that logic — and
+            // it was the copy that keyed on the picture alone, so a clip the funnel approved on
+            // beat 1 was never re-examined on beat 7.
+            const judgement = await checkBeatRelevance({
+              clipPath: winner.clipPath,
               contentKey: clipContentKey(winner.clipPath),
+              ctx: beatVisualContext(beat, scene, videoTitle),
+              workDir,
               state: dedup.beatImageGate,
+              ledger: dedup.beatRelevance,
+              route: `funnel:${winner.candidate.source}`,
+              onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
             });
-            noteVisionDelta(dedup, scene.index, beat.index, visionBefore);
-            for (const p of framePaths) {
-              try { fs.unlinkSync(p); } catch { /* ignore */ }
-            }
-
-            console.log(
-              `[BeatImageGate] s${scene.index}b${beat.index} ${judgement.verdict} ` +
-                `src=${winner.candidate.source} clip=${path.basename(winner.clipPath)} ` +
-                `depicts="${judgement.depicts}" reason="${judgement.reason}"`
-            );
             if (judgement.verdict !== "does_not_fit") break;
 
             recordClipReject(
@@ -28890,10 +29187,11 @@ async function fetchSceneVisualsInner(
         // Nothing survived, but something was refused: take the refusal back rather than leave
         // the beat to a placeholder. A picture the gate disliked is still a picture.
         if (!winner && gateReprieveWinner) {
-          console.log(
-            `[BeatImageGate] reprieve s${scene.index}b${beat.index} ` +
-              `${path.basename(gateReprieveWinner.clipPath)} — nothing else passed`
-          );
+          // RONDE 103 phase 15: the override is written down against the clip, so the verdict
+          // stays `does_not_fit` and the compose barrier can tell "we decided to use it anyway"
+          // apart from "nothing ever objected". Before this, a reprieved clip was indexed by the
+          // pipeline as though it had passed.
+          reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath, "nothing else passed");
           winner = gateReprieveWinner;
         }
         let funnelClip: string | null = null;
@@ -29251,7 +29549,7 @@ async function fetchSceneVisualsInner(
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
       } else {
-        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
+        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
         await pushClip(clip);
       }
     }
@@ -29273,7 +29571,7 @@ async function fetchSceneVisualsInner(
       } catch {
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
-        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
+        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
         await pushClip(withText);
         console.log(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI clip (power word "${beat.powerWord}")`
@@ -29348,7 +29646,7 @@ async function fetchSceneVisualsInner(
         );
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
-        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
+        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
         await pushClip(withText);
       } else if (!archiveOnly) {
         console.warn(
@@ -29495,7 +29793,7 @@ async function fetchSceneVisualsInner(
       continue;
     }
     if (archiveOnly) {
-      if (!(await montageClipPassesComposeGate(extra, scene.index, clips.length))) {
+      if (!(await montageClipPassesComposeGate(extra, scene.index, clips.length, dedup.beatRelevance))) {
         dedup.usedContentKeys.add(clipContentKey(extra));
         markCuratedAssetUsed(extra, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(extra, dedup));
         backfillAttempts++;
@@ -30628,7 +30926,7 @@ export async function composeSceneVideoInner(
   const droppedClips: Array<{ path: string; reason: string }> = [];
   const lineage = composeOptions?.dedup?.sourcingCache?.lineage;
   for (const clipPath of existingClips) {
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, validClips.length))) {
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, validClips.length, composeOptions?.dedup?.beatRelevance))) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping bad clip ${path.basename(clipPath)}`);
       droppedClips.push({ path: clipPath, reason: "compose_gate_failed" });
       continue;
@@ -30691,9 +30989,10 @@ export async function composeSceneVideoInner(
       for (let i = 0; i < minNeeded; i++) {
         const tierOut: GuaranteedTierOut = {};
         const clip = await generateGuaranteedBeatClip(
-          scene.index, i, holdSec, workDir, undefined, undefined, undefined, tierOut
+          scene.index, i, holdSec, workDir, undefined, undefined, undefined, tierOut,
+          composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
         );
-        if (await montageClipPassesComposeGate(clip, scene.index, i)) {
+        if (await montageClipPassesComposeGate(clip, scene.index, i, composeOptions?.dedup?.beatRelevance)) {
           validClips.push(clip);
           // RONDE 95 (§1): a generated placeholder standing in for the scene's real clips is the
           // most important replacement to be able to see, not the least.
@@ -30737,7 +31036,7 @@ export async function composeSceneVideoInner(
             async (clipPath, holdSec) => {
               const key = clipContentKey(clipPath);
               if (seenRecover.has(key)) return false;
-              if (!(await montageClipPassesComposeGate(clipPath, scene.index, recovered.length))) {
+              if (!(await montageClipPassesComposeGate(clipPath, scene.index, recovered.length, composeOptions?.dedup?.beatRelevance))) {
                 return false;
               }
               seenRecover.add(key);
@@ -30761,7 +31060,8 @@ export async function composeSceneVideoInner(
   if (validClips.length === 0 && canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
     const tierOut: GuaranteedTierOut = {};
     const clip = await generateGuaranteedBeatClip(
-      scene.index, 999, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+      scene.index, 999, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
+      composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
     );
     validClips.push(clip);
     // Round 17: same audit gap as the guaranteed-fill loop above — see its comment.
@@ -30821,7 +31121,8 @@ export async function composeSceneVideoInner(
       console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
       const tierOut: GuaranteedTierOut = {};
       const clip = await generateGuaranteedBeatClip(
-        scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+        scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
+        composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
       );
       const ok = await requireValidClip(clip, scene.index, duration, workDir);
       const adopted = ok ?? clip;
@@ -30864,7 +31165,7 @@ export async function composeSceneVideoInner(
             async (clipPath, sec = rescueBeat.holdSec) => {
               const key = clipContentKey(clipPath);
               if (seenKeys.has(key)) return false;
-              if (!(await montageClipPassesComposeGate(clipPath, scene.index, safeClips.length))) {
+              if (!(await montageClipPassesComposeGate(clipPath, scene.index, safeClips.length, composeOptions?.dedup?.beatRelevance))) {
                 return false;
               }
               seenKeys.add(key);
@@ -31693,7 +31994,8 @@ export async function composeSceneVideoInner(
     console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
     const tierOut: GuaranteedTierOut = {};
     const clip = await generateGuaranteedBeatClip(
-      scene.index, 8888, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+      scene.index, 8888, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
+      composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
     );
     // Round 17 audit-gap fix, third site: same class of gap as the two guaranteed-fill blocks
     // above (composeSceneVideoInner) — this compose-empty rescue path also used a successfully
@@ -33221,7 +33523,8 @@ async function _runVideoPipelineInner(
                         try {
                           const rescueClip = await generateGuaranteedBeatClip(
                             scene.index, si, hold, workDir, slotBeatText,
-                            rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut
+                            rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut,
+                            { dedup: visualDedup, scene, videoTitle }
                           );
                           rescueClips.push(rescueClip);
                           rescueBeatIndices.push(slotBeatIndex);
@@ -33250,7 +33553,8 @@ async function _runVideoPipelineInner(
                           try {
                             const retryClip = await generateGuaranteedBeatClip(
                               scene.index, si, hold, workDir, slotBeatText,
-                              rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut
+                              rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut,
+                              { dedup: visualDedup, scene, videoTitle }
                             );
                             rescueClips.push(retryClip);
                             rescueBeatIndices.push(slotBeatIndex);
@@ -33341,7 +33645,8 @@ async function _runVideoPipelineInner(
                         try {
                           parityClip = await generateGuaranteedBeatClip(
                             scene.index, 9999, Math.max(3, scene.duration), workDir, scene.text,
-                            undefined, undefined, parityTierOut
+                            undefined, undefined, parityTierOut,
+                            { dedup: visualDedup, scene, videoTitle }
                           );
                         } catch (guaranteedErr) {
                           console.warn(
@@ -34090,7 +34395,8 @@ async function _runVideoPipelineInner(
                         rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text,
                         rescueUsedAssetIds,
                         rescueUsedStorageUrls,
-                        slotTierOut
+                        slotTierOut,
+                        { dedup: visualDedup, scene, videoTitle }
                       );
                       rescueClips.push(rescueClip);
                       // RONDE 50 (point 8): the beat mapping is published only once the clip it
@@ -34179,7 +34485,8 @@ async function _runVideoPipelineInner(
                 try {
                   lastClip = await generateGuaranteedBeatClip(
                     scene.index, 9999, Math.max(3, scene.duration), workDir,
-                    undefined, undefined, undefined, lastTierOut
+                    undefined, undefined, undefined, lastTierOut,
+                    { dedup: visualDedup, scene, videoTitle }
                   );
                 } catch (guaranteedErr) {
                   visualDedup.sceneRescueColorFallbackCount++;
@@ -34631,10 +34938,10 @@ async function _runVideoPipelineInner(
       // as the other sends the next round of work in the wrong direction.
       {
         const g = visualDedup.beatImageGate;
-        if (g.judgementsUsed > 0 || g.judgementsFailed > 0) {
+        if (g.judgementsUsed > 0 || g.judgementsFailed > 0 || g.judgementsSkipped > 0) {
           const line =
             `beat image gate — judged=${g.judgementsUsed} unavailable=${g.judgementsFailed}` +
-            ` (youtube ${g.youtubeJudgementsUsed})`;
+            ` never_asked=${g.judgementsSkipped} (youtube ${g.youtubeJudgementsUsed})`;
           console.log(`[Quality] Video ${videoId}: ${line}`);
           if (g.judgementsFailed >= Math.max(3, g.judgementsUsed * 0.25)) {
             qualityReport.warnings.push(
@@ -34642,6 +34949,40 @@ async function _runVideoPipelineInner(
                 `oordelen niet ophalen — die clips zijn ONGEZIEN aangenomen`
             );
           }
+          /**
+           * RONDE 103 — a decline is not a pass.
+           *
+           * `judgementsSkipped` counts the asks this gate never attempted: the render budget was
+           * spent, the per-beat ceiling was reached, no frame could be read. Every one of those
+           * adopted a clip nobody looked at, and until this counter existed they were reported as
+           * nothing at all — a render that examined its first scene and then ran blind for the
+           * rest scored exactly the same as one that looked at everything.
+           */
+          if (g.judgementsSkipped >= Math.max(3, g.judgementsUsed * 0.25)) {
+            qualityReport.warnings.push(
+              `beeldgate is ${g.judgementsSkipped} keer niet eens bevraagd (budget op, of geen ` +
+                `leesbaar beeld) — die clips zijn ONGEZIEN aangenomen`
+            );
+          }
+        }
+        console.log(
+          `[Quality] Video ${videoId}: ${formatRelevanceSummary(g, visualDedup.beatRelevance)}`
+        );
+        /**
+         * RONDE 103 phase 15 — a shot used over the picture editor's objection is reported as
+         * exactly that. The reprieve is a deliberate product choice (a real picture beats a grey
+         * card), but a render that had to make it eight times is telling you its sourcing failed,
+         * and that has to be visible rather than folded into the pass count.
+         */
+        let reprieved = 0;
+        for (const { decision } of visualDedup.beatRelevance.byClipPath.values()) {
+          if (decision.reprieved) reprieved++;
+        }
+        if (reprieved > 0) {
+          qualityReport.warnings.push(
+            `${reprieved} clip(s) zijn gebruikt terwijl de beeldgate ze had afgekeurd — er was ` +
+              `geen alternatief (verdict=does_not_fit, reprieved=true)`
+          );
         }
       }
       // RONDE 70: one funnel line per beat, for EVERY beat.

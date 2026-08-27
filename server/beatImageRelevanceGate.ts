@@ -45,6 +45,12 @@ export type BeatImageJudgement = {
   /** What the model says is in the frame — logged so a wrong verdict is diagnosable. */
   depicts: string;
   reason: string;
+  /**
+   * RONDE 103: true when this verdict was read back from `state.seen` rather than earned by a
+   * call. Logging it is not cosmetic — a log line that says `fits` without saying `cached=true`
+   * cannot be told apart from a fresh look, and that is exactly how a stale verdict hides.
+   */
+  cached?: boolean;
 };
 
 const RESPONSE_SCHEMA = {
@@ -102,7 +108,19 @@ export function beatImageRelevanceGateEnabled(): boolean {
  * spend each other's budget or read each other's verdicts.
  */
 export type BeatImageGateState = {
-  /** contentKey -> verdict, so the same clip is judged once per render. */
+  /**
+   * `contentKey|beatIdentity` -> verdict.
+   *
+   * RONDE 103 — this key used to be the contentKey alone, and that was wrong in the one way that
+   * matters. The question this gate asks is "does THIS picture belong under THIS narration": the
+   * prompt is built from the beat's own text, the scene's text and the documentary title. Keying
+   * the answer on the picture alone means the first beat to look at a clip decides for every
+   * later beat, so a clip that genuinely fits "Berlin, April 1945" comes back as `fits` on a beat
+   * about a boardroom in 2019 — never re-examined, and logged as though it had been.
+   *
+   * See `beatIdentityKey` in ./beatVisualRelevance for what the second half is derived from and
+   * why it is the narration rather than the beat's position.
+   */
   seen: Map<string, BeatImageJudgement>;
   judgementsUsed: number;
   /** Of those, how many went to YouTube candidates — capped separately. */
@@ -117,10 +135,27 @@ export type BeatImageGateState = {
    * sourcing is wrong, the second means the verdicts are noise — and they were being read as one.
    */
   judgementsFailed: number;
+  /**
+   * RONDE 103: asks this gate declined to even attempt — the render budget was spent, there was
+   * no readable frame, no narration, or the gate is switched off.
+   *
+   * These were invisible before. `judgementsUsed` counts calls that were made and
+   * `judgementsFailed` counts calls that came back unusable, so a render that spent its budget on
+   * scene 0 and then adopted forty unexamined clips reported "60 judged, 0 unavailable" — a
+   * perfect score for a render where most of the timeline was never looked at. Counting the
+   * declines is what lets the end-of-render summary say so.
+   */
+  judgementsSkipped: number;
 };
 
 export function createBeatImageGateState(): BeatImageGateState {
-  return { seen: new Map(), judgementsUsed: 0, youtubeJudgementsUsed: 0, judgementsFailed: 0 };
+  return {
+    seen: new Map(),
+    judgementsUsed: 0,
+    youtubeJudgementsUsed: 0,
+    judgementsFailed: 0,
+    judgementsSkipped: 0,
+  };
 }
 
 function buildPrompt(
@@ -189,22 +224,42 @@ export async function judgeBeatImage(params: {
   videoTitle?: string;
   sceneText?: string;
   contentKey: string;
+  /**
+   * RONDE 103 — identity of the narration this clip is being judged against. See
+   * `beatIdentityKey` in ./beatVisualRelevance.
+   *
+   * Optional only so a caller that has genuinely no beat context (the YouTube pre-pool check
+   * judges against a scene-level line) keeps working; such a caller gets its own bucket rather
+   * than sharing one with every other beat.
+   */
+  beatIdentity?: string;
   state: BeatImageGateState;
   timeoutMs?: number;
 }): Promise<BeatImageJudgement> {
   const { framePaths, beatText, videoTitle, sceneText, contentKey, state } = params;
   const unknown = (reason: string): BeatImageJudgement => ({ verdict: "unknown", depicts: "", reason });
+  /** A decline: the gate never looked. Counted so the render summary cannot claim it did. */
+  const declined = (reason: string): BeatImageJudgement => {
+    state.judgementsSkipped++;
+    return unknown(reason);
+  };
 
-  if (!beatImageRelevanceGateEnabled()) return unknown("gate disabled");
-  const cached = state.seen.get(contentKey);
-  if (cached) return cached;
+  if (!beatImageRelevanceGateEnabled()) return declined("gate disabled");
+  /**
+   * The verdict belongs to a (picture, narration) pair, not to the picture. `beatIdentity` is
+   * hashed from the beat's own words, so the same clip arriving on a different beat is a cache
+   * MISS and gets looked at again — which is the entire point of the gate.
+   */
+  const seenKey = `${contentKey}|${params.beatIdentity ?? ""}`;
+  const cached = state.seen.get(seenKey);
+  if (cached) return { ...cached, cached: true };
   if (state.judgementsUsed >= maxBeatImageJudgementsPerRender()) {
-    return unknown("render judgement budget spent");
+    return declined("render judgement budget spent");
   }
-  if (!beatText?.trim()) return unknown("no narration to judge against");
+  if (!beatText?.trim()) return declined("no narration to judge against");
 
   const usable = (framePaths ?? []).filter((p) => p && fs.existsSync(p));
-  if (usable.length === 0) return unknown("no frame available");
+  if (usable.length === 0) return declined("no frame available");
 
   const dataUrls: string[] = [];
   for (const framePath of usable) {
@@ -217,7 +272,7 @@ export async function judgeBeatImage(params: {
       // One unreadable frame does not sink the judgement — the others still describe the clip.
     }
   }
-  if (dataUrls.length === 0) return unknown("frames not usable as images");
+  if (dataUrls.length === 0) return declined("frames not usable as images");
 
   state.judgementsUsed++;
   const timeoutMs = params.timeoutMs ?? 12_000;
@@ -272,7 +327,7 @@ export async function judgeBeatImage(params: {
       depicts: (parsed.depicts ?? "").slice(0, 160),
       reason: (parsed.reason ?? "").slice(0, 160),
     };
-    state.seen.set(contentKey, judgement);
+    state.seen.set(seenKey, judgement);
     return judgement;
   } catch (err) {
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,

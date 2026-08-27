@@ -62,9 +62,29 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
   });
 
   it("a reprieve is announced, so it is never silent", () => {
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately — and the rule got stricter.
+     *
+     * RONDE 67 required the reprieve to be announced. That was necessary but not sufficient: the
+     * announcement went to the log while the pipeline itself carried the clip forward as though
+     * it had passed, so nothing downstream — and nothing in the quality report — could tell a
+     * shot used over the picture editor's objection from one nobody objected to. The reprieve is
+     * now recorded against the clip, with the verdict left as the model gave it.
+     */
     const src = PIPELINE();
-    expect(src).toContain("[BeatImageGate] reprieve s${sceneIndex}b${beatIndex}");
+    expect(src).toContain("reprieveBeatClip(dedup.beatRelevance,");
     expect(src).toContain("a real picture beats a placeholder");
+
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    const idx = mod.indexOf("export function reprieveBeatClip(");
+    expect(idx).toBeGreaterThan(-1);
+    const block = mod.slice(idx, idx + 900);
+    // Still announced.
+    expect(block).toContain("REPRIEVE");
+    // The verdict is NOT relabelled — that is the RONDE 103 addition.
+    expect(block).toContain("allowed: true, reprieved: true");
+    expect(block).toContain("verdict=${entry.decision.verdict} reprieved=true");
+    expect(block).not.toContain('verdict: "fits"');
   });
 
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
