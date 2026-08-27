@@ -662,40 +662,6 @@ export function targetClipVisionScore(): number {
   return 8;
 }
 
-/** Returns true when clip passes local vision gate (or gate skipped). */
-export async function clipPassesVisionGate(
-  clipPath: string,
-  beatText: string,
-  videoTitle: string | undefined,
-  workDir: string,
-  sceneIndex: number,
-  beatIndex: number,
-  fastMode: boolean,
-  minScore = minClipQualityScore(),
-  visualDescription?: string,
-  _segmentLock?: unknown,
-  queryEmb?: number[] | null,
-  contentKey?: string
-): Promise<boolean> {
-  return (
-    await evaluateClipVisionGate(
-      clipPath,
-      beatText,
-      videoTitle,
-      workDir,
-      sceneIndex,
-      beatIndex,
-      fastMode,
-      minScore,
-      visualDescription,
-      _segmentLock,
-      queryEmb,
-      undefined,
-      contentKey
-    )
-  ).pass;
-}
-
 /** Score clip against narration for post-adoption QA (returns null when local vision unavailable). */
 export async function scoreAdoptedClipQuality(
   clipPath: string,

@@ -70,7 +70,7 @@ const SCOPED_LEAVES = [
   "fetchBeatAuthenticStills",
   "resolveBeatClipFast",
   "padShortClipWithNext",
-  "fetchMuskGoldenStockBeat",
+  // RONDE 104: fetchMuskGoldenStockBeat was dead production code (zero callers) and is gone.
   "fetchBeatScriptImageClip",
   "fetchBeatScriptImageForced",
   "fetchPersonBeatClip",

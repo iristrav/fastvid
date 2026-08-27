@@ -37,6 +37,7 @@
 import fs from "fs";
 import { invokeLLM } from "./_core/llm";
 import { imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
+import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
 
@@ -120,6 +121,18 @@ export type BeatImageGateState = {
    *
    * See `beatIdentityKey` in ./beatVisualRelevance for what the second half is derived from and
    * why it is the narration rather than the beat's position.
+   *
+   * RONDE 104 — this map is render-scoped; the VERDICTS in it are not.
+   *
+   * RONDE 58 made the whole gate state render-scoped so two concurrent renders could not read
+   * each other's verdicts or spend each other's budget. The budget half of that is unchanged and
+   * still matters: `judgementsUsed` belongs to one render and nothing else may draw on it.
+   *
+   * The verdict half was over-strict. "Does this picture belong under this sentence" is a fact
+   * about a picture and a sentence — it does not depend on which render is asking, so isolating
+   * it bought nothing and cost a re-render every answer it already owned. Verdicts now also go to
+   * ./beatRelevanceVerdictStore, which is shared by every render and every replica. This map
+   * stays as the render's own hot cache in front of it.
    */
   seen: Map<string, BeatImageJudgement>;
   judgementsUsed: number;
@@ -253,10 +266,35 @@ export async function judgeBeatImage(params: {
   const seenKey = `${contentKey}|${params.beatIdentity ?? ""}`;
   const cached = state.seen.get(seenKey);
   if (cached) return { ...cached, cached: true };
+  if (!beatText?.trim()) return declined("no narration to judge against");
+
+  /**
+   * RONDE 104 — ask the durable store before spending anything.
+   *
+   * The render-scoped map above only knows what THIS render has already asked. The store knows
+   * what any render ever asked about this exact (picture, narration) pair, which is the same
+   * question with the same answer. Checked BEFORE the budget so a re-render of a script does not
+   * exhaust its sixty judgements re-earning verdicts it already owns — a hit costs nothing, and
+   * refusing to read it would only make the render blinder for no saving at all.
+   *
+   * A store that is absent, disabled or broken returns null, which is indistinguishable from a
+   * miss. It can make the gate cheaper; it can never make it decide differently.
+   */
+  const stored = await lookupVerdict(seenKey).catch(() => null);
+  if (stored) {
+    const fromStore: BeatImageJudgement = {
+      verdict: stored.verdict,
+      depicts: stored.depicts,
+      reason: stored.reason,
+      cached: true,
+    };
+    state.seen.set(seenKey, { verdict: stored.verdict, depicts: stored.depicts, reason: stored.reason });
+    return fromStore;
+  }
+
   if (state.judgementsUsed >= maxBeatImageJudgementsPerRender()) {
     return declined("render judgement budget spent");
   }
-  if (!beatText?.trim()) return declined("no narration to judge against");
 
   const usable = (framePaths ?? []).filter((p) => p && fs.existsSync(p));
   if (usable.length === 0) return declined("no frame available");
@@ -328,6 +366,17 @@ export async function judgeBeatImage(params: {
       reason: (parsed.reason ?? "").slice(0, 160),
     };
     state.seen.set(seenKey, judgement);
+    /**
+     * RONDE 104: only a real answer is written down. `unknown` means the gate could not get one,
+     * and persisting that would turn a provider hiccup into a permanent silence for this pair.
+     * Fire-and-forget: this render already has its verdict, and a failed write must cost it
+     * nothing.
+     */
+    if (judgement.verdict !== "unknown") {
+      void persistVerdict(seenKey, judgement.verdict, judgement.depicts, judgement.reason).catch(
+        () => undefined
+      );
+    }
     return judgement;
   } catch (err) {
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,

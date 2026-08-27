@@ -336,7 +336,7 @@ describe("RONDE 60 #3 — YouTube finally reaches the beat-image gate", () => {
     const src = SRC();
     const idx = src.indexOf("async function youtubeClipPassesImageGate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 3000);
+    const block = src.slice(idx, idx + 4200);
     expect(block).toContain("JUDGEMENT_FRAME_FRACTIONS");
     expect(block).toContain("judgeBeatImage({");
     expect(block).toContain('return judgement.verdict !== "does_not_fit";');

@@ -75,8 +75,13 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     expect(mod).toContain('if (!beatImageRelevanceGateEnabled()) return pass("unknown", "gate disabled");');
     expect(mod).toContain('if (!ctx.beatText?.trim()) return pass("unknown", "no narration to judge against");');
     expect(mod).toContain("allowed: true");
-    // The single place `allowed` can be false is the definite refusal.
-    expect(mod.match(/allowed: judgement\.verdict !== "does_not_fit"/g) ?? []).toHaveLength(1);
+    /**
+     * `allowed` can be false in exactly one way — a definite refusal — and both places that build
+     * a decision spell it the same way. RONDE 104 added the second: recordExternalRelevanceVerdict
+     * writes down the YouTube pre-pool verdict, which is earned outside checkBeatRelevance and
+     * must be read by the same rule.
+     */
+    expect(mod.match(/allowed: judgement\.verdict !== "does_not_fit"/g) ?? []).toHaveLength(2);
     expect(mod).not.toContain("allowed: false,");
   });
 

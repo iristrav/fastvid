@@ -22,7 +22,6 @@
  */
 import { createHash } from "crypto";
 import { exec as execCb, execFile as execFileCb } from "child_process";
-import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -37,7 +36,6 @@ import { recordArchiveContentGap } from "./archiveContentGaps";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
-import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import {
   generateKlingBeatVideo,
   klingBeatFallbackEnabled,
@@ -52,8 +50,6 @@ import {
   buildStillEncodeArgs,
   buildWikimediaDocumentaryVF,
   documentaryStyleEnabled,
-  renderHighlightCaptionOverlay,
-  renderNameBadgeOverlay,
   resolveStillCompositionVF,
   stillOutputFrameCount,
   type TimedOverlay,
@@ -71,7 +67,6 @@ import {
   extractPrimaryGeoSearchTag,
   extractPrimaryVisualAnchor,
   extractSceneSearchTags,
-  extractVisualSearchTags,
   inferVideoVisualTopic,
   isOffTopicProtestForBeat,
 } from "./visualBeatTags";
@@ -91,12 +86,7 @@ import {
 } from "./gateFiringStats";
 import {
   buildCinematicOverlays,
-  buildBeatAlignedYearOverlays,
-  planBeatAlignedYears,
-  planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
-  computeVoiceBeatWindows,
-  computeVoiceSyncedClipDurations,
   pickVoiceBackfillBeatIndex,
   finalizeVoiceSyncedMontageDurations,
   resolveVoiceSyncMontagePlan,
@@ -130,7 +120,6 @@ import {
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
   buildTypedRetrievalContext,
-  combinedTypedQueriesForBeat,
   extractPeriodPhrase,
   type TypedRetrievalContext,
   extractEventCue,
@@ -139,7 +128,6 @@ import {
   inferTopicKind,
   isHistoricalDocumentary,
   partitionCandidatesForIntent,
-  prefersArchivalVideo,
   prefersRealFootageOnly,
   realFootageFirstEnabled,
   rankMediaCandidates,
@@ -177,7 +165,7 @@ import {
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -191,11 +179,8 @@ import {
   markCuratedAssetUsed,
   prepareCuratedArchiveClip,
   isCuratedPreparedVideoClip,
-  listCuratedArchiveCandidates,
   buildVideoArchiveCandidatePool,
   buildBeatMatchTags,
-  extractTopicAnchorTags,
-  orderCuratedCandidatesForBeat,
   searchCuratedCandidatesForBeat,
   resolvePrefetchedArchiveCandidates,
   hashVarietySeed,
@@ -231,7 +216,6 @@ import {
   getShotForBeat,
   enrichBeatFromShot,
   editorialSequencePlannerEnabled,
-  clearStoryboardCache,
   clearStoryboardCacheForVideo,
 } from "./editorialSequencePlanner";
 import {
@@ -239,7 +223,7 @@ import {
   editorialReorderEnabled,
 } from "./editorialReorder";
 import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequenceOptimizer";
-import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
+import { applyVisualRhythm, visualRhythmEngineEnabled } from "./visualRhythmEngine";
 import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
@@ -262,11 +246,10 @@ import {
   warnComposeTimeNetwork,
   isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
-import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectAudit } from "./clipRejectAudit";
 import {
   recordClipReject,
-  summarizeClipRejectAudit,
   createClipRejectAudit,
   beatRejectCount,
   beatRejectReasons,
@@ -293,7 +276,6 @@ import {
   formatRenderManifest,
   formatSelectedButNotRendered,
   formatFunnelReport,
-  formatLineageEvent,
   formatLineageLine,
   formatSourceSummary,
   type VisualLineageRecord,
@@ -308,22 +290,14 @@ import {
   buildPrioritisedQueries,
   checkPersonName,
   formatSearchGateReport,
-  isVerifiedSearchQuery,
-  legacyQueryTicket,
-  mintVerifiedQuery,
-  searchGateAudit,
-  searchGateStrict,
   type VerifiedSearchQuery,
   emptyQueryContext,
-  formatSearchQueryAudit,
   getSearchProvenance,
   searchGateDecision,
   withSearchProvenance,
-  formatSearchQueryRejected,
   isFunctionWord,
   isPronounToken,
   provenToken,
-  validateSearchQuery,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
 export { getSearchProvenance, withSearchProvenance } from "./searchQueryContract";
@@ -356,10 +330,7 @@ import {
   applyDocumentaryTasteModel,
   recordTasteModelAdoption,
   resetTasteModelScene,
-  detectDocumentaryType,
-  documentaryTasteModelEnabled,
   type TasteModelContext,
-  type TasteModelResult,
 } from "./documentaryTasteModel";
 import {
   editorialGraphicsEnabled,
@@ -386,6 +357,7 @@ import {
   checkBeatRelevance,
   composeBarrierAllows,
   createBeatRelevanceLedger,
+  recordExternalRelevanceVerdict,
   formatRelevanceSummary,
   inheritBeatRelevance,
   reprieveBeatClip,
@@ -423,9 +395,7 @@ import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postR
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
 import {
   auditSceneVoiceMontageSync,
-  voiceMontageSyncAuditEnabled,
   summarizeVoiceMontageSyncAudits,
-  strictVoiceMontageSyncExport,
   type VoiceMontageSyncAuditResult,
 } from "./voiceMontageSyncAudit";
 import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
@@ -495,8 +465,6 @@ function leonardoApiKey(): string {
 }
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
-const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
-const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
 /** Optional: CC-licensed event/interview videos (https://www.flickr.com/services/api/) */
 const FLICKR_API_KEY = process.env.FLICKR_API_KEY || "";
@@ -2305,6 +2273,7 @@ async function fetchBeatYoutubeOnly(
           videoTitle,
           fastMode: dedup.perf.fastStockMode,
           imageGate: dedup.beatImageGate,
+          relevanceLedger: dedup.beatRelevance,
         },
         dedup.usedContentKeys,
         dedup.sourcingCache
@@ -3259,6 +3228,7 @@ async function tryBeatRealYouTubeFootage(
                 videoTitle: adoptOpts.videoTitle,
                 fastMode: dedup.perf.fastStockMode,
                 imageGate: dedup.beatImageGate,
+                relevanceLedger: dedup.beatRelevance,
               },
               dedup.usedContentKeys,
               dedup.sourcingCache
@@ -8436,45 +8406,9 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
   throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir})`);
 }
 
-/** Rotate golden Musk queries; never grey or duplicate clips. */
-async function fetchMuskGoldenStockBeat(
-  beat: SceneBeat,
-  scene: Scene,
-  workDir: string,
-  sceneIndex: number,
-  dedup: VisualDedupState,
-  adoptOpts: VisualAdoptOptions
-): Promise<string | null> {
-  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
-  return withBeatProvenance(beat, scene, () => fetchMuskGoldenStockBeatInner(beat, scene, workDir, sceneIndex, dedup, adoptOpts));
-}
 
-async function fetchMuskGoldenStockBeatInner(
-  beat: SceneBeat,
-  scene: Scene,
-  workDir: string,
-  sceneIndex: number,
-  dedup: VisualDedupState,
-  adoptOpts: VisualAdoptOptions
-): Promise<string | null> {
-  const clipFetchDur = 4;
-  const start = (sceneIndex * 5 + beat.index) % GOLDEN_MUSK_QUERIES.length;
-  const maxTries = dedup.perf.fastStockMode ? 3 : GOLDEN_MUSK_QUERIES.length;
-  for (let i = 0; i < maxTries; i++) {
-    const gq = GOLDEN_MUSK_QUERIES[(start + i) % GOLDEN_MUSK_QUERIES.length];
-    if (isBlockedStockQuery(gq)) continue;
-    const golden = await fetchPexelsClips(
-      gq, clipFetchDur, workDir, sceneIndex, 2, [gq], true,
-      `b${beat.index}_golden`, dedup.usedPexelsIds, beat.index + sceneIndex + i,
-      dedup.perf.pexelsDownloadRetries
-    );
-    const gClip = await adoptClip(
-      golden, dedup, sceneIndex, beat.index, beat.text, workDir, gq, adoptOpts
-    );
-    if (gClip) return gClip;
-  }
-  return null;
-}
+
+
 
 /** Return clipPath if ffprobe confirms a video stream; never substitute grey placeholders. */
 /**
@@ -8588,71 +8522,10 @@ async function generateVeoVideoClip(
 }
 
 // ─── 3c4. Generate Higgsfield Text-to-Video Clip ───────────────────────────────
-async function generateHiggsfieldTextToVideoClip(
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!HIGGSFIELD_API_KEY || !HIGGSFIELD_API_SECRET) {
-    return null; // Fallback to other sources
-  }
 
-  try {
-    const result = await generateHiggsfieldTextToVideo(prompt, Math.min(duration, 8));
-    if (!result) return null;
-
-    // Download the video from the URL and save to local file
-    const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield.mp4");
-    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
-    if (!response.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video download failed (${response.status})`);
-      return null;
-    }
-
-    const buffer = await response.buffer();
-    fs.writeFileSync(higgsfieldOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video saved (${buffer.length} bytes)`);
-    return higgsfieldOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video error:`, err);
-    return null;
-  }
-}
 
 // ─── 3c5. Generate Higgsfield Image-to-Video Clip ───────────────────────────────
-async function generateHiggsfieldImageToVideoClip(
-  imageUrl: string,
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!HIGGSFIELD_API_KEY || !HIGGSFIELD_API_SECRET) {
-    return null; // Fallback to other sources
-  }
 
-  try {
-    const result = await generateHiggsfieldImageToVideo(imageUrl, prompt, Math.min(duration, 8));
-    if (!result) return null;
-
-    // Download the video from the URL and save to local file
-    const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield_img.mp4");
-    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
-    if (!response.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video download failed (${response.status})`);
-      return null;
-    }
-
-    const buffer = await response.buffer();
-    fs.writeFileSync(higgsfieldOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video saved (${buffer.length} bytes)`);
-    return higgsfieldOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video error:`, err);
-    return null;
-  }
-}
 
 // ─── 3c6. Leonardo AI Image → Video (HIGH QUALITY image gen, replaces Stability AI) ─────
 // Exported only for direct testability (F3-13) — same zero-behavior-change pattern used
@@ -11025,19 +10898,7 @@ export async function searchWebWideVideoClips(
   return results;
 }
 
-function buildEventVideoQueries(scene: Scene, primarySubject: string, hasPerson: boolean): string[] {
-  const hint = `${scene.text} ${primarySubject}`;
-  const q = [
-    scene.visualCue,
-    scene.pexelsQuery,
-    ...(scene.pexelsQueries ?? []),
-    ...(scene.brollQueries ?? []),
-    hasPerson && primarySubject ? primarySubject : "",
-  ]
-    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-    .map((s) => simplifyStockSearchWord(s, hint));
-  return Array.from(new Set(q.filter((w) => w.length >= 3)));
-}
+
 
 function isSpaceRelatedTopic(...parts: string[]): boolean {
   const text = parts.filter(Boolean).join(" ").toLowerCase();
@@ -11639,8 +11500,32 @@ async function youtubeClipPassesImageGate(
 
   console.log(
     `[BeatImageGate] youtube s${sceneIndex} ${videoId.slice(0, 12)} ${judgement.verdict} ` +
-      `depicts="${judgement.depicts}" reason="${judgement.reason}"`
+      `depicts="${judgement.depicts}" reason="${judgement.reason}" cached=${judgement.cached === true}`
   );
+  /**
+   * RONDE 104: write the verdict down where the compose barrier can find it.
+   *
+   * Until now this was the one gate whose answers went only to the log. A YouTube clip refused
+   * here was dropped from the pool — but the same asset arriving later by another route (the
+   * funnel's own YouTube path, a rescue) reached compose as a path nothing had ever judged, and
+   * the barrier had to let it through. Recording it under the clip's CONTENT identity closes
+   * that: the refusal now follows the asset, not the file.
+   */
+  if (scriptGuided.relevanceLedger) {
+    recordExternalRelevanceVerdict(
+      scriptGuided.relevanceLedger,
+      clipPath,
+      clipContentKey(clipPath),
+      {
+        sceneIndex,
+        beatIndex: -1,
+        beatText: scriptGuided.beatText,
+        videoTitle: scriptGuided.videoTitle,
+      },
+      judgement,
+      "youtube_prepool"
+    );
+  }
   return judgement.verdict !== "does_not_fit";
 }
 
@@ -12063,6 +11948,15 @@ type ScriptGuidedBeatContext = {
    * which is the same behaviour every other failure mode of the gate produces.
    */
   imageGate?: BeatImageGateState;
+  /**
+   * RONDE 104: the render's relevance ledger, so a YouTube clip refused here is REMEMBERED.
+   *
+   * This check runs before a clip is in any beat's pool, so it was the one judgement that never
+   * reached the ledger — and a YouTube clip refused here could walk back in through a different
+   * route under a name the compose barrier had never seen. Optional for exactly the same reason
+   * imageGate is: a call site without it behaves as before.
+   */
+  relevanceLedger?: BeatRelevanceLedger;
 };
 
 type YoutubeSearchRow = {
@@ -16632,14 +16526,7 @@ function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number 
   return VIDRUSH_BEAT_SEC;
 }
 
-function beatsBelongTogether(prevText: string, nextText: string, prevVisual: string, nextVisual: string): boolean {
-  if (prevVisual && nextVisual && prevVisual.toLowerCase() === nextVisual.toLowerCase()) return true;
-  const prevEntities = extractBeatRealEntities(prevText).map((r) => r.id).join(",");
-  const nextEntities = extractBeatRealEntities(nextText).map((r) => r.id).join(",");
-  if (prevEntities && nextEntities && prevEntities === nextEntities) return true;
-  if (!extractInlineVisualCues(nextText).length && nextText.length < 90) return true;
-  return false;
-}
+
 
 function estimateMontageDurationSec(durations: number[]): number {
   const n = durations.length;
@@ -17872,140 +17759,14 @@ function normalizeMontageDurations(
   return normalized;
 }
 
-/** @deprecated Montage no longer repeats clips — kept for reference if expansion returns. */
-function pickMontageExpansionClip(clips: string[], expanded: string[]): string | null {
-  if (clips.length === 0) return null;
-  const usedKeys = new Set(expanded.map((c) => clipContentKey(c)));
-  const prevKey = expanded.length ? clipContentKey(expanded[expanded.length - 1]!) : "";
-  const pool = clips.some((c) => !isMotionGraphicClip(c))
-    ? clips.filter((c) => !isMotionGraphicClip(c))
-    : clips;
 
-  for (const c of pool) {
-    const k = clipContentKey(c);
-    if (usedKeys.has(k)) continue;
-    if (k === prevKey) continue;
-    return c;
-  }
-  for (const c of pool) {
-    const k = clipContentKey(c);
-    if (!usedKeys.has(k)) return c;
-  }
-  return null;
-}
 
-function stretchMontageDurations(
-  durs: number[],
-  outDur: number,
-  sourceMaxDurs?: number[]
-): number[] {
-  const maxClip = effectiveMaxClipSec();
-  let next = normalizeMontageDurations([...durs], outDur, sourceMaxDurs);
-  for (let pass = 0; pass < 10; pass++) {
-    if (effectiveMontageDurationSec(next, sourceMaxDurs) >= outDur * 0.92) break;
-    let grew = false;
-    next = next.map((d, i) => {
-      const srcMax =
-        sourceMaxDurs?.[i] && sourceMaxDurs[i]! > 0.15
-          ? Math.max(effectiveMinClipSec() * 0.4, sourceMaxDurs[i]! - 0.05)
-          : maxClip;
-      const ceiling = Math.min(maxClip, srcMax);
-      if (d >= ceiling - 0.05) return d;
-      grew = true;
-      return Math.min(ceiling, d * 1.12);
-    });
-    next = normalizeMontageDurations(next, outDur, sourceMaxDurs);
-    if (!grew) break;
-  }
-  return next;
-}
 
-function dedupeMontageClipsByContentKey(
-  clips: string[],
-  beatDurations?: number[]
-): { clips: string[]; beatDurations?: number[] } {
-  const seen = new Set<string>();
-  const outClips: string[] = [];
-  const outDurs: number[] = [];
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]!;
-    const key = clipContentKey(clip);
-    if (seen.has(key)) {
-      console.warn(
-        `[Pipeline] Dropping repeat montage clip ${path.basename(clip)} (once per video)`
-      );
-      continue;
-    }
-    seen.add(key);
-    outClips.push(clip);
-    if (beatDurations?.length === clips.length) outDurs.push(beatDurations[i]!);
-  }
-  return {
-    clips: outClips,
-    beatDurations: outDurs.length === outClips.length ? outDurs : beatDurations,
-  };
-}
 
-function dedupeAdjacentMontageClips(
-  clips: string[],
-  beatDurations?: number[]
-): { clips: string[]; beatDurations?: number[] } {
-  if (clips.length <= 1) return { clips, beatDurations };
-  const outClips: string[] = [];
-  const outDurs: number[] = [];
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]!;
-    const key = clipContentKey(clip);
-    const prevKey = outClips.length ? clipContentKey(outClips[outClips.length - 1]!) : "";
-    const dur = beatDurations?.[i] ?? 0;
-    if (outClips.length && key === prevKey) {
-      console.warn(
-        `[Pipeline] Skipping adjacent duplicate montage clip ${path.basename(clip)} (avoids frozen repeat)`
-      );
-      continue;
-    }
-    outClips.push(clip);
-    if (beatDurations?.length === clips.length) outDurs.push(dur);
-  }
-  return {
-    clips: outClips,
-    beatDurations: outDurs.length === outClips.length ? outDurs : beatDurations,
-  };
-}
 
-function prepareMontageDurationsForVoice(
-  clips: string[],
-  outDur: number,
-  beatDurations?: number[],
-  sourceMaxDurs?: number[]
-): { clips: string[]; beatDurations: number[] } {
-  if (clips.length === 0) return { clips, beatDurations: beatDurations ?? [] };
-  const srcMaxList =
-    sourceMaxDurs?.length === clips.length ? sourceMaxDurs : clips.map(() => 0);
-  const seed = beatDurations?.length === clips.length ? beatDurations : undefined;
-  const durs = balanceMontageDurationsForVoice(clips.length, outDur, seed, srcMaxList);
-  return { clips, beatDurations: durs };
-}
 
-/** @deprecated Use prepareMontageDurationsForVoice — no duplicate clips in montage. */
-function expandClipsForSceneDuration(
-  clips: string[],
-  outDur: number,
-  beatDurations?: number[],
-  sourceMaxDurs?: number[]
-): { clips: string[]; beatDurations?: number[] } {
-  const prepared = prepareMontageDurationsForVoice(clips, outDur, beatDurations, sourceMaxDurs);
-  const est = effectiveMontageDurationSec(
-    prepared.beatDurations,
-    sourceMaxDurs?.length === clips.length ? sourceMaxDurs : undefined
-  );
-  if (est < outDur - 0.35) {
-    console.warn(
-      `[Pipeline] Montage ${clips.length} unique clip(s) cover ~${est.toFixed(1)}s of ${outDur.toFixed(1)}s voice`
-    );
-  }
-  return prepared;
-}
+
+
 
 async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
   const cache = new Map<string, number>();
@@ -18205,10 +17966,7 @@ function buildMontageXfadeFilter(
   return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
 
-function extractTopicStockQueries(scriptText: string): string[] {
-  const queries = scriptStockSearchQueries(scriptText);
-  return queries.length > 0 ? queries : ["documentary"];
-}
+
 
 function buildTopicAnchoredQueries(
   scene: Scene,
@@ -18448,28 +18206,7 @@ function buildGeoEventComboAnchors(
   }).slice(0, 6);
 }
 
-/**
- * Auto-detects Pexels anchor queries from a video title + beat text.
- *
- * Priority / combination logic:
- * 1. Beat text is checked for strong event/situation signals (WWII, flood, protest…).
- * 2. Combined title+beat text is checked for geographic context (country, city…).
- * 3a. BOTH detected → geo-event COMBO anchors (e.g. "Netherlands flood", "flood disaster", "Amsterdam")
- * 3b. Only event → event anchors only (topic switch away from geo context)
- * 3c. Only geo → geo anchors only (current-beat topic == video title topic)
- * 3d. Neither → [] (Pexels falls back to beat.searchQuery)
- */
-function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
-  const override = detectBeatTopicOverride(beatText);
-  const geo = detectGeoContext(videoTitle, beatText);
 
-  if (override && geo) {
-    return buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
-  }
-  if (override) return override.anchors;
-  if (geo) return geo.anchors;
-  return [];
-}
 
 /**
  * Same as extractVideoTopicAnchors but also returns the matched topic key
@@ -19979,7 +19716,18 @@ async function adoptClip(
    * narration less well than the imperfect picture it replaced. A real image always beats a
    * placeholder.
    */
-  const gateReprieved = new Set<string>();
+  /**
+   * Clips this loop has already sent to the back of the queue after a refusal.
+   *
+   * RONDE 104 looked at whether this duplicated the relevance ledger and concluded it does not.
+   * The ledger records a VERDICT — "the gate refused this picture on this beat" — and is the one
+   * place that fact lives. This set records something else: "I have already re-offered this one",
+   * which is this loop's own bookkeeping. Deriving it from the ledger would take a clip that a
+   * different route refused earlier on the same beat and adopt it IMMEDIATELY instead of putting
+   * it last, which is exactly the ordering the reprieve exists to get right: a refused picture is
+   * the last resort, not the first.
+   */
+  const requeuedAfterRefusal = new Set<string>();
 
   return withVisualDedupLock(dedup, async () => {
     // F3-04: record every candidate considered for this beat (adopted or not) so a post-scene
@@ -20188,7 +19936,7 @@ async function adoptClip(
       // lot. Verdicts are cached by content identity, so a clip the funnel already judged is
       // free here, and the render-wide budget still bounds the total.
       if (
-        !gateReprieved.has(p) &&
+        !requeuedAfterRefusal.has(p) &&
         !(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))
       ) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
@@ -20196,11 +19944,11 @@ async function adoptClip(
         // an append is visited after every candidate that has not been refused. If one of those
         // is adopted this is never reached again; if none is, this clip gets its turn rather
         // than the beat getting a placeholder.
-        gateReprieved.add(p);
+        requeuedAfterRefusal.add(p);
         finalPaths.push(p);
         continue;
       }
-      if (gateReprieved.has(p)) {
+      if (requeuedAfterRefusal.has(p)) {
         // RONDE 103 phase 15: recorded as an override, not relabelled as a pass. The verdict on
         // the ledger stays `does_not_fit` so the render can be asked how many of its shots were
         // used over the picture editor's objection, and answer.
@@ -21765,7 +21513,7 @@ async function fetchHistoricalBeatVideoInner(
         if (!youtubeReady) return [];
         return fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
-          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate },
+          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate, relevanceLedger: dedup.beatRelevance },
           dedup.usedContentKeys,
           dedup.sourcingCache
         );
@@ -22124,6 +21872,7 @@ async function researchBeatClipUnifiedInner(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -22153,6 +21902,7 @@ async function researchBeatClipUnifiedInner(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -22995,6 +22745,7 @@ async function fetchBeatClipInner(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
         {
@@ -23050,6 +22801,7 @@ async function fetchBeatClipInner(
             videoTitle,
             fastMode: perf.fastStockMode,
             imageGate: dedup.beatImageGate,
+            relevanceLedger: dedup.beatRelevance,
           }, dedup.usedContentKeys, dedup.sourcingCache),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
@@ -23073,6 +22825,7 @@ async function fetchBeatClipInner(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
@@ -23159,6 +22912,7 @@ async function fetchBeatClipInner(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
@@ -24401,17 +24155,33 @@ async function beatClipPassesVisionGate(
     );
     return { pass: false, worstScore10: null, skipped: false, fromCache: false };
   }
-  // RONDE 29: same reasoning as the baked-text check above — one hook here covers every route.
-  // Runs before the CLIP evaluation so an off-topic protest clip costs no vision call.
+  /**
+   * RONDE 104 — the last judge that decides content without seeing the picture.
+   *
+   * RONDE 29 added this because a "white lives matter" roadside clip went under narration about
+   * the Battle of Berlin, and it worked: it reads the provider's title, or failing that the
+   * asset's own slug, and refuses footage of a protest on a beat that is not about protests.
+   *
+   * The problem is not that it is wrong. It is that it reads a FILENAME. It sat in front of CLIP,
+   * whose content verdicts on this material are measurably inverted, so a cheap word-match ahead
+   * of a bad judge was a net gain. It now sits in front of a model that actually looks at the
+   * frame and reads the narration — and there it can only take material away: a clip the model
+   * would have accepted is binned because a word in its filename matched.
+   *
+   * That is precisely the pattern RONDE 103 removed from CLIP, and it survived only because it
+   * was not called CLIP. So it is demoted the same way: it still runs, it is still counted in the
+   * gate-firing stats, and what it says is logged — it just does not get the last word. The
+   * baked-text check above KEEPS its veto, because burnt-in subtitles are a defect in the file
+   * rather than a claim about the subject, and no amount of looking at the frame makes a chyron
+   * belong in a documentary.
+   */
   const isOffTopicProtest = beatClipIsOffTopicProtest(clipPath, beat, videoTitle, dedup);
   recordGateVerdict("off_topic_protest", isOffTopicProtest);
   if (isOffTopicProtest) {
-    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "off_topic_protest", queryLabel);
-    console.warn(
-      `[Pipeline] Scene ${scene.index} beat ${beat.index}: rejected — protest footage for a beat ` +
-        `that is not about protests (${path.basename(clipPath)})`
+    console.log(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: filename reads as protest footage ` +
+        `(${path.basename(clipPath)}) — flagged, not rejected; the relevance gate decides`
     );
-    return { pass: false, worstScore10: null, skipped: false, fromCache: false };
   }
   // contentKey gives the vision-gate cache an asset-derived identity instead of falling back to
   // path.basename(clipPath) — this call funnels every rescue/adoption route (Openverse,
@@ -24551,28 +24321,7 @@ function noteVisionSpend(
   for (let i = 0; i < spent.failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
 }
 
-async function loadArchiveCandidatePool(
-  scene: Scene,
-  videoTitle: string | undefined,
-  dedup: VisualDedupState,
-  combinedSceneText?: string
-): Promise<CuratedCandidatePick[]> {
-  if (dedup.archiveCandidatePool) return dedup.archiveCandidatePool;
-  dedup.archiveCandidatePool = await buildVideoArchiveCandidatePool(
-    videoTitle,
-    combinedSceneText ?? scene.text,
-    {
-      assetsCache: dedup.archiveAssetsCache,
-      crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-      excludeIds: dedup.usedCuratedAssetIds,
-      excludeStorageUrls: dedup.usedCuratedStorageUrls,
-    }
-  );
-  console.log(
-    `[Pipeline] Archive pool: ${dedup.archiveCandidatePool.length} candidate(s) (single load for video)`
-  );
-  return dedup.archiveCandidatePool;
-}
+
 
 async function preparePooledArchiveClip(
   picked: CuratedCandidatePick,
@@ -27261,28 +27010,7 @@ async function ensureBeatVisualFilled(
   );
 }
 
-/** @deprecated alias */
-async function adoptPexelsBeatClipFallback(
-  beat: SceneBeat,
-  scene: Scene,
-  workDir: string,
-  videoTitle: string | undefined,
-  dedup: VisualDedupState,
-  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
-  holdSec: number,
-  semanticProfile?: BeatSemanticProfile
-): Promise<boolean> {
-  return adoptStockBeatClipFallback(
-    beat,
-    scene,
-    workDir,
-    videoTitle,
-    dedup,
-    pushClip,
-    holdSec,
-    semanticProfile
-  );
-}
+
 
 async function backfillArchiveMontageFromPool(
   scene: Scene,
@@ -30157,50 +29885,14 @@ async function renderChapterCard(
 }
 
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
-async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workDir: string): Promise<string> {
-  const outputPath = path.join(workDir, "intro_card.mp4");
-  // Sanitize title for FFmpeg drawtext filter
-  const safeTitle = sanitizeForDrawtext(videoTitle, 60);
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-      `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-filter_complex "[0:v]drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
-      `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
-      `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-    ),
-    60_000, "Intro card FFmpeg render"
-  );
-  return outputPath;
-}
 
-async function renderIntroCard(videoTitle: string, duration: number, workDir: string): Promise<string> {
-  // Always use FFmpeg-only implementation (no canvas dependency)
-  return renderIntroCardFFmpeg(videoTitle, duration, workDir);
-}
+
+
 
 //// ─── 4c. Branded Outro Card ────────────────────────────────────────────
-async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise<string> {
-  const outputPath = path.join(workDir, "outro_card.mp4");
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-      `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=h/2-80,` +
-      `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
-      `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-    ),
-    90_000, "Outro card FFmpeg render"
-  );
-  return outputPath;
-}
 
-async function renderOutroCard(duration: number, workDir: string): Promise<string> {
-  // Always use FFmpeg-only implementation (no canvas dependency)
-  return renderOutroCardFFmpeg(duration, workDir);
-}
+
+
 
 type ComposePhase = "assembly" | "effects" | "full";
 

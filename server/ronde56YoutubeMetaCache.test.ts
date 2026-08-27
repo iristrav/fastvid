@@ -23,11 +23,30 @@ import { describe, expect, it } from "vitest";
 
 const SRC = () => readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
+/**
+ * RONDE 104: walk the parameter list by BALANCE, not to its first `)`.
+ *
+ * `indexOf(")", start)` stops inside the first parameter that has parentheses of its own — a doc
+ * comment, a default, an inline function type. The `{` matched after that can then be an inline
+ * object RETURN TYPE rather than the body, and the test reads a few lines of a type declaration
+ * while appearing to read the implementation: a test that passes for the wrong reason.
+ */
+function signatureBodyBrace(src: string, start: number): number {
+  let i = src.indexOf("(", start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")" && --depth === 0) break;
+  }
+  const line = src.slice(i, src.indexOf("\n", i));
+  return i + line.lastIndexOf("{");
+}
+
 /** The helper's body, brace-matched rather than taken as a character window. */
 function metaHelper(src: string): string {
   const start = src.indexOf("async function fetchRapidApiYoutubeMeta(");
   expect(start).toBeGreaterThan(-1);
-  const open = src.indexOf("{", src.indexOf(")", start));
+  const open = signatureBodyBrace(src, start);
   let depth = 0;
   for (let i = open; i < src.length; i++) {
     if (src[i] === "{") depth++;

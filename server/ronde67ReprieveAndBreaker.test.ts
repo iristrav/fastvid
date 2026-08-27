@@ -35,13 +35,18 @@ const PIPELINE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"),
 describe("RONDE 67 — a refused clip beats a placeholder", () => {
   it("the adoption loop moves a refusal to the back of the queue instead of dropping it", () => {
     const src = PIPELINE();
-    const idx = src.indexOf("const gateReprieved = new Set<string>();");
+    const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
     expect(idx).toBeGreaterThan(-1);
     const block = src.slice(idx, idx + 14000);
-    expect(block).toContain("gateReprieved.add(p);");
+    expect(block).toContain("requeuedAfterRefusal.add(p);");
     expect(block).toContain("finalPaths.push(p);");
     // The gate is not applied a second time to a clip that has already been refused.
-    expect(block).toContain("!gateReprieved.has(p) &&");
+    // RONDE 104 renamed this set to say what it is: bookkeeping about what this loop has
+    // already RE-OFFERED, which is not the same fact as the ledger's verdict. Deriving it from
+    // the ledger would adopt a clip another route refused on this beat immediately instead of
+    // putting it last, and the reprieve exists precisely to make a refused picture the last
+    // resort rather than the first.
+    expect(block).toContain("!requeuedAfterRefusal.has(p) &&");
   });
 
   it("the queue it appends to is a copy it owns", () => {
@@ -89,7 +94,7 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
 
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
     const src = PIPELINE();
-    const idx = src.indexOf("const gateReprieved = new Set<string>();");
+    const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
     const block = src.slice(idx, idx + 14000);
     expect(block).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });

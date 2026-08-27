@@ -35,6 +35,7 @@ import {
   type BeatRelevanceLedger,
   type BeatVisualContext,
 } from "./beatVisualRelevance";
+import { __resetVerdictStoreForTests } from "./beatRelevanceVerdictStore";
 
 const invoke = vi.hoisted(() => ({ fn: vi.fn() }));
 vi.mock("./_core/llm", () => ({ invokeLLM: invoke.fn }));
@@ -73,6 +74,13 @@ let ledger: BeatRelevanceLedger;
 
 beforeEach(() => {
   invoke.fn.mockReset();
+  /**
+   * RONDE 104: the durable verdict store keeps a process-level cache in front of the database,
+   * and it is deliberately NOT render-scoped — a verdict about a (picture, narration) pair is the
+   * same fact whoever asks. That is the feature, and it means these suites must clear it between
+   * tests, or one test's answer silently answers the next test's question.
+   */
+  __resetVerdictStoreForTests();
   state = createBeatImageGateState();
   ledger = createBeatRelevanceLedger();
   vi.spyOn(console, "log").mockImplementation(() => {});

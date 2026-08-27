@@ -291,16 +291,3 @@ export function beatVisionContextForSearch(
 ): BeatVisionQueryContext {
   return beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
 }
-
-export async function scoreAssetClipSimilarity(
-  assetId: number,
-  queryEmbedding: number[]
-): Promise<number> {
-  const frames = loadStoredFrameEmbeddings(assetId);
-  if (!frames.length || queryEmbedding.length === 0) return 0;
-  let best = 0;
-  for (const emb of frames) {
-    best = Math.max(best, scoreEmbeddingSimilarity(queryEmbedding, emb));
-  }
-  return Math.round(best * 100);
-}
