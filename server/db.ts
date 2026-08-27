@@ -462,16 +462,63 @@ export async function updateVideoStatus(id: number, status: InsertVideo["status"
 }) {
   const db = await getDb();
   if (!db) return;
-  await db.update(videos).set({ status, ...extra }).where(eq(videos.id, id));
+  if (extra?.progressPercent == null) {
+    await db.update(videos).set({ status, ...extra }).where(eq(videos.id, id));
+    return;
+  }
+  /**
+   * RONDE 107 — a progress percent may go up, or start over. It may never slip.
+   *
+   * The number is written from a dozen places with fixed values (5, 28, 29, 30, 100), and the
+   * pipeline does not visit them in a single ascending order: a render at 45% that reaches a
+   * stage hard-coded to 29 wrote 29, and the badge on the user's video stepped backwards. A
+   * progress bar that goes down is not a smaller claim, it is a broken one — the viewer stops
+   * believing any of it.
+   *
+   * A RESET is a different thing from a slip, and the write says which it is without any call
+   * site having to be changed:
+   *
+   *   · a new run     — `generationStartedAt` is set in the same write, so this IS the start of
+   *                     a generation and its percent is authoritative
+   *   · not running   — queued, pending or failed: the video is not mid-render, and whatever the
+   *                     lifecycle change says the percent is, is the percent
+   *   · anything else — a tick. It may raise the stored value and may never lower it.
+   */
+  const isNewRun = extra.generationStartedAt != null;
+  const isNotRunning = status === "queued" || status === "pending" || status === "failed";
+  const { progressPercent, ...restExtra } = extra;
+  await db
+    .update(videos)
+    .set({
+      status,
+      ...restExtra,
+      progressPercent:
+        isNewRun || isNotRunning
+          ? progressPercent
+          : // GREATEST in SQL rather than read-then-write: two workers and an out-of-order poll
+            // must not be able to interleave into a decrease.
+            sql`GREATEST(COALESCE(${videos.progressPercent}, 0), ${progressPercent})`,
+    })
+    .where(eq(videos.id, id));
 }
 
-/** Lightweight helper to update only the progress fields without changing status */
+/**
+ * Lightweight helper to update only the progress fields without changing status.
+ *
+ * RONDE 107: this is the tick path — it can only ever mean "we got further", so the stored
+ * percent is raised and never lowered. A restart goes through updateVideoStatus, which knows
+ * from the write itself whether it is starting a new run.
+ */
 export async function updateVideoProgress(id: number, progressStep: string, progressPercent: number) {
   const db = await getDb();
   if (!db) return;
   await db
     .update(videos)
-    .set({ progressStep, progressPercent, updatedAt: new Date() })
+    .set({
+      progressStep,
+      progressPercent: sql`GREATEST(COALESCE(${videos.progressPercent}, 0), ${progressPercent})`,
+      updatedAt: new Date(),
+    })
     .where(eq(videos.id, id));
 }
 

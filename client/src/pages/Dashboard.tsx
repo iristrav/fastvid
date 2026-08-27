@@ -34,7 +34,11 @@ import { formatGenerationDuration } from "@shared/pipelineProgress";
 import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
 import {
 } from "@shared/videoQuality";
-import { GenerationProgressBar, useSmoothedProgressPercent } from "@/components/GenerationProgressBar";
+import {
+  GenerationProgressBar,
+  progressRunKey,
+  useSmoothedProgressPercent,
+} from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
@@ -255,7 +259,14 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   // could disagree, and the raw value could visibly step backwards between polls whenever a
   // later pipeline stage reported a lower percent than an earlier stage already had.
   const rawBadgePct = Math.max(0, Math.min(100, Math.round(progressPercent)));
-  const smoothedBadgePct = useSmoothedProgressPercent(rawBadgePct, isProcessing && rawBadgePct < 100);
+  // RONDE 107: keyed on the video, so the badge keeps its high-water mark when the card
+  // remounts (scroll, tab switch, a refetch) instead of snapping back to the raw value.
+  const runKey = progressRunKey(video.id, pollData?.generationStartedAt);
+  const smoothedBadgePct = useSmoothedProgressPercent(
+    rawBadgePct,
+    isProcessing && rawBadgePct < 100,
+    runKey
+  );
   const statusBadgeLabel =
     isProcessing
       ? `${smoothedBadgePct}%`
@@ -289,6 +300,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 <GenerationProgressBar
                   compact
                   progressPercent={progressPercent}
+                  progressKey={runKey}
                   generationStartedAt={pollData?.generationStartedAt}
                   videoLength={video.videoLength}
                   className="max-w-[220px]"
@@ -300,6 +312,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 <GenerationProgressBar
                   compact
                   progressPercent={progressPercent}
+                  progressKey={runKey}
                   generationStartedAt={pollData?.generationStartedAt}
                   videoLength={video.videoLength}
                   className="max-w-[220px]"

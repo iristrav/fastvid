@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
-import { GenerationProgressBar } from "@/components/GenerationProgressBar";
+import { GenerationProgressBar, progressRunKey } from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
 
 function formatVideoId(id: number) {
@@ -590,6 +590,7 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
           <GenerationProgressBar
             compact
             progressPercent={progressPercent}
+            progressKey={progressRunKey(video.id, (pollData as { generationStartedAt?: Date | null })?.generationStartedAt)}
             generationStartedAt={(pollData as { generationStartedAt?: Date | null })?.generationStartedAt}
             videoLength={video.videoLength}
             className="min-w-[140px]"
@@ -847,6 +848,7 @@ function AdminVideoGenerator() {
           {isGenerating && (
             <GenerationProgressBar
               progressPercent={statusData?.progressPercent ?? 0}
+              progressKey={generatedId != null ? progressRunKey(generatedId, statusData?.generationStartedAt) : undefined}
               generationStartedAt={statusData?.generationStartedAt}
               videoLength={videoLength}
             />
