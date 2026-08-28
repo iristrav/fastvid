@@ -26,6 +26,9 @@
  * runs that sit just under whatever that minimum is. This counts every frame instead.
  */
 import { exec as execCb } from "child_process";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { promisify } from "util";
 
 const exec = promisify(execCb);
@@ -48,10 +51,74 @@ export type StillnessReport = {
   stillRuns: Array<{ startSec: number; durationSec: number }>;
   /** How many times the picture genuinely changed. */
   visualChanges: number;
+  /**
+   * RONDE 136 — the mean luma of the LAST frame that decodes, or null if it could not be read.
+   *
+   * ── The blind spot this closes, measured ─────────────────────────────────────────────────
+   *
+   * Two checks run on a finished render and neither of them looks at the end of it:
+   *
+   *   postRenderSpotCheck  samples at 12%, 38%, 62% and 88% of the duration. On a three-minute
+   *                        film the last sample is at 2:38, so a black final second is 22
+   *                        seconds past anything it inspects.
+   *   this audit           measured motion only. A file can end on a second and a half of pure
+   *                        black and every number above stays healthy.
+   *
+   * Reproduced: a 12.52s fixture ending on 1.5s of black was audited by the pre-RONDE-136 code,
+   * which reported the 7-second still correctly and said nothing whatsoever about the ending.
+   *
+   * The last frame is what the viewer is left looking at and what YouTube freezes for its end
+   * screen. It is also exactly what RONDE 132's closing-tail fix exists to protect, and nothing
+   * was verifying the result.
+   */
+  endFrameLuma: number | null;
+  /** True when the film ends on a frame dark enough to read as blank. Null luma is not a verdict. */
+  endsOnBlack: boolean;
 };
+
+/**
+ * Below this a frame reads as blank rather than as a dark shot.
+ *
+ * Deliberately the same threshold postRenderSpotCheck already uses, so the two checks cannot
+ * disagree about what black means — a documentary ends on a genuinely dark image often enough
+ * that a second, stricter definition would produce contradictory warnings on the same file.
+ */
+export const END_FRAME_BLACK_LUMA = 22;
 
 /** Runs shorter than this are ordinary held frames inside real footage, not stillness. */
 const REPORTABLE_STILL_SEC = 0.6;
+
+/**
+ * The mean luma of the final decoded frame, or null when it cannot be read.
+ *
+ * Written to a temporary file next to the source rather than into the video's own directory: this
+ * runs on the finished export, and leaving a stray JPEG beside a deliverable is the kind of thing
+ * that ends up uploaded.
+ */
+async function readFinalFrameLuma(videoPath: string): Promise<number | null> {
+  const framePath = path.join(
+    os.tmpdir(),
+    `fastvid_endframe_${process.pid}_${Date.now()}.jpg`
+  );
+  try {
+    await exec(
+      `${ffmpegBin()} -y -v error -i "${videoPath}" -q:v 2 -update 1 "${framePath}"`,
+      { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }
+    );
+    if (!fs.existsSync(framePath)) return null;
+    const { stdout } = await exec(
+      `${ffprobeBin()} -v error -f lavfi -i "movie=${framePath},signalstats" ` +
+        `-show_entries frame_tags=lavfi.signalstats.YAVG -of default=nw=1:nk=1`,
+      { timeout: 30_000 }
+    );
+    const luma = Number.parseFloat(String(stdout).trim().split("\n")[0] ?? "");
+    return Number.isFinite(luma) ? luma : null;
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(framePath); } catch { /* nothing to clean up */ }
+  }
+}
 
 /**
  * Measure how long the picture stands still, anywhere in the file.
@@ -102,6 +169,19 @@ export async function auditVideoStillness(params: {
     stderr: String(e?.stderr ?? e?.stdout ?? ""),
   }));
 
+  /**
+   * RONDE 136 — read the LAST frame, not a frame near the end.
+   *
+   * The same `-update 1` technique RONDE 132 established for the closing tail: decode to EOF
+   * writing every frame over one temporary file, so what survives is the final frame by
+   * construction. Naming a timestamp instead is what produced "Output file is empty" on a
+   * container whose audio outlived its picture, and the same trap applies here.
+   *
+   * Measured through signalstats on that one frame. Any failure yields null, which is reported as
+   * "not measured" rather than as a pass — an unread frame is not a bright one.
+   */
+  const endFrameLuma = await readFinalFrameLuma(params.videoPath).catch(() => null);
+
   const times = [...String(stderr).matchAll(/pts_time:([\d.]+)/g)]
     .map((m) => Number.parseFloat(m[1]!))
     .filter((n) => Number.isFinite(n))
@@ -127,6 +207,8 @@ export async function auditVideoStillness(params: {
       longestStillStartSec: times[0] ?? 0,
       stillRuns: [{ startSec: times[0] ?? 0, durationSec }],
       visualChanges: Math.max(0, times.length - 1),
+      endFrameLuma,
+      endsOnBlack: endFrameLuma !== null && endFrameLuma < END_FRAME_BLACK_LUMA,
     };
   }
 
@@ -139,6 +221,8 @@ export async function auditVideoStillness(params: {
     longestStillStartSec: longest.startSec,
     stillRuns,
     visualChanges: Math.max(0, times.length - 1),
+    endFrameLuma,
+    endsOnBlack: endFrameLuma !== null && endFrameLuma < END_FRAME_BLACK_LUMA,
   };
 }
 
@@ -146,6 +230,13 @@ export type StillnessVerdict = {
   ok: boolean;
   longestStillSec: number;
   limitSec: number;
+  /**
+   * RONDE 136 — §12's `imagesOver5Sec`, as a number.
+   *
+   * The same information `violations` carries, counted. A report that prints a list is read by a
+   * person; a number is what a threshold, a warning and a comparison between two renders can use.
+   */
+  stillsOverLimit: number;
   /** Runs that break the rule, so a report can name them rather than only count them. */
   violations: Array<{ startSec: number; durationSec: number }>;
 };
@@ -161,9 +252,16 @@ export function checkStillnessLimit(report: StillnessReport, limitSec: number): 
   const tolerance = 0.25;
   const violations = report.stillRuns.filter((r) => r.durationSec > limitSec + tolerance);
   return {
-    ok: violations.length === 0,
+    /**
+     * RONDE 136: a film that ends on black fails, however well it moved. The last frame is what
+     * the viewer is left with, and RONDE 132 added a closing tail precisely so that it would be a
+     * picture. An unreadable frame is NOT a failure — `endsOnBlack` is false when the luma could
+     * not be measured, and the report says "not measured" rather than passing it quietly.
+     */
+    ok: violations.length === 0 && !report.endsOnBlack,
     longestStillSec: report.longestStillSec,
     limitSec,
+    stillsOverLimit: violations.length,
     violations,
   };
 }
@@ -176,9 +274,15 @@ export function formatStillnessReport(label: string, report: StillnessReport, ve
     `  visual changes      ${report.visualChanges}`,
     `  still segments      ${report.stillRuns.length}`,
     `  longest still       ${report.longestStillSec.toFixed(2)}s at ${report.longestStillStartSec.toFixed(2)}s`,
+    `  imagesOver5Sec      ${verdict.stillsOverLimit}`,
+    `  endFrameLuma        ${report.endFrameLuma === null ? "NOT_MEASURED" : report.endFrameLuma.toFixed(1)}`,
+    `  endsOnBlack         ${report.endFrameLuma === null ? "NOT_MEASURED" : report.endsOnBlack ? "YES" : "no"}`,
     `  limit               ${verdict.limitSec.toFixed(2)}s`,
     `  passed              ${verdict.ok ? "yes" : "NO"}`,
   ];
+  if (report.endsOnBlack) {
+    lines.push(`  VIOLATION           the film ends on a black frame (luma ${report.endFrameLuma?.toFixed(1)})`);
+  }
   for (const v of verdict.violations.slice(0, 5)) {
     lines.push(`  VIOLATION           ${v.durationSec.toFixed(2)}s of unchanging picture at ${v.startSec.toFixed(2)}s`);
   }

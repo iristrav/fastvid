@@ -89,6 +89,15 @@ export type VideoQualityReport = {
     longestStillStartSec: number;
     visualChanges: number;
     stillSegments: number;
+    /** RONDE 136 — how many stills outstayed the cap. §12's `imagesOver5Sec`. */
+    imagesOverLimit: number;
+    /**
+     * RONDE 136 — the mean luma of the film's actual last frame, or null when it could not be
+     * read. Null is reported as NOT_MEASURED and never as a pass: an unread frame is not a bright
+     * one, and the two checks that ran before this one both stopped short of the ending.
+     */
+    endFrameLuma: number | null;
+    endsOnBlack: boolean;
     limitSec: number;
     ok: boolean;
   };

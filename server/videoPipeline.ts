@@ -36562,9 +36562,19 @@ async function _runVideoPipelineInner(
         longestStillStartSec: stillness.longestStillStartSec,
         visualChanges: stillness.visualChanges,
         stillSegments: stillness.stillRuns.length,
+        // RONDE 136: the two facts about the END of the film, which nothing measured before.
+        imagesOverLimit: verdict.stillsOverLimit,
+        endFrameLuma: stillness.endFrameLuma,
+        endsOnBlack: stillness.endsOnBlack,
         limitSec: verdict.limitSec,
         ok: verdict.ok,
       };
+      if (stillness.endsOnBlack) {
+        qualityReport.warnings.push(
+          `de video eindigt op een zwart beeld (luma ${stillness.endFrameLuma?.toFixed(0)}) — ` +
+            `de kijker blijft achter met een leeg scherm`
+        );
+      }
       for (const v of verdict.violations.slice(0, 3)) {
         qualityReport.warnings.push(
           `beeld staat ${v.durationSec.toFixed(1)}s stil vanaf ${v.startSec.toFixed(1)}s — ` +
