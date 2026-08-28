@@ -116,16 +116,30 @@ describe("RONDE 154 — nothing about what a card IS has changed", () => {
     expect(PIPE).toContain("isPlaceholderGuaranteedTier(tierOut.tier) ? \"rescue_placeholder\"");
   });
 
-  it("the card is still a flat colour — no fake motion was added", () => {
+  it("no fake camera move was added — the card is a source, not a pan", () => {
     /**
-     * Making a placeholder drift would turn the stillness audit green while showing the viewer the
-     * same absence of footage. This round deliberately does not do that: it stops FOUR cards being
-     * measured as ONE, which is a real difference, and leaves each card honest about itself.
+     * SUPERSEDED IN PART BY RONDE 155, on the owner's explicit instruction.
+     *
+     * This round argued the card should stay a flat colour, because animating it would turn the
+     * stillness audit green while showing the viewer the same absence of footage. The owner heard
+     * that argument and overruled it: a frozen picture is unacceptable regardless of cause. R155
+     * therefore replaced the flat `color=` source with an animated `gradients` one, measured at
+     * longestStill 0.00s in 8 runs of 8.
+     *
+     * The concern behind this test was never really "flat vs moving" — it was that the accounting
+     * must not improve when only the appearance does. That half is still asserted, here and above:
+     * the clip is still adopted as rescue_placeholder, still in fallbackRatio, still penalised.
+     *
+     * What remains asserted below is the narrower rule that survives: the motion comes from the
+     * SOURCE, not from a zoom or pan faked over a still. A zoompan here would be the pipeline
+     * pretending to have a camera it does not have.
      */
     const idx = PIPE.indexOf("async function _generateColorFallbackInner");
-    const body = PIPE.slice(idx, idx + 1600);
-    expect(body).toContain('color=c=#${color}');
+    const body = PIPE.slice(idx, idx + 4200);
+    expect(body).toContain("gradients=");
     expect(body).not.toContain("zoompan");
     expect(body).not.toContain("geq=");
+    // The flat-colour ladder is still there for a box that cannot run the gradient source.
+    expect(body).toContain('color=c=#${color}');
   });
 });

@@ -547,6 +547,24 @@ export function mismatchFaultSplit(tally: MismatchTally): {
 }
 
 /** The per-refusal line, printed where the refusal happens. */
+/**
+ * RONDE 155 — when the classifier gives up, print what it could not read.
+ *
+ * Video 551: 10 refusals, 7 of them UNCLEAR. An UNCLEAR refusal has no fault, so no correction
+ * strategy, so no research — the beat falls through to a placeholder. Seventy percent of the
+ * chain's input was being discarded at the first step.
+ *
+ * The classifier matches keywords ("title card", "modern", "out of focus", ...) against the gate's
+ * own prose. The gate is not wrong when it says something like "the photo shows a crowd, but the
+ * narration is about a private meeting" — that names the problem perfectly, and matches no pattern.
+ * Which formulations actually fall through is not guessable, so this prints them rather than
+ * inviting another round of pattern-guessing.
+ *
+ * Only for UNCLEAR, and truncated: this is diagnostic input for the next round, not a running
+ * commentary on every refusal the chain already understands.
+ */
+const UNCLEAR_PROSE_CHARS = 160;
+
 export function formatMismatchFeedback(params: {
   sceneIndex: number;
   beatIndex: number;
@@ -554,13 +572,18 @@ export function formatMismatchFeedback(params: {
   kind: MismatchKind;
   reordered: boolean;
   remaining: number;
+  depicts?: string;
+  reason?: string;
 }): string {
-  return (
+  const head =
     `[MismatchFeedback] s${params.sceneIndex}b${params.beatIndex} ` +
     `source=${params.source || "unknown"} kind=${params.kind} ` +
     `fault=${mismatchFault(params.kind)} remaining=${params.remaining} ` +
-    `reordered=${params.reordered ? "yes" : "no"}`
-  );
+    `reordered=${params.reordered ? "yes" : "no"}`;
+  if (params.kind !== "UNCLEAR") return head;
+  const prose = `${params.depicts ?? ""} ${params.reason ?? ""}`.trim().replace(/\s+/g, " ");
+  if (!prose) return `${head}\n  unclassified: the gate returned no prose to classify`;
+  return `${head}\n  unclassified prose: "${prose.slice(0, UNCLEAR_PROSE_CHARS)}"`;
 }
 
 /** The render-end block. Empty string when nothing was refused — silence is the good outcome. */

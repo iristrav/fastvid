@@ -8320,11 +8320,20 @@ async function generateGuaranteedBeatClipInner(
       const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
       // RONDE 154: the same sequence counter, for the same reason — every placeholder beat in
       // one scene used to get the identical colour and merge into a single unchanging picture.
-      const color = colors[colorFallbackSequence++ % colors.length];
+      const textVariant = colorFallbackSequence++;
+      const color = colors[textVariant % colors.length];
+      /**
+       * RONDE 155 — the same drifting background as the plain card, for the same reason.
+       *
+       * This card's only movement was the text fading in over its first 0.4s; every frame after
+       * that was identical. A failure here falls through to generateColorFallback below, so a box
+       * without the gradients source still gets a card.
+       */
+      const textColorB = colors[(textVariant + 1) % colors.length];
       const safeDur = guaranteedTextOverlayDurationSec(duration);
       await withSceneFetchTimeout(
         () => exec(
-          `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
+          `${FFMPEG_BIN} -y -f lavfi -i "gradients=s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:c0=0x${color}:c1=0x${textColorB}:speed=0.20:r=25" -t ${safeDur} ` +
           `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
           `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
           `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
@@ -8523,8 +8532,39 @@ async function generateColorFallback(
 async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string, variantIndex?: number): Promise<string> {
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
   // RONDE 154: the card's own position in the sequence, so two in a row are never one picture.
-  const color = colors[Math.abs(variantIndex ?? colorFallbackSequence++) % colors.length];
+  const variant = Math.abs(variantIndex ?? colorFallbackSequence++);
+  const color = colors[variant % colors.length];
+  /**
+   * RONDE 155 — a placeholder is still a placeholder, but it is not a frozen frame.
+   *
+   * A flat `color=` source is, by construction, one unchanging picture for its whole duration. The
+   * stillness audit measures exactly that, and measured it: a five-second card reports
+   * longestStill 5.00s with zero visual changes.
+   *
+   * The second colour is the NEXT palette entry, so the drift stays inside the same muted family
+   * rather than becoming a light show. Measured with the pipeline's own auditVideoStillness:
+   *
+   *     color=            0 changes   longest still 5.00s
+   *     gradients speed=0.05    marginal: 0.00s / 0.75s / 0.75s over three runs
+   *     gradients speed=0.20   32-39 changes  longest still 0.00s, 8 runs of 8
+   *
+   * speed=0.20 was chosen by repeated measurement, not by taste. 0.05 looked adequate in a single
+   * run and turned out to be MARGINAL: across three runs it reported 0.00s once and 0.75s twice,
+   * because the drift is slow enough that whether two sampled frames differ is close to a
+   * coin-flip. 0.20 returned 0.00s in eight runs out of eight (32-39 changes each). A guarantee
+   * needs margin, not a setting that happens to pass.
+   *
+   * It changes NOTHING about the accounting. The clip is still adopted as `rescue_placeholder`,
+   * still counted in fallbackRatio, still penalised in the quality score. What it stops is the
+   * viewer being shown a frozen video, which is a rendering fault regardless of what caused it.
+   */
+  const colorB = colors[(variant + 1) % colors.length];
   const commands = [
+    `${FFMPEG_BIN} -y -f lavfi -i "gradients=s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:c0=0x${color}:c1=0x${colorB}:speed=0.20:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    // Every command below is a flat colour and therefore a still picture. They are the ladder that
+    // already existed for a box where the first command cannot run at all — an older ffmpeg without
+    // the gradients source, or one under such load that only the cheapest encode survives. A card
+    // that is a held frame beats no card at all, which is the whole point of a last-resort net.
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
@@ -24776,6 +24816,28 @@ async function beatClipPassesVisionGate(
      * failure mode RONDE 142 set out to end.
      */
     dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);
+    /**
+     * RONDE 155 — the shared gate sees most refusals and logged none of them individually.
+     *
+     * The funnel prints a [MismatchFeedback] line per refusal because it has a candidate list to
+     * reorder; this route has none, so it recorded the tally and said nothing. That is precisely
+     * where video 551's seven UNCLEAR refusals went — counted, never shown. Only the unclassified
+     * ones are printed: the rest are already understood and acted on.
+     */
+    if (kind === "UNCLEAR") {
+      console.log(
+        formatMismatchFeedback({
+          sceneIndex: scene.index,
+          beatIndex: beat.index,
+          source: dedup.sourcingCache.lineage.providerBucketFor(clipPath, clipContentKey(clipPath)),
+          kind,
+          reordered: false,
+          remaining: 0,
+          depicts: relevance.depicts,
+          reason: relevance.reason,
+        })
+      );
+    }
     return { pass: false, worstScore10: result.worstScore10, skipped: false, fromCache: relevance.cached };
   }
   if (!relevance.cached && relevance.verdict !== "unknown") recordGateVerdict("beat_image_gate", false);
@@ -29951,6 +30013,9 @@ async function fetchSceneVisualsInner(
                 kind: mismatchKind,
                 reordered: reorderChangedOrder(beforeOrder, scored),
                 remaining: scored.length - dedup.beatImageRejectedIds.size - 1,
+                // RONDE 155: printed only when the kind is UNCLEAR — see formatMismatchFeedback.
+                depicts: judgement.depicts,
+                reason: judgement.reason,
               })
             );
             // RONDE 61: a hard exclusion, not a used-marker. Marking it "used" alone put the
