@@ -56,11 +56,20 @@ export function allowUnverifiedYoutube(): boolean {
 }
 
 /**
- * RONDE 145 — does the operator hold rights this metadata cannot see?
+ * RONDE 145/146 — has the operator cleared THIS asset?
  *
- * The FastVid owner states they have a separate agreement covering YouTube material and has asked
- * for the REJECTED category to be opened on that basis. This flag is how that assertion enters the
- * pipeline: deliberately, per environment, off unless switched on.
+ * The FastVid owner states they hold rights this metadata cannot see and asked for those assets to
+ * be usable. Two things have to be true before one is, and RONDE 146 is the second of them:
+ *
+ *     ALLOW_OPERATOR_LICENSED_YOUTUBE=true       the mechanism is armed
+ *     OPERATOR_LICENSED_YOUTUBE_IDS=<ids>        this asset was named in it
+ *
+ * ── Why the list exists ──────────────────────────────────────────────────────────────────────
+ *
+ * RONDE 145 shipped the flag alone, which made it a blanket rule: with it on, EVERY `youtube-*`
+ * item whose licence said no was used. That is a general YouTube bypass, and it is the thing the
+ * brief for this round rules out — an override is meaningful only for assets a human actually
+ * looked at. An empty list allows nothing, however the flag is set.
  *
  * ── What it does NOT do ──────────────────────────────────────────────────────────────────────
  *
@@ -69,20 +78,56 @@ export function allowUnverifiedYoutube(): boolean {
  * metadata said no. Nothing in this module is made to claim a licence that the metadata does not
  * show — that was RONDE 124's founding rule and it is unchanged.
  *
- * What the flag changes is only the ACTION taken on that status, which is the operator's call to
- * make and is recorded as theirs. The distinction matters: if a rightsholder ever asks, the log
- * shows the licence was read correctly, the refusal was seen, and a human overrode it — not that
+ * What the override changes is the ACTION, and `licenseBasis` records that a human, not YouTube,
+ * is the authority for it. If a rightsholder ever asks, the log shows the licence was read
+ * correctly, the refusal was seen, and a named human overrode it for a named video — not that
  * FastVid mistook an -nc licence for permission.
  *
  * ── What the operator is taking on ───────────────────────────────────────────────────────────
  *
  * REJECTED means the UPLOADER chose "non-commercial" or "no derivative works" on their own video.
- * That choice belongs to the uploader, not to YouTube, and a platform-level agreement does not
- * transfer it. Whoever turns this on is asserting they have rights from another source. This
- * comment exists so that assertion is visible in the code that acts on it.
+ * That choice belongs to the uploader, not to the platform, and a platform-level agreement does
+ * not transfer it. Whoever adds an id here is asserting they have rights from another source, for
+ * that specific video. This comment exists so the assertion is visible in the code that acts on it.
  */
 export function allowOperatorLicensedYoutube(): boolean {
   return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() === "true";
+}
+
+/**
+ * The YouTube video ids the operator has cleared, from `OPERATOR_LICENSED_YOUTUBE_IDS`.
+ *
+ * Accepts either bare ids or full `youtube-<id>` identifiers, separated by commas or whitespace,
+ * so the value can be pasted from either the archive identifier or the YouTube URL.
+ *
+ * Case is PRESERVED. YouTube ids are case-sensitive — `cS2JdEghHDo` and `cs2jdeghhdo` are not the
+ * same video — so lowercasing here would let one cleared asset silently vouch for another.
+ */
+export function operatorLicensedYoutubeIds(raw?: string | null): ReadonlySet<string> {
+  const value = (raw ?? process.env.OPERATOR_LICENSED_YOUTUBE_IDS ?? "").trim();
+  if (!value) return new Set<string>();
+  const ids = value
+    .split(/[\s,]+/)
+    .map((entry) => youtubeVideoIdFromIdentifier(entry) ?? entry.trim())
+    .filter(Boolean);
+  return new Set(ids);
+}
+
+/**
+ * Is this specific asset one the operator cleared?
+ *
+ * Both halves are required, and the YouTube-origin check comes first: a Pexels, Pixabay, Wikimedia
+ * or ordinary Internet Archive item can never reach the override, whatever an id list says.
+ */
+export function isOperatorLicensedYoutubeAsset(params: {
+  identifier: string | null | undefined;
+  allowOperatorLicensed: boolean;
+  licensedIds: ReadonlySet<string>;
+}): boolean {
+  if (!params.allowOperatorLicensed) return false;
+  if (!isYoutubeOriginIdentifier(params.identifier)) return false;
+  const videoId = youtubeVideoIdFromIdentifier(params.identifier);
+  return videoId !== null && params.licensedIds.has(videoId);
 }
 
 /**
@@ -143,9 +188,21 @@ export function classifyArchiveLicense(
   return "UNVERIFIED";
 }
 
+/**
+ * RONDE 146 — WHO is the authority for using this item.
+ *
+ * `status` says what the metadata showed. `licenseBasis` says who decided, and the two must never
+ * be collapsed: an operator-cleared asset is used on a human's say-so, not because YouTube or the
+ * archive supplied a licence. Keeping the field separate is what stops a report from ever reading
+ * as though the platform verified something it did not.
+ */
+export type LicenseBasis = "archive_metadata" | "operator_assertion";
+
 export type LicenseDecision = {
   status: LicenseStatus;
   action: LicenseAction;
+  /** Who authorised this — the metadata, or a human overriding it. */
+  licenseBasis: LicenseBasis;
   /** May the pipeline go on to download, preview and judge this item? */
   allowed: boolean;
   /** Present only when the item is a YouTube mirror. */
@@ -164,14 +221,20 @@ export type LicenseDecision = {
  *  2. UNVERIFIED continues only when it is a YouTube-origin item AND the operator has switched
  *     ALLOW_UNVERIFIED_YOUTUBE on. Anything else — a non-YouTube archive item, or the flag off —
  *     stops exactly as it does today.
- *  3. RONDE 145: REJECTED continues only when it is a YouTube-origin item AND the operator has
- *     switched ALLOW_OPERATOR_LICENSED_YOUTUBE on, asserting rights from an agreement this
- *     metadata cannot see. The status stays REJECTED and every report goes on saying so; what
- *     changes is who is answerable for using it. With the flag off — the default — an explicit
- *     refusal is never overridden, exactly as before.
+ *  3. RONDE 145/146: an item the operator has NAMED continues, whatever the metadata said, but
+ *     only when it is YouTube-origin, only when ALLOW_OPERATOR_LICENSED_YOUTUBE is on, and only
+ *     when its video id appears in OPERATOR_LICENSED_YOUTUBE_IDS. All three, every time. The
+ *     status stays exactly what the metadata said and every report goes on printing it; what
+ *     changes is `licenseBasis`, which records that a human is the authority. With the flag off,
+ *     or the id absent — the defaults — an explicit refusal is never overridden.
  *
- * Both overrides are narrow by construction: YouTube-origin identifiers only, so an Internet
- * Archive item from any other source keeps its current treatment under either flag.
+ * Rule 3 is checked LAST on purpose. An item that is already allowed on its own licence keeps
+ * `archive_metadata` as its basis: naming a video the operator did not actually need to clear must
+ * not rewrite the record of why it was usable.
+ *
+ * Both overrides are narrow by construction: YouTube-origin identifiers only, so a Pexels,
+ * Pixabay, Wikimedia or ordinary Internet Archive item keeps its current treatment under either
+ * flag and under any id list.
  *
  * Continuing is not the same as using. An allowed item still has to survive the preview check
  * (RONDE 118), the vision gate and ranking, all untouched by this module.
@@ -184,23 +247,35 @@ export function youtubeLicenseDecision(params: {
   allowUnverified?: boolean;
   /** RONDE 145: injected the same way, for the operator-licence override. */
   allowOperatorLicensed?: boolean;
+  /** RONDE 146: the operator's cleared-asset list, injected the same way. */
+  licensedIds?: ReadonlySet<string>;
 }): LicenseDecision {
   const status = classifyArchiveLicense(params.licenseUrl, params.rights);
   const isYoutube = isYoutubeOriginIdentifier(params.identifier);
   const allowUnverified = params.allowUnverified ?? allowUnverifiedYoutube();
   const allowOperatorLicensed = params.allowOperatorLicensed ?? allowOperatorLicensedYoutube();
+  const licensedIds = params.licensedIds ?? operatorLicensedYoutubeIds();
 
   let action: LicenseAction = "REJECT";
+  let licenseBasis: LicenseBasis = "archive_metadata";
   if (status === "VERIFIED") action = "ALLOW";
   else if (status === "UNVERIFIED" && isYoutube && allowUnverified) {
     action = "ALLOW_UNVERIFIED_YOUTUBE";
-  } else if (status === "REJECTED" && isYoutube && allowOperatorLicensed) {
+  } else if (
+    isOperatorLicensedYoutubeAsset({
+      identifier: params.identifier,
+      allowOperatorLicensed,
+      licensedIds,
+    })
+  ) {
     action = "ALLOW_OPERATOR_LICENSED_YOUTUBE";
+    licenseBasis = "operator_assertion";
   }
 
   return {
     status,
     action,
+    licenseBasis,
     allowed: action !== "REJECT",
     youtubeVideoId: isYoutube ? youtubeVideoIdFromIdentifier(params.identifier) : null,
     licenseUrl: params.licenseUrl?.trim() || null,
@@ -217,16 +292,25 @@ export function youtubeLicenseDecision(params: {
 export function formatYoutubeLicenseLine(decision: LicenseDecision): string {
   return (
     `[YouTubeLicense] video=${decision.youtubeVideoId ?? "unknown"} ` +
-    `status=${decision.status} action=${decision.action}` +
+    `status=${decision.status} action=${decision.action} ` +
+    /**
+     * RONDE 146 — `source=` on every line, so the authority is never inferred from the status.
+     *
+     * `source=operator` and `source=archive` is the distinction the brief asked to be made
+     * explicit. Reading `status=VERIFIED` alone must never be enough to conclude that YouTube or
+     * the archive supplied the right; the basis is printed beside it on the same line.
+     */
+    `source=${decision.licenseBasis === "operator_assertion" ? "operator" : "archive"}` +
     (decision.licenseUrl ? ` licenseUrl=${decision.licenseUrl}` : " licenseUrl=null") +
     (decision.status === "UNVERIFIED" && decision.action !== "REJECT"
       ? " — rights NOT proven, verify manually before publishing"
       : "") +
-    // RONDE 145: the licence itself said no. Say that plainly on the line that let it through,
-    // so the override is never mistaken for a permission FastVid established.
+    // RONDE 145/146: the metadata said no, or said nothing, and a human overrode it for this
+    // specific video. Say that plainly on the line that let it through.
     (decision.action === "ALLOW_OPERATOR_LICENSED_YOUTUBE"
-      ? " — licence FORBIDS this use (uploader chose -nc/-nd); used on the operator's asserted " +
-        "agreement, NOT on any right FastVid verified"
+      ? ` — archive metadata says ${decision.status}; used because the operator named this video ` +
+        "in OPERATOR_LICENSED_YOUTUBE_IDS. Authority is the operator's asserted agreement, " +
+        "NOT any right FastVid or YouTube verified"
       : "")
   );
 }
@@ -239,6 +323,11 @@ export type YoutubeUsageEntry = {
   title?: string;
   channel?: string;
   licenseStatus: LicenseStatus;
+  /**
+   * RONDE 146 — who authorised it. Optional so existing callers compile unchanged; absent is read
+   * as `archive_metadata`, which is what every pre-RONDE-145 entry was.
+   */
+  licenseBasis?: LicenseBasis;
   licenseUrl: string | null;
   rights: string | null;
   previewStatus: string;
@@ -259,25 +348,37 @@ export function formatYoutubeUsageReport(entries: ReadonlyArray<YoutubeUsageEntr
     );
     if (e.title) lines.push(`   title="${e.title.slice(0, 120)}"`);
     if (e.channel) lines.push(`   channel="${e.channel.slice(0, 80)}"`);
+    const basis = e.licenseBasis ?? "archive_metadata";
     lines.push(
       `   licenseStatus=${e.licenseStatus} licenseUrl=${e.licenseUrl ?? "null"} ` +
-        `rights=${e.rights ?? "null"}`
+        `rights=${e.rights ?? "null"} ` +
+        /**
+         * RONDE 146: the authority, on the same line as the status so neither can be read alone.
+         *
+         * Appended rather than inserted: RONDE 124 asserts the existing three fields as one
+         * contiguous string, and that assertion is still exactly right. Adding a field is not a
+         * reason to make an older test rewrite what it was already checking correctly.
+         */
+        `source=${basis === "operator_assertion" ? "operator" : "archive"}`
     );
     lines.push(`   preview=${e.previewStatus} vision=${e.visionVerdict} used=true`);
-    if (e.licenseStatus === "UNVERIFIED") {
+    if (e.licenseStatus === "UNVERIFIED" && basis !== "operator_assertion") {
       lines.push("   ⚠ rights NOT verified by FastVid — check this one manually");
     }
     /**
-     * RONDE 145 — the strongest warning in the report, because this is the strongest claim.
+     * RONDE 145/146 — the strongest warning in the report, because this is the strongest claim.
      *
-     * A manual rights check starts from this report. An item whose own licence forbids the use
-     * has to be findable here in one pass, with the reason it was used anyway stated next to it.
+     * A manual rights check starts from this report. An item used against what its own metadata
+     * said has to be findable here in one pass, with the reason stated next to it. Keyed on the
+     * BASIS rather than the status: an operator-cleared UNVERIFIED item is the same kind of claim
+     * as an operator-cleared REJECTED one, and both need the human to be able to find them.
      */
-    if (e.licenseStatus === "REJECTED") {
+    if (basis === "operator_assertion") {
       lines.push(
-        "   ⛔ the uploader's licence FORBIDS this use (-nc/-nd). Used under " +
-          "ALLOW_OPERATOR_LICENSED_YOUTUBE on the operator's asserted agreement — FastVid " +
-          "verified no right to it. Clear this one before publishing or monetising."
+        `   ⛔ archive metadata says ${e.licenseStatus}. Used under ` +
+          "ALLOW_OPERATOR_LICENSED_YOUTUBE because the operator named this video in " +
+          "OPERATOR_LICENSED_YOUTUBE_IDS — FastVid verified no right to it, and neither did " +
+          "YouTube. Clear this one before publishing or monetising."
       );
     }
   });

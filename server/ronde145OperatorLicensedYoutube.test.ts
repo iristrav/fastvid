@@ -38,12 +38,28 @@ import {
 const NC = "https://creativecommons.org/licenses/by-nc-nd/4.0/";
 const CC_BY = "https://creativecommons.org/licenses/by/4.0/";
 
+/**
+ * NARROWED BY RONDE 146, deliberately.
+ *
+ * RONDE 145 required only the flag, which made the override a blanket rule: with it on, every
+ * `youtube-*` item whose licence said no was used. RONDE 146 added the second condition — the
+ * asset has to be NAMED in `OPERATOR_LICENSED_YOUTUBE_IDS` — so `allowOperatorLicensed: true`
+ * alone no longer allows anything.
+ *
+ * The helper therefore supplies the id list as well. Every assertion below is unchanged: they
+ * were about what the override does to a cleared asset, and that is exactly what they still test.
+ * RONDE 146's own file covers the case this one can no longer express — an armed flag against an
+ * UNLISTED video, which must stay refused.
+ */
+const CLEARED_ID = "cS2JdEghHDo";
+
 const decide = (over: Partial<Parameters<typeof youtubeLicenseDecision>[0]> = {}) =>
   youtubeLicenseDecision({
-    identifier: "youtube-cS2JdEghHDo",
+    identifier: `youtube-${CLEARED_ID}`,
     licenseUrl: NC,
     allowUnverified: false,
     allowOperatorLicensed: false,
+    licensedIds: new Set([CLEARED_ID]),
     ...over,
   });
 
@@ -136,12 +152,21 @@ describe("RONDE 145 — the override is narrow", () => {
 
 describe("RONDE 145 — the record says what actually happened", () => {
   it("I. the log line states the licence forbids it and who decided otherwise", () => {
+    /**
+     * REWORDED BY RONDE 146, not weakened.
+     *
+     * The message used to name -nc/-nd specifically. RONDE 146 keys it on the BASIS instead, so
+     * the same warning covers an operator-cleared UNVERIFIED item too, and it now names the id
+     * list that authorised it. Both guarantees this test was written for are asserted below in
+     * the new wording: the metadata's refusal is stated, and the authority is not FastVid's.
+     */
     const line = formatYoutubeLicenseLine(decide({ allowOperatorLicensed: true }));
     expect(line).toContain("status=REJECTED");
     expect(line).toContain("action=ALLOW_OPERATOR_LICENSED_YOUTUBE");
-    expect(line).toContain("licence FORBIDS this use");
-    // The crucial half: it must not read as something FastVid established.
-    expect(line).toContain("NOT on any right FastVid verified");
+    expect(line).toContain("archive metadata says REJECTED");
+    // The crucial half: it must not read as something FastVid — or YouTube — established.
+    expect(line).toContain("NOT any right FastVid or YouTube verified");
+    expect(line).toContain("source=operator");
     expect(line).toContain(NC);
   });
 
@@ -158,6 +183,9 @@ describe("RONDE 145 — the record says what actually happened", () => {
       youtubeVideoId: "cS2JdEghHDo",
       title: "Göring at Nuremberg",
       licenseStatus: "REJECTED",
+      // RONDE 146: the marker is keyed on the basis now, so the entry has to carry it. An item
+      // that reached the film with status REJECTED can only have got there this way.
+      licenseBasis: "operator_assertion",
       licenseUrl: NC,
       rights: null,
       previewStatus: "ok",
@@ -165,7 +193,7 @@ describe("RONDE 145 — the record says what actually happened", () => {
     };
     const report = formatYoutubeUsageReport([entry]);
     expect(report).toContain("licenseStatus=REJECTED");
-    expect(report).toContain("FORBIDS this use");
+    expect(report).toContain("archive metadata says REJECTED");
     expect(report).toContain("ALLOW_OPERATOR_LICENSED_YOUTUBE");
     expect(report).toContain("FastVid verified no right to it");
     // Findable in one pass by someone doing a rights check.
