@@ -447,6 +447,7 @@ import {
   recordMismatch,
   reorderAfterMismatch,
   reorderChangedOrder,
+  repeatOffenderSources,
   type MismatchKind,
   type MismatchTally,
 } from "./visualMismatchFeedback";
@@ -464,6 +465,7 @@ import {
   recordResearchSkip,
   type ResearchTally,
 } from "./mismatchResearch";
+import { formatVisualSourcingAudit, findUnproductiveProviders, summarizeProviderOutcomes } from "./visualSourcingAudit";
 import {
   auditVideoStillness,
   checkStillnessLimit,
@@ -29722,7 +29724,21 @@ async function fetchSceneVisualsInner(
               reason: judgement.reason,
             });
             const beforeOrder = scored;
-            scored = reorderAfterMismatch(scored, mismatchKind, (s) => s.candidate.source);
+            /**
+             * RONDE 135 §15 — the render's own evidence, on top of the static table.
+             *
+             * `repeatOffenderSources` reads the tally this render has been filling in since its
+             * first refusal. A source refused three times for present-day footage on THIS
+             * documentary is not a good bet for the fourth, whatever a table about catalogues in
+             * general says. It is a ranking signal only: the reorder is still a permutation, so a
+             * beat whose only candidates come from a penalised source still gets them.
+             */
+            scored = reorderAfterMismatch(
+              scored,
+              mismatchKind,
+              (s) => s.candidate.source,
+              repeatOffenderSources(dedup.mismatchTally)
+            );
             console.log(
               formatMismatchFeedback({
                 sceneIndex: scene.index,
@@ -35845,6 +35861,48 @@ async function _runVideoPipelineInner(
                 `${split.question} van ${visualDedup.mismatchTally.total} afgewezen beelden waren ` +
                   `fout van soort (verkeerde periode, plaats of onderwerp) — die had een ` +
                   `preciezere zoekvraag kunnen voorkomen`
+              );
+            }
+            /**
+             * RONDE 135 — the three lines above, joined to the one fact they were all missing.
+             *
+             * "21 refusals" is a fact about the render. "Pexels supplied nine candidates and eight
+             * were refused as present-day footage" is a fact about a SOURCE, and only the second
+             * says where to look next. The tally has been keyed by `${kind}|${source}` since
+             * RONDE 131 and nothing had ever printed it.
+             */
+            const adoptedByProvider = new Map<string, number>();
+            for (const entry of visualDedup.clipAdoptAudit) {
+              const key = (entry.source ?? "").trim().toLowerCase() || "unknown";
+              adoptedByProvider.set(key, (adoptedByProvider.get(key) ?? 0) + 1);
+            }
+            console.log(
+              formatVisualSourcingAudit({
+                beats: qualityReport.beatVisuals?.beats ?? 0,
+                visionAttempts: t.attempts,
+                fits: t.fits,
+                doesNotFit: t.mismatch,
+                research: {
+                  attempts: visualDedup.researchTally.attempts,
+                  produced: visualDedup.researchTally.produced,
+                  accepted: visualDedup.researchTally.accepted,
+                  rejected: visualDedup.researchTally.rejected,
+                },
+                tally: visualDedup.mismatchTally,
+                adoptedByProvider,
+              })
+            );
+            /**
+             * A provider that supplied plenty and passed nothing is reported, never removed.
+             * RONDE 135 §8: one render is not evidence about a catalogue, it is a prompt to look.
+             */
+            const unproductive = findUnproductiveProviders(
+              summarizeProviderOutcomes({ tally: visualDedup.mismatchTally, adoptedByProvider })
+            );
+            for (const p of unproductive) {
+              qualityReport.warnings.push(
+                `bron ${p.provider} leverde ${p.judged} beoordeelde kandidaten en geen enkele ` +
+                  `bruikbare${p.topKind ? ` (meestal ${p.topKind})` : ""}`
               );
             }
           }

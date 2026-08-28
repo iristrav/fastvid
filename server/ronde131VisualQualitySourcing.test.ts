@@ -37,31 +37,45 @@ const cand = (id: string, source: string) => ({ id, source });
 
 describe("RONDE 131 — classifying what the picture editor said", () => {
   it("1. reads a period error stated in the reason", () => {
-    expect(
-      classifyMismatch({
-        depicts: "a city street with cars",
-        reason: "this is present-day footage under narration about Berlin in April 1945",
-      })
-    ).toBe("WRONG_PERIOD");
+    // RONDE 135 split present-day wording out as MODERN_FOOTAGE — a period fault still, with the
+    // same QUESTION blame and the same correction, counted separately so a render can tell a
+    // modern catalogue from an archive that reached for the wrong decade.
+    const kind = classifyMismatch({
+      depicts: "a city street with cars",
+      reason: "this is present-day footage under narration about Berlin in April 1945",
+    });
+    expect(kind).toBe("MODERN_FOOTAGE");
+    expect(mismatchFault(kind)).toBe("QUESTION");
   });
 
   it("2. reads a period error stated only in depicts", () => {
+    const kind = classifyMismatch({
+      depicts: "a modern city street with parked cars and road markings, filmed in colour",
+      reason: "it does not belong here",
+    });
+    expect(kind).toBe("MODERN_FOOTAGE");
+    expect(mismatchFault(kind)).toBe("QUESTION");
+  });
+
+  it("2b. a decade error with no present-day wording stays WRONG_PERIOD", () => {
     expect(
       classifyMismatch({
-        depicts: "a modern city street with parked cars and road markings, filmed in colour",
-        reason: "it does not belong here",
+        depicts: "a newsreel of marching troops",
+        reason: "this is a different decade from the one the narration describes",
       })
     ).toBe("WRONG_PERIOD");
   });
 
   it("3. recognises a title card as a material problem, not a period one", () => {
-    // Both words are present. TEXT_ON_SCREEN must win: the query was answered, the asset is text.
-    expect(
-      classifyMismatch({
-        depicts: "a modern title card with white lettering on black",
-        reason: "the frame is a title card rather than footage",
-      })
-    ).toBe("TEXT_ON_SCREEN");
+    // Both words are present. The MATERIAL fault must win: the query was answered, the asset is
+    // text. RONDE 135 split the text kinds — a frame that IS text is TITLE_CARD, text OVER
+    // footage is TEXT_ON_SCREEN — so the assertion is on the fault, plus the exact kind.
+    const kind = classifyMismatch({
+      depicts: "a modern title card with white lettering on black",
+      reason: "the frame is a title card rather than footage",
+    });
+    expect(kind).toBe("TITLE_CARD");
+    expect(mismatchFault(kind)).toBe("MATERIAL");
   });
 
   it("4. recognises a person addressing the camera", () => {
@@ -105,7 +119,8 @@ describe("RONDE 131 — classifying what the picture editor said", () => {
 
   it("9. is case-insensitive, because the model capitalises where it likes", () => {
     expect(classifyMismatch({ reason: "Different country entirely." })).toBe("WRONG_PLACE");
-    expect(classifyMismatch({ reason: "Modern footage." })).toBe("WRONG_PERIOD");
+    // RONDE 135: present-day wording is MODERN_FOOTAGE, a watermark/logo is TEXT_ON_SCREEN.
+    expect(classifyMismatch({ reason: "Modern footage." })).toBe("MODERN_FOOTAGE");
     expect(classifyMismatch({ reason: "A LOGO fills the frame." })).toBe("TEXT_ON_SCREEN");
   });
 });
@@ -305,12 +320,12 @@ describe("RONDE 131 — the log surfaces", () => {
  * Verified by hand against a file copy, in the RONDE 122 manner — no `git checkout`.
  */
 describe("RONDE 131 — mutation guards", () => {
-  it("M1. TEXT_ON_SCREEN must be checked before WRONG_PERIOD", () => {
+  it("M1. a text kind must be checked before a period kind", () => {
     // If the pattern order were reversed, "a modern title card" would classify as a period error
     // and the pipeline would go looking in the archives for a problem the archives also have.
-    expect(
-      classifyMismatch({ depicts: "a modern title card", reason: "text, not footage" })
-    ).toBe("TEXT_ON_SCREEN");
+    const kind = classifyMismatch({ depicts: "a modern title card", reason: "text, not footage" });
+    expect(kind).toBe("TITLE_CARD");
+    expect(mismatchFault(kind)).toBe("MATERIAL");
   });
 
   it("M2. UNRELATED must come last, so a specific kind is never swallowed by it", () => {
@@ -322,7 +337,7 @@ describe("RONDE 131 — mutation guards", () => {
         depicts: "a modern street",
         reason: "unrelated — it does not belong, this is present-day footage",
       })
-    ).toBe("WRONG_PERIOD");
+    ).toBe("MODERN_FOOTAGE");
   });
 
   it("M3. the reorder must not drop the avoided candidates", () => {
@@ -366,7 +381,9 @@ describe("RONDE 131 — mutation guards", () => {
 
     expect(window).toContain("classifyMismatch(judgement)");
     expect(window).toContain("recordMismatch(dedup.mismatchTally");
-    expect(window).toContain("reorderAfterMismatch(scored, mismatchKind");
+    // RONDE 135 added the learned repeat-offender argument, so the call spans several lines.
+    expect(window).toContain("reorderAfterMismatch(");
+    expect(window).toContain("repeatOffenderSources(dedup.mismatchTally)");
     // The reorder must be assigned back — computing a permutation and discarding it is the exact
     // shape of RONDE 122's mutation M2, which passed every test while changing nothing.
     expect(window).toMatch(/scored = reorderAfterMismatch\(/);

@@ -53,16 +53,51 @@
 
 /** What kind of wrong the picture was. Named for the fix it implies, not for the words that matched. */
 export type MismatchKind =
-  /** Modern footage under historical narration, or any plain period error. */
+  /** A plain period error: a different century, a different decade. */
   | "WRONG_PERIOD"
+  /**
+   * RONDE 135 — present-day footage specifically, split out from WRONG_PERIOD.
+   *
+   * Both are period errors and both argue for the same correction, so they share a strategy. What
+   * they do NOT share is what they say about the SOURCE: "this is a 1970s newsreel under 1945
+   * narration" is an archive that reached for the wrong decade, while "this is present-day colour
+   * video" is a modern catalogue answering a historical question. The second is a property of
+   * where we looked, and RONDE 135 uses it to rank sources — which needs it counted separately.
+   */
+  | "MODERN_FOOTAGE"
   /** A different person or a different thing than the beat is about. */
   | "WRONG_SUBJECT"
   /** The right sort of thing, somewhere else entirely. */
   | "WRONG_PLACE"
-  /** A title card, a logo, a watermark, a screenshot, a countdown leader — text, not footage. */
+  /**
+   * RONDE 135 — the right people in the right place, at the wrong occasion.
+   *
+   * "This is the Nuremberg rally, not the Reichstag fire." Neither the subject nor the place nor
+   * the period is wrong; the EVENT is. Previously this fell to WRONG_SUBJECT, which corrects by
+   * adding the person — and the person was already right.
+   */
+  | "WRONG_EVENT"
+  /** Text over footage: a watermark, a lower third, burnt-in subtitles. */
   | "TEXT_ON_SCREEN"
+  /**
+   * RONDE 135 — the frame IS the text: a title card, a leader, a countdown, an end card.
+   *
+   * Split from TEXT_ON_SCREEN because the two are different material problems. Text over footage
+   * means there is footage under it; a title card means there is none. Both are MATERIAL faults
+   * and both look for other material, so the response is shared — but a render whose refusals are
+   * mostly title cards is being handed whole programmes rather than clips, which is a different
+   * finding from one whose refusals are watermarked footage.
+   */
+  | "TITLE_CARD"
   /** Someone addressing the camera: an interview, a presenter, a commentary upload. */
   | "TALKING_HEAD"
+  /**
+   * RONDE 135 — nothing wrong with it, and nothing in it.
+   *
+   * A black frame, a blank wall, an out-of-focus smear. The gate is right to refuse it and the
+   * question was never the problem, so it is a MATERIAL fault like the others.
+   */
+  | "LOW_INFORMATION"
   /** Plainly unrelated, with nothing more specific said about it. */
   | "UNRELATED"
   /** The gate refused but its words do not say what was wrong. Never acted on. */
@@ -93,16 +128,47 @@ export type MismatchFault = "QUESTION" | "MATERIAL" | "UNKNOWN";
  */
 const MISMATCH_PATTERNS: ReadonlyArray<{ kind: MismatchKind; re: RegExp }> = [
   {
+    /**
+     * The frame IS the text. Checked before TEXT_ON_SCREEN so "a title card with white lettering"
+     * is a title card rather than footage that happens to carry text.
+     */
+    kind: "TITLE_CARD",
+    re: /\b(title card|titlecard|text card|end card|title screen|intro (?:card|screen|sequence)|credits? (?:roll|screen|sequence)?|caption card|countdown|leader|slate|blank screen with text|screenshot|screen ?grab|web ?page|website|thumbnail)\b/i,
+  },
+  {
+    /** Text OVER footage — there is a picture underneath, it is just spoiled. */
     kind: "TEXT_ON_SCREEN",
-    re: /\b(title card|titlecard|text card|end card|credits?|caption card|countdown|leader|slate|watermark|logo|screenshot|screen ?grab|web ?page|website|thumbnail|intro sequence|lower third|subtitle|on-?screen text|text overlay|graphic overlay|placeholder)\b/i,
+    re: /\b(watermark|logo|lower third|subtitles?|on-?screen text|text overlay|graphic overlay|burnt[- ]in text|station ident|channel bug|placeholder)\b/i,
   },
   {
     kind: "TALKING_HEAD",
     re: /\b(talking (?:to|at) (?:the )?camera|talking head|piece to camera|presenter|newsreader|anchor|vlog|vlogger|youtuber|interview(?:ee|er)?|commentar(?:y|ist)|narrator on screen|person speaking (?:to|into))\b/i,
   },
   {
+    /** Nothing wrong with it, and nothing in it. */
+    kind: "LOW_INFORMATION",
+    re: /\b(black (?:frame|screen)|blank (?:frame|screen|wall)|empty frame|out of focus|blurr?(?:ed|y)|too dark to|nothing (?:is )?(?:visible|discernible)|featureless|shows (?:almost )?nothing)\b/i,
+  },
+  {
+    /**
+     * Present-day footage specifically. Checked before the general period rule so a render can
+     * tell "a modern catalogue answered a historical question" from "an archive reached for the
+     * wrong decade" — see MODERN_FOOTAGE's note above.
+     */
+    kind: "MODERN_FOOTAGE",
+    re: /\b(modern|contemporary|present[- ]day|nowadays|today'?s|21st century|20\d\d footage|recent(?:ly)? (?:filmed|shot|recorded)|high definition colour video|hd colour video)\b/i,
+  },
+  {
     kind: "WRONG_PERIOD",
-    re: /\b(modern|contemporary|present[- ]day|recent|nowadays|today'?s|21st century|20th century|different (?:century|era|period|decade|time)|wrong (?:century|era|period|decade|time)|anachronis(?:m|tic)|too (?:new|recent|modern)|much later|decades? later)\b/i,
+    re: /\b(different (?:century|era|period|decade|time)|wrong (?:century|era|period|decade|time)|anachronis(?:m|tic)|too (?:new|recent|modern|old|early|late)|much later|decades? (?:later|earlier)|years? (?:later|earlier)|\d{4}s? rather than|not (?:the )?(?:right )?period)\b/i,
+  },
+  {
+    /**
+     * The right people, the right place, the wrong occasion. Checked before WRONG_SUBJECT, which
+     * would otherwise "correct" it by adding a person who is already in the frame.
+     */
+    kind: "WRONG_EVENT",
+    re: /\b(different (?:event|occasion|ceremony|battle|rally|meeting|speech|conference|campaign)|wrong (?:event|occasion|ceremony|battle|rally|meeting|speech|conference|campaign)|another (?:event|occasion|ceremony|rally|battle)|not (?:the )?(?:same )?(?:event|occasion|battle|rally|ceremony))\b/i,
   },
   {
     kind: "WRONG_PLACE",
@@ -146,12 +212,21 @@ export function classifyMismatch(params: { depicts?: string; reason?: string }):
 export function mismatchFault(kind: MismatchKind): MismatchFault {
   switch (kind) {
     case "WRONG_PERIOD":
+    case "MODERN_FOOTAGE":
     case "WRONG_SUBJECT":
     case "WRONG_PLACE":
+    case "WRONG_EVENT":
     case "UNRELATED":
       return "QUESTION";
+    /**
+     * All four are answers to a question that was asked correctly. RONDE 135 §14: the response is
+     * to look for other MATERIAL first — which is what the pipeline already does, because the
+     * research pass only runs once the beat's candidates are exhausted.
+     */
     case "TEXT_ON_SCREEN":
+    case "TITLE_CARD":
     case "TALKING_HEAD":
+    case "LOW_INFORMATION":
       return "MATERIAL";
     case "UNCLEAR":
       return "UNKNOWN";
@@ -227,13 +302,65 @@ const NO_PREFERENCE: SourcePreference = { prefer: new Set(), avoid: new Set() };
 export function sourcePreferenceForMismatch(kind: MismatchKind): SourcePreference {
   switch (kind) {
     case "WRONG_PERIOD":
+    case "MODERN_FOOTAGE":
       return { prefer: HISTORICAL_ARCHIVE_SOURCES, avoid: MODERN_STOCK_SOURCES };
     case "TEXT_ON_SCREEN":
+    case "TITLE_CARD":
     case "TALKING_HEAD":
       return { prefer: new Set(), avoid: UPLOAD_SHAPED_SOURCES };
+    /**
+     * LOW_INFORMATION gets no source preference. A black frame or an out-of-focus shot is not a
+     * property of a catalogue — every provider holds some — so reordering by source would be
+     * superstition, exactly as it would be for WRONG_PLACE and WRONG_SUBJECT.
+     */
     default:
       return NO_PREFERENCE;
   }
+}
+
+// ─── RONDE 135 §15 — what this render has learned about its own sources ──────────────────────
+
+/**
+ * Sources that keep failing the same way, this render.
+ *
+ * RONDE 131's source preference is a static table: it says where present-day footage tends to
+ * live, and that is a fact about catalogues rather than about today. This adds the render's own
+ * evidence on top. If Pexels has been refused four times for MODERN_FOOTAGE on this documentary,
+ * the fifth Pexels candidate is not a good bet, whatever the table says.
+ *
+ * Three deliberate limits:
+ *
+ *  · It is a RANKING signal, never a veto. The caller reorders; nothing is removed, and a beat
+ *    whose only candidates come from a penalised source still gets them.
+ *  · It is render-scoped, read from the tally that already exists. No second cache, no blacklist,
+ *    and nothing survives to poison the next render.
+ *  · It needs real evidence. One refusal is noise; the threshold is where a pattern starts.
+ */
+export const REPEAT_OFFENDER_MIN_REFUSALS = 3;
+
+/**
+ * Sources this render has seen fail repeatedly for faults of the same family.
+ *
+ * Only QUESTION-family period faults count. A source that returns title cards is not a source
+ * that returns the wrong century, and lumping them together would penalise an archive for the
+ * shape of its uploads rather than for the content of its holdings.
+ */
+export function repeatOffenderSources(
+  tally: MismatchTally,
+  minRefusals: number = REPEAT_OFFENDER_MIN_REFUSALS
+): Set<string> {
+  const perSource = new Map<string, number>();
+  for (const [key, count] of tally.byKindAndSource) {
+    const [kind, source] = key.split("|");
+    if (!kind || !source) continue;
+    if (kind !== "MODERN_FOOTAGE" && kind !== "WRONG_PERIOD") continue;
+    perSource.set(source, (perSource.get(source) ?? 0) + count);
+  }
+  const out = new Set<string>();
+  for (const [source, count] of perSource) {
+    if (count >= minRefusals) out.add(source);
+  }
+  return out;
 }
 
 /** Anything with a `source` can be reordered — the funnel's candidates, a pool, a shortlist. */
@@ -272,9 +399,21 @@ function defaultSourceOf(candidate: unknown): string {
 export function reorderAfterMismatch<T>(
   candidates: readonly T[],
   kind: MismatchKind,
-  sourceOf: (candidate: T) => string = defaultSourceOf
+  sourceOf: (candidate: T) => string = defaultSourceOf,
+  /**
+   * RONDE 135 §15 — sources this render has already seen fail this way, from
+   * `repeatOffenderSources`. Merged into `avoid`, so a source the render has learned to distrust
+   * sorts last even when the static table has nothing to say about it. Optional: a caller with no
+   * tally behaves exactly as RONDE 131 did.
+   */
+  learnedOffenders?: ReadonlySet<string>
 ): T[] {
-  const { prefer, avoid } = sourcePreferenceForMismatch(kind);
+  const preference = sourcePreferenceForMismatch(kind);
+  const prefer = preference.prefer;
+  const avoid =
+    learnedOffenders && learnedOffenders.size > 0
+      ? new Set([...preference.avoid, ...learnedOffenders])
+      : preference.avoid;
   if (prefer.size === 0 && avoid.size === 0) return [...candidates];
 
   const preferred: T[] = [];

@@ -344,7 +344,8 @@ describe("RONDE 132 — a QUESTION fault starts one corrected search", () => {
       depicts: "a modern city street with parked cars and road markings, filmed in colour",
       reason: "this is present-day footage under narration about Berlin in April 1945",
     });
-    expect(kind).toBe("WRONG_PERIOD");
+    // RONDE 135 split present-day wording out as MODERN_FOOTAGE; it takes the same correction.
+    expect(kind).toBe("MODERN_FOOTAGE");
     const d = decideResearch({ kind, ctx: goringBerlinContext(), alreadyResearched: false });
     expect(d.action).toBe("RESEARCH");
     if (d.action !== "RESEARCH") return;

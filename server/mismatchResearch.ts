@@ -75,6 +75,13 @@ export type CorrectionStrategy =
   /** Add the place the narration states. */
   | "ADD_PLACE"
   /**
+   * RONDE 135 — name the occasion the beat states.
+   *
+   * "The right people, the wrong occasion" is not fixed by adding the person: the person is
+   * already in the frame. It is fixed by naming the event, when the beat or its scene proves one.
+   */
+  | "ADD_EVENT"
+  /**
    * RONDE 134 — ask for the archive rather than for the upload.
    *
    * A title card and a piece to camera are not answers to the wrong question; they are the wrong
@@ -101,6 +108,7 @@ const STRATEGY_REQUIRES: Record<CorrectionStrategy, ReadonlyArray<QueryTokenType
   ADD_TIME: ["year", "time"],
   ADD_PERSON: ["person"],
   ADD_PLACE: ["place", "country"],
+  ADD_EVENT: ["event"],
   ADD_ARCHIVAL_INTENT: ["technical"],
   MOST_SPECIFIC: [],
 };
@@ -120,6 +128,7 @@ const STRATEGY_PRIORITY: Record<CorrectionStrategy, ReadonlyArray<QueryTokenType
   ADD_TIME: ["year", "time", "person", "place", "country", "event"],
   ADD_PERSON: ["person", "event", "place", "country", "year", "time"],
   ADD_PLACE: ["place", "country", "person", "year", "time", "event"],
+  ADD_EVENT: ["event", "person", "place", "country", "year", "time"],
   ADD_ARCHIVAL_INTENT: ["technical", "person", "event", "place", "country", "year"],
   MOST_SPECIFIC: ["event", "person", "place", "country", "year", "time"],
 };
@@ -128,11 +137,15 @@ const STRATEGY_PRIORITY: Record<CorrectionStrategy, ReadonlyArray<QueryTokenType
 export function correctionStrategyFor(kind: MismatchKind): CorrectionStrategy | null {
   switch (kind) {
     case "WRONG_PERIOD":
+    // RONDE 135: present-day footage is a period fault and takes the period correction.
+    case "MODERN_FOOTAGE":
       return "ADD_TIME";
     case "WRONG_SUBJECT":
       return "ADD_PERSON";
     case "WRONG_PLACE":
       return "ADD_PLACE";
+    case "WRONG_EVENT":
+      return "ADD_EVENT";
     case "UNRELATED":
       return "MOST_SPECIFIC";
     /**
@@ -144,8 +157,16 @@ export function correctionStrategyFor(kind: MismatchKind): CorrectionStrategy | 
      * happened to return. The blame stays MATERIAL in every report; only the response changes.
      */
     case "TEXT_ON_SCREEN":
+    case "TITLE_CARD":
     case "TALKING_HEAD":
       return "ADD_ARCHIVAL_INTENT";
+    /**
+     * RONDE 135 — a black frame or a blurred one says nothing about the question OR the
+     * catalogue's phrasing. There is no correction to make; the beat needs different material,
+     * which the exhausted-pool path it arrived on has already been looking for.
+     */
+    case "LOW_INFORMATION":
+      return null;
     // A refusal whose words say nothing is still never acted on.
     case "UNCLEAR":
       return null;
