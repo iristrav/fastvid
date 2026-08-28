@@ -38,7 +38,11 @@
 /** What FastVid was able to establish about an item's rights. */
 export type LicenseStatus = "VERIFIED" | "UNVERIFIED" | "REJECTED";
 
-export type LicenseAction = "ALLOW" | "ALLOW_UNVERIFIED_YOUTUBE" | "REJECT";
+export type LicenseAction =
+  | "ALLOW"
+  | "ALLOW_UNVERIFIED_YOUTUBE"
+  | "ALLOW_OPERATOR_LICENSED_YOUTUBE"
+  | "REJECT";
 
 /**
  * Is the operator willing to use YouTube-origin material whose rights FastVid cannot prove?
@@ -49,6 +53,36 @@ export type LicenseAction = "ALLOW" | "ALLOW_UNVERIFIED_YOUTUBE" | "REJECT";
  */
 export function allowUnverifiedYoutube(): boolean {
   return process.env.ALLOW_UNVERIFIED_YOUTUBE?.trim().toLowerCase() === "true";
+}
+
+/**
+ * RONDE 145 — does the operator hold rights this metadata cannot see?
+ *
+ * The FastVid owner states they have a separate agreement covering YouTube material and has asked
+ * for the REJECTED category to be opened on that basis. This flag is how that assertion enters the
+ * pipeline: deliberately, per environment, off unless switched on.
+ *
+ * ── What it does NOT do ──────────────────────────────────────────────────────────────────────
+ *
+ * It does not change `classifyArchiveLicense`. A `-nc` or `-nd` licence still classifies as
+ * REJECTED, every report still prints REJECTED, and the audit trail still records that the
+ * metadata said no. Nothing in this module is made to claim a licence that the metadata does not
+ * show — that was RONDE 124's founding rule and it is unchanged.
+ *
+ * What the flag changes is only the ACTION taken on that status, which is the operator's call to
+ * make and is recorded as theirs. The distinction matters: if a rightsholder ever asks, the log
+ * shows the licence was read correctly, the refusal was seen, and a human overrode it — not that
+ * FastVid mistook an -nc licence for permission.
+ *
+ * ── What the operator is taking on ───────────────────────────────────────────────────────────
+ *
+ * REJECTED means the UPLOADER chose "non-commercial" or "no derivative works" on their own video.
+ * That choice belongs to the uploader, not to YouTube, and a platform-level agreement does not
+ * transfer it. Whoever turns this on is asserting they have rights from another source. This
+ * comment exists so that assertion is visible in the code that acts on it.
+ */
+export function allowOperatorLicensedYoutube(): boolean {
+  return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() === "true";
 }
 
 /**
@@ -127,10 +161,17 @@ export type LicenseDecision = {
  * Three rules, and the third is the one that matters:
  *
  *  1. VERIFIED always continues — unchanged.
- *  2. REJECTED always stops, flag or no flag. An explicit refusal is never overridden.
- *  3. UNVERIFIED continues only when it is a YouTube-origin item AND the operator has switched
- *     the flag on. Anything else — a non-YouTube archive item, or the flag off — stops exactly
- *     as it does today.
+ *  2. UNVERIFIED continues only when it is a YouTube-origin item AND the operator has switched
+ *     ALLOW_UNVERIFIED_YOUTUBE on. Anything else — a non-YouTube archive item, or the flag off —
+ *     stops exactly as it does today.
+ *  3. RONDE 145: REJECTED continues only when it is a YouTube-origin item AND the operator has
+ *     switched ALLOW_OPERATOR_LICENSED_YOUTUBE on, asserting rights from an agreement this
+ *     metadata cannot see. The status stays REJECTED and every report goes on saying so; what
+ *     changes is who is answerable for using it. With the flag off — the default — an explicit
+ *     refusal is never overridden, exactly as before.
+ *
+ * Both overrides are narrow by construction: YouTube-origin identifiers only, so an Internet
+ * Archive item from any other source keeps its current treatment under either flag.
  *
  * Continuing is not the same as using. An allowed item still has to survive the preview check
  * (RONDE 118), the vision gate and ranking, all untouched by this module.
@@ -141,15 +182,20 @@ export function youtubeLicenseDecision(params: {
   rights?: string | null;
   /** Injected so a test can drive both settings without touching the environment. */
   allowUnverified?: boolean;
+  /** RONDE 145: injected the same way, for the operator-licence override. */
+  allowOperatorLicensed?: boolean;
 }): LicenseDecision {
   const status = classifyArchiveLicense(params.licenseUrl, params.rights);
   const isYoutube = isYoutubeOriginIdentifier(params.identifier);
   const allowUnverified = params.allowUnverified ?? allowUnverifiedYoutube();
+  const allowOperatorLicensed = params.allowOperatorLicensed ?? allowOperatorLicensedYoutube();
 
   let action: LicenseAction = "REJECT";
   if (status === "VERIFIED") action = "ALLOW";
   else if (status === "UNVERIFIED" && isYoutube && allowUnverified) {
     action = "ALLOW_UNVERIFIED_YOUTUBE";
+  } else if (status === "REJECTED" && isYoutube && allowOperatorLicensed) {
+    action = "ALLOW_OPERATOR_LICENSED_YOUTUBE";
   }
 
   return {
@@ -175,6 +221,12 @@ export function formatYoutubeLicenseLine(decision: LicenseDecision): string {
     (decision.licenseUrl ? ` licenseUrl=${decision.licenseUrl}` : " licenseUrl=null") +
     (decision.status === "UNVERIFIED" && decision.action !== "REJECT"
       ? " — rights NOT proven, verify manually before publishing"
+      : "") +
+    // RONDE 145: the licence itself said no. Say that plainly on the line that let it through,
+    // so the override is never mistaken for a permission FastVid established.
+    (decision.action === "ALLOW_OPERATOR_LICENSED_YOUTUBE"
+      ? " — licence FORBIDS this use (uploader chose -nc/-nd); used on the operator's asserted " +
+        "agreement, NOT on any right FastVid verified"
       : "")
   );
 }
@@ -214,6 +266,19 @@ export function formatYoutubeUsageReport(entries: ReadonlyArray<YoutubeUsageEntr
     lines.push(`   preview=${e.previewStatus} vision=${e.visionVerdict} used=true`);
     if (e.licenseStatus === "UNVERIFIED") {
       lines.push("   ⚠ rights NOT verified by FastVid — check this one manually");
+    }
+    /**
+     * RONDE 145 — the strongest warning in the report, because this is the strongest claim.
+     *
+     * A manual rights check starts from this report. An item whose own licence forbids the use
+     * has to be findable here in one pass, with the reason it was used anyway stated next to it.
+     */
+    if (e.licenseStatus === "REJECTED") {
+      lines.push(
+        "   ⛔ the uploader's licence FORBIDS this use (-nc/-nd). Used under " +
+          "ALLOW_OPERATOR_LICENSED_YOUTUBE on the operator's asserted agreement — FastVid " +
+          "verified no right to it. Clear this one before publishing or monetising."
+      );
     }
   });
   return lines.join("\n");
