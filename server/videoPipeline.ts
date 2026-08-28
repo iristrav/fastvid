@@ -11313,8 +11313,16 @@ export async function fetchInternetArchiveClips(
         });
         const ytMetrics = providerMetrics(sourcingCache, "youtube_archive");
         if (licenseDecision.youtubeVideoId) {
-          if (licenseDecision.status === "VERIFIED") ytMetrics.licenseVerified++;
-          else if (licenseDecision.status === "UNVERIFIED") ytMetrics.licenseUnverified++;
+          /**
+           * RONDE 147 — count what the METADATA said, not what the decision concluded.
+           *
+           * `status` can now be OPERATOR_AUTHORIZED, which is neither verified nor rejected. Left
+           * on `status`, the else-branch would have booked every operator-authorised item as a
+           * licence REJECTION, and the provider table would report mass refusals on a render that
+           * used the footage. `metadataStatus` is exactly the value this counter has always meant.
+           */
+          if (licenseDecision.metadataStatus === "VERIFIED") ytMetrics.licenseVerified++;
+          else if (licenseDecision.metadataStatus === "UNVERIFIED") ytMetrics.licenseUnverified++;
           else ytMetrics.licenseRejected++;
           console.log(`[Pipeline] Scene ${sceneIndex}: ${formatYoutubeLicenseLine(licenseDecision)}`);
         }
