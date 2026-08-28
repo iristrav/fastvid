@@ -47,8 +47,17 @@ describe("Camera Renderer (Phase 7)", () => {
       // documentaryStyle's buildKenBurnsTail, whose eased curve is now blended 35% sine / 65%
       // linear so a photo never stops moving before its last frame. Same distance, same
       // direction, same sine term — it just no longer stands alone.
-      expect(panLeft.filter).toMatch(/-\d+\*\(0\.35\*sin\(PI\/2\*min\(on\//);
-      expect(panRight.filter).toMatch(/\+\d+\*\(0\.35\*sin\(PI\/2\*min\(on\//);
+      //
+      // SUPERSEDED AGAIN by RONDE 147, this time in the DISTANCE. The pixel count these patterns
+      // matched was quadratic in duration and overshot the room the zoom affords by up to 146×,
+      // so the frame slid to the edge of the picture and stopped there. The travel is now a share
+      // of `(iw-iw/zoom)/2`, which ffmpeg evaluates per frame, so it cannot leave the image at any
+      // zoom or duration. What this test is really about — opposite directions, same eased curve —
+      // is asserted exactly as before.
+      expect(panLeft.filter).toMatch(/-\(iw-iw\/zoom\)\/2\*[\d.]+\*\(0\.35\*sin\(PI\/2\*min\(on\//);
+      expect(panRight.filter).toMatch(/\+\(iw-iw\/zoom\)\/2\*[\d.]+\*\(0\.35\*sin\(PI\/2\*min\(on\//);
+      // And a raw pixel distance must not come back — that is the shape of the defect.
+      expect(panLeft.filter).not.toMatch(/[-+]\d{2,}\*\(0\.35\*sin/);
       // pan_left/pan_right zoomEnd is fixed at 1.02 regardless of intensity — expressed as
       // a 1.0 base plus a 0.02 delta under the new eased zoom expression.
       expect(panLeft.filter).toContain("0.0200000");

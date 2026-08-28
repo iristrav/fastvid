@@ -181,9 +181,15 @@ describe("RONDE 128 — the whole picture, in the middle", () => {
 
   it("the encoder's default branch is the contain one", () => {
     const curated = src("curatedMediaSourcing.ts");
+    /**
+     * Widened from 6000 in RONDE 147, which documented the Ken Burns pan fix inside the zoom
+     * branch and pushed the contain assertion below past the old edge (measured offset 6155).
+     * The window is a way of saying "inside convertImageToKenBurns" and nothing more — both
+     * assertions are unchanged and each still fails if the line it names is deleted.
+     */
     const fn = curated.slice(
       curated.indexOf("async function convertImageToKenBurns("),
-      curated.indexOf("async function convertImageToKenBurns(") + 6000
+      curated.indexOf("async function convertImageToKenBurns(") + 7500
     );
     // The zoom/crop path is now behind the flag...
     expect(fn).toContain("} else if (stillKenBurnsEnabled()) {");

@@ -40,6 +40,7 @@ import {
   deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES,
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
+  createDiscountCodeRow, listDiscountCodes, getDiscountCodeById, getDiscountCodeByCode, updateDiscountCodeRow, deleteDiscountCodeRow,
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
@@ -47,7 +48,7 @@ import {
 } from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
-import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
+import { videoLengthSchema, normalizeVideoLength, isShortVideoLength, videoLengthAllowedForRole } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel } from "./videoGenerationCancel";
@@ -1045,6 +1046,22 @@ export const appRouter = router({
         }
       }
 
+      /**
+       * RONDE 147 — the one-minute option is enforced here, not in the UI.
+       *
+       * `videoLengthSchema` accepts "1" because the value is legitimate for the owner, so a
+       * hand-rolled request carrying it arrives fully valid and passes every check above. This is
+       * the first point at which the role is known, which makes it the only place the rule can
+       * actually be applied.
+       */
+      if (!videoLengthAllowedForRole(input.videoLength, ctx.user.role)) {
+        throw appTrpcError(
+          "FORBIDDEN",
+          APP_ERROR.NOT_ADMIN,
+          "The 1 minute test length is not available on your account"
+        );
+      }
+
       const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
       if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
 
@@ -1142,6 +1159,21 @@ export const appRouter = router({
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
       }
       assertVideoRetryBudgetNotExhausted(video);
+      /**
+       * RONDE 147 — re-checked on retry, because a role can change after a video is created.
+       *
+       * Retry does not let the caller choose a length; it reuses the stored one. That is safe
+       * while the account still holds the role it was created under, and this is the case where
+       * it does not: an admin creates a one-minute video, the account is later demoted, and retry
+       * would otherwise re-queue a length the account can no longer request.
+       */
+      if (!videoLengthAllowedForRole(video.videoLength, ctx.user.role)) {
+        throw appTrpcError(
+          "FORBIDDEN",
+          APP_ERROR.NOT_ADMIN,
+          "The 1 minute test length is not available on your account"
+        );
+      }
       const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id, video.id);
       if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
 
@@ -1195,29 +1227,34 @@ export const appRouter = router({
     }),
     listUsers: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => sanitizeUsers(await getAllUsers(input.limit, input.offset))),
     listVideos: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => getAllVideos(input.limit, input.offset)),
-    updateUserRole: adminProcedure.input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) })).mutation(async ({ input }) => { await updateUserRole(input.userId, input.role); return { success: true }; }),
+    /**
+     * RONDE 147 — role changes, with the one guard the admin surface actually needs.
+     *
+     * `adminProcedure` already answers the brief's two access questions: an ordinary user cannot
+     * reach this at all, so they can neither change someone else's role nor promote themselves.
+     * That was true before this round and is unchanged.
+     *
+     * What was missing is the case an admin can walk into on their own: demoting THEMSELVES. There
+     * is no other route back — promotion requires an admin — so the last person out would lock the
+     * door behind them and the only fix would be a hand-written SQL statement against production.
+     * Refusing the self-demotion is the whole guard; an admin may still demote any other admin.
+     */
+    updateUserRole: adminProcedure
+      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.userId === ctx.user.id && input.role !== "admin") {
+          throw appTrpcError(
+            "BAD_REQUEST",
+            APP_ERROR.SERVICE_ERROR,
+            "You cannot remove your own admin role — ask another admin to do it"
+          );
+        }
+        await updateUserRole(input.userId, input.role);
+        return { success: true };
+      }),
     updateUserSubscription: adminProcedure.input(z.object({ userId: z.number(), subscriptionStatus: z.enum(["active", "inactive", "cancelled"]) })).mutation(async ({ input }) => {
       await updateUserSubscription(input.userId, { subscriptionStatus: input.subscriptionStatus, subscriptionStartDate: input.subscriptionStatus === "active" ? new Date() : undefined });
       return { success: true };
-    }),
-    generateVideo: adminProcedure.input(z.object({
-      prompt: z.string().min(10).max(500),
-      videoLength: videoLengthSchema,
-      videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
-    })).mutation(async ({ ctx, input }) => {
-      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
-      if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
-
-      const videoId = await createVideo({
-        userId: ctx.user.id,
-        prompt: input.prompt,
-        videoLength: input.videoLength,
-        videoType: input.videoType,
-        status: "queued",
-      });
-      if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
-      await enqueueVideoJob(videoId, "🔍 Waiting in queue...");
-      return { videoId };
     }),
     searchVideos: adminProcedure.input(z.object({
       query: z.string().optional(),
@@ -1302,6 +1339,185 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deactivateInviteCode(input.id);
+        return { success: true };
+      }),
+  }),
+
+  /**
+   * RONDE 147 — discount codes, created in Stripe so they work at checkout.
+   *
+   * `billing.createCheckout` already passes `allow_promotion_codes: true`, which puts Stripe's own
+   * promotion-code box on the payment page. A code that exists only in FastVid's database would
+   * therefore look valid in this panel and be rejected by the very next screen the customer sees —
+   * the failure mode the brief calls out by name.
+   *
+   * So a code is created as a Stripe Coupon (the discount) plus a Stripe Promotion Code (the string
+   * the customer types), and the local row mirrors it for the overview. Stripe stays authoritative
+   * for redeemability and redemption counts; `list` refreshes those from Stripe on read.
+   *
+   * Every procedure here is an adminProcedure. That is the whole access rule for this router.
+   */
+  discount: router({
+    list: adminProcedure.query(async () => {
+      const rows = await listDiscountCodes();
+      if (!rows.length || !process.env.STRIPE_SECRET_KEY) return rows;
+      /**
+       * Redemption counts come from Stripe, not from a counter FastVid increments — FastVid never
+       * sees a redemption, Stripe does. A failure here degrades to the stored value rather than
+       * failing the page: a stale count is worth more than an admin screen that will not load.
+       */
+      const refreshed = await Promise.all(
+        rows.map(async (row) => {
+          try {
+            const promo = await getStripe().promotionCodes.retrieve(row.stripePromotionCodeId);
+            const timesRedeemed = promo.times_redeemed ?? row.timesRedeemed;
+            const isActive = promo.active ? 1 : 0;
+            if (timesRedeemed !== row.timesRedeemed || isActive !== row.isActive) {
+              await updateDiscountCodeRow(row.id, { timesRedeemed, isActive });
+            }
+            return { ...row, timesRedeemed, isActive };
+          } catch {
+            return row;
+          }
+        })
+      );
+      return refreshed;
+    }),
+
+    create: adminProcedure
+      .input(
+        z
+          .object({
+            code: z
+              .string()
+              .trim()
+              .min(3)
+              .max(64)
+              .regex(/^[A-Za-z0-9_-]+$/, "Use letters, numbers, hyphens and underscores only"),
+            percentOff: z.number().int().min(1).max(100).optional(),
+            amountOffCents: z.number().int().min(1).optional(),
+            startsAt: z.date().optional(),
+            expiresAt: z.date().optional(),
+            maxRedemptions: z.number().int().min(1).optional(),
+            note: z.string().trim().max(256).optional(),
+          })
+          // Exactly one kind of discount. Stripe rejects a coupon carrying both, and a coupon
+          // carrying neither is not a discount at all — better refused here with a readable
+          // message than as an opaque Stripe error.
+          .refine(
+            (v) => (v.percentOff == null) !== (v.amountOffCents == null),
+            "Give either a percentage or a fixed amount, not both"
+          )
+          .refine(
+            (v) => !v.startsAt || !v.expiresAt || v.startsAt < v.expiresAt,
+            "The start date must be before the expiry date"
+          )
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!process.env.STRIPE_SECRET_KEY) {
+          throw appTrpcError(
+            "INTERNAL_SERVER_ERROR",
+            APP_ERROR.STRIPE_NOT_CONFIGURED,
+            "Stripe is not configured, so a discount code cannot be created"
+          );
+        }
+        const code = input.code.toUpperCase();
+        if (await getDiscountCodeByCode(code)) {
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, `Code ${code} already exists`);
+        }
+
+        const coupon = await getStripe().coupons.create({
+          name: code,
+          duration: "forever",
+          ...(input.percentOff != null
+            ? { percent_off: input.percentOff }
+            : { amount_off: input.amountOffCents!, currency: FASTVID_PRO_PLAN.currency }),
+        });
+
+        /**
+         * The promotion code carries everything customer-facing: the string, the expiry and the
+         * usage cap. Those limits live on Stripe's object rather than being enforced by FastVid,
+         * because FastVid is not in the redemption path and could not enforce them if it wanted to.
+         */
+        const promo = await getStripe().promotionCodes.create({
+          // Stripe v22 wraps the coupon in a typed `promotion` rather than taking it directly.
+          promotion: { type: "coupon", coupon: coupon.id },
+          code,
+          ...(input.expiresAt ? { expires_at: Math.floor(input.expiresAt.getTime() / 1000) } : {}),
+          ...(input.maxRedemptions ? { max_redemptions: input.maxRedemptions } : {}),
+        });
+
+        const id = await createDiscountCodeRow({
+          code,
+          stripeCouponId: coupon.id,
+          stripePromotionCodeId: promo.id,
+          percentOff: input.percentOff ?? null,
+          amountOffCents: input.amountOffCents ?? null,
+          currency: input.amountOffCents != null ? FASTVID_PRO_PLAN.currency : null,
+          isActive: 1,
+          startsAt: input.startsAt ?? null,
+          expiresAt: input.expiresAt ?? null,
+          maxRedemptions: input.maxRedemptions ?? null,
+          timesRedeemed: 0,
+          note: input.note ?? null,
+          createdByUserId: ctx.user.id,
+        });
+        return { id, code };
+      }),
+
+    /**
+     * Switching a code off is done in Stripe first.
+     *
+     * If the Stripe call fails the local row is left alone, so the panel goes on showing the code
+     * as active — which is the truth, because it still is. Writing the local row first would have
+     * produced the opposite and worse error: a code shown as disabled that customers can still use.
+     */
+    setActive: adminProcedure
+      .input(z.object({ id: z.number(), isActive: z.boolean() }))
+      .mutation(async ({ input }) => {
+        const row = await getDiscountCodeById(input.id);
+        if (!row) throw appTrpcError("NOT_FOUND", APP_ERROR.SERVICE_ERROR, "Discount code not found");
+        await getStripe().promotionCodes.update(row.stripePromotionCodeId, {
+          active: input.isActive,
+        });
+        await updateDiscountCodeRow(input.id, { isActive: input.isActive ? 1 : 0 });
+        return { success: true };
+      }),
+
+    update: adminProcedure
+      .input(z.object({ id: z.number(), note: z.string().trim().max(256).nullable() }))
+      .mutation(async ({ input }) => {
+        const row = await getDiscountCodeById(input.id);
+        if (!row) throw appTrpcError("NOT_FOUND", APP_ERROR.SERVICE_ERROR, "Discount code not found");
+        await updateDiscountCodeRow(input.id, { note: input.note });
+        return { success: true };
+      }),
+
+    /**
+     * Delete only what is safe to delete.
+     *
+     * A redeemed code is part of a customer's billing history: Stripe keeps the promotion code so
+     * the discount on their subscription stays explainable, and removing FastVid's row would drop
+     * the record of who issued it and why. So a redeemed code can only be switched off, and the
+     * error says which action to take instead.
+     */
+    remove: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const row = await getDiscountCodeById(input.id);
+        if (!row) throw appTrpcError("NOT_FOUND", APP_ERROR.SERVICE_ERROR, "Discount code not found");
+        if (row.timesRedeemed > 0) {
+          throw appTrpcError(
+            "BAD_REQUEST",
+            APP_ERROR.SERVICE_ERROR,
+            `${row.code} has been redeemed ${row.timesRedeemed} time(s) and is part of billing history — deactivate it instead`
+          );
+        }
+        // Stripe promotion codes cannot be deleted, only deactivated; the coupon behind an
+        // unredeemed code can go, which is what actually stops it working.
+        await getStripe().promotionCodes.update(row.stripePromotionCodeId, { active: false }).catch(() => {});
+        await getStripe().coupons.del(row.stripeCouponId).catch(() => {});
+        await deleteDiscountCodeRow(input.id);
         return { success: true };
       }),
   }),

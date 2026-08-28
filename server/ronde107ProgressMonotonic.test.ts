@@ -156,10 +156,15 @@ describe("RONDE 107 — the shown percent cannot go down either", () => {
     expect(DASHBOARD).toContain("const runKey = progressRunKey(video.id, pollData?.generationStartedAt);");
     expect(DASHBOARD.match(/progressKey=\{runKey\}/g) ?? []).toHaveLength(2);
     expect(DASHBOARD).toContain("isProcessing && rawBadgePct < 100,\n    runKey");
-    // ...and both bars in the admin. The second sits behind a ternary (the generate panel has no
-    // video id until the render starts), so this counts the calls rather than one literal shape.
-    expect(ADMIN.match(/progressKey=\{/g) ?? []).toHaveLength(2);
-    expect(ADMIN.match(/progressRunKey\(/g) ?? []).toHaveLength(2); // the import carries no paren
+    /**
+     * ...and the admin's bar. There were two until RONDE 147: the second belonged to the admin
+     * Generate Video panel, which that round removed in favour of Discount Codes. One bar remains,
+     * and it still passes a run key — which is the property this test exists for. The count is
+     * asserted rather than a mere ">= 1" so that a bar added later without a run key still fails
+     * here, exactly as before.
+     */
+    expect(ADMIN.match(/progressKey=\{/g) ?? []).toHaveLength(1);
+    expect(ADMIN.match(/progressRunKey\(/g) ?? []).toHaveLength(1); // the import carries no paren
   });
 });
 

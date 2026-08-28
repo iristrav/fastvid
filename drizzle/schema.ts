@@ -694,3 +694,62 @@ export const editorialReviews = mysqlTable(
 );
 
 export type EditorialReviewRow = typeof editorialReviews.$inferSelect;
+
+// ─── Discount Codes ───────────────────────────────────────────────────────────
+/**
+ * RONDE 147 — discount codes that are REAL codes, not a local table that checkout ignores.
+ *
+ * The billing flow already creates its Stripe Checkout session with `allow_promotion_codes: true`,
+ * so Stripe's own promotion-code box is on the payment page and already honours anything Stripe
+ * knows about. Building a second, FastVid-side discount concept would have meant a code that looks
+ * valid in the admin panel and does nothing when a customer types it — exactly the outcome the
+ * brief rules out.
+ *
+ * So the admin page creates the code IN STRIPE (a Coupon carrying the discount, plus a Promotion
+ * Code carrying the customer-facing string) and this table mirrors it. The mirror is what makes an
+ * overview page possible without an API round-trip per row, and it is what holds FastVid's own
+ * bookkeeping — who created a code, and when. Stripe stays the source of truth for redemptions.
+ *
+ * `stripePromotionCodeId` is unique: one row per Stripe promotion code, so a failed create cannot
+ * leave two rows pointing at the same object.
+ */
+export const discountCodes = mysqlTable(
+  "discount_codes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** The string a customer types at checkout. Stored uppercase; unique. */
+    code: varchar("code", { length: 64 }).notNull().unique(),
+    /** The Stripe Coupon holding the actual discount. */
+    stripeCouponId: varchar("stripeCouponId", { length: 128 }).notNull(),
+    /** The Stripe Promotion Code holding the customer-facing string. */
+    stripePromotionCodeId: varchar("stripePromotionCodeId", { length: 128 }).notNull().unique(),
+    /** Percentage off, 1–100. Null when this is a fixed-amount code. */
+    percentOff: int("percentOff"),
+    /** Fixed amount off in the smallest currency unit. Null when this is a percentage code. */
+    amountOffCents: int("amountOffCents"),
+    /** ISO currency for amountOffCents; null for percentage codes. */
+    currency: varchar("currency", { length: 8 }),
+    /** 1 = redeemable, 0 = switched off. Mirrors the Stripe promotion code's `active`. */
+    isActive: int("isActive").default(1).notNull(),
+    /** Optional first moment the code may be used. Null = immediately. */
+    startsAt: timestamp("startsAt"),
+    /** Optional expiry. Null = no expiry. */
+    expiresAt: timestamp("expiresAt"),
+    /** Optional cap on total redemptions. Null = unlimited. */
+    maxRedemptions: int("maxRedemptions"),
+    /** Last known redemption count from Stripe. Refreshed when the admin list is read. */
+    timesRedeemed: int("timesRedeemed").default(0).notNull(),
+    /** Optional internal label — what this code is for. Never shown to customers. */
+    note: varchar("note", { length: 256 }),
+    createdByUserId: int("createdByUserId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    activeIdx: index("discount_codes_isActive_idx").on(t.isActive),
+    createdIdx: index("discount_codes_created_idx").on(t.createdAt),
+  })
+);
+
+export type DiscountCode = typeof discountCodes.$inferSelect;
+export type InsertDiscountCode = typeof discountCodes.$inferInsert;

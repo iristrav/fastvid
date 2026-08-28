@@ -31,7 +31,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 import { formatGenerationDuration } from "@shared/pipelineProgress";
-import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
+import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, videoLengthAllowedForRole, type VideoLength } from "@shared/videoLengths";
 import {
 } from "@shared/videoQuality";
 import {
@@ -40,10 +40,22 @@ import {
   useSmoothedProgressPercent,
 } from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
+import { useVoicePreview } from "@/hooks/useVoicePreview";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
   opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
 );
+
+/**
+ * RONDE 147 — show only what this account may actually pick.
+ *
+ * The server refuses a restricted length whatever the UI sends (see videoLengthAllowedForRole),
+ * so this is a courtesy rather than the control: there is no reason to offer an option that will
+ * come back as a 403.
+ */
+function videoLengthsForRole(role: string | null | undefined) {
+  return VIDEO_LENGTHS.filter((opt) => videoLengthAllowedForRole(opt.value, role));
+}
 
 function readGenerationDurationSec(video: {
   metadata?: unknown;
@@ -605,9 +617,6 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
 // ─── Voice Selector Component ────────────────────────────────────────────────
 function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onSelect: (id: string) => void }) {
   const { data: voices = [], isLoading } = trpc.voice.list.useQuery();
-  const [playingId, setPlayingId] = useState<number | null>(null);
-  const [loadingPreviewId, setLoadingPreviewId] = useState<number | null>(null);
-  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
   const previewMutation = trpc.voice.preview.useMutation();
 
   useEffect(() => {
@@ -616,38 +625,28 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
     }
   }, [voices]);
 
-  function stopAudio() {
-    if (audioEl) { audioEl.pause(); audioEl.src = ""; }
-    setAudioEl(null);
-    setPlayingId(null);
-  }
+  /**
+   * RONDE 147 — playback moved into useVoicePreview.
+   *
+   * The old local copy called `.play()` without awaiting it, so an autoplay refusal or a dead
+   * sample URL became an unhandled rejection and the button sat on "Stop" over silence. The hook
+   * awaits it, reports failures, cancels a preview the user has moved on from, and still prefers
+   * a stored sample over spending a generation.
+   */
+  const { playingId, loadingId: loadingPreviewId, toggle } = useVoicePreview({
+    generate: async (voice) => {
+      const match = voices.find((v) => v.id === voice.id);
+      const result = await previewMutation.mutateAsync({
+        fishAudioReferenceId: match!.fishAudioReferenceId,
+      });
+      return result.url;
+    },
+    onError: (message) => toast.error("Preview failed", { description: message }),
+  });
 
-  function playAudioUrl(url: string, voiceId: number) {
-    stopAudio();
-    const a = new Audio(url);
-    a.onended = () => { setPlayingId(null); setAudioEl(null); };
-    a.play();
-    setAudioEl(a);
-    setPlayingId(voiceId);
-  }
-
-  async function handlePreview(voice: typeof voices[0], e: React.MouseEvent) {
+  function handlePreview(voice: typeof voices[0], e: React.MouseEvent) {
     e.stopPropagation();
-    if (playingId === voice.id) { stopAudio(); return; }
-    if (voice.exampleAudioUrl) {
-      playAudioUrl(voice.exampleAudioUrl, voice.id);
-      return;
-    }
-    setLoadingPreviewId(voice.id);
-    try {
-      const result = await previewMutation.mutateAsync({ fishAudioReferenceId: voice.fishAudioReferenceId });
-      setLoadingPreviewId(null);
-      playAudioUrl(result.url, voice.id);
-    } catch (err: unknown) {
-      setLoadingPreviewId(null);
-      const msg = toastErrorMessage(err, "Could not generate voice preview");
-      toast.error("Preview failed", { description: msg });
-    }
+    toggle({ id: voice.id, exampleAudioUrl: voice.exampleAudioUrl });
   }
   return (
     <div>
@@ -958,7 +957,7 @@ export default function Dashboard() {
             <div>
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Video length</p>
               <div className="flex flex-wrap gap-2">
-                {VIDEO_LENGTHS.map(opt => (
+                {videoLengthsForRole(user?.role).map(opt => (
                   <button
                     key={opt.value}
                     onClick={() => setSelectedLength(opt.value)}

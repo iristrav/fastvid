@@ -13,11 +13,13 @@ import {
   Users, Video, TrendingUp, CheckCircle2, Loader2,
   Play, LogOut, LayoutDashboard, Settings, Shield, RefreshCw,
   UserCheck, Crown, Eye, X, Copy, AlertTriangle,
-  FileText, Hash, Sparkles, Search, Filter, Download,
+  FileText, Hash, Search, Filter, Download,
   ChevronDown, Mic, Plus, Pencil, Trash2, Volume2, ToggleLeft, ToggleRight,
-  Archive, Upload, Radio,
+  Archive, Upload, Radio, Ticket,
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
+import { DiscountCodesAdmin } from "@/components/admin/DiscountCodesAdmin";
+import { useVoicePreview } from "@/hooks/useVoicePreview";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
 import { GenerationProgressBar, progressRunKey } from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
@@ -26,12 +28,8 @@ function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
 }
 
-import { VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
 import { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_DISPLAY } from "@shared/billing";
 
-const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
-  opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
-);
 
 function StatCard({ label, value, icon: Icon, color, sub }: {
   label: string; value: number | string; icon: React.ElementType; color: string; sub?: string;
@@ -737,144 +735,6 @@ function VideosTable() {
   );
 }
 
-function AdminVideoGenerator() {
-  const [prompt, setPrompt] = useState("");
-  const [videoLength, setVideoLength] = useState("15-20");
-  const [generatedId, setGeneratedId] = useState<number | null>(null);
-
-  const generateMutation = trpc.admin.generateVideo.useMutation({
-    onSuccess: (data) => {
-      setGeneratedId(data.videoId);
-      setPrompt("");
-      toast.success(`Video ${formatVideoId(data.videoId)} is being generated!`);
-    },
-    onError: (err) =>
-      toast.error("Failed to start generation", { description: toastErrorMessage(err) }),
-  });
-
-  const { data: videoStatus, isLoading: statusLoading, refetch: refetchVideoStatus } = trpc.video.pollStatus.useQuery(
-    { id: generatedId! },
-    {
-      enabled: !!generatedId,
-      refetchInterval: (query: { state: { data: unknown } }) => {
-        const status = (query.state.data as { status?: string } | undefined)?.status;
-        return (status === "completed" || status === "failed") ? false : 5000;
-      },
-    }
-  );
-  // SSE push (Phase 1), additive to the 5s poll above — see Dashboard.tsx's VideoCard for
-  // the same pattern and rationale.
-  const generatedStatus = (videoStatus as { status?: string } | undefined)?.status;
-  const generatedInProgress = !!generatedId && generatedStatus !== "completed" && generatedStatus !== "failed";
-  const generatedProgressEvent = useVideoProgressStream(generatedId, generatedInProgress);
-  useEffect(() => {
-    if (generatedProgressEvent) void refetchVideoStatus();
-  }, [generatedProgressEvent, refetchVideoStatus]);
-
-  const statusData = videoStatus as {
-    status?: string;
-    videoUrl?: string;
-    title?: string;
-    progressPercent?: number;
-    generationStartedAt?: Date | null;
-  } | undefined;
-  const isGenerating = !!statusData?.status && !['completed', 'failed'].includes(statusData.status);
-  // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
-  const { data: genVideoUrlData } = trpc.video.getVideoUrl.useQuery(
-    { id: generatedId! },
-    { enabled: !!(generatedId && statusData?.status === 'completed' && statusData?.videoUrl), staleTime: 1000 * 60 * 5 }
-  );
-  const genPlaybackUrl = genVideoUrlData?.url ?? statusData?.videoUrl;
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="font-bold text-white text-lg flex items-center gap-2 mb-1">
-          <Sparkles className="w-5 h-5 text-purple-400" /> Generate a Video
-        </h2>
-        <p className="text-slate-400 text-sm">As admin, you can generate videos without a subscription.</p>
-      </div>
-      <div className="glass-card border border-white/8 rounded-xl p-6 space-y-5">
-        <div>
-          <label className="block text-xs text-slate-400 font-medium uppercase tracking-wide mb-2">Video Prompt</label>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe the YouTube video you want to create..."
-            rows={3}
-            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-500 outline-none focus:border-purple-500/50 transition-colors resize-none"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-400 font-medium uppercase tracking-wide mb-2">Video Length</label>
-          <div className="flex flex-wrap gap-2">
-            {VIDEO_LENGTHS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setVideoLength(opt.value)}
-                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all duration-200 ${
-                  videoLength === opt.value
-                    ? "bg-gradient-to-br from-purple-600/40 to-cyan-500/30 border-purple-400/60 text-white shadow-lg shadow-purple-500/20"
-                    : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <button
-          onClick={() => generateMutation.mutate({ prompt, videoLength: videoLength as VideoLength })}
-          disabled={generateMutation.isPending || prompt.trim().length < 10}
-          className="w-full py-3 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 btn-gradient disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-        >
-          {generateMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Starting generation...</>
-          ) : (
-            <><Sparkles className="w-4 h-4" /> Generate Video</>
-          )}
-        </button>
-      </div>
-
-      {generatedId && (
-        <div className="glass-card border border-white/8 rounded-xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-white text-sm flex items-center gap-2">
-              <span className="mono text-purple-400">{formatVideoId(generatedId)}</span>
-              {statusData?.title && <span className="text-slate-300 font-normal truncate max-w-xs">{statusData.title}</span>}
-            </h3>
-            {statusLoading && <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />}
-          </div>
-          {isGenerating && (
-            <GenerationProgressBar
-              progressPercent={statusData?.progressPercent ?? 0}
-              progressKey={generatedId != null ? progressRunKey(generatedId, statusData?.generationStartedAt) : undefined}
-              generationStartedAt={statusData?.generationStartedAt}
-              videoLength={videoLength}
-            />
-          )}
-          {statusData?.status === "completed" && statusData?.videoUrl && (
-            <div className="space-y-3 pt-2 border-t border-white/8">
-              <p className="text-xs text-green-400 font-medium flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Video ready!
-              </p>
-              {genPlaybackUrl && <video src={genPlaybackUrl} controls className="w-full rounded-xl border border-white/10 bg-black" style={{ maxHeight: "300px" }} />}
-              <a href={`/api/download/video/${generatedId}`} download={`fastvid-${formatVideoId(generatedId)}.mp4`} className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">
-                <Download className="w-4 h-4" /> Download MP4
-              </a>
-            </div>
-          )}
-          {statusData?.status === "failed" && (
-            <div className="flex items-center gap-2 text-xs text-red-400 pt-2 border-t border-white/8">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              Generation failed. Check the All Videos tab for details.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function Admin() {
   const { user, loading, isAuthenticated, logout } = useAuth() as {
@@ -882,7 +742,7 @@ export default function Admin() {
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [location, navigate] = useLocation();
-  type AdminTab = "overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive" | "niches";
+  type AdminTab = "overview" | "users" | "videos" | "discounts" | "voices" | "invites" | "archive" | "niches";
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
 
   useEffect(() => {
@@ -927,7 +787,11 @@ export default function Admin() {
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
     { id: "archive" as const, label: "Media Archive", icon: Archive },
     { id: "niches" as const, label: "Niche Requests", icon: Radio },
-    { id: "generate" as const, label: "Generate Video", icon: Sparkles },
+    // RONDE 147: the admin-side video generator page is gone — an admin generates from the
+    // ordinary dashboard like everyone else, and this slot is now where discount codes live.
+    // Its old label is deliberately not written out here: the regression test asserts that string
+    // is absent from this file.
+    { id: "discounts" as const, label: "Discount Codes", icon: Ticket },
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
     { id: "voices" as const, label: "Voice Library", icon: Mic },
@@ -1057,7 +921,7 @@ export default function Admin() {
             </div>
           )}
 
-          {activeTab === "generate" && <AdminVideoGenerator />}
+          {activeTab === "discounts" && <DiscountCodesAdmin />}
           {activeTab === "users" && <UsersTable />}
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
@@ -1123,26 +987,32 @@ function VoiceLibraryAdmin() {
   const [editVoice, setEditVoice] = useState<null | typeof voices[0]>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
-  const [previewingId, setPreviewingId] = useState<number | null>(null);
-  const [previewAudioEl, setPreviewAudioEl] = useState<HTMLAudioElement | null>(null);
 
   const createMut = trpc.voice.create.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setShowForm(false); toast.success("Voice added!"); } });
   const updateMut = trpc.voice.update.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setEditVoice(null); toast.success("Voice updated!"); } });
   const deleteMut = trpc.voice.delete.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Voice deleted!"); } });
   const uploadAudioMut = trpc.voice.uploadExampleAudio.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Example audio uploaded!"); } });
-  const previewMut = trpc.voice.preview.useMutation({
-    onSuccess: (data) => {
-      if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
-      const a = new Audio(data.url);
-      a.onended = () => { setPreviewingId(null); setPreviewAudioEl(null); };
-      a.play();
-      setPreviewAudioEl(a);
-    },
-    onError: (err) => {
-      setPreviewingId(null);
-      toast.error("Preview failed", { description: toastErrorMessage(err) });
-    },
-  });
+  const previewMut = trpc.voice.preview.useMutation();
+  /**
+   * RONDE 147 — the admin preview now uses the shared hook, like the dashboard picker.
+   *
+   * Three things were wrong here specifically. `.play()` was never awaited, so an autoplay refusal
+   * or a dead URL became an unhandled rejection and the button stuck on "Stop" over silence. There
+   * was no `onerror`, so a source that failed to load did the same. And `exampleAudioUrl` was
+   * ignored entirely: every click spent an ElevenLabs generation, including on voices that already
+   * had a stored sample sitting in the row being rendered.
+   */
+  const { playingId: previewingId, loadingId: previewLoadingId, toggle: togglePreview } =
+    useVoicePreview({
+      generate: async (voice) => {
+        const match = voices.find((v) => v.id === voice.id);
+        const result = await previewMut.mutateAsync({
+          fishAudioReferenceId: match!.fishAudioReferenceId,
+        });
+        return result.url;
+      },
+      onError: (message) => toast.error("Preview failed", { description: message }),
+    });
   const resetDefaultsMut = trpc.voice.resetDefaults.useMutation({
     onSuccess: (data) => { utils.voice.listAll.invalidate(); toast.success(`Reset complete — ${data.upserted} voices updated`); },
     onError: (err) => toast.error("Reset failed", { description: toastErrorMessage(err) }),
@@ -1160,14 +1030,13 @@ function VoiceLibraryAdmin() {
   }
 
   function testPreview(voice: typeof voices[0]) {
-    if (voice.fishAudioReferenceId.startsWith("PLACEHOLDER")) {
+    // A placeholder id cannot generate anything — but a voice with a stored sample can still be
+    // played, so this only blocks the case that would actually fail.
+    if (voice.fishAudioReferenceId.startsWith("PLACEHOLDER") && !voice.exampleAudioUrl) {
       toast.error("Cannot preview: this voice has a placeholder ElevenLabs voice ID. Please edit and set a real ID.");
       return;
     }
-    if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
-    if (previewingId === voice.id) { setPreviewingId(null); setPreviewAudioEl(null); return; }
-    setPreviewingId(voice.id);
-    previewMut.mutate({ fishAudioReferenceId: voice.fishAudioReferenceId });
+    togglePreview({ id: voice.id, exampleAudioUrl: voice.exampleAudioUrl });
   }
 
   async function handleAudioUpload(voiceId: number, file: File) {
@@ -1253,19 +1122,19 @@ function VoiceLibraryAdmin() {
                 {/* Test Preview: calls ElevenLabs live */}
                 <button
                   onClick={() => testPreview(v)}
-                  disabled={previewMut.isPending && previewingId === v.id}
+                  disabled={previewLoadingId === v.id}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                     previewingId === v.id
                       ? "bg-cyan-600 text-white"
                       : "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
                   }`}
                 >
-                  {previewMut.isPending && previewingId === v.id ? (
+                  {previewLoadingId === v.id ? (
                     <Loader2 className="w-3 h-3 animate-spin" />
                   ) : (
                     <Mic className="w-3 h-3" />
                   )}
-                  {previewingId === v.id && !previewMut.isPending ? "Stop" : "Test Preview"}
+                  {previewingId === v.id ? "Stop" : "Test Preview"}
                 </button>
                 {/* Play uploaded sample */}
                 <button

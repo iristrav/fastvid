@@ -1769,3 +1769,65 @@ export function filterMediaArchiveAssets<
     return true;
   });
 }
+
+// ─── Discount Codes (RONDE 147) ───────────────────────────────────────────────
+import { discountCodes, type InsertDiscountCode } from "../drizzle/schema";
+
+/**
+ * The mirror of Stripe's promotion codes — see drizzle/schema.ts for why a mirror exists at all.
+ * Stripe remains the source of truth for whether a code is redeemable and how often it has been
+ * used; these rows exist so the admin overview is one query rather than one API call per code.
+ */
+export async function createDiscountCodeRow(data: InsertDiscountCode) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(discountCodes).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function listDiscountCodes() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(discountCodes).orderBy(desc(discountCodes.createdAt));
+}
+
+export async function getDiscountCodeById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db.select().from(discountCodes).where(eq(discountCodes.id, id)).limit(1);
+  return row;
+}
+
+export async function getDiscountCodeByCode(code: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db
+    .select()
+    .from(discountCodes)
+    .where(eq(discountCodes.code, code.trim().toUpperCase()))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Narrow updates only.
+ *
+ * Deliberately not a generic patch: the brief rules out exposing arbitrary columns through the
+ * admin surface, and the fields a human may change after a code exists are exactly these three.
+ * `code`, the discount itself and the Stripe ids are immutable here because they are immutable in
+ * Stripe — changing a discount means issuing a new code.
+ */
+export async function updateDiscountCodeRow(
+  id: number,
+  data: Partial<Pick<InsertDiscountCode, "isActive" | "note" | "timesRedeemed">>
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(discountCodes).set(data).where(eq(discountCodes.id, id));
+}
+
+export async function deleteDiscountCodeRow(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(discountCodes).where(eq(discountCodes.id, id));
+}

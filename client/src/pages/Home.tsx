@@ -45,9 +45,12 @@ const MOCKUP_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9G
 const SCRIPT_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-script-JueTt4K7PbHkfqDhKoXwkv.webp";
 const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-visuals-YGMDS8Lz6mqFNsCHUYEQDS.webp";
 
-import { VIDEO_LENGTH_OPTIONS } from "@shared/videoLengths";
+import { VIDEO_LENGTH_OPTIONS, videoLengthAllowedForRole } from "@shared/videoLengths";
 
-const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS;
+// RONDE 147: the marketing picker offers only what a visitor could actually generate. The
+// 1-minute test length is the owner’s and the server refuses it for anyone else, so advertising
+// it here would be promising something the first click cannot deliver.
+const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.filter((opt) => videoLengthAllowedForRole(opt.value, null));
 
 const VIDEO_FORMATS = [
   {
@@ -460,9 +463,17 @@ export default function Home() {
           <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
             {/* Left: Text */}
             <div className="flex flex-col gap-6">
+              {/*
+                RONDE 147 — the positioning line the owner asked for, stated where a first-time
+                visitor reads it: specialists in documentaries for YouTube and Spotify. It replaces
+                the badge's near-duplicate of the headline rather than being added underneath it,
+                so the hero still makes one claim instead of three.
+              */}
               <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-purple-500/30 bg-purple-500/10 w-fit">
                 <Film className="w-3.5 h-3.5 text-purple-400" />
-                <span className="mono text-xs text-purple-300 font-medium">YouTube-ready documentaries</span>
+                <span className="mono text-xs text-purple-300 font-medium">
+                  Specialists in documentaries for YouTube and Spotify
+                </span>
               </div>
 
               <h1 className="animate-fade-up delay-100 text-4xl sm:text-5xl lg:text-6xl font-black leading-tight text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -471,7 +482,7 @@ export default function Home() {
               </h1>
 
               <p className="animate-fade-up delay-200 text-base md:text-lg text-slate-300 leading-relaxed max-w-lg">
-                Describe your story once. Fastvid writes the script, narrates it, finds visuals that match what is being said, and delivers a finished video — built for factual, narrator-led channels.
+                Fastvid specialises in documentary video for YouTube and Spotify. Describe your story once — Fastvid writes the script, narrates it, finds visuals that match what is being said, and delivers a finished video, built for factual, narrator-led channels.
               </p>
 
               {/* Video length selector */}
@@ -1054,7 +1065,15 @@ export default function Home() {
           <p className="text-slate-300 max-w-lg mx-auto mb-10 text-base md:text-lg">
             Join creators producing narrator-led YouTube videos without a full production crew. Brief, build, edit, publish.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          {/*
+            RONDE 147 — the secondary demo button was removed. It scrolled to How it works rather
+            than playing anything, so it promised a video the page did not have. "Get started now"
+            is the one action this section is for, and it now stands alone rather than beside a
+            second button competing for the same click. The wording is deliberately paraphrased:
+            the regression test asserts the old label is absent from this file, and quoting it here
+            would defeat that.
+          */}
+          <div className="flex justify-center">
             <button
               onClick={handleGetStarted}
               className="btn-gradient px-8 py-4 rounded-xl font-bold text-white text-base flex items-center justify-center gap-2 shadow-2xl shadow-purple-500/30"
@@ -1062,13 +1081,6 @@ export default function Home() {
               <Sparkles className="w-5 h-5" />
               Get started now
               <ArrowRight className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => scrollTo("how-it-works")}
-              className="px-8 py-4 rounded-xl font-semibold text-white text-base border border-white/15 hover:bg-white/5 transition-colors flex items-center justify-center gap-2"
-            >
-              <Play className="w-4 h-4" />
-              Watch demo
             </button>
           </div>
         </div>

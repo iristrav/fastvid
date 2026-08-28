@@ -71,6 +71,7 @@ import {
   archiveStillKenBurnsVariant,
   resolveStillKenBurnsVariant,
   standardArchiveKenBurnsZoomEnd,
+  kenBurnsCenterXExpr,
 } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
@@ -1661,10 +1662,18 @@ async function convertImageToKenBurns(
     const padH = Math.round(VIDEO_HEIGHT * 1.12);
     const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
     const yExpr = "ih/2-(ih/zoom/2)";
-    const xExpr =
-      variant === "pan-left"
-        ? `iw/2-(iw/zoom/2)-on*${Math.max(1, Math.round(totalFrames * 0.04))}`
-        : "iw/2-(iw/zoom/2)";
+    /**
+     * RONDE 147 — the same quadratic overshoot as buildKenBurnsTail had, fixed the same way.
+     *
+     * `on * round(totalFrames * 0.04)` reaches `0.04 * totalFrames²` by the last frame: 500px on a
+     * 5-second still, against roughly 37px of room at this zoom. The frame slid to the edge of the
+     * picture and stayed there. kenBurnsCenterXExpr bounds the drift by what the zoom affords at
+     * each frame, so the image stays centred and whole.
+     */
+    const xExpr = kenBurnsCenterXExpr(
+      variant === "pan-left" ? "left" : null,
+      `min(on/${totalFrames},1)`
+    );
     const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
     await exec(
       `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +

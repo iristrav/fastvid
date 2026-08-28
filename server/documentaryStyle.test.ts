@@ -20,6 +20,7 @@ import {
   documentaryStyleEnabled,
   resolveStillCompositionVF,
   usePolaroidLayout,
+  KEN_BURNS_MAX_PAN_SHARE,
 } from "./documentaryStyle";
 
 describe("documentaryStyle", () => {
@@ -166,15 +167,36 @@ describe("documentaryStyle", () => {
       expect(velocity(0)).toBeGreaterThan(velocity(1));
     });
 
-    it("pan-left/pan-right ease the same total pixel distance a linear pan would have covered", () => {
-      const totalFrames = 100; // 4s @ 25fps
-      const panStep = Math.max(1, Math.round(totalFrames * 0.06));
-      const expectedDistance = panStep * totalFrames;
+    /**
+     * REWRITTEN BY RONDE 147, because the distance it asserted was the defect.
+     *
+     * `panStep * totalFrames` is quadratic in duration: at 4s it asked for 600px of travel, and a
+     * 1.02 zoom on a 1920-wide image leaves about 19px of room before the sampling window runs off
+     * the picture — 32× too far. ffmpeg clamps instead of failing, so the frame pinned itself
+     * against the edge and stayed there for the rest of the shot.
+     *
+     * What this test was really for survives unchanged: the two variants still pan in OPPOSITE
+     * directions, and both still ride the eased sine progress rather than a linear step. What it
+     * can no longer assert is a pixel count, because there no longer is one — the travel is a
+     * share of the room the zoom actually affords, evaluated by ffmpeg per frame.
+     */
+    it("pan-left/pan-right ease in opposite directions, bounded by the room the zoom affords", () => {
       const left = buildKenBurnsTail(4, 1.02, "center", "pan-left");
       const right = buildKenBurnsTail(4, 1.02, "center", "pan-right");
-      // RONDE 111: same total distance, same direction — only the velocity curve's tail moved.
-      expect(left).toContain(`-${expectedDistance}*(0.35*sin(PI/2*min(on/`);
-      expect(right).toContain(`+${expectedDistance}*(0.35*sin(PI/2*min(on/`);
+      expect(left).toContain(`-(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*(0.35*sin(PI/2*min(on/`);
+      expect(right).toContain(`+(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*(0.35*sin(PI/2*min(on/`);
+      // No raw pixel distance may come back: that is the shape of the bug.
+      expect(left).not.toMatch(/[-+]\d{2,}\*\(0\.35\*sin/);
+      expect(right).not.toMatch(/[-+]\d{2,}\*\(0\.35\*sin/);
+    });
+
+    it("a longer shot does not pan further than a short one", () => {
+      // The defect scaled travel with duration²; the bound is now duration-independent.
+      const short = buildKenBurnsTail(3, 1.02, "center", "pan-left");
+      const long = buildKenBurnsTail(12, 1.02, "center", "pan-left");
+      const bound = `-(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*`;
+      expect(short).toContain(bound);
+      expect(long).toContain(bound);
     });
 
     it("center variant has no pan term regardless of easing", () => {
