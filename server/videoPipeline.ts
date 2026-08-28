@@ -8318,7 +8318,9 @@ async function generateGuaranteedBeatClipInner(
     try {
       const safeText = sanitizeForDrawtextStrict(beatText, 90);
       const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
-      const color = colors[Math.abs(sceneIndex) % colors.length];
+      // RONDE 154: the same sequence counter, for the same reason — every placeholder beat in
+      // one scene used to get the identical colour and merge into a single unchanging picture.
+      const color = colors[colorFallbackSequence++ % colors.length];
       const safeDur = guaranteedTextOverlayDurationSec(duration);
       await withSceneFetchTimeout(
         () => exec(
@@ -8458,16 +8460,43 @@ async function appendGuaranteedSceneClips(
   }
 }
 
+/**
+ * RONDE 154 — two cards in a row must not be the same colour.
+ *
+ * The colour was `colors[Math.abs(seed) % colors.length]` with `seed = sceneIndex * 1000 +
+ * slotIndex`. Video 551's scene 2 asked for slots 101, 102 and 302; the last two both landed on
+ * palette index 6 and came out identically coloured. To `mpdecimate` that is not two cards, it is
+ * ONE unchanging picture — which is how a 19.38s still appeared in a render whose longest single
+ * card is about five seconds.
+ *
+ * ── Why a counter and not better arithmetic ──────────────────────────────────────────────────
+ *
+ * Slot numbers are tier markers, not a sequence: 101, 102, then 302. ANY linear function of the
+ * slot collides whenever two slots differ by a multiple of the palette size, and 302 − 102 = 200
+ * is. `(scene * 31 + slot) % 8` fails on exactly this case too — it was tried and measured.
+ *
+ * So the colour comes from how many cards have actually been made, which is the only quantity that
+ * is guaranteed to advance by one between consecutive cards. Cross-scene interleaving under
+ * parallel compose can shuffle WHICH colour a card gets; it cannot make two successive calls
+ * return the same one, which is the property that matters.
+ *
+ * It changes nothing about what a card IS: still a placeholder in the audit, still counted in
+ * fallbackRatio, still a beat with no footage behind it.
+ */
+let colorFallbackSequence = 0;
+
 async function generateColorFallback(
   sceneIndex: number,
   duration: number,
   workDir: string,
-  outputPath?: string
+  outputPath?: string,
+  variantIndex?: number
 ): Promise<string> {
   fs.mkdirSync(workDir, { recursive: true });
   const out = outputPath ?? path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
-  const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
-  const color = colors[Math.abs(sceneIndex) % colors.length];
+  // Drawn ONCE here and passed down, so the counter advances once per card rather than once per
+  // internal retry — and so the colour this function logs is the colour the encoder actually uses.
+  const variant = variantIndex ?? colorFallbackSequence++;
   // Guard NaN/Infinity/0 — Math.max(NaN, 3) = NaN which breaks ffmpeg -t
   const rawDuration = Number.isFinite(duration) && duration > 0 ? duration : 5;
   const safeDuration = Math.min(Math.max(rawDuration, 3), 90);
@@ -8488,12 +8517,13 @@ async function generateColorFallback(
   // attempt eventually timed out and failed ("all color-fallback attempts failed") even
   // though the commands themselves (a trivial solid-color test pattern) were never actually
   // broken.
-  return _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir);
+  return _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir, variant);
 }
 
-async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
+async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string, variantIndex?: number): Promise<string> {
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
-  const color = colors[Math.abs(sceneIndex) % colors.length];
+  // RONDE 154: the card's own position in the sequence, so two in a row are never one picture.
+  const color = colors[Math.abs(variantIndex ?? colorFallbackSequence++) % colors.length];
   const commands = [
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
