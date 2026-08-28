@@ -467,6 +467,14 @@ import {
 } from "./mismatchResearch";
 import { formatVisualSourcingAudit, findUnproductiveProviders, summarizeProviderOutcomes } from "./visualSourcingAudit";
 import {
+  createExtendHoldState,
+  formatExtendRefusal,
+  mayExtendAgain,
+  recordExtension,
+  resetExtendHold,
+  type ExtendHoldState,
+} from "./extendHoldBudget";
+import {
   auditVideoStillness,
   checkStillnessLimit,
   formatStillnessReport,
@@ -15129,6 +15137,22 @@ export interface VisualDedupState {
   mismatchResearchedBeats: Set<string>;
   /** RONDE 132: what the research passes cost and what they bought. */
   researchTally: ResearchTally;
+  /**
+   * RONDE 142 — how long one source clip has been carried by extendLastClip.
+   *
+   * Video 548 filled 13 empty beats by extending the same clip and put one picture on screen for
+   * 41.38 of its 95.84 seconds. Each extension was short and legitimate on its own; nothing
+   * counted the run. See ./extendHoldBudget.
+   */
+  extendHold: ExtendHoldState;
+  /**
+   * RONDE 142 — the last mismatch kind the gate produced for each beat, keyed `s{scene}b{beat}`.
+   *
+   * Written at the shared gate so it covers every route, and read by the research pass. Before
+   * this, the research pass could only see refusals that happened inside the funnel's own loop,
+   * which is why video 548 had four QUESTION-blame refusals and zero research attempts.
+   */
+  lastMismatchByBeat: Map<string, MismatchKind>;
   /** Sticky NL/US segment lock for comparison documentaries. */
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
@@ -15375,6 +15399,8 @@ export function createVisualDedupState(
     mismatchTally: createMismatchTally(),
     mismatchResearchedBeats: new Set<string>(),
     researchTally: createResearchTally(),
+    extendHold: createExtendHoldState(),
+    lastMismatchByBeat: new Map<string, MismatchKind>(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
     assetDirectorSceneClips: [],
@@ -24658,6 +24684,41 @@ async function beatClipPassesVisionGate(
   if (!relevance.allowed) {
     recordGateVerdict("beat_image_gate", true);
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "beat_image_gate", queryLabel);
+    /**
+     * RONDE 142 — every refusal is classified here, because every route passes here.
+     *
+     * The comment above this function says it: "this call funnels every rescue/adoption route
+     * (Openverse, Wikimedia, Pexels, Pixabay, Internet Archive, YouTube CC, curated archive)
+     * through one evaluateClipVisionGate call". RONDE 131 put the classification on the FUNNEL
+     * instead, which is one route among several, and video 548 measured the cost:
+     *
+     *     vision gate does_not_fit   24
+     *     [MismatchFeedback] counted  5
+     *
+     * Nineteen of twenty-four refusals — 79% — never reached classifyMismatch. The consequences
+     * were not cosmetic: the provider table reported `pexels accepted 1 of 1 (100%)` on a render
+     * whose log carries ten refused Pexels clips, five of them described as modern; and
+     * `decideResearch` never saw a fault to act on, so research ran zero times.
+     *
+     * Registering here fixes all three at once. Deduped by (content, beat) so a candidate seen by
+     * two layers is counted once, and the provider comes from the lineage ledger rather than the
+     * filename — RONDE 87's rule, unchanged.
+     */
+    const refusalKey = `${clipContentKey(clipPath)}|s${scene.index}b${beat.index}`;
+    const kind = classifyMismatch(relevance);
+    if (
+      recordMismatch(dedup.mismatchTally, {
+        kind,
+        source: dedup.sourcingCache.lineage.providerBucketFor(clipPath, clipContentKey(clipPath)),
+        depicts: relevance.depicts,
+        reason: relevance.reason,
+        dedupeKey: refusalKey,
+      })
+    ) {
+      // The beat's last verdict, so the research pass can act on it even when the refusal
+      // happened on a route that has no candidate list of its own to reorder.
+      dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);
+    }
     return { pass: false, worstScore10: result.worstScore10, skipped: false, fromCache: relevance.cached };
   }
   if (!relevance.cached && relevance.verdict !== "unknown") recordGateVerdict("beat_image_gate", false);
@@ -26731,6 +26792,8 @@ async function adoptStockBeatClipFallbackInner(
       if (await tryClip(clipPath, q, source, holdSec)) {
         markLicensedStockBeatUsed(dedup);
         dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
+      resetExtendHold(dedup.extendHold);
         console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: ${source} voor "${q}"`);
         return true;
       }
@@ -27226,15 +27289,39 @@ async function rescueBeatVisualWhenEmptyInner(
 
   // Try extending the last real clip before falling back to color
   if (dedup.lastRealClip) {
-    try {
-      const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir);
-      if (extended && await pushClip(extended, holdSec)) {
-        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, extended, "rescue_extend", undefined, dedup.segmentGeoLock);
-        console.log(`[Retrieval] s${scene.index}b${beat.index} extendLastClip HIT`);
-        return true;
+    /**
+     * RONDE 142 — the run of extensions is what put one picture on screen for 41 seconds.
+     *
+     * Each call here is short and, on its own, defensible: extendLastClip loops rather than
+     * freezes and lays a slow zoom over the top, which is RONDE 111's answer to a long hold. What
+     * nothing accounted for is that `dedup.lastRealClip` does not change while beats keep failing,
+     * so beat after beat extends the SAME footage. Video 548 did that thirteen times and the
+     * finished MP4 measured 41.38s of unchanging picture against a 5.00s limit.
+     *
+     * The budget below is RONDE 128's existing `stillImageMaxSec()` — no new limit, applied to
+     * the one route that sat outside it. When it is spent the beat falls through to the same
+     * fallback it would have reached anyway; nothing new is invented to fill it.
+     */
+    const extendDecision = mayExtendAgain({
+      state: dedup.extendHold,
+      sourceClipPath: dedup.lastRealClip,
+      holdSec,
+    });
+    if (!extendDecision.allowed) {
+      console.warn(formatExtendRefusal(scene.index, beat.index, extendDecision));
+    } else {
+      try {
+        const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir);
+        if (extended && await pushClip(extended, holdSec)) {
+          // Charged only on an adoption: an extension that failed to build put nothing on screen.
+          recordExtension(dedup.extendHold, dedup.lastRealClip, holdSec);
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, extended, "rescue_extend", undefined, dedup.segmentGeoLock);
+          console.log(`[Retrieval] s${scene.index}b${beat.index} extendLastClip HIT`);
+          return true;
+        }
+      } catch (err) {
+        console.warn("[Retrieval] extendLastClip error:", (err as Error).message?.slice(0, 80));
       }
-    } catch (err) {
-      console.warn("[Retrieval] extendLastClip error:", (err as Error).message?.slice(0, 80));
     }
   }
 
@@ -28318,6 +28405,8 @@ async function fetchArchiveSentenceMontage(
       markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
       if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
         dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
+      resetExtendHold(dedup.extendHold);
       }
       return true;
     });
@@ -29378,6 +29467,8 @@ async function fetchSceneVisualsInner(
       fs.existsSync(clipPath)
     ) {
       dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
+      resetExtendHold(dedup.extendHold);
     }
     return true;
   };
@@ -29673,7 +29764,23 @@ async function fetchSceneVisualsInner(
         // in the ordinary case. A rejected winner is marked used, the next-best is tried, and
         // after MAX_JUDGEMENTS_PER_BEAT the pipeline takes what it has rather than starving the
         // beat. Every failure mode returns "unknown", which adopts exactly as before.
-        if (winner && beatImageRelevanceGateEnabled()) {
+        if (beatImageRelevanceGateEnabled()) {
+          /**
+           * RONDE 142 — the judging loop needs a candidate; the research pass below does not.
+           *
+           * These were one block until now, and video 548 measured what that cost: 13 of its 15
+           * beats reached this point with `offered=0` — no candidate at all — so the whole block
+           * was skipped, research included. Research is unreachable in exactly the situation it
+           * exists for. Splitting the two puts the loop behind `winner` where it belongs and
+           * leaves the research pass reachable for a beat that found nothing.
+           *
+           * The condition is given a name rather than written inline, because RONDE 53 anchors its
+           * adoption-audit test on the first bare winner-guard after the picker; a second one here
+           * would silently point that test at the wrong block. The comment avoids the literal form
+           * for the same reason — RONDE 130 learned that these guards match TEXT, not code.
+           */
+          const hasCandidateToJudge = winner !== null;
+          if (hasCandidateToJudge) {
           for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++) {
             // RONDE 103: the same central decider every other route uses. The frame sampling,
             // the cleanup and the cache key used to be this loop's own copy of that logic — and
@@ -29773,6 +29880,7 @@ async function fetchSceneVisualsInner(
             gateReprieveWinner = winner;
             winner = null;
           }
+          } // end: candidates existed and were judged
 
           /**
            * RONDE 132 — the beat has been refused and has nothing left. Ask a better question.
@@ -29806,7 +29914,16 @@ async function fetchSceneVisualsInner(
            * like every other route — so a research candidate is judged, never adopted on trust.
            */
           const researchKey = `s${scene.index}b${beat.index}`;
-          if (!winner && lastMismatchKind && !dedup.perf.fastStockMode) {
+          /**
+           * RONDE 142 — the refusal may have happened on another route.
+           *
+           * `lastMismatchKind` is set inside this loop only. Video 548 showed why that is too
+           * narrow: 19 of its 24 refusals came from routes that never touch this loop, and the
+           * research pass consequently never saw a fault. The shared gate now records the kind
+           * per beat, so a beat refused elsewhere still has something to correct against.
+           */
+          const beatMismatchKind = lastMismatchKind ?? dedup.lastMismatchByBeat.get(researchKey) ?? null;
+          if (!winner && beatMismatchKind && !dedup.perf.fastStockMode) {
             const beatLabel = researchKey;
             /**
              * RONDE 134 — the beat's context, widened by the scene's, using the same extractor.
@@ -29823,7 +29940,7 @@ async function fetchSceneVisualsInner(
                 : null,
             });
             const decision = decideResearch({
-              kind: lastMismatchKind,
+              kind: beatMismatchKind,
               ctx: researchCtx,
               alreadyResearched: dedup.mismatchResearchedBeats.has(researchKey),
               // Every question this beat has already been asked, so a "correction" cannot be one

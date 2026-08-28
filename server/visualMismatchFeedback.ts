@@ -451,17 +451,48 @@ export type MismatchTally = {
   byKindAndSource: Map<string, number>;
   /** One example per kind, so a report can quote the gate rather than only count it. */
   examples: Map<MismatchKind, { source: string; depicts: string; reason: string }>;
+  /**
+   * RONDE 142 — refusals already counted, so one candidate cannot be recorded twice.
+   *
+   * The gate is consulted from several layers, and a clip refused deep in the adopt path can be
+   * seen again by an outer route. Counting it twice would inflate exactly the numbers a render is
+   * meant to be judged on. Keyed by the caller — see `dedupeKey` on recordMismatch.
+   */
+  countedKeys: Set<string>;
   total: number;
 };
 
 export function createMismatchTally(): MismatchTally {
-  return { byKind: new Map(), byKindAndSource: new Map(), examples: new Map(), total: 0 };
+  return {
+    byKind: new Map(),
+    byKindAndSource: new Map(),
+    examples: new Map(),
+    countedKeys: new Set(),
+    total: 0,
+  };
 }
 
 export function recordMismatch(
   tally: MismatchTally,
-  params: { kind: MismatchKind; source: string; depicts?: string; reason?: string }
-): void {
+  params: {
+    kind: MismatchKind;
+    source: string;
+    depicts?: string;
+    reason?: string;
+    /**
+     * RONDE 142 — identity of the (candidate, beat) pair being refused.
+     *
+     * Supplied by callers that can be reached more than once for the same refusal. A repeat is
+     * ignored rather than counted; omitting the key keeps the old unconditional behaviour for
+     * callers that cannot repeat.
+     */
+    dedupeKey?: string;
+  }
+): boolean {
+  if (params.dedupeKey) {
+    if (tally.countedKeys.has(params.dedupeKey)) return false;
+    tally.countedKeys.add(params.dedupeKey);
+  }
   const source = (params.source ?? "").trim().toLowerCase() || "unknown";
   tally.total++;
   tally.byKind.set(params.kind, (tally.byKind.get(params.kind) ?? 0) + 1);
@@ -474,6 +505,7 @@ export function recordMismatch(
       reason: (params.reason ?? "").slice(0, 120),
     });
   }
+  return true;
 }
 
 export type MismatchBreakdown = {

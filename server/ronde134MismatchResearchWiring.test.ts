@@ -531,7 +531,7 @@ describe("RONDE 134 — mutation guards", () => {
   it("M1. the research pass calls the provider cascade", () => {
     const idx = PIPE.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
     expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, idx + 4500);
+    const block = PIPE.slice(idx, idx + 6200);
     expect(block).toContain("fetchHistoricalBeatVideo(");
     expect(block).toContain("leadQueries: decision.correctedQueries");
     expect(block).toContain("researchPass: true");
@@ -539,7 +539,7 @@ describe("RONDE 134 — mutation guards", () => {
 
   it("M2/M3. the scene context is built and passed", () => {
     const idx = PIPE.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = PIPE.slice(idx, idx + 2000);
+    const block = PIPE.slice(idx, idx + 3000);
     expect(block).toContain("buildResearchContext({");
     expect(block).toContain("scene: scene.text?.trim()");
     expect(block).toContain("ctx: researchCtx");

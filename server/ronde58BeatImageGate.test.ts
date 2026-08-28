@@ -195,11 +195,13 @@ describe("RONDE 58 — the wiring", () => {
     expect(idx).toBeGreaterThan(-1);
     /**
      * Widened from 4600 in RONDE 131, which inserted the mismatch-feedback block into the refusal
-     * branch and pushed the last assertion below past the old edge. The window is a way of saying
-     * "in the funnel's adopt block" and nothing else — every assertion is unchanged, and each one
-     * still fails if the line it names is deleted.
+     * branch and pushed the last assertion below past the old edge. Widened again in RONDE 142,
+     * which split the judging loop from the research pass so the latter is reachable for a beat
+     * with no candidate at all. The window is a way of saying "in the funnel's adopt block" and
+     * nothing else — every assertion is unchanged, and each one still fails if the line it names
+     * is deleted.
      */
-    const block = src.slice(idx, idx + 6800);
+    const block = src.slice(idx, idx + 9000);
     /**
      * SUPERSEDED BY RONDE 103, deliberately.
      *

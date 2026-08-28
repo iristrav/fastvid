@@ -366,9 +366,12 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
     expect(idx).toBeGreaterThan(0);
     // RONDE 134 widened this from 4000: the research block gained the scene-context merge and the
     // budget check, which pushed the provider call past the old edge. No assertion changed.
-    const block = src.slice(idx, idx + 5600);
+    const block = src.slice(idx, idx + 7000);
     expect(block).toContain("decideResearch({");
-    expect(block).toContain("kind: lastMismatchKind");
+    // RONDE 142: the kind now falls back to the shared gate's per-beat record, so a refusal
+    // that happened on another route still reaches research.
+    expect(block).toContain("kind: beatMismatchKind");
+    expect(block).toContain("dedup.lastMismatchByBeat.get(researchKey)");
     // RONDE 134 widened the context to beat + scene; beatSearchProvenance is still what builds
     // both halves of it.
     expect(block).toContain("ctx: researchCtx");
@@ -381,7 +384,7 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
   it("18. the one-pass limit is claimed BEFORE the search, not after", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = src.slice(idx, idx + 5600);
+    const block = src.slice(idx, idx + 7000);
     const claim = block.indexOf("dedup.mismatchResearchedBeats.add(researchKey);");
     const search = block.indexOf("fetchHistoricalBeatVideo(");
     expect(claim).toBeGreaterThan(0);
@@ -607,7 +610,7 @@ describe("RONDE 132 — mutation guards", () => {
   it("M1. removing the research call breaks the wiring assertion", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = src.slice(idx, idx + 5600);
+    const block = src.slice(idx, idx + 7000);
     expect(block).toContain("await withSceneFetchTimeout(");
     expect(block).toContain("fetchHistoricalBeatVideo(");
   });
