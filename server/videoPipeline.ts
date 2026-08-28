@@ -3775,7 +3775,21 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
     profile = applyAiFallbackToProfile({
       targetWallClockMin: 10,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
-      maxTopicQueries: IS_RAILWAY ? 1 : 3,
+      /**
+       * RONDE 153 — one topical query was too few, measured.
+       *
+       * Video 550 filled five consecutive slots of scene 1 from a single query. The asset dedup
+       * held, so they were five DIFFERENT clips — but all five came out of one query's result
+       * set, which is as much variety as that query happened to contain. Six of fifteen beats
+       * ended on a placeholder and four on a colour card.
+       *
+       * Raised to two rather than to the three used off-Railway: the same render finished in
+       * 10m 45s of a 22m budget (49%, 11m 15s unused), so there is measured room for a second
+       * query, and stopping short of the off-Railway value keeps a margin against the
+       * peak-memory pressure the parallelism comment above is about. Revert to 1 if a fresh
+       * render shows the wall clock creeping toward its target.
+       */
+      maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 12_000,
       enableArchival: true,
@@ -29976,7 +29990,28 @@ async function fetchSceneVisualsInner(
            * per beat, so a beat refused elsewhere still has something to correct against.
            */
           const beatMismatchKind = lastMismatchKind ?? dedup.lastMismatchByBeat.get(researchKey) ?? null;
-          if (!winner && beatMismatchKind && !dedup.perf.fastStockMode) {
+          /**
+           * RONDE 153 — the budget decides, not the preset.
+           *
+           * `!fastStockMode` was a second gate on top of one that already exists and is better
+           * informed: `decideResearch` takes `remainingBudgetMs` and refuses as BUDGET_EXCEEDED
+           * when a pass would not fit. The preset check fired regardless of how much time was
+           * actually left, and video 550 measured what that costs on the one-minute preset, where
+           * fastStockMode is on by default on Railway:
+           *
+           *     [MismatchFeedback] 18 refusal(s) — search-preventable=8
+           *     research attempts=0
+           *     BudgetSummary  estimated=22m  actual=10m 45s  used=49%  total_remaining=11m 15s
+           *
+           * Eight refusals the feedback chain had already classified as fixable by asking a better
+           * question, eleven minutes of unused budget, and not one corrected search — because the
+           * preset said "fast". The beats fell through to placeholders and colour cards instead.
+           *
+           * Research is the recovery path for a refused beat. Switching it off on the preset most
+           * likely to be short of footage is backwards; the budget check is what should decide,
+           * and it already did.
+           */
+          if (!winner && beatMismatchKind) {
             const beatLabel = researchKey;
             /**
              * RONDE 134 — the beat's context, widened by the scene's, using the same extractor.

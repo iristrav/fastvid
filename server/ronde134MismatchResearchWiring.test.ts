@@ -531,7 +531,12 @@ describe("RONDE 134 — mutation guards", () => {
   it("M1. the research pass calls the provider cascade", () => {
     const idx = PIPE.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
     expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, idx + 6200);
+    /**
+     * Widened from 6200 in RONDE 153, which documented why the research pass no longer carries a
+     * fastStockMode gate and pushed the last assertion just past the old edge (measured offset
+     * 6194). Every assertion below is unchanged and each still fails if the line it names goes.
+     */
+    const block = PIPE.slice(idx, idx + 7600);
     expect(block).toContain("fetchHistoricalBeatVideo(");
     expect(block).toContain("leadQueries: decision.correctedQueries");
     expect(block).toContain("researchPass: true");

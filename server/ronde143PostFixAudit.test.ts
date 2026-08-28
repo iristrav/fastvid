@@ -224,6 +224,18 @@ describe("RONDE 143 GAP 3 — the research signal survives a duplicate count", (
     // quietly undo them while these gaps are being closed.
     expect(PIPE).toContain("dedup.lastMismatchByBeat.get(researchKey)");
     expect(PIPE).toContain("const hasCandidateToJudge = winner !== null;");
-    expect(PIPE).toContain("if (!winner && beatMismatchKind && !dedup.perf.fastStockMode)");
+    /**
+     * NARROWED BY RONDE 153, deliberately.
+     *
+     * The condition carried a third clause, `!dedup.perf.fastStockMode`, which switched research
+     * off entirely on the one-minute preset — in production, on the renders most likely to be
+     * short of footage. Video 550 measured the cost: 8 search-preventable refusals, 11 minutes of
+     * unused budget, and research attempts=0. The budget check inside decideResearch is the
+     * better-informed gate and was being pre-empted by the cruder one.
+     *
+     * What this test exists for is unchanged and still asserted: the pass runs only when the beat
+     * has NO winner, and only when a mismatch kind is known for it.
+     */
+    expect(PIPE).toContain("if (!winner && beatMismatchKind) {");
   });
 });
