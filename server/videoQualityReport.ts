@@ -73,6 +73,25 @@ export type VideoQualityReport = {
     worstMeanLuma: number | null;
     warnings: string[];
   };
+  /**
+   * RONDE 133 — what the finished MP4 actually looks like, measured frame by frame.
+   *
+   * Every other number in this report is derived from what the pipeline BELIEVED it did. This one
+   * is read back off the exported file by ./videoStillnessAudit, so a filter that silently did
+   * nothing, a concat that repeated a segment, or a still that outstayed its cap shows up here
+   * even when every plan upstream says otherwise. Absent when the audit could not run — which is
+   * reported as absent, never as a pass.
+   */
+  stillness?: {
+    durationSec: number;
+    /** Longest stretch of unchanging picture. The number the no-frozen-frame chain exists for. */
+    longestStillSec: number;
+    longestStillStartSec: number;
+    visualChanges: number;
+    stillSegments: number;
+    limitSec: number;
+    ok: boolean;
+  };
   adoptAuditSummary?: AdoptAuditSummary;
   voiceMontageSync?: {
     ok: boolean;

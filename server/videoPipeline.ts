@@ -462,6 +462,11 @@ import {
   recordResearchSkip,
   type ResearchTally,
 } from "./mismatchResearch";
+import {
+  auditVideoStillness,
+  checkStillnessLimit,
+  formatStillnessReport,
+} from "./videoStillnessAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
@@ -36428,6 +36433,53 @@ async function _runVideoPipelineInner(
     // disk (multipart upload for S3/R2) instead of reading the whole file into a single Buffer
     // first, which previously peaked at roughly 2x the file size in RAM for this one step.
     const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
+
+    /**
+     * RONDE 133 — measure the finished file, on every render.
+     *
+     * RONDE 130 built `videoStillnessAudit` to answer the one question the whole no-frozen-frame
+     * chain exists for: how long is the viewer looking at exactly the same thing. It proved the
+     * tail-pad fix on a real MP4 and it was never called from the pipeline — so `auditVideoStillness`
+     * appeared in the codebase and in its own tests, and in not one production render.
+     *
+     * That is the RONDE 26 shape this project keeps rediscovering, and all three of the lenses
+     * RONDE 29 named miss it in the same way: the module is exercised (by tests), it logs (in
+     * tests), and no flag switches it off. What it never did was run on a real export.
+     *
+     * Wired here because this is the first point where the finished MP4 exists. It decides
+     * nothing: it measures, it warns, and it is wrapped so a slow or broken audit can never cost a
+     * render that is otherwise complete.
+     */
+    try {
+      const stillness = await withTimeout(
+        auditVideoStillness({ videoPath: finalVideoPath, maxSampleFps: 8, timeoutMs: 180_000 }),
+        200_000,
+        "stillness audit"
+      );
+      const verdict = checkStillnessLimit(stillness, stillImageMaxSec());
+      console.log(formatStillnessReport(`video ${videoId} final.mp4`, stillness, verdict));
+      qualityReport.stillness = {
+        durationSec: stillness.durationSec,
+        longestStillSec: stillness.longestStillSec,
+        longestStillStartSec: stillness.longestStillStartSec,
+        visualChanges: stillness.visualChanges,
+        stillSegments: stillness.stillRuns.length,
+        limitSec: verdict.limitSec,
+        ok: verdict.ok,
+      };
+      for (const v of verdict.violations.slice(0, 3)) {
+        qualityReport.warnings.push(
+          `beeld staat ${v.durationSec.toFixed(1)}s stil vanaf ${v.startSec.toFixed(1)}s — ` +
+            `langer dan de ${verdict.limitSec.toFixed(0)}s die een foto mag duren`
+        );
+      }
+    } catch (err) {
+      // A measurement that could not be taken is reported as absent, never as a pass.
+      console.warn(
+        `[VisualIntegrity] stillness audit could not run: ${(err as Error)?.message?.slice(0, 120)}`
+      );
+    }
+
     let url: string;
 
     if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
