@@ -183,3 +183,25 @@ export function formatStillPlan(sceneIndex: number, beatIndex: number, totalSec:
     `${segments.length} still(s), max ${stillImageMaxSec().toFixed(1)}s each — ${parts}`
   );
 }
+
+/**
+ * RONDE 152 — the gentle push that keeps a contained still from being a frozen frame.
+ *
+ * Eases from `STILL_DRIFT_ZOOM` back to 1.0 across the clip, so the LAST frame is exactly the
+ * contained picture — whole, centred, uncropped, which is RONDE 128's rule. Everything before it
+ * is the same picture very slightly larger, which for any image narrower than 16:9 is eating the
+ * letterbox padding rather than the photograph.
+ *
+ * The amount is small on purpose. It only has to defeat `mpdecimate`, which is what the stillness
+ * audit measures with: a picture that changes at all is not a held frame. Four percent over five
+ * seconds is roughly 15 pixels of scale per second at 1080p — visible as life, not as a move.
+ */
+export const STILL_DRIFT_ZOOM = 1.04;
+
+export function stillZoomOutExpr(totalFrames: number): string {
+  const frames = Math.max(2, Math.round(totalFrames));
+  const delta = (STILL_DRIFT_ZOOM - 1).toFixed(7);
+  // Linear in `on`, clamped, so the final frame lands exactly on 1.0 however ffmpeg rounds the
+  // frame count. A trailing fraction of a frame must not leave the picture slightly cropped.
+  return `max(${STILL_DRIFT_ZOOM.toFixed(4)}-${delta}*on/${frames - 1},1.0)`;
+}

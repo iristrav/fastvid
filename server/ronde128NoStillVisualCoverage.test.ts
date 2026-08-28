@@ -182,19 +182,29 @@ describe("RONDE 128 — the whole picture, in the middle", () => {
   it("the encoder's default branch is the contain one", () => {
     const curated = src("curatedMediaSourcing.ts");
     /**
-     * Widened from 6000 in RONDE 147, which documented the Ken Burns pan fix inside the zoom
-     * branch and pushed the contain assertion below past the old edge (measured offset 6155).
-     * The window is a way of saying "inside convertImageToKenBurns" and nothing more — both
-     * assertions are unchanged and each still fails if the line it names is deleted.
+     * Widened from 6000 in RONDE 147 and again to 9500 in RONDE 152, which documented why the
+     * contained still now MOVES (measured offset 8109). The window is a way of saying "inside
+     * convertImageToKenBurns" and nothing more — every assertion is unchanged and each still
+     * fails if the line it names is deleted.
      */
     const fn = curated.slice(
       curated.indexOf("async function convertImageToKenBurns("),
-      curated.indexOf("async function convertImageToKenBurns(") + 7500
+      curated.indexOf("async function convertImageToKenBurns(") + 9500
     );
     // The zoom/crop path is now behind the flag...
     expect(fn).toContain("} else if (stillKenBurnsEnabled()) {");
     // ...and the default path contains the picture.
     expect(fn).toContain("containCenterFilter({ widthPx: VIDEO_WIDTH, heightPx: VIDEO_HEIGHT })");
+    /**
+     * RONDE 152 — and it MOVES, which RONDE 128 did not require and production paid for.
+     *
+     * Removing the crop was right; removing the motion with it left this branch emitting a
+     * literally frozen picture. Video 550 measured 34.13s of unchanging image because the
+     * coverage fill looped a motionless still. The drift eases back to 1.0, so the last frame is
+     * still exactly the contained picture — whole, centred, uncropped.
+     */
+    expect(fn).toContain("stillZoomOutExpr(");
+    expect(fn).toContain('kenBurnsCenterXExpr(null, "1")');
   });
 
   it("THE REAL TEST: a wide photo really is letterboxed and centred, not cropped", () => {

@@ -5,7 +5,7 @@ import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
 import { stitchSourceFloorSec } from "./coverageFillPlan";
-import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled } from "./stillImagePolicy";
+import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
 import {
   extractVisualSearchTags,
   extractSceneSearchTags,
@@ -1698,11 +1698,46 @@ async function convertImageToKenBurns(
      * fits and never past it — and the pad offsets centre what is left over. No crop, because
      * after a contain scale there is nothing outside the frame to cut. No zoompan at all.
      */
+    /**
+     * RONDE 152 — the whole picture, in the middle, and MOVING.
+     *
+     * RONDE 128 removed the crop and the zoom together, because the zoom of the day was the thing
+     * sliding around inside a cropped photograph. Removing the crop was right. Removing the motion
+     * with it left this branch — the one that actually runs, since ENABLE_STILL_KEN_BURNS is unset
+     * in production — emitting a literally frozen picture for up to five seconds.
+     *
+     * Video 550 measured what that costs once the coverage fill gets hold of one:
+     *
+     *     scene 1 montage:  loop=loop=3:size=124, setpts=2.0*PTS, trim=38.245
+     *                       → 4.96s of source, looped 4× and slowed 2×
+     *     stillness audit:  longest still 34.13s at 23.25s, imagesOver5Sec 3, passed NO
+     *
+     * Looping a motionless source produces a motionless montage. RONDE 130 replaced the frozen
+     * tail-pad with a loop precisely to avoid held frames, and that fix is sound — but it can only
+     * work if the footage it loops actually moves. This is the missing half.
+     *
+     * ── Why a zoom OUT ───────────────────────────────────────────────────────────────────────
+     *
+     * The photograph has to end whole, which is RONDE 128's rule and still right. A zoom that
+     * pushes IN finishes on a cropped picture; a zoom that eases OUT finishes on exactly the
+     * contained frame — the same last frame this branch produced before, arrived at through
+     * movement instead of stillness. The motion is applied AFTER the contain, so it works on the
+     * padded 1920×1080 composite: for any image narrower than 16:9 the early frames eat padding
+     * rather than picture.
+     *
+     * `kenBurnsCenterXExpr(null, …)` is RONDE 147/149's centred expression, so the frame cannot
+     * drift toward an edge at any zoom or duration — the defect that made the old zoom worth
+     * removing cannot come back through this door.
+     */
     const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
     const contain = containCenterFilter({ widthPx: VIDEO_WIDTH, heightPx: VIDEO_HEIGHT });
+    const stillFrames = Math.max(2, Math.round(duration * 25));
+    const drift = stillZoomOutExpr(stillFrames);
     await exec(
       `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
-        `-vf "${contain},fps=25,format=yuv420p" ` +
+        `-vf "${contain},zoompan=z='${drift}':` +
+        `x='${kenBurnsCenterXExpr(null, "1")}':y='ih/2-(ih/zoom/2)':` +
+        `d=${stillFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25,format=yuv420p" ` +
         `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an "${outPath}"`,
       EXEC_TIMEOUT_ENCODE_MS
     );
