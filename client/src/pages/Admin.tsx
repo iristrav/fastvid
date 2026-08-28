@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
 import { DiscountCodesAdmin } from "@/components/admin/DiscountCodesAdmin";
+import { EditUserDialog, type EditableUser } from "@/components/admin/EditUserDialog";
 import { useVoicePreview } from "@/hooks/useVoicePreview";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
 import { GenerationProgressBar, progressRunKey } from "@/components/GenerationProgressBar";
@@ -467,15 +468,12 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
   );
 }
 
-function UsersTable() {
+function UsersTable({ currentUserId }: { currentUserId: number | null }) {
   const { data: users, isLoading, refetch } = trpc.admin.listUsers.useQuery({ limit: 100, offset: 0 });
+  const [editingUser, setEditingUser] = useState<EditableUser | null>(null);
   const updateSubMutation = trpc.admin.updateUserSubscription.useMutation({
     onSuccess: () => { toast.success("Subscription updated"); refetch(); },
     onError: () => toast.error("Failed to update subscription"),
-  });
-  const updateRoleMutation = trpc.admin.updateUserRole.useMutation({
-    onSuccess: () => { toast.success("Role updated"); refetch(); },
-    onError: () => toast.error("Failed to update role"),
   });
 
   if (isLoading) return <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 text-purple-400 animate-spin" /></div>;
@@ -536,11 +534,19 @@ function UsersTable() {
                           <UserCheck className="w-3 h-3" /> Activate
                         </button>
                       )}
-                      {user.role !== "admin" && (
-                        <button onClick={() => updateRoleMutation.mutate({ userId: user.id, role: "admin" })} className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded-md hover:bg-purple-400/10">
-                          <Crown className="w-3 h-3" /> Make Admin
-                        </button>
-                      )}
+                      {/*
+                        RONDE 148: the one-way promote button is now a full edit dialog. Promotion
+                        used to be the only role change the product could perform, so a mistaken
+                        promotion was permanent — there was no route back from admin to user
+                        anywhere in the UI. Its old label is deliberately not written out here: the
+                        regression test asserts that string is absent from this file.
+                      */}
+                      <button
+                        onClick={() => setEditingUser(user as unknown as EditableUser)}
+                        className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded-md hover:bg-purple-400/10"
+                      >
+                        <Pencil className="w-3 h-3" /> Edit
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -552,6 +558,14 @@ function UsersTable() {
           </table>
         </div>
       </div>
+      {editingUser && (
+        <EditUserDialog
+          user={editingUser}
+          currentUserId={currentUserId}
+          onClose={() => setEditingUser(null)}
+          onSaved={() => refetch()}
+        />
+      )}
     </div>
   );
 }
@@ -738,7 +752,9 @@ function VideosTable() {
 
 export default function Admin() {
   const { user, loading, isAuthenticated, logout } = useAuth() as {
-    user: { name?: string; role?: string } | null;
+    // RONDE 147: id is needed so the users table can tell the edit dialog which row is the
+    // signed-in admin, and refuse the self-demotion the server also refuses.
+    user: { id?: number; name?: string; role?: string } | null;
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [location, navigate] = useLocation();
@@ -922,7 +938,7 @@ export default function Admin() {
           )}
 
           {activeTab === "discounts" && <DiscountCodesAdmin />}
-          {activeTab === "users" && <UsersTable />}
+          {activeTab === "users" && <UsersTable currentUserId={user?.id ?? null} />}
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
           {activeTab === "archive" && <MediaArchiveAdmin />}
