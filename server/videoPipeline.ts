@@ -436,6 +436,17 @@ import {
   type ScoredFunnelCandidate,
   BEAT_ARCHIVE_STOP_THRESHOLD,
 } from "./retrievalFunnel";
+import {
+  classifyMismatch,
+  createMismatchTally,
+  formatMismatchFeedback,
+  formatMismatchSummary,
+  mismatchFaultSplit,
+  recordMismatch,
+  reorderAfterMismatch,
+  reorderChangedOrder,
+  type MismatchTally,
+} from "./visualMismatchFeedback";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
@@ -15074,6 +15085,15 @@ export interface VisualDedupState {
    * everything has been used — this one is never restored.
    */
   beatImageRejectedIds: Set<string>;
+  /**
+   * RONDE 131: what the content decider SAID when it refused, read and counted.
+   *
+   * Same render lifetime as the gate state above and for the same reason. The gate's `depicts`
+   * and `reason` are prose about one refusal; this is the render's distribution over them, which
+   * is what turns "21 does_not_fit" into a statement about whether better queries or better
+   * catalogues would have fixed it. See ./visualMismatchFeedback.
+   */
+  mismatchTally: MismatchTally;
   /** Sticky NL/US segment lock for comparison documentaries. */
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
@@ -15317,6 +15337,7 @@ export function createVisualDedupState(
     beatImageGate: createBeatImageGateState(),
     beatRelevance: createBeatRelevanceLedger(),
     beatImageRejectedIds: new Set<string>(),
+    mismatchTally: createMismatchTally(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
     assetDirectorSceneClips: [],
@@ -29458,7 +29479,9 @@ async function fetchSceneVisualsInner(
         const discoveredCount = funnelCandidates.length;
         const shortlistCount = toScore.length;
         let downloadedCount = 0;
-        const scored: ScoredFunnelCandidate[] = [];
+        // RONDE 131: `let`, because a refusal reorders what is left. The array's CONTENTS are
+        // never changed by that — see reorderAfterMismatch, which returns a permutation.
+        let scored: ScoredFunnelCandidate[] = [];
         // FASE 7.2 — embedding-space separation. funnelBeatEmb is an OpenAI
         // text-embedding-3-small vector (1536 dim, see createTextEmbedding above). It is the
         // right vector for the archive/text ranking below (findBestArchiveScoreForBeat,
@@ -29590,6 +29613,43 @@ async function fetchSceneVisualsInner(
             recordClipReject(
               dedup.clipRejectAudit, scene.index, beat.index, winner.clipPath,
               "beat_image_gate", winner.candidate.title
+            );
+
+            /**
+             * RONDE 131 — read what the picture editor just said, and look somewhere else.
+             *
+             * The gate returns `depicts` and `reason`: prose from a model that has seen the frame
+             * and read the narration. Until this round both were logged and discarded, and the
+             * loop's second look went to the next candidate in an order the first refusal had not
+             * touched — so a beat that had just been told "this is present-day footage under 1945
+             * narration" would cheerfully try the next present-day stock clip.
+             *
+             * Two things happen with it now. It is COUNTED, so the render can finally say whether
+             * its refusals were a sourcing problem or a catalogue problem. And when the refusal
+             * names something a catalogue actually predicts — a period error, a title card — the
+             * remaining candidates are reordered so the ones likely to repeat it sort last.
+             *
+             * Nothing is removed and no gate is consulted. See ./visualMismatchFeedback for why a
+             * reorder is the correct weight for this evidence rather than a rejection.
+             */
+            const mismatchKind = classifyMismatch(judgement);
+            recordMismatch(dedup.mismatchTally, {
+              kind: mismatchKind,
+              source: winner.candidate.source,
+              depicts: judgement.depicts,
+              reason: judgement.reason,
+            });
+            const beforeOrder = scored;
+            scored = reorderAfterMismatch(scored, mismatchKind, (s) => s.candidate.source);
+            console.log(
+              formatMismatchFeedback({
+                sceneIndex: scene.index,
+                beatIndex: beat.index,
+                source: winner.candidate.source,
+                kind: mismatchKind,
+                reordered: reorderChangedOrder(beforeOrder, scored),
+                remaining: scored.length - dedup.beatImageRejectedIds.size - 1,
+              })
             );
             // RONDE 61: a hard exclusion, not a used-marker. Marking it "used" alone put the
             // clip straight back: with one passer on the beat, unusedPassers empties, the picker
@@ -35520,6 +35580,26 @@ async function _runVideoPipelineInner(
               `beeldgate is ${t.skipped} keer niet eens bevraagd (budget op, of geen ` +
                 `leesbaar beeld) — die clips zijn ONGEZIEN aangenomen`
             );
+          }
+          /**
+           * RONDE 131 — and WHAT was wrong with the pictures it refused.
+           *
+           * `does_not_fit=21` says twenty-one pictures did not belong. It does not say whether a
+           * narrower query would have found better ones or whether the archives simply do not
+           * hold them, and those are the two projects the next round has to choose between. The
+           * split below is the first time this render can answer that.
+           */
+          {
+            const summary = formatMismatchSummary(visualDedup.mismatchTally);
+            if (summary) console.log(summary);
+            const split = mismatchFaultSplit(visualDedup.mismatchTally);
+            if (split.question >= Math.max(3, visualDedup.mismatchTally.total * 0.5)) {
+              qualityReport.warnings.push(
+                `${split.question} van ${visualDedup.mismatchTally.total} afgewezen beelden waren ` +
+                  `fout van soort (verkeerde periode, plaats of onderwerp) — die had een ` +
+                  `preciezere zoekvraag kunnen voorkomen`
+              );
+            }
           }
         }
         console.log(

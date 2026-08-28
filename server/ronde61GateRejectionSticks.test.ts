@@ -110,7 +110,10 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 5200);
+    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
+    // block, which pushed the reprieve check past the old edge. The window says "in the
+    // funnel's adopt block"; no assertion below it changed.
+    const block = src.slice(idx, idx + 7400);
     const picks = [...block.matchAll(/pickBestFunnelCandidate\(\s*\n?\s*scored, dedup\.usedFunnelCandidateIds, dedup\.beatImageRejectedIds/g)];
     expect(picks.length).toBe(2);
     // The bare two-argument call that could hand a refused clip back is gone from this block.
@@ -120,7 +123,10 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   it("a refusal is added to the hard set, not only to the soft one", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 5200);
+    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
+    // block, which pushed the reprieve check past the old edge. The window says "in the
+    // funnel's adopt block"; no assertion below it changed.
+    const block = src.slice(idx, idx + 7400);
     expect(block).toContain("dedup.beatImageRejectedIds.add(winner.candidate.id);");
   });
 
@@ -134,7 +140,10 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   it("running out of looks releases the winner, but keeps it as a last resort", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 5200);
+    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
+    // block, which pushed the reprieve check past the old edge. The window says "in the
+    // funnel's adopt block"; no assertion below it changed.
+    const block = src.slice(idx, idx + 7400);
     expect(block).toContain("if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id))");
     expect(block).toContain("no acceptable candidate");
     // Still nulled here, so every other route is tried first — that half is unchanged.
