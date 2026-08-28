@@ -226,9 +226,18 @@ describe("RONDE 111 — when no new candidate exists, the scene's own footage mo
   it("round B re-uses the last real clip in motion rather than freezing it", () => {
     const idx = PIPELINE.indexOf("Round B — re-use this scene's OWN footage, in motion.");
     expect(idx).toBeGreaterThan(-1);
-    const body = PIPELINE.slice(idx, idx + 2400);
+    /**
+     * Widened from 2400 in RONDE 143, which put this loop behind the same extend-hold budget the
+     * per-beat rescue ladder already used and documented why; the comment pushed the
+     * `"rescue_extend"` assertion below past the old edge. The window is a way of saying "inside
+     * round B" and nothing more — both assertions are unchanged, and both still fail if the line
+     * they name is deleted.
+     */
+    const body = PIPELINE.slice(idx, idx + 3600);
     expect(body).toContain("await extendLastClip(source,");
     expect(body).toContain('"rescue_extend"');
+    // RONDE 143: and round B is budgeted like every other route into extendLastClip.
+    expect(body).toContain("mayExtendAgain({ state: dedup.extendHold, sourceClipPath: source, holdSec: need })");
   });
 
   it("extendLastClip keeps the picture moving — a loop under a zoom, never a still", () => {

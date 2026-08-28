@@ -24706,19 +24706,24 @@ async function beatClipPassesVisionGate(
      */
     const refusalKey = `${clipContentKey(clipPath)}|s${scene.index}b${beat.index}`;
     const kind = classifyMismatch(relevance);
-    if (
-      recordMismatch(dedup.mismatchTally, {
-        kind,
-        source: dedup.sourcingCache.lineage.providerBucketFor(clipPath, clipContentKey(clipPath)),
-        depicts: relevance.depicts,
-        reason: relevance.reason,
-        dedupeKey: refusalKey,
-      })
-    ) {
-      // The beat's last verdict, so the research pass can act on it even when the refusal
-      // happened on a route that has no candidate list of its own to reorder.
-      dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);
-    }
+    recordMismatch(dedup.mismatchTally, {
+      kind,
+      source: dedup.sourcingCache.lineage.providerBucketFor(clipPath, clipContentKey(clipPath)),
+      depicts: relevance.depicts,
+      reason: relevance.reason,
+      dedupeKey: refusalKey,
+    });
+    /**
+     * The beat's last verdict, so the research pass can act on it even when the refusal happened
+     * on a route that has no candidate list of its own to reorder.
+     *
+     * RONDE 143 — recorded whichever way the tally went. This used to sit inside the dedupe's
+     * `true` branch, which tied "what did the gate say about this beat" to "was this the first
+     * time we counted it". A clip already counted for this beat still tells the research pass what
+     * is wrong with the beat; suppressing the signal because the COUNT was a duplicate is the one
+     * failure mode RONDE 142 set out to end.
+     */
+    dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);
     return { pass: false, worstScore10: result.worstScore10, skipped: false, fromCache: relevance.cached };
   }
   if (!relevance.cached && relevance.verdict !== "unknown") recordGateVerdict("beat_image_gate", false);
@@ -29143,6 +29148,27 @@ async function ensureArchiveMontageVoiceCoverage(
   }
   for (let attempt = 0; attempt < 3 && coverage < floor; attempt++) {
     const need = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(6, floor - coverage + 0.5));
+    /**
+     * RONDE 143 — the SECOND route into extendLastClip, held to the same budget as the first.
+     *
+     * RONDE 142 guarded the per-beat rescue ladder, which is where video 548's 41.38s run came
+     * from. This loop is the same defect wearing a different call site: `source` is the same
+     * `dedup.lastRealClip`, nothing here changes it, and three attempts of up to 6s each can lay
+     * ~18s of one picture end to end — well past the 5.00s the stillness audit measures against.
+     *
+     * It also has to CHARGE the budget, not merely read it. Whatever this loop puts on screen is
+     * screen time the per-beat ladder must not be allowed to extend on top of afterwards; a guard
+     * that reads a total nobody writes to is not a budget.
+     *
+     * `break`, not `continue`: `need` does not shrink between attempts and the budget does not
+     * grow, so a refusal here refuses every remaining attempt too. The scene falls through to the
+     * held-frame report below — the same place it would have reached anyway.
+     */
+    const extendDecision = mayExtendAgain({ state: dedup.extendHold, sourceClipPath: source, holdSec: need });
+    if (!extendDecision.allowed) {
+      console.warn(formatExtendRefusal(scene.index, 900 + attempt, extendDecision));
+      break;
+    }
     try {
       const extended = await extendLastClip(source, need, scene.index, 900 + attempt, workDir);
       if (!extended) break;
@@ -29152,6 +29178,9 @@ async function ensureArchiveMontageVoiceCoverage(
       clips.push(extended);
       beatDurations.push(need);
       clipBeatIndices.push(beats[0]?.index ?? 0);
+      // RONDE 143: charged here because the push above IS the adoption on this route — there is
+      // no pushClip gate to pass first, so this is the moment the footage reaches the montage.
+      recordExtension(dedup.extendHold, source, need);
       coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
       recordClipAdopt(
         dedup.clipAdoptAudit, scene.index, beats[0]?.index ?? 0, beats[0]?.text ?? "",
@@ -29824,11 +29853,27 @@ async function fetchSceneVisualsInner(
             // RONDE 132: the last thing the gate said about this beat, kept so the research pass
             // below can act on it after the loop has run out of candidates.
             lastMismatchKind = mismatchKind;
+            /**
+             * RONDE 143 — the same dedupe key the shared gate uses.
+             *
+             * RONDE 142 gave `beatClipPassesVisionGate` a (content, beat) key so a candidate seen
+             * by two layers is counted once, but left this registration un-keyed. The funnel and
+             * the rescue ladder can be offered the SAME file for the same beat — a Wikimedia clip
+             * the funnel refused can come back through the Wikimedia rescue — and the second look
+             * reads its verdict from `checkBeatRelevance`'s cache, so it is still a refusal and
+             * was still counted a second time. That inflates exactly the numbers RONDE 142 was
+             * written to make trustworthy: the refusal total and the per-provider table.
+             *
+             * The reorder above and `lastMismatchKind` stay unconditional — they are about what
+             * the gate SAID, which is true however often it has been asked. Only the counting is
+             * deduped.
+             */
             recordMismatch(dedup.mismatchTally, {
               kind: mismatchKind,
               source: winner.candidate.source,
               depicts: judgement.depicts,
               reason: judgement.reason,
+              dedupeKey: `${clipContentKey(winner.clipPath)}|s${scene.index}b${beat.index}`,
             });
             const beforeOrder = scored;
             /**
