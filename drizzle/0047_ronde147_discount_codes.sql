@@ -7,17 +7,25 @@
 -- `stripePromotionCodeId` is unique so a retried create cannot leave two rows pointing at the same
 -- Stripe object. `code` is unique because it is what a customer types.
 --
--- ── RONDE 150: two things this file got wrong the first time ────────────────────────────────
+-- ── Three things this file got wrong before it worked ───────────────────────────────────────
 --
--- 1. `--> statement-breakpoint` is required, not decoration. drizzle-orm's migrator splits a
---    migration on those markers and sends each piece as its own query; without them all three
---    statements arrive as one string and MySQL rejects it.
+-- 1. It was not in meta/_journal.json. drizzle iterates the journal, not the folder, so the file
+--    was invisible: "47/47 recorded — nothing to apply", then a schema-validation crash-loop.
 --
--- 2. `CREATE INDEX IF NOT EXISTS` is MariaDB syntax. MySQL does not accept it, so the idempotent
---    form has to go through INFORMATION_SCHEMA and a prepared statement — the pattern already
---    established by 0019/0020/0023/0024 in this folder, followed here verbatim rather than
+-- 2. It had no statement separators. drizzle cuts a migration on the breakpoint marker and sends
+--    each piece as its own query; without them all the statements arrive as one string and MySQL
+--    rejects the lot.
+--
+-- 3. It used CREATE INDEX with an existence guard inline, which is MariaDB syntax that MySQL does
+--    not accept. The idempotent form here goes through INFORMATION_SCHEMA and a prepared
+--    statement — the pattern 0019/0020/0023/0024 already use, followed verbatim rather than
 --    invented again. Idempotency matters because migrationGuard re-runs a partially applied
 --    migration rather than aborting, and only if it can detect the migration is safe to re-run.
+--
+-- NOTE FOR ANYONE EDITING THIS FILE: never write the breakpoint marker inside a comment. The
+-- splitter matches that string ANYWHERE in the file, comments included — a sentence quoting it
+-- gets cut in half and the remainder is handed to MySQL as SQL. That is precisely how attempt 2
+-- failed: ER_PARSE_ERROR on "` is required, not decoration. drizzle-orm's migrator splits a".
 CREATE TABLE IF NOT EXISTS `discount_codes` (
 	`id` int AUTO_INCREMENT NOT NULL,
 	`code` varchar(64) NOT NULL,

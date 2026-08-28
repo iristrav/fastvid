@@ -85,6 +85,20 @@ async function runMigrations() {
   if (!migrationsFolder) {
     throw new Error("[Worker] drizzle folder not found — cannot apply migrations");
   }
+  /**
+   * LAYER 1 — are the migration artifacts internally consistent?
+   *
+   * Runs BEFORE the migrator and before any schema comparison, because a count derived from a
+   * broken artifact set is worse than no count: a `.sql` the journal does not name produced
+   * "47/47 recorded — nothing to apply" and a crash-loop two steps later. Throws on failure, so an
+   * inconsistent set never reaches the database and the app never half-starts.
+   *
+   * LAYER 2 is the schema validation further down, which asks the different question of whether
+   * the live database matches what the code declares. Both are needed; neither replaces the other.
+   */
+  const { assertMigrationIntegrity } = await import("./migrationIntegrity");
+  assertMigrationIntegrity(migrationsFolder);
+
   console.log("[Worker] Running migrations from:", migrationsFolder);
   const { runMigrationsWithGuard } = await import("./migrationGuard");
   // Guard handles all error logging internally; re-throw triggers process.exit(1) via uncaughtException.
