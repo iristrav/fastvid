@@ -451,8 +451,10 @@ import {
   type MismatchTally,
 } from "./visualMismatchFeedback";
 import {
+  buildResearchContext,
   createResearchTally,
   decideResearch,
+  formatResearchContext,
   formatResearchDecision,
   formatResearchOutcome,
   formatResearchQuery,
@@ -29765,10 +29767,18 @@ async function fetchSceneVisualsInner(
            *
            * The decision is narrow on purpose:
            *
-           *  · Only a QUESTION fault. A title card or a piece to camera means the query was
-           *    answered correctly with unusable material, and re-asking would spend a provider
-           *    call to find another title card.
+           *  · Never on an unclassified refusal. RONDE 134 does act on a MATERIAL fault, but by
+           *    changing what is asked FOR (archive footage) rather than what is asked ABOUT — see
+           *    ADD_ARCHIVAL_INTENT in ./mismatchResearch.
            *  · Only once per beat, enforced by `mismatchResearchedBeats` before anything is spent.
+           *  · Only when the render can afford it — RONDE 134 §20 passes the remaining scene
+           *    budget, and a pass that would not fit is skipped as BUDGET_EXCEEDED rather than
+           *    started and cut off.
+           *  · RONDE 134: the context is the beat's MERGED with the scene's. A documentary states
+           *    its period once and then relies on it, and RONDE 133 measured what reading only the
+           *    beat costs — a period correction fired on 2 of 10 realistic beats. The scene's own
+           *    words were already admissible evidence to the SearchGate; nothing was building
+           *    queries from them.
            *  · Only a query the CONTRACT already minted for this beat. `decideResearch` selects
            *    from `buildPrioritisedQueries`, so the corrected query carries the beat's own proven
            *    tokens — "Hermann Göring Berlin 1945", with the ö intact, never a reconstruction and
@@ -29782,13 +29792,43 @@ async function fetchSceneVisualsInner(
           const researchKey = `s${scene.index}b${beat.index}`;
           if (!winner && lastMismatchKind && !dedup.perf.fastStockMode) {
             const beatLabel = researchKey;
+            /**
+             * RONDE 134 — the beat's context, widened by the scene's, using the same extractor.
+             *
+             * `beatSearchProvenance(beat, scene)` is the ambient provenance every provider search
+             * on this beat already runs under; calling it a second time with the SCENE's text as
+             * the subject yields the scene's own typed tokens through exactly the same code path.
+             * No second extractor, and no term that the scene does not literally state.
+             */
+            const researchCtx = buildResearchContext({
+              beat: beatSearchProvenance(beat, scene),
+              scene: scene.text?.trim()
+                ? beatSearchProvenance({ text: scene.text }, scene)
+                : null,
+            });
             const decision = decideResearch({
               kind: lastMismatchKind,
-              ctx: beatSearchProvenance(beat, scene),
+              ctx: researchCtx,
               alreadyResearched: dedup.mismatchResearchedBeats.has(researchKey),
-              alreadyUsed: [beat.searchQuery ?? "", beat.text].filter(Boolean),
+              // Every question this beat has already been asked, so a "correction" cannot be one
+              // of them wearing a different sort order — RONDE 134 §19.
+              alreadyUsed: [
+                beat.searchQuery ?? "",
+                beat.text,
+                ...scored.map((s) => s.candidate.title ?? ""),
+              ].filter(Boolean),
+              /**
+               * RONDE 134 §20 — the render's own tracker, the same one the retry guard at the
+               * provider-failure site reads. `forceExportMode` is folded in because it is the
+               * pipeline's existing "stop searching, finish the film" signal: a render already
+               * past its deadline must not start a fresh provider cascade for one beat.
+               */
+              remainingBudgetMs: dedup.forceExportMode
+                ? 0
+                : get_activeBudgetTracker()?.remainingMs?.(),
             });
             console.log(formatResearchDecision(beatLabel, decision));
+            console.log(formatResearchContext(beatLabel, researchCtx));
             if (decision.action === "NONE") {
               recordResearchSkip(dedup.researchTally, decision.reason);
             } else {

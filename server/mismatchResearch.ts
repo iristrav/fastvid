@@ -48,11 +48,23 @@
 
 import {
   buildPrioritisedQueries,
+  provenToken,
   type PrioritisedQuery,
+  type QueryToken,
   type QueryTokenType,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
 import { mismatchFault, type MismatchFault, type MismatchKind } from "./visualMismatchFeedback";
+
+/**
+ * What one research pass costs, when the caller has a budget but no better estimate.
+ *
+ * A pass is one run of the existing provider cascade over a handful of queries — the same work an
+ * ordinary beat does, which the render already budgets for. Deliberately generous: skipping a
+ * research pass costs one beat a better picture, while overrunning the render's deadline costs
+ * the whole export.
+ */
+export const RESEARCH_ESTIMATED_COST_MS = 45_000;
 
 /** What a correction is trying to add to the question. */
 export type CorrectionStrategy =
@@ -62,6 +74,20 @@ export type CorrectionStrategy =
   | "ADD_PERSON"
   /** Add the place the narration states. */
   | "ADD_PLACE"
+  /**
+   * RONDE 134 — ask for the archive rather than for the upload.
+   *
+   * A title card and a piece to camera are not answers to the wrong question; they are the wrong
+   * KIND of answer to the right one. RONDE 132 therefore did nothing about them, and a beat whose
+   * every candidate was a leader or a presenter fell through with the question unchanged.
+   *
+   * There is one move available that does not invent a word: the contract already mints an
+   * archival-phrased variant of the beat's strongest combination — "Hermann Göring Berlin archival
+   * footage" — using TECHNICAL_ARCHIVAL_TERM, the single technical term it permits. Asking that
+   * instead is a different question about the same subject, and it is the question a documentary
+   * researcher would ask after being handed a talk-show clip.
+   */
+  | "ADD_ARCHIVAL_INTENT"
   /** Ask the most specific question this beat supports, whatever it is. */
   | "MOST_SPECIFIC";
 
@@ -75,7 +101,27 @@ const STRATEGY_REQUIRES: Record<CorrectionStrategy, ReadonlyArray<QueryTokenType
   ADD_TIME: ["year", "time"],
   ADD_PERSON: ["person"],
   ADD_PLACE: ["place", "country"],
+  ADD_ARCHIVAL_INTENT: ["technical"],
   MOST_SPECIFIC: [],
+};
+
+/**
+ * RONDE 134 §14 — what each correction reaches for FIRST.
+ *
+ * A strategy says which dimension the refusal was missing; this says how to choose between the
+ * several contract queries that supply it. The order is the brief's, expressed as token types so
+ * it ranks the queries the contract already built rather than composing new ones: a period
+ * correction prefers the query that carries the year AND the person over the one that carries the
+ * year alone, because "Hermann Göring Berlin 1945" is a better question than "Berlin 1945".
+ *
+ * Types earlier in the list are worth more. Nothing here can add a term.
+ */
+const STRATEGY_PRIORITY: Record<CorrectionStrategy, ReadonlyArray<QueryTokenType>> = {
+  ADD_TIME: ["year", "time", "person", "place", "country", "event"],
+  ADD_PERSON: ["person", "event", "place", "country", "year", "time"],
+  ADD_PLACE: ["place", "country", "person", "year", "time", "event"],
+  ADD_ARCHIVAL_INTENT: ["technical", "person", "event", "place", "country", "year"],
+  MOST_SPECIFIC: ["event", "person", "place", "country", "year", "time"],
 };
 
 /** The correction each kind argues for, or null when the kind argues for no new question at all. */
@@ -89,9 +135,18 @@ export function correctionStrategyFor(kind: MismatchKind): CorrectionStrategy | 
       return "ADD_PLACE";
     case "UNRELATED":
       return "MOST_SPECIFIC";
-    // A title card and a piece to camera are answers to a question that was asked correctly.
+    /**
+     * RONDE 134 changes these two from "do nothing".
+     *
+     * RONDE 132's reasoning was that a MATERIAL fault does not indict the question, and that is
+     * still true — which is why the correction here does not change the SUBJECT of the question.
+     * It changes what is being asked FOR: archive footage rather than whatever the catalogue
+     * happened to return. The blame stays MATERIAL in every report; only the response changes.
+     */
     case "TEXT_ON_SCREEN":
     case "TALKING_HEAD":
+      return "ADD_ARCHIVAL_INTENT";
+    // A refusal whose words say nothing is still never acted on.
     case "UNCLEAR":
       return null;
   }
@@ -105,7 +160,14 @@ export type ResearchSkipReason =
   /** This beat has already had its one extra pass. */
   | "ALREADY_RESEARCHED"
   /** The beat proves nothing more specific than what was already asked. */
-  | "NO_BETTER_QUERY";
+  | "NO_BETTER_QUERY"
+  /**
+   * RONDE 134 §20 — there is not enough render left to spend on another search.
+   *
+   * Distinct from NO_BETTER_QUERY on purpose: one says the beat had nothing better to ask, the
+   * other says it did and the render could not afford to. They lead to different work.
+   */
+  | "BUDGET_EXCEEDED";
 
 export type ResearchDecision =
   | {
@@ -132,6 +194,127 @@ function carriesAnyType(query: PrioritisedQuery, types: ReadonlyArray<QueryToken
 }
 
 /**
+ * RONDE 134 §14 — how well this query serves the strategy.
+ *
+ * Sums the weight of the priority types it carries, earlier types weighing more. A pure ranking
+ * function over queries that already exist: it can reorder them and nothing else.
+ */
+function priorityScore(query: PrioritisedQuery, order: ReadonlyArray<QueryTokenType>): number {
+  const present = new Set(query.tokens.map((t) => t.type));
+  let score = 0;
+  for (let i = 0; i < order.length; i++) {
+    if (present.has(order[i]!)) score += order.length - i;
+  }
+  return score;
+}
+
+// ─── The research context: everything the pipeline already knows about this beat ─────────────
+
+/**
+ * RONDE 134 §2/§3 — the scene knows things the beat does not say twice.
+ *
+ * A documentary states its period once and then relies on it: "In April 1945 Hermann Göring left
+ * Berlin for the south. He had commanded the Luftwaffe since 1935. The decision was his alone."
+ * The third sentence is a beat with no year, no place and no event — and RONDE 133 measured what
+ * that costs: a period correction fired on 2 of 10 realistic beats, because years and places are
+ * read from the beat's own words only. Persons already read the scene; nothing else did.
+ *
+ * This merges the scene's typed tokens in behind the beat's. Three properties make it safe:
+ *
+ *  · No new extractor. The scene context comes from the SAME `buildVerifiedQueryContextForBeat`
+ *    the beat's does, called on the scene's text — so a scene year is found exactly the way a beat
+ *    year is, by code that RONDE 125 already guards.
+ *  · No new evidence. `beatSearchProvenance` already builds the ambient context with
+ *    `evidence = beat text + scene text`, and `validateSearchQuery` proves a content word against
+ *    that evidence string. A scene-derived year was ALREADY admissible to the SearchGate; the only
+ *    thing missing was a builder willing to put it in a query.
+ *  · The beat still leads. Beat tokens keep their position; scene tokens are appended, so every
+ *    query the beat could form on its own is unchanged and ranked first.
+ *
+ * ACTIONS are deliberately not merged. A verb from another sentence is that sentence's verb —
+ * "left" belongs to the beat that says it, and carrying it across would assert something the beat
+ * does not.
+ */
+export function buildResearchContext(params: {
+  beat: VerifiedQueryContext;
+  scene?: VerifiedQueryContext | null;
+}): VerifiedQueryContext {
+  const { beat, scene } = params;
+  if (!scene) return beat;
+
+  const merged: VerifiedQueryContext = {
+    persons: [...beat.persons],
+    places: [...beat.places],
+    countries: [...beat.countries],
+    events: [...beat.events],
+    // The beat's own verb, and only the beat's.
+    actions: [...beat.actions],
+    objects: [...beat.objects],
+    time: [...beat.time],
+    years: [...beat.years],
+    evidence: beat.evidence,
+  };
+
+  /**
+   * A scene token is re-minted as `scene_text` rather than copied.
+   *
+   * The source label is a claim about where a term came from, and RONDE 90 made that claim
+   * checkable. Copying a token that says `beat_text` into a context whose beat never said it
+   * would be a false claim with correct-looking offsets — the one failure mode the evidence
+   * system exists to prevent.
+   */
+  const adopt = (
+    target: QueryToken[],
+    from: readonly QueryToken[],
+    sceneEvidence: string
+  ): void => {
+    for (const token of from) {
+      if (!token.verified || !token.term.trim()) continue;
+      if (target.some((t) => t.term.toLowerCase() === token.term.toLowerCase())) continue;
+      target.push(provenToken(token.term, token.type, "scene_text", sceneEvidence));
+    }
+  };
+
+  const sceneEvidence = scene.evidence ?? "";
+  adopt(merged.persons, scene.persons, sceneEvidence);
+  adopt(merged.places, scene.places, sceneEvidence);
+  adopt(merged.countries, scene.countries, sceneEvidence);
+  adopt(merged.events, scene.events, sceneEvidence);
+  adopt(merged.objects, scene.objects, sceneEvidence);
+  adopt(merged.time, scene.time, sceneEvidence);
+  adopt(merged.years, scene.years, sceneEvidence);
+  return merged;
+}
+
+/**
+ * RONDE 134 §19 — is this actually a better question, or the same one again?
+ *
+ * Deliberately not a length rule. "Hermann Göring Berlin" and "Berlin Hermann Göring" differ in no
+ * character count that matters and ask the same thing; "Hermann Göring Berlin 1945" is longer AND
+ * asks something narrower, and it is the second property that makes it worth a provider call.
+ *
+ * So: compare the SET of content words, ignoring order, case and the production vocabulary that
+ * carries no subject. A candidate that adds nothing the original did not already contain is the
+ * original.
+ */
+export function queryImprovesOn(original: string, candidate: string): boolean {
+  const words = (s: string): Set<string> =>
+    new Set(
+      (s ?? "")
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}'’-]+/u)
+        .filter(Boolean)
+    );
+  const a = words(original);
+  const b = words(candidate);
+  if (b.size === 0) return false;
+  for (const w of b) {
+    if (!a.has(w)) return true;
+  }
+  return false;
+}
+
+/**
  * Pick the corrected question.
  *
  * The candidates are ranked by SPECIFICITY first and by the contract's own priority second.
@@ -147,12 +330,26 @@ export function selectCorrectedQueries(params: {
   alreadyUsed?: readonly string[];
 }): string[] {
   const required = STRATEGY_REQUIRES[params.strategy];
-  const used = new Set((params.alreadyUsed ?? []).map((q) => q.trim().toLowerCase()).filter(Boolean));
+  const order = STRATEGY_PRIORITY[params.strategy];
+  const used = (params.alreadyUsed ?? []).map((q) => (q ?? "").trim()).filter(Boolean);
+  const usedExact = new Set(used.map((q) => q.toLowerCase()));
 
   return buildPrioritisedQueries(params.ctx)
     .filter((q) => carriesAnyType(q, required))
-    .filter((q) => !used.has(q.query.trim().toLowerCase()))
-    .sort((a, b) => b.level - a.level || a.priority - b.priority)
+    .filter((q) => !usedExact.has(q.query.trim().toLowerCase()))
+    /**
+     * RONDE 134 §19 — a candidate that says nothing the old questions did not already say is the
+     * old question with the words shuffled. Checked against EVERY query already tried, not only
+     * the last one: a beat that has asked "Hermann Göring Berlin" and "Berlin 1945" is not helped
+     * by being handed either of them back under a different sort order.
+     */
+    .filter((q) => used.length === 0 || used.some((u) => queryImprovesOn(u, q.query)))
+    .sort(
+      (a, b) =>
+        priorityScore(b, order) - priorityScore(a, order) ||
+        b.level - a.level ||
+        a.priority - b.priority
+    )
     .map((q) => q.query);
 }
 
@@ -165,11 +362,24 @@ export function selectCorrectedQueries(params: {
  */
 export function decideResearch(params: {
   kind: MismatchKind;
+  /**
+   * The beat's proven context. Pass the merged one from `buildResearchContext` when a scene
+   * context is available — RONDE 134 §2/§3.
+   */
   ctx: VerifiedQueryContext;
   alreadyResearched: boolean;
   alreadyUsed?: readonly string[];
   /** How many corrected queries the caller is willing to run. Bounded by the caller's budget. */
   maxQueries?: number;
+  /**
+   * RONDE 134 §20 — milliseconds of render left, when the caller tracks one.
+   *
+   * Omitted means the caller does not track a budget and the question is skipped rather than
+   * guessed at — the same contract `shouldRetryAfterFailure` uses in ./providerFailureClass.
+   */
+  remainingBudgetMs?: number;
+  /** What one research pass is expected to cost. Defaults to a conservative single-beat search. */
+  estimatedCostMs?: number;
 }): ResearchDecision {
   const { kind } = params;
   const blame = mismatchFault(kind);
@@ -183,11 +393,45 @@ export function decideResearch(params: {
     return { action: "NONE", kind, blame, reason: blame === "MATERIAL" ? "MATERIAL" : "UNCLEAR" };
   }
 
-  const queries = selectCorrectedQueries({
+  /**
+   * Checked before the queries are built, because a render with no time left does not benefit
+   * from knowing what it would have asked.
+   */
+  const remaining = params.remainingBudgetMs;
+  if (typeof remaining === "number" && Number.isFinite(remaining)) {
+    if (remaining < (params.estimatedCostMs ?? RESEARCH_ESTIMATED_COST_MS)) {
+      return { action: "NONE", kind, blame, reason: "BUDGET_EXCEEDED" };
+    }
+  }
+
+  const ranked = selectCorrectedQueries({
     ctx: params.ctx,
     strategy,
     alreadyUsed: params.alreadyUsed,
-  }).slice(0, Math.max(1, params.maxQueries ?? 2));
+  });
+  /**
+   * RONDE 134 §6 — narrow first, then ONE deliberate step wider. Then stop.
+   *
+   * The ranking above puts the most specific correction first, which is right: "Hermann Göring
+   * Berlin 1945" is the question the refusal argued for. But a very specific question is also the
+   * one an archive is most likely to answer with nothing, and taking the next-best by the same
+   * ranking gives a second query that is just as narrow — "Hermann Göring Berlin April 1945" —
+   * which fails in the same way for the same reason.
+   *
+   * RONDE 132 and 133 got this progression by accident, out of the contract's own priority order,
+   * and adding the priority ranking took it away. It is deliberate now: the second query is the
+   * BROADEST remaining one that still carries the dimension the refusal named. Two questions, one
+   * narrow and one wide, and no third.
+   */
+  const cap = Math.max(1, params.maxQueries ?? 2);
+  const queries = ranked.slice(0, 1);
+  if (cap > 1 && ranked.length > 1) {
+    const contentWords = (q: string): number => q.split(/\s+/).filter(Boolean).length;
+    const broadest = ranked
+      .slice(1)
+      .reduce((a, b) => (contentWords(b) < contentWords(a) ? b : a));
+    if (broadest && contentWords(broadest) < contentWords(queries[0]!)) queries.push(broadest);
+  }
 
   if (queries.length === 0) {
     return { action: "NONE", kind, blame, reason: "NO_BETTER_QUERY" };
@@ -261,6 +505,27 @@ export function formatResearchDecision(beatLabel: string, decision: ResearchDeci
   return (
     `[MismatchResearch] beat=${beatLabel} mismatch=${decision.kind} ` +
     `blame=${decision.blame} action=RESEARCH strategy=${decision.strategy}`
+  );
+}
+
+/**
+ * RONDE 134 §21 — what the research pass actually had to work with.
+ *
+ * Printed alongside the decision so a production log answers "why did it correct THAT" without
+ * anyone re-deriving the extraction. Sources are shown because a scene-derived year and a
+ * beat-derived one are different claims, and the difference is the whole of RONDE 134's §3.
+ */
+export function formatResearchContext(beatLabel: string, ctx: VerifiedQueryContext): string {
+  const show = (list: readonly QueryToken[]): string => {
+    const kept = list.filter((t) => t.verified).slice(0, 4);
+    if (kept.length === 0) return "[]";
+    return `[${kept.map((t) => `${t.term}${t.source === "scene_text" ? "*" : ""}`).join(", ")}]`;
+  };
+  return (
+    `[MismatchResearch] beat=${beatLabel} context ` +
+    `persons=${show(ctx.persons)} places=${show([...ctx.places, ...ctx.countries])} ` +
+    `years=${show(ctx.years)} time=${show(ctx.time)} events=${show(ctx.events)} ` +
+    `(* = proven by the scene, not the beat)`
   );
 }
 

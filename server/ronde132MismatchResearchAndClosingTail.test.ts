@@ -139,29 +139,46 @@ describe("RONDE 132 — a QUESTION fault starts one corrected search", () => {
     expect(decision.correctedQuery).toContain("Berlin");
   });
 
-  it("4. TEXT_ON_SCREEN changes no question at all", () => {
+  /**
+   * SUPERSEDED BY RONDE 134, deliberately.
+   *
+   * This asserted that a TEXT_ON_SCREEN refusal changed nothing. RONDE 132's reasoning was that a
+   * material fault does not indict the question — still true, and still visible in `blame`. What
+   * RONDE 134 adds is that there IS one move available which does not change the subject: ask the
+   * contract's archival-phrased variant of the same question. A beat whose every candidate was a
+   * title card previously fell through with the question unchanged.
+   *
+   * The guarantee this test was protecting — a material fault never rewrites the SUBJECT — is
+   * asserted below, and more strictly than before.
+   */
+  it("4. TEXT_ON_SCREEN asks for the archive without changing the subject", () => {
     const decision = decideResearch({
       kind: "TEXT_ON_SCREEN",
       ctx: goringBerlinContext(),
       alreadyResearched: false,
     });
-    expect(decision.action).toBe("NONE");
-    if (decision.action !== "NONE") return;
+    expect(decision.action).toBe("RESEARCH");
+    if (decision.action !== "RESEARCH") return;
+    // The blame is unchanged: this is still a fault of the material.
     expect(decision.blame).toBe("MATERIAL");
-    expect(decision.reason).toBe("MATERIAL");
-    expect(correctionStrategyFor("TEXT_ON_SCREEN")).toBeNull();
+    expect(decision.strategy).toBe("ADD_ARCHIVAL_INTENT");
+    expect(correctionStrategyFor("TEXT_ON_SCREEN")).toBe("ADD_ARCHIVAL_INTENT");
+    // Same subject, different kind of material.
+    expect(decision.correctedQuery).toContain("Hermann Göring");
+    expect(decision.correctedQuery).toContain("archival footage");
   });
 
-  it("5. TALKING_HEAD is a material fault and is treated as one", () => {
+  it("5. TALKING_HEAD is a material fault and is still reported as one", () => {
     const decision = decideResearch({
       kind: "TALKING_HEAD",
       ctx: goringBerlinContext(),
       alreadyResearched: false,
     });
-    expect(decision.action).toBe("NONE");
-    if (decision.action !== "NONE") return;
+    // RONDE 134: it now corrects, but the classification it corrects UNDER is unchanged.
     expect(mismatchFault("TALKING_HEAD")).toBe("MATERIAL");
-    expect(decision.reason).toBe("MATERIAL");
+    expect(decision.blame).toBe("MATERIAL");
+    if (decision.action !== "RESEARCH") return;
+    expect(decision.strategy).toBe("ADD_ARCHIVAL_INTENT");
   });
 
   it("6. an unclassified refusal starts nothing", () => {
@@ -298,12 +315,19 @@ describe("RONDE 132 — a QUESTION fault starts one corrected search", () => {
     expect(line).toContain("blame=QUESTION");
     expect(line).toContain("action=RESEARCH");
 
+    // RONDE 134: an unclassified refusal is now the case that starts nothing.
     const none = formatResearchDecision(
       "s2b2",
-      decideResearch({ kind: "TEXT_ON_SCREEN", ctx, alreadyResearched: false })
+      decideResearch({ kind: "UNCLEAR", ctx, alreadyResearched: false })
     );
     expect(none).toContain("action=NONE");
-    expect(none).toContain("reason=MATERIAL");
+    expect(none).toContain("reason=UNCLEAR");
+    // And a material fault reports its blame even while it corrects.
+    const material = formatResearchDecision(
+      "s2b3",
+      decideResearch({ kind: "TEXT_ON_SCREEN", ctx, alreadyResearched: false })
+    );
+    expect(material).toContain("blame=MATERIAL");
 
     expect(formatResearchQuery("s2b1", "Hermann Göring Berlin", "Hermann Göring Berlin 1945")).toContain(
       'correctedQuery="Hermann Göring Berlin 1945"'
@@ -339,10 +363,15 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
     expect(idx).toBeGreaterThan(0);
-    const block = src.slice(idx, idx + 4000);
+    // RONDE 134 widened this from 4000: the research block gained the scene-context merge and the
+    // budget check, which pushed the provider call past the old edge. No assertion changed.
+    const block = src.slice(idx, idx + 5600);
     expect(block).toContain("decideResearch({");
     expect(block).toContain("kind: lastMismatchKind");
-    expect(block).toContain("ctx: beatSearchProvenance(beat, scene)");
+    // RONDE 134 widened the context to beat + scene; beatSearchProvenance is still what builds
+    // both halves of it.
+    expect(block).toContain("ctx: researchCtx");
+    expect(block).toContain("beatSearchProvenance(beat, scene)");
     expect(block).toContain("fetchHistoricalBeatVideo(");
     expect(block).toContain("leadQueries: decision.correctedQueries");
     expect(block).toContain("researchPass: true");
@@ -351,7 +380,7 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
   it("18. the one-pass limit is claimed BEFORE the search, not after", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = src.slice(idx, idx + 4000);
+    const block = src.slice(idx, idx + 5600);
     const claim = block.indexOf("dedup.mismatchResearchedBeats.add(researchKey);");
     const search = block.indexOf("fetchHistoricalBeatVideo(");
     expect(claim).toBeGreaterThan(0);
@@ -577,7 +606,7 @@ describe("RONDE 132 — mutation guards", () => {
   it("M1. removing the research call breaks the wiring assertion", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = src.slice(idx, idx + 4000);
+    const block = src.slice(idx, idx + 5600);
     expect(block).toContain("await withSceneFetchTimeout(");
     expect(block).toContain("fetchHistoricalBeatVideo(");
   });
