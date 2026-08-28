@@ -396,8 +396,10 @@ import {
 } from "./archiveLearningLog";
 import {
   buildClosingTail,
+  closingTailFrameSeek,
   closingTailSeconds,
   formatClosingTailPlan,
+  formatClosingTailSeek,
   trailingBlackTrimReachesClosingTail,
 } from "./closingTail";
 import {
@@ -445,8 +447,21 @@ import {
   recordMismatch,
   reorderAfterMismatch,
   reorderChangedOrder,
+  type MismatchKind,
   type MismatchTally,
 } from "./visualMismatchFeedback";
+import {
+  createResearchTally,
+  decideResearch,
+  formatResearchDecision,
+  formatResearchOutcome,
+  formatResearchQuery,
+  formatResearchSummary,
+  recordResearchAttempt,
+  recordResearchOutcome,
+  recordResearchSkip,
+  type ResearchTally,
+} from "./mismatchResearch";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
@@ -15094,6 +15109,17 @@ export interface VisualDedupState {
    * catalogues would have fixed it. See ./visualMismatchFeedback.
    */
   mismatchTally: MismatchTally;
+  /**
+   * RONDE 132 — beats that have already had their one corrected-query research pass.
+   *
+   * `s{scene}b{beat}`. This is the whole of the "maximaal één extra research-pass" rule: a beat
+   * whose key is in here is never researched again, whatever it is refused for afterwards. Kept
+   * beside the other per-render sets for the same reason they are — two concurrent renders on one
+   * worker must not be able to spend each other's passes.
+   */
+  mismatchResearchedBeats: Set<string>;
+  /** RONDE 132: what the research passes cost and what they bought. */
+  researchTally: ResearchTally;
   /** Sticky NL/US segment lock for comparison documentaries. */
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
@@ -15338,6 +15364,8 @@ export function createVisualDedupState(
     beatRelevance: createBeatRelevanceLedger(),
     beatImageRejectedIds: new Set<string>(),
     mismatchTally: createMismatchTally(),
+    mismatchResearchedBeats: new Set<string>(),
+    researchTally: createResearchTally(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
     assetDirectorSceneClips: [],
@@ -21779,13 +21807,42 @@ export async function fetchHistoricalBeatVideo(
   intent: ReturnType<typeof buildMediaSearchIntent>,
   adoptOpts: VisualAdoptOptions,
   tag: string,
-  opts: { skipYoutube?: boolean } = {}
+  opts: HistoricalBeatVideoOpts = {}
 ): Promise<string | null> {
   // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
   return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
     fetchHistoricalBeatVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, adoptOpts, tag, opts)
   );
 }
+
+/**
+ * RONDE 132 — the two knobs the corrected-query research pass needs, and nothing else.
+ *
+ * Deliberately additive: every existing caller passes neither and gets exactly the behaviour it
+ * had. The research pass is the only caller that sets them, and it sets both together.
+ */
+export type HistoricalBeatVideoOpts = {
+  skipYoutube?: boolean;
+  /**
+   * Queries to try FIRST, ahead of the ones this cascade builds for itself.
+   *
+   * They are still deduped and still cut to the same per-beat cap, so this does not widen the
+   * provider budget — it changes which questions get asked inside it. Every string here must have
+   * come from `buildPrioritisedQueries`; the SearchGate that wraps this call is what enforces
+   * that, and a term that does not trace to the beat is refused there exactly as any other would
+   * be.
+   */
+  leadQueries?: readonly string[];
+  /**
+   * Allow this beat's cascade to run a SECOND time.
+   *
+   * `historicalCascadeAttemptedBeats` normally makes the cascade a once-per-beat affair, which is
+   * right for the ordinary path. A research pass is by definition a second look, so it says so
+   * rather than quietly deleting the guard for everyone. The caller enforces the one-pass limit;
+   * this flag only removes the door.
+   */
+  researchPass?: boolean;
+};
 
 async function fetchHistoricalBeatVideoInner(
   beat: SceneBeat,
@@ -21797,12 +21854,15 @@ async function fetchHistoricalBeatVideoInner(
   intent: ReturnType<typeof buildMediaSearchIntent>,
   adoptOpts: VisualAdoptOptions,
   tag: string,
-  opts: { skipYoutube?: boolean } = {}
+  opts: HistoricalBeatVideoOpts = {}
 ): Promise<string | null> {
   // F3-49: skip the whole cascade outright if it already ran (and missed) for this exact beat
   // earlier this render — see historicalCascadeAttemptedBeats' doc comment on VisualDedupState.
+  //
+  // RONDE 132: a research pass is allowed through, once. The one-pass limit lives in the caller's
+  // `mismatchResearchedBeats` set, so this guard keeps its original meaning for every other route.
   const cascadeKey = `s${sceneIndex}b${beat.index}`;
-  if (dedup.historicalCascadeAttemptedBeats.has(cascadeKey)) {
+  if (!opts.researchPass && dedup.historicalCascadeAttemptedBeats.has(cascadeKey)) {
     return null;
   }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
@@ -21816,7 +21876,17 @@ async function fetchHistoricalBeatVideoInner(
   // strongest-query-first ordering while roughly halving that worst-case ceiling, without
   // dropping any tier or changing ranking/content.
   const queryCap = dedup.perf.fastStockMode ? 2 : 3;
-  const allQueries = uniqueQueryStrings([...entityYt, ...queries]).slice(0, queryCap);
+  /**
+   * RONDE 132 — the corrected question leads, inside the same cap.
+   *
+   * `uniqueQueryStrings` dedupes, and the slice is unchanged, so a research pass asks the SAME
+   * NUMBER of questions the ordinary pass would have asked — just better ones. That is what makes
+   * this affordable: it does not add provider calls, it redirects them.
+   */
+  const allQueries = uniqueQueryStrings([...(opts.leadQueries ?? []), ...entityYt, ...queries]).slice(
+    0,
+    queryCap
+  );
   const archiveHitsPerQuery = dedup.perf.fastStockMode ? 1 : 2;
   const youtubeReady = !opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady();
 
@@ -29579,6 +29649,8 @@ async function fetchSceneVisualsInner(
         let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
         /** RONDE 67: the refused winner, kept in case nothing better turns up. */
         let gateReprieveWinner: typeof winner = null;
+        /** RONDE 132: what the gate last blamed, null while nothing has been refused. */
+        let lastMismatchKind: MismatchKind | null = null;
 
         // RONDE 58: before adopting, look at the picture.
         //
@@ -29633,6 +29705,9 @@ async function fetchSceneVisualsInner(
              * reorder is the correct weight for this evidence rather than a rejection.
              */
             const mismatchKind = classifyMismatch(judgement);
+            // RONDE 132: the last thing the gate said about this beat, kept so the research pass
+            // below can act on it after the loop has run out of candidates.
+            lastMismatchKind = mismatchKind;
             recordMismatch(dedup.mismatchTally, {
               kind: mismatchKind,
               source: winner.candidate.source,
@@ -29674,6 +29749,101 @@ async function fetchSceneVisualsInner(
             );
             gateReprieveWinner = winner;
             winner = null;
+          }
+
+          /**
+           * RONDE 132 — the beat has been refused and has nothing left. Ask a better question.
+           *
+           * This is the point RONDE 131 could not reach. Reordering the pile is the right answer
+           * while there is a pile; here there is none, and the beat is about to fall through to a
+           * reprieved picture the gate has already said does not belong.
+           *
+           * The decision is narrow on purpose:
+           *
+           *  · Only a QUESTION fault. A title card or a piece to camera means the query was
+           *    answered correctly with unusable material, and re-asking would spend a provider
+           *    call to find another title card.
+           *  · Only once per beat, enforced by `mismatchResearchedBeats` before anything is spent.
+           *  · Only a query the CONTRACT already minted for this beat. `decideResearch` selects
+           *    from `buildPrioritisedQueries`, so the corrected query carries the beat's own proven
+           *    tokens — "Hermann Göring Berlin 1945", with the ö intact, never a reconstruction and
+           *    never the reject reason glued onto the old string.
+           *  · Inside the same provider budget: the cascade's query cap is unchanged, so the
+           *    corrected question REPLACES a weaker one rather than being added to it.
+           *
+           * The clip that comes back has been through `adoptClip`, which runs the beat-image gate
+           * like every other route — so a research candidate is judged, never adopted on trust.
+           */
+          const researchKey = `s${scene.index}b${beat.index}`;
+          if (!winner && lastMismatchKind && !dedup.perf.fastStockMode) {
+            const beatLabel = researchKey;
+            const decision = decideResearch({
+              kind: lastMismatchKind,
+              ctx: beatSearchProvenance(beat, scene),
+              alreadyResearched: dedup.mismatchResearchedBeats.has(researchKey),
+              alreadyUsed: [beat.searchQuery ?? "", beat.text].filter(Boolean),
+            });
+            console.log(formatResearchDecision(beatLabel, decision));
+            if (decision.action === "NONE") {
+              recordResearchSkip(dedup.researchTally, decision.reason);
+            } else {
+              // Marked BEFORE the search, so a throw, a timeout or a cancellation cannot leave the
+              // beat eligible for a second pass. One extra look means one, however it ends.
+              dedup.mismatchResearchedBeats.add(researchKey);
+              recordResearchAttempt(dedup.researchTally, decision.strategy);
+              console.log(
+                formatResearchQuery(beatLabel, beat.searchQuery || beat.text, decision.correctedQuery)
+              );
+              const fitsBefore = dedup.beatImageGate.judgementsFits;
+              const mismatchBefore = dedup.beatImageGate.judgementsMismatch;
+              const researched = await withSceneFetchTimeout(
+                () =>
+                  fetchHistoricalBeatVideo(
+                    beat, scene, workDir, scene.index, beat.holdSec, dedup,
+                    buildMediaSearchIntent({
+                      beatText: beat.text,
+                      // The corrected queries lead inside fetchHistoricalBeatVideo; the intent's
+                      // own list stays exactly what every other route on this beat would build,
+                      // so nothing about the fallback questions changes.
+                      searchQueries: beatMediaSearchQueries(beat, videoTitle),
+                      keywords: beat.keywords,
+                      primaryPerson: historicalDoc ? "" : personName,
+                      persons: scenePersons,
+                      videoTitle,
+                      powerWord: beat.powerWord,
+                      personTopicLock: dedup.personTopicLock && !historicalDoc,
+                      spaceTopic: isSpaceRelatedTopic(
+                        scene.visualCue, scene.pexelsQuery, beat.text, scene.text, videoTitle ?? ""
+                      ),
+                      muskTopic,
+                    }),
+                    beatAdoptOpts,
+                    `s${scene.index}b${beat.index}_research`,
+                    { leadQueries: decision.correctedQueries, researchPass: true }
+                  ),
+                beatVisualWallMs(dedup.perf),
+                `scene ${scene.index} beat ${beat.index} mismatch research`
+              ).catch(() => null);
+              const gateFits = dedup.beatImageGate.judgementsFits - fitsBefore;
+              const gateRejected = dedup.beatImageGate.judgementsMismatch - mismatchBefore;
+              console.log(
+                formatResearchOutcome({
+                  beatLabel,
+                  newCandidates: researched ? 1 : 0,
+                  gateFits,
+                  gateRejected,
+                })
+              );
+              recordResearchOutcome(dedup.researchTally, {
+                produced: Boolean(researched) || gateFits + gateRejected > 0,
+                accepted: Boolean(researched),
+              });
+              if (researched && (await pushClip(researched, beat.holdSec))) {
+                // The research candidate is the beat's picture. Nothing below runs for this beat:
+                // it has real footage the gate approved, which is the outcome the whole round is for.
+                continue;
+              }
+            }
           }
         }
         // RONDE 9: person-locked renders verify the winner with AWS Rekognition celebrity
@@ -32890,6 +33060,18 @@ export async function concatenateScenesWithMusic(
   if (tailSec > 0 && allClips.length > 0) {
     const lastScene = allClips[allClips.length - 1]!;
     const lastSceneDur = await probeVideoDurationSec(lastScene);
+    /**
+     * RONDE 132 — the picture's own length, not the file's.
+     *
+     * probeVideoDurationSec reads `format=duration`, which is the maximum over every stream. On a
+     * composed scene that is the voiceover, and it outlives the last video frame by however long
+     * its tail and fade run. Production video 546 measured 21.400 against a final picture at
+     * 21.160, and the frame grab at 21.297 returned nothing at all.
+     *
+     * probeVideoStreamMeta already reads `stream=duration` on v:0, so the right number was one
+     * call away the whole time.
+     */
+    const lastSceneVideoDur = (await probeVideoStreamMeta(lastScene))?.durationSec ?? null;
     if (lastSceneDur > 0.2) {
       const built = await buildClosingTail({
         lastScenePath: lastScene,
@@ -32898,6 +33080,7 @@ export async function concatenateScenesWithMusic(
         ffmpegBin: FFMPEG_BIN,
         run: (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label),
         lastSceneDurationSec: lastSceneDur,
+        lastSceneVideoDurationSec: lastSceneVideoDur,
         tailSec,
         widthPx: VIDEO_WIDTH,
         heightPx: VIDEO_HEIGHT,
@@ -32909,6 +33092,15 @@ export async function concatenateScenesWithMusic(
       if (built) {
         allClips.push(built.path);
         closingTailSec = built.plan.tailSec;
+        console.log(
+          formatClosingTailSeek(
+            closingTailFrameSeek({
+              containerDurationSec: lastSceneDur,
+              videoStreamDurationSec: lastSceneVideoDur,
+            }),
+            lastSceneDur
+          )
+        );
         console.log(formatClosingTailPlan(built.plan, VIDEO_WIDTH, VIDEO_HEIGHT));
       } else {
         console.warn("[ClosingTail] could not be built — the video ends on the last word, as before");
@@ -35592,6 +35784,16 @@ async function _runVideoPipelineInner(
           {
             const summary = formatMismatchSummary(visualDedup.mismatchTally);
             if (summary) console.log(summary);
+            /**
+             * RONDE 132 — and what the render DID about it.
+             *
+             * The mismatch split says how many refusals a better question could have prevented.
+             * This says how many the render actually went back and asked, and how many of those
+             * came home with a picture the gate then accepted. The two lines together are the
+             * before/after this round is measured on.
+             */
+            const research = formatResearchSummary(visualDedup.researchTally);
+            if (research) console.log(research);
             const split = mismatchFaultSplit(visualDedup.mismatchTally);
             if (split.question >= Math.max(3, visualDedup.mismatchTally.total * 0.5)) {
               qualityReport.warnings.push(

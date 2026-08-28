@@ -123,6 +123,118 @@ export function planClosingTail(params: {
 }
 
 /**
+ * RONDE 132 — where to start looking for the last picture.
+ *
+ * ── The bug, measured rather than guessed ────────────────────────────────────────────────────
+ *
+ * Production: `[ClosingTail] could not be built`, on a file the log described as ~21.4 seconds,
+ * from a frame grab at 21.297s. Reproduced exactly, with a scene-shaped MP4 whose audio runs a
+ * fraction past its picture — which is every composed scene, because the voiceover and its fade
+ * end after the last video frame:
+ *
+ *     format=duration          21.400      ← what probeVideoDurationSec reads
+ *     stream=duration (v:0)    21.200
+ *     last video frame pts     21.160
+ *
+ *     ffmpeg -ss 21.300 -i scene.mp4 -frames:v 1 out.jpg
+ *     → "Output file is empty, nothing was encoded"
+ *
+ * The container's duration is the MAXIMUM over its streams. `probeVideoDurationSec` reads
+ * `format=duration`, so on any scene with audio it returns the audio's length, and RONDE 121's
+ * `duration - 0.1` was subtracting a tenth of a second from the wrong number. Here that leaves the
+ * seek 0.14s past the final picture; the grab produces no file, `fileExists` is false, and the
+ * tail is silently dropped.
+ *
+ * No constant can fix that. The gap between the container and the picture is however long the
+ * audio outlives the video, and 0.1 was a guess at a quantity that is not fixed.
+ *
+ * ── The rule instead ─────────────────────────────────────────────────────────────────────────
+ *
+ * Two changes, and the second is the one that makes it safe.
+ *
+ *  1. Measure against the VIDEO stream. `stream=duration` on v:0 is a statement about the
+ *     picture; `format=duration` is a statement about the file.
+ *  2. Stop naming a target frame at all. The command opens a short WINDOW at the end and writes
+ *     every frame in it over the same file (`-update 1`), so what survives is the last frame that
+ *     actually decoded. A window start can be early and still be right; a target timestamp is
+ *     either exactly inside the file or it yields nothing, and variable frame rate, edit lists and
+ *     B-frame reordering all make "exactly" a promise no arithmetic here can keep.
+ *
+ * Verified on the reproduction above: the window grab is byte-identical to an explicit grab of the
+ * frame at 21.160, and so is the full-decode fallback.
+ */
+
+/**
+ * How much of the end to decode when hunting for the last frame.
+ *
+ * Long enough to contain several frames at any sane rate, short enough that this stays a
+ * fraction of a second of decoding on a scene that may be a minute long.
+ */
+export const CLOSING_TAIL_FRAME_WINDOW_SEC = 0.5;
+
+export type ClosingTailSeek = {
+  /** Where to start decoding. Provably at or before the last frame — see closingTailSeekIsSafe. */
+  seekSec: number;
+  /** Which duration the answer was derived from, so a log can say why it chose what it chose. */
+  basis: "video_stream" | "container";
+  /** The duration that was actually used. */
+  effectiveDurationSec: number;
+};
+
+/**
+ * Where to open the window.
+ *
+ * The video stream's duration is preferred and the container's is the fallback, because a probe
+ * can legitimately return nothing for a stream duration (some containers do not store one). When
+ * the container is the only number available the window still protects the grab: it is half a
+ * second wide, which absorbs a divergence the old fixed 0.1 could not.
+ *
+ * A video stream duration LONGER than the container is not believed — that combination means one
+ * of the two probes is wrong, and the smaller number is the safe one to seek against.
+ */
+export function closingTailFrameSeek(params: {
+  containerDurationSec: number;
+  videoStreamDurationSec?: number | null;
+  fps?: number;
+}): ClosingTailSeek {
+  const container = params.containerDurationSec > 0 ? params.containerDurationSec : 0;
+  const stream = params.videoStreamDurationSec ?? 0;
+  const fps = params.fps && params.fps > 0 ? params.fps : 25;
+
+  const useStream = stream > 0 && stream <= container + 0.05;
+  const effectiveDurationSec = useStream ? stream : container;
+
+  // At least two frames of margin on top of the window, so the window always contains a frame
+  // even when the stream duration is reported one frame long.
+  const backOff = Math.max(CLOSING_TAIL_FRAME_WINDOW_SEC, 2 / fps);
+  return {
+    seekSec: Math.max(0, effectiveDurationSec - backOff),
+    basis: useStream ? "video_stream" : "container",
+    effectiveDurationSec,
+  };
+}
+
+/**
+ * Is this seek inside the picture?
+ *
+ * The acceptance criterion RONDE 132 states — "de gekozen timestamp moet binnen het geldige
+ * framebereik liggen" — as a function, so a test can assert it against a real file's real last
+ * frame rather than against the arithmetic that produced it.
+ */
+export function closingTailSeekIsSafe(seekSec: number, lastFramePtsSec: number): boolean {
+  return Number.isFinite(seekSec) && seekSec >= 0 && seekSec <= lastFramePtsSec;
+}
+
+/** One line naming the numbers the seek was derived from. */
+export function formatClosingTailSeek(seek: ClosingTailSeek, containerDurationSec: number): string {
+  return (
+    `[ClosingTail] last-frame window from ${seek.seekSec.toFixed(3)}s ` +
+    `(basis=${seek.basis} effective=${seek.effectiveDurationSec.toFixed(3)}s ` +
+    `container=${containerDurationSec.toFixed(3)}s) — taking the last frame that decodes`
+  );
+}
+
+/**
  * RONDE 122 — may the trailing-black trimmer cut here?
  *
  * The final stage looks for a dark run reaching the end of the film and cuts back to where the
@@ -185,7 +297,17 @@ export async function buildClosingTail(params: {
   framePath: string;
   ffmpegBin: string;
   run: (cmd: string, timeoutMs: number, label: string) => Promise<unknown>;
+  /** The CONTAINER duration, as probeVideoDurationSec returns it. */
   lastSceneDurationSec: number;
+  /**
+   * RONDE 132 — the VIDEO stream's own duration, when the caller has it.
+   *
+   * This is the number the frame grab has to respect; the container's is the maximum over all
+   * streams and on a scene with a voiceover it is the audio's. Optional so a caller without it
+   * still works — the window then opens against the container, which is wider than the old
+   * behaviour and no longer betting a fixed 0.1s against an unbounded divergence.
+   */
+  lastSceneVideoDurationSec?: number | null;
   tailSec?: number;
   widthPx?: number;
   heightPx?: number;
@@ -202,21 +324,43 @@ export async function buildClosingTail(params: {
   if (!plan) return null;
 
   /**
-   * Grab the frame just BEFORE the end rather than at it.
+   * RONDE 132 — open a window at the end and keep whatever frame closes it.
    *
-   * The last scene fades its audio out and can carry a video fade too; seeking to the exact
-   * duration also lands past the final frame on some containers and yields nothing at all. A
-   * tenth of a second back is still the closing image and is reliably there.
+   * `-update 1` makes the image muxer rewrite the SAME file for every frame it receives, so after
+   * decoding from `seekSec` to EOF the file holds the last frame that existed. There is no target
+   * timestamp to be past, which is the entire failure this replaces: RONDE 121 asked for the frame
+   * at `containerDuration - 0.1`, which on a scene whose audio outlives its picture is past the
+   * final frame, and ffmpeg answers that with an empty output and a zero exit code.
+   *
+   * Two attempts. The window is the cheap one; a full decode from zero is the one that cannot
+   * fail, and is reached only when the probe's numbers were wrong enough that even a half-second
+   * window missed. A scene is seconds long, so the fallback is affordable exactly because it is
+   * rare.
    */
-  const seekSec = Math.max(0, params.lastSceneDurationSec - 0.1);
+  const seek = closingTailFrameSeek({
+    containerDurationSec: params.lastSceneDurationSec,
+    videoStreamDurationSec: params.lastSceneVideoDurationSec,
+    fps,
+  });
 
   try {
     await params.run(
-      `${params.ffmpegBin} -y -ss ${seekSec.toFixed(3)} -i "${params.lastScenePath}" ` +
-        `-frames:v 1 -q:v 2 "${params.framePath}"`,
+      `${params.ffmpegBin} -y -ss ${seek.seekSec.toFixed(3)} -i "${params.lastScenePath}" ` +
+        `-q:v 2 -update 1 "${params.framePath}"`,
       30_000,
       "ClosingTail: last frame"
     );
+    if (!params.fileExists(params.framePath)) {
+      console.warn(
+        `[ClosingTail] no frame in the last ${(seek.effectiveDurationSec - seek.seekSec).toFixed(2)}s ` +
+          `(basis=${seek.basis}) — decoding the whole scene for its final frame`
+      );
+      await params.run(
+        `${params.ffmpegBin} -y -i "${params.lastScenePath}" -q:v 2 -update 1 "${params.framePath}"`,
+        60_000,
+        "ClosingTail: last frame (full decode)"
+      );
+    }
     if (!params.fileExists(params.framePath)) return null;
 
     await params.run(
