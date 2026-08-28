@@ -77,10 +77,14 @@ describe("RONDE 133 — the stillness audit runs on real renders", () => {
     const src = SRC();
     const idx = src.indexOf("auditVideoStillness({");
     // The wrapper sits BEFORE the call, so the window has to start above it.
-    const block = src.slice(idx - 200, idx + 1900);
+    // RONDE 156 put a second audit inside the same try, pushing the catch from +1900 to +3133;
+    // the window was measured and widened rather than the assertion being softened.
+    const block = src.slice(idx - 200, idx + 3800);
     // Wrapped, timed out, and on failure it logs — it does not set `ok: true`.
     expect(block).toContain("await withTimeout(");
-    expect(block).toContain("stillness audit could not run");
+    // The message names both audits since RONDE 156: the block holds two, and a failure in the
+    // first means the second never ran, so claiming to know which one failed would be a guess.
+    expect(block).toContain("stillness/repeat audit could not run");
     const catchIdx = block.indexOf("} catch (err) {");
     expect(catchIdx).toBeGreaterThan(0);
     // Nothing in the failure path claims the file passed.

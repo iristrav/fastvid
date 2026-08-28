@@ -479,6 +479,11 @@ import {
   checkStillnessLimit,
   formatStillnessReport,
 } from "./videoStillnessAudit";
+import {
+  auditVideoRepeats,
+  checkRepeatLimit,
+  formatRepeatReport,
+} from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
@@ -36881,10 +36886,48 @@ async function _runVideoPipelineInner(
             `langer dan de ${verdict.limitSec.toFixed(0)}s die een foto mag duren`
         );
       }
+
+      /**
+       * RONDE 156 — and does the same picture come back?
+       *
+       * The sourcing dedup is thorough but runs entirely BEFORE adoption, and two routes step
+       * around it on purpose when a scene is starved: round B of ensureArchiveMontageVoiceCoverage
+       * re-uses dedup.lastRealClip, and montageTailPadFilterChain loops the whole scene montage.
+       * Neither is visible to usedContentKeys or usedFingerprints, so nothing could answer
+       * "does the finished film repeat itself". This measures the exported MP4 and answers it.
+       *
+       * Measurement only, like the stillness audit beside it — it decides nothing and cannot cost
+       * a render that is otherwise complete.
+       */
+      const repeats = await withTimeout(
+        auditVideoRepeats({ videoPath: finalVideoPath, timeoutMs: 180_000 }),
+        200_000,
+        "repeat audit"
+      );
+      const repeatVerdict = checkRepeatLimit(repeats);
+      console.log(formatRepeatReport(`video ${videoId} final.mp4`, repeats, repeatVerdict));
+      qualityReport.repeats = {
+        distinctPictures: repeats.distinctPictures,
+        repeatedPictures: repeats.repeats.length,
+        repeatedSec: repeats.repeatedSec,
+        repeatedShare: repeats.repeatedShare,
+        limitShare: repeatVerdict.limitShare,
+        ok: repeatVerdict.ok,
+      };
+      for (const v of repeatVerdict.violations.slice(0, 3)) {
+        qualityReport.warnings.push(`hetzelfde beeld keert terug — ${v}`);
+      }
     } catch (err) {
-      // A measurement that could not be taken is reported as absent, never as a pass.
+      /**
+       * A measurement that could not be taken is reported as absent, never as a pass.
+       *
+       * RONDE 156: this block now holds two audits, and the earlier one throwing means the later
+       * one never ran. Both fields stay unset on qualityReport, so "no number" reads as "not
+       * measured" rather than "clean" — but the message must not claim to know which one failed.
+       */
       console.warn(
-        `[VisualIntegrity] stillness audit could not run: ${(err as Error)?.message?.slice(0, 120)}`
+        `[VisualIntegrity] stillness/repeat audit could not run: ` +
+          `${(err as Error)?.message?.slice(0, 120)}`
       );
     }
 

@@ -101,6 +101,26 @@ export type VideoQualityReport = {
     limitSec: number;
     ok: boolean;
   };
+  /**
+   * RONDE 156 — does the finished film show the same picture twice?
+   *
+   * Read off the exported MP4 by ./videoRepeatAudit, for the same reason the stillness block is:
+   * the sourcing dedup is thorough but runs entirely BEFORE adoption, and the coverage-fill routes
+   * step around it on purpose when a scene is starved. Only the file itself can say whether the
+   * viewer ends up seeing a picture come back. Absent when the audit could not run — reported as
+   * absent, never as a pass.
+   */
+  repeats?: {
+    /** How many visually distinct pictures the film contains. */
+    distinctPictures: number;
+    /** How many of them appear more than once, with a real gap in between. */
+    repeatedPictures: number;
+    /** Seconds the viewer spent looking at something already seen. */
+    repeatedSec: number;
+    repeatedShare: number;
+    limitShare: number;
+    ok: boolean;
+  };
   adoptAuditSummary?: AdoptAuditSummary;
   voiceMontageSync?: {
     ok: boolean;
