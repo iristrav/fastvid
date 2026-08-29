@@ -257,6 +257,115 @@ export function mismatchFault(kind: MismatchKind): MismatchFault {
 }
 
 /**
+ * RONDE 166 — how wrong the picture was, which is a different question from whose fault it is.
+ *
+ * `mismatchFault` answers "what should the pipeline do next" and has been right about that since
+ * RONDE 131. It cannot answer the question this round is about, which is "may this picture be used
+ * anyway when nothing else was found".
+ *
+ * That question was previously not asked at all. RONDE 67 made a product decision — a real picture
+ * beats a grey card — and applied it to every refusal equally, so `reprieveBeatClip` would hand
+ * back a title card, a football match and a 1970s newsreel with the same shrug. Video 554 shipped
+ * six beats whose picture the gate had refused.
+ *
+ * The decision is kept, and narrowed to the refusals it was ever defensible for. A picture that is
+ * about the right thing and imperfectly so is worth more than a colour card; a picture about
+ * something else is not, and no amount of "better than nothing" makes it one.
+ *
+ * Read off the kind that already exists. No second classifier, no second call to a model, and no
+ * new words in the gate's prompt — this is one more question asked of the same answer.
+ */
+export type MismatchSeverity =
+  /** About the right thing, imperfectly. Usable as a last resort, never as a first choice. */
+  | "SOFT_MISMATCH"
+  /** About something else, or not a picture of anything. Never usable. */
+  | "HARD_MISMATCH"
+  /** No discernible relation to the beat at all. Never usable. */
+  | "TOTALLY_UNRELATED"
+  /** The gate refused and its words do not say what was wrong. Never treated as a mismatch. */
+  | "UNKNOWN";
+
+export function mismatchSeverity(kind: MismatchKind): MismatchSeverity {
+  switch (kind) {
+    /**
+     * The four that are still ABOUT the beat.
+     *
+     * WRONG_PERIOD is a different decade of the same subject — a 1970s newsreel under 1945
+     * narration is archival material about the right thing. WRONG_PLACE is the right sort of
+     * thing somewhere else, WRONG_EVENT is the right people at the wrong occasion, and a
+     * TALKING_HEAD discussing the subject is on-topic footage in an unwanted form. Each is a
+     * visible imperfection and none of them puts a different topic on screen.
+     */
+    case "WRONG_PERIOD":
+    case "WRONG_PLACE":
+    case "WRONG_EVENT":
+    case "TALKING_HEAD":
+      return "SOFT_MISMATCH";
+    /**
+     * MODERN_FOOTAGE is deliberately NOT soft, though it shares a correction strategy with
+     * WRONG_PERIOD. Present-day colour video under historical narration is the single fault a
+     * viewer names without being asked — the brief's own example is a modern wedding under
+     * "Hermann Göring joined Hitler in Munich" — and it is the one a documentary cannot absorb.
+     *
+     * WRONG_SUBJECT is a different person or a different thing: the beat's topic is not on screen.
+     *
+     * TEXT_ON_SCREEN and TITLE_CARD are both refused outright because this pipeline's standing
+     * rule is that no text may be burned into the picture; taking one back as a "last resort"
+     * would be overruling that rule rather than the gate.
+     *
+     * LOW_INFORMATION is a black frame or a blank wall. There is nothing in it to be relevant.
+     */
+    case "MODERN_FOOTAGE":
+    case "WRONG_SUBJECT":
+    case "TEXT_ON_SCREEN":
+    case "TITLE_CARD":
+    case "LOW_INFORMATION":
+      return "HARD_MISMATCH";
+    case "UNRELATED":
+      return "TOTALLY_UNRELATED";
+    case "UNCLEAR":
+      return "UNKNOWN";
+  }
+}
+
+/**
+ * May a refusal of this kind be overruled when nothing else was found?
+ *
+ * The single predicate the reprieve is allowed to consult. UNKNOWN keeps the pre-existing
+ * behaviour on purpose: the gate refused but said nothing usable about why, and inventing a
+ * severity for it would be the guess this module exists to avoid — RONDE 160 already tried acting
+ * on UNCLEAR and had to be reverted.
+ */
+export function reprieveAllowedFor(kind: MismatchKind): boolean {
+  const severity = mismatchSeverity(kind);
+  return severity === "SOFT_MISMATCH" || severity === "UNKNOWN";
+}
+
+/**
+ * One line saying why a picture is on screen, or why it is not (RONDE 166 §7).
+ *
+ * `decision` is the outcome, `severity` is what it was decided on. Both are printed even when the
+ * answer is the dull one, because "this beat's picture was approved" and "this beat's picture was
+ * never judged" look identical in a log that only prints problems.
+ */
+export function formatVisualFitDecision(input: {
+  beatLabel: string;
+  candidate: string;
+  verdict: string;
+  severity: MismatchSeverity | "NONE";
+  decision: "ADOPTED" | "REJECTED" | "REPRIEVED";
+  reason: string;
+  fallback?: boolean;
+}): string {
+  return (
+    `[VisualFitDecision] beat=${input.beatLabel} candidate=${input.candidate} ` +
+    `verdict=${input.verdict} severity=${input.severity} decision=${input.decision} ` +
+    `reason=${input.reason}` +
+    (input.fallback ? " fallback=true" : "")
+  );
+}
+
+/**
  * Was this rejection about something the render could have avoided?
  *
  * The audit question RONDE 131 opens with is "wordt hij terecht afgewezen" — is the candidate

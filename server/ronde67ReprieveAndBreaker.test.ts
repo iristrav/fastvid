@@ -2,6 +2,11 @@ import fs from "fs";
 import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBeatImageGateState } from "./beatImageRelevanceGate";
+import {
+  createBeatRelevanceLedger,
+  recordExternalRelevanceVerdict,
+  reprieveBeatClip,
+} from "./beatVisualRelevance";
 import { fetchYoutubeVideoContext, _resetYoutubeVideoContextCache } from "./youtubeVideoContext";
 
 /**
@@ -83,13 +88,39 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
     const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
     const idx = mod.indexOf("export function reprieveBeatClip(");
     expect(idx).toBeGreaterThan(-1);
-    const block = mod.slice(idx, idx + 900);
-    // Still announced.
-    expect(block).toContain("REPRIEVE");
+    const block = mod.slice(idx, mod.indexOf("\n}", idx));
     // The verdict is NOT relabelled — that is the RONDE 103 addition.
     expect(block).toContain("allowed: true, reprieved: true");
-    expect(block).toContain("verdict=${entry.decision.verdict} reprieved=true");
     expect(block).not.toContain('verdict: "fits"');
+
+    /**
+     * RONDE 166 moved the announcement into the shared [VisualFitDecision] line, so the rule is
+     * asserted on the line the function actually emits rather than on the string it used to
+     * build. Same rule, checked one level closer: a reprieve is announced, and the announcement
+     * names the verdict it is overruling.
+     */
+    const ledger = createBeatRelevanceLedger();
+    recordExternalRelevanceVerdict(
+      ledger, "/w/r67.mp4", "k:r67",
+      { sceneIndex: 1, beatIndex: 6, beatText: "the beat" },
+      {
+        verdict: "does_not_fit",
+        depicts: "a newsreel crowd",
+        reason: "this is from a different decade than the narration describes",
+      },
+      "funnel"
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(reprieveBeatClip(ledger, "/w/r67.mp4", "nothing else passed")).toBe(true);
+      const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes("decision=REPRIEVED"));
+      expect(line, "a reprieve must never be silent").toBeTruthy();
+      expect(line).toContain("verdict=does_not_fit");
+      expect(line).not.toContain("verdict=fits");
+    } finally {
+      log.mockRestore();
+    }
+    expect(ledger.byClipPath.get("/w/r67.mp4")!.decision.verdict).toBe("does_not_fit");
   });
 
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {

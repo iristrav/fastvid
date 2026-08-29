@@ -385,10 +385,12 @@ import {
   formatRelevanceSummary,
   inheritBeatRelevance,
   reprieveBeatClip,
+  beatClipSeverity,
+  formatAdoptedFitDecision,
   type BeatRelevanceLedger,
   type BeatVisualContext,
 } from "./beatVisualRelevance";
-import { formatBeatVisualProblems } from "./beatVisualStatus";
+import { formatBeatVisualProblems, formatVisualFitAudit } from "./beatVisualStatus";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
@@ -20630,11 +20632,20 @@ async function adoptClip(
         // RONDE 103 phase 15: recorded as an override, not relabelled as a pass. The verdict on
         // the ledger stays `does_not_fit` so the render can be asked how many of its shots were
         // used over the picture editor's objection, and answer.
-        reprieveBeatClip(
+        //
+        // RONDE 166: the override is no longer automatic. A refusal that puts a different topic,
+        // a title card or a blank frame on screen is declined, and this candidate goes back to
+        // being refused — the loop moves to the next path rather than adopting it. The beat keeps
+        // every route below it, so this is "look further", not "give the beat a colour card".
+        const reprieved = reprieveBeatClip(
           dedup.beatRelevance,
           p,
           "refused, but every alternative failed too; a real picture beats a placeholder"
         );
+        if (!reprieved) {
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "hard_mismatch", sourceQuery);
+          continue;
+        }
       }
       // contentKey was computed and checked at the top of this iteration (see the comment
       // there). Nothing between that check and here can add to usedContentKeys — the whole
@@ -30542,8 +30553,14 @@ async function fetchSceneVisualsInner(
           // stays `does_not_fit` and the compose barrier can tell "we decided to use it anyway"
           // apart from "nothing ever objected". Before this, a reprieved clip was indexed by the
           // pipeline as though it had passed.
-          reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath, "nothing else passed");
-          winner = gateReprieveWinner;
+          //
+          // RONDE 166: and the override can be declined. On a hard mismatch the beat keeps `winner`
+          // null and falls through to every remaining route — the rescue ladder, the curated
+          // archive, the research pass — exactly as a beat that found nothing would. A colour card
+          // is what happens if all of those also fail, not what happens instead of trying them.
+          if (reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath, "nothing else passed")) {
+            winner = gateReprieveWinner;
+          }
         }
         let funnelClip: string | null = null;
         let winningExternalCandidate: FunnelCandidate | null = null;
@@ -30572,6 +30589,18 @@ async function fetchSceneVisualsInner(
             candidate.source, candidate.title, dedup.segmentGeoLock,
             candidate.archivePick?.asset?.id
           );
+          /**
+           * RONDE 166 §7 — one line saying why THIS picture is on screen.
+           *
+           * Printed for a plain approval too, not only for a reprieve: a log that speaks up only
+           * when something is wrong cannot tell an approved beat from an unjudged one, and video
+           * 554 had both. Null only when the ledger never saw the clip, which the render summary
+           * already counts as a barrier bypass.
+           */
+          const fitLine = formatAdoptedFitDecision(
+            dedup.beatRelevance, clipPath, clipContentKey(clipPath)
+          );
+          if (fitLine) console.log(fitLine);
           if (candidate.source !== "archive") winningExternalCandidate = candidate;
           // RONDE 62: count the moving/still split here too.
           //
@@ -37371,6 +37400,20 @@ async function _runVideoPipelineInner(
         // read as thirteen named beats rather than a number to be trusted.
         for (const line of formatBeatVisualProblems(qualityReport.beatVisualProblems ?? [])) {
           console.warn(pipelineReport.add("beats", line));
+        }
+        /**
+         * RONDE 166 §8/§9 — why each beat's picture is on screen, and why two beats were never
+         * judged. The severity comes from the relevance ledger's own words, through the same
+         * classifier the reprieve guard consults, so the report and the decision cannot disagree.
+         */
+        for (const line of formatVisualFitAudit(
+          // Every beat, not only the failing ones — verifiedFit and adoptedFit are counted here.
+          qualityReport.beatVisualStatuses ?? [],
+          (sceneIndex, beatIndex, basename) =>
+            beatClipSeverity(visualDedup.beatRelevance, sceneIndex, beatIndex, basename)
+        )) {
+          if (line.includes("INVARIANT_BROKEN")) console.error(pipelineReport.add("beats", line));
+          else console.log(pipelineReport.add("beats", line));
         }
       }
       for (const line of formatSelectedButNotRendered(

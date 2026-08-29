@@ -59,8 +59,16 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     // Three call sites share that line; the adoption path is the one preceded by the gate.
     const accept = src.indexOf("dedup.usedPaths.add(p);", src.indexOf("async function adoptClip("));
     expect(accept).toBeGreaterThan(-1);
-    // The gate runs BEFORE the clip is marked used, so a refusal costs it its place.
-    const before = src.slice(Math.max(0, accept - 2000), accept);
+    /**
+     * The gate runs BEFORE the clip is marked used, so a refusal costs it its place.
+     *
+     * Bounded by the gate call itself rather than by a character count: RONDE 67 widened this
+     * block once and RONDE 166 widened it again, and each time a fixed -N window stopped reaching
+     * back to the gate — a green test turning red on a change that did not touch the rule.
+     */
+    const gateAt = src.lastIndexOf("beatClipPassesImageGate(", accept);
+    expect(gateAt).toBeGreaterThan(-1);
+    const before = src.slice(gateAt, accept);
     expect(before).toContain("beatClipPassesImageGate(");
     expect(before).toContain('"beat_image_gate"');
     // RONDE 67 put the reprieve between the refusal and the continue, so the window is wider —
@@ -271,7 +279,11 @@ describe("RONDE 62 #7 — the render can measure its own visual mix", () => {
     const src = PIPELINE();
     const idx = src.indexOf("funnelClip = clipPath;");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2600);
+    // Bounded by the end of the adoption block, not a character count — RONDE 165 and 166 both
+    // added lines inside it, and a fixed +N window stops reaching the counters each time.
+    const end = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     expect(block).toContain("dedup.stillClipCount++");
     expect(block).toContain("dedup.movingClipCount++");
   });

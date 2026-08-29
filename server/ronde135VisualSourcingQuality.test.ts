@@ -160,9 +160,19 @@ describe("RONDE 135 — QUESTION and MATERIAL stay distinct", () => {
     // shape, one level up.
     const kinds = new Set<MismatchKind>(REPORTED_MISMATCH_KINDS);
     const src = readFileSync(join(__dirname, "visualMismatchFeedback.ts"), "utf8");
-    const declared = [...src.matchAll(/^\s*\|\s*"([A-Z_]+)"/gm)].map((m) => m[1] as MismatchKind);
+    /**
+     * Scoped to the MismatchKind declaration itself.
+     *
+     * This used to scrape every `| "UPPER_CASE"` line in the file and skip a hardcoded list of
+     * MismatchFault's members — so any OTHER string union added to the module failed this test
+     * while saying nothing about the kinds. RONDE 166 added MismatchSeverity and did exactly that.
+     * Reading the one declaration the assertion is about keeps it guarding what it claims to.
+     */
+    const start = src.indexOf("export type MismatchKind =");
+    const block = src.slice(start, src.indexOf(";", src.indexOf('| "UNCLEAR"', start)));
+    const declared = [...block.matchAll(/^\s*\|\s*"([A-Z_]+)"/gm)].map((m) => m[1] as MismatchKind);
+    expect(declared.length).toBeGreaterThan(5);
     for (const k of declared) {
-      if (k === "QUESTION" || k === "MATERIAL" || k === "UNKNOWN") continue;
       expect(kinds.has(k), `${k} is not in REPORTED_MISMATCH_KINDS`).toBe(true);
     }
   });

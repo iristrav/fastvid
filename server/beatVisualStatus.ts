@@ -143,30 +143,86 @@ export function coverageOfAdoptEntry(entry: {
   return "own_footage";
 }
 
+function verificationOf(decision: {
+  reprieved: boolean;
+  verdict: string;
+}): BeatVerification {
+  if (decision.reprieved) return "reprieved_after_refusal";
+  if (decision.verdict === "fits") return "verified_fit";
+  if (decision.verdict === "does_not_fit") return "verified_mismatch";
+  // `unknown` covers both "the model could not answer" and "the gate declined to ask". The
+  // ledger does not distinguish them per clip; the render-level counters do, and the report
+  // prints both. Per beat, the honest word for "no verdict" is unknown.
+  return "unknown";
+}
+
 /**
- * Read the relevance ledger for one beat.
+ * Read the relevance ledger for the picture this beat ACTUALLY ended up with.
  *
- * The ledger is keyed by clip path and by content identity, and this report has neither — it has
- * a basename and a beat. So the lookup is by beat: the entry whose recorded context names this
- * scene and beat. That is exact, because RONDE 103 records the context alongside every decision.
+ * ── RONDE 166: what this used to do, and why the number it produced was wrong ────────────────
+ *
+ * The lookup was by beat alone — the first ledger entry whose context named this scene and beat.
+ * That was written when a beat was judged once, and stopped being true the moment the funnel
+ * started judging several candidates per beat: render 554's s2b3 alone judged four. The ledger
+ * therefore holds the LOSERS of a beat as well as its winner, in insertion order, and "the first
+ * entry for this beat" is usually a loser.
+ *
+ * So `verified_mismatch=6` did not mean six beats shipped a refused picture. It meant six beats
+ * whose first recorded candidate was refused — which is compatible with all six of them having
+ * adopted a perfectly good picture two candidates later. The type's own documentation says
+ * verified_mismatch is a picture that "was not used anyway", and the lookup could not tell.
+ *
+ * The adopt audit knows which file won: `entry.basename`. Matching on it reads the verdict of the
+ * clip that is on screen. The beat-wide scan is kept as a FALLBACK, for a beat whose adopted file
+ * was never judged under the name the audit recorded — there the honest answer is still "something
+ * on this beat was judged", and losing that would trade a wrong number for a missing one.
  */
 function verificationForBeat(
   ledger: BeatRelevanceLedger | undefined,
   sceneIndex: number,
-  beatIndex: number
+  beatIndex: number,
+  adoptedBasename: string
 ): BeatVerification {
   if (!ledger) return "never_asked";
-  for (const { ctx, decision } of ledger.byClipPath.values()) {
+  let onThisBeat: BeatVerification | null = null;
+  for (const [clipPath, { ctx, decision }] of ledger.byClipPath.entries()) {
     if (ctx.sceneIndex !== sceneIndex || ctx.beatIndex !== beatIndex) continue;
-    if (decision.reprieved) return "reprieved_after_refusal";
-    if (decision.verdict === "fits") return "verified_fit";
-    if (decision.verdict === "does_not_fit") return "verified_mismatch";
-    // `unknown` covers both "the model could not answer" and "the gate declined to ask". The
-    // ledger does not distinguish them per clip; the render-level counters do, and the report
-    // prints both. Per beat, the honest word for "no verdict" is unknown.
-    return "unknown";
+    // The clip that is actually on screen settles it, wherever it sits in the map.
+    if (adoptedBasename && path.basename(clipPath) === adoptedBasename) {
+      return verificationOf(decision);
+    }
+    onThisBeat ??= verificationOf(decision);
   }
-  return "never_asked";
+  return onThisBeat ?? "never_asked";
+}
+
+/**
+ * RONDE 166 §9 — why a beat's picture was never judged.
+ *
+ * Video 554 reported `never_asked=2` and nothing said which two or why. The reason is not guessed
+ * at here: it is read off the two records that exist. A beat covered by a placeholder or a held
+ * frame has nothing to judge and the gate is right not to have been asked; a beat holding real
+ * footage that nobody looked at is a gap in the instrumentation, and those are different findings
+ * that must not share a word.
+ */
+export function neverAskedReason(coverage: BeatCoverage): string {
+  switch (coverage) {
+    case "placeholder":
+      return "no_picture_to_judge:placeholder";
+    case "held_frame":
+      return "no_picture_to_judge:held_frame";
+    case "graphic":
+      return "no_picture_to_judge:graphic";
+    case "none":
+      return "no_clip_recorded";
+    case "generated":
+      return "generated_clip_not_routed_through_gate";
+    case "own_footage":
+    case "subject_only":
+      // Real footage with no verdict. Nothing about the coverage explains it, so nothing is
+      // invented — this names the gap rather than papering over it.
+      return "real_footage_never_judged";
+  }
 }
 
 /**
@@ -186,7 +242,9 @@ export function buildBeatVisualStatuses(
   const out: BeatVisualStatus[] = [];
   for (const entry of byBeat.values()) {
     const coverage = coverageOfAdoptEntry(entry);
-    const verification = verificationForBeat(ledger, entry.sceneIndex, entry.beatIndex);
+    const verification = verificationForBeat(
+      ledger, entry.sceneIndex, entry.beatIndex, entry.basename
+    );
     const verifiedOwnVisual = coverage === "own_footage" && verification === "verified_fit";
     out.push({
       sceneIndex: entry.sceneIndex,
@@ -235,6 +293,83 @@ export function tallyBeatVisualStatuses(statuses: readonly BeatVisualStatus[]): 
 }
 
 /** One line per beat that is not finished, for the render log. */
+/**
+ * RONDE 166 §8/§9 — why every beat's picture is on screen, in one block.
+ *
+ * Built from the statuses this module already derives plus the severity of each refusal, so it
+ * reports on the existing records rather than keeping its own. Two rules make it worth reading:
+ *
+ *   · A HARD_MISMATCH or TOTALLY_UNRELATED may never appear as adopted or reprieved. If one does,
+ *     the reprieve guard has been bypassed and this is where that becomes visible.
+ *   · A `never_asked` beat gets a named reason, never a blank. "Nothing to judge" and "real
+ *     footage nobody looked at" are different findings and used to share one word.
+ */
+export function formatVisualFitAudit(
+  statuses: readonly BeatVisualStatus[],
+  severityOf: (sceneIndex: number, beatIndex: number, basename: string) => string
+): string[] {
+  if (statuses.length === 0) return [];
+  const counts = {
+    verifiedFit: 0,
+    softMismatch: 0,
+    hardMismatch: 0,
+    totallyUnrelated: 0,
+    unknown: 0,
+    neverAsked: 0,
+    adoptedFit: 0,
+    reprievedSoftMismatch: 0,
+    rejectedHardMismatch: 0,
+    rejectedUnrelated: 0,
+  };
+  const lines: string[] = [];
+  for (const s of statuses) {
+    if (s.verification === "verified_fit") {
+      counts.verifiedFit++;
+      counts.adoptedFit++;
+      continue;
+    }
+    if (s.verification === "unknown") {
+      counts.unknown++;
+      continue;
+    }
+    if (s.verification === "never_asked") {
+      counts.neverAsked++;
+      lines.push(
+        `[VisualFitAudit] beat=s${s.sceneIndex}b${s.beatIndex} status=NEVER_ASKED ` +
+          `reason=${neverAskedReason(s.coverage)} source=${s.source}`
+      );
+      continue;
+    }
+    // Refused. What happened next is the difference between a reprieve and a rejection.
+    const severity = severityOf(s.sceneIndex, s.beatIndex, s.basename);
+    if (severity === "HARD_MISMATCH") counts.hardMismatch++;
+    else if (severity === "TOTALLY_UNRELATED") counts.totallyUnrelated++;
+    else counts.softMismatch++;
+    if (s.verification === "reprieved_after_refusal") {
+      if (severity === "HARD_MISMATCH" || severity === "TOTALLY_UNRELATED") {
+        // The invariant the round exists for. Counted as reprieved so the totals still add up,
+        // and shouted about so it cannot pass as an ordinary fallback.
+        lines.push(
+          `[VisualFitAudit] INVARIANT_BROKEN beat=s${s.sceneIndex}b${s.beatIndex} ` +
+            `severity=${severity} was reprieved — a hard mismatch may never be taken back`
+        );
+      }
+      counts.reprievedSoftMismatch++;
+    } else if (severity === "TOTALLY_UNRELATED") counts.rejectedUnrelated++;
+    else if (severity === "HARD_MISMATCH") counts.rejectedHardMismatch++;
+  }
+  lines.unshift(
+    `[VisualFitAudit] TOTAL beats=${statuses.length} verifiedFit=${counts.verifiedFit} ` +
+      `softMismatch=${counts.softMismatch} hardMismatch=${counts.hardMismatch} ` +
+      `totallyUnrelated=${counts.totallyUnrelated} unknown=${counts.unknown} ` +
+      `neverAsked=${counts.neverAsked} adoptedFit=${counts.adoptedFit} ` +
+      `reprievedSoftMismatch=${counts.reprievedSoftMismatch} ` +
+      `rejectedHardMismatch=${counts.rejectedHardMismatch} ` +
+      `rejectedUnrelated=${counts.rejectedUnrelated}`
+  );
+  return lines;
+}
+
 export function formatBeatVisualProblems(statuses: readonly BeatVisualStatus[]): string[] {
   return statuses
     .filter((s) => !s.verifiedOwnVisual)

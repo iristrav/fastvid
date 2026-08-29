@@ -166,6 +166,14 @@ export type VideoQualityReport = {
   beatVisuals?: BeatVisualTally;
   /** The beats that are not finished, one entry each, so the report can name them. */
   beatVisualProblems?: BeatVisualStatus[];
+  /**
+   * RONDE 166 — every beat, not only the unfinished ones.
+   *
+   * `beatVisualProblems` is this list filtered to the failures, which is right for a warning block
+   * and wrong for an audit: [VisualFitAudit] has to report `verifiedFit` and `adoptedFit` too, and
+   * counting those from a list the successes were removed from would print zero for both.
+   */
+  beatVisualStatuses?: BeatVisualStatus[];
 };
 
 /**
@@ -612,6 +620,7 @@ export function buildVideoQualityReport(
     qualityReason: verdict.reason,
     beatVisuals,
     beatVisualProblems: beatVisualProblems.length > 0 ? beatVisualProblems : undefined,
+    beatVisualStatuses: beatStatuses.length > 0 ? beatStatuses : undefined,
   };
 }
 
