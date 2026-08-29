@@ -17484,6 +17484,78 @@ export async function logComposePreFlight(
   }
 }
 
+/**
+ * RONDE 157 — give the coverage filler a montage long enough that it never has to hold a frame.
+ *
+ * montageTailPadFilterChain slows the montage to the MAX_COVERAGE_SLOWDOWN cap and, past that,
+ * either loops the picture or holds the last frame. Which one it gets is decided by a frame
+ * budget: `loop` buffers `size` DECODED frames, so a montage over 300 frames (12 seconds) is too
+ * large to loop at 1080p and falls through to the hold. Video 552's scene 1 is exactly that case —
+ * 16.9s of montage, 422 frames, too big to loop — so even with the pad wired in it would still
+ * have ended on a held frame.
+ *
+ * Replaying the FILE has no frame budget at all: `-stream_loop` re-reads the input instead of
+ * buffering it. So the montage is extended here, to the shortest length from which the existing
+ * 2x slowdown reaches the voice on its own — and the filler is then a slowdown, never a hold.
+ *
+ * Deliberately the minimum: extending to `outDur / MAX_COVERAGE_SLOWDOWN` and letting the cap do
+ * the rest means the least replayed footage that still avoids a freeze. Extending all the way to
+ * `outDur` would repeat twice as much picture, and RONDE 156 exists because repetition is its own
+ * fault. This trades the smallest amount of repeat for a guarantee against the frozen frame.
+ *
+ * Fail-safe: any failure returns the montage untouched, so the worst case is the behaviour that
+ * was there before rather than a scene with no picture.
+ */
+export async function extendMontageForCoverage(
+  montagePath: string,
+  montageDur: number,
+  outDur: number,
+  sceneIndex: number,
+  workDir: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<{ path: string; dur: number }> {
+  const unchanged = { path: montagePath, dur: montageDur };
+  if (!(montageDur > 0.4) || !(outDur > 0)) return unchanged;
+  const needed = outDur / MAX_COVERAGE_SLOWDOWN;
+  // Already long enough for the cap to cover the rest by slowing alone.
+  if (montageDur >= needed - 0.05) return unchanged;
+
+  const plays = Math.max(2, Math.ceil(needed / montageDur));
+  const extendedPath = path.join(workDir, `scene_${sceneIndex}_seq_montage_ext.mp4`);
+  try {
+    await withSceneFetchTimeout(
+      () => exec(
+        // -stream_loop counts EXTRA passes, so one fewer than the number of plays.
+        `${FFMPEG_BIN} -y -stream_loop ${plays - 1} -i "${montagePath}" -t ${needed.toFixed(3)} ` +
+          `-an -vsync cfr ${threadFlag} -c:v libx264 ${pipelineFfmpegThreadFlag()} ` +
+          `-preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 20 -pix_fmt yuv420p ` +
+          `-avoid_negative_ts make_zero "${extendedPath}"`
+      ),
+      composeTimeout,
+      `Montage replay for coverage scene ${sceneIndex}`
+    );
+    const extDur = await probeVideoDurationSec(extendedPath);
+    if (extDur > montageDur + 0.05) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: montage ${montageDur.toFixed(1)}s cannot reach ` +
+          `${outDur.toFixed(1)}s of voice even at the ${MAX_COVERAGE_SLOWDOWN}x cap — playing it ` +
+          `${plays}x to ${extDur.toFixed(1)}s so the filler can slow instead of freeze`
+      );
+      return { path: extendedPath, dur: extDur };
+    }
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: montage replay produced ${extDur.toFixed(2)}s — keeping the original`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: montage replay failed, coverage filler may hold a frame: ` +
+        `${(err as Error)?.message?.slice(0, 140)}`
+    );
+  }
+  return unchanged;
+}
+
 async function composePlainMontageScene(
   sceneIndex: number,
   safeClips: string[],
@@ -17506,10 +17578,61 @@ async function composePlainMontageScene(
     const gradeChain = montageFilterOpts?.fastEncode
       ? `[vmont]${FPS_FORMAT_VF}[vout]`
       : `[vmont]${fadeFilter}[vout]`;
+    /**
+     * RONDE 157 — the montage is filled up to the voice HERE, or the last frame is held.
+     *
+     * This is the route Railway takes: `if (IS_RAILWAY)` renders the montage sequentially and
+     * hands the file to this mux, and the third route falls back to it as well. Both passed the
+     * montage straight through `[0:v]FPS_FORMAT_VF[vmont]` and then asked ffmpeg for
+     * `-t outDur` seconds of it. When the montage is shorter than the narration, that does not
+     * shorten the scene — it writes a file of the full length whose picture stops at the end of
+     * the montage. The viewer sees a frozen frame for the difference.
+     *
+     * Measured on video 552, which carried RONDE 152-156 and still froze:
+     *
+     *     scene 1   montage est 16.9s < voice 42.9s   → 26.0s gap → 27.25s of unchanging picture
+     *     scene 2   montage est  8.5s < voice 21.2s   → 12.7s gap → 12.75s of unchanging picture
+     *
+     * Both violations the render's own stillness audit reported, to the tenth of a second.
+     *
+     * The machinery to prevent this already existed and was already correct — RONDE 85 slows,
+     * RONDE 111 caps the slowdown, RONDE 130 loops past the cap — but only two of the three
+     * routes through this function reached it: the inline xfade route calls montageTailPadVF,
+     * and renderSequentialArchiveMontage pads only its SINGLE-clip branch. A scene with two or
+     * more clips on the Railway route reached no filler at all. That is why every round that
+     * fixed a frozen SOURCE left this frozen picture standing: it is not a source, it is the end
+     * of the montage being held by the muxer.
+     *
+     * The duration is probed rather than estimated, because at this point the file exists and its
+     * real length is the number that decides how much filler is needed. A probe that fails leaves
+     * the chain exactly as it was and says so — an unmeasured montage must not silently skip the
+     * pad.
+     */
+    const probed = await probeVideoDurationSec(montageVideoPath);
+    const extended = await extendMontageForCoverage(
+      montageVideoPath,
+      probed,
+      outDur,
+      sceneIndex,
+      workDir,
+      composeTimeout,
+      threadFlag
+    );
+    const montageVideoIn = extended.path;
+    const montageDur = extended.dur;
+    let headChain = `[0:v]${FPS_FORMAT_VF}[vmont]`;
+    if (montageDur > 0) {
+      headChain = montageTailPadVF("0:v", montageDur, outDur);
+    } else {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: could not probe montage length — tail pad skipped, ` +
+          `a short montage will hold its last frame`
+      );
+    }
     await withSceneFetchTimeout(
       () => exec(
-        `${FFMPEG_BIN} -y -i "${montageVideoPath}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];${gradeChain};` +
+        `${FFMPEG_BIN} -y -i "${montageVideoIn}" -i "${safeAudioPath}" ` +
+          `-filter_complex "${headChain};${gradeChain};` +
           `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
           `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr ` +
@@ -37101,7 +37224,31 @@ async function _runVideoPipelineInner(
     const totalMs = Date.now() - t0;
     console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
     profiler.printReport(totalMs, pipelineStepTiming.toReport());
-    if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
+    /**
+     * RONDE 157 — the variety memory is written whenever variety is on.
+     *
+     * The read side excludes assets used by recent same-topic videos, and it is gated on
+     * archiveCrossVideoVarietyEnabled alone. The WRITE side carried a second condition,
+     * curatedArchiveOnlyVisuals(), and that flag is off in production (CURATED_ARCHIVE_ONLY is
+     * set to "false" so the external cascade stays reachable). So nothing was ever recorded, the
+     * exclude set was empty on every render, and the ranking — which is deterministic — handed
+     * back the same top-scoring assets every time.
+     *
+     * Measured across the two most recent production renders on the same topic:
+     *
+     *     video 551   21 archive assets
+     *     video 552   47 archive assets
+     *     shared      12 — 57% of video 551's footage came back in video 552
+     *
+     * and neither log contains a single [ArchiveVariety] line, which is what a write that never
+     * happens looks like.
+     *
+     * The two flags are about different things. CURATED_ARCHIVE_ONLY says which SOURCES a render
+     * may draw from; the variety memory says which assets the LAST renders already used. Assets
+     * are recorded from usedCuratedAssetIds either way — video 552's own filenames are
+     * `curated_a56104` and so on — so the condition suppressed a fact the render had regardless.
+     */
+    if (archiveCrossVideoVarietyEnabled(videoLength)) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
     }
 
