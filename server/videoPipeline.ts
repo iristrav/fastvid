@@ -288,6 +288,7 @@ import { bindLineageLedger, createClipAdoptAudit, recordClipAdopt } from "./clip
 import {
   UNVERIFIED_PROVIDER,
   VisualSourceLedger,
+  formatAssetLifecycleAudit,
   formatAssetUsageSummary,
   formatAuditReport,
   formatFinalVisualReport,
@@ -296,6 +297,8 @@ import {
   formatFunnelReport,
   formatLineageLine,
   formatSourceSummary,
+  recordAssetOutcome,
+  type AssetOutcomeReason,
   type VisualLineageRecord,
 } from "./visualSourceLineage";
 import {
@@ -20725,6 +20728,8 @@ async function adoptClip(
           return markAdopted(p);
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+        // RONDE 165: SELECTED was filed above; this exit is where that stopped being true.
+        recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`);
         continue;
       }
       const transformMs = mustFairUse
@@ -20738,6 +20743,8 @@ async function adoptClip(
         (!transformed || !transformed.includes("_transformed") || !fs.existsSync(transformed))
       ) {
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+        // RONDE 165: a clip that MUST be transformed and could not be is refused, not lost.
+        recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`);
         continue;
       }
       if (await isValidVideoFile(transformed)) {
@@ -20750,6 +20757,15 @@ async function adoptClip(
         return markAdopted(transformed);
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+      /**
+       * RONDE 165 — the last exit out of an iteration that selected but did not adopt.
+       *
+       * The transform produced nothing usable. Every adopting branch above `return`s, so reaching
+       * this line means `p` was marked SELECTED and the loop is about to move on from it — with or
+       * without the `continue` below, which only decides whether `p` may still serve as
+       * lastRealClip. Filed once, before either path leaves.
+       */
+      recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`);
       if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
         dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
@@ -27687,7 +27703,18 @@ async function rescueBeatVisualWhenEmptyInner(
     } else {
       try {
         const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir);
-        if (extended && await pushClip(extended, holdSec)) {
+        /**
+         * RONDE 165 — an extension the compose barrier then refused.
+         *
+         * `extendLastClip` writes a real file derived from lastRealClip, so it inherits that clip's
+         * lineage record; when pushClip turns it away the record was left saying nothing, which is
+         * how `extend_s*` files reached render 554's vanished list.
+         */
+        if (extended && !(await pushClip(extended, holdSec))) {
+          recordAssetOutcome(
+            dedup.sourcingCache?.lineage, extended, "extended_rejected", `s${scene.index}b${beat.index}`
+          );
+        } else if (extended) {
           // Charged only on an adoption: an extension that failed to build put nothing on screen.
           recordExtension(dedup.extendHold, dedup.lastRealClip, holdSec);
           recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, extended, "rescue_extend", undefined, dedup.segmentGeoLock);
@@ -30586,6 +30613,39 @@ async function fetchSceneVisualsInner(
               }
             }
           }
+        }
+
+        /**
+         * RONDE 165 — the beat is decided; say what became of the candidates that lost it.
+         *
+         * This is the route render 554's vanished list was mostly made of, and the audit line above
+         * is what proved it. Beat s2b3:
+         *
+         *     downloaded=4 visionJudged=4 visionAccepted=4 adopted=1
+         *     [VisualDiscovery] s2b3 winner=loc(score=8.0) runnerUp=archive(score=8.0)
+         *
+         * Four candidates fetched, four judged, four PASSED, one used. The other three were dropped
+         * by `scored` going out of scope — no rejection, because nothing rejected them, and no
+         * outcome either, so the ledger showed three assets selected and then simply gone.
+         *
+         * They get the ending they actually had. `superseded_by_winner` and `not_chosen` are kept
+         * apart deliberately: "a better candidate won" is the funnel working, "the beat found no
+         * winner at all" is the funnel failing, and one reason covering both would make the next
+         * render's audit unreadable in exactly the way this one was.
+         */
+        for (const candidate of scored) {
+          if (winner && candidate.clipPath === winner.clipPath) continue;
+          const reason: AssetOutcomeReason = dedup.beatImageRejectedIds.has(candidate.candidate.id)
+            ? "vision_rejected"
+            : winner
+              ? "superseded_by_winner"
+              : "not_chosen";
+          recordAssetOutcome(
+            dedup.sourcingCache?.lineage,
+            candidate.clipPath,
+            reason,
+            `s${scene.index}b${beat.index}`
+          );
         }
 
         // [VisualDiscovery] audit line — counts + per-source scores + winner, one line per beat.
@@ -37323,6 +37383,17 @@ async function _runVideoPipelineInner(
       for (const line of formatSearchGateReport()) console.log(pipelineReport.add("search", line));
       const reconciliation = ledger.reconcile();
       for (const line of formatAuditReport(reconciliation)) console.log(pipelineReport.add("sourcing", line));
+      /**
+       * RONDE 165 — the denominator under the vanished warnings printed just above.
+       *
+       * formatAuditReport names each unaccounted asset; this counts all of them against the assets
+       * that were delivered or explained, so `unresolved=` is a number the next render can be
+       * measured against rather than a list to be eyeballed.
+       */
+      for (const line of formatAssetLifecycleAudit(ledger)) {
+        if (line.includes("unresolved=0")) console.log(pipelineReport.add("sourcing", line));
+        else console.warn(pipelineReport.add("sourcing", line));
+      }
       console.log(formatGlobalBudget());
       console.log(
         pipelineReport.add(

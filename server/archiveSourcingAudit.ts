@@ -198,6 +198,74 @@ export function formatArchiveSourcingAudit(
  * MAX_FUNNEL_CANDIDATES_TO_SCORE: a render whose beats mostly read LOST_BEFORE_VISION with
  * cutByBudget high has a budget problem, and one whose beats read REJECTED_BY_VISION does not.
  */
+/**
+ * The gap between the worst candidate the cap kept and the best one it turned away, per beat.
+ *
+ * Absent — not zero — for a beat where the cap cut nothing, or that had no archive candidates at
+ * all: those beats say nothing about whether the cap is set right, and averaging a zero in for them
+ * would drag the mean toward "the cap is costing us" using beats the cap never touched.
+ */
+export function capGapFor(audit: ArchiveSourcingAudit): number | null {
+  const { taken, cut } = audit.archive;
+  if (taken.length === 0 || cut.length === 0) return null;
+  return Math.min(...taken) - Math.max(...cut);
+}
+
+export type ArchiveCapStats = {
+  /** Beats where the cap actually turned an archive candidate away. */
+  beatsWithCapBinding: number;
+  avgCapGap: number | null;
+  medianCapGap: number | null;
+  capGapMin: number | null;
+  capGapMax: number | null;
+};
+
+/**
+ * RONDE 165 — whether the per-source cap is cutting good candidates, over a whole render.
+ *
+ * RONDE 164 printed the gap per beat, and render 554 gave exactly one beat with a gap of 0.00 —
+ * one archive candidate refused that scored identically to the one kept. One beat is an anecdote,
+ * and raising the cap on it would be guessing. These are the numbers that would turn it into
+ * evidence: how many beats the cap actually bound on, and how far below the kept candidates the
+ * refused ones really scored.
+ *
+ * A small median gap across many binding beats means the cap is refusing candidates as good as the
+ * ones it keeps. A large one means it is doing its job. Neither is decided here — this reports, and
+ * the decision needs a render to read it on.
+ */
+export function archiveCapStats(audits: ReadonlyArray<ArchiveSourcingAudit>): ArchiveCapStats {
+  const gaps = audits
+    .map(capGapFor)
+    .filter((g): g is number => g != null)
+    .sort((a, b) => a - b);
+  if (gaps.length === 0) {
+    return {
+      beatsWithCapBinding: 0,
+      avgCapGap: null,
+      medianCapGap: null,
+      capGapMin: null,
+      capGapMax: null,
+    };
+  }
+  const mid = Math.floor(gaps.length / 2);
+  return {
+    beatsWithCapBinding: gaps.length,
+    avgCapGap: gaps.reduce((sum, g) => sum + g, 0) / gaps.length,
+    medianCapGap: gaps.length % 2 === 1 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2,
+    capGapMin: gaps[0],
+    capGapMax: gaps[gaps.length - 1],
+  };
+}
+
+function formatCapStats(stats: ArchiveCapStats): string {
+  const g = (v: number | null): string => (v == null ? "n/a" : v.toFixed(2));
+  return (
+    `beatsWithCapBinding=${stats.beatsWithCapBinding} ` +
+    `avgCapGap=${g(stats.avgCapGap)} medianCapGap=${g(stats.medianCapGap)} ` +
+    `capGapMin=${g(stats.capGapMin)} capGapMax=${g(stats.capGapMax)}`
+  );
+}
+
 export function summarizeArchiveSourcing(audits: ReadonlyArray<ArchiveSourcingAudit>): string {
   if (audits.length === 0) return "";
   const counts = new Map<ArchiveSourcingVerdict, number>();
@@ -218,6 +286,7 @@ export function summarizeArchiveSourcing(audits: ReadonlyArray<ArchiveSourcingAu
   return (
     `[ArchiveSourcingAudit] TOTAL beats=${audits.length} ${byVerdict} ` +
     `cutBySourceCap=${cutByCap} cutByBudget=${cutByBudget} ` +
-    `rejectedAfterDownload=${rejectedAfterDownload}`
+    `rejectedAfterDownload=${rejectedAfterDownload} ` +
+    formatCapStats(archiveCapStats(audits))
   );
 }

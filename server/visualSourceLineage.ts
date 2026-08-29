@@ -89,6 +89,104 @@ export type LineageStage = (typeof LINEAGE_STAGES)[number];
 export type LineageEventStatus = "OK" | "FAILED" | "REJECTED" | "REPLACED" | "REMOVED";
 
 /**
+ * RONDE 165 — the one vocabulary every terminal outcome is written in.
+ *
+ * Four rounds fixed VANISHED_WITHOUT_OUTCOME one route at a time (RONDE 95 built the rule, 159
+ * closed the compose filter, 162 closed validation and placeholders) and render 554 still reported
+ * seventeen. Each fix invented its own reason string at its own call site, so the next route to be
+ * added started silent again by default.
+ *
+ * These are the reasons, named once. `recordAssetOutcome` below is the only way to file one, so a
+ * route that ends an asset's life either uses a reason from this list or does not compile.
+ *
+ * Deliberately NOT a second audit system: this is a typed front door onto recordEventForPath, the
+ * ledger that already holds every asset's history and already computes the vanished warning.
+ */
+export type AssetOutcomeReason =
+  // ── Refused by a check ──────────────────────────────────────────────────────────────────────
+  /** The file could not be read at all. */
+  | "invalid_file"
+  /** Readable, but the montage cannot use this video stream. */
+  | "unusable_stream"
+  /** Nearly all black — a picture with nothing in it. */
+  | "mostly_black"
+  /** A placeholder card that failed its own validation. */
+  | "placeholder_rejected"
+  /** A placeholder card that was made and then not needed. */
+  | "placeholder_not_used"
+  /** Refused by the compose barrier. */
+  | "compose_gate"
+  /** The same content is already in this scene. */
+  | "duplicate_content"
+  /** VisionGate judged it and refused it. */
+  | "vision_rejected"
+  /** A curated archive asset refused before adoption. */
+  | "curated_rejected"
+  /** An extended clip that could not be used. */
+  | "extended_rejected"
+  /** The fair-use transform this asset required did not produce a usable file. */
+  | "transform_failed"
+  // ── Ended by something else winning ─────────────────────────────────────────────────────────
+  /** Downloaded and judged, but another candidate won the beat. */
+  | "superseded_by_winner"
+  /**
+   * Judged, kept nothing against it, and the beat still went elsewhere.
+   *
+   * Deliberately distinct from `superseded_by_winner`: "another candidate was better" and "this
+   * beat found no winner at all" need opposite fixes, and a single reason covering both would
+   * hide which of the two a render is actually suffering from.
+   */
+  | "not_chosen"
+  /** Swapped out for a specific replacement. */
+  | "replaced_by_candidate"
+  /** A derived clip took over from the source it was made from. */
+  | "superseded_by_derived";
+
+/** Which lineage status each reason files. Kept beside the reasons so the two cannot drift. */
+const OUTCOME_STATUS: Record<AssetOutcomeReason, LineageEventStatus> = {
+  invalid_file: "REJECTED",
+  unusable_stream: "REJECTED",
+  mostly_black: "REJECTED",
+  placeholder_rejected: "REJECTED",
+  placeholder_not_used: "REMOVED",
+  compose_gate: "REJECTED",
+  duplicate_content: "REMOVED",
+  vision_rejected: "REJECTED",
+  curated_rejected: "REJECTED",
+  extended_rejected: "REJECTED",
+  transform_failed: "REJECTED",
+  not_chosen: "REMOVED",
+  superseded_by_winner: "REPLACED",
+  replaced_by_candidate: "REPLACED",
+  superseded_by_derived: "REPLACED",
+};
+
+/**
+ * File the one terminal outcome an asset gets.
+ *
+ * `context` is free text for the beat or scene it happened in — never a second reason. A caller
+ * with no ledger is a no-op, exactly as every other audit call in this file is.
+ */
+export function recordAssetOutcome(
+  ledger: VisualSourceLedger | undefined,
+  clipPath: string,
+  reason: AssetOutcomeReason,
+  context?: string
+): void {
+  const status = OUTCOME_STATUS[reason];
+  /**
+   * REJECTED is a STATUS, not a stage — see rejectionStageForGate. A refusal is filed as a
+   * REMOVED stage carrying the REJECTED status, which is exactly the shape the vanished rule
+   * looks for ("a stage whose status includes REJECTED"), and a hand-off is filed as REPLACED.
+   */
+  const stage: LineageStage = status === "REPLACED" ? "REPLACED" : "REMOVED";
+  ledger?.recordEventForPath(clipPath, stage, {
+    status,
+    reason: context ? `${reason}:${context}` : reason,
+  });
+}
+
+/**
  * The gate that produced a rejection, §E.
  *
  * Kept separate from `stage`: the stage says WHERE in the clip's life the refusal happened, the
@@ -1481,6 +1579,84 @@ export function formatAuditReport(result: ReconciliationResult): string[] {
   }
   for (const e of result.errors) {
     lines.push(`[VisualAuditError] ${e.code} ${e.lineageId ? `lineageId=${e.lineageId} ` : ""}${e.message}${e.detail ? ` — ${e.detail}` : ""}`);
+  }
+  return lines;
+}
+
+/**
+ * RONDE 165 — every asset the render touched, and how each one ended.
+ *
+ * `reconcile()` already emits one VANISHED_WITHOUT_OUTCOME warning per unaccounted asset, and
+ * render 554 emitted seventeen of them. Seventeen warnings is a list; what nobody could read off
+ * it is the denominator — whether seventeen out of twenty is a broken pipeline or seventeen out of
+ * two hundred is a narrow leak, and which route the leak is on.
+ *
+ * So the same records are counted instead of listed, in the four states an asset can end in:
+ *
+ *   delivered    it is in the final video
+ *   resolved     it is not, and something says why (REPLACED / REMOVED / a REJECTED status)
+ *   neverChosen  it was found and no route ever selected it — nothing to explain
+ *   unresolved   it was chosen, is not in the film, and says nothing: the number to drive to zero
+ *
+ * `unresolved` is exactly the set reconcile() warns about, counted from the same rule rather than
+ * recomputed differently — this reports on that audit, it is not a second one. Nothing here reads
+ * the disk, asks a provider, or changes a record.
+ */
+export function formatAssetLifecycleAudit(ledger: VisualSourceLedger): string[] {
+  const records = ledger.allRecords();
+  if (records.length === 0) return [];
+  const stagesByLineage = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  for (const event of ledger.allEvents()) {
+    let stages = stagesByLineage.get(event.lineageId);
+    if (!stages) stagesByLineage.set(event.lineageId, (stages = new Map()));
+    // The terminal status wins over an earlier OK on the same stage: a REPLACED stage filed after
+    // a plain one is the outcome, and reading the first would hide it.
+    if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
+  }
+  let delivered = 0;
+  let resolved = 0;
+  let neverChosen = 0;
+  const unresolved: VisualLineageRecord[] = [];
+  const unresolvedByRoute = new Map<string, number>();
+  for (const record of records) {
+    const stages = stagesByLineage.get(record.lineageId);
+    if (stages?.has("FINAL_VIDEO")) {
+      delivered++;
+      continue;
+    }
+    const hasOutcome =
+      stages?.has("REPLACED") ||
+      stages?.has("REMOVED") ||
+      [...(stages?.values() ?? [])].some((st) => st.includes("REJECTED"));
+    if (hasOutcome) {
+      resolved++;
+      continue;
+    }
+    if (!stages?.has("SELECTED") && !stages?.has("ADOPTED")) {
+      neverChosen++;
+      continue;
+    }
+    unresolved.push(record);
+    unresolvedByRoute.set(record.route, (unresolvedByRoute.get(record.route) ?? 0) + 1);
+  }
+  const lines = [
+    `[AssetLifecycleAudit] assets=${records.length} delivered=${delivered} ` +
+      `resolved=${resolved} neverChosen=${neverChosen} unresolved=${unresolved.length}`,
+  ];
+  if (unresolvedByRoute.size > 0) {
+    const byRoute = [...unresolvedByRoute.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([route, count]) => `${route}=${count}`)
+      .join(" ");
+    lines.push(`[AssetLifecycleAudit] unresolvedByRoute ${byRoute}`);
+  }
+  // Named, not just counted: a route with a leak is fixed by looking at one of its files.
+  for (const record of unresolved.slice(0, 12)) {
+    lines.push(
+      `[AssetLifecycleAudit] unresolved asset=${record.lineageId} route=${record.route} ` +
+        `provider=${record.provider ?? UNVERIFIED_PROVIDER} scene=${record.sceneIndex} ` +
+        `beat=${record.beatIndex} file=${record.currentFilename}`
+    );
   }
   return lines;
 }
