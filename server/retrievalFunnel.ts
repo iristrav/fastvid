@@ -37,6 +37,10 @@ import {
 } from "./archiveEmbeddingIndex";
 import { cosineSimilarityVectors } from "./semanticVisualMatching";
 import {
+  recordShortlistStage,
+  type ArchiveSourcingAudit,
+} from "./archiveSourcingAudit";
+import {
   buildSceneCandidatePool,
   type PoolCandidate,
   type BuildPoolRequest,
@@ -927,7 +931,9 @@ const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;
 export function buildDownloadShortlist(
   candidates: FunnelCandidate[],
   budget: number,
-  usedCandidateIds?: ReadonlySet<string>
+  usedCandidateIds?: ReadonlySet<string>,
+  /** RONDE 164: filled in with this stage's counts when the caller is tracking a beat. */
+  audit?: ArchiveSourcingAudit
 ): FunnelCandidate[] {
   if (budget <= 0 || candidates.length === 0) return [];
   // FIX 2 — per-beat shortlist exclusion. The funnel result is built once per SCENE but
@@ -963,30 +969,41 @@ export function buildDownloadShortlist(
    */
   let cutByCap = 0;
   let cutByBudget = 0;
+  /**
+   * RONDE 164 — the archive scores on both sides of the cap.
+   *
+   * The brief asks whether the top three really are the best three. Recording what the cap kept
+   * and what it turned away answers it with data: a cap is doing its job when what it cuts scores
+   * materially below what it keeps. Both lists come from candidates already sorted by
+   * rankingScore, so nothing is computed for the sake of the comparison.
+   */
+  const archiveTaken: number[] = [];
+  const archiveCut: number[] = [];
   for (const c of sorted) {
     if (shortlist.length >= budget) {
       cutByBudget++;
+      if (c.source === "archive") archiveCut.push(c.rankingScore);
       continue;
     }
     const used = perSourceCount.get(c.source) ?? 0;
     if (used >= capFor(c.source)) {
       cutByCap++;
+      if (c.source === "archive") archiveCut.push(c.rankingScore);
       continue;
     }
     shortlist.push(c);
+    if (c.source === "archive") archiveTaken.push(c.rankingScore);
     perSourceCount.set(c.source, used + 1);
   }
-  if (candidates.length > shortlist.length) {
-    const bySource = [...perSourceCount.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([s, n]) => `${s}:${n}/${capFor(s)}`)
-      .join(" ");
-    console.log(
-      `[ArchiveSourcingAudit] candidatesFound=${candidates.length} ` +
-        `afterBeatDedup=${pool.length} shortlisted=${shortlist.length} budget=${budget} ` +
-        `cutBySourceCap=${cutByCap} cutByBudget=${cutByBudget} perSource=[${bySource}]`
-    );
-  }
+  recordShortlistStage(audit, {
+    afterMetadata: candidates.length,
+    afterBeatDedup: pool.length,
+    afterSourceCap: shortlist.length,
+    downloadBudget: budget,
+    cutBySourceCap: cutByCap,
+    cutByBudget,
+    archive: { taken: archiveTaken, cut: archiveCut },
+  });
 
   return shortlist;
 }

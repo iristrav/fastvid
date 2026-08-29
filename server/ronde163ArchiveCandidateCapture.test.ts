@@ -164,43 +164,27 @@ describe("RONDE 163 — nothing was loosened to get there", () => {
 });
 
 describe("RONDE 163 — where candidates are lost is now counted", () => {
-  it("the audit line names each step, so a log says which one took them", () => {
+  it("the shortlist stage reports each count into the beat's audit", async () => {
     /**
-     * The brief's measurement: candidatesFound → afterDedup → shortlisted, plus the reason. Every
-     * value is already in hand at this point — no query, no fetch, no extra scoring.
+     * RONDE 164 moved the printing to the beat, where the downstream numbers (downloaded,
+     * visionJudged, adopted) are known — one line per beat instead of one per stage. What this
+     * round put in place is the counting, and that is what is asserted here: the same values,
+     * recorded rather than logged in isolation.
      */
-    const logs: string[] = [];
-    const original = console.log;
-    console.log = (...args: unknown[]) => {
-      logs.push(args.join(" "));
-    };
-    try {
-      buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
-    } finally {
-      console.log = original;
-    }
-    const line = logs.find((l) => l.startsWith("[ArchiveSourcingAudit]"));
-    expect(line).toBeDefined();
-    expect(line).toContain("candidatesFound=26");
+    const { createArchiveSourcingAudit } = await import("./archiveSourcingAudit");
+    const audit = createArchiveSourcingAudit();
+    buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, undefined, audit);
+    expect(audit.afterMetadata).toBe(26);
+    expect(audit.afterBeatDedup).toBe(26);
     // Four, not six: the budget is a ceiling and this beat has only two sources, so the caps —
-    // not the budget — decide. That distinction is the whole point of printing both.
-    expect(line).toContain("shortlisted=4");
-    expect(line).toContain("cutBySourceCap=22");
-    expect(line).toContain("cutBySourceCap=");
-    expect(line).toContain("perSource=[");
+    // not the budget — decide. That distinction is the whole point of recording both.
+    expect(audit.afterSourceCap).toBe(4);
+    expect(audit.cutBySourceCap).toBe(22);
+    expect(audit.cutByBudget).toBe(0);
   });
 
-  it("a beat that loses nothing prints nothing", () => {
-    const logs: string[] = [];
-    const original = console.log;
-    console.log = (...args: unknown[]) => {
-      logs.push(args.join(" "));
-    };
-    try {
-      buildDownloadShortlist([cand("archive:0", "archive", 5)], MAX_FUNNEL_CANDIDATES_TO_SCORE);
-    } finally {
-      console.log = original;
-    }
-    expect(logs.some((l) => l.startsWith("[ArchiveSourcingAudit]"))).toBe(false);
+  it("a caller that tracks nothing still gets a shortlist", () => {
+    // The audit is optional: every other call site is unchanged and unaffected.
+    expect(buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE)).toHaveLength(4);
   });
 });

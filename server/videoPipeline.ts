@@ -174,6 +174,13 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
+import {
+  createArchiveSourcingAudit,
+  formatArchiveSourcingAudit,
+  recordBeatOutcome,
+  summarizeArchiveSourcing,
+  type ArchiveSourcingAudit,
+} from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
 import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
@@ -15183,6 +15190,8 @@ export interface VisualDedupState {
    * because scenes compose in parallel and one starved scene must not open the door for the rest.
    */
   composeFetchExemptScenes: Set<number>;
+  /** RONDE 164: one funnel audit per beat, tallied at render end. */
+  archiveSourcingAudits: ArchiveSourcingAudit[];
   /** asset.id → prepared beat MP4 (avoid re-trim when next zin tries same file). */
   preparedArchiveClips: Map<string, string>;
   /** asset.id → shared raw source file (one disk copy per video). */
@@ -15512,6 +15521,7 @@ export function createVisualDedupState(
     varietySeed: 0,
     crossVideoExcludeIds: new Set(),
     composeFetchExemptScenes: new Set(),
+    archiveSourcingAudits: [],
     preparedArchiveClips: new Map(),
     materializedArchiveRaw: new Map(),
     ttsSceneBeats: new Map(),
@@ -30010,10 +30020,20 @@ async function fetchSceneVisualsInner(
         // FIX 2: exclude assets an earlier beat already won, so the identical per-scene
         // candidate list produces a different shortlist per beat. Falls back to the full
         // list inside buildDownloadShortlist() once everything has been used.
+        /**
+         * RONDE 164 — the beat's own funnel, counted at every step.
+         *
+         * `candidatesFound` is what retrieval returned for the SCENE, before the metadata slice
+         * above narrowed it: render 553's s1b6 found 25 and offered 3, and only the raw number
+         * makes that visible. Everything else is filled in by the code that already computes it.
+         */
+        const sourcingAudit = createArchiveSourcingAudit();
+        const candidatesFoundForBeat = funnelResult.candidates.length;
         const toScore = buildDownloadShortlist(
           funnelCandidates,
           MAX_FUNNEL_CANDIDATES_TO_SCORE,
-          dedup.usedFunnelCandidateIds
+          dedup.usedFunnelCandidateIds,
+          sourcingAudit
         );
         const discoveredCount = funnelCandidates.length;
         const shortlistCount = toScore.length;
@@ -30586,6 +30606,25 @@ async function fetchSceneVisualsInner(
           acc[c.source] = (acc[c.source] ?? 0) + 1;
           return acc;
         }, {});
+        /**
+         * RONDE 164 — one line saying whether this beat lost candidates or was given bad ones.
+         *
+         * [VisualDiscovery] below reports the same render from the winner's side. This reports it
+         * from the funnel's, which is the side that says which constraint bound: a beat that never
+         * reached VisionGate needs the funnel widened, one whose candidates VisionGate refused
+         * needs better candidates. Nothing here is computed — every value was in hand already.
+         */
+        recordBeatOutcome(sourcingAudit, {
+          candidatesFound: candidatesFoundForBeat,
+          downloaded: downloadedCount,
+          visionJudged: scored.length,
+          visionAccepted: scored.filter((sc) => sc.visionResult.pass).length,
+          adopted: Boolean(winner),
+        });
+        dedup.archiveSourcingAudits.push(sourcingAudit);
+        console.log(
+          formatArchiveSourcingAudit(`s${scene.index}b${beat.index}`, sourcingAudit)
+        );
         console.log(
           `[VisualDiscovery] s${scene.index}b${beat.index} discovered=${discoveredCount} ` +
           `shortlist=${shortlistCount} downloaded=${downloadedCount} scored=${scored.length} ` +
@@ -36523,6 +36562,19 @@ async function _runVideoPipelineInner(
     // so "there should be more video than photos" was a claim nobody could check against a
     // finished render — including me, when I sized the moving-footage bonus in RONDE 27.
     {
+      /**
+       * RONDE 164 — which constraint actually bound this render, across every beat.
+       *
+       * One beat proves nothing about a download budget. This is the number the next round needs
+       * before touching MAX_FUNNEL_CANDIDATES_TO_SCORE: a render whose beats mostly read
+       * LOST_BEFORE_VISION with cutByBudget high has a budget problem; one whose beats read
+       * REJECTED_BY_VISION has a candidate-quality problem, and raising the budget would only buy
+       * more downloads to refuse.
+       */
+      {
+        const sourcingTotal = summarizeArchiveSourcing(visualDedup.archiveSourcingAudits);
+        if (sourcingTotal) console.log(sourcingTotal);
+      }
       const moving = visualDedup.movingClipCount;
       const still = visualDedup.stillClipCount;
       const total = moving + still;

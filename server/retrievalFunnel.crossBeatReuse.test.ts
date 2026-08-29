@@ -259,7 +259,7 @@ describe("wiring + scope", () => {
     expect(pipelineSrc).toContain("usedFunnelCandidateIds: Set<string>;");
     expect(pipelineSrc).toContain("usedFunnelCandidateIds: new Set(),");
     expect(pipelineSrc).toMatch(
-      /buildDownloadShortlist\(\s*funnelCandidates,\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds\s*\)/
+      /buildDownloadShortlist\(\s*funnelCandidates,\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds,\s*sourcingAudit\s*\)/
     );
     expect(pipelineSrc).toMatch(
       // RONDE 61 added a third argument (the gate's refusal set); the used-set is still passed.
