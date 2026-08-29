@@ -174,13 +174,30 @@ export function classifyClipMixKind(filePath: string): VisualMixKind {
  * Share of a render's adopted clips that should be MOVING footage rather than a still panned
  * with Ken Burns.
  *
- * 0.45 rather than DEFAULT_VISUAL_MIX_PERCENT.real_video's 10%: that 10% describes a classic
- * archive documentary built mostly from photographs, and the explicit instruction for this
- * pipeline is the opposite — more video, fewer stills. Render 528 landed at 11/18 stills.
- * Deliberately below half, because for many historical subjects the best-MATCHING material
- * genuinely is photographic, and match beats motion.
+ * RONDE 161 — 0.80, on the owner's instruction: "gebruik zoveel mogelijk echte beelden in plaats
+ * van afbeeldingen".
+ *
+ * The number that made the change necessary is render 553's own:
+ *
+ *     [Quality] Video 553: visual mix — 7/10 moving (70%), 3 still
+ *
+ * Seventy per cent, and the render applied NO pressure toward video at any point, because
+ * movingShareDeficit returns 0 the moment the share reaches the target and 0.45 had been passed
+ * long before. The ranking bonus existed and was dormant for the whole render. Raising the target
+ * is what turns it back on for exactly the renders this instruction is about.
+ *
+ * 0.80 rather than 1.0 deliberately. This is a TARGET the ranking leans toward, not a quota the
+ * selection must satisfy — see the file header. A photograph that is the only material matching
+ * its narration still wins, because the alternative is not a better picture, it is a placeholder
+ * card. Match still beats motion; motion now wins every tie that is not a match.
+ *
+ * The previous value and its reasoning, kept because it is the argument against going further:
+ * 0.45 was chosen "deliberately below half, because for many historical subjects the best-MATCHING
+ * material genuinely is photographic". That remains true for some beats, which is why the
+ * mechanism is a bonus and not a cap, and why archiveMaxImageClipsPerVideo was NOT tightened in
+ * the same round — a hard cap on photos produces coloured cards, not footage.
  */
-export const DEFAULT_TARGET_MOVING_SHARE = 0.45;
+export const DEFAULT_TARGET_MOVING_SHARE = 0.8;
 
 /** Read the target from env (TARGET_MOVING_SHARE=0.45), clamped to 0–1. */
 export function resolveTargetMovingShare(): number {
