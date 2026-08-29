@@ -8685,22 +8685,49 @@ export function resetComposeClipValidationMemo(): void {
   composeClipValidationMemo.clear();
 }
 
+/**
+ * RONDE 162 — the last place a clip could disappear without saying why.
+ *
+ * Every drop below is correct: an unreadable file, a stream the montage cannot use, a frame that
+ * is nearly all black. What was missing is that the caller filtered the null out and nothing was
+ * written down, so the render's own lineage audit reported the asset as VANISHED_WITHOUT_OUTCOME —
+ * chosen, adopted, absent from the film, no reason on record. Render 553:
+ *
+ *     Scene 2: dropping mostly-black clip scene_2_b1_curated_a56087.mp4
+ *     Scene 2: dropping mostly-black clip scene_2_b3_curated_a56190.mp4
+ *     ...
+ *     VANISHED_WITHOUT_OUTCOME  scene_2_b1_curated_a56204.mp4  (and five more)
+ *
+ * The reason is now filed against the asset, one per drop, naming which check refused it.
+ */
 async function requireValidClip(
   clipPath: string,
   sceneIndex: number,
   _duration: number,
-  _workDir: string
+  _workDir: string,
+  lineage?: VisualSourceLedger
 ): Promise<string | null> {
+  const dropped = (reason: string): null => {
+    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason });
+    return null;
+  };
   if (!(await isValidVideoFile(clipPath)) || isPipelineFallbackClip(clipPath)) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
-    return null;
+    /**
+     * A placeholder gets its own reason rather than none. RONDE 159 assumed a placeholder carries
+     * no lineage record; render 553 disproved it — `scene_1_slot2_guaranteed.mp4` and five like it
+     * hold ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME for exactly that reason.
+     */
+    return dropped(
+      isPipelineFallbackClip(clipPath) ? `placeholder_rejected:s${sceneIndex}` : `invalid_file:s${sceneIndex}`
+    );
   }
   const meta = await probeVideoStreamMeta(clipPath);
   if (!meta || !montageStreamMetaUsable(meta, montageClipStartSec(sceneIndex, 0))) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: dropping clip with unusable stream ${path.basename(clipPath)}`
     );
-    return null;
+    return dropped(`unusable_stream:s${sceneIndex}`);
   }
   // Compose gate already checked start/center luma for curated archive beats.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(clipPath) != null) {
@@ -8708,7 +8735,7 @@ async function requireValidClip(
   }
   if (await isMostlyBlackClip(clipPath)) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: dropping mostly-black clip ${path.basename(clipPath)}`);
-    return null;
+    return dropped(`mostly_black:s${sceneIndex}`);
   }
   return clipPath;
 }
@@ -21320,7 +21347,13 @@ async function composeReadySceneClips(
   for (const clipPath of clips) {
     if (!clipPath) continue;
     if (isPipelineFallbackClip(clipPath)) {
-      // A placeholder is not an asset; it has no lineage record to settle.
+      /**
+       * RONDE 162 corrects RONDE 159's assumption here. A placeholder was treated as having no
+       * lineage record to settle, and render 553 showed it does: six `_guaranteed.mp4` clips held
+       * ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME because this branch said nothing.
+       * A card that was made and then not used is an outcome like any other.
+       */
+      dropped(clipPath, `placeholder_not_used:s${sceneIndex}`);
       continue;
     }
     if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length, relevance))) {
@@ -32343,7 +32376,9 @@ export async function composeSceneVideoInner(
             const key = clipContentKey(clip);
             const cached = composeClipValidationMemo.get(key);
             if (cached !== undefined) return cached ? clip : null;
-            const ok = await requireValidClip(clip, scene.index, duration, workDir);
+            const ok = await requireValidClip(
+              clip, scene.index, duration, workDir, composeOptions?.dedup?.sourcingCache?.lineage
+            );
             if (composeClipValidationMemo.size >= COMPOSE_VALIDATION_MEMO_MAX) {
               const oldest = composeClipValidationMemo.keys().next();
               if (!oldest.done) composeClipValidationMemo.delete(oldest.value);
@@ -32357,10 +32392,69 @@ export async function composeSceneVideoInner(
     },
     scene.index
   );
+  const clipsBeforeValidation = safeClips.length;
   safeClips = verifiedClips.filter((clip, i, arr) => {
     const key = clipContentKey(clip);
     return arr.findIndex((c) => clipContentKey(c) === key) === i;
   });
+  /**
+   * RONDE 162 — validation may take footage away, and the scene has to be told to go and replace
+   * it, not just carry on with half a montage.
+   *
+   * There was a rescue for "every clip failed" and none at all for "some did", so a scene that
+   * lost part of its footage here simply composed with what was left. Render 553's scene 2:
+   *
+   *     Scene 2: dropping mostly-black clip scene_2_b1_curated_a56087.mp4
+   *     Scene 2: dropping mostly-black clip scene_2_b3_curated_a56190.mp4
+   *     Scene 2: only 2/7 unique clips for 21.9s voice
+   *     Scene 2: montage 8.0s cannot reach 21.9s of voice … playing it 2x
+   *
+   * Four clips became two, the montage came out at 8.0s against 21.9s of narration, and RONDE
+   * 157's replay put those two pictures on screen twice. That is where the render's 24.8%
+   * repetition comes from — measured at 59s/74s and 61s/77s, both inside scene 2 — and it is not
+   * a dedup failure at all: the sourcing dedup never saw a second use, because there was not one.
+   * The scene was simply short.
+   *
+   * The two drops were right; more archive candidates for that scene existed and went unused
+   * (#56042, #56176, #56168, #56212 were all found and scored for its beats). So the fix is to
+   * ask for replacements, through the rescue that was already there for the all-failed case.
+   *
+   * Deliberately not done here: adding a colour card to pad the count. A card is not footage and
+   * would trade a repeat for something worse.
+   */
+  const lostToValidation = clipsBeforeValidation - safeClips.length;
+  if (
+    safeClips.length > 0 &&
+    lostToValidation > 0 &&
+    safeClips.length < requiredMontageClipsForDuration(duration) &&
+    isFastShortVideoLength(composeOptions?.dedup?.videoLength) &&
+    composeOptions?.dedup &&
+    !isComposeNetworkBlocked(composeOptions.dedup, scene.index)
+  ) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: validation dropped ${lostToValidation} clip(s), ` +
+        `${safeClips.length}/${requiredMontageClipsForDuration(duration)} left — looking for replacements`
+    );
+    const replacements = await rescueFastShortComposeClips(
+      scene,
+      workDir,
+      coerceVisionString(composeOptions.videoTitle),
+      composeOptions.dedup
+    );
+    for (const clipPath of replacements) {
+      const key = clipContentKey(clipPath);
+      if (safeClips.some((c) => clipContentKey(c) === key)) continue;
+      const ok = await requireValidClip(
+        clipPath, scene.index, duration, workDir, composeOptions.dedup.sourcingCache?.lineage
+      );
+      if (ok) safeClips.push(ok);
+      if (safeClips.length >= requiredMontageClipsForDuration(duration)) break;
+    }
+    console.log(
+      `[Pipeline] Scene ${scene.index}: after replacement ${safeClips.length}/` +
+        `${requiredMontageClipsForDuration(duration)} clip(s)`
+    );
+  }
   if (safeClips.length === 0) {
     if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
       console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
@@ -32369,7 +32463,9 @@ export async function composeSceneVideoInner(
         scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
         composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
       );
-      const ok = await requireValidClip(clip, scene.index, duration, workDir);
+      const ok = await requireValidClip(
+        clip, scene.index, duration, workDir, composeOptions?.dedup?.sourcingCache?.lineage
+      );
       const adopted = ok ?? clip;
       safeClips.push(adopted);
       // Audit-gap fix, fourth site in this function (same class as Round 17 + the two

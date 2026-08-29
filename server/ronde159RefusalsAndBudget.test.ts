@@ -371,10 +371,20 @@ describe("RONDE 159 §D — a dropped clip says what became of it", () => {
     }
   });
 
-  it("a placeholder is not reported as a vanished asset — it never was one", () => {
+  it("a placeholder that is not used gets a reason like every other drop", () => {
+    /**
+     * CORRECTED BY RONDE 162, on production evidence.
+     *
+     * This round asserted the opposite — that a placeholder has no lineage record to settle, so
+     * skipping it silently was right. Render 553 disproved it: six `_guaranteed.mp4` clips hold
+     * ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME for exactly this branch's silence.
+     * A card that was made and then not used is an outcome like any other, and the rule this file
+     * exists for — every drop names its reason — never had an exception.
+     */
     const idx = PIPE.indexOf("async function composeReadySceneClips(");
-    const body = PIPE.slice(idx, idx + 1800);
-    expect(body).toContain("A placeholder is not an asset");
+    const body = PIPE.slice(idx, idx + 2400);
+    expect(body).toContain("`placeholder_not_used:s${sceneIndex}`");
+    expect(body).not.toContain("A placeholder is not an asset");
   });
 });
 
