@@ -4189,8 +4189,28 @@ export async function downloadAndTrimPoolCandidate(
   // copies of the SAME source item, so the cross-scene dedup could not tell them apart: render
   // 528 downloaded internet_archive/white-lives-matter-montana four times and cut it into two
   // different scenes, and pexels_32021142 landed in two scenes as well.
+  /**
+   * RONDE 165 — a still says so in its own name, like every other still already does.
+   *
+   * `isVideo` is known right here and was thrown away: both a film clip and a scanned photograph
+   * came out as `..._pool_<source>_<id>.mp4`. classifyClipMixKind has no rule for loc/nara/nasa/
+   * internet_archive, so those fell through to its `.mp4$` fallback and were counted as REAL
+   * VIDEO. Render 554 shipped a Library of Congress newspaper scan
+   * (`..._pool_loc_..._sn86089716_1941__pid_loc.mp4`, a Chronicling America serial) and the
+   * quality report called the render "11/13 moving (85%)".
+   *
+   * That mis-count does not just misreport — it disables the correction. RONDE 161's push toward
+   * moving footage is scaled by movingShareDeficit, which is 0 once the measured share passes the
+   * target. A render full of photographs that measures 85% moving therefore stops asking for
+   * video, which is the opposite of what the owner asked for.
+   *
+   * `_still` is the marker the curated route has always used (isCuratedPreparedStillClip,
+   * isPipelineBlurFillStillClip), and classifyClipMixKind already reads it. No new naming scheme,
+   * no second classifier — the one that exists is simply told the truth.
+   */
+  const stillSuffix = isVideo ? "" : "_still";
   const outPath = tagPathWithProviderAsset(
-    path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`),
+    path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}${stillSuffix}.mp4`),
     candidate.source,
     candidate.assetId,
     sourcingCache,

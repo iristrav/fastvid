@@ -268,6 +268,15 @@ export function isCuratedPreparedStillClip(filePath: string): boolean {
 export function isPipelineBlurFillStillClip(filePath: string): boolean {
   if (isCuratedPreparedStillClip(filePath)) return true;
   const base = path.basename(filePath);
+  /**
+   * RONDE 165 — `_still` is the marker every still now carries.
+   *
+   * The provider list below names the sources that had a filename rule; loc, nara, nasa,
+   * internet_archive and europeana never did, so their photographs were labelled as whatever came
+   * next. The download stamps `_still` for any image-derived clip, so the marker answers for all
+   * of them without a sixth provider pattern.
+   */
+  if (/_still\.mp4$/i.test(base)) return true;
   return /_wiki_|_openverse_|_serp_|_unsplash_|_p0_|_p2_/i.test(base) && /\.mp4$/i.test(base);
 }
 

@@ -126,7 +126,12 @@ describe("RONDE 59 — the trim actually receives the offset", () => {
     const src = SRC();
     const idx = src.indexOf("export async function downloadAndTrimPoolCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 8000);
+    /**
+     * RONDE 165 added the still-marker note to this function, pushing both calls from ~7.5k to
+     * ~8.8k. Window measured and widened rather than the assertion being softened — the calls
+     * themselves are unchanged and both are still asserted below.
+     */
+    const block = src.slice(idx, idx + 10_000);
     expect(block).toContain("pickBeatSegmentStartSec(sourceDur, takeSec, beatIndex)");
     expect(block).toContain(
       "trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec)"
