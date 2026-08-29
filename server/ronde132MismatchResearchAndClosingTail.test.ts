@@ -332,9 +332,26 @@ describe("RONDE 132 — a QUESTION fault starts one corrected search", () => {
     expect(formatResearchQuery("s2b1", "Hermann Göring Berlin", "Hermann Göring Berlin 1945")).toContain(
       'correctedQuery="Hermann Göring Berlin 1945"'
     );
+    /**
+     * RONDE 160 replaced `newCandidates=0|1` with real counts. The property this guards is
+     * unchanged — the outcome line reports what the pass produced — but a boolean could not tell
+     * "the corrected question found nothing" from "it found twelve and the gate refused them all",
+     * and those need opposite fixes. The brief for that round asks for exactly this order:
+     * reason → strategy → query → results → eligible → adopted.
+     */
     expect(
-      formatResearchOutcome({ beatLabel: "s2b1", newCandidates: 1, gateFits: 1, gateRejected: 0 })
-    ).toContain("newCandidates=1 gateFits=1 gateRejected=0");
+      formatResearchOutcome({
+        beatLabel: "s2b1",
+        kind: "WRONG_PERIOD",
+        strategy: "ADD_TIME",
+        query: "Hermann Göring Berlin 1945",
+        results: 12,
+        eligible: 1,
+        adopted: 1,
+        gateFits: 1,
+        gateRejected: 0,
+      })
+    ).toContain("results=12 eligible=1 adopted=1 gateFits=1 gateRejected=0");
   });
 
   it("16. the gate's real wording drives the whole chain end to end", () => {

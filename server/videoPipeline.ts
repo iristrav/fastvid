@@ -30350,6 +30350,16 @@ async function fetchSceneVisualsInner(
               );
               const fitsBefore = dedup.beatImageGate.judgementsFits;
               const mismatchBefore = dedup.beatImageGate.judgementsMismatch;
+              /**
+               * RONDE 160 — how many assets this pass actually brought in.
+               *
+               * Counted from the ledger rather than from the return value: the pass may find
+               * footage that a later gate refuses, and "found nothing" and "found twelve and kept
+               * none" are different problems needing opposite fixes. Absent when no ledger is
+               * attached, and reported as absent rather than as zero.
+               */
+              const ledgerForResearch = dedup.sourcingCache?.lineage;
+              const recordsBefore = ledgerForResearch?.allRecords().length ?? null;
               const researched = await withSceneFetchTimeout(
                 () =>
                   fetchHistoricalBeatVideo(
@@ -30380,10 +30390,19 @@ async function fetchSceneVisualsInner(
               ).catch(() => null);
               const gateFits = dedup.beatImageGate.judgementsFits - fitsBefore;
               const gateRejected = dedup.beatImageGate.judgementsMismatch - mismatchBefore;
+              const recordsAfter = ledgerForResearch?.allRecords().length ?? null;
               console.log(
                 formatResearchOutcome({
                   beatLabel,
-                  newCandidates: researched ? 1 : 0,
+                  kind: beatMismatchKind,
+                  strategy: decision.strategy,
+                  query: decision.correctedQuery,
+                  results:
+                    recordsBefore != null && recordsAfter != null
+                      ? Math.max(0, recordsAfter - recordsBefore)
+                      : -1,
+                  eligible: gateFits + gateRejected,
+                  adopted: researched ? 1 : 0,
                   gateFits,
                   gateRejected,
                 })

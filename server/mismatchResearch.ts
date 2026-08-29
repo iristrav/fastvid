@@ -167,7 +167,25 @@ export function correctionStrategyFor(kind: MismatchKind): CorrectionStrategy | 
      */
     case "LOW_INFORMATION":
       return null;
-    // A refusal whose words say nothing is still never acted on.
+    /**
+     * A refusal whose words say nothing is still never acted on.
+     *
+     * RONDE 160 tried reversing this — mapping UNCLEAR to MOST_SPECIFIC, on the argument that the
+     * alternative outcome is a placeholder card and that MOST_SPECIFIC invents no dimension. It was
+     * backed out, for two reasons that are worth writing down so the next round does not retry it.
+     *
+     * First, four rounds (132, 134, 135, 153) each independently asserted this null as a guard, and
+     * the reasoning holds: research passes are budgeted, and giving one to a beat whose refusal
+     * nobody could read spends it against beats that have a diagnosed fault and a correction that
+     * follows from it.
+     *
+     * Second, and decisively: the real defect is that the refusal was unreadable, not that nothing
+     * was done about it. RONDE 159 fixed the largest instance of that properly — the gate writes
+     * "does not relate", the classifier read "not related" — by reading production prose and adding
+     * the form it actually uses. That is the structural fix, and it is repeatable: the log window
+     * was widened in the same round so the next render shows whole verdicts instead of preambles.
+     * Acting on an unreadable refusal would have removed the symptom that leads to the evidence.
+     */
     case "UNCLEAR":
       return null;
   }
@@ -565,14 +583,48 @@ export function formatResearchProvider(beatLabel: string, provider: string, resu
   return `[MismatchResearch] beat=${beatLabel} provider=${provider} results=${results}`;
 }
 
+/**
+ * RONDE 160 — one line per recovery, in the order a person reads it:
+ *
+ *     reason → strategy → query → results → eligible → adopted
+ *
+ * What this replaces printed `newCandidates=0|1`, which is a boolean wearing a number's clothes.
+ * It could not tell the two failures apart, and they need opposite fixes:
+ *
+ *     results=0                       the corrected question found nothing — the catalogue is
+ *                                     short, or the question is still wrong
+ *     results=12 eligible=0           twelve came back and none survived validation
+ *     results=12 eligible=9 adopted=0 nine were judged and the gate refused every one
+ *
+ * `results` is counted from the lineage ledger's own records — assets that entered the render
+ * during this pass — rather than from a return value, so a pass that found footage and lost it
+ * later still reports what it found.
+ */
 export function formatResearchOutcome(params: {
   beatLabel: string;
-  newCandidates: number;
+  /** The refusal that triggered this pass. */
+  kind?: MismatchKind;
+  strategy?: CorrectionStrategy;
+  query?: string;
+  /** Assets that entered the ledger during the pass. */
+  results: number;
+  /** Of those, the ones the beat-image gate actually judged. */
+  eligible: number;
+  /** Whether the beat came away with a picture. */
+  adopted: number;
   gateFits: number;
   gateRejected: number;
 }): string {
+  const head = `[MismatchResearch] beat=${params.beatLabel}`;
+  const reason = params.kind ? ` reason=${params.kind}` : "";
+  const strategy = params.strategy ? ` strategy=${params.strategy}` : "";
+  const query = params.query ? ` query="${params.query.slice(0, 120)}"` : "";
+  // A negative count means the caller had no ledger to count from. Printed as unmeasured, never
+  // as zero — "found nothing" is a finding and "nobody counted" is not.
+  const results = params.results < 0 ? "NOT_MEASURED" : String(params.results);
   return (
-    `[MismatchResearch] beat=${params.beatLabel} newCandidates=${params.newCandidates} ` +
+    `${head}${reason}${strategy}${query} ` +
+    `results=${results} eligible=${params.eligible} adopted=${params.adopted} ` +
     `gateFits=${params.gateFits} gateRejected=${params.gateRejected}`
   );
 }
