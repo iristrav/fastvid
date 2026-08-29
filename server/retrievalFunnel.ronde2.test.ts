@@ -438,7 +438,13 @@ describe("FIX 4 — Test 9: the downstream source caps still apply unchanged", (
     ];
     const ordered = orderCandidatesForBeatGap(pool, "one_external");
     const shortlist = buildDownloadShortlist(ordered, MAX_FUNNEL_CANDIDATES_TO_SCORE, new Set());
-    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(2);
+    /**
+     * RONDE 163: the archive's cap is 3, every other source's is unchanged — 2 for historical/open
+     * sources, 1 for stock. That is what this test verifies and it still verifies it; only the
+     * archive's own number moved, on the evidence that render 553 offered a beat 2 of the 25
+     * archive candidates it had found.
+     */
+    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(3);
     expect(shortlist.filter((c) => c.source === "nara")).toHaveLength(2);
     expect(shortlist.filter((c) => c.source === "pexels")).toHaveLength(1);
     expect(shortlist.length).toBeLessThanOrEqual(MAX_FUNNEL_CANDIDATES_TO_SCORE);

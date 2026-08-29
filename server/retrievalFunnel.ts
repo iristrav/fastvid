@@ -866,6 +866,41 @@ const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;
 const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
 
 /**
+ * RONDE 163 — the curated archive is not one source among interchangeable peers.
+ *
+ * The diversity cap above is right for what it was written against: several stock libraries that
+ * answer the same query with much the same footage, where letting one fill the shortlist crowds
+ * out a better result from another. It treats `archive` as one of those, and the archive is the
+ * catalogue this pipeline is built on.
+ *
+ * What that costs, from render 553's own log:
+ *
+ *     [ArchiveRetrieval] s1b6 query="See how internal conflicts further destabilized the Nazi reg"
+ *                        candidates=25 bestScore=0.444 knownSuccessful=11
+ *     [VisualCoverageFinal] scene=1 beat=6 offered=3 visionJudged=0 eligible=0 adopted=0
+ *
+ * Twenty-five archive candidates were found and scored for that beat. Every one of them carries
+ * source `archive`, so the cap allowed TWO of the twenty-five to be downloaded and judged. The
+ * same shape on s1b5: 25 candidates, offered=2. Two chances out of twenty-five is why beats with
+ * plenty of matching material still end as placeholders.
+ *
+ * 3 rather than 2, against a download budget of MAX_FUNNEL_CANDIDATES_TO_SCORE = 6. Half the
+ * shortlist is the ceiling, and it is deliberate: 4 was tried first and broke the guard that
+ * matters here — with five archive candidates outranking three other sources, a cap of 4 left one
+ * slot and a source that had a candidate got none. Three keeps every other source reachable while
+ * giving the primary catalogue 50% more chances per beat than it had.
+ *
+ * This is a bounded step, not the whole answer. Two of twenty-five becomes three of twenty-five.
+ * The larger lever is the download budget itself, and that trades directly against download and
+ * VisionGate cost per beat — a trade that needs a production measurement before it is made.
+ *
+ * Nothing else moves. Relevance (rankingScore) still decides who fills the slots, the download
+ * budget still bounds how many are fetched, and VisionGate still decides the winner — this only
+ * changes how many archive candidates are allowed to be considered.
+ */
+const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;
+
+/**
  * FASE 4 — Candidate Expansion: replaces the old flat "take the top N by rank" download
  * selection with a source-diversity-aware shortlist, so a strong candidate from a
  * less-dominant source (e.g. ranked 4th overall but the best NARA result) still gets a
@@ -912,17 +947,45 @@ export function buildDownloadShortlist(
   const pool = unused.length > 0 ? unused : candidates;
   const sorted = [...pool].sort((a, b) => b.rankingScore - a.rankingScore);
 
-  const capFor = (source: FunnelCandidateSource): number =>
-    STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
+  const capFor = (source: FunnelCandidateSource): number => {
+    if (source === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;
+    return STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
+  };
 
   const shortlist: FunnelCandidate[] = [];
   const perSourceCount = new Map<FunnelCandidateSource, number>();
+  /**
+   * RONDE 163 — where candidates are lost, counted rather than inferred.
+   *
+   * Render 553 could be read as "25 candidates in, 2 offered", with no way to say which step took
+   * the other 23. These are the two that can: the per-beat exclusion above, and the per-source cap
+   * here. Nothing is computed for the sake of the count — every value is already in hand.
+   */
+  let cutByCap = 0;
+  let cutByBudget = 0;
   for (const c of sorted) {
-    if (shortlist.length >= budget) break;
+    if (shortlist.length >= budget) {
+      cutByBudget++;
+      continue;
+    }
     const used = perSourceCount.get(c.source) ?? 0;
-    if (used >= capFor(c.source)) continue;
+    if (used >= capFor(c.source)) {
+      cutByCap++;
+      continue;
+    }
     shortlist.push(c);
     perSourceCount.set(c.source, used + 1);
+  }
+  if (candidates.length > shortlist.length) {
+    const bySource = [...perSourceCount.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([s, n]) => `${s}:${n}/${capFor(s)}`)
+      .join(" ");
+    console.log(
+      `[ArchiveSourcingAudit] candidatesFound=${candidates.length} ` +
+        `afterBeatDedup=${pool.length} shortlisted=${shortlist.length} budget=${budget} ` +
+        `cutBySourceCap=${cutByCap} cutByBudget=${cutByBudget} perSource=[${bySource}]`
+    );
   }
 
   return shortlist;

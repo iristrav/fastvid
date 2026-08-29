@@ -272,14 +272,26 @@ describe("wiring + scope", () => {
     expect(funnelSrc).toContain("export const STOCK_TIER_WIN_MARGIN = 1.0;");
     expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;");
     expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;");
+    /**
+     * RONDE 163 gave the curated archive its own cap. The two constants above are unchanged —
+     * every other source is still capped exactly as before — and the point of this guard, that
+     * the caps are stated as constants rather than scattered as literals, still holds.
+     */
+    expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;");
     expect(funnelSrc).toContain("export const FUNNEL_CANDIDATE_POOL_LIMIT = 15;");
     expect(funnelSrc).toContain("export const MAX_FUNNEL_CANDIDATES_TO_SCORE = 6;");
     expect(funnelSrc).toContain("internet_archive: 0.15,");
     expect(funnelSrc).toContain("wikimedia: 0.10,");
     expect(funnelSrc).toContain("pexels: 0,");
-    // The sort and the cap loop are still the original ones.
+    // The sort is still the original one — relevance decides who fills the slots.
     expect(funnelSrc).toContain("const sorted = [...pool].sort((a, b) => b.rankingScore - a.rankingScore);");
-    expect(funnelSrc).toContain("if (used >= capFor(c.source)) continue;");
+    /**
+     * The cap loop still consults capFor and still skips a candidate whose source is full. RONDE
+     * 163 counts the skip on the way past so a log can say where candidates were lost, which is
+     * why the statement is no longer a one-liner. The rule it enforces is identical.
+     */
+    expect(funnelSrc).toContain("if (used >= capFor(c.source)) {");
+    expect(funnelSrc).toContain("cutByCap++;");
   });
 
   it("no score is mutated, no penalty and no randomisation were introduced", () => {

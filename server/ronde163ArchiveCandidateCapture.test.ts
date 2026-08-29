@@ -1,0 +1,206 @@
+/**
+ * RONDE 163 — twenty-five relevant archive candidates, two chances.
+ *
+ * ── The production case, beat s1b6 of render 553 ─────────────────────────────────────────────
+ *
+ *     [ArchiveRetrieval] s1b6 query="See how internal conflicts further destabilized the Nazi reg"
+ *                        candidates=25 bestScore=0.444 knownSuccessful=11 strategy=one_external
+ *     [VisualCoverageFinal] scene=1 beat=6 offered=3 visionJudged=0 eligible=0 adopted=0
+ *
+ * and its neighbour s1b5: also 25 candidates, offered=2, adopted=0. Both ended as beats with no
+ * footage in a render that finished with 6 placeholders out of 15 beats.
+ *
+ * ── Where the other twenty-three went ────────────────────────────────────────────────────────
+ *
+ * Not the search: the archive found twenty-five and scored them. Not the embedding threshold
+ * either — falling under it changes the ORDER (external leads) but keeps the archive candidates
+ * in the list. The loss is two caps, applied in sequence:
+ *
+ *     25 found
+ *      8 after the funnel's metadata slice
+ *      2 after buildDownloadShortlist's per-source cap        ← the binding one
+ *
+ * Every archive asset carries the same `source: "archive"`, and the shortlist allowed 2 per
+ * non-stock source. So no matter how many archive assets matched a beat, two of them could ever
+ * be downloaded and judged.
+ *
+ * That cap is right for what it was written against — several stock libraries answering the same
+ * query with much the same footage, where one filling the shortlist crowds out a better result
+ * from another. It is wrong for the catalogue the pipeline is built on, which is not one source
+ * among interchangeable peers.
+ *
+ * ── What changed, and what deliberately did not ──────────────────────────────────────────────
+ *
+ * The archive gets its own cap: 3 against a download budget of 6. Half the shortlist is the
+ * ceiling — 4 was implemented first and rejected, because with five archive candidates outranking
+ * three other sources it left one slot and a source with a candidate got none.
+ *
+ * No gate is loosened, no score raised, no duplicate forced. Relevance still orders the shortlist,
+ * the download budget still bounds it, and VisionGate still decides the winner. The only change is
+ * how many archive candidates are allowed to compete.
+ */
+import { describe, expect, it } from "vitest";
+
+import {
+  MAX_FUNNEL_CANDIDATES_TO_SCORE,
+  buildDownloadShortlist,
+  type FunnelCandidate,
+  type FunnelCandidateSource,
+} from "./retrievalFunnel";
+
+const cand = (id: string, source: FunnelCandidateSource, rankingScore: number): FunnelCandidate => ({
+  id,
+  source,
+  title: `${source} ${id}`,
+  thumbnailUrl: null,
+  mediaType: "video",
+  embeddingSimilarity: null,
+  archiveKeywordScore: null,
+  clipSimilarity: null,
+  rankingScore,
+});
+
+/** s1b6's shape: a deep archive result set and one external candidate beside it. */
+const beatS1B6 = (): FunnelCandidate[] => [
+  ...Array.from({ length: 25 }, (_, i) => cand(`archive:${i}`, "archive", 5 - i * 0.05)),
+  cand("openverse:1", "openverse", 3.0),
+];
+
+describe("RONDE 163 — the production case, reproduced", () => {
+  it("BEFORE: a 2-per-source cap offered two of twenty-five", () => {
+    /**
+     * The old rule, applied by hand to the same input, so the measurement this round rests on is
+     * visible rather than asserted from memory. This is what render 553 did.
+     */
+    const sorted = [...beatS1B6()].sort((a, b) => b.rankingScore - a.rankingScore);
+    const perSource = new Map<string, number>();
+    const oldShortlist: FunnelCandidate[] = [];
+    for (const c of sorted) {
+      if (oldShortlist.length >= MAX_FUNNEL_CANDIDATES_TO_SCORE) break;
+      const used = perSource.get(c.source) ?? 0;
+      if (used >= 2) continue;
+      oldShortlist.push(c);
+      perSource.set(c.source, used + 1);
+    }
+    expect(oldShortlist.filter((c) => c.source === "archive")).toHaveLength(2);
+  });
+
+  it("AFTER: the same beat now gets three archive candidates to judge", () => {
+    const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(3);
+    // And the external candidate is still there — this took nothing from anyone.
+    expect(shortlist.some((c) => c.source === "openverse")).toBe(true);
+  });
+
+  it("the ones it offers are the best-ranked ones, not an arbitrary three", () => {
+    const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    const archive = shortlist.filter((c) => c.source === "archive").map((c) => c.id);
+    expect(archive).toEqual(["archive:0", "archive:1", "archive:2"]);
+  });
+});
+
+describe("RONDE 163 — nothing was loosened to get there", () => {
+  it("no other source's cap moved", () => {
+    const pool = [
+      ...Array.from({ length: 4 }, (_, i) => cand(`nara:${i}`, "nara", 9 - i)),
+      ...Array.from({ length: 4 }, (_, i) => cand(`pexels:${i}`, "pexels", 5 - i)),
+    ];
+    const shortlist = buildDownloadShortlist(pool, MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    expect(shortlist.filter((c) => c.source === "nara")).toHaveLength(2);
+    expect(shortlist.filter((c) => c.source === "pexels")).toHaveLength(1);
+  });
+
+  it("every source that has a candidate still reaches the shortlist", () => {
+    /**
+     * The property the earlier guard protects, and the reason the cap is 3 and not 4: with a
+     * budget of 6, three archive candidates leave room for every other source present.
+     */
+    const pool = [
+      ...Array.from({ length: 5 }, (_, i) => cand(`archive:${i}`, "archive", 9 - i * 0.1)),
+      cand("wikimedia:1", "wikimedia", 7.0),
+      cand("nasa:1", "nasa", 6.9),
+      cand("nara:1", "nara", 6.8),
+    ];
+    const shortlist = buildDownloadShortlist(pool, MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    for (const source of ["wikimedia", "nasa", "nara"]) {
+      expect(shortlist.some((c) => c.source === source), source).toBe(true);
+    }
+    expect(shortlist.filter((c) => c.source === "archive").length).toBeLessThanOrEqual(3);
+  });
+
+  it("the download budget is still the ceiling", () => {
+    const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    expect(shortlist.length).toBeLessThanOrEqual(MAX_FUNNEL_CANDIDATES_TO_SCORE);
+  });
+
+  it("a budget of zero still yields nothing — no floor was introduced", () => {
+    expect(buildDownloadShortlist(beatS1B6(), 0)).toEqual([]);
+  });
+
+  it("no duplicate is forced in to fill a slot", () => {
+    // Two candidates, budget six: the shortlist is two, not two padded to six.
+    const pool = [cand("archive:0", "archive", 5), cand("nara:0", "nara", 4)];
+    expect(buildDownloadShortlist(pool, MAX_FUNNEL_CANDIDATES_TO_SCORE)).toHaveLength(2);
+  });
+
+  it("the per-beat exclusion still runs before the caps", () => {
+    /**
+     * RONDE 2's cross-beat reuse: a candidate an earlier beat already took is dropped from the
+     * input, so the same ranking reaches further down for the next beat. Raising the archive cap
+     * must not shortcut that.
+     */
+    const used = new Set(["archive:0", "archive:1"]);
+    const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, used);
+    expect(shortlist.map((c) => c.id)).not.toContain("archive:0");
+    expect(shortlist.map((c) => c.id)).not.toContain("archive:1");
+    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(3);
+  });
+
+  it("when every candidate has been used the full list comes back — a beat is never starved", () => {
+    const all = new Set(beatS1B6().map((c) => c.id));
+    const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, all);
+    expect(shortlist.length).toBeGreaterThan(0);
+  });
+});
+
+describe("RONDE 163 — where candidates are lost is now counted", () => {
+  it("the audit line names each step, so a log says which one took them", () => {
+    /**
+     * The brief's measurement: candidatesFound → afterDedup → shortlisted, plus the reason. Every
+     * value is already in hand at this point — no query, no fetch, no extra scoring.
+     */
+    const logs: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.join(" "));
+    };
+    try {
+      buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    } finally {
+      console.log = original;
+    }
+    const line = logs.find((l) => l.startsWith("[ArchiveSourcingAudit]"));
+    expect(line).toBeDefined();
+    expect(line).toContain("candidatesFound=26");
+    // Four, not six: the budget is a ceiling and this beat has only two sources, so the caps —
+    // not the budget — decide. That distinction is the whole point of printing both.
+    expect(line).toContain("shortlisted=4");
+    expect(line).toContain("cutBySourceCap=22");
+    expect(line).toContain("cutBySourceCap=");
+    expect(line).toContain("perSource=[");
+  });
+
+  it("a beat that loses nothing prints nothing", () => {
+    const logs: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.join(" "));
+    };
+    try {
+      buildDownloadShortlist([cand("archive:0", "archive", 5)], MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    } finally {
+      console.log = original;
+    }
+    expect(logs.some((l) => l.startsWith("[ArchiveSourcingAudit]"))).toBe(false);
+  });
+});

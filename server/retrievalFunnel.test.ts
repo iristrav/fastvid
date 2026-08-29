@@ -274,7 +274,14 @@ describe("buildDownloadShortlist", () => {
     ];
     const shortlist = buildDownloadShortlist(pool, 6);
     const archiveCount = shortlist.filter(c => c.source === "archive").length;
-    expect(archiveCount).toBeLessThanOrEqual(2);
+    /**
+     * RONDE 163 raised the archive's own cap from 2 to 3 — render 553 offered a beat 2 of the 25
+     * archive candidates it had found. The property this test guards is unchanged and still
+     * asserted below: with a budget of 6, every other source that has a candidate still gets a
+     * slot. Half the shortlist is the ceiling, which is why 4 was tried and rejected.
+     */
+    expect(archiveCount).toBeLessThanOrEqual(3);
+    expect(archiveCount).toBeLessThanOrEqual(Math.floor(6 / 2));
     expect(shortlist.some(c => c.source === "wikimedia")).toBe(true);
     expect(shortlist.some(c => c.source === "nasa")).toBe(true);
     expect(shortlist.some(c => c.source === "nara")).toBe(true);
