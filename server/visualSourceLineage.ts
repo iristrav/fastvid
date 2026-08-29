@@ -1408,17 +1408,40 @@ export function formatUsageInconsistencies(
   summary: VisualSourceSummary,
   finalVideoVerified: boolean
 ): string[] {
-  const ORDER: Array<[SummaryCounter, string]> = [
+  /**
+   * RONDE 159 — two of these stages are optional, and treating them as mandatory made every
+   * render report a fault it did not have.
+   *
+   * Video 552 printed, on a render that was fine:
+   *
+   *     provider=TOTAL assigned=32 exceeds downloaded=11
+   *     provider=TOTAL downloaded=11 exceeds selected=4
+   *     provider=unsplash downloaded=1 exceeds selected=0
+   *
+   * Those are not miscounts. The curated archive route prepares a clip from the archive store and
+   * adopts it without ever downloading anything, and the rescue route adopts without a SELECTED
+   * event — which this file's own lineage audit already states in as many words ("a rescue clip
+   * legitimately skips SELECTED"). The funnel check contradicted the audit standing three hundred
+   * lines above it, and did so on every render, which is how a real finding gets ignored.
+   *
+   * So the strict chain is kept for the stages every asset must pass, and the two a route may
+   * legitimately skip are checked against the last mandatory stage before them instead. A genuine
+   * miscount — more rendered than assigned, more selected than validated — still reports.
+   */
+  const MANDATORY: Array<[SummaryCounter, string]> = [
     ["results", "found"],
     ["eligible", "validated"],
-    ["selected", "selected"],
-    ["downloadSucceeded", "downloaded"],
     ["adopted", "assigned"],
     ["finalVideo", "rendered"],
   ];
+  /** Stages a route may skip entirely, bounded by the last stage that is not optional. */
+  const OPTIONAL: Array<[SummaryCounter, string, SummaryCounter, string]> = [
+    ["selected", "selected", "eligible", "validated"],
+    ["downloadSucceeded", "downloaded", "eligible", "validated"],
+  ];
   const out: string[] = [];
   const check = (provider: string, c: SummaryCounts): void => {
-    const stages = finalVideoVerified ? ORDER : ORDER.slice(0, -1);
+    const stages = finalVideoVerified ? MANDATORY : MANDATORY.slice(0, -1);
     for (let i = 1; i < stages.length; i++) {
       const [prevKey, prevLabel] = stages[i - 1]!;
       const [key, label] = stages[i]!;
@@ -1426,6 +1449,14 @@ export function formatUsageInconsistencies(
         out.push(
           `[AssetUsageInconsistency] provider=${provider} ${label}=${c[key]} exceeds ` +
             `${prevLabel}=${c[prevKey]} — a later stage cannot count more assets than the one it follows`
+        );
+      }
+    }
+    for (const [key, label, boundKey, boundLabel] of OPTIONAL) {
+      if (c[key] > c[boundKey]) {
+        out.push(
+          `[AssetUsageInconsistency] provider=${provider} ${label}=${c[key]} exceeds ` +
+            `${boundLabel}=${c[boundKey]} — a later stage cannot count more assets than the one it follows`
         );
       }
     }

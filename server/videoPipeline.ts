@@ -175,7 +175,7 @@ import {
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2534,7 +2534,7 @@ export async function fetchBeatArchivalThenPexels(
           usedArchiveNames: dedup.usedArchiveNames,
         }
       ),
-      archiveBeatTryTimeoutMs(dedup.videoLength),
+      archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
       `archive s${sceneIndex} b${beat.index}`
     );
   } catch (err) {
@@ -15148,6 +15148,14 @@ export interface VisualDedupState {
   varietySeed: number;
   /** Assets used in recent same-topic videos — skipped when pool allows. */
   crossVideoExcludeIds: Set<number>;
+  /**
+   * RONDE 159 — scenes allowed to fetch at compose time despite local-only mode.
+   *
+   * Granted only to a scene that is genuinely short of footage while the render still holds real
+   * wall-clock headroom; see composeMayFetchForStarvedScene. Per scene rather than per render,
+   * because scenes compose in parallel and one starved scene must not open the door for the rest.
+   */
+  composeFetchExemptScenes: Set<number>;
   /** asset.id → prepared beat MP4 (avoid re-trim when next zin tries same file). */
   preparedArchiveClips: Map<string, string>;
   /** asset.id → shared raw source file (one disk copy per video). */
@@ -15476,6 +15484,7 @@ export function createVisualDedupState(
     archiveAssetsCache: new Map(),
     varietySeed: 0,
     crossVideoExcludeIds: new Set(),
+    composeFetchExemptScenes: new Set(),
     preparedArchiveClips: new Map(),
     materializedArchiveRaw: new Map(),
     ttsSceneBeats: new Map(),
@@ -21285,18 +21294,44 @@ async function recoverSceneClipsIfEmptyInner(
   return { clips, beatDurations };
 }
 
+/**
+ * RONDE 159 — this is where chosen footage disappeared without saying why.
+ *
+ * Video 552's lineage audit reported twelve VANISHED_WITHOUT_OUTCOME warnings, all of them scene
+ * 2's: assets that were FOUND, were ADOPTED, and were not in the final video, with no REPLACED,
+ * REMOVED or REJECTED event to account for them. The audit rule (RONDE 95 §4) was right; what it
+ * detected is this loop. Three `continue` statements drop a clip and record nothing, so every
+ * report downstream had to describe an asset that had simply evaporated.
+ *
+ * Each drop now files the ending it actually is, with the reason that caused it. Nothing about
+ * which clips survive changes — only whether the ledger can say what became of the others.
+ */
 async function composeReadySceneClips(
   clips: string[],
   sceneIndex: number,
   /** RONDE 103 phase 17: all three callers hold the render state, so the barrier applies here too. */
-  relevance?: BeatRelevanceLedger
+  relevance?: BeatRelevanceLedger,
+  lineage?: VisualSourceLedger
 ): Promise<string[]> {
   const out: string[] = [];
+  const dropped = (clipPath: string, reason: string): void => {
+    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason });
+  };
   for (const clipPath of clips) {
-    if (!clipPath || isPipelineFallbackClip(clipPath)) continue;
-    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length, relevance))) continue;
+    if (!clipPath) continue;
+    if (isPipelineFallbackClip(clipPath)) {
+      // A placeholder is not an asset; it has no lineage record to settle.
+      continue;
+    }
+    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length, relevance))) {
+      dropped(clipPath, `compose_gate:s${sceneIndex}`);
+      continue;
+    }
     const key = clipContentKey(clipPath);
-    if (out.some((c) => clipContentKey(c) === key)) continue;
+    if (out.some((c) => clipContentKey(c) === key)) {
+      dropped(clipPath, `duplicate_content:s${sceneIndex}`);
+      continue;
+    }
     out.push(clipPath);
   }
   return out;
@@ -21308,7 +21343,7 @@ function skipComposeNetworkFetch(
   sceneIndex: number,
   beatIndex?: number
 ): boolean {
-  if (!isComposeNetworkBlocked(dedup)) return false;
+  if (!isComposeNetworkBlocked(dedup, sceneIndex)) return false;
   const beat = beatIndex != null ? ` beat ${beatIndex}` : "";
   console.warn(
     `[Pipeline] Scene ${sceneIndex}${beat}: compose local-only — blocked ${source}`
@@ -21325,7 +21360,7 @@ async function rescueFastShortComposeClips(
   dedup: VisualDedupState
 ): Promise<string[]> {
   if (!isFastShortVideoLength(dedup.videoLength)) return [];
-  if (isComposeNetworkBlocked(dedup)) {
+  if (isComposeNetworkBlocked(dedup, scene.index)) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose rescue skipped (local-only mode)`);
     return [];
   }
@@ -21460,7 +21495,7 @@ async function finalizeLocalClipCacheForScene(
   const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
 
   const applyReady = async (clips: string[], source: SceneVisualsResult): Promise<SceneVisualsResult> => {
-    const ready = await composeReadySceneClips(clips, scene.index, dedup.beatRelevance);
+    const ready = await composeReadySceneClips(clips, scene.index, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     const durations =
       source.beatDurations?.slice(0, ready.length) ??
       ready.map(() => beatSec);
@@ -21476,6 +21511,36 @@ async function finalizeLocalClipCacheForScene(
   console.warn(
     `[Pipeline] Scene ${scene.index}: ${result.clips.length}/${minNeeded} compose-ready clips — pre-compose cache fill`
   );
+
+  /**
+   * RONDE 159 — a scene this short of footage may go and fetch, if the clock allows it.
+   *
+   * Every fill stage below is refused by the local-only block, and video 552 shows what that costs
+   * on a scene that has nothing: 2 of 7 clips, thirteen refusals, and 21.5s of narration carried by
+   * two clips. That shortfall is the gap RONDE 157 and 158 had to paper over with slowed and
+   * replayed picture; here is where it can be prevented instead.
+   *
+   * The block stays for every scene that is merely thinner than planned. The exemption is granted
+   * only below half of what the scene needs, only while the render is genuinely ahead of its
+   * budget, and only to this scene.
+   */
+  const remainingWallClockMs = get_activeBudgetTracker()?.remainingMs?.();
+  if (
+    isComposeNetworkBlocked(dedup, scene.index) &&
+    composeMayFetchForStarvedScene({
+      videoLength: dedup.videoLength,
+      clipsOnDisk: result.clips.length,
+      clipsNeeded: minNeeded,
+      remainingWallClockMs,
+    })
+  ) {
+    dedup.composeFetchExemptScenes.add(scene.index);
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: only ${result.clips.length}/${minNeeded} clips and ` +
+        `${Math.round((remainingWallClockMs ?? 0) / 1000)}s of budget left — allowing this scene ` +
+        `to fetch during compose`
+    );
+  }
 
   // RONDE 7 (render 518): each fill stage below used to REPLACE `result` with only its own
   // clips — scene 0 entered this function with 4 compose-ready winners and left with the single
@@ -21567,7 +21632,7 @@ async function ensureFastShortScenesReadyForCompose(
       continue;
     }
 
-    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index, visualDedup.beatRelevance);
+    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
     if (ready.length > 0) {
       sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
       continue;
@@ -21593,7 +21658,7 @@ async function ensureFastShortScenesReadyForCompose(
           : 35_000,
         `Scene ${scene.index} pre-compose recovery`
       );
-      ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance);
+      ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
       if (ready.length > 0) {
         sceneVisualResults[si] = { ...recovered, clips: ready };
       }
@@ -21763,7 +21828,7 @@ async function fetchLastResortRealClipInner(
           assetsCache: dedup.archiveAssetsCache,
         }
       ),
-      archiveBeatTryTimeoutMs(dedup.videoLength),
+      archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
       `archive s${sceneIndex} b${beat.index} (last resort)`
     );
   } catch (err) {
@@ -28537,7 +28602,7 @@ async function retryAuthenticBeforeLicensedStock(
               semanticProfile
             ),
         ],
-        archiveBeatTryTimeoutMs(dedup.videoLength)
+        archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.())
       );
     }
 

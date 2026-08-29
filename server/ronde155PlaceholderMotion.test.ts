@@ -97,8 +97,16 @@ describe("RONDE 155 — an unclassified refusal now says what it could not read"
   });
 
   it("it is truncated, so a long answer cannot flood the log", () => {
+    /**
+     * RONDE 159 split the single window in two. The reason carries the verdict and the description
+     * runs long, so sharing one 160-character budget cut three of video 552's five refusals off
+     * mid-verdict. Both fields are still bounded — which is what this test is for — but each now
+     * has its own bound.
+     */
     expect(FEEDBACK).toContain("const UNCLEAR_PROSE_CHARS = 160;");
-    expect(FEEDBACK).toContain("prose.slice(0, UNCLEAR_PROSE_CHARS)");
+    expect(FEEDBACK).toContain("const UNCLEAR_REASON_CHARS = 320;");
+    expect(FEEDBACK).toContain("depicts.slice(0, UNCLEAR_PROSE_CHARS)");
+    expect(FEEDBACK).toContain("reason.slice(0, UNCLEAR_REASON_CHARS)");
   });
 
   it("an empty answer is reported as empty rather than silently skipped", () => {

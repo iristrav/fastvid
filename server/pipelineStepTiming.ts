@@ -170,11 +170,31 @@ export async function timePipelineStep<T>(
 }
 
 /** True when compose render must not trigger Wikimedia/Pexels/archive network fetches. */
-export function isComposeNetworkBlocked(dedup?: {
-  composeNetworkBlocked?: boolean;
-  videoLength?: string;
-}): boolean {
-  return Boolean(dedup?.composeNetworkBlocked) && composeLocalClipsOnly(dedup?.videoLength);
+export function isComposeNetworkBlocked(
+  dedup?: {
+    composeNetworkBlocked?: boolean;
+    videoLength?: string;
+    composeFetchExemptScenes?: Set<number>;
+  },
+  /**
+   * RONDE 159 — which scene is asking.
+   *
+   * The block is right in general and wrong for a scene that has almost no footage. Video 552's
+   * scene 2 went into compose with 2 of the 7 clips it needed, was refused thirteen times here,
+   * and ended as 21.5 seconds of narration over two clips — the shortfall RONDE 157/158 then had
+   * to fill with slowed and replayed picture. The footage existed; the render would not go and
+   * get it, while holding eleven unused minutes of budget.
+   *
+   * A caller that does not name a scene gets the plain answer, because the exemption is a
+   * statement about one starved scene and must not leak into decisions made for the render.
+   */
+  sceneIndex?: number
+): boolean {
+  if (!Boolean(dedup?.composeNetworkBlocked) || !composeLocalClipsOnly(dedup?.videoLength)) {
+    return false;
+  }
+  if (sceneIndex != null && dedup?.composeFetchExemptScenes?.has(sceneIndex)) return false;
+  return true;
 }
 
 /** Loud marker when network sourcing runs during compose (should be rare). */

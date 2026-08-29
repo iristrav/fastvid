@@ -808,6 +808,93 @@ export function archiveBeatTryTimeoutMs(videoLength?: string | null): number {
 }
 
 /**
+ * Wall-clock that must survive the sourcing stage, whatever else happens.
+ *
+ * Compose, concat, the music mix and the upload still have to run after every beat is decided.
+ * Video 552 spent 33.5s on assemble+music and 12.2s on upload, with compose the large item; four
+ * minutes is comfortably above that and is the amount no beat may eat into.
+ */
+export const SOURCING_RESERVE_MS = 240_000;
+
+/**
+ * How many further beats to assume are still waiting when handing one of them extra time.
+ *
+ * Nothing at the call site knows the real number, and guessing low would let one beat spend
+ * headroom that twenty beats need. Video 552 had 22 beats, so twenty is a realistic worst case
+ * rather than a flattering one: if every remaining beat took the extended budget, the render still
+ * lands inside the reserve.
+ */
+const BEATS_ASSUMED_REMAINING = 20;
+
+/** Never more than this multiple of the base, however much clock is left. */
+const MAX_BEAT_BUDGET_MULTIPLE = 3;
+
+/**
+ * RONDE 159 — spend the clock the render actually has.
+ *
+ * Video 552 abandoned three beats on "archive beat budget exceeded — exceeded 18s" and then
+ * finished the whole render in 10m 19s of a 22m budget: 47% used, 11m 41s left unspent. Footage
+ * was thrown away for want of time by a render that had time to spare, and the beats it gave up on
+ * are the ones that ended as coloured placeholder cards.
+ *
+ * The base stays the base. It is raised only out of headroom that genuinely exists, bounded three
+ * ways so a generous clock cannot turn into an overrun: the reserve is untouchable, one beat may
+ * take at most its share of what is left, and the result is capped at a multiple of the base.
+ *
+ * A render that is behind schedule gets exactly the old number, which is the case the 18s was
+ * chosen for.
+ */
+export function archiveBeatBudgetMs(
+  videoLength?: string | null,
+  remainingWallClockMs?: number | null
+): number {
+  const base = archiveBeatTryTimeoutMs(videoLength);
+  // An explicit override is an instruction, not a starting point.
+  if (process.env.ARCHIVE_BEAT_TRY_TIMEOUT_MS?.trim()) return base;
+  if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return base;
+  const headroom = remainingWallClockMs - SOURCING_RESERVE_MS;
+  if (headroom <= 0) return base;
+  const share = Math.floor(headroom / BEATS_ASSUMED_REMAINING);
+  return Math.min(Math.max(base, share), base * MAX_BEAT_BUDGET_MULTIPLE);
+}
+
+/**
+ * RONDE 159 — may the compose stage still fetch, for a scene that has too little footage?
+ *
+ * composeLocalClipsOnly exists for a real reason: on the short-video path, compose runs against a
+ * deadline and a fetch there can blow it. But it was unconditional, and video 552 shows what that
+ * costs when it fires on a starved scene:
+ *
+ *     Scene 2: 2/7 compose-ready clips — pre-compose cache fill
+ *     Scene 2: compose local-only — blocked visual rescue        (13 blocks in that render)
+ *     12 assets VANISHED_WITHOUT_OUTCOME — found, chosen, never on disk
+ *
+ * Two clips for 21.5s of narration, and that shortfall is precisely the gap RONDE 157 and 158
+ * had to fill with slowed and replayed footage. The footage existed; the render refused to go
+ * and get it while holding eleven minutes of unused budget.
+ *
+ * So the block is kept, and lifted only where it is doing harm: a scene genuinely short of clips,
+ * with real headroom left. A scene that has what it needs still never fetches at compose time.
+ */
+export function composeMayFetchForStarvedScene(params: {
+  videoLength?: string | null;
+  clipsOnDisk: number;
+  clipsNeeded: number;
+  remainingWallClockMs?: number | null;
+}): boolean {
+  // Not in local-only mode at all — fetching was never blocked, so there is nothing to lift.
+  if (!composeLocalClipsOnly(params.videoLength)) return true;
+  if (process.env.COMPOSE_LOCAL_CLIPS_ONLY === "true") return false;
+  const { clipsOnDisk, clipsNeeded, remainingWallClockMs } = params;
+  if (!(clipsNeeded > 0)) return false;
+  // "Starved" means the montage cannot be built from what is here, not merely that it is thinner
+  // than planned: below half of what the scene asked for.
+  if (clipsOnDisk * 2 >= clipsNeeded) return false;
+  if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return false;
+  return remainingWallClockMs - SOURCING_RESERVE_MS > 0;
+}
+
+/**
  * RONDE 20: hard wall-clock cap for ONE scene's compose-time rescue (recoverSceneClipsIfEmpty).
  *
  * That path was the only major stage with no time bound at all: it loops up to ~7 fallback texts,

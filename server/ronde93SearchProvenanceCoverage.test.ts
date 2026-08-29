@@ -266,8 +266,14 @@ describe("RONDE 94 — found is not rendered, and the report says which is which
     const broken = counts({ results: 10, eligible: 4, selected: 6, downloadSucceeded: 6, adopted: 6, finalVideo: 6 });
     const problems = formatUsageInconsistencies(summaryOf({ nasa: broken }, broken), true);
     expect(problems.length).toBeGreaterThan(0);
-    expect(problems[0]).toContain("[AssetUsageInconsistency]");
-    expect(problems[0]).toContain("selected=6 exceeds validated=4");
+    expect(problems.every((p) => p.startsWith("[AssetUsageInconsistency]"))).toBe(true);
+    /**
+     * RONDE 159 reports the mandatory stages first and the two optional ones (selected,
+     * downloaded — a curated clip is adopted without either) after them, so this finding is no
+     * longer the first line. It is still reported, which is what the test is for; asserting
+     * membership rather than position also stops the test breaking on the next ordering change.
+     */
+    expect(problems.some((p) => p.includes("selected=6 exceeds validated=4"))).toBe(true);
   });
 
   it("TEST 20 — a well-formed funnel reports nothing", () => {

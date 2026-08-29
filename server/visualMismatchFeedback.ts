@@ -179,11 +179,34 @@ const MISMATCH_PATTERNS: ReadonlyArray<{ kind: MismatchKind; re: RegExp }> = [
   },
   {
     kind: "WRONG_SUBJECT",
-    re: /\b(different (?:person|man|woman|subject|figure|individual|topic|event|thing)|wrong (?:person|man|woman|subject|figure|topic|event)|someone else|somebody else|not the (?:same )?(?:person|man|woman|subject)|another (?:person|man|woman|subject)|does not (?:show|depict) (?:the|any)|shows? nothing (?:to do with|related))\b/i,
+    /**
+     * RONDE 159: `does not (show|depict)` required an article after it, so "does not depict what
+     * the narration describes" fell through. The article is now optional — the phrase itself is
+     * the finding, and what follows it varies.
+     */
+    re: /\b(different (?:person|man|woman|subject|figure|individual|topic|event|thing)|wrong (?:person|man|woman|subject|figure|topic|event)|someone else|somebody else|not the (?:same )?(?:person|man|woman|subject)|another (?:person|man|woman|subject)|does not (?:show|depict)|shows? nothing (?:to do with|related))\b/i,
   },
   {
     kind: "UNRELATED",
-    re: /\b(unrelated|irrelevant|nothing to do with|no (?:apparent )?(?:connection|relation|relevance|bearing)|not related|off[- ]topic|does not belong)\b/i,
+    /**
+     * RONDE 159 — the formulation the gate actually uses, read off two production renders.
+     *
+     * Video 552 refused 13 candidates and could not classify 8 of them. The prose logged by
+     * RONDE 155 shows why, and it is one missing verb form:
+     *
+     *     "The clip shows a wedding ceremony, which does not relate to the narrative…"
+     *     "The images depict children greeting a woman, which does not relate…"
+     *
+     * The pattern had `not related` — the adjective. The gate writes `does not relate` — the verb.
+     * Every one of those refusals is an UNRELATED, which is a QUESTION fault, which is what makes
+     * the beat try a different search instead of falling through to a placeholder card. So a
+     * missing verb form is why those beats got a coloured card.
+     *
+     * The additions below are the phrasings observed in those logs plus their immediate
+     * variations, and nothing further: a guessed pattern that fires wrongly would reorder
+     * candidates away from a source for a reason nobody gave.
+     */
+    re: /\b(unrelated|irrelevant|nothing to do with|no (?:apparent )?(?:connection|relation|relevance|bearing)|not related|off[- ]topic|does not belong|(?:does|do|did) not (?:relate|correspond|match|align|fit|pertain)|not relevant|bears? no relation|has nothing (?:to do )?with)\b/i,
   },
 ];
 
@@ -565,6 +588,9 @@ export function mismatchFaultSplit(tally: MismatchTally): {
  */
 const UNCLEAR_PROSE_CHARS = 160;
 
+/** The verdict clause lives here, so it gets the larger window. See formatMismatchFeedback. */
+const UNCLEAR_REASON_CHARS = 320;
+
 export function formatMismatchFeedback(params: {
   sceneIndex: number;
   beatIndex: number;
@@ -581,9 +607,23 @@ export function formatMismatchFeedback(params: {
     `fault=${mismatchFault(params.kind)} remaining=${params.remaining} ` +
     `reordered=${params.reordered ? "yes" : "no"}`;
   if (params.kind !== "UNCLEAR") return head;
-  const prose = `${params.depicts ?? ""} ${params.reason ?? ""}`.trim().replace(/\s+/g, " ");
-  if (!prose) return `${head}\n  unclassified: the gate returned no prose to classify`;
-  return `${head}\n  unclassified prose: "${prose.slice(0, UNCLEAR_PROSE_CHARS)}"`;
+  const depicts = (params.depicts ?? "").trim().replace(/\s+/g, " ");
+  const reason = (params.reason ?? "").trim().replace(/\s+/g, " ");
+  if (!depicts && !reason) return `${head}\n  unclassified: the gate returned no prose to classify`;
+  /**
+   * RONDE 159 — the two fields are printed separately, because one 160-character window did not
+   * reach the part that decides.
+   *
+   * Video 552 logged five unclassified refusals. `depicts` is a description of the picture and
+   * runs long; `reason` carries the verdict. Sharing one budget meant the description ate it and
+   * three of the five were cut off mid-verdict — "…which do", "…likely during the WWII perio" —
+   * exactly where the classifying words are. The reason gets the larger share now, and the
+   * description a smaller one, so the next round reads a whole finding instead of a preamble.
+   */
+  const lines = [head];
+  if (reason) lines.push(`  unclassified reason: "${reason.slice(0, UNCLEAR_REASON_CHARS)}"`);
+  if (depicts) lines.push(`  unclassified prose: "${depicts.slice(0, UNCLEAR_PROSE_CHARS)}"`);
+  return lines.join("\n");
 }
 
 /** The render-end block. Empty string when nothing was refused — silence is the good outcome. */
