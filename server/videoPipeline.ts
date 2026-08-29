@@ -17549,8 +17549,8 @@ export async function extendMontageForCoverage(
     );
   } catch (err) {
     console.warn(
-      `[Pipeline] Scene ${sceneIndex}: montage replay failed, coverage filler may hold a frame: ` +
-        `${(err as Error)?.message?.slice(0, 140)}`
+      `[Pipeline] Scene ${sceneIndex}: montage replay failed — the finished scene is checked ` +
+        `for a short picture and repaired if needed: ${(err as Error)?.message?.slice(0, 140)}`
     );
   }
   return unchanged;
@@ -17625,8 +17625,8 @@ async function composePlainMontageScene(
       headChain = montageTailPadVF("0:v", montageDur, outDur);
     } else {
       console.warn(
-        `[Pipeline] Scene ${sceneIndex}: could not probe montage length — tail pad skipped, ` +
-          `a short montage will hold its last frame`
+        `[Pipeline] Scene ${sceneIndex}: could not probe montage length — tail pad skipped here; ` +
+          `the finished scene is checked for a short picture and repaired if needed`
       );
     }
     await withSceneFetchTimeout(
@@ -31985,10 +31985,40 @@ export async function composeSceneVideoInner(
   );
   // RONDE 34 (point 4): staged clip list, published only on a successful return.
   let pendingUsedClips: string[] = [];
-  const returnComposed = (composedPath: string): string => {
+  /**
+   * RONDE 158 — the one place every compose route leaves through, so the one place to check that
+   * the scene's picture actually covers its sound.
+   *
+   * `targetDur` is the scene's own length. Omitted means "not known here", and the check is then
+   * skipped rather than run against a guess.
+   */
+  const returnComposed = async (composedPath: string, targetDur?: number): Promise<string> => {
     if (usedClipsOut) {
       usedClipsOut.length = 0;
       usedClipsOut.push(...pendingUsedClips);
+    }
+    if (targetDur != null && targetDur > 0 && composedPath === outputPath) {
+      const covered = await repairShortSceneVideo(
+        composedPath,
+        targetDur,
+        scene.index,
+        workDir,
+        90_000,
+        pipelineFfmpegThreadFlag()
+      );
+      if (covered !== composedPath) {
+        // The repair wrote a new file; it becomes the compose output so the rename below publishes
+        // it under the name the caller expects.
+        try {
+          fs.rmSync(outputPath, { force: true });
+          fs.renameSync(covered, outputPath);
+        } catch (err) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index}: could not swap in the repaired scene: ` +
+              `${(err as Error)?.message?.slice(0, 120)}`
+          );
+        }
+      }
     }
     // Only the compose output itself is published atomically; a caller that hands back some
     // other path (there is none today) is returned unchanged rather than renamed blindly.
@@ -32701,7 +32731,7 @@ export async function composeSceneVideoInner(
         scene.index
       )
     ) {
-      return returnComposed(outputPath);
+      return await returnComposed(outputPath, outDur);
     }
     console.warn(`[Pipeline] Scene ${scene.index}: fast plain compose failed — trying full compose path`);
   }
@@ -32830,7 +32860,7 @@ export async function composeSceneVideoInner(
       if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
         throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} label compose produced no output`);
       }
-      return returnComposed(outputPath);
+      return await returnComposed(outputPath, outDur);
     }
 
     if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
@@ -32959,7 +32989,7 @@ export async function composeSceneVideoInner(
         )
       ) {
         console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
-        return returnComposed(outputPath);
+        return await returnComposed(outputPath, outDur);
       }
     } catch (plainErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose failed:`, plainErr);
@@ -32998,7 +33028,7 @@ export async function composeSceneVideoInner(
           `Compose without SFX scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return returnComposed(outputPath);
+          return await returnComposed(outputPath, outDur);
         }
       } catch (noSfxErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: compose without SFX failed:`, noSfxErr);
@@ -33035,7 +33065,7 @@ export async function composeSceneVideoInner(
           if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
           for (const frame of kineticFrames) { try { fs.unlinkSync(frame.path); } catch { /* ignore */ } }
           for (const overlay of docOverlays) { try { fs.unlinkSync(overlay.path); } catch { /* ignore */ } }
-          return returnComposed(outputPath);
+          return await returnComposed(outputPath, outDur);
         }
       } catch (noOverlayErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: compose without overlays failed:`, noOverlayErr);
@@ -33099,7 +33129,7 @@ export async function composeSceneVideoInner(
           `Sequential rescue scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return returnComposed(outputPath);
+          return await returnComposed(outputPath, outDur);
         }
       } catch (seqRescueErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
@@ -33198,7 +33228,7 @@ export async function composeSceneVideoInner(
   for (const overlay of docOverlays) {
     try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
   }
-  return returnComposed(outputPath);
+  return await returnComposed(outputPath, outDur);
   } finally {
     discardUnpublishedComposeTemp();
   }
@@ -33355,6 +33385,139 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
     } catch { /* try next */ }
   }
   return 0;
+}
+
+/**
+ * How long the PICTURE lasts, which is not the same as how long the file lasts.
+ *
+ * RONDE 158 — the difference between the two is the defect. A scene muxed from a montage shorter
+ * than its voice has a container of the full length and a video stream that stops early; a player
+ * holds the last frame across the difference, and the final concat turns that hold into real
+ * duplicated frames. `format=duration` reports the container and therefore reads such a scene as
+ * complete, which is why every check that used it saw nothing wrong.
+ *
+ * Falls back to frame count over frame rate when the stream carries no duration of its own, and
+ * returns 0 when neither can be read — never a guess, because a guessed length here would silently
+ * disable the repair that depends on it.
+ */
+export async function probeVideoStreamDurationSec(filePath: string): Promise<number> {
+  for (const probe of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await withSceneFetchTimeout(
+        () => exec(
+          `"${probe}" -v error -select_streams v:0 -show_entries stream=duration,nb_frames,avg_frame_rate ` +
+            `-of default=noprint_wrappers=1 "${filePath}"`
+        ),
+        30_000,
+        `probeVideoStreamDurationSec ${path.basename(filePath)}`
+      );
+      // Read by key: ffprobe emits these in ITS order (avg_frame_rate first), not the requested
+      // one, so positional parsing silently returns a frame rate where a duration belongs.
+      const fields = new Map<string, string>();
+      for (const line of String(stdout).trim().split(/\r?\n/)) {
+        const eq = line.indexOf("=");
+        if (eq > 0) fields.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
+      }
+      const direct = parseFloat(fields.get("duration") ?? "");
+      if (!isNaN(direct) && direct > 0) return direct;
+      // MP4 from some encoders reports stream duration as N/A; frames ÷ rate is exact enough.
+      const frames = parseInt(fields.get("nb_frames") ?? "", 10);
+      const [num, den] = (fields.get("avg_frame_rate") ?? "").split("/").map((v) => parseFloat(v));
+      if (!isNaN(frames) && frames > 0 && num && den) {
+        const fps = num / den;
+        if (fps > 0) return frames / fps;
+      }
+    } catch { /* try next */ }
+  }
+  return 0;
+}
+
+/**
+ * RONDE 158 — the net under every compose route: a scene whose picture is shorter than its sound.
+ *
+ * RONDE 157 fixed the route production takes by measuring the montage before muxing it. Five other
+ * pad sites cannot do that — they build the montage inline in one filter graph, so there is no file
+ * to measure and they pass an ESTIMATE of its length instead. An estimate that runs long makes the
+ * pad too small and leaves a shortfall, and video 552 shows it running long:
+ *
+ *     scene 1   gap predicted from the estimate 26.0s, gap actually measured 27.25s
+ *     scene 2   gap predicted from the estimate 12.7s, gap actually measured 12.75s
+ *
+ * so scene 1's real montage was about 1.25s shorter than the estimate believed. Small, and still a
+ * frozen second of film.
+ *
+ * This runs after compose, on the finished scene, where the real length can simply be read. It is
+ * deliberately the LAST check rather than a sixth pad site: whatever the cause upstream — an
+ * estimate that ran long, a montage replay that failed, a filter that silently did nothing — the
+ * symptom is the same and is visible here. It also covers the one thing RONDE 157 could not: that
+ * round's replay falls back to the old behaviour when it fails, and this catches that fallback.
+ *
+ * Repairs by stretching the picture across the sound with the same chain everything else uses.
+ * The audio is copied untouched, so the voice keeps its timing and only the picture is adjusted.
+ */
+export async function repairShortSceneVideo(
+  scenePath: string,
+  targetDur: number,
+  sceneIndex: number,
+  workDir: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<string> {
+  if (!(targetDur > 0) || !fs.existsSync(scenePath)) return scenePath;
+  const videoDur = await probeVideoStreamDurationSec(scenePath);
+  if (videoDur <= 0) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: could not read the picture's length — cannot tell whether ` +
+        `it covers the voice`
+    );
+    return scenePath;
+  }
+  // One frame of tolerance: a scene may legitimately end a frame short of its container.
+  const shortfall = targetDur - videoDur;
+  if (shortfall <= 0.12) return scenePath;
+
+  console.warn(
+    `[Pipeline] Scene ${sceneIndex}: picture ends at ${videoDur.toFixed(2)}s but the scene runs ` +
+      `${targetDur.toFixed(2)}s — ${shortfall.toFixed(2)}s would be a held frame; repairing`
+  );
+  const repaired = path.join(workDir, `scene_${sceneIndex}_covered_${Date.now()}.mp4`);
+  const chain = montageTailPadFilterChain(
+    videoDur,
+    targetDur,
+    `Scene ${sceneIndex} finished picture ${videoDur.toFixed(1)}s vs scene ${targetDur.toFixed(1)}s`
+  );
+  try {
+    await withSceneFetchTimeout(
+      () => exec(
+        `${FFMPEG_BIN} -y -i "${scenePath}" ` +
+          `-filter_complex "[0:v]${chain}${FPS_FORMAT_VF}[vout]" ` +
+          `-map "[vout]" -map "0:a?" -c:a copy -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} ` +
+          `-crf 20 -pix_fmt yuv420p "${repaired}"`
+      ),
+      composeTimeout,
+      `Scene ${sceneIndex} coverage repair`
+    );
+    const fixedDur = await probeVideoStreamDurationSec(repaired);
+    if (fixedDur > videoDur + 0.05 && fs.statSync(repaired).size > 1000) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex}: picture now runs ${fixedDur.toFixed(2)}s of ` +
+          `${targetDur.toFixed(2)}s`
+      );
+      return repaired;
+    }
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: repair produced ${fixedDur.toFixed(2)}s — keeping the original`
+    );
+  } catch (err) {
+    // The scene itself is fine as footage; only its tail is short. Losing it would be worse.
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: coverage repair failed, the tail will hold a frame: ` +
+        `${(err as Error)?.message?.slice(0, 140)}`
+    );
+  }
+  try { fs.unlinkSync(repaired); } catch { /* ignore */ }
+  return scenePath;
 }
 
 /** Trim leading/trailing silence so scenes concatenate without dead air. */

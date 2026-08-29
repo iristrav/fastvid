@@ -495,7 +495,10 @@ describe("RONDE 50 #3 — no compose output can be published without its clip li
     );
     expect(outputReturns.length).toBeGreaterThanOrEqual(7);
     for (const r of outputReturns) {
-      expect(r).toMatch(/^returnComposed\(/);
+      // RONDE 158 made the funnel async (it now measures the finished scene before publishing it),
+      // so the call is awaited. The rule is unchanged: nothing hands back a compose output except
+      // through the funnel.
+      expect(r).toMatch(/^(await\s+)?returnComposed\(/);
     }
     // A bare `return outputPath;` would bypass the publication entirely.
     expect(returns).not.toContain("outputPath");
@@ -511,9 +514,9 @@ describe("RONDE 50 #3 — no compose output can be published without its clip li
     expect(funnelBlock).toContain("usedClipsOut.push(...pendingUsedClips);");
     // ...and it is staged, not published, where the old code published it.
     expect(body).toContain("pendingUsedClips = uniqueClipsInOrder(safeClips);");
-    expect(body.indexOf("pendingUsedClips = uniqueClipsInOrder")).toBeLessThan(
-      body.indexOf("return returnComposed(")
-    );
+    const firstReturn = body.indexOf("return await returnComposed(");
+    expect(firstReturn).toBeGreaterThan(-1);
+    expect(body.indexOf("pendingUsedClips = uniqueClipsInOrder")).toBeLessThan(firstReturn);
   });
 });
 
