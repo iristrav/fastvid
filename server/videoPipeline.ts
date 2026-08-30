@@ -520,6 +520,7 @@ import {
   type VisualDedupStats,
 } from "./visualDedupRegistry";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
+import { yearsIn } from "./candidatePeriodMatch";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
   buildVideoQualityReport,
@@ -30177,6 +30178,25 @@ async function fetchSceneVisualsInner(
               // written under at the adopt point below — get_activeVideoTopic()'s person, or the
               // title when the video is not about a person. Write and read must agree or the
               // memory is invisible to itself, which is how RONDE 28 found it last time.
+              /**
+               * RONDE 175 §2 — what this passage is about, for period/place/subject ranking.
+               *
+               * SCENE-level, because that is the scope this funnel runs at: it builds one
+               * candidate pool per scene, so the years come from the scene's narration rather than
+               * from one beat's sentence. That is also the honest scope — a scene about 1926 makes
+               * a 1945 reel a worse candidate for any of its beats.
+               *
+               * Read off text the script actually contains and context the pipeline established,
+               * never invented. A candidate saying nothing about its period is unaffected, so the
+               * catalogue-numbered archive titles this pipeline lives on score exactly as before.
+               */
+              beatTemporalContext: {
+                years: yearsIn(scene.text).map(String),
+                places: get_activeVideoVisualContext()?.locations?.slice(0, 3),
+                subjects: [activeMemoryEntity(), ...(scene.personNames ?? [])].filter(
+                  (x): x is string => Boolean(x)
+                ),
+              },
               memoryEntity: activeMemoryEntity(),
               memoryExcludeAssetIds: dedup.usedCuratedAssetIds,
               memoryMetrics: dedup.searchMemoryMetrics,

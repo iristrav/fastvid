@@ -37,6 +37,10 @@ import {
 } from "./archiveEmbeddingIndex";
 import { cosineSimilarityVectors } from "./semanticVisualMatching";
 import {
+  matchCandidateToBeat,
+  type BeatTemporalContext,
+} from "./candidatePeriodMatch";
+import {
   formatSearchMemoryLine,
   mergeRecalledIntoArchivePicks,
   recallProvenAssetsForEntity,
@@ -557,7 +561,14 @@ export function mergeCandidates(
    * own provider attached to it. Optional — omitted, every candidate is treated as unjudgeable
    * and the ranking is exactly what it was.
    */
-  topicMatcher?: TopicMatcher
+  topicMatcher?: TopicMatcher,
+  /**
+   * RONDE 175 §2: the years, places and subjects this beat is established to be about.
+   *
+   * Optional for the same reason as topicMatcher — omitted, every candidate scores exactly as it
+   * did before, because absence of period information is neutral by design.
+   */
+  beatTemporalContext?: BeatTemporalContext
 ): FunnelCandidate[] {
   const seen = new Set<string>();
   const merged: FunnelCandidate[] = [];
@@ -576,8 +587,23 @@ export function mergeCandidates(
     const kwBase = Math.min(1, pick.score / KEYWORD_SCORE_MAX);
     const embBoost = embSim !== null ? embSim * 0.4 : 0;
     const archiveMediaType = (pick.asset.mediaType === "video" ? "video" : "image") as "video" | "image";
+    /**
+     * RONDE 175 §2 — what the candidate says about its own period, place and subject.
+     *
+     * Applied to the archive too, and not only to stock: an archive holding a 1945 reel is no
+     * better a fit for a 1926 beat than a stock clip would be. Absence is neutral, so the
+     * catalogue-numbered titles this archive is full of ("Bundesarchiv Bild 183-S33882") score
+     * exactly as they did before.
+     */
+    const archiveMatch = matchCandidateToBeat(
+      [pick.asset.title, (pick.asset as { description?: string }).description, pick.archiveName]
+        .filter(Boolean)
+        .join(" "),
+      beatTemporalContext
+    );
     const rankingScore =
-      (kwBase + embBoost + movingFootageBonus(archiveMediaType, movingDeficit)) * archiveWeight;
+      (kwBase + embBoost + movingFootageBonus(archiveMediaType, movingDeficit) + archiveMatch.bonus) *
+      archiveWeight;
 
     // Load stored embedding for fast per-beat cosine scoring (no extra API call)
     const storedEmb = loadStoredAssetEmbedding(pick.asset.id);
@@ -624,6 +650,9 @@ export function mergeCandidates(
       (0.7 +
         (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) +
         movingFootageBonus(c.mediaType, movingDeficit) +
+        // RONDE 175 §2: agreement on year, place or subject lifts; a year that genuinely conflicts
+        // costs. Saying nothing costs nothing.
+        matchCandidateToBeat(`${c.title ?? ""} ${c.assetId ?? ""}`, beatTemporalContext).bonus +
         topicalRankingBonus(topical?.verdict ?? "neutral"));
     merged.push({
       id,
@@ -707,6 +736,13 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
   memoryEntity?: string;
   /** Assets already used this render; recall must not re-serve them. */
   memoryExcludeAssetIds?: Set<number>;
+  /**
+   * RONDE 175 §2 — the years, places and subjects this beat is established to be about.
+   *
+   * Used to rank, never to filter: a candidate that says nothing about its period is scored
+   * exactly as it was before. Absent (the default) the ranking is unchanged.
+   */
+  beatTemporalContext?: BeatTemporalContext;
   /** RONDE 132 §11: rotates which of the equally-proven memory assets is offered first. */
   memoryVarietySeed?: number;
   /** RONDE 132 §2: called for each memory asset the video's used-asset set refused. */
@@ -875,7 +911,8 @@ export async function buildRetrievalFunnel(
     archiveWeight, internetWeight, maxTotal,
     req.movingShareDeficit ?? 0,
     // RONDE 54: built from what the pipeline already knows about this video.
-    buildTopicMatcher(req.videoTitle, extractTopicAnchorTags(req.videoTitle, req.sceneText), req.sceneText)
+    buildTopicMatcher(req.videoTitle, extractTopicAnchorTags(req.videoTitle, req.sceneText), req.sceneText),
+    req.beatTemporalContext
   );
 
   const latencyMs = Date.now() - t0;

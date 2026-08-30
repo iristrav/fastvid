@@ -30,6 +30,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { matchCandidateToBeat, yearsIn } from "./candidatePeriodMatch";
 import {
   MAX_JUDGEMENTS_PER_BEAT,
   maxBeatImageJudgementsPerRender,
@@ -228,5 +229,118 @@ describe("RONDE 175 — nothing was loosened to get here", () => {
     const pipe = read("videoPipeline.ts");
     expect(pipe).toContain('"beat_image_gate"');
     expect(pipe).toContain("dedup.beatImageRejectedIds.add");
+  });
+});
+
+/* ═══════════════════════ §2 — the ranker learns when and where ═══════════════════════ */
+
+describe("RONDE 175 §2 — period, place and subject reach the ranking", () => {
+  const ctx = { years: ["1926"], places: ["Munich"], subjects: ["Hermann Göring"] };
+
+  it("THE RULE THIS RESTS ON: saying nothing costs nothing", () => {
+    /**
+     * The mistake this had to avoid, and the reason the module is written the way it is. Real
+     * archive titles are catalogue numbers with no year, no place and no name:
+     *
+     *     "Bundesarchiv Bild 183-S33882"
+     *
+     * If absence were a penalty, exactly the material this pipeline exists to find would sink and
+     * richly-titled stock footage would rise — RONDE 54's finding reproduced through a new
+     * mechanism. So a candidate that establishes nothing scores exactly zero, not below zero.
+     */
+    const m = matchCandidateToBeat("Bundesarchiv Bild 183-S33882", ctx);
+    expect(m.bonus).toBe(0);
+    expect(m.period).toBe("unknown");
+    expect(m.place).toBe("unknown");
+    expect(m.subject).toBe("unknown");
+  });
+
+  it("K. a candidate from the wrong decade is pushed down", () => {
+    const wrong = matchCandidateToBeat("Berlin street scene, 1945", ctx);
+    expect(wrong.period).toBe("contradicts");
+    expect(wrong.bonus).toBeLessThan(0);
+    // ...and it ends up below the catalogue-numbered archive title that claims nothing.
+    expect(wrong.bonus).toBeLessThan(matchCandidateToBeat("Bundesarchiv Bild 183", ctx).bonus);
+  });
+
+  it("K2. a candidate from the right period is lifted", () => {
+    const right = matchCandidateToBeat("Munich rally, 1926 newsreel", ctx);
+    expect(right.period).toBe("agrees");
+    expect(right.place).toBe("agrees");
+    expect(right.bonus).toBeGreaterThan(0);
+  });
+
+  it("a near miss is not a contradiction", () => {
+    /**
+     * Archive material is routinely dated to the year it was catalogued rather than shot, and a
+     * beat about the mid-twenties is legitimately served by a 1931 photograph. Only a real
+     * conflict trips it.
+     */
+    expect(matchCandidateToBeat("Munich, 1931", ctx).period).toBe("agrees");
+    expect(matchCandidateToBeat("Munich, 1955", ctx).period).toBe("contradicts");
+  });
+
+  it("a compilation spanning years is judged on its closest one", () => {
+    // A reel labelled 1939-1945 is not in conflict with a beat about 1943.
+    expect(matchCandidateToBeat("Newsreel compilation 1939-1945", { years: ["1943"] }).period)
+      .toBe("agrees");
+  });
+
+  it("L. the named place lifts, and a place the candidate never mentions does not sink it", () => {
+    expect(matchCandidateToBeat("Munich beer hall", ctx).place).toBe("agrees");
+    // Not naming Munich is not a claim about somewhere else — there is no contradiction to find.
+    const silent = matchCandidateToBeat("Crowd in a hall", ctx);
+    expect(silent.place).toBe("unknown");
+    expect(silent.bonus).toBe(0);
+  });
+
+  it("M. the named subject lifts, on a whole word", () => {
+    expect(matchCandidateToBeat("Portrait of Hermann Göring", ctx).subject).toBe("agrees");
+    // Whole-word: "man" appears INSIDE "woman" and "Germany" and must not match either.
+    expect(matchCandidateToBeat("A woman in Germany", { subjects: ["man"] }).subject).toBe("unknown");
+    // ...while the same word standing on its own does match.
+    expect(matchCandidateToBeat("A man in Germany", { subjects: ["man"] }).subject).toBe("agrees");
+  });
+
+  it("no beat context at all leaves every candidate exactly where it was", () => {
+    for (const text of ["Munich 1926", "Berlin 1945", "Bundesarchiv Bild 183"]) {
+      expect(matchCandidateToBeat(text, undefined).bonus, text).toBe(0);
+      expect(matchCandidateToBeat(text, {}).bonus, text).toBe(0);
+    }
+  });
+
+  it("it is a nudge, not a veto — sized inside one source-tier step", () => {
+    /**
+     * The tier bonuses span 0–0.15. A ranking signal larger than that would let period alone
+     * reorder the source priorities, and the winner is still decided by the beat image gate on the
+     * actual picture, not by this.
+     */
+    const best = matchCandidateToBeat("Hermann Göring in Munich, 1926", ctx);
+    expect(best.bonus).toBeLessThanOrEqual(0.25);
+    const worst = matchCandidateToBeat("Berlin 1999", ctx);
+    expect(worst.bonus).toBeGreaterThanOrEqual(-0.2);
+  });
+
+  it("a year outside plausible range is not read as a year", () => {
+    expect(yearsIn("Bild 183-S33882")).toEqual([]);
+    expect(yearsIn("shot in 1926 and 1931")).toEqual([1926, 1931]);
+  });
+
+  it("both ranking paths use it — the archive is not exempt", () => {
+    /**
+     * An archive holding a 1945 reel is no better a fit for a 1926 beat than a stock clip. Applying
+     * it only to external candidates would have made the archive the one source that could never
+     * be wrong about a period.
+     */
+    const funnel = read("retrievalFunnel.ts");
+    expect(funnel).toContain("const archiveMatch = matchCandidateToBeat(");
+    expect(funnel).toContain("+ archiveMatch.bonus)");
+    expect(funnel).toContain("matchCandidateToBeat(`${c.title ?? \"\"} ${c.assetId ?? \"\"}`");
+  });
+
+  it("the pipeline fills it from the script, not from a guess", () => {
+    const pipe = read("videoPipeline.ts");
+    expect(pipe).toContain("years: yearsIn(scene.text).map(String),");
+    expect(pipe).toContain("places: get_activeVideoVisualContext()?.locations?.slice(0, 3),");
   });
 });
