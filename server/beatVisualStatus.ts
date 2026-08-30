@@ -254,7 +254,24 @@ export function buildBeatVisualStatuses(
       source: entry.source,
       basename: entry.basename,
       verifiedOwnVisual,
-      reason: verifiedOwnVisual ? "" : coverage !== "own_footage" ? coverage : verification,
+      /**
+       * RONDE 132 §3 — `never_asked` is never a reason on its own.
+       *
+       * The word says the gate was not consulted and stops there, which is how "the beat holds a
+       * held frame, so there was nothing to judge" and "the beat holds real footage nobody looked
+       * at" ended up sharing one label in the render warning. The first is the pipeline working;
+       * the second is a hole in the instrumentation.
+       *
+       * `neverAskedReason` was written for exactly this in RONDE 166 §9 and had no caller — the
+       * warning built its own reason string and used the bare verification. It is the caller now.
+       */
+      reason: verifiedOwnVisual
+        ? ""
+        : verification === "never_asked"
+          ? neverAskedReason(coverage)
+          : coverage !== "own_footage"
+            ? coverage
+            : verification,
     });
   }
   return out.sort((a, b) => a.sceneIndex - b.sceneIndex || a.beatIndex - b.beatIndex);

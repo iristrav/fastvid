@@ -46,6 +46,17 @@ import {
 import { orderForDiversity, recallProvenAssetsForEntity } from "./searchMemoryRecall";
 import type { ProvenAssetMemory } from "./visualSearchMemory";
 import type { ArchiveAssetRow } from "./curatedMediaSourcing";
+import { buildBeatVisualStatuses, neverAskedReason } from "./beatVisualStatus";
+import type { ClipAdoptEntry } from "./clipAdoptAudit";
+
+/** One adopted beat, in the shape clipAdoptAudit records. */
+const adopt = (
+  sceneIndex: number,
+  beatIndex: number,
+  basename: string,
+  source: string
+): ClipAdoptEntry =>
+  ({ sceneIndex, beatIndex, basename, source }) as unknown as ClipAdoptEntry;
 
 const sets = (): UsedAssetSets => ({
   usedContentKeys: new Set(),
@@ -359,5 +370,78 @@ describe("RONDE 132 §2 — wired where the pictures are actually adopted", () =
     ]) {
       expect(pipe, set).toContain(`${set}:`);
     }
+  });
+});
+
+/* ═══════════════════════ N: never_asked must name a cause ═══════════════════════ */
+
+describe("RONDE 132 §3 — never_asked is never an ending on its own", () => {
+  it("THE GAP: the warning printed the bare word, with no cause", () => {
+    /**
+     * From the render:
+     *
+     *     10 van 14 beat(s) zonder goedgekeurd eigen beeld
+     *     (held_frame=2, never_asked=5, subject_only=1, unknown=2)
+     *
+     * `never_asked=5` says the gate was not consulted and stops there — so "the beat holds a held
+     * frame, there was nothing to judge" and "the beat holds real footage nobody looked at" shared
+     * one label. The first is the pipeline working. The second is a hole.
+     *
+     * `neverAskedReason` was written for this in RONDE 166 §9 and had no caller: the warning built
+     * its own string from the bare verification.
+     */
+    const statuses = buildBeatVisualStatuses(
+      [
+        adopt(0, 0, "own_footage.mp4", "archive"),
+        adopt(0, 1, "scene_0_b1_placeholder.mp4", "fallback"),
+      ],
+      undefined // no relevance ledger at all → every beat is never_asked
+    );
+    for (const st of statuses) {
+      expect(st.verification, `${st.sceneIndex}:${st.beatIndex}`).toBe("never_asked");
+      // ...and not one of them reports the bare word as its reason.
+      expect(st.reason, `${st.sceneIndex}:${st.beatIndex}`).not.toBe("never_asked");
+      expect(st.reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("real footage nobody judged is named as the gap it is", () => {
+    const [st] = buildBeatVisualStatuses([adopt(0, 0, "own_footage.mp4", "archive")], undefined);
+    expect(st!.reason).toBe("real_footage_never_judged");
+  });
+
+  it("a beat with nothing to judge says so, and is not confused with the gap", () => {
+    // A placeholder carries no picture, so the gate is RIGHT not to have been asked. That must
+    // read differently from real footage that slipped past the gate.
+    const [st] = buildBeatVisualStatuses(
+      [adopt(0, 0, "scene_0_b0_placeholder.mp4", "fallback")],
+      undefined
+    );
+    expect(st!.reason).toContain("no_picture_to_judge");
+    expect(st!.reason).not.toBe("real_footage_never_judged");
+  });
+
+  it("every coverage has a cause — none can fall through to a blank", () => {
+    /**
+     * The invariant §3 asks for: never_asked may not become a normal ending without a cause. Stated
+     * across the whole vocabulary rather than for the cases that happen to occur today.
+     */
+    const coverages = [
+      "own_footage", "subject_only", "placeholder", "held_frame", "graphic", "none", "generated",
+    ] as const;
+    for (const c of coverages) {
+      const reason = neverAskedReason(c);
+      expect(reason, c).toBeTruthy();
+      expect(reason, c).not.toBe("never_asked");
+      expect(reason.length, c).toBeGreaterThan(3);
+    }
+  });
+
+  it("a beat that WAS judged keeps its verdict, not a never-asked cause", () => {
+    // The change must not overwrite a real verdict with a reason about not having one.
+    const ledger = { byClipPath: new Map() } as unknown as Parameters<typeof buildBeatVisualStatuses>[1];
+    const statuses = buildBeatVisualStatuses([adopt(0, 0, "own_footage.mp4", "archive")], ledger);
+    expect(statuses[0]!.verification).toBe("never_asked"); // empty ledger, still never asked
+    expect(statuses[0]!.reason).toBe("real_footage_never_judged");
   });
 });
