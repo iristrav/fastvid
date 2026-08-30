@@ -234,24 +234,65 @@ export default function Home() {
   const [promptValue, setPromptValue] = useState("");
   const [selectedLength, setSelectedLength] = useState("8-10");
 
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
+  /**
+   * One definition of "may use the product", shared by every button on this page.
+   *
+   * Same rule the dashboard and the server use: an active subscription, or an admin. Reading it in
+   * one place is what stops the three entry points from drifting apart — which is exactly how the
+   * paywall came to have a gap in the first place.
+   */
+  const hasActiveSubscription =
+    (user as { subscriptionStatus?: string; role?: string } | null)?.subscriptionStatus === "active" ||
+    (user as { role?: string } | null)?.role === "admin";
 
   // 👉 Generate knop (met prompt + length)
   const handleGenerate = () => {
-  if (isAuthenticated) {
+    if (!isAuthenticated) {
+      navigate(`/login?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
+      return;
+    }
+    /**
+     * The prompt is carried through the paywall rather than thrown away.
+     *
+     * Someone who typed an idea and pressed Generate has already told us what they want; making
+     * them retype it after paying is a small thing that reads as the product losing their work.
+     * The dashboard reads these two parameters either way, so the round trip through /subscribe
+     * costs nothing.
+     */
+    if (!hasActiveSubscription) {
+      navigate(`/subscribe?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
+      return;
+    }
     navigate(`/dashboard?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
-  } else {
-    navigate(`/login?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
-  }
-};
+  };
 
   // 👉 Overige knoppen (zonder prompt)
- const handleGetStarted = () => {
-  if (isAuthenticated) {
-    navigate("/dashboard");
-  } else {
+/**
+ * Where every "Get started" on this page leads.
+ *
+ * Three buttons share this: the header, the mobile menu, and the two "Get started now" calls to
+ * action in the pricing card and the closing section. They must agree, and the thing they have to
+ * agree on is that an account without an active subscription cannot use the product.
+ *
+ * A signed-in visitor with no subscription used to be sent to /dashboard, which then bounced them
+ * to /subscribe — one redirect later, and only sometimes: the dashboard's own guard skips the
+ * bounce while onboarding is incomplete, so a user who had just registered landed in the studio
+ * shell instead of at the paywall. Sending them straight there removes both the flicker and the
+ * gap.
+ *
+ * The server is still the enforcement (`subscribedProcedure`); this is the routing that matches it.
+ */
+const handleGetStarted = () => {
+  if (!isAuthenticated) {
     navigate("/login");
+    return;
   }
+  if (!hasActiveSubscription) {
+    navigate("/subscribe");
+    return;
+  }
+  navigate("/dashboard");
 };
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);

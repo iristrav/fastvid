@@ -853,11 +853,22 @@ export default function Dashboard() {
   });
   
   // ─── Subscription gate ────────────────────────────────────────────────────
+  /**
+   * THE GAP: `&& !needsOnboarding` let an unsubscribed account past the paywall.
+   *
+   * A freshly registered user has both — no subscription AND an incomplete niche request — so the
+   * condition was false and no redirect happened. They landed in the dashboard shell instead of at
+   * the paywall, which is precisely the state the invite code is not supposed to grant.
+   *
+   * The subscription is now the first question, unconditionally. The niche request is still
+   * required and still asked for; it simply comes after paying rather than instead of it, and the
+   * server's `subscribedProcedure` refuses the work either way.
+   */
   useEffect(() => {
-    if (!loading && isAuthenticated && user && !hasActiveSubscription && !needsOnboarding) {
+    if (!loading && isAuthenticated && user && !hasActiveSubscription) {
       navigate("/subscribe");
     }
-  }, [loading, isAuthenticated, user, hasActiveSubscription, needsOnboarding, navigate]);
+  }, [loading, isAuthenticated, user, hasActiveSubscription, navigate]);
 
   useEffect(() => {
     if (window.location.hash === "#niche-requests") {
@@ -866,6 +877,19 @@ export default function Dashboard() {
   }, [navigate]);
 
   const handleGenerate = () => {
+    /**
+     * Asked before anything is sent. The server refuses this without an active subscription
+     * (`subscribedProcedure`), and it did so before this check existed — but as an error toast
+     * after the click, which reads as a fault rather than as a step that has not been taken yet.
+     */
+    if (!hasActiveSubscription) {
+      toast.error("Abonnement vereist", {
+        description: "Sluit Fastvid Pro af om video's te genereren.",
+        action: { label: "Abonneren", onClick: () => navigate("/subscribe") },
+      });
+      navigate("/subscribe");
+      return;
+    }
     if (!prompt.trim() || prompt.length < 10) {
       toast.error("Please enter a prompt of at least 10 characters");
       return;

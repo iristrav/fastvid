@@ -42,8 +42,20 @@ export default function Login() {
   const register = trpc.auth.register.useMutation({
     onSuccess: async () => {
       await utils.auth.me.invalidate();
-      toast.success("Account created!", { description: "Complete your niche request to continue." });
-      navigate("/dashboard/niche-requests");
+      /**
+       * The invite code opens the door; the subscription is what gets you inside.
+       *
+       * A freshly registered account has no subscription, so every route that matters — the
+       * dashboard studio, generating a video — is going to refuse it. Sending them to the niche
+       * request first meant filling in a form before finding that out, and arriving at the paywall
+       * having already done work.
+       *
+       * The niche request is not skipped, only reordered: the dashboard still asks for it once the
+       * subscription is active, and `subscribedProcedure` on the server is what actually enforces
+       * the payment either way.
+       */
+      toast.success("Account created!", { description: "One more step: activate your subscription." });
+      navigate("/subscribe");
     },
     onError: (e) => toast.error("Registration failed", { description: toastErrorMessage(e) }),
   });
