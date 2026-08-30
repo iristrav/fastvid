@@ -187,7 +187,12 @@ describe("RONDE 29c — per-gate ask/fire counters", () => {
       recordGateVerdict("vision_gate", true);
       recordGateVerdict("vision_gate", false);
     });
-    expect(summarizeGateFiring(stats)).toEqual([{ gate: "vision_gate", asked: 3, fired: 1 }]);
+    expect(summarizeGateFiring(stats)).toEqual([
+      // RONDE 174 added closestShortfall/notArmed to the row. Null and 0 are what a gate that
+      // reports no evidence must produce — a shortfall of 0 would read as "it came within
+      // nothing of firing", which is a different and much more alarming statement.
+      { gate: "vision_gate", asked: 3, fired: 1, closestShortfall: null, notArmed: 0 },
+    ]);
   });
 
   it("orders the summary by how busy each gate was", () => {
@@ -206,7 +211,7 @@ describe("RONDE 29c — per-gate ask/fire counters", () => {
       for (let i = 0; i < SILENT_GATE_MIN_ASKED; i++) recordGateVerdict("modern_mismatch", false);
     });
     expect(findSilentGates(stats)).toEqual([
-      { gate: "modern_mismatch", asked: SILENT_GATE_MIN_ASKED, fired: 0 },
+      { gate: "modern_mismatch", asked: SILENT_GATE_MIN_ASKED, fired: 0, closestShortfall: null, notArmed: 0 },
     ]);
   });
 
@@ -253,8 +258,12 @@ describe("RONDE 29c — per-gate ask/fire counters", () => {
         recordGateVerdict("baked_text", false);
       }),
     ]);
-    expect(summarizeGateFiring(a)).toEqual([{ gate: "vision_gate", asked: 2, fired: 2 }]);
-    expect(summarizeGateFiring(b)).toEqual([{ gate: "baked_text", asked: 1, fired: 0 }]);
+    expect(summarizeGateFiring(a)).toEqual([
+      { gate: "vision_gate", asked: 2, fired: 2, closestShortfall: null, notArmed: 0 },
+    ]);
+    expect(summarizeGateFiring(b)).toEqual([
+      { gate: "baked_text", asked: 1, fired: 0, closestShortfall: null, notArmed: 0 },
+    ]);
   });
 
   it("counts the vision gate only on fresh verdicts, never on cache hits", () => {

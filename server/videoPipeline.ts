@@ -87,6 +87,8 @@ import {
 } from "./visualMixPolicy";
 import {
   createGateFiringStats,
+  describeSilentGate,
+  findOutOfScopeGates,
   findSilentGates,
   summarizeDemotedGates,
   formatGateFiringSummary,
@@ -263,7 +265,7 @@ import {
   warnComposeTimeNetwork,
   isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
-import { clipPassesDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate, judgeDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectAudit } from "./clipRejectAudit";
 import {
   recordClipReject,
@@ -20704,8 +20706,11 @@ async function adoptClip(
       // filename patterns) now applies unconditionally, including scriptImageFallback
       // candidates — it was previously exempted here, one of the gaps that let a completely
       // unrelated SerpAPI image reach adoption with zero topical scrutiny.
-      const failsDocumentaryBeatGate = !clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle);
-      recordGateVerdict("documentary_beat_gate", failsDocumentaryBeatGate);
+      const docGate = judgeDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle);
+      const failsDocumentaryBeatGate = !docGate.passes;
+      // RONDE 174: `armed` separates "this gate had nothing to say about a 1940s subject" from
+      // "this gate is broken" — the two the silent-gate detector used to report identically.
+      recordGateVerdict("documentary_beat_gate", failsDocumentaryBeatGate, { armed: docGate.armed });
       if (failsDocumentaryBeatGate) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "documentary_beat_gate", sourceQuery);
         continue;
@@ -25885,8 +25890,9 @@ async function adoptBestSimilarBeatClip(
     // Identical existing functions, identical thresholds, identical audit reasons; nothing new
     // is judged here. Placed before the vision gate so a rejected candidate costs no CLIP
     // evaluation, matching the ordering in adoptClip and beatClipPassesVisionGate.
-    const similarFailsDocGate = !clipPassesDocumentaryBeatGate(clip, similarQuery, beat.text, videoTitle);
-    recordGateVerdict("documentary_beat_gate", similarFailsDocGate);
+    const similarDocGate = judgeDocumentaryBeatGate(clip, similarQuery, beat.text, videoTitle);
+    const similarFailsDocGate = !similarDocGate.passes;
+    recordGateVerdict("documentary_beat_gate", similarFailsDocGate, { armed: similarDocGate.armed });
     if (similarFailsDocGate) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "documentary_beat_gate", similarQuery);
       continue;
@@ -37397,11 +37403,33 @@ async function _runVideoPipelineInner(
         }
         const silent = findSilentGates(gateStats);
         if (silent.length > 0) {
-          const detail = silent.map((g) => `${g.gate} (${g.asked}×)`).join(", ");
+          /**
+           * RONDE 174 — the warning now carries the measurement instead of an instruction.
+           *
+           * "verify the check can still fire" told a reader to go and read code, every render,
+           * with nothing new to read. `closest 0.021 short of firing` says whether the threshold
+           * or the material is the reason, in the same unit the threshold is written in.
+           */
+          const detail = silent.map(describeSilentGate).join(", ");
           qualityReport.warnings.push(
-            `silent gate(s): ${detail} — asked repeatedly, rejected nothing; verify the check can still fire`
+            `silent gate(s): ${detail} — asked repeatedly, rejected nothing`
           );
           console.warn(pipelineReport.add("gates", `[GateSilent] ${detail}`));
+        }
+        /**
+         * Gates that looked and had no rule that could apply to this subject. Reported as
+         * information: `documentary_beat_gate`'s blocklists are about pharmacies, Columbus Ohio
+         * and a Dutch/US region lock, so a WWII documentary never touches them. That is not a
+         * defect, and reporting it as one every render is how a real alarm gets ignored.
+         */
+        for (const row of findOutOfScopeGates(gateStats)) {
+          console.log(
+            pipelineReport.add(
+              "gates",
+              `[GateOutOfScope] ${row.gate} asked=${row.asked} notArmed=${row.notArmed} — ` +
+                `geen regel van toepassing op dit onderwerp`
+            )
+          );
         }
       }
     }
