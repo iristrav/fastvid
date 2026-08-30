@@ -290,7 +290,8 @@ describe("RONDE 96 §8 — every downloading provider is lineage-capable", () =>
 
   it("TEST 32 — the curated archive is exempt, and says why", () => {
     // Curated assets come from the database, not from a search, so there is no route to record.
-    const idx = PIPELINE_SRC.indexOf("export function ensureCuratedAssetLineage(");
+    // RONDE 170 split the body out so the funnel, which holds only a ledger, can call it too.
+    const idx = PIPELINE_SRC.indexOf("export function ensureCuratedAssetLineageOn(");
     expect(idx).toBeGreaterThan(-1);
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
     expect(body).toContain("createLineage({");

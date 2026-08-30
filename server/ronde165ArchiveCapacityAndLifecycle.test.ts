@@ -376,6 +376,8 @@ describe("RONDE 165 — nothing was widened on this round's evidence", () => {
   it("the per-source archive cap stays 3", () => {
     // RONDE 157 measured cap=4 starving the other sources; render 554 gives ONE binding beat.
     // These three are module-private, so they are read from the declaration itself.
+    // RONDE 170 did NOT raise it. The slack the caps left behind is filled from what they
+    // refused, which is a different mechanism and leaves every source's share untouched.
     expect(FUNNEL).toMatch(/^const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;$/m);
     expect(FUNNEL).toMatch(/^const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;$/m);
     expect(FUNNEL).toMatch(/^const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;$/m);

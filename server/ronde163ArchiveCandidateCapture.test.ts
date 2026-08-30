@@ -86,16 +86,42 @@ describe("RONDE 163 — the production case, reproduced", () => {
   });
 
   it("AFTER: the same beat now gets three archive candidates to judge", () => {
+    /**
+     * RONDE 170 amended the NUMBER, never the rule.
+     *
+     * The cap still gives the archive three before anyone gets a second — that is what this round
+     * fixed and it is asserted below. What changed is what happens to the slots the caps leave
+     * empty: this beat has only two sources, so the caps filled four of a six-slot budget and the
+     * other two were thrown away. They are now filled from the candidates the cap refused.
+     *
+     * The guarantee that matters is unchanged and is checked here: the external source still gets
+     * its place, so the backfill took nothing from anyone.
+     */
     const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
-    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(3);
+    expect(shortlist.filter((c) => c.source === "archive").length).toBeGreaterThanOrEqual(3);
     // And the external candidate is still there — this took nothing from anyone.
     expect(shortlist.some((c) => c.source === "openverse")).toBe(true);
+  });
+
+  it("the caps still decide the first picks, one source at a time", () => {
+    /**
+     * The diversity rule, stated on the part of the shortlist the caps produce. Every source's
+     * share is settled before the backfill sees a single slot, so a source can never be pushed out
+     * by another source's overflow.
+     */
+    const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    const firstFour = shortlist.slice(0, 4);
+    expect(firstFour.filter((c) => c.source === "archive")).toHaveLength(3);
+    expect(firstFour.filter((c) => c.source === "openverse")).toHaveLength(1);
   });
 
   it("the ones it offers are the best-ranked ones, not an arbitrary three", () => {
     const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE);
     const archive = shortlist.filter((c) => c.source === "archive").map((c) => c.id);
-    expect(archive).toEqual(["archive:0", "archive:1", "archive:2"]);
+    // Best-ranked first, and RONDE 170's backfill continues down the same ranking rather than
+    // reaching for something arbitrary — so the list stays a prefix of the archive ordering.
+    expect(archive.slice(0, 3)).toEqual(["archive:0", "archive:1", "archive:2"]);
+    expect(archive).toEqual([...archive].sort((a, b) => Number(a.split(":")[1]) - Number(b.split(":")[1])));
   });
 });
 
@@ -106,8 +132,35 @@ describe("RONDE 163 — nothing was loosened to get there", () => {
       ...Array.from({ length: 4 }, (_, i) => cand(`pexels:${i}`, "pexels", 5 - i)),
     ];
     const shortlist = buildDownloadShortlist(pool, MAX_FUNNEL_CANDIDATES_TO_SCORE);
-    expect(shortlist.filter((c) => c.source === "nara")).toHaveLength(2);
+    // The caps settle the first three: nara 2, pexels 1. RONDE 170 fills the remaining three
+    // slots of the six-slot budget, which were previously discarded.
+    const capped = shortlist.slice(0, 3);
+    expect(capped.filter((c) => c.source === "nara")).toHaveLength(2);
+    expect(capped.filter((c) => c.source === "pexels")).toHaveLength(1);
+    // Five, not six: RONDE 170 backfills the slack from nara's overflow but never from stock —
+    // six near-duplicate Pexels clips are the case an earlier round deliberately refused to fetch.
+    expect(shortlist).toHaveLength(5);
     expect(shortlist.filter((c) => c.source === "pexels")).toHaveLength(1);
+  });
+
+  it("a shortlist the caps already fill is not touched by the backfill", async () => {
+    /**
+     * The condition under which RONDE 170 does nothing at all: enough sources to fill the budget.
+     * `backfilledFromCap=0` on such a beat is the proof that the caps, not the backfill, are
+     * deciding — and a render where it stays 0 throughout has no slack to reclaim.
+     */
+    const { createArchiveSourcingAudit } = await import("./archiveSourcingAudit");
+    const audit = createArchiveSourcingAudit();
+    const pool = [
+      ...Array.from({ length: 4 }, (_, i) => cand(`archive:${i}`, "archive", 9 - i * 0.1)),
+      ...Array.from({ length: 3 }, (_, i) => cand(`nara:${i}`, "nara", 8 - i * 0.1)),
+      cand("wikimedia:0", "wikimedia", 7.5),
+      cand("nasa:0", "nasa", 7.4),
+    ];
+    const shortlist = buildDownloadShortlist(pool, MAX_FUNNEL_CANDIDATES_TO_SCORE, undefined, audit);
+    expect(shortlist).toHaveLength(MAX_FUNNEL_CANDIDATES_TO_SCORE);
+    expect(audit.backfilledFromCap).toBe(0);
+    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(3);
   });
 
   it("every source that has a candidate still reaches the shortlist", () => {
@@ -153,7 +206,9 @@ describe("RONDE 163 — nothing was loosened to get there", () => {
     const shortlist = buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, used);
     expect(shortlist.map((c) => c.id)).not.toContain("archive:0");
     expect(shortlist.map((c) => c.id)).not.toContain("archive:1");
-    expect(shortlist.filter((c) => c.source === "archive")).toHaveLength(3);
+    // The exclusion happens before the caps AND before the backfill, so neither can bring an
+    // already-used candidate back — which is the property RONDE 2 depends on.
+    expect(shortlist.filter((c) => c.source === "archive").length).toBeGreaterThanOrEqual(3);
   });
 
   it("when every candidate has been used the full list comes back — a beat is never starved", () => {
@@ -178,13 +233,17 @@ describe("RONDE 163 — where candidates are lost is now counted", () => {
     expect(audit.afterBeatDedup).toBe(26);
     // Four, not six: the budget is a ceiling and this beat has only two sources, so the caps —
     // not the budget — decide. That distinction is the whole point of recording both.
-    expect(audit.afterSourceCap).toBe(4);
-    expect(audit.cutBySourceCap).toBe(22);
+    // RONDE 170: the caps let four through and the backfill filled the two slots the budget had
+    // left over, so the shortlist is six. `cutBySourceCap` counts what the caps refused and the
+    // backfill did NOT reclaim, so it falls by exactly the two that were reclaimed.
+    expect(audit.afterSourceCap).toBe(6);
+    expect(audit.backfilledFromCap).toBe(2);
+    expect(audit.cutBySourceCap).toBe(20);
     expect(audit.cutByBudget).toBe(0);
   });
 
   it("a caller that tracks nothing still gets a shortlist", () => {
     // The audit is optional: every other call site is unchanged and unaffected.
-    expect(buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE)).toHaveLength(4);
+    expect(buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE)).toHaveLength(6);
   });
 });

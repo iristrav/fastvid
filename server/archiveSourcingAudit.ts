@@ -55,6 +55,14 @@ export type ArchiveSourcingAudit = {
   cutByBudget: number | null;
   /** Downloaded candidates VisionGate then refused. */
   rejectedAfterDownload: number | null;
+  /**
+   * RONDE 170 — candidates the per-source cap refused that then filled a slot nobody else wanted.
+   *
+   * Reported so the change is measurable rather than assumed: a render where this stays 0 has
+   * shortlists that already fill the budget, and one where it is high was leaving paid-for
+   * download slots empty while the cap turned candidates away.
+   */
+  backfilledFromCap: number | null;
   archive: ArchiveCapComparison;
 };
 
@@ -72,6 +80,7 @@ export function createArchiveSourcingAudit(): ArchiveSourcingAudit {
     cutBySourceCap: null,
     cutByBudget: null,
     rejectedAfterDownload: null,
+    backfilledFromCap: null,
     archive: { taken: [], cut: [] },
   };
 }
@@ -86,6 +95,7 @@ export function recordShortlistStage(
     downloadBudget: number;
     cutBySourceCap: number;
     cutByBudget: number;
+    backfilledFromCap: number;
     archive: ArchiveCapComparison;
   }
 ): void {
@@ -96,6 +106,7 @@ export function recordShortlistStage(
   audit.downloadBudget = stage.downloadBudget;
   audit.cutBySourceCap = stage.cutBySourceCap;
   audit.cutByBudget = stage.cutByBudget;
+  audit.backfilledFromCap = stage.backfilledFromCap;
   audit.archive = stage.archive;
 }
 
@@ -186,6 +197,7 @@ export function formatArchiveSourcingAudit(
     `visionJudged=${n(audit.visionJudged)} visionAccepted=${n(audit.visionAccepted)} ` +
     `adopted=${n(audit.adopted)} ` +
     `cutBySourceCap=${n(audit.cutBySourceCap)} cutByBudget=${n(audit.cutByBudget)} ` +
+    `backfilledFromCap=${n(audit.backfilledFromCap)} ` +
     `rejectedAfterDownload=${n(audit.rejectedAfterDownload)} ` +
     `verdict=${archiveSourcingVerdict(audit)} ${formatCapComparison(audit.archive)}`
   );
@@ -272,12 +284,14 @@ export function summarizeArchiveSourcing(audits: ReadonlyArray<ArchiveSourcingAu
   let cutByCap = 0;
   let cutByBudget = 0;
   let rejectedAfterDownload = 0;
+  let backfilled = 0;
   for (const a of audits) {
     const v = archiveSourcingVerdict(a);
     counts.set(v, (counts.get(v) ?? 0) + 1);
     cutByCap += a.cutBySourceCap ?? 0;
     cutByBudget += a.cutByBudget ?? 0;
     rejectedAfterDownload += a.rejectedAfterDownload ?? 0;
+    backfilled += a.backfilledFromCap ?? 0;
   }
   const byVerdict = [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -286,7 +300,7 @@ export function summarizeArchiveSourcing(audits: ReadonlyArray<ArchiveSourcingAu
   return (
     `[ArchiveSourcingAudit] TOTAL beats=${audits.length} ${byVerdict} ` +
     `cutBySourceCap=${cutByCap} cutByBudget=${cutByBudget} ` +
-    `rejectedAfterDownload=${rejectedAfterDownload} ` +
+    `rejectedAfterDownload=${rejectedAfterDownload} backfilledFromCap=${backfilled} ` +
     formatCapStats(archiveCapStats(audits))
   );
 }

@@ -194,9 +194,19 @@ describe("FIX 2 — Test 5: shortlist excludes already-used assets", () => {
       6,
       used
     );
-    expect(out.filter((c) => c.source === "loc")).toHaveLength(2);
+    /**
+     * RONDE 170 amended the tail of this list, never its head.
+     *
+     * The caps still settle the first three — loc 2, pexels 1 — and that is what this test was
+     * written to guard. What changed is that the three remaining slots of a six-slot budget used
+     * to be discarded; they are now filled from the non-stock candidates the cap refused, which
+     * on this fixture is one more loc. Stock is deliberately not backfilled, so pexels stays at 1.
+     */
+    expect(out.slice(0, 3).filter((c) => c.source === "loc")).toHaveLength(2);
     expect(out.filter((c) => c.source === "pexels")).toHaveLength(1);
-    expect(out.map((c) => c.id)).toEqual(["loc:B", "loc:C", "pexels:1"]);
+    expect(out.map((c) => c.id)).toEqual(["loc:B", "loc:C", "pexels:1", "loc:D"]);
+    // The exclusion still holds: the used candidate never comes back.
+    expect(out.map((c) => c.id)).not.toContain("loc:A");
   });
 
   it("ranking order inside the reduced set is untouched (still rankingScore desc)", () => {
@@ -279,6 +289,14 @@ describe("wiring + scope", () => {
      */
     expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;");
     expect(funnelSrc).toContain("export const FUNNEL_CANDIDATE_POOL_LIMIT = 15;");
+    /**
+     * RONDE 170: the caps are still constants and still applied one source at a time. The counter
+     * this used to look for by name (`cutByCap++`) was an implementation detail of the old
+     * single-pass loop; the rule it stood for — that what the cap refuses is counted separately
+     * from what the budget refuses — is asserted on the audit itself in ronde163/164/170.
+     */
+    expect(funnelSrc).toContain("const cutByCap = capOverflow.length - backfilledFromCap;");
+    expect(funnelSrc).toContain("if (STOCK_SOURCES.has(c.source)) continue;");
     expect(funnelSrc).toContain("export const MAX_FUNNEL_CANDIDATES_TO_SCORE = 6;");
     expect(funnelSrc).toContain("internet_archive: 0.15,");
     expect(funnelSrc).toContain("wikimedia: 0.10,");
@@ -291,7 +309,6 @@ describe("wiring + scope", () => {
      * why the statement is no longer a one-liner. The rule it enforces is identical.
      */
     expect(funnelSrc).toContain("if (used >= capFor(c.source)) {");
-    expect(funnelSrc).toContain("cutByCap++;");
   });
 
   it("no score is mutated, no penalty and no randomisation were introduced", () => {

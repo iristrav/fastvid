@@ -71,9 +71,12 @@ describe("RONDE 164 — the chain is counted end to end", () => {
     buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, undefined, audit);
     expect(audit.afterMetadata).toBe(26);
     expect(audit.afterBeatDedup).toBe(26);
-    expect(audit.afterSourceCap).toBe(4);
+    // RONDE 170: the caps let four through, the backfill filled the two slots the budget had
+    // left over. cutBySourceCap drops by exactly what was reclaimed — the totals still add up.
+    expect(audit.afterSourceCap).toBe(6);
+    expect(audit.backfilledFromCap).toBe(2);
     expect(audit.downloadBudget).toBe(MAX_FUNNEL_CANDIDATES_TO_SCORE);
-    expect(audit.cutBySourceCap).toBe(22);
+    expect(audit.cutBySourceCap).toBe(20);
     expect(audit.cutByBudget).toBe(0);
   });
 
@@ -220,8 +223,11 @@ describe("RONDE 164 — are the top 3 archive candidates really the best 3?", ()
   it("the scores on both sides of the cap are recorded, so the question has data", () => {
     const audit = createArchiveSourcingAudit();
     buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, undefined, audit);
-    expect(audit.archive.taken).toHaveLength(3);
-    expect(audit.archive.cut).toHaveLength(22);
+    // Three from the cap plus whatever the backfill reclaimed — `taken` reports the shortlist
+    // as it really is, so the capGap below compares what was downloaded against what was not.
+    expect(audit.archive.taken.length).toBeGreaterThanOrEqual(3);
+    // 20, not 22: RONDE 170 reclaimed two of them into the budget slack the caps left.
+    expect(audit.archive.cut).toHaveLength(20);
     // Taken are the highest-ranked: every kept score is at least the best cut score.
     expect(Math.min(...audit.archive.taken)).toBeGreaterThanOrEqual(Math.max(...audit.archive.cut));
   });
@@ -263,10 +269,24 @@ describe("RONDE 164 — the budget and the cap were NOT changed", () => {
   it("the archive cap is unchanged at 3", async () => {
     const src = readFileSync(join(__dirname, "retrievalFunnel.ts"), "utf8");
     expect(src).toContain("const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;");
-    // And it still applies: three of twenty-five, not more.
-    const audit = createArchiveSourcingAudit();
-    buildDownloadShortlist(beatS1B6(), MAX_FUNNEL_CANDIDATES_TO_SCORE, undefined, audit);
-    expect(audit.archive.taken).toHaveLength(3);
+    /**
+     * And it still applies — to the CAP, which is what the constant governs.
+     *
+     * RONDE 170 did not raise it. This beat has two sources, so the caps fill four of a six-slot
+     * budget and the remaining two used to be discarded; they are now filled from what the cap
+     * refused. The cap's own share is unchanged, and the way to see that is the beat where the
+     * budget is already full: there the backfill takes nothing and the archive gets exactly three.
+     */
+    const full = createArchiveSourcingAudit();
+    const busyBeat = [
+      ...Array.from({ length: 6 }, (_, i) => cand(`archive:${i}`, "archive", 9 - i * 0.1)),
+      ...Array.from({ length: 3 }, (_, i) => cand(`nara:${i}`, "nara", 8 - i * 0.1)),
+      cand("wikimedia:0", "wikimedia", 7.5),
+      cand("nasa:0", "nasa", 7.4),
+    ];
+    buildDownloadShortlist(busyBeat, MAX_FUNNEL_CANDIDATES_TO_SCORE, undefined, full);
+    expect(full.backfilledFromCap).toBe(0);
+    expect(full.archive.taken).toHaveLength(3);
   });
 
   it("every other source's cap is unchanged", () => {

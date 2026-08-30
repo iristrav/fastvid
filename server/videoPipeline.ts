@@ -4149,6 +4149,46 @@ async function downloadFunnelCandidate(
 ): Promise<string | null> {
   try {
     if (candidate.archivePick) {
+      /**
+       * RONDE 170 — the curated route now opens its lineage BEFORE the download, like every other.
+       *
+       * ── What render 555 measured ─────────────────────────────────────────────────────────────
+       *
+       *     [Quality] Video 555: score=14/100, clips=16 [UNVERIFIED=14, loc=1, nasa=1]
+       *     [Quality] Video 555: 14 clip(s) met niet-bewezen bron (UNVERIFIED).
+       *
+       * Fourteen of sixteen delivered clips could not say where they came from, on a render with
+       * exactly ONE colour card — so thirteen of them were real pictures whose provenance was lost
+       * on the way in.
+       *
+       * ── Why ──────────────────────────────────────────────────────────────────────────────────
+       *
+       * `prepareCuratedArchiveClip` lives in curatedMediaSourcing, which contains no reference to
+       * `lineage` at all. Every other download route opens a record at the one instant the provider
+       * name, the asset id and the destination path are all in hand — `tagPathWithProviderAsset`
+       * for the eleven external providers, `ensureCuratedAssetLineage` + `bindPath` inside
+       * `preparePooledArchiveClip` for the curated pool. The FUNNEL's curated branch called
+       * `prepareCuratedArchiveClip` directly and did neither.
+       *
+       * So a curated clip adopted through the funnel reached `recordClipAdopt` as a file the ledger
+       * had never seen, and that function's hole-filling branch opens a record with NO provider on
+       * purpose — RONDE 87's rule that a route label is not a provider. Correct behaviour on a
+       * record that should never have been needed.
+       *
+       * ── The fix ──────────────────────────────────────────────────────────────────────────────
+       *
+       * The same two calls `preparePooledArchiveClip` already makes, in the same order: the record
+       * from the DB row before the download, then `bindPath` onto the file that came out. The
+       * provider is the archive the row was ingested into — a fact about the row, not a guess about
+       * a filename. Nothing new is invented and no second mechanism is added.
+       */
+      const lineage = sourcingCache?.lineage;
+      const pending = lineage
+        ? ensureCuratedAssetLineageOn(lineage, candidate.archivePick, sceneIndex, beatIndex)
+        : null;
+      if (pending && lineage) {
+        lineage.recordEvent(pending.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
+      }
       const clip = await prepareCuratedArchiveClip(
         candidate.archivePick.asset,
         workDir,
@@ -4156,7 +4196,20 @@ async function downloadFunnelCandidate(
         beatIndex,
         holdSec
       );
-      return clip && fs.existsSync(clip) ? clip : null;
+      const ok = clip && fs.existsSync(clip);
+      if (pending && lineage) {
+        if (ok) {
+          lineage.bindPath(pending.lineageId, clip, curatedAssetContentKey(candidate.archivePick.asset.id));
+          lineage.recordEvent(pending.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
+        } else {
+          // RONDE 167 F1: a download that never finished is an ending, and it names the asset.
+          lineage.recordEvent(pending.lineageId, "DOWNLOAD_FAILED", {
+            status: "FAILED",
+            reason: "curated_clip_not_produced",
+          });
+        }
+      }
+      return ok ? clip : null;
     }
     if (candidate.poolCandidate) {
       return downloadAndTrimPoolCandidate(candidate.poolCandidate, workDir, sceneIndex, beatIndex, holdSec, sourcingCache);
@@ -25388,7 +25441,23 @@ export function ensureCuratedAssetLineage(
   sceneIndex: number,
   beatIndex: number
 ): VisualLineageRecord {
-  const ledger = dedup.sourcingCache.lineage;
+  return ensureCuratedAssetLineageOn(dedup.sourcingCache.lineage, picked, sceneIndex, beatIndex);
+}
+
+/**
+ * RONDE 170 — the same record, for a caller that holds the ledger rather than the whole render.
+ *
+ * `downloadFunnelCandidate` is handed a SourcingCache, not a VisualDedupState, so it could not
+ * reach the function above — which is a large part of why the funnel's curated branch opened no
+ * lineage at all and its clips reported UNVERIFIED. Same body, one fewer thing required of the
+ * caller; the wrapper keeps every existing call site unchanged.
+ */
+export function ensureCuratedAssetLineageOn(
+  ledger: VisualSourceLedger,
+  picked: CuratedCandidatePick,
+  sceneIndex: number,
+  beatIndex: number
+): VisualLineageRecord {
   const contentKey = curatedAssetContentKey(picked.asset.id);
   const placeholder = `archive-asset:${picked.asset.id}`;
   const existing = ledger.resolve(placeholder, contentKey);

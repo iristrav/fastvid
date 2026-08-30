@@ -958,43 +958,94 @@ export function buildDownloadShortlist(
     return STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
   };
 
-  const shortlist: FunnelCandidate[] = [];
+  /**
+   * RONDE 170 — the caps decide who goes FIRST, not how many slots are left empty.
+   *
+   * ── What render 555 measured ───────────────────────────────────────────────────────────────
+   *
+   *     beat=s2b0 afterMetadata=15 afterSourceCap=3 downloadBudget=6 downloaded=0
+   *               cutBySourceCap=8 cutByBudget=0   verdict=LOST_BEFORE_VISION
+   *     beat=s2b1 afterSourceCap=3 downloadBudget=6 cutBySourceCap=5 cutByBudget=0
+   *     beat=s2b3 afterSourceCap=5 downloadBudget=6 cutBySourceCap=7 cutByBudget=0
+   *     TOTAL     cutBySourceCap=106 cutByBudget=6
+   *               beatsWithCapBinding=13 medianCapGap=0.00 capGapMax=0.01
+   *
+   * On three of the four beats the render printed in full, the shortlist came out SMALLER than the
+   * download budget while the per-source cap was turning candidates away. s2b0 is the clearest:
+   * ninety-three candidates found, fifteen visible, three shortlisted, eight refused by the cap —
+   * and three of the six paid-for download slots left empty. The beat then downloaded nothing at
+   * all and was scored LOST_BEFORE_VISION.
+   *
+   * Across the render the cap cut 106 candidates while the budget cut 6, and the thirteen beats
+   * where the cap actually bound show a median score gap of 0.00 between what it kept and what it
+   * refused. RONDE 164 and 165 both declined to act on one beat with a gap of 0.00; thirteen is
+   * the evidence they were waiting for.
+   *
+   * ── Why this is not a cap raise ────────────────────────────────────────────────────────────
+   *
+   * RONDE 157 raised MAX_SHORTLIST_PER_ARCHIVE_SOURCE to 4 and measured the cost: the archive ate
+   * slots the other providers needed, and the guard failed. Raising it again would repeat that.
+   *
+   * The caps are a DIVERSITY rule and they still decide the whole shortlist whenever there are
+   * enough candidates to fill the budget — every source gets its share before anyone gets a
+   * second. What they were also doing, silently, was shrinking the shortlist below the budget when
+   * no other source had anything to put in those slots. An empty slot serves no diversity: nothing
+   * is being kept out of it, it is simply unused.
+   *
+   * So the caps run first and unchanged, and only the slack they leave behind is filled, from the
+   * candidates they refused, in ranking order. The budget stays 6 and the caps stay 3/2/1.
+   */
+  const capped: FunnelCandidate[] = [];
+  const capOverflow: FunnelCandidate[] = [];
   const perSourceCount = new Map<FunnelCandidateSource, number>();
-  /**
-   * RONDE 163 — where candidates are lost, counted rather than inferred.
-   *
-   * Render 553 could be read as "25 candidates in, 2 offered", with no way to say which step took
-   * the other 23. These are the two that can: the per-beat exclusion above, and the per-source cap
-   * here. Nothing is computed for the sake of the count — every value is already in hand.
-   */
-  let cutByCap = 0;
-  let cutByBudget = 0;
-  /**
-   * RONDE 164 — the archive scores on both sides of the cap.
-   *
-   * The brief asks whether the top three really are the best three. Recording what the cap kept
-   * and what it turned away answers it with data: a cap is doing its job when what it cuts scores
-   * materially below what it keeps. Both lists come from candidates already sorted by
-   * rankingScore, so nothing is computed for the sake of the comparison.
-   */
-  const archiveTaken: number[] = [];
-  const archiveCut: number[] = [];
   for (const c of sorted) {
-    if (shortlist.length >= budget) {
-      cutByBudget++;
-      if (c.source === "archive") archiveCut.push(c.rankingScore);
-      continue;
-    }
     const used = perSourceCount.get(c.source) ?? 0;
     if (used >= capFor(c.source)) {
-      cutByCap++;
-      if (c.source === "archive") archiveCut.push(c.rankingScore);
+      capOverflow.push(c);
       continue;
     }
-    shortlist.push(c);
-    if (c.source === "archive") archiveTaken.push(c.rankingScore);
+    capped.push(c);
     perSourceCount.set(c.source, used + 1);
   }
+
+  const shortlist = capped.slice(0, budget);
+  /**
+   * Candidates the caps refused that are taking a slot nobody else wanted.
+   *
+   * STOCK IS EXCLUDED, and that exclusion is the whole reason this is a backfill and not a raised
+   * cap. An earlier round settled it — "niet te veel downloaden" — with a homogeneous Pexels pool:
+   * six generic stock clips of the same query are interchangeable, so fetching six to fill a
+   * six-slot budget buys nothing but wall time. That argument is about STOCK, whose catalogue is
+   * commissioned and repetitive by construction, and it stays honoured exactly as written.
+   *
+   * It is not an argument about the archive. Render 555's s2b0 found ninety-three distinct archive
+   * candidates, shortlisted three, downloaded none and scored LOST_BEFORE_VISION with three of six
+   * paid-for slots unused. Those are different holdings of different material, not six versions of
+   * one clip, and leaving the slots empty cost the beat its picture.
+   */
+  let backfilledFromCap = 0;
+  for (const c of capOverflow) {
+    if (shortlist.length >= budget) break;
+    if (STOCK_SOURCES.has(c.source)) continue;
+    shortlist.push(c);
+    backfilledFromCap++;
+  }
+
+  /**
+   * RONDE 163/164 — where candidates were lost, counted after the fact rather than during it.
+   *
+   * `cutBySourceCap` is what the caps refused AND the backfill did not reclaim, so it keeps
+   * meaning "lost to the diversity rule". `cutByBudget` is what a full shortlist had no room for.
+   * Both still add up to what did not make it, and `backfilledFromCap` says how much of the cap's
+   * refusal the budget's slack bought back.
+   */
+  const cutByCap = capOverflow.length - backfilledFromCap;
+  const cutByBudget = Math.max(0, capped.length - shortlist.length);
+  const inShortlist = new Set(shortlist);
+  const archiveTaken = shortlist.filter((c) => c.source === "archive").map((c) => c.rankingScore);
+  const archiveCut = sorted
+    .filter((c) => c.source === "archive" && !inShortlist.has(c))
+    .map((c) => c.rankingScore);
   recordShortlistStage(audit, {
     afterMetadata: candidates.length,
     afterBeatDedup: pool.length,
@@ -1002,6 +1053,7 @@ export function buildDownloadShortlist(
     downloadBudget: budget,
     cutBySourceCap: cutByCap,
     cutByBudget,
+    backfilledFromCap,
     archive: { taken: archiveTaken, cut: archiveCut },
   });
 
