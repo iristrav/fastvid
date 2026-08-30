@@ -415,8 +415,23 @@ describe("RONDE 166 — [VisualFitAudit] and the two never_asked beats", () => {
   });
 
   it("a clean render raises no invariant line", () => {
-    expect(formatVisualFitAudit([...statuses], severityOf).some((l) => l.includes("INVARIANT_BROKEN")))
+    /**
+     * RONDE 167 corrected this fixture, and the correction is the finding.
+     *
+     * It used to run on `statuses`, which holds s1b6 as `own_footage` + `verified_mismatch` with a
+     * HARD severity — a refused picture on screen that nobody reprieved. That is a violation, and
+     * this test asserted no violation was raised. It passed only because the audit could not see
+     * that shape yet: it inspected reprieves, and there was no reprieve to inspect.
+     *
+     * So the assertion was true about the code and wrong about the render. A genuinely clean
+     * render is the fixture without that beat.
+     */
+    const clean = statuses.filter((s) => s.verification !== "verified_mismatch");
+    expect(formatVisualFitAudit(clean, severityOf).some((l) => l.includes("INVARIANT_BROKEN")))
       .toBe(false);
+    // And the beat that was removed is exactly the one the audit now names.
+    expect(formatVisualFitAudit([...statuses], severityOf).some((l) => l.includes("INVARIANT_BROKEN")))
+      .toBe(true);
   });
 
   it("every never_asked beat gets a named reason", () => {

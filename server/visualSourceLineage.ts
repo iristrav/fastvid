@@ -171,7 +171,22 @@ export function recordAssetOutcome(
   ledger: VisualSourceLedger | undefined,
   clipPath: string,
   reason: AssetOutcomeReason,
-  context?: string
+  context?: string,
+  /**
+   * RONDE 167 — the second handle, and for a whole route it is the ONLY one that works.
+   *
+   * `resolve` tries the exact path, then the derivation chain, then the content key. The curated
+   * archive route never registers a path at all: `ensureCuratedAssetLineage` opens the record from
+   * the DB row under `archive-asset:<id>` and its content key, and `prepareCuratedArchiveClip`
+   * writes `scene_N_bM_curated_a<id>.mp4` without touching the ledger. So an outcome filed by path
+   * alone found nothing and wrote nothing — measured: zero events — which made RONDE 165's
+   * `superseded_by_winner` dead for every archive candidate, the exact case render 554's s2b3
+   * evidence was about.
+   *
+   * The record was always reachable. `clipContentKey` maps that filename straight back to
+   * `curated:asset:<id>`; nobody was passing it.
+   */
+  contentKey?: string
 ): void {
   const status = OUTCOME_STATUS[reason];
   /**
@@ -183,6 +198,7 @@ export function recordAssetOutcome(
   ledger?.recordEventForPath(clipPath, stage, {
     status,
     reason: context ? `${reason}:${context}` : reason,
+    contentKey,
   });
 }
 
@@ -749,11 +765,19 @@ export class VisualSourceLedger {
   recordReplacement(
     originalPath: string,
     replacementPath: string | null,
-    reason: string
+    reason: string,
+    /**
+     * RONDE 167 — the curated route has no registered path, only a content key. Without this a
+     * replacement of an archive clip resolved to nothing and the swap went unrecorded, which is
+     * the silent substitution §8 exists to catch. See recordAssetOutcome for the measurement.
+     */
+    keys: { originalContentKey?: string; replacementContentKey?: string } = {}
   ): boolean {
-    const original = this.resolve(originalPath);
+    const original = this.resolve(originalPath, keys.originalContentKey);
     if (!original) return false;
-    const replacement = replacementPath ? this.resolve(replacementPath) : null;
+    const replacement = replacementPath
+      ? this.resolve(replacementPath, keys.replacementContentKey)
+      : null;
     this.recordEvent(original.lineageId, "REPLACED", {
       status: "REPLACED",
       reason: `${reason} -> ${replacement?.lineageId ?? path.basename(replacementPath ?? "none")}`,

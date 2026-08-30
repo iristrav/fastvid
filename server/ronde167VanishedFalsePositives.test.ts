@@ -37,6 +37,17 @@
  * Linking the extension fixes the outcome and the provenance in one move, and the provenance is
  * proof rather than inference: the pipeline built that file from that clip itself.
  *
+ * ── F3: a whole route the outcome writers could not see ──────────────────────────────────────
+ *
+ * The biggest of the three, found by asking the same question of the OTHER routes. The curated
+ * archive route registers its record from the DB row and never registers a path: every terminal
+ * outcome writer in the pipeline passed only the path, so all of them wrote nothing for an archive
+ * clip. That includes RONDE 165's headline `superseded_by_winner` — inert for exactly the beat its
+ * own evidence was about — and RONDE 95's `recordReplacement`, so archive swaps went unrecorded.
+ *
+ * The record was always reachable: `clipContentKey` maps the filename back to `curated:asset:<id>`.
+ * Nobody was passing it. Every writer does now.
+ *
  * ── What is deliberately NOT changed ─────────────────────────────────────────────────────────
  *
  * An extension is still never judged against the beat it fills — see the last block. That is a
@@ -46,6 +57,9 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 
+import { curatedAssetContentKey } from "./curatedMediaSourcing";
+import { formatVisualFitAudit } from "./beatVisualStatus";
+import { clipContentKey } from "./videoPipeline";
 import {
   VisualSourceLedger,
   formatAssetLifecycleAudit,
@@ -175,6 +189,142 @@ describe("RONDE 167 — the extension is on the record now", () => {
     expect(PIPE).toContain(
       "extendLastClip(source, need, scene.index, 900 + attempt, workDir, dedup.sourcingCache?.lineage)"
     );
+  });
+});
+
+describe("RONDE 167 — F3: the curated route has no path, only a key", () => {
+  /**
+   * The biggest of the three, and the one that made RONDE 165's headline fix inert.
+   *
+   * `ensureCuratedAssetLineage` opens the record from the DB row, under the placeholder
+   * `archive-asset:<id>` and the asset's content key. `prepareCuratedArchiveClip` then writes
+   * `scene_N_bM_curated_a<id>.mp4` and touches the ledger not at all — curatedMediaSourcing.ts
+   * contains no reference to `lineage`. So the file on disk has no registered path.
+   *
+   * `resolve` tries the exact path, the derivation chain, then the content key. Every terminal
+   * outcome writer in the pipeline passed only the path. Measured: zero events written.
+   *
+   * That is exactly the beat render 554's evidence was about — s2b3, three archive runners-up at
+   * score 8.0 losing to a loc winner at 8.0 — so RONDE 165 wrote its `superseded_by_winner` for
+   * those three into nothing while its test asserted the call's source text and passed.
+   */
+  const ASSET = 56153;
+  const CLIP = "/w/scene_2_b3_curated_a56153.mp4";
+
+  function curatedLedger(): VisualSourceLedger {
+    const l = new VisualSourceLedger({ renderId: "r167" });
+    const rec = l.createLineage({
+      sceneIndex: 2, beatIndex: 3, contentKey: curatedAssetContentKey(ASSET),
+      localPath: `archive-asset:${ASSET}`, provider: "bundesarchiv",
+    });
+    l.recordEvent(rec.lineageId, "SELECTED", { status: "OK" });
+    return l;
+  }
+
+  it("the file the render writes is not reachable by its own path", () => {
+    expect(curatedLedger().resolve(CLIP)).toBeNull();
+  });
+
+  it("clipContentKey maps that filename straight back to the record", () => {
+    // The record was always reachable; nobody was passing the handle.
+    expect(clipContentKey(CLIP)).toBe(curatedAssetContentKey(ASSET));
+    expect(curatedLedger().resolve(CLIP, clipContentKey(CLIP))).not.toBeNull();
+  });
+
+  it("the bug: an outcome filed by path alone wrote nothing", () => {
+    const l = curatedLedger();
+    const before = l.allEvents().length;
+    recordAssetOutcome(l, CLIP, "superseded_by_winner", "s2b3");
+    expect(l.allEvents().length - before).toBe(0);
+  });
+
+  it("with the key it writes exactly one, and the asset stops being unaccounted for", () => {
+    const l = curatedLedger();
+    recordAssetOutcome(l, CLIP, "superseded_by_winner", "s2b3", clipContentKey(CLIP));
+    l.markFinalVideo([]);
+    expect(l.reconcile().warnings.filter((w) => w.code === "VANISHED_WITHOUT_OUTCOME")).toHaveLength(0);
+  });
+
+  it("a replacement of a curated clip is recorded too", () => {
+    // recordReplacement resolved by path alone as well, so every archive swap went unrecorded —
+    // the silent substitution RONDE 95 §8 exists to catch.
+    const l = curatedLedger();
+    expect(l.recordReplacement(CLIP, "/w/other.mp4", "healed")).toBe(false);
+    expect(
+      l.recordReplacement(CLIP, "/w/other.mp4", "healed", { originalContentKey: clipContentKey(CLIP) })
+    ).toBe(true);
+  });
+
+  it("every outcome writer in the pipeline now passes a content key", () => {
+    /**
+     * Five writers, one rule. A new one that forgets the key is the same dead-code bug again, and
+     * it would pass its own source-text test exactly as RONDE 165's did.
+     */
+    for (const call of [
+      'recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`, contentKey)',
+      'recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey)',
+      "clipContentKey(candidate.clipPath)",
+      "clipContentKey(extended)",
+      "originalContentKey: clipContentKey(dropped.path)",
+    ]) {
+      expect(PIPE, call).toContain(call);
+    }
+    // The two REMOVED writers R159/R162 added carry it as well.
+    expect(
+      (PIPE.match(/recordEventForPath\(clipPath, "REMOVED", \{ status: "REMOVED", reason, contentKey: clipContentKey\(clipPath\) \}\)/g) ?? []).length
+    ).toBe(2);
+  });
+});
+
+describe("RONDE 167 — F4: the fit audit was flattering itself", () => {
+  const statuses = [
+    { sceneIndex: 0, beatIndex: 0, coverage: "own_footage", verification: "verified_fit",
+      source: "archive", basename: "good.mp4", verifiedOwnVisual: true, reason: "" },
+    { sceneIndex: 1, beatIndex: 6, coverage: "own_footage", verification: "verified_mismatch",
+      source: "archive", basename: "vague.mp4", verifiedOwnVisual: false, reason: "x" },
+  ] as const;
+
+  it("an unclassified refusal is no longer counted as a soft one", () => {
+    /**
+     * `classifyMismatch` reads the gate's prose for phrases its own prompt invites. When the model
+     * answers in words none of the patterns know, the severity is UNKNOWN and the reprieve is
+     * ALLOWED — deliberately, because RONDE 160 proved guessing here is worse. Those beats are
+     * exactly where RONDE 166 has no opinion, and reporting them as softMismatch said the
+     * opposite: it made the guard look like it had ruled on traffic it never saw.
+     */
+    const line = formatVisualFitAudit([...statuses], () => "UNKNOWN")[0];
+    expect(line).toContain("unclassifiedMismatch=1");
+    expect(line).toContain("softMismatch=0");
+  });
+
+  it("a real soft mismatch is still a soft mismatch", () => {
+    const line = formatVisualFitAudit([...statuses], () => "SOFT_MISMATCH")[0];
+    expect(line).toContain("softMismatch=1");
+    expect(line).toContain("unclassifiedMismatch=0");
+  });
+
+  it("a hard mismatch ON SCREEN with no reprieve is called out", () => {
+    /**
+     * The other way the invariant breaks, which the reprieve check could not see: there was no
+     * reprieve to inspect. `own_footage` + `verified_mismatch` means a refused picture reached the
+     * timeline down a path that never met the compose barrier. Video 554 reported four beats in
+     * exactly this state and the audit said nothing about any of them.
+     */
+    const lines = formatVisualFitAudit([...statuses], () => "HARD_MISMATCH");
+    expect(lines.some((l) => l.includes("INVARIANT_BROKEN") && l.includes("compose barrier was bypassed")))
+      .toBe(true);
+  });
+
+  it("a soft mismatch on screen is a fallback, not a violation", () => {
+    const lines = formatVisualFitAudit([...statuses], () => "SOFT_MISMATCH");
+    expect(lines.some((l) => l.includes("INVARIANT_BROKEN"))).toBe(false);
+  });
+
+  it("a placeholder beat that was refused is not blamed on the barrier", () => {
+    // Only a beat holding its OWN footage can have walked a refusal past the barrier.
+    const onCard = [{ ...statuses[1], coverage: "placeholder" as const }];
+    expect(formatVisualFitAudit(onCard, () => "HARD_MISMATCH").some((l) => l.includes("INVARIANT_BROKEN")))
+      .toBe(false);
   });
 });
 

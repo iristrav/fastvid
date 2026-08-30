@@ -312,6 +312,8 @@ export function formatVisualFitAudit(
   const counts = {
     verifiedFit: 0,
     softMismatch: 0,
+    /** Refusals `classifyMismatch` could not place. The guard has no opinion on these. */
+    unclassifiedMismatch: 0,
     hardMismatch: 0,
     totallyUnrelated: 0,
     unknown: 0,
@@ -342,11 +344,27 @@ export function formatVisualFitAudit(
     }
     // Refused. What happened next is the difference between a reprieve and a rejection.
     const severity = severityOf(s.sceneIndex, s.beatIndex, s.basename);
+    const blocking = severity === "HARD_MISMATCH" || severity === "TOTALLY_UNRELATED";
     if (severity === "HARD_MISMATCH") counts.hardMismatch++;
     else if (severity === "TOTALLY_UNRELATED") counts.totallyUnrelated++;
-    else counts.softMismatch++;
+    /**
+     * RONDE 167 — an UNCLASSIFIED refusal is not a soft one, and counting it as one flatters the
+     * guard exactly where the guard does nothing.
+     *
+     * `classifyMismatch` reads the gate's prose for phrases its own prompt invites. When the model
+     * answers in words none of the patterns know, the kind is UNCLEAR, the severity is UNKNOWN and
+     * `reprieveAllowedFor` lets the refusal be taken back — deliberately, because RONDE 160 proved
+     * guessing here is worse. So these are precisely the beats where RONDE 166 has no opinion, and
+     * reporting them as `softMismatch` would say the opposite. Video 551 had seven of them.
+     *
+     * Counted on its own so a render can be asked how much of its refusal traffic the severity
+     * rule actually reached. A high number here is the signal that the classifier needs work —
+     * which is a different round from this one, and it needs this number first.
+     */
+    else if (severity === "SOFT_MISMATCH") counts.softMismatch++;
+    else counts.unclassifiedMismatch++;
     if (s.verification === "reprieved_after_refusal") {
-      if (severity === "HARD_MISMATCH" || severity === "TOTALLY_UNRELATED") {
+      if (blocking) {
         // The invariant the round exists for. Counted as reprieved so the totals still add up,
         // and shouted about so it cannot pass as an ordinary fallback.
         lines.push(
@@ -357,10 +375,27 @@ export function formatVisualFitAudit(
       counts.reprievedSoftMismatch++;
     } else if (severity === "TOTALLY_UNRELATED") counts.rejectedUnrelated++;
     else if (severity === "HARD_MISMATCH") counts.rejectedHardMismatch++;
+    /**
+     * RONDE 167 — the OTHER way the invariant can break, which the first check could not see.
+     *
+     * A beat reading `own_footage` + `verified_mismatch` has a picture the gate refused and NOBODY
+     * reprieved. `composeBarrierAllows` is supposed to make that impossible, so it means the clip
+     * reached the timeline down a path that never met the barrier. The reprieve check above cannot
+     * catch it — there was no reprieve to inspect — and video 554 reported four beats in exactly
+     * this state while the audit said nothing.
+     */
+    if (blocking && s.verification === "verified_mismatch" && s.coverage === "own_footage") {
+      lines.push(
+        `[VisualFitAudit] INVARIANT_BROKEN beat=s${s.sceneIndex}b${s.beatIndex} ` +
+          `severity=${severity} is on screen with no reprieve — the compose barrier was bypassed`
+      );
+    }
   }
   lines.unshift(
     `[VisualFitAudit] TOTAL beats=${statuses.length} verifiedFit=${counts.verifiedFit} ` +
-      `softMismatch=${counts.softMismatch} hardMismatch=${counts.hardMismatch} ` +
+      `softMismatch=${counts.softMismatch} ` +
+      `unclassifiedMismatch=${counts.unclassifiedMismatch} ` +
+      `hardMismatch=${counts.hardMismatch} ` +
       `totallyUnrelated=${counts.totallyUnrelated} unknown=${counts.unknown} ` +
       `neverAsked=${counts.neverAsked} adoptedFit=${counts.adoptedFit} ` +
       `reprievedSoftMismatch=${counts.reprievedSoftMismatch} ` +

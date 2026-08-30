@@ -8769,7 +8769,8 @@ async function requireValidClip(
   lineage?: VisualSourceLedger
 ): Promise<string | null> {
   const dropped = (reason: string): null => {
-    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason });
+    // RONDE 167: by content key too — the curated route registers no path. See recordAssetOutcome.
+    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason, contentKey: clipContentKey(clipPath) });
     return null;
   };
   if (!(await isValidVideoFile(clipPath)) || isPipelineFallbackClip(clipPath)) {
@@ -20769,7 +20770,7 @@ async function adoptClip(
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         // RONDE 165: SELECTED was filed above; this exit is where that stopped being true.
-        recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`);
+        recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`, contentKey);
         continue;
       }
       const transformMs = mustFairUse
@@ -20784,7 +20785,7 @@ async function adoptClip(
       ) {
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         // RONDE 165: a clip that MUST be transformed and could not be is refused, not lost.
-        recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`);
+        recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey);
         continue;
       }
       if (await isValidVideoFile(transformed)) {
@@ -20805,7 +20806,7 @@ async function adoptClip(
        * without the `continue` below, which only decides whether `p` may still serve as
        * lastRealClip. Filed once, before either path leaves.
        */
-      recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`);
+      recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey);
       if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
         dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
@@ -21428,7 +21429,8 @@ async function composeReadySceneClips(
 ): Promise<string[]> {
   const out: string[] = [];
   const dropped = (clipPath: string, reason: string): void => {
-    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason });
+    // RONDE 167: by content key too — the curated route registers no path. See recordAssetOutcome.
+    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason, contentKey: clipContentKey(clipPath) });
   };
   for (const clipPath of clips) {
     if (!clipPath) continue;
@@ -27752,7 +27754,8 @@ async function rescueBeatVisualWhenEmptyInner(
          */
         if (extended && !(await pushClip(extended, holdSec))) {
           recordAssetOutcome(
-            dedup.sourcingCache?.lineage, extended, "extended_rejected", `s${scene.index}b${beat.index}`
+            dedup.sourcingCache?.lineage, extended, "extended_rejected", `s${scene.index}b${beat.index}`,
+            clipContentKey(extended)
           );
         } else if (extended) {
           // Charged only on an adoption: an extension that failed to build put nothing on screen.
@@ -30702,7 +30705,9 @@ async function fetchSceneVisualsInner(
             dedup.sourcingCache?.lineage,
             candidate.clipPath,
             reason,
-            `s${scene.index}b${beat.index}`
+            `s${scene.index}b${beat.index}`,
+            // The curated archive route has no registered path — this is its only handle.
+            clipContentKey(candidate.clipPath)
           );
         }
 
@@ -32410,11 +32415,16 @@ export async function composeSceneVideoInner(
     dropsRecorded = true;
     for (const dropped of droppedClips) {
       if (substitute) {
-        lineage.recordReplacement(dropped.path, substitute, `${reason}:${dropped.reason}`);
+        lineage.recordReplacement(dropped.path, substitute, `${reason}:${dropped.reason}`, {
+          originalContentKey: clipContentKey(dropped.path),
+          replacementContentKey: clipContentKey(substitute),
+        });
       } else {
         lineage.recordEventForPath(dropped.path, "REMOVED", {
           status: "REMOVED",
           reason: dropped.reason,
+          // RONDE 167: the curated route is reachable only by content key.
+          contentKey: clipContentKey(dropped.path),
         });
       }
     }
