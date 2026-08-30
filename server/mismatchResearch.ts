@@ -66,6 +66,20 @@ import { mismatchFault, type MismatchFault, type MismatchKind } from "./visualMi
  */
 export const RESEARCH_ESTIMATED_COST_MS = 45_000;
 
+/**
+ * RONDE 171 — how much more a render must be able to afford once it is past its own pacing.
+ *
+ * `forceExportMode` used to be a veto: it replaced the remaining budget with 0, so every research
+ * pass after it turned on was refused however much render was left. Video 555 turned it on nine
+ * minutes into a twenty-two minute budget and finished with nearly seven minutes unspent, having
+ * run the recovery path zero times against seventeen search-preventable refusals.
+ *
+ * A margin says the same thing without the lie. A render in force-export is already behind, so a
+ * pass has to fit twice over before it is started — and when it genuinely does not fit,
+ * `decideResearch`'s own check refuses it as BUDGET_EXCEEDED, which is the honest reason.
+ */
+export const FORCE_EXPORT_RESEARCH_MARGIN = 2;
+
 /** What a correction is trying to add to the question. */
 export type CorrectionStrategy =
   /** Add the period the narration states. */

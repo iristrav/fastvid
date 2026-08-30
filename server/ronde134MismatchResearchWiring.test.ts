@@ -536,7 +536,11 @@ describe("RONDE 134 — mutation guards", () => {
      * fastStockMode gate and pushed the last assertion just past the old edge (measured offset
      * 6194). Every assertion below is unchanged and each still fails if the line it names goes.
      */
-    const block = PIPE.slice(idx, idx + 7600);
+    // RONDE 171: bounded by the research block's own end marker rather than a character count —
+    // this round documented the budget decision and a fixed +N window stopped reaching the search.
+    const blockEnd = PIPE.indexOf("formatResearchOutcome({", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = PIPE.slice(idx, blockEnd);
     expect(block).toContain("fetchHistoricalBeatVideo(");
     expect(block).toContain("leadQueries: decision.correctedQueries");
     expect(block).toContain("researchPass: true");
@@ -544,7 +548,11 @@ describe("RONDE 134 — mutation guards", () => {
 
   it("M2/M3. the scene context is built and passed", () => {
     const idx = PIPE.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = PIPE.slice(idx, idx + 3000);
+    // RONDE 171: bounded by the decision the context is built FOR, not a character count. This
+    // round documented the budget rule between the two and a fixed +2000 stopped reaching them.
+    const blockEnd = PIPE.indexOf("console.log(formatResearchDecision(", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = PIPE.slice(idx, blockEnd);
     expect(block).toContain("buildResearchContext({");
     expect(block).toContain("scene: scene.text?.trim()");
     expect(block).toContain("ctx: researchCtx");
@@ -576,7 +584,7 @@ describe("RONDE 134 — mutation guards", () => {
 
   it("M8. the existing cache and dedup are what the pass uses", () => {
     const idx = PIPE.indexOf("const fetchTierPaths = async (tier: HistoricalSourceTier, q: string)");
-    const block = PIPE.slice(idx, idx + 2600);
+    const block = PIPE.slice(idx, idx + 2000);
     expect(block).toContain("dedup.sourcingCache");
     expect(block).toContain("dedup.usedContentKeys");
     expect(PIPE).toContain("recordAdoptedClipSource");

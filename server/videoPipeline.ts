@@ -469,6 +469,8 @@ import {
 import {
   buildResearchContext,
   createResearchTally,
+  FORCE_EXPORT_RESEARCH_MARGIN,
+  RESEARCH_ESTIMATED_COST_MS,
   decideResearch,
   formatResearchContext,
   formatResearchDecision,
@@ -30700,13 +30702,42 @@ async function fetchSceneVisualsInner(
               ].filter(Boolean),
               /**
                * RONDE 134 §20 — the render's own tracker, the same one the retry guard at the
-               * provider-failure site reads. `forceExportMode` is folded in because it is the
-               * pipeline's existing "stop searching, finish the film" signal: a render already
-               * past its deadline must not start a fresh provider cascade for one beat.
+               * provider-failure site reads.
+               *
+               * ── RONDE 171: force-export no longer switches this off outright ────────────────
+               *
+               * `forceExportMode` used to replace the real number with 0, which meant every
+               * research pass after it turned on was refused as BUDGET_EXCEEDED regardless of how
+               * much render was actually left. Video 555 measured what that costs:
+               *
+               *     10:39:47 [Pipeline] Force-export mode (≥9 min) — finishing with archive+stock
+               *     10:41:52 [MismatchResearch] beat=s2b0 action=NONE reason=BUDGET_EXCEEDED
+               *              [MismatchResearch] attempts=0 produced=0 accepted=0 skipped=2
+               *              17 van 30 afgewezen beelden waren fout van soort
+               *              [Budget] concat ... remaining=6m 56s
+               *
+               * Force-export fired nine minutes into a twenty-two minute budget. Every beat after
+               * it was refused a forty-five second pass — seventeen of the render's thirty
+               * refusals were the kind a better question fixes — and the render finished with
+               * nearly seven minutes unspent. Three of nineteen beats ended with an approved
+               * picture of their own.
+               *
+               * This is the same shape RONDE 153 removed one round earlier, for the same reason:
+               * a blunt switch sitting on top of a budget check that is better informed. Its words
+               * apply verbatim — "Research is the recovery path for a refused beat. Switching it
+               * off on the preset most likely to be short of footage is backwards; the budget
+               * check is what should decide, and it already did."
+               *
+               * So the real remaining time is passed and `decideResearch` refuses when a pass will
+               * not fit. Force-export is honoured as a MARGIN rather than a veto: a render already
+               * past its own pacing must be able to afford the pass twice over before starting it.
+               * That keeps the intent — do not gamble late — without making the recovery path dead
+               * exactly when a render is short of footage, which is when it is needed.
                */
-              remainingBudgetMs: dedup.forceExportMode
-                ? 0
-                : get_activeBudgetTracker()?.remainingMs?.(),
+              remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),
+              estimatedCostMs: dedup.forceExportMode
+                ? RESEARCH_ESTIMATED_COST_MS * FORCE_EXPORT_RESEARCH_MARGIN
+                : undefined,
             });
             console.log(formatResearchDecision(beatLabel, decision));
             console.log(formatResearchContext(beatLabel, researchCtx));

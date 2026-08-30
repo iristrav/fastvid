@@ -55,9 +55,23 @@ describe("RONDE 153 — the preset no longer decides whether research may run", 
   });
 
   it("the budget gate that remains is the one that was always better informed", () => {
-    // decideResearch still receives the render's real remaining time.
-    expect(PIPE).toContain("remainingBudgetMs: dedup.forceExportMode");
-    expect(PIPE).toContain("get_activeBudgetTracker()?.remainingMs?.()");
+    /**
+     * RONDE 171 carried this round's own principle one step further, and the assertion follows it.
+     *
+     * RONDE 153 removed `!fastStockMode` — a blunt switch on top of a budget check that knew more —
+     * and left `forceExportMode ? 0 : …` standing. That was the same shape: from the moment
+     * force-export turned on, the call site replaced the real remaining time with a literal 0, so
+     * every pass after it was refused as BUDGET_EXCEEDED whatever the render actually had left.
+     * Video 555 turned it on nine minutes into a twenty-two minute budget, ran the pass zero times
+     * against seventeen search-preventable refusals, and finished with nearly seven minutes spare.
+     *
+     * The gate that remains is now the ONLY one: decideResearch's own check, on the render's real
+     * remaining time. Force-export is honoured as a margin — the pass must fit twice over — which
+     * is stricter than an ordinary render, never looser (asserted in ronde171).
+     */
+    expect(PIPE).toContain("remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),");
+    expect(PIPE).not.toContain("remainingBudgetMs: dedup.forceExportMode");
+    expect(PIPE).toContain("estimatedCostMs: dedup.forceExportMode");
   });
 
   it("and it genuinely refuses when the time is not there", () => {
@@ -83,7 +97,13 @@ describe("RONDE 153 — the preset no longer decides whether research may run", 
     expect(decision.action).not.toBe("NONE");
   });
 
-  it("forceExportMode still stops it — a render past its deadline starts no new cascade", () => {
+  it("a render with no time left starts no new cascade", () => {
+    /**
+     * RONDE 171 renamed this: it never tested forceExportMode, it tested the budget check with a
+     * zero — which was what the call site passed the moment force-export turned on. That literal
+     * is gone; force-export now raises the required margin instead (see ronde171). The rule this
+     * asserts is the one that always did the work: no time, no pass.
+     */
     const decision = decideResearch({
       kind: "WRONG_PERIOD",
       ctx: ctxWithTime(),

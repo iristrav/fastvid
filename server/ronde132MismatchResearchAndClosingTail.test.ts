@@ -383,7 +383,10 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
     expect(idx).toBeGreaterThan(0);
     // RONDE 134 widened this from 4000: the research block gained the scene-context merge and the
     // budget check, which pushed the provider call past the old edge. No assertion changed.
-    const block = src.slice(idx, idx + 7000);
+    // RONDE 171: bounded by the research block's own end marker rather than a character count —
+    // this round documented the budget decision and a fixed +N window stopped reaching the search.
+    const blockEnd1 = src.indexOf("formatResearchOutcome({", idx);
+    const block = src.slice(idx, blockEnd1 > idx ? blockEnd1 : idx + 4000);
     expect(block).toContain("decideResearch({");
     // RONDE 142: the kind now falls back to the shared gate's per-beat record, so a refusal
     // that happened on another route still reaches research.
@@ -401,7 +404,10 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
   it("18. the one-pass limit is claimed BEFORE the search, not after", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = src.slice(idx, idx + 7000);
+    // RONDE 171: bounded by the research block's own end marker rather than a character count —
+    // this round documented the budget decision and a fixed +N window stopped reaching the search.
+    const blockEnd2 = src.indexOf("formatResearchOutcome({", idx);
+    const block = src.slice(idx, blockEnd2 > idx ? blockEnd2 : idx + 4000);
     const claim = block.indexOf("dedup.mismatchResearchedBeats.add(researchKey);");
     const search = block.indexOf("fetchHistoricalBeatVideo(");
     expect(claim).toBeGreaterThan(0);
@@ -442,7 +448,10 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
   it("22. the existing sourcing cache and search memory are what the pass uses", () => {
     const src = SRC();
     const idx = src.indexOf("const fetchTierPaths = async (tier: HistoricalSourceTier, q: string)");
-    const block = src.slice(idx, idx + 2600);
+    // RONDE 171: bounded by the research block's own end marker rather than a character count —
+    // this round documented the budget decision and a fixed +N window stopped reaching the search.
+    const blockEnd3 = src.indexOf("formatResearchOutcome({", idx);
+    const block = src.slice(idx, blockEnd3 > idx ? blockEnd3 : idx + 4000);
     // Every tier is handed the render's own cache — the research pass inherits it rather than
     // opening a second one.
     expect(block).toContain("dedup.sourcingCache");
@@ -627,7 +636,10 @@ describe("RONDE 132 — mutation guards", () => {
   it("M1. removing the research call breaks the wiring assertion", () => {
     const src = SRC();
     const idx = src.indexOf("const researchKey = `s${scene.index}b${beat.index}`;");
-    const block = src.slice(idx, idx + 7000);
+    // RONDE 171: bounded by the research block's own end marker rather than a character count —
+    // this round documented the budget decision and a fixed +N window stopped reaching the search.
+    const blockEnd4 = src.indexOf("formatResearchOutcome({", idx);
+    const block = src.slice(idx, blockEnd4 > idx ? blockEnd4 : idx + 4000);
     expect(block).toContain("await withSceneFetchTimeout(");
     expect(block).toContain("fetchHistoricalBeatVideo(");
   });
