@@ -214,7 +214,10 @@ describe("RONDE 142 BUG 2 — every refusal reaches the feedback chain", () => {
     // offered=0 that skipped the whole block, research included.
     const idx = PIPE.indexOf("if (beatImageRelevanceGateEnabled()) {");
     expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, idx + 12000);
+    // RONDE 168: bounded by the adopt block's own end marker rather than a character count.
+    const blockEnd = PIPE.indexOf("[VisualDiscovery] audit line", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = PIPE.slice(idx, blockEnd);
     const loopGuard = block.indexOf("const hasCandidateToJudge = winner !== null;");
     const endLoop = block.indexOf("end: candidates existed and were judged");
     const research = block.indexOf("const researchKey =");

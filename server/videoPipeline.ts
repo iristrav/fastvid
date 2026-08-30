@@ -445,6 +445,7 @@ import {
   pickBestFunnelCandidate,
   buildDownloadShortlist,
   MAX_FUNNEL_CANDIDATES_TO_SCORE,
+  keepOnlyJudgedWinner,
   FUNNEL_CANDIDATE_POOL_LIMIT,
   type FunnelCandidate,
   type RetrievalFunnelResult,
@@ -456,6 +457,7 @@ import {
   createMismatchTally,
   formatMismatchFeedback,
   formatMismatchSummary,
+  formatVisualFitDecision,
   mismatchFaultSplit,
   recordMismatch,
   reorderAfterMismatch,
@@ -30290,8 +30292,18 @@ async function fetchSceneVisualsInner(
            * for the same reason — RONDE 130 learned that these guards match TEXT, not code.
            */
           const hasCandidateToJudge = winner !== null;
+          /**
+           * RONDE 168 — which candidates this beat actually looked at.
+           *
+           * The loop below judges the CURRENT winner and, on a refusal, moves to the next. When it
+           * ends because the look ceiling ran out rather than because something passed, the winner
+           * it leaves behind has never been judged at all — and video 555 shipped one. See the
+           * block after the loop.
+           */
+          const judgedCandidateIds = new Set<string>();
           if (hasCandidateToJudge) {
           for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++) {
+            judgedCandidateIds.add(winner.candidate.id);
             // RONDE 103: the same central decider every other route uses. The frame sampling,
             // the cleanup and the cache key used to be this loop's own copy of that logic — and
             // it was the copy that keyed on the picture alone, so a clip the funnel approved on
@@ -30395,6 +30407,69 @@ async function fetchSceneVisualsInner(
             dedup.usedFunnelCandidateIds.add(winner.candidate.id);
             winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
           }
+          /**
+           * RONDE 168 — the beat may not adopt a picture nobody looked at.
+           *
+           * ── What video 555 shipped ─────────────────────────────────────────────────────────
+           *
+           *     [BeatRelevance] s2b3 funnel:loc              does_not_fit
+           *     [BeatRelevance] s2b3 funnel:internet_archive does_not_fit
+           *     [RenderAsset]   provider=nasa scene=2 beat=3
+           *                     file=..._nasa_Hidden_Figures_Way_NASA_s_Vision_of_Equality...
+           *                     verdict=does_not_fit reprieved=false rendered=true
+           *
+           * A NASA clip about equality, on screen under narration about Churchill, Roosevelt and
+           * Stalin at the Tehran Conference. RONDE 166's guard never saw it, and the reason is two
+           * lines of control flow rather than anything about severity.
+           *
+           * The loop above runs `look < MAX_JUDGEMENTS_PER_BEAT` (=2). Each pass judges the
+           * current winner and, on a refusal, picks the next-best. It `break`s the moment one
+           * PASSES — so a winner produced by a `break` has been judged. But when the ceiling runs
+           * out instead, the winner left in hand is the candidate picked by the LAST refusal, and
+           * nothing has ever looked at it. It is not in `beatImageRejectedIds` either, so the
+           * reprieve check below does not fire, no severity is consulted, and `funnelClip = clipPath`
+           * hands it straight to the montage — the funnel is the one adopt route that does not go
+           * through pushClip, so the compose barrier never sees it either.
+           *
+           * Two refusals therefore bought an UNEXAMINED third candidate a free pass, and the more
+           * a beat's candidates were refused the likelier its picture was one nobody had judged.
+           * That is the exact inverse of the intent stated four comments above this one: "It runs
+           * on the candidate about to be ADOPTED, not on all of them."
+           *
+           * ── The fix, inside the existing budget ────────────────────────────────────────────
+           *
+           * The look budget is spent on judging, not on shopping. With two looks a beat may try
+           * two candidates properly; it may not try two and then take a third on trust. So an
+           * unjudged winner is put back and the beat continues with what it actually knows — the
+           * candidates it DID judge, under RONDE 166's severity rules, via the reprieve below.
+           *
+           * No gate call is added and no ceiling is raised. What changes is which candidate the
+           * beat ends on when the ceiling binds: a judged one, or none.
+           */
+          const judgedOnly = keepOnlyJudgedWinner(
+            winner, judgedCandidateIds, scored, dedup.beatImageRejectedIds
+          );
+          if (judgedOnly.putBack) {
+            console.warn(
+              formatVisualFitDecision({
+                beatLabel: `s${scene.index}b${beat.index}`,
+                candidate: path.basename(judgedOnly.putBack.clipPath),
+                verdict: judgedOnly.reason,
+                severity: "UNKNOWN",
+                decision: "REJECTED",
+                reason: `look_budget_spent_after_${judgedCandidateIds.size}_judgements`,
+              })
+            );
+            recordAssetOutcome(
+              dedup.sourcingCache?.lineage,
+              judgedOnly.putBack.clipPath,
+              judgedOnly.reason,
+              `s${scene.index}b${beat.index}`,
+              clipContentKey(judgedOnly.putBack.clipPath)
+            );
+          }
+          winner = judgedOnly.winner;
+
           // RONDE 61 dropped the winner here so the beat could fall through to another source.
           // RONDE 67 keeps it: render 533 showed what "falling through" costs when the other
           // sources have nothing either — eight beats ended on a grey placeholder, which matches

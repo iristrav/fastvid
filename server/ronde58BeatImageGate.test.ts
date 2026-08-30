@@ -201,7 +201,17 @@ describe("RONDE 58 — the wiring", () => {
      * nothing else — every assertion is unchanged, and each one still fails if the line it names
      * is deleted.
      */
-    const block = src.slice(idx, idx + 9000);
+    /**
+     * RONDE 168 — bounded by the funnel adopt block's own end, not a character count.
+     *
+     * Widened at 131, 142 and 168, each time because a real change pushed the last assertion past
+     * a number nobody could pick correctly in advance. The window only ever meant "in the funnel's
+     * adopt block"; that is now what it says. Every assertion below is unchanged and each still
+     * fails if the line it names is deleted.
+     */
+    const end = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     /**
      * SUPERSEDED BY RONDE 103, deliberately.
      *

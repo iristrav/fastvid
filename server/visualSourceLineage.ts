@@ -143,6 +143,14 @@ export type AssetOutcomeReason =
   /** Downloaded and judged, but another candidate won the beat. */
   | "superseded_by_winner"
   /**
+   * RONDE 168 — the beat's look budget ran out before anyone judged this candidate.
+   *
+   * Distinct from `not_chosen`, and the distinction is the whole finding: "we looked and preferred
+   * another" and "we never looked" are opposite facts, and video 555 shipped a picture on the
+   * second while its audit read like the first.
+   */
+  | "never_judged"
+  /**
    * Judged, kept nothing against it, and the beat still went elsewhere.
    *
    * Deliberately distinct from `superseded_by_winner`: "another candidate was better" and "this
@@ -169,6 +177,7 @@ const OUTCOME_STATUS: Record<AssetOutcomeReason, LineageEventStatus> = {
   extended_rejected: "REJECTED",
   extended_removed: "REMOVED",
   transform_failed: "REJECTED",
+  never_judged: "REMOVED",
   not_chosen: "REMOVED",
   superseded_by_winner: "REPLACED",
   replaced_by_candidate: "REPLACED",

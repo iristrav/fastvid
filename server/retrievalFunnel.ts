@@ -1024,6 +1024,54 @@ function scoreSpreadEnv(fallback: number): number {
 }
 const NON_DISCRIMINATING_SCORE_SPREAD = scoreSpreadEnv(1);
 
+/**
+ * RONDE 168 — the beat may not end on a candidate nobody judged.
+ *
+ * ── The bug this exists to make impossible ───────────────────────────────────────────────────
+ *
+ * videoPipeline's judging loop runs `look < MAX_JUDGEMENTS_PER_BEAT` and, on each refusal, picks
+ * the next-best candidate. It breaks the moment one passes, so a winner produced by a break has
+ * been judged. When the CEILING ends the loop instead, the winner left in hand is whatever the
+ * last refusal picked and nothing has ever looked at it — and it is not in the refused set either,
+ * so the reprieve check does not fire and no severity is consulted. Video 555 shipped a NASA clip
+ * about equality under narration on the Tehran Conference exactly this way.
+ *
+ * ── Why it lives here and not inline ─────────────────────────────────────────────────────────
+ *
+ * Written inline, the only thing a test could check was that the source text was present — and a
+ * source-text assertion cannot tell whether the winner it ends on was judged, which is the entire
+ * question. As a function the real rule is the thing under test, and a mutation to it fails.
+ *
+ * The look budget is spent on judging, not on shopping: with two looks a beat may try two
+ * candidates properly, not two and then a third on trust. No gate call is added and no ceiling is
+ * raised — what changes is which candidate the beat ends on when the ceiling binds.
+ */
+export type JudgedWinnerDecision<T> = {
+  /** The candidate the beat may keep: judged, or none. */
+  winner: T | null;
+  /** The unjudged candidate that was put back, so the caller can log and account for it. */
+  putBack: T | null;
+  /** The outcome reason for `putBack`. Kept with the rule so the two cannot drift. */
+  reason: "never_judged";
+};
+
+export function keepOnlyJudgedWinner<T extends { candidate: { id: string } }>(
+  winner: T | null,
+  judgedCandidateIds: ReadonlySet<string>,
+  scored: readonly T[],
+  /** RONDE 61's hard exclusion set: the candidates a judge looked at and refused. */
+  refusedCandidateIds: ReadonlySet<string>
+): JudgedWinnerDecision<T> {
+  if (!winner || judgedCandidateIds.has(winner.candidate.id)) {
+    return { winner, putBack: null, reason: "never_judged" };
+  }
+  // Back to the best candidate this beat actually looked at. Refused, so RONDE 67's reprieve and
+  // RONDE 166's severity rules decide whether it may be used — which is the point: a known fault
+  // judged on its merits beats an unknown one adopted on trust.
+  const judged = scored.find((c) => refusedCandidateIds.has(c.candidate.id)) ?? null;
+  return { winner: judged, putBack: winner, reason: "never_judged" };
+}
+
 export function pickBestFunnelCandidate(
   scored: ScoredFunnelCandidate[],
   usedCandidateIds?: ReadonlySet<string>,

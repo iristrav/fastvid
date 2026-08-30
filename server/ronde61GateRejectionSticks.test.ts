@@ -115,7 +115,11 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
     // block, which pushed the reprieve check past the old edge. The window says "in the
     // funnel's adopt block"; no assertion below it changed.
-    const block = src.slice(idx, idx + 9800);
+    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
+    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
+    const end = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     const picks = [...block.matchAll(/pickBestFunnelCandidate\(\s*\n?\s*scored, dedup\.usedFunnelCandidateIds, dedup\.beatImageRejectedIds/g)];
     expect(picks.length).toBe(2);
     // The bare two-argument call that could hand a refused clip back is gone from this block.
@@ -130,7 +134,11 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
     // block, which pushed the reprieve check past the old edge. The window says "in the
     // funnel's adopt block"; no assertion below it changed.
-    const block = src.slice(idx, idx + 9800);
+    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
+    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
+    const blockEnd = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = src.slice(idx, blockEnd);
     expect(block).toContain("dedup.beatImageRejectedIds.add(winner.candidate.id);");
   });
 
@@ -149,7 +157,11 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
     // block, which pushed the reprieve check past the old edge. The window says "in the
     // funnel's adopt block"; no assertion below it changed.
-    const block = src.slice(idx, idx + 9800);
+    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
+    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
+    const blockEnd = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = src.slice(idx, blockEnd);
     expect(block).toContain("if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id))");
     expect(block).toContain("no acceptable candidate");
     // Still nulled here, so every other route is tried first — that half is unchanged.
