@@ -10,7 +10,9 @@ import { curatedClipPathAssetId, isPipelineBlurFillStillClip } from "./curatedMe
 import { UNVERIFIED_PROVIDER } from "./visualSourceLineage";
 
 export function editorClipFromArchiveAsset(asset: MediaArchiveAsset): EditorClip {
-  const previewUrl = editorArchiveMediaUrl(asset.id);
+  // RONDE 177: version the URL from the row, so a clip trimmed in the archive stops previewing as
+  // the footage it had before the trim.
+  const previewUrl = editorArchiveMediaUrl(asset.id, asset);
   return {
     url: previewUrl,
     thumbnailUrl: previewUrl,
@@ -128,6 +130,10 @@ export async function buildEditorScenesFromPipeline(
 
 /** Resolve preview/play URL for client (handles legacy temp paths). */
 export function resolveEditorClipPreviewUrl(clip: EditorClip): string {
-  if (clip.archiveAssetId) return editorArchiveMediaUrl(clip.archiveAssetId);
+  // The manifest holds the storageUrl the clip had when the video was rendered — a snapshot, not
+  // the live row. Versioning from it still breaks the cache the manifest itself was stored with;
+  // a clip trimmed AFTER the manifest was written needs the manifest rebuilt, which
+  // editorClipFromArchiveAsset above does from the current row.
+  if (clip.archiveAssetId) return editorArchiveMediaUrl(clip.archiveAssetId, clip);
   return clip.thumbnailUrl ?? clip.url;
 }

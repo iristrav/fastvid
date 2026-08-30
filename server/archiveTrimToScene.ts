@@ -114,11 +114,32 @@ export async function trimArchiveAsset(
      * resolveRemoteDownloadUrl prefers storageKey over storageUrl. Writing only the URL left the
      * row pointing at two different files and the loader picking the old one — the trim was real
      * on disk and invisible everywhere else.
+     *
+     * ── RONDE 177: and every verdict that was reached about the OLD footage ──────────────────
+     *
+     * These five columns are not facts about the asset, they are conclusions drawn from watching
+     * its frames. The frames just changed, so the conclusions are about a file that no longer
+     * exists — and the most common reason to trim a clip is precisely that its first seconds were
+     * the problem the conclusion recorded.
+     *
+     * Every one of them already treats NULL as "not looked at yet", which is the honest state
+     * here: the annotator re-runs when annotationVersion no longer matches, the overlay filter
+     * re-checks when hasBakedEditText is null, and the RONDE 118 preview sweep re-checks when
+     * previewCheckedAt is null. Nothing is declared broken; it is declared unexamined.
+     *
+     * editorialScore deliberately survives. It is rewritten by the annotator on its next pass and
+     * is read as a ranking signal in the meantime, where null is treated as a below-average 50 —
+     * so clearing it would quietly demote every freshly trimmed clip for no gain.
      */
     await updateMediaArchiveAsset(asset.id, {
       storageUrl: url,
       storageKey: key,
       durationSec: newDuration > 0 ? newDuration : keepSec,
+      annotationJson: null,
+      annotationVersion: null,
+      hasBakedEditText: null,
+      previewCheckedAt: null,
+      previewIssue: null,
     });
 
     console.log(

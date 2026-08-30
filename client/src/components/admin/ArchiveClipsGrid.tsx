@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
 import { MIN_TRIMMED_CLIP_SEC, validateTrimRange } from "@shared/archiveTrim";
+import { withArchiveMediaVersion } from "@shared/archiveMediaVersion";
 import {
   Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch, Ban, Scissors,
 } from "lucide-react";
@@ -167,8 +168,16 @@ function describeAutoTitleOutcome(result: {
   return parts.join(". ");
 }
 
-function archiveClipMediaUrl(assetId: number): string {
-  return `/api/admin/archive/media/${assetId}`;
+/**
+ * RONDE 177 — the address carries which version of the file it is.
+ *
+ * `/api/admin/archive/media/<id>` alone is identical before and after a trim, and the endpoint asks
+ * the browser to cache it for an hour. So a trimmed clip was refetched as a ROW and replayed as a
+ * FILE from cache: the operator saw the untrimmed footage and reported that the trim was not saved.
+ * `?v=` changes exactly when storagePut writes new bytes, so the browser goes and asks again.
+ */
+function archiveClipMediaUrl(asset: Pick<ArchiveAsset, "id" | "storageUrl" | "durationSec">): string {
+  return withArchiveMediaVersion(`/api/admin/archive/media/${asset.id}`, asset);
 }
 
 function mediaIssueLabel(issue?: ArchiveAsset["mediaIssue"]): string | null {
@@ -193,7 +202,7 @@ function LazyArchiveMedia({
 
   // Images can be served directly from their storage URL (storage proxy or local-storage
   // static), avoiding the extra server hop through the media streaming endpoint.
-  const mediaSrc = asset.mediaType === "image" ? asset.storageUrl : archiveClipMediaUrl(asset.id);
+  const mediaSrc = asset.mediaType === "image" ? asset.storageUrl : archiveClipMediaUrl(asset);
 
   useEffect(() => {
     setLoadError(false);
@@ -657,7 +666,7 @@ function AssetPreviewModal({
           <div className="flex items-center gap-2 shrink-0">
             {asset.mediaAvailable !== false && (
               <a
-                href={archiveClipMediaUrl(asset.id)}
+                href={archiveClipMediaUrl(asset)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"

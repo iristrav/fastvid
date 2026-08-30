@@ -179,7 +179,17 @@ export const mediaArchiveAssets = mysqlTable(
   topics: json("topics").$type<string[]>(),
   width: int("width"),
   height: int("height"),
-  durationSec: int("durationSec"),
+  /**
+   * RONDE 177 — FLOAT, not INT.
+   *
+   * The trim writes the probed duration of the file it just produced, which is fractional
+   * (8.53s). An INT column rounds that on the way in, so the number in the row disagreed with the
+   * number the trim returned to the operator — and a trim that shortened a clip by less than half
+   * a second wrote back the SAME integer, leaving a row that looked untouched.
+   *
+   * media_asset_cache.durationSec was already FLOAT for exactly this reason.
+   */
+  durationSec: float("durationSec"),
   sortOrder: int("sortOrder").default(0).notNull(),
   isActive: int("isActive").default(1).notNull(),
   /** Cached overlay-filter verdict: null = not yet checked, 0 = clean, 1 = baked edit text detected. */

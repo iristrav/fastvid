@@ -337,6 +337,13 @@
       "when": 1787900100000,
       "tag": "0047_ronde147_discount_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "5",
+      "when": 1787900200000,
+      "tag": "0048_ronde177_archive_trim_duration",
+      "breakpoints": true
     }
   ]
 }
