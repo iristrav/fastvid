@@ -8436,6 +8436,52 @@ async function generateGuaranteedBeatClipInner(
   }
 }
 
+/**
+ * RONDE 169 — a scene whose picture list is rebuilt must say what became of the old one.
+ *
+ * ── What render 555 measured ─────────────────────────────────────────────────────────────────
+ *
+ *     [OutcomeInvariant] FAILED selectedWithoutOutcome=18
+ *     [AssetLifecycleAudit] unresolvedByRoute backfill=6 rescue=6 fallback=4 primary=2
+ *
+ * Eighteen assets chosen, delivered nowhere, explained by nothing — and every one of them carried
+ * `provider=UNVERIFIED`, the signature of `recordClipAdopt`'s hole-filling branch on the backfill,
+ * rescue and fallback routes.
+ *
+ * Twelve places assign `sceneVisualResults[i]`. Several rebuild a scene's list from scratch — a
+ * coverage repair, a strict-voice refill, a guaranteed fill after an empty scene. The clips of the
+ * PREVIOUS list were adopted and then simply stopped being referenced: no gate refused them,
+ * nothing replaced them one for one, and the array they lived in was overwritten. That is the
+ * common cause behind all eighteen, and it is one cause rather than eighteen.
+ *
+ * ── Why here and not in the audit ────────────────────────────────────────────────────────────
+ *
+ * The audit could derive this at the end — "adopted, not delivered, therefore dropped" — and that
+ * would make `unresolved` unfalsifiable: every hole would explain itself. The code that drops the
+ * clip is the code that knows, so it is the code that says so.
+ *
+ * `hasOutcomeFor` keeps it honest in the other direction. A clip a compose gate already refused
+ * keeps that ending; this never overwrites a specific reason with a vaguer one, and it is safe to
+ * call at every assignment site including the ones that only refine a list.
+ */
+function noteSceneClipsResourced(
+  dedup: VisualDedupState | undefined,
+  previous: { clips?: string[] } | undefined,
+  next: { clips?: string[] } | undefined,
+  context: string
+): void {
+  const lineage = dedup?.sourcingCache?.lineage;
+  if (!lineage || !previous?.clips?.length) return;
+  const kept = new Set(next?.clips ?? []);
+  for (const clip of previous.clips) {
+    if (!clip || kept.has(clip)) continue;
+    const contentKey = clipContentKey(clip);
+    // Already explained by whoever dropped it — a compose gate, a duplicate, a validation swap.
+    if (lineage.hasOutcomeFor(clip, contentKey)) continue;
+    recordAssetOutcome(lineage, clip, "scene_resourced", context, contentKey);
+  }
+}
+
 async function appendGuaranteedSceneClips(
   scene: Scene,
   workDir: string,
@@ -21752,6 +21798,7 @@ async function ensureFastShortScenesReadyForCompose(
     const scene = scenes[si]!;
     const vr = sceneVisualResults[si] ?? { clips: [], beatDurations: [] };
     if (composeLocalClipsOnly(videoLength)) {
+      const prevSceneVisual_0 = sceneVisualResults[si];
       sceneVisualResults[si] = await finalizeLocalClipCacheForScene(
         scene,
         vr,
@@ -21761,6 +21808,7 @@ async function ensureFastShortScenesReadyForCompose(
         videoLength,
         audioPaths?.[si]
       );
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_0, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       const cached = sceneVisualResults[si]!.clips?.length ?? 0;
       const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
       console.log(
@@ -21771,18 +21819,22 @@ async function ensureFastShortScenesReadyForCompose(
 
     let ready = await composeReadySceneClips(vr.clips ?? [], scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
     if (ready.length > 0) {
+      const prevSceneVisual_1 = sceneVisualResults[si];
       sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_1, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       continue;
     }
 
     console.warn(`[Pipeline] Scene ${scene.index}: fast pre-compose — no compose-ready clips`);
     const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup);
     if (rescued.length > 0) {
+      const prevSceneVisual_2 = sceneVisualResults[si];
       sceneVisualResults[si] = {
         ...vr,
         clips: rescued,
         beatDurations: rescued.map(() => archiveVisualBeatSecForVideo(videoLength)),
       };
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_2, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       continue;
     }
 
@@ -21797,7 +21849,9 @@ async function ensureFastShortScenesReadyForCompose(
       );
       ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
       if (ready.length > 0) {
+        const prevSceneVisual_3 = sceneVisualResults[si];
         sceneVisualResults[si] = { ...recovered, clips: ready };
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_3, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       }
     } catch (err) {
       console.warn(
@@ -35256,7 +35310,9 @@ async function _runVideoPipelineInner(
                   svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
                 }
               }
+              const prevSceneVisual_4 = sceneVisualResults[i];
               sceneVisualResults[i] = svr;
+              noteSceneClipsResourced(visualDedup, prevSceneVisual_4, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
               completedPipelineVisuals++;
               gantt(`Scene ${scene.index} retrieve END  (${svr.clips.length} clips)`, t2p);
               profiler.recordSceneRetrieve(i, scene.index, scene.duration, retrieveStartMs, Date.now(), 0, svr.clips.length);
@@ -35897,9 +35953,11 @@ async function _runVideoPipelineInner(
       );
       if (usable.length > 0) continue;
       console.warn(`[Pipeline] Scene ${scenes[si].index}: empty after fetch — recovery sweep`);
+      const prevSceneVisual_5 = sceneVisualResults[si];
       sceneVisualResults[si] = await recoverSceneClipsIfEmpty(
         scenes[si], workDir, topicContext, visualDedup
       );
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_5, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       if (
         sceneVisualResults[si].clips.length === 0 &&
         perf.enableAiFallback &&
@@ -35927,10 +35985,12 @@ async function _runVideoPipelineInner(
           topicContext
         );
         if (aiClip && !isPipelineFallbackClip(aiClip)) {
+          const prevSceneVisual_6 = sceneVisualResults[si];
           sceneVisualResults[si] = {
             clips: [aiClip],
             beatDurations: [Math.max(VIDRUSH_BEAT_SEC, scene.duration / 2)],
           };
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_6, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
           console.warn(`[Pipeline] Scene ${scene.index}: last-resort AI clip`);
         }
       }
@@ -35979,12 +36039,15 @@ async function _runVideoPipelineInner(
             await appendGuaranteedSceneClips(scene, workDir, clips, beatDurations, minNeeded, visualDedup);
           }
           if (clips.length > 0) {
+            const prevSceneVisual_7 = sceneVisualResults[si];
             sceneVisualResults[si] = { clips, beatDurations };
+            noteSceneClipsResourced(visualDedup, prevSceneVisual_7, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
           }
         } else if (strictVoiceVisualMatchEnabled()) {
           console.warn(
             `[Pipeline] Scene ${scenes[si].index}: strict refill — elke zin moet voice/script-matchen`
           );
+          const prevSceneVisual_8 = sceneVisualResults[si];
           sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
             scenes[si],
             workDir,
@@ -35992,6 +36055,7 @@ async function _runVideoPipelineInner(
             visualDedup,
             audioPaths[si]
           );
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_8, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
         } else {
           console.warn(`[Pipeline] Scene ${scenes[si].index}: still empty — guaranteed scene fill`);
           const scene = scenes[si];
@@ -36005,7 +36069,9 @@ async function _runVideoPipelineInner(
             minClipsForBalancedVoice(scene.duration + 0.15),
             visualDedup
           );
+          const prevSceneVisual_9 = sceneVisualResults[si];
           sceneVisualResults[si] = { clips, beatDurations };
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_9, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
         }
       }
     }
@@ -36036,6 +36102,7 @@ async function _runVideoPipelineInner(
         console.warn(
           `[Pipeline] Scene ${scenes[si].index}: ${usable.length}/${minNeeded} clips — strict beat refill`
         );
+        const prevSceneVisual_10 = sceneVisualResults[si];
         sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
           scenes[si],
           workDir,
@@ -36043,6 +36110,7 @@ async function _runVideoPipelineInner(
           visualDedup,
           audioPaths[si]
         );
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_10, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       }
     }
 
@@ -36093,12 +36161,14 @@ async function _runVideoPipelineInner(
               vr.clipBeatIndices,
               vr.beats
             );
+            const prevSceneVisual_11 = sceneVisualResults[i];
             sceneVisualResults[i] = {
               ...vr,
               clips: reordered.clips,
               beatDurations: reordered.beatDurations,
               clipBeatIndices: reordered.clipBeatIndices,
             };
+            noteSceneClipsResourced(visualDedup, prevSceneVisual_11, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
           })
         );
         console.log(`[Editorial] Reorder pass done in ${Date.now() - reorderT0}ms`);
@@ -36114,7 +36184,9 @@ async function _runVideoPipelineInner(
         if (!vr || vr.clips.length < 2) continue;
         const sso = optimizeShotSequence(scenes[i].index, vr.clips, vr.beatDurations, vr.clipBeatIndices, vr.beats);
         if (sso.changes > 0) {
+          const prevSceneVisual_12 = sceneVisualResults[i];
           sceneVisualResults[i] = { ...vr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_12, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
         }
       }
     }
@@ -36127,7 +36199,9 @@ async function _runVideoPipelineInner(
         const beatTexts = (vr.beats ?? []).map((b) => b.text);
         if (beatTexts.length === 0) continue;
         const rr = applyVisualRhythm(scenes[i].index, beatTexts, vr.beatDurations);
+        const prevSceneVisual_13 = sceneVisualResults[i];
         sceneVisualResults[i] = { ...vr, beatDurations: rr.beatDurations };
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_13, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
       }
     }
 

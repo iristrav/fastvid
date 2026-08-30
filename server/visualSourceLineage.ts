@@ -160,6 +160,20 @@ export type AssetOutcomeReason =
   | "not_chosen"
   /** Swapped out for a specific replacement. */
   | "replaced_by_candidate"
+  /**
+   * RONDE 169 — the scene this clip was adopted for was re-sourced, and it was not carried over.
+   *
+   * Twelve places assign `sceneVisualResults[i]`, several of them rebuilding a scene's picture
+   * list from scratch after a coverage repair or a strict-voice refill. The clips of the previous
+   * list were ADOPTED and then simply stopped being referenced — no gate refused them, nothing
+   * replaced them one-for-one, and nothing said a word. Render 555 ended with eighteen assets in
+   * that state and every one of them carried provider=UNVERIFIED, which is the signature of the
+   * backfill, rescue and fallback routes that rebuild lists.
+   *
+   * Its own reason rather than `replaced_by_candidate`, because there is no single candidate that
+   * took its place: the whole scene was re-cut.
+   */
+  | "scene_resourced"
   /** A derived clip took over from the source it was made from. */
   | "superseded_by_derived";
 
@@ -181,6 +195,7 @@ const OUTCOME_STATUS: Record<AssetOutcomeReason, LineageEventStatus> = {
   not_chosen: "REMOVED",
   superseded_by_winner: "REPLACED",
   replaced_by_candidate: "REPLACED",
+  scene_resourced: "REPLACED",
   superseded_by_derived: "REPLACED",
 };
 
@@ -636,6 +651,24 @@ export class VisualSourceLedger {
    * paid on the rare lookup rather than the common one. Never throws: a resolver that fails leaves
    * the clip unknown, which is the honest answer and the pre-RONDE-167 behaviour.
    */
+  /**
+   * RONDE 169 — does this clip already have an ending?
+   *
+   * Asked by the scene-replacement writer so a clip that a compose gate already refused is not
+   * given a second, weaker ending on top. Same `hasTerminalOutcome` the vanished rule, the
+   * lifecycle audit and the §8 invariant use, so "accounted for" means one thing everywhere.
+   */
+  hasOutcomeFor(clipPath: string, contentKey?: string): boolean {
+    const record = this.resolve(clipPath, contentKey);
+    if (!record) return false;
+    const stages = new Map<LineageStage, LineageEventStatus>();
+    for (const event of this.events) {
+      if (event.lineageId !== record.lineageId) continue;
+      if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
+    }
+    return stages.has("FINAL_VIDEO") || hasTerminalOutcome(stages);
+  }
+
   /** The path a derived file was produced from, or undefined. Read by resolveClipOutcomeIdentity. */
   derivationOriginOf(clipPath: string): string | undefined {
     return this.derivedFrom.get(clipPath);
