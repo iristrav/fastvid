@@ -31,6 +31,7 @@
 import { describe, expect, it } from "vitest";
 
 import { matchCandidateToBeat, yearsIn } from "./candidatePeriodMatch";
+import { reorderShortlistForBeat, type FunnelCandidate } from "./retrievalFunnel";
 import {
   MAX_JUDGEMENTS_PER_BEAT,
   maxBeatImageJudgementsPerRender,
@@ -342,5 +343,133 @@ describe("RONDE 175 §2 — period, place and subject reach the ranking", () => 
     const pipe = read("videoPipeline.ts");
     expect(pipe).toContain("years: yearsIn(scene.text).map(String),");
     expect(pipe).toContain("places: get_activeVideoVisualContext()?.locations?.slice(0, 3),");
+  });
+});
+
+/* ═══════════════════════ RONDE 176 — the beat orders its own pool ═══════════════════════ */
+
+describe("RONDE 176 — the scene's order no longer decides what a late beat gets", () => {
+  const cand = (id: string, title: string, rankingScore: number): FunnelCandidate =>
+    ({ id, source: "wikimedia", title, rankingScore, mediaType: "image" }) as FunnelCandidate;
+
+  it("THE ASYMMETRY: a beat used to inherit the scene's order minus its neighbours' picks", () => {
+    /**
+     * The funnel searches once per SCENE; the shortlist is drawn once per BEAT. Between them
+     * nothing re-read the beat, so the last beat of a scene had systematically worse options than
+     * the first — not because its sentence was harder, but because it came later in the loop.
+     */
+    const pool = [
+      cand("a", "Luftwaffe aircraft, 1940", 9),
+      cand("b", "Munich beer hall, 1926", 5),
+    ];
+    // With no beat context the order is exactly the scene's, unchanged.
+    expect(reorderShortlistForBeat(pool, undefined).map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
+  it("THE FIX: the beat about Munich in 1926 gets the Munich picture first", () => {
+    const pool = [
+      cand("a", "Luftwaffe aircraft, 1940", 9),
+      cand("b", "Munich beer hall, 1926", 5),
+    ];
+    const ordered = reorderShortlistForBeat(pool, { years: ["1926"], places: ["Munich"] });
+    expect(ordered.map((c) => c.id)).toEqual(["b", "a"]);
+  });
+
+  it("it reorders, it never drops", () => {
+    // Every candidate the scene found is still a candidate — this decides order, not membership.
+    const pool = [cand("a", "A", 3), cand("b", "Munich 1926", 2), cand("c", "C", 1)];
+    const ordered = reorderShortlistForBeat(pool, { years: ["1926"], places: ["Munich"] });
+    expect(ordered).toHaveLength(3);
+    expect(ordered.map((c) => c.id).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("a beat that establishes nothing leaves the scene ranking exactly as it was", () => {
+    const pool = [cand("a", "A", 3), cand("b", "B", 2)];
+    expect(reorderShortlistForBeat(pool, {})).toBe(pool);
+    expect(reorderShortlistForBeat(pool, { years: [], places: [], subjects: [] })).toBe(pool);
+  });
+
+  it("the scene ranking still breaks ties, and the order is fully determined", () => {
+    /**
+     * Two candidates that agree equally with the beat fall back to the ranking that got them into
+     * the pool, then to their original position — so two runs of the same render cannot differ.
+     */
+    const pool = [
+      cand("a", "Munich 1926 street", 4),
+      cand("b", "Munich 1926 hall", 7),
+      cand("c", "Munich 1926 square", 7),
+    ];
+    const ordered = reorderShortlistForBeat(pool, { years: ["1926"], places: ["Munich"] });
+    expect(ordered.map((c) => c.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("a catalogue-numbered archive title keeps its place", () => {
+    // The rule the whole matcher rests on, re-checked at this call site: absence is neutral, so
+    // the material this pipeline exists to find is not pushed down by saying nothing.
+    const pool = [
+      cand("bund", "Bundesarchiv Bild 183-S33882", 9),
+      cand("stock", "Generic crowd footage HD", 8),
+    ];
+    expect(reorderShortlistForBeat(pool, { years: ["1926"], places: ["Munich"] }).map((c) => c.id))
+      .toEqual(["bund", "stock"]);
+  });
+
+  it("a contradicting year sinks below a candidate that claims nothing", () => {
+    const pool = [
+      cand("wrong", "Berlin 1955 street scene", 9),
+      cand("silent", "Bundesarchiv Bild 183-S33882", 8),
+    ];
+    expect(reorderShortlistForBeat(pool, { years: ["1926"] }).map((c) => c.id))
+      .toEqual(["silent", "wrong"]);
+  });
+
+  it("an archive candidate is read from its asset, not from a title it does not have", () => {
+    const archive = {
+      id: "archive:101",
+      source: "archive",
+      title: "archive clip",
+      rankingScore: 5,
+      mediaType: "video",
+      archivePick: {
+        asset: { id: 101, title: "Munich rally 1926" },
+        archiveName: "Bundesarchiv",
+        score: 40,
+      },
+    } as unknown as FunnelCandidate;
+    const other = cand("x", "Something else", 9);
+    expect(reorderShortlistForBeat([other, archive], { years: ["1926"], places: ["Munich"] })
+      .map((c) => c.id)).toEqual(["archive:101", "x"]);
+  });
+
+  it("the archive's NAME counts too — it is often the only thing naming the place", () => {
+    /**
+     * A holding's title is frequently a catalogue number while the archive it sits in names the
+     * city: "Stadtarchiv München" says Munich when "Bild 183-S33882" says nothing. Reading only
+     * the title would throw that away, and a mutation proved the other archive test could not see
+     * it because its title already carried the match.
+     */
+    const named = {
+      id: "archive:7",
+      source: "archive",
+      title: "archive clip",
+      rankingScore: 1,
+      mediaType: "video",
+      archivePick: {
+        asset: { id: 7, title: "Bild 183-S33882" },
+        archiveName: "Stadtarchiv Munich",
+        score: 40,
+      },
+    } as unknown as FunnelCandidate;
+    const other = cand("x", "Unrelated footage", 9);
+    expect(reorderShortlistForBeat([other, named], { places: ["Munich"] }).map((c) => c.id))
+      .toEqual(["archive:7", "x"]);
+  });
+
+  it("it runs BEFORE the shortlist is cut, or it could not change what is downloaded", () => {
+    const pipe = read("videoPipeline.ts");
+    expect(pipe).toContain("reorderShortlistForBeat(funnelCandidates, beatContext),");
+    // The years come from the BEAT here — the sentence is in scope at this point, unlike where
+    // the funnel is built.
+    expect(pipe).toContain("years: yearsIn(beat.text).map(String),");
   });
 });

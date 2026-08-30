@@ -268,8 +268,14 @@ describe("wiring + scope", () => {
   it("the pipeline passes usedFunnelCandidateIds to both functions and registers the winner", () => {
     expect(pipelineSrc).toContain("usedFunnelCandidateIds: Set<string>;");
     expect(pipelineSrc).toContain("usedFunnelCandidateIds: new Set(),");
+    /**
+     * RONDE 176 wraps the pool in `reorderShortlistForBeat` before the cut, so the first argument
+     * is no longer the bare `funnelCandidates`. What this test guards — the used-set reaches the
+     * shortlist so a later beat cannot re-take an earlier beat's pick — is unchanged, and the
+     * wrapper is asserted to be a REORDERING rather than a filter in ronde175BeatFitJudgement.
+     */
     expect(pipelineSrc).toMatch(
-      /buildDownloadShortlist\(\s*funnelCandidates,\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds,\s*sourcingAudit\s*\)/
+      /buildDownloadShortlist\(\s*reorderShortlistForBeat\(funnelCandidates, beatContext\),\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds,\s*sourcingAudit\s*\)/
     );
     expect(pipelineSrc).toMatch(
       // RONDE 61 added a third argument (the gate's refusal set); the used-set is still passed.

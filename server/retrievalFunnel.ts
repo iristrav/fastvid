@@ -1054,6 +1054,75 @@ const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;
  * decision (pickBestFunnelCandidate) — this only decides which candidates are worth the
  * download+VisionGate cost.
  */
+/**
+ * RONDE 176 — the beat's own sentence decides its order, not the scene's.
+ *
+ * ── The asymmetry this removes ───────────────────────────────────────────────────────────────
+ *
+ * The funnel searches once per SCENE and the shortlist is drawn once per BEAT. Between them,
+ * nothing re-read the beat. `buildDownloadShortlist` takes the scene-level ranking and removes
+ * what earlier beats already used (FIX 2), so a beat's order was: the scene's ordering, minus the
+ * pictures its neighbours took first.
+ *
+ * That gives the last beat of a scene systematically worse options than the first — not because
+ * its sentence is harder, but because it is later in the loop. And the scene-level ranking cannot
+ * know that beat 4 is the one about Munich in 1926 while beat 0 was about the Luftwaffe.
+ *
+ * ── Why here and not by running the funnel per beat ──────────────────────────────────────────
+ *
+ * Running retrieval per beat would multiply provider searches and archive scans roughly fourfold,
+ * on a render (555) whose retrieval was already 13m28s over a 1m36s budget. This costs nothing:
+ * the pool is already in memory, the beat's text is already in scope, and the matcher is the one
+ * RONDE 175 §2 already built. Same candidates, ordered for the sentence they are about to sit
+ * under.
+ *
+ * ── Still a nudge ────────────────────────────────────────────────────────────────────────────
+ *
+ * It reorders; it never drops. Every candidate the scene found is still a candidate, and absence
+ * of period information is still neutral — a catalogue-numbered archive title keeps its place.
+ */
+export function reorderShortlistForBeat(
+  candidates: FunnelCandidate[],
+  beatContext: BeatTemporalContext | undefined
+): FunnelCandidate[] {
+  if (!beatContext || candidates.length < 2) return candidates;
+  const hasSignal =
+    (beatContext.years?.length ?? 0) > 0 ||
+    (beatContext.places?.length ?? 0) > 0 ||
+    (beatContext.subjects?.length ?? 0) > 0;
+  if (!hasSignal) return candidates;
+
+  // Scored once, then sorted — `matchCandidateToBeat` is pure and this keeps it O(n log n) rather
+  // than re-running the matcher inside every comparison.
+  const scored = candidates.map((c, i) => ({
+    c,
+    i,
+    bonus: matchCandidateToBeat(candidateTextOf(c), beatContext).bonus,
+  }));
+  scored.sort(
+    (a, b) =>
+      // The beat's own agreement first, then the scene ranking that got them here, then the
+      // original position — so the order is fully determined and two runs cannot differ.
+      b.bonus - a.bonus || b.c.rankingScore - a.c.rankingScore || a.i - b.i
+  );
+  return scored.map((x) => x.c);
+}
+
+/** Everything a candidate says about itself, whichever kind it is. */
+function candidateTextOf(c: FunnelCandidate): string {
+  const archive = c.archivePick;
+  if (archive) {
+    return [
+      archive.asset.title,
+      (archive.asset as { description?: string }).description,
+      archive.archiveName,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  return `${c.title ?? ""} ${c.poolCandidate?.assetId ?? ""}`;
+}
+
 export function buildDownloadShortlist(
   candidates: FunnelCandidate[],
   budget: number,

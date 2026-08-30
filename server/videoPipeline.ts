@@ -446,6 +446,7 @@ import {
   orderCandidatesForBeatGap,
   pickBestFunnelCandidate,
   buildDownloadShortlist,
+  reorderShortlistForBeat,
   MAX_FUNNEL_CANDIDATES_TO_SCORE,
   keepOnlyJudgedWinner,
   FUNNEL_CANDIDATE_POOL_LIMIT,
@@ -30490,8 +30491,26 @@ async function fetchSceneVisualsInner(
          */
         const sourcingAudit = createArchiveSourcingAudit();
         const candidatesFoundForBeat = funnelResult.candidates.length;
+        /**
+         * RONDE 176 — this beat's own sentence orders the pool before the shortlist is cut.
+         *
+         * The funnel searched once for the SCENE; this runs once per BEAT. Between them nothing
+         * re-read the beat, so a beat's order was the scene's order minus what its neighbours had
+         * already taken — which gave the last beat of a scene systematically worse options than
+         * the first, for no reason but its position in the loop.
+         *
+         * The years come from the beat's own text here, not the scene's: at this point the
+         * sentence IS in scope, which it is not where the funnel is built.
+         */
+        const beatContext = {
+          years: yearsIn(beat.text).map(String),
+          places: get_activeVideoVisualContext()?.locations?.slice(0, 3),
+          subjects: [activeMemoryEntity(), ...(scene.personNames ?? [])].filter(
+            (x): x is string => Boolean(x)
+          ),
+        };
         const toScore = buildDownloadShortlist(
-          funnelCandidates,
+          reorderShortlistForBeat(funnelCandidates, beatContext),
           MAX_FUNNEL_CANDIDATES_TO_SCORE,
           dedup.usedFunnelCandidateIds,
           sourcingAudit
