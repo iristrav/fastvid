@@ -144,6 +144,36 @@ export function formatSearchMemorySummary(m: SearchMemoryRecallMetrics): string 
   );
 }
 
+/**
+ * Rotate within equal-usage tiers, never across them.
+ *
+ * §11 asks for diversity without dropping quality: "geef niet altijd asset #1 terug". Sorting by
+ * something other than proven usage would do that at the cost of offering a less-proven asset over
+ * a better-proven one. Rotating INSIDE a tier keeps the ordering by evidence exactly as it was and
+ * only changes which of the equally-proven assets is offered first.
+ *
+ * A seed of 0 returns the input unchanged, so a caller that does not ask for variety gets none.
+ */
+export function orderForDiversity(
+  memories: ProvenAssetMemory[],
+  seed: number
+): ProvenAssetMemory[] {
+  if (seed === 0 || memories.length < 2) return memories;
+  const tiers = new Map<number, ProvenAssetMemory[]>();
+  for (const m of memories) {
+    const tier = m.usageCount;
+    (tiers.get(tier) ?? tiers.set(tier, []).get(tier)!).push(m);
+  }
+  const out: ProvenAssetMemory[] = [];
+  // Descending usage: the tier order — the evidence order — is preserved exactly.
+  for (const tier of [...tiers.keys()].sort((a, b) => b - a)) {
+    const group = tiers.get(tier)!;
+    const offset = ((seed % group.length) + group.length) % group.length;
+    for (let i = 0; i < group.length; i++) out.push(group[(offset + i) % group.length]!);
+  }
+  return out;
+}
+
 export type RecalledAsset = {
   pick: CuratedCandidatePick;
   memory: ProvenAssetMemory;
@@ -160,7 +190,18 @@ export async function recallProvenAssetsForEntity(
   opts: {
     /** Assets this render has already used, so recall cannot re-serve them. */
     excludeAssetIds?: Set<number>;
+    /** Called for each remembered asset the exclude set refused, so the refusal can be logged. */
+    onExcluded?: (memory: ProvenAssetMemory) => void;
     limit?: number;
+    /**
+     * RONDE 132 §11 — so ten proven assets do not always yield asset #1.
+     *
+     * The reader orders by usageCount, which is exactly the ordering that makes the most-used
+     * asset more used still. The seed rotates the entry point within each usage tier, so a subject
+     * with a deep memory offers a different face on a different video without ever preferring a
+     * less-proven asset over a better-proven one.
+     */
+    varietySeed?: number;
     /** Injected in tests; production uses the real readers. */
     readMemory?: typeof getProvenAssetIdsForEntity;
     loadAssets?: (ids: number[]) => Promise<ArchiveAssetRow[]>;
@@ -180,9 +221,23 @@ export async function recallProvenAssetsForEntity(
     const remembered = await readMemory(trimmed, Math.max(limit * 3, 12));
     if (remembered.length === 0) return [];
 
-    const wanted = remembered
-      .filter((r) => !opts.excludeAssetIds?.has(r.assetId))
-      .slice(0, Math.max(limit * 3, 12));
+    /**
+     * RONDE 132 §11 — the video's own used-asset set is authoritative over the memory.
+     *
+     * A proven asset is a suggestion from an earlier video; what THIS video has already put on
+     * screen outranks it absolutely. `onExcluded` reports each refusal so the render can log a
+     * [VisualDedup] line for it rather than dropping it silently — a memory that quietly filters
+     * is indistinguishable from a memory that found nothing.
+     */
+    const wanted: ProvenAssetMemory[] = [];
+    for (const r of remembered) {
+      if (opts.excludeAssetIds?.has(r.assetId)) {
+        opts.onExcluded?.(r);
+        continue;
+      }
+      wanted.push(r);
+      if (wanted.length >= Math.max(limit * 3, 12)) break;
+    }
     if (wanted.length === 0) return [];
 
     const loadAssets = opts.loadAssets ?? getMediaArchiveAssetsByIds;
@@ -199,7 +254,7 @@ export async function recallProvenAssetsForEntity(
 
     const nameCache = new Map<number, string>();
     const out: RecalledAsset[] = [];
-    for (const memory of wanted) {
+    for (const memory of orderForDiversity(wanted, opts.varietySeed ?? 0)) {
       if (out.length >= limit) break;
       const asset = byId.get(memory.assetId);
       // Deleted, deactivated, or belonging to an archive that is gone. RONDE 127's rule holds

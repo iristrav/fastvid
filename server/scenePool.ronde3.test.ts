@@ -466,8 +466,12 @@ describe("RONDE 1 + RONDE 2 are untouched by RONDE 3", () => {
   });
 
   it("FIX 3 failed-download registration is intact", () => {
-    const occurrences = codeOnly(pipelineSrc).match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
-    expect(occurrences).toHaveLength(2);
+    // RONDE 132 counts both forms: the winner's registration moved into markAssetUsedInVideo,
+    // which writes this same Set plus the identities the funnel never recorded. Same invariant.
+    const code = codeOnly(pipelineSrc);
+    const occurrences = code.match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
+    const viaRegistry = code.match(/funnelCandidateId: candidate\.id,/g) ?? [];
+    expect(occurrences.length + viaRegistry.length).toBe(2);
   });
 
   it("FIX 4 gap strategy still eliminates no candidates", () => {

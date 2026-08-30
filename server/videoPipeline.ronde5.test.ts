@@ -253,8 +253,12 @@ describe("RONDE 1-4 are untouched by RONDE 5", () => {
   it("R1/R2 winner memory + gap-strategy ordering intact", () => {
     expect(funnelSrc).toContain("const unusedPassers = usedCandidateIds?.size");
     expect(funnelSrc).toContain('case "archive_only":\n    case "one_external":\n    case "all_external":');
-    const adds = codeOnly(pipelineSrc).match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
-    expect(adds).toHaveLength(2); // failed download (FIX 3) + winner (FIX 1)
+    // RONDE 132 counts both forms: the winner's registration moved into markAssetUsedInVideo,
+    // which writes this same Set plus the identities the funnel never recorded. Same invariant.
+    const code = codeOnly(pipelineSrc);
+    const adds = code.match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
+    const viaRegistry = code.match(/funnelCandidateId: candidate\.id,/g) ?? [];
+    expect(adds.length + viaRegistry.length).toBe(2); // failed download (FIX 3) + winner (FIX 1)
   });
 
   it("R3 provider batching + R4 DB-backed embedding index intact", () => {

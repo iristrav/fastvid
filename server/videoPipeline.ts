@@ -510,6 +510,15 @@ import {
   formatSearchMemorySummary,
   type SearchMemoryRecallMetrics,
 } from "./searchMemoryRecall";
+import {
+  assetUsedInVideo,
+  createVisualDedupStats,
+  formatVisualDedupReject,
+  formatVisualDedupSummary,
+  markAssetUsedInVideo,
+  noteDuplicateAttempt,
+  type VisualDedupStats,
+} from "./visualDedupRegistry";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
@@ -15396,6 +15405,18 @@ export interface VisualDedupState {
   searchMemoryMetrics: SearchMemoryRecallMetrics;
   /** Archive assets this render offered because an earlier video proved them (RONDE 131). */
   recalledAssetIds: Set<number>;
+  /** RONDE 132 §2: unique/reused/refused counts across every dedup identity. */
+  visualDedupStats: VisualDedupStats;
+  /**
+   * RONDE 132 §2 — provider+id, render-wide.
+   *
+   * The provider axis existed only as a `usedProviderKeys` PARAMETER threaded into each fetcher,
+   * so it was scoped to a call chain rather than to the video: two routes asking two providers for
+   * the same beat each carried their own set. This is the render-wide one, written at every adopt
+   * point, so "have we already used this provider asset in this video" finally has an answer that
+   * outlives one call. The per-fetcher parameter is untouched.
+   */
+  usedProviderKeys: Set<string>;
   /** Storage URLs from curated archive — blocks same file twice even with different IDs. */
   usedCuratedStorageUrls: Set<string>;
   /** Cap modern historian interview B-roll (looks like one frozen talking head). */
@@ -15724,6 +15745,8 @@ export function createVisualDedupState(
     usedPaths: new Set(),
     searchMemoryMetrics: createSearchMemoryRecallMetrics(),
     recalledAssetIds: new Set(),
+    visualDedupStats: createVisualDedupStats(),
+    usedProviderKeys: new Set(),
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
     usedContentKeys: new Set(),
@@ -30108,6 +30131,22 @@ async function fetchSceneVisualsInner(
               memoryExcludeAssetIds: dedup.usedCuratedAssetIds,
               memoryMetrics: dedup.searchMemoryMetrics,
               memoryRecalledInto: dedup.recalledAssetIds,
+              // RONDE 132 §11: the scene index rotates which equally-proven memory asset comes
+              // first, so a subject with a deep memory does not put its single most-used clip in
+              // every video.
+              memoryVarietySeed: scene.index + 1,
+              onMemoryAssetExcluded: (m) => {
+                noteDuplicateAttempt(dedup.visualDedupStats, "archive_asset_id");
+                console.log(
+                  formatVisualDedupReject({
+                    // Readable from any module in this render — what runWithActiveVideoId exists for.
+                    videoId: getActiveVideoId() ?? null,
+                    beat: `s${scene.index}`,
+                    asset: `curated:asset:${m.assetId}`,
+                    matchedOn: "archive_asset_id",
+                  })
+                );
+              },
             }), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
         console.log(
           `[FunnelTimeout] scene=${scene.index} completed elapsedMs=${Date.now() - funnelAwaitT0} ` +
@@ -30962,9 +31001,30 @@ async function fetchSceneVisualsInner(
         let winningExternalCandidate: FunnelCandidate | null = null;
         if (winner) {
           const { candidate, clipPath } = winner;
-          // Registered under the candidate's own provider identity: this beat's winner is
-          // what later beats of this render try to avoid repeating.
-          dedup.usedFunnelCandidateIds.add(candidate.id);
+          /**
+           * RONDE 132 §2 — registered under EVERY identity it has, not only the funnel's.
+           *
+           * `usedFunnelCandidateIds.add` was the whole record here, and `usedCuratedAssetIds` had
+           * exactly one writer in the file: the older archive scan. So an archive asset adopted
+           * through the funnel — the primary path — was never marked as a used ARCHIVE ASSET, and
+           * everything that asks that question was blind to it:
+           *
+           *   · the archive scan re-offered it on a later beat,
+           *   · RONDE 131's search memory, whose exclude set IS that Set, could hand it back.
+           *
+           * `usedContentKeys` still caught it at the adopt point so nothing shipped twice — but
+           * only after a download and a vision call, in one of the six shortlist slots the beat
+           * had, which is a slot a different picture could have used.
+           */
+          markAssetUsedInVideo(dedup, {
+            funnelCandidateId: candidate.id,
+            archiveAssetId: candidate.archivePick?.asset?.id ?? null,
+            storageUrl: (candidate.archivePick?.asset as { storageUrl?: string } | undefined)?.storageUrl ?? null,
+            provider: candidate.poolCandidate ? candidate.source : null,
+            providerAssetId: candidate.poolCandidate?.assetId ?? null,
+            contentKey: clipContentKey(clipPath),
+          });
+          dedup.visualDedupStats.uniqueAssets++;
           funnelClip = clipPath;
           // RONDE 53: record the adoption. This is the SECOND route that never did.
           //
@@ -37954,6 +38014,19 @@ async function _runVideoPipelineInner(
        */
       console.log(
         pipelineReport.add("sourcing", formatSearchMemorySummary(visualDedup.searchMemoryMetrics))
+      );
+      /**
+       * RONDE 132 §2 — how many distinct pictures this video actually used.
+       *
+       * `uniqueAssets` against `duplicateAttempts` is the number that answers "is the same footage
+       * coming back", and `matchedOn` says which identity caught it — an archive-asset match and a
+       * content-key match are two different stories about where the repeat came from.
+       */
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          formatVisualDedupSummary(getActiveVideoId() ?? null, visualDedup.visualDedupStats)
+        )
       );
       /**
        * RONDE 165 — the denominator under the vanished warnings printed just above.

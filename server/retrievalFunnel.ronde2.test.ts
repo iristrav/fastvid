@@ -283,8 +283,18 @@ describe("FIX 3 — wiring at the single call site", () => {
   });
 
   it("the winner registration from FIX 1 is still there too", () => {
-    const occurrences = codeOnly(pipelineSrc).match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
-    expect(occurrences).toHaveLength(2); // failed download + winner
+    /**
+     * Counts BOTH forms of the registration. RONDE 132 replaced the winner's bare
+     * `usedFunnelCandidateIds.add(candidate.id)` with `markAssetUsedInVideo`, which writes that
+     * same Set plus the archive-asset, storage-url and provider identities the funnel never
+     * recorded. The invariant this test guards — the winner is registered, so later beats cannot
+     * repeat it — is unchanged; only the call that does it moved.
+     */
+    const src = codeOnly(pipelineSrc);
+    const direct = src.match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
+    const viaRegistry = src.match(/funnelCandidateId: candidate\.id,/g) ?? [];
+    expect(direct.length + viaRegistry.length).toBe(2); // failed download + winner
+    expect(viaRegistry).toHaveLength(1);
     expect(pipelineSrc).toMatch(/pickBestFunnelCandidate\(scored, dedup\.usedFunnelCandidateIds[,)]/);
   });
 

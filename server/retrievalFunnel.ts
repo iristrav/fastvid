@@ -707,6 +707,10 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
   memoryEntity?: string;
   /** Assets already used this render; recall must not re-serve them. */
   memoryExcludeAssetIds?: Set<number>;
+  /** RONDE 132 §11: rotates which of the equally-proven memory assets is offered first. */
+  memoryVarietySeed?: number;
+  /** RONDE 132 §2: called for each memory asset the video's used-asset set refused. */
+  onMemoryAssetExcluded?: (memory: { assetId: number; query: string; source: string }) => void;
   /** Injected in tests so the recall path can be driven without a database. */
   recallProvenAssets?: typeof recallProvenAssetsForEntity;
   /** Counters for the recall, when the caller is keeping them. */
@@ -794,6 +798,11 @@ export async function buildRetrievalFunnel(
   const recall = req.memoryEntity
     ? await (req.recallProvenAssets ?? recallProvenAssetsForEntity)(req.memoryEntity, {
         excludeAssetIds: req.memoryExcludeAssetIds,
+        varietySeed: req.memoryVarietySeed ?? 0,
+        // RONDE 132 §2: a memory asset this video already used is a duplicate ATTEMPT, and it is
+        // reported as one. Filtering it away silently would make a working exclude set look
+        // exactly like an empty memory.
+        onExcluded: req.onMemoryAssetExcluded,
       })
     : [];
   const { picks: archivePicks, added: recalledAdded } = mergeRecalledIntoArchivePicks(
