@@ -606,7 +606,17 @@ export class VisualSourceLedger {
     derivedPath: string,
     originPath: string,
     stage: Extract<LineageStage, "TRIMMED" | "PADDED" | "OVERLAYED" | "TRANSFORMED">,
-    opts: { contentKey?: string; reason?: string } = {}
+    /**
+     * RONDE 167 — `supersedesParent` says whether the parent stops being a file in its own right.
+     *
+     * A trim, an overlay and a fair-use transform all REPLACE the clip they were made from, so the
+     * parent record should be known by the derived file's name; that is the default and it is
+     * unchanged. An extension does not: `extendLastClip` loops a clip that is already on screen
+     * under its own beat to fill a second one, and both files are live. Renaming the parent there
+     * would mislabel a clip that is still in the montage, in the manifest and in every warning
+     * that names a file.
+     */
+    opts: { contentKey?: string; reason?: string; supersedesParent?: boolean } = {}
   ): VisualLineageRecord | null {
     if (!derivedPath || !originPath || derivedPath === originPath) return null;
     this.derivedFrom.set(derivedPath, originPath);
@@ -633,7 +643,7 @@ export class VisualSourceLedger {
       parentLineageId: parent.lineageId,
       // Provider is inherited by createLineage from the parent; nothing is invented here.
     });
-    parent.currentFilename = path.basename(derivedPath);
+    if (opts.supersedesParent !== false) parent.currentFilename = path.basename(derivedPath);
     derived.currentFilename = path.basename(derivedPath);
     this.recordEvent(derived.lineageId, stage, { status: "OK", reason: opts.reason });
     return derived;
@@ -1041,7 +1051,26 @@ export class VisualSourceLedger {
         !stagesByLineage.get(id)?.has("REMOVED") &&
         // A rejection is a STATUS on whichever stage the gate maps to, not a stage of its own —
         // see recordRejection — so it is looked for as one.
-        ![...(stagesByLineage.get(id)?.values() ?? [])].some((st) => st.includes("REJECTED"))
+        ![...(stagesByLineage.get(id)?.values() ?? [])].some((st) => st.includes("REJECTED")) &&
+        /**
+         * RONDE 167 — a download that never finished is an ending, and this rule called it a
+         * disappearance.
+         *
+         * `preparePooledArchiveClip` files SELECTED, then DOWNLOAD_STARTED, then on failure a
+         * DOWNLOAD_FAILED carrying the reason. Every one of those is honest bookkeeping and the
+         * asset plainly cannot be in the final video — there is no file. But FAILED is not
+         * REPLACED, REMOVED or REJECTED, so the rule counted it as unaccounted for, and every
+         * curated asset whose fetch timed out became a warning that named a real problem it did
+         * not have. Video 554's `scene_N_bM_curated_*` vanished entries are this shape.
+         *
+         * Narrow on purpose: only when nothing later SUCCEEDED. A record that failed once, was
+         * retried, downloaded and then genuinely disappeared must still be caught — otherwise a
+         * single early failure would buy an asset permanent silence.
+         */
+        !(
+          stagesByLineage.get(id)?.has("DOWNLOAD_FAILED") &&
+          !stagesByLineage.get(id)?.has("DOWNLOAD_SUCCEEDED")
+        )
       ) {
         warnings.push({
           code: "VANISHED_WITHOUT_OUTCOME",
@@ -1627,7 +1656,10 @@ export function formatAssetLifecycleAudit(ledger: VisualSourceLedger): string[] 
     const hasOutcome =
       stages?.has("REPLACED") ||
       stages?.has("REMOVED") ||
-      [...(stages?.values() ?? [])].some((st) => st.includes("REJECTED"));
+      [...(stages?.values() ?? [])].some((st) => st.includes("REJECTED")) ||
+      // RONDE 167: a download that never finished, exactly as reconcile() reads it — see the
+      // vanished rule above. The two must agree or this audit reports on a different set.
+      (stages?.has("DOWNLOAD_FAILED") && !stages?.has("DOWNLOAD_SUCCEEDED"));
     if (hasOutcome) {
       resolved++;
       continue;

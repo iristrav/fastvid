@@ -8041,13 +8041,39 @@ async function extendLastClip(
   beatDuration: number,
   sceneIndex: number,
   beatIndex: number,
-  workDir: string
+  workDir: string,
+  /**
+   * RONDE 167 — the extension is a NEW file made from a known clip, and nothing said so.
+   *
+   * `linkDerivedPath`'s own contract is "call it at every site that writes a new file from an
+   * existing clip"; this site never did. Two things followed. An adopted extension reached the
+   * manifest through `recordClipAdopt`'s hole-filling branch, which opens a record with NO
+   * provider — so real Library of Congress footage, looped, was reported UNVERIFIED. And RONDE
+   * 165's `extended_rejected` outcome was written against a path the ledger could not resolve,
+   * so it silently wrote nothing at all: proven by test, zero events.
+   *
+   * Linking it fixes both. The extension inherits its source's proven provider — which is not a
+   * guess, the pipeline built the file itself from that clip — and the refusal now lands.
+   */
+  lineage?: VisualSourceLedger
 ): Promise<string | null> {
   if (!lastClipPath || !fs.existsSync(lastClipPath)) return null;
   if (isPipelineFallbackClip(lastClipPath)) return null;
   if (!(await isValidVideoFile(lastClipPath))) return null;
   const safeDuration = Math.min(Math.max(beatDuration, 1), 60);
   const out = path.join(workDir, `extend_s${sceneIndex}b${beatIndex}_${Date.now()}.mp4`);
+  /**
+   * RONDE 167 — link the extension to the clip it was looped from, without retiring that clip.
+   *
+   * `supersedesParent: false` because both files are live: the source under its own beat and the
+   * extension under the next. See linkDerivedPath for why the default is the other way.
+   */
+  const linkExtension = (): void => {
+    lineage?.linkDerivedPath(out, lastClipPath, "TRANSFORMED", {
+      reason: "extendLastClip",
+      supersedesParent: false,
+    });
+  };
 
   // A raw stream_loop repeats the exact same footage with zero variation. Over a long hold
   // (this path only runs when nothing else could be found/padded for the beat) that reads as
@@ -8073,6 +8099,7 @@ async function extendLastClip(
     );
     if (await isValidVideoFile(out)) {
       console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (zoom, moving) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+      linkExtension();
       return out;
     }
   } catch {
@@ -8089,6 +8116,7 @@ async function extendLastClip(
     );
     if (await isValidVideoFile(out)) {
       console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+      linkExtension();
       return out;
     }
   } catch {
@@ -8103,6 +8131,7 @@ async function extendLastClip(
       );
       if (await isValidVideoFile(out)) {
         console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (re-encode) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+        linkExtension();
         return out;
       }
     } catch { /* give up */ }
@@ -27713,7 +27742,7 @@ async function rescueBeatVisualWhenEmptyInner(
       console.warn(formatExtendRefusal(scene.index, beat.index, extendDecision));
     } else {
       try {
-        const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir);
+        const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir, dedup.sourcingCache?.lineage);
         /**
          * RONDE 165 — an extension the compose barrier then refused.
          *
@@ -29578,7 +29607,7 @@ async function ensureArchiveMontageVoiceCoverage(
       break;
     }
     try {
-      const extended = await extendLastClip(source, need, scene.index, 900 + attempt, workDir);
+      const extended = await extendLastClip(source, need, scene.index, 900 + attempt, workDir, dedup.sourcingCache?.lineage);
       if (!extended) break;
       const before = clips.length;
       // Bypasses the content-key dedup on purpose: this IS the same footage, deliberately, and

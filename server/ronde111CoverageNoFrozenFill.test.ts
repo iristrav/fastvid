@@ -242,7 +242,11 @@ describe("RONDE 111 — when no new candidate exists, the scene's own footage mo
 
   it("extendLastClip keeps the picture moving — a loop under a zoom, never a still", () => {
     const idx = PIPELINE.indexOf("async function extendLastClip(");
-    const body = PIPELINE.slice(idx, idx + 2200);
+    // Bounded by the function's own end, not a character count: RONDE 167 documented a new
+    // parameter and a fixed +N window stopped reaching the ffmpeg command it is asserting about.
+    const end = PIPELINE.indexOf("guaranteedTextOverlayDurationSec", idx);
+    expect(end).toBeGreaterThan(idx);
+    const body = PIPELINE.slice(idx, end);
     expect(body).toContain("-stream_loop -1");
     expect(body).toContain("zoompan=z=");
     // d=1 advances one output frame per real input frame, so nothing is ever held static.
