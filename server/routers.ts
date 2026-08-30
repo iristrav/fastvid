@@ -1571,17 +1571,43 @@ export const appRouter = router({
         customerId = customer.id;
         await updateUserSubscription(ctx.user.id, { stripeCustomerId: customerId });
       }
-      // Create a recurring price on the fly (or use a pre-created one)
-      const price = await getStripe().prices.create({
-        currency: FASTVID_PRO_PLAN.currency,
-        unit_amount: FASTVID_PRO_PLAN.priceUsd,
-        recurring: { interval: FASTVID_PRO_PLAN.interval },
-        product_data: { name: FASTVID_PRO_PLAN.name },
-      });
+      /**
+       * The price to bill, from Stripe when one is configured.
+       *
+       * STRIPE_PRO_PRICE_ID names a Price created once in the Stripe dashboard. Without it the
+       * old behaviour stands: a fresh Price (and Product) is created on every single checkout,
+       * which works but leaves one throwaway pair in the dashboard per customer, and puts the
+       * amount in code rather than in Stripe.
+       *
+       * The fallback is kept deliberately. A missing or mistyped variable must not stop people
+       * from subscribing — it costs a tidy dashboard, not a sale.
+       */
+      const configuredPriceId = process.env.STRIPE_PRO_PRICE_ID?.trim();
+      if (configuredPriceId && !configuredPriceId.startsWith("price_")) {
+        // Same lesson as STRIPE_SECRET_KEY: say which variable is wrong rather than forwarding
+        // the value and relaying Stripe's confusion about it.
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.STRIPE_NOT_CONFIGURED,
+          "STRIPE_PRO_PRICE_ID must be a Stripe price ID (price_…). Copy it from " +
+            "Stripe → Products → your plan → the Pricing section."
+        );
+      }
+      const priceId =
+        configuredPriceId ||
+        (
+          await getStripe().prices.create({
+            currency: FASTVID_PRO_PLAN.currency,
+            unit_amount: FASTVID_PRO_PLAN.priceUsd,
+            recurring: { interval: FASTVID_PRO_PLAN.interval },
+            product_data: { name: FASTVID_PRO_PLAN.name },
+          })
+        ).id;
+
       const session = await getStripe().checkout.sessions.create({
         customer: customerId,
         mode: "subscription",
-        line_items: [{ price: price.id, quantity: 1 }],
+        line_items: [{ price: priceId, quantity: 1 }],
         success_url: `${origin}/dashboard?payment=success`,
         cancel_url: `${origin}/subscribe?payment=cancelled`,
         client_reference_id: ctx.user.id.toString(),

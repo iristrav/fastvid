@@ -280,6 +280,12 @@ describe("both Stripe clients and all three gates use the one validator", () => 
 });
 
 describe("the discount-code flow itself is unchanged", () => {
+  const read = (file: string) => {
+    const { readFileSync } = require("fs") as typeof import("fs");
+    const { join } = require("path") as typeof import("path");
+    return readFileSync(join(__dirname, file), "utf8");
+  };
+
   it("a code is still a real Stripe coupon plus promotion code, mirrored locally", () => {
     // Nothing about this round touches what a discount code IS — only which key reaches Stripe.
     const routers = (() => {
@@ -293,39 +299,51 @@ describe("the discount-code flow itself is unchanged", () => {
     expect(block).toContain("promotionCodes.create(");
     expect(block).toContain("stripeCouponId: coupon.id");
     expect(block).toContain("stripePromotionCodeId: promo.id");
-    // And checkout still builds its price inline rather than from a stored price ID.
+    // Checkout can still build its price inline — that is the fallback when no price is configured.
     expect(routers).toContain("unit_amount: FASTVID_PRO_PLAN.priceUsd");
     expect(routers).toContain("allow_promotion_codes: true");
   });
 
-  it("no price ID is stored or read anywhere in the server", () => {
+  it("a price ID enters through exactly ONE variable, and it is not the key's", () => {
     /**
-     * The structural reason a price ID could only have come from the environment: FastVid has no
-     * price ID to confuse with a key. If one is ever introduced, this test is where the confusion
-     * gets caught.
+     * This test used to assert that FastVid held no price ID at all — which was true, and was the
+     * structural reason the production `price_…` could only have come from the environment.
+     *
+     * That premise changed on purpose: checkout can now bill a Price created once in the Stripe
+     * dashboard, named by STRIPE_PRO_PRICE_ID. So the invariant is no longer "there is no price
+     * ID" but the one that actually prevented the bug: a price ID and an API key are read from
+     * different variables and can never be swapped for one another.
      */
-    const { execFileSync } = require("child_process") as typeof import("child_process");
-    // grep exits 1 when it finds nothing, which is the passing case here.
-    const hits = ((): string => {
-      try {
-        return execFileSync(
-          "grep",
-          [
-            "-rIl", "-e", "STRIPE_PRICE_ID", "-e", "priceId",
-            "--include=*.ts", "--include=*.tsx",
-            // Tests may name what they guard against; production code may not.
-            "--exclude=*.test.ts", "--exclude-dir=node_modules",
-            "server", "shared", "client",
-          ],
-          { cwd: `${__dirname}/..`, encoding: "utf8" }
-        ).toString().trim();
-      } catch (err) {
-        const status = (err as { status?: number }).status;
-        if (status === 1) return "";
-        throw err;
-      }
-    })();
-    expect(hits).toBe("");
+    const routers = read("routers.ts");
+    // One reader, one variable.
+    expect((routers.match(/process\.env\.STRIPE_PRO_PRICE_ID/g) ?? []).length).toBe(1);
+    // It is validated as a price, not as a key.
+    expect(routers).toContain('!configuredPriceId.startsWith("price_")');
+    // And it is used as a line item — never as credentials.
+    expect(routers).toContain("line_items: [{ price: priceId, quantity: 1 }]");
+    expect(routers).not.toContain("new Stripe(priceId");
+    expect(routers).not.toContain("new Stripe(configuredPriceId");
+  });
+
+  it("the two Stripe variables cannot be read from each other", () => {
+    /**
+     * The swap that caused the outage, made structurally impossible: the key reader looks only at
+     * STRIPE_SECRET_KEY and the price reader only at STRIPE_PRO_PRICE_ID, with no fallback in
+     * either direction. A helpful "if the key is missing, try the price" is exactly how a price ID
+     * would reach Stripe as credentials again.
+     */
+    const env = read("_core/env.ts");
+    expect(env).toContain('process.env.STRIPE_SECRET_KEY?.trim()');
+    expect(env).not.toContain("STRIPE_PRO_PRICE_ID");
+    // Line-based rather than a byte window: no single expression may mention both variables, which
+    // is what a fallback from one to the other would have to look like.
+    const routers = read("routers.ts");
+    const bothOnOneLine = routers
+      .split("\n")
+      .filter((l) => l.includes("STRIPE_PRO_PRICE_ID") && l.includes("STRIPE_SECRET_KEY"));
+    expect(bothOnOneLine).toEqual([]);
+    expect(routers).not.toContain("STRIPE_PRO_PRICE_ID || process.env.STRIPE_SECRET_KEY");
+    expect(routers).not.toContain("STRIPE_SECRET_KEY || process.env.STRIPE_PRO_PRICE_ID");
   });
 });
 
