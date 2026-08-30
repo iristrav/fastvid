@@ -35255,6 +35255,47 @@ async function _runVideoPipelineInner(
     let voiceMontageSyncResults: Array<{ sceneIndex: number; audit: VoiceMontageSyncAuditResult }> = [];
 
     if (scenePipelineEnabled()) {
+      /**
+       * RONDE 172 — the degradation ladder's clock starts HERE on this path too.
+       *
+       * ── The gap ────────────────────────────────────────────────────────────────────────────
+       *
+       * `visualDedup.pipelineStartedMs` is initialised to `pipelineWallStartMs` (the render's own
+       * start) far above, and RONDE 5 / FIX 7 resets it to the visual stage — but that reset lives
+       * in the SEQUENTIAL branch below and this branch never had one. So on the P5A path the whole
+       * ladder measured RENDER time: script generation, TTS, the blueprint, the archive-pool warm
+       * and the CLIP prewarm all counted against budgets meant for sourcing.
+       *
+       * FIX 7 already wrote down exactly what that costs, for the reason it was made:
+       *
+       *     "It used to measure from videoRow.generationStartedAt, which meant (a) script + TTS +
+       *      archive-pool warm + CLIP prewarm all counted against the sourcing budgets, and (b) a
+       *      stall-recovery RETRY inherited the first attempt's clock wholesale — render 517
+       *      attempt 2 started with 12s beat budgets 34 seconds in."
+       *
+       * That fix was applied to one of the two branches. This is the other one.
+       *
+       * ── What it changes ────────────────────────────────────────────────────────────────────
+       *
+       * All three rungs read this field — turbo at 25% of the wall clock, rush at 35%, force-export
+       * at 45%. On a 1-minute video that is 5 / 7 / 9 minutes. Every minute spent before the scene
+       * loop was a minute taken off all three.
+       *
+       * Render 555 fired force-export at 9m28s measured from its work directory's own timestamp,
+       * and its research pass was refused for the rest of the render. Whether that render took this
+       * branch cannot be read from its log — both branch-announcing lines fall in the truncated
+       * first seven minutes — so this is not offered as that render's diagnosis. It is a hole in
+       * the clock that is visible in the code either way, and it can only make the ladder fire
+       * early, never late.
+       *
+       * The 45% fraction itself is NOT touched. One render is not evidence about a threshold that
+       * governs every render, and firing later risks the hard wall-clock cap it exists to avoid.
+       */
+      visualDedup.pipelineStartedMs = Date.now();
+      console.log(
+        `[Pipeline] video=${videoId} sourcing-ladder clock started at visual stage (P5A) ` +
+        `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
+      );
       // ── P5A: Scene Processing Pipeline ──────────────────────────────────────
       // Producer/Consumer: each scene runs fetch → per-scene recovery → compose
       // as a unit. Scene N+1 composes while Scene N+2 is still fetching.
