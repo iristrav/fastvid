@@ -33,6 +33,7 @@ import {
 import { ENV, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus, mergeWorkerClipVisionStatus } from "../visualQualityGate";
 import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
+import { logStripeStartupDiagnostics } from "../stripeStartupDiagnostics";
 import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
 import { getSessionSecret } from "./sessionSecret";
 
@@ -260,6 +261,7 @@ async function startServer() {
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
   logLlmStartupDiagnostics("web");
+  logStripeStartupDiagnostics();
   await recordWorkerHeartbeat("web").catch((e) =>
     console.warn("[Fastvid] Web heartbeat failed:", (e as Error).message)
   );

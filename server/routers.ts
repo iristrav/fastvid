@@ -25,6 +25,7 @@ import {
 import type { TrpcContext } from "./_core/context";
 import type { Video } from "../drizzle/schema";
 import { invokeLLM } from "./_core/llm";
+import { describeStripeKeyProblem, stripeKeyProblem, stripeSecretKeyFromEnv } from "./_core/env";
 import { assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { notifyOwner } from "./_core/notification";
 import { sendNicheApprovedEmail } from "./_core/emailService";
@@ -197,12 +198,19 @@ async function generateSectionNarration(
 let _stripe: Stripe | null = null;
 function getStripe(): Stripe {
   if (!_stripe) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) {
+    const key = stripeSecretKeyFromEnv();
+    /**
+     * A non-empty check is not a configured check. A Stripe price ID passed the old test, reached
+     * Stripe as an API key, and came back as "Invalid API Key provided: price_…" — an error that
+     * reads like a Stripe problem and is in fact one wrong environment variable. Refuse it here
+     * instead, and say which variable and what belongs in it.
+     */
+    const problem = stripeKeyProblem(key);
+    if (problem) {
       throw appTrpcError(
         "INTERNAL_SERVER_ERROR",
         APP_ERROR.STRIPE_NOT_CONFIGURED,
-        "Stripe is not configured. Please add STRIPE_SECRET_KEY to your environment variables"
+        describeStripeKeyProblem(problem, key)
       );
     }
     _stripe = new Stripe(key);
@@ -1360,7 +1368,9 @@ export const appRouter = router({
   discount: router({
     list: adminProcedure.query(async () => {
       const rows = await listDiscountCodes();
-      if (!rows.length || !process.env.STRIPE_SECRET_KEY) return rows;
+      // Redemption counts are a nice-to-have here, so a misconfigured key degrades to the stored
+      // value rather than failing the page — but it must not be sent to Stripe either.
+      if (!rows.length || stripeKeyProblem(stripeSecretKeyFromEnv())) return rows;
       /**
        * Redemption counts come from Stripe, not from a counter FastVid increments — FastVid never
        * sees a redemption, Stripe does. A failure here degrades to the stored value rather than
@@ -1414,11 +1424,17 @@ export const appRouter = router({
           )
       )
       .mutation(async ({ ctx, input }) => {
-        if (!process.env.STRIPE_SECRET_KEY) {
+        /**
+         * The gate that let a price ID through. It asked only whether the variable was set, so a
+         * `price_…` value passed, reached Stripe as an API key and returned "Invalid API Key
+         * provided: price_…" — a message about Stripe rather than about the variable at fault.
+         */
+        const keyProblem = stripeKeyProblem(stripeSecretKeyFromEnv());
+        if (keyProblem) {
           throw appTrpcError(
             "INTERNAL_SERVER_ERROR",
             APP_ERROR.STRIPE_NOT_CONFIGURED,
-            "Stripe is not configured, so a discount code cannot be created"
+            `A discount code cannot be created. ${describeStripeKeyProblem(keyProblem, stripeSecretKeyFromEnv())}`
           );
         }
         const code = input.code.toUpperCase();
@@ -1535,8 +1551,13 @@ export const appRouter = router({
 
   billing: router({
     createCheckout: protectedProcedure.input(z.object({ origin: z.string().optional() })).mutation(async ({ ctx, input }) => {
-      if (!process.env.STRIPE_SECRET_KEY) {
-        throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.STRIPE_NOT_CONFIGURED, "Stripe not configured");
+      const checkoutKeyProblem = stripeKeyProblem(stripeSecretKeyFromEnv());
+      if (checkoutKeyProblem) {
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.STRIPE_NOT_CONFIGURED,
+          describeStripeKeyProblem(checkoutKeyProblem, stripeSecretKeyFromEnv())
+        );
       }
       const origin = resolveAppOrigin(ctx.req, input.origin);
       // Create or retrieve Stripe customer
