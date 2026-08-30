@@ -568,8 +568,14 @@ describe("RONDE 70 §10 — observability only", () => {
     expect(mod).toContain("failed: state.judgementsFailed - before.failed");
     // judgeBeatImage's own signature is untouched.
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
-    expect(gate).toContain("export const MAX_JUDGEMENTS_PER_BEAT = 2;");
-    expect(gate).toContain('return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 60, 0, 500);');
+    /**
+     * SUPERSEDED BY RONDE 175 — the budgets moved, deliberately, and are not what this test is
+     * about. It guards that the attribution reads the state's own counters and changes no verdict;
+     * pinning the two numbers here made it an unrelated tripwire on every budget change. Their own
+     * assertions live in ronde175BeatFitJudgement.
+     */
+    expect(gate).toContain("export const MAX_JUDGEMENTS_PER_BEAT = envInt(");
+    expect(gate).toContain('envInt("MAX_BEAT_IMAGE_JUDGEMENTS",');
   });
 
   it("no threshold, source priority or fallback policy was touched", () => {

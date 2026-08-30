@@ -113,16 +113,25 @@ function runBeat(
 
 describe("RONDE 168 — the bug, reproduced as control flow", () => {
   it("the ceiling used to hand the beat a candidate nobody had judged", () => {
-    // Render 555's s2b3: loc refused, internet_archive refused, nasa adopted unseen.
-    const before = runBeat(["does_not_fit", "does_not_fit", "fits"], { applyFix: false });
-    expect(before.winner).toBe(2);
-    expect(before.judged).toEqual([0, 1]);
-    expect(before.judged).not.toContain(2);
+    /**
+     * Render 555's s2b3: every candidate the loop could look at was refused, and the one after the
+     * ceiling was adopted unseen.
+     *
+     * Built from MAX_JUDGEMENTS_PER_BEAT rather than from the literal 2 it was when this was
+     * written. RONDE 175 raised the budget to 4; the bug being reproduced here is about the
+     * candidate that sits just PAST the ceiling, whatever the ceiling happens to be.
+     */
+    const refusals = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT).fill("does_not_fit");
+    const before = runBeat([...refusals, "fits"], { applyFix: false });
+    expect(before.winner).toBe(MAX_JUDGEMENTS_PER_BEAT);
+    expect(before.judged).toEqual(refusals.map((_, i) => i));
+    expect(before.judged).not.toContain(before.winner);
   });
 
   it("and the more candidates were refused, the likelier that was", () => {
     // Every extra refusal moves the adopted candidate further past the last look.
-    for (const n of [2, 3, 4]) {
+    // Every count at or above the ceiling puts the adopted candidate past the last look.
+    for (const n of [MAX_JUDGEMENTS_PER_BEAT, MAX_JUDGEMENTS_PER_BEAT + 1, MAX_JUDGEMENTS_PER_BEAT + 2]) {
       const verdicts = Array<"does_not_fit" | "fits">(n).fill("does_not_fit").concat("fits");
       const before = runBeat(verdicts, { applyFix: false });
       expect(before.winner, `${n} refusals`).toBe(MAX_JUDGEMENTS_PER_BEAT);
@@ -164,12 +173,20 @@ describe("RONDE 168 — after the fix, an adopted candidate has always been judg
     expect(after.looks).toBe(1);
   });
 
-  it("the look budget is not raised — the fix spends it differently, not more", () => {
-    expect(MAX_JUDGEMENTS_PER_BEAT).toBe(2);
+  it("RONDE 168's fix spends the budget differently, it does not spend more of it", () => {
+    /**
+     * SUPERSEDED IN ITS HEADLINE BY RONDE 175 — the budget DID later rise, for an unrelated reason
+     * (the gate refused three quarters of what it saw and only ever saw two). What RONDE 168
+     * claimed, and what still holds, is that ITS fix costs no extra looks: the loop never exceeds
+     * whatever the ceiling is.
+     */
+    const long = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT + 2)
+      .fill("does_not_fit")
+      .concat("fits");
     for (const verdicts of [
-      ["does_not_fit", "does_not_fit", "fits"],
-      ["does_not_fit", "does_not_fit", "does_not_fit", "fits"],
-    ] as Array<Array<"fits" | "does_not_fit">>) {
+      Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT).fill("does_not_fit").concat("fits"),
+      long,
+    ]) {
       expect(runBeat(verdicts, { applyFix: true }).looks).toBeLessThanOrEqual(MAX_JUDGEMENTS_PER_BEAT);
     }
   });
@@ -179,14 +196,20 @@ describe("RONDE 168 — after the fix, an adopted candidate has always been judg
      * Not to a colour card. The candidates it looked at are still candidates, and RONDE 166's
      * severity rules decide whether one may be used — SOFT as a last resort, HARD never.
      */
-    const after = runBeat(["does_not_fit", "does_not_fit", "does_not_fit"], { applyFix: true });
+    // Every candidate refused, sized to the ceiling so the loop genuinely exhausts it.
+    const allRefused = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT + 1).fill("does_not_fit");
+    const after = runBeat(allRefused, { applyFix: true });
     expect(after.winner).toBe(0);
     expect(after.judged).toContain(0);
   });
 
   it("the candidate that was put back is named never_judged by the rule itself", () => {
     // The reason lives with the decision, so a call site cannot file it under a different word.
-    const after = runBeat(["does_not_fit", "does_not_fit", "fits"], { applyFix: true });
+    // The fit sits just past the ceiling, so the winner the loop leaves behind was never judged.
+    const pastCeiling = Array<"does_not_fit" | "fits">(MAX_JUDGEMENTS_PER_BEAT)
+      .fill("does_not_fit")
+      .concat("fits");
+    const after = runBeat(pastCeiling, { applyFix: true });
     expect(after.putBackReason).toBe("never_judged");
     // And a beat that ended on a judged candidate puts nothing back.
     expect(runBeat(["fits"], { applyFix: true }).putBackReason).toBeNull();

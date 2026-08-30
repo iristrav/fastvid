@@ -63,6 +63,13 @@ export type BeatImageJudgement = {
   provider?: string;
 };
 
+function envInt(key: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[key]?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+
 const RESPONSE_SCHEMA = {
   type: "json_schema" as const,
   json_schema: {
@@ -81,19 +88,46 @@ const RESPONSE_SCHEMA = {
   },
 };
 
-/** Judgements per beat before the pipeline stops asking and takes what it has. */
-export const MAX_JUDGEMENTS_PER_BEAT = 2;
+/**
+ * Judgements per beat before the pipeline stops asking and takes what it has.
+ *
+ * ── RONDE 175 — why this moved from 2 to 4 ───────────────────────────────────────────────────
+ *
+ * The gate works. Render 555 measured it:
+ *
+ *     beat image gate — attempts=50 answered=50 (fits=13 does_not_fit=37) never_asked=38
+ *
+ * Three quarters of what it saw did not belong under the narration, and it said so. What it did
+ * not get was a look: a beat downloads six candidates and only the first two were ever asked. If
+ * candidate four was the right picture, the question never reached it, and the beat fell through
+ * to a rescue route or a placeholder holding a picture nobody had approved.
+ *
+ * Two is not a quality setting, it is a budget. Raising it spends LLM calls to buy the one thing
+ * this pipeline cannot get any other way — a real answer to "does this picture belong under this
+ * sentence" — on candidates that are already downloaded and already paid for.
+ *
+ * Overridable, and see maxBeatImageJudgementsPerRender below: raising THIS without raising THAT
+ * would not add looks, it would move the starvation from inside a beat to the end of the render.
+ */
+export const MAX_JUDGEMENTS_PER_BEAT = envInt("MAX_BEAT_IMAGE_JUDGEMENTS_PER_BEAT", 4, 1, 12);
 
-function envInt(key: string, fallback: number, min: number, max: number): number {
-  const raw = process.env[key]?.trim();
-  if (!raw) return fallback;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
-}
-
-/** Render-wide ceiling, so a pathological render cannot spend without bound. */
+/**
+ * Render-wide ceiling, so a pathological render cannot spend without bound.
+ *
+ * ── RONDE 175 — raised with the per-beat budget, and why it had to be ────────────────────────
+ *
+ * At 60, a 19-beat render allows barely three judgements per beat before the ceiling is reached —
+ * and the ceiling is spent in beat order, so the early beats would take four each and the last
+ * beats would get none at all. Raising MAX_JUDGEMENTS_PER_BEAT alone does not buy more looks; it
+ * moves the starvation from inside a beat to the end of the render, where it is harder to see and
+ * lands on whichever beats happen to be last.
+ *
+ * 120 covers 19 beats × 4 with room for the routes that judge before adoption. The YouTube share
+ * below deliberately does NOT move with it, so every added call goes to the funnel — the route the
+ * adopted clips actually come from (RONDE 61).
+ */
 export function maxBeatImageJudgementsPerRender(): number {
-  return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 60, 0, 500);
+  return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 120, 0, 500);
 }
 
 /**
@@ -252,11 +286,70 @@ export function judgementTally(state: BeatImageGateState): JudgementTally {
   };
 }
 
+/**
+ * RONDE 175 §3 — what this beat is established to be about, in the judge's own question.
+ *
+ * The prompt carried the documentary title, the scene paragraph and the narration line, and left
+ * the judge to infer the subject and the period from prose. The pipeline already KNOWS them: the
+ * subject resolver names the person or place, and the query contract carries the verified years
+ * and places. None of it reached the question.
+ *
+ * That matters because of how this prompt ends — "when you genuinely cannot tell, say it belongs".
+ * The tie-break is deliberately permissive, so a vague question does not merely produce a vague
+ * answer, it produces an ALLOW. Naming the subject and the period is how the judge stops having to
+ * guess at what it is checking against.
+ *
+ * Every field is optional and every field is something the pipeline verified. Nothing is invented
+ * here: an empty anchor prints nothing rather than a placeholder the model could reason from.
+ */
+export type BeatSubjectAnchors = {
+  /**
+   * The resolved subject of THIS beat, e.g. "Hermann Göring".
+   *
+   * Beat-level. Only set when the subject resolver actually named one, so a beat that names
+   * nothing prints nothing rather than borrowing the video's subject and telling the judge that
+   * this shot is meant to show it.
+   */
+  subject?: string;
+  /**
+   * The period the DOCUMENTARY is set in, e.g. "1930s-1940s".
+   *
+   * Video-level, and labelled as such in the prompt. Presenting it as the beat's own period would
+   * be a misattribution: a WWII documentary can legitimately cut to a 1919 shot, and telling the
+   * judge the narration places THIS shot in the 1940s would make it refuse a correct picture.
+   */
+  documentaryPeriod?: string;
+  /** Places established for the DOCUMENTARY. Video-level, same caveat as the period. */
+  documentaryPlaces?: string[];
+};
+
+/**
+ * The anchor lines, each labelled with the scope it actually has.
+ *
+ * The wording matters more than it looks. "The narration places it in 1943" is a claim about this
+ * sentence; "the documentary is set in the 1930s-1940s" is a claim about the film. Saying the
+ * second in the words of the first would turn a legitimate cutaway into a refusal.
+ */
+function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
+  if (!anchors) return [];
+  const lines: string[] = [];
+  const subject = anchors.subject?.trim();
+  if (subject) lines.push(`This shot is meant to show: ${subject}`);
+  const period = anchors.documentaryPeriod?.trim();
+  if (period) lines.push(`The documentary is set in: ${period} (the film, not necessarily this shot)`);
+  const places = (anchors.documentaryPlaces ?? []).map((p) => p.trim()).filter(Boolean);
+  if (places.length > 0) {
+    lines.push(`Places this documentary is about: ${places.slice(0, 3).join(", ")}`);
+  }
+  return lines;
+}
+
 function buildPrompt(
   beatText: string,
   frameCount: number,
   videoTitle?: string,
-  sceneText?: string
+  sceneText?: string,
+  anchors?: BeatSubjectAnchors
 ): string {
   const many = frameCount > 1;
   return [
@@ -273,6 +366,7 @@ function buildPrompt(
     videoTitle ? `Documentary: "${videoTitle}"` : "",
     sceneText && sceneText !== beatText ? `Scene: "${sceneText.slice(0, 300)}"` : "",
     `Narration for this shot: "${beatText.slice(0, 300)}"`,
+    ...formatAnchors(anchors),
     "",
     many
       ? "First say plainly what the clip shows — the subject, the period it looks like, any text" +
@@ -317,6 +411,8 @@ export async function judgeBeatImage(params: {
   beatText: string;
   videoTitle?: string;
   sceneText?: string;
+  /** RONDE 175 §3: the subject, years and places the pipeline already established for this beat. */
+  anchors?: BeatSubjectAnchors;
   contentKey: string;
   /**
    * RONDE 103 — identity of the narration this clip is being judged against. See
@@ -415,7 +511,7 @@ export async function judgeBeatImage(params: {
             content: [
               {
                 type: "text",
-                text: buildPrompt(beatText, dataUrls.length, videoTitle, sceneText),
+                text: buildPrompt(beatText, dataUrls.length, videoTitle, sceneText, params.anchors),
               },
               // "low" detail: enough to recognise subject, period and on-screen text, at a
               // fraction of the tokens a full-resolution read would cost. That is what makes

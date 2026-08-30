@@ -10,6 +10,7 @@ import {
   maxBeatImageJudgementsPerRender,
   MAX_JUDGEMENTS_PER_BEAT,
 } from "./beatImageRelevanceGate";
+import { MAX_FUNNEL_CANDIDATES_TO_SCORE } from "./retrievalFunnel";
 
 /**
  * RONDE 58 — the gate that actually looks at the frame.
@@ -272,7 +273,13 @@ describe("RONDE 58 — the wiring", () => {
   });
 
   it("MAX_JUDGEMENTS_PER_BEAT is small — this is a verification step, not a search", () => {
-    expect(MAX_JUDGEMENTS_PER_BEAT).toBeLessThanOrEqual(3);
+    /**
+     * The claim is that this is a VERIFICATION step, not a search: it checks a handful of the
+     * candidates a beat already downloaded rather than sweeping them all. RONDE 175 raised it from
+     * 2 to 4 on the evidence that the gate refused three quarters of what it saw and only ever saw
+     * two — so the ceiling that matters is the candidate pool, not the number 3.
+     */
     expect(MAX_JUDGEMENTS_PER_BEAT).toBeGreaterThanOrEqual(1);
+    expect(MAX_JUDGEMENTS_PER_BEAT).toBeLessThan(MAX_FUNNEL_CANDIDATES_TO_SCORE);
   });
 });

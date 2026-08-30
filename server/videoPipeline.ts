@@ -25424,12 +25424,31 @@ function beatVisualContext(
   scene: { text?: string; index?: number },
   videoTitle: string | undefined
 ): BeatVisualContext {
+  /**
+   * RONDE 175 §3 — what the pipeline already established, handed to the judge.
+   *
+   * The judge's question carried the title, the paragraph and the line, and left it to infer the
+   * subject and the period from prose. `buildVideoVisualContext` has established the period and
+   * the places for this documentary, and neither ever reached the question.
+   *
+   * The period is passed as the DOCUMENTARY's, never as this shot's: a WWII film can legitimately
+   * cut to a 1919 photograph, and telling the judge the narration places this shot in the 1940s
+   * would make it refuse a correct picture. The prompt labels the scope.
+   */
+  const visual = get_activeVideoVisualContext();
+  const anchors = visual
+    ? {
+        documentaryPeriod: visual.period?.trim() || undefined,
+        documentaryPlaces: visual.locations?.filter(Boolean).slice(0, 3),
+      }
+    : undefined;
   return {
     sceneIndex: scene.index ?? 0,
     beatIndex: beat.index ?? 0,
     beatText: beat.text ?? "",
     sceneText: scene.text,
     videoTitle: asVideoTitleString(videoTitle) || undefined,
+    anchors,
   };
 }
 
