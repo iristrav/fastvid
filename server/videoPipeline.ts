@@ -28146,11 +28146,26 @@ async function trySubjectFallbackForBeat(
   if (dedup.subjectFallbackBeats.has(`${scene.index}:${beat.index}`)) return false;
   dedup.subjectFallbackBeats.add(`${scene.index}:${beat.index}`);
 
+  /**
+   * RONDE 132 §4 — the scene the beat sits in, as a subject of last resort.
+   *
+   * Every signal below the first three was beat-local, and the person lock only counted when the
+   * beat literally spelled the name. So an abstract sentence resolved to nothing while the scene
+   * around it named its subject plainly — seven of fourteen beats in the reported render.
+   *
+   * `scene.personNames` already exists and is documented as "names of all people mentioned in this
+   * scene's narration", which is exactly the signal that was missing. The neighbour list is the
+   * scene's names too: within one scene the nearest named person IS a scene name, and building a
+   * second per-beat extraction here would be a new content decider for no extra information.
+   */
+  const sceneNames = (scene.personNames ?? []).filter(Boolean);
   const subject = resolveBeatSubject({
     beatText: beat.text,
     entities: semanticProfile?.entities,
     primaryPerson: dedup.primaryPerson,
     namesInBeat: extractPersonNamesFromText(beat.text),
+    sceneEntities: { persons: sceneNames },
+    neighbourPersons: sceneNames,
   });
   if (!subject) {
     // A real outcome, not a skipped step: this beat names nothing specific enough to search for,
@@ -28178,6 +28193,10 @@ async function trySubjectFallbackForBeat(
     visualDescription: subject.subject,
   };
 
+  // RONDE 132: what the gates did during THIS fallback, so the empty-result line can say whether
+  // anything ever reached them. Snapshotted rather than counted separately — the reject audit is
+  // already the record, it was simply never read at this moment.
+  const rejectsBefore = dedup.clipRejectAudit.entries.length;
   let adopted: string | null = null;
   const capture = async (clipPath: string, sec?: number): Promise<boolean> => {
     const ok = await pushClip(clipPath, sec ?? holdSec);
@@ -28197,7 +28216,10 @@ async function trySubjectFallbackForBeat(
   }
 
   if (!adopted) {
-    const line = formatSubjectFallbackEmptyLine(scene.index, beat.index, subject);
+    const rejected = dedup.clipRejectAudit.entries
+      .slice(rejectsBefore)
+      .filter((e) => e.sceneIndex === scene.index && e.beatIndex === beat.index).length;
+    const line = formatSubjectFallbackEmptyLine(scene.index, beat.index, subject, { rejected });
     console.warn(line);
     dedup.coverageDecisions.push(line);
     return false;

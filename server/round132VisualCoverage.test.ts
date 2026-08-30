@@ -47,6 +47,11 @@ import { orderForDiversity, recallProvenAssetsForEntity } from "./searchMemoryRe
 import type { ProvenAssetMemory } from "./visualSearchMemory";
 import type { ArchiveAssetRow } from "./curatedMediaSourcing";
 import { buildBeatVisualStatuses, neverAskedReason } from "./beatVisualStatus";
+import {
+  beatContinuesPreviousThought,
+  formatSubjectFallbackEmptyLine,
+  resolveBeatSubject,
+} from "./beatSubjectFallback";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 
 /** One adopted beat, in the shape clipAdoptAudit records. */
@@ -443,5 +448,193 @@ describe("RONDE 132 §3 — never_asked is never an ending on its own", () => {
     const statuses = buildBeatVisualStatuses([adopt(0, 0, "own_footage.mp4", "archive")], ledger);
     expect(statuses[0]!.verification).toBe("never_asked"); // empty ledger, still never asked
     expect(statuses[0]!.reason).toBe("real_footage_never_judged");
+  });
+});
+
+/* ═══════════════════════ J: a beat with no subject of its own ═══════════════════════ */
+
+describe("RONDE 132 §4 — why half the beats had no subject", () => {
+  /**
+   * ── The answer, from the code ──────────────────────────────────────────────────────────────
+   *
+   * `resolveBeatSubject` had six routes and every one of them asked the SENTENCE:
+   *
+   *     1. the beat's own semantic persons        beat-local
+   *     2. the beat's own semantic companies      beat-local
+   *     3. the video's person lock                ...but only when the beat literally spells the name
+   *     4. names extracted from the beat text     beat-local
+   *     5. the beat's own semantic locations      beat-local
+   *     6. the beat's own semantic events         beat-local
+   *
+   * The scene was never consulted. Not once. And route 3 — the only one carrying video-level
+   * context — is gated on `beat.includes(part)`, which is exactly what an abstract sentence never
+   * does. So "That's the chilling story hidden beneath the battlefields" resolved to nothing while
+   * the scene around it named Hitler twice.
+   *
+   * It was not a threshold and not a bug. The function only ever looked at one sentence.
+   */
+  const abstractBeats = [
+    "But how did these overlooked blunders twist the trajectory of history?",
+    "This obsession cost thousands of lives and altered global power balances.",
+    "That's the chilling story hidden beneath the battlefields.",
+    "unraveling bonds and trust, ultimately shaping their catastrophic downfall.",
+  ];
+
+  it("THE BUG: every one of the render's abstract beats resolved to nothing", () => {
+    // No scene context supplied — the old behaviour exactly.
+    for (const beatText of abstractBeats) {
+      expect(resolveBeatSubject({ beatText }), beatText).toBeNull();
+    }
+  });
+
+  it("the person lock could not help, because it needs the beat to spell the name", () => {
+    // Route 3, and why it never fired on these sentences.
+    for (const beatText of abstractBeats) {
+      expect(resolveBeatSubject({ beatText, primaryPerson: "Adolf Hitler" }), beatText).toBeNull();
+    }
+    // It does fire when the beat DOES name them — unchanged.
+    expect(
+      resolveBeatSubject({ beatText: "Hitler ordered the attack.", primaryPerson: "Adolf Hitler" })
+    ).toMatchObject({ subject: "Adolf Hitler", origin: "person_lock" });
+  });
+
+  it("J. THE FIX: the scene's own names answer the beat the sentence could not", () => {
+    for (const beatText of abstractBeats) {
+      const subject = resolveBeatSubject({
+        beatText,
+        sceneEntities: { persons: ["Hitler"] },
+        neighbourPersons: ["Hitler"],
+      });
+      expect(subject, beatText).toBeTruthy();
+      expect(subject!.subject, beatText).toBe("Hitler");
+    }
+  });
+
+  it("a borrowed subject is LABELLED as borrowed, so the log stays honest", () => {
+    /**
+     * The claim genuinely weakens: a subject the beat supplied is about this sentence, one taken
+     * from the scene is about the passage. That difference has to survive into the report.
+     */
+    const continued = resolveBeatSubject({
+      beatText: "That's the chilling story hidden beneath the battlefields.",
+      sceneEntities: { persons: ["Hitler"] },
+      neighbourPersons: ["Hitler"],
+    });
+    expect(continued!.origin).toBe("neighbour_beat_persons");
+
+    // A sentence that introduces rather than continues falls through to the wider scene label.
+    const fresh = resolveBeatSubject({
+      beatText: "Production lines slowed to a crawl across occupied Europe.",
+      sceneEntities: { persons: ["Hitler"] },
+      neighbourPersons: ["Hitler"],
+    });
+    expect(fresh!.origin).toBe("scene_persons");
+  });
+
+  it("the beat's own subject is NEVER overruled by the scene's", () => {
+    /**
+     * The constraint that keeps this from making things worse. A beat that names someone is about
+     * them, whoever else the scene mentions.
+     */
+    const subject = resolveBeatSubject({
+      beatText: "Göring inspected the Luftwaffe that spring.",
+      entities: { persons: ["Göring"] },
+      sceneEntities: { persons: ["Hitler"] },
+      neighbourPersons: ["Hitler"],
+    });
+    expect(subject).toMatchObject({ subject: "Göring", origin: "semantic_persons" });
+  });
+
+  it("a sentence that introduces something new is answered by the SCENE route alone", () => {
+    /**
+     * Isolates the scene route from the neighbour route. The four abstract beats above all carry
+     * a pronoun, so the neighbour route answers them and the scene route would go untested — which
+     * is how a removed scene route could keep every other test in this file green.
+     */
+    const fresh = "Production lines slowed to a crawl across occupied Europe.";
+    expect(beatContinuesPreviousThought(fresh)).toBe(false);
+    expect(resolveBeatSubject({ beatText: fresh, neighbourPersons: ["Hitler"] })).toBeNull();
+    expect(resolveBeatSubject({ beatText: fresh, sceneEntities: { persons: ["Hitler"] } }))
+      .toMatchObject({ subject: "Hitler", origin: "scene_persons" });
+  });
+
+  it("the pipeline actually HANDS the resolver the scene's names", () => {
+    /**
+     * Source-bound, and the weakest test in this file — deliberately labelled as such. The wiring
+     * lives inside `trySubjectFallbackForBeat`, which needs a whole render to call. Without this
+     * the fix could be disconnected in production while every behaviour test above stayed green,
+     * which is exactly what a mutation of the call site proved.
+     */
+    const { readFileSync } = require("fs") as typeof import("fs");
+    const { join } = require("path") as typeof import("path");
+    const pipe = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
+    const idx = pipe.indexOf("const subject = resolveBeatSubject({");
+    expect(idx).toBeGreaterThan(0);
+    const call = pipe.slice(idx, pipe.indexOf("});", idx));
+    expect(call).toContain("sceneEntities: { persons: sceneNames }");
+    expect(call).toContain("neighbourPersons: sceneNames");
+    // ...from the field that already carries them.
+    expect(pipe).toContain("const sceneNames = (scene.personNames ?? []).filter(Boolean);");
+  });
+
+  it("a scene with no names still resolves to nothing — nothing is invented", () => {
+    // The whole point of the module: no subject is a real outcome, and borrowing from an empty
+    // scene would be the "random word from the sentence" it exists to avoid, one step removed.
+    for (const beatText of abstractBeats) {
+      expect(resolveBeatSubject({ beatText, sceneEntities: { persons: [] } }), beatText).toBeNull();
+      expect(resolveBeatSubject({ beatText, neighbourPersons: ["the", "history"] }), beatText)
+        .toBeNull();
+    }
+  });
+
+  it("continuation is a grammatical test, not a content decision", () => {
+    expect(beatContinuesPreviousThought("His obsession cost thousands of lives.")).toBe(true);
+    expect(beatContinuesPreviousThought("That's the chilling story.")).toBe(true);
+    expect(beatContinuesPreviousThought("These blunders changed everything.")).toBe(true);
+    expect(beatContinuesPreviousThought("Germany invaded Poland in 1939.")).toBe(false);
+    expect(beatContinuesPreviousThought("")).toBe(false);
+  });
+});
+
+/* ═══════════════════════ the five empty subject searches ═══════════════════════ */
+
+describe("RONDE 132 — 'subject search returned nothing' was two failures in one sentence", () => {
+  const subject = { subject: "hitler", kind: "person", origin: "semantic_persons" } as const;
+
+  it("THE AMBIGUITY: one reason covered a bug and correct behaviour alike", () => {
+    /**
+     * Reported five times in the render, for "hitler", "germany" and "russia", on a WWII
+     * documentary with a filled archive. `subject_search_returned_nothing` asserts that nothing
+     * came back — but "plenty came back and every candidate was refused" is at least as likely on
+     * a one-word beat, and the line could not tell them apart.
+     */
+    const old = "reason=subject_search_returned_nothing";
+    expect(formatSubjectFallbackEmptyLine(1, 1, subject, { rejected: 0 })).not.toContain(old);
+    expect(formatSubjectFallbackEmptyLine(1, 1, subject, { rejected: 4 })).not.toContain(old);
+  });
+
+  it("nothing reached the gates — the case actually worth investigating", () => {
+    const line = formatSubjectFallbackEmptyLine(1, 1, subject, { rejected: 0 });
+    expect(line).toContain("reason=no_candidate_reached_the_gates");
+    expect(line).toContain("rejected=0");
+  });
+
+  it("candidates arrived and were all refused — the pipeline working", () => {
+    const line = formatSubjectFallbackEmptyLine(1, 1, subject, { rejected: 4 });
+    expect(line).toContain("reason=all_candidates_rejected");
+    expect(line).toContain("rejected=4");
+  });
+
+  it("with no count available it says so rather than guessing", () => {
+    // A rejection count is proof a candidate reached the gates; absent it, neither story is known.
+    const line = formatSubjectFallbackEmptyLine(1, 1, subject);
+    expect(line).toContain("reason=subject_search_outcome_unknown");
+    expect(line).not.toContain("rejected=");
+  });
+
+  it("the line names where the subject came from, so a borrowed one is visible here too", () => {
+    const borrowed = { subject: "Hitler", kind: "person", origin: "scene_persons" } as const;
+    expect(formatSubjectFallbackEmptyLine(1, 1, borrowed, { rejected: 0 }))
+      .toContain("origin=scene_persons");
   });
 });

@@ -46,7 +46,18 @@ export type BeatSubject = {
     | "semantic_locations"
     | "semantic_events"
     | "person_lock"
-    | "beat_names";
+    | "beat_names"
+    /**
+     * RONDE 132 §4 — the beat said nothing, but the scene did.
+     *
+     * These are deliberately last and deliberately named apart. A subject the beat itself
+     * supplied is a claim about THIS sentence; a subject borrowed from the scene is a claim about
+     * the passage the sentence sits in, which is weaker and must be readable as such in the log.
+     */
+    | "scene_persons"
+    | "neighbour_beat_persons"
+    | "scene_locations"
+    | "scene_events";
 };
 
 /** What the resolver was given. Every field is produced elsewhere in the existing chain. */
@@ -63,6 +74,29 @@ export type BeatSubjectSignals = {
   primaryPerson?: string;
   /** Names the pipeline's own extractor found in the beat text. */
   namesInBeat?: string[];
+  /**
+   * RONDE 132 §4 — the entities of the SCENE this beat belongs to.
+   *
+   * Every lookup below was beat-local: the beat's own semantic profile, names in the beat's own
+   * text, and a person lock gated on the beat literally spelling the name. So a sentence like
+   * "That's the chilling story hidden beneath the battlefields" resolved to nothing, in a scene
+   * whose other beats named Hitler twice.
+   *
+   * Optional, so a caller that has no scene profile behaves exactly as before.
+   */
+  sceneEntities?: {
+    persons?: string[];
+    locations?: string[];
+    companies?: string[];
+    events?: string[];
+  };
+  /**
+   * Persons named by the beats immediately before and after this one.
+   *
+   * Narrower than the scene and closer to the sentence: a passage that names someone and then says
+   * "his obsession cost thousands of lives" is about that person, and the pronoun is the evidence.
+   */
+  neighbourPersons?: string[];
 };
 
 /**
@@ -148,7 +182,53 @@ export function resolveBeatSubject(signals: BeatSubjectSignals): BeatSubject | n
   const event = firstUsable(signals.entities?.events);
   if (event) return { subject: event, kind: "event", origin: "semantic_events" };
 
+  /**
+   * RONDE 132 §4 — everything above asked the SENTENCE. Now ask the passage.
+   *
+   * Ordered after every beat-local signal, so a beat that names its own subject is never
+   * overruled by its neighbours. Within the borrowed signals, nearer beats come before the whole
+   * scene, and persons before places and events — the same precedence the beat-local rules use,
+   * for the same reason: a picture of a person under narration about that person means more than
+   * a picture of a country.
+   *
+   * A neighbouring beat is only evidence when this beat carries a pronoun or a demonstrative
+   * pointing back at it. "That's the chilling story" and "his obsession" are continuations; a
+   * sentence that introduces something new is not, and borrowing a subject for it would be the
+   * "random word from the sentence" this module exists to avoid — one step removed.
+   */
+  if (beatContinuesPreviousThought(signals.beatText)) {
+    const neighbour = firstUsable(signals.neighbourPersons);
+    if (neighbour) {
+      return { subject: neighbour, kind: "person", origin: "neighbour_beat_persons" };
+    }
+  }
+
+  const scenePerson = firstUsable(signals.sceneEntities?.persons);
+  if (scenePerson) return { subject: scenePerson, kind: "person", origin: "scene_persons" };
+
+  const scenePlace = firstUsable(signals.sceneEntities?.locations);
+  if (scenePlace) return { subject: scenePlace, kind: "place", origin: "scene_locations" };
+
+  const sceneEvent = firstUsable(signals.sceneEntities?.events);
+  if (sceneEvent) return { subject: sceneEvent, kind: "event", origin: "scene_events" };
+
   return null;
+}
+
+/**
+ * Does this sentence point back at something already said?
+ *
+ * The test for whether a neighbour's subject is evidence about THIS beat. Pronouns and
+ * demonstratives are the grammar of continuation — "his obsession", "that's the story", "these
+ * blunders" — and a sentence without one is introducing rather than continuing.
+ *
+ * Deliberately mechanical, and deliberately not a stop-word list: this is a grammatical test, not
+ * a content decision, and the module is not allowed to become a second content decider.
+ */
+export function beatContinuesPreviousThought(beatText: string): boolean {
+  const t = String(beatText ?? "").toLowerCase();
+  if (!t.trim()) return false;
+  return /\b(he|him|his|she|her|hers|they|them|their|it|its|this|that|these|those)\b/.test(t);
 }
 
 /**
@@ -188,15 +268,56 @@ export function formatNoSubjectLine(sceneIndex: number, beatIndex: number, beatT
   );
 }
 
-/** The line for a subject that WAS named but had no footage anywhere. */
+/**
+ * The line for a subject that WAS named but ended with no picture.
+ *
+ * ── RONDE 132 §2 (the second finding) ────────────────────────────────────────────────────────
+ *
+ * The render reported this five times, for "hitler", "germany" and "russia", on a WWII
+ * documentary with a filled archive:
+ *
+ *     [SubjectFallback] subject="hitler" result=no_footage_found
+ *                       reason=subject_search_returned_nothing
+ *
+ * `subject_search_returned_nothing` is one sentence covering two completely different failures:
+ *
+ *   · nothing came back at all — a routing or provider problem, and a real bug,
+ *   · plenty came back and every candidate was refused by the gates — the pipeline working,
+ *     on a one-word beat that gives the vision gate almost nothing to judge.
+ *
+ * The old wording asserted the first while the second is at least as likely, and nothing in the
+ * line let a reader tell them apart. It now reports what actually happened. `candidates` and
+ * `rejected` come from counters the beat already keeps, so nothing new is measured — it is simply
+ * no longer thrown away at the one moment it would answer the question.
+ */
 export function formatSubjectFallbackEmptyLine(
   sceneIndex: number,
   beatIndex: number,
-  subject: BeatSubject
+  subject: BeatSubject,
+  outcome?: { rejected?: number }
 ): string {
+  const rejected = outcome?.rejected ?? null;
+  /**
+   * Derived from the beat's own reject audit and nothing else.
+   *
+   * A rejection is proof that a candidate reached the gates, so `rejected > 0` settles it: the
+   * search DID return something and the gates refused all of it. Zero rejections means nothing
+   * ever got that far — which is the case worth investigating, and the one the old single reason
+   * was silently asserting for both.
+   *
+   * No candidate COUNT is reported, because none is measured here. Printing an invented one would
+   * be worse than the ambiguity this replaces.
+   */
+  const reason =
+    rejected == null
+      ? "subject_search_outcome_unknown"
+      : rejected === 0
+        ? "no_candidate_reached_the_gates"
+        : "all_candidates_rejected";
+  const counts = rejected == null ? "" : ` rejected=${rejected}`;
   return (
     `[SubjectFallback] scene=${sceneIndex} beat=${beatIndex} ` +
-    `subject="${subject.subject}" kind=${subject.kind} result=no_footage_found ` +
-    `reason=subject_search_returned_nothing`
+    `subject="${subject.subject}" kind=${subject.kind} origin=${subject.origin} ` +
+    `result=no_footage_found reason=${reason}${counts}`
   );
 }

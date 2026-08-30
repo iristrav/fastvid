@@ -299,14 +299,39 @@ describe("RONDE 112 — a named subject with no footage says so", () => {
     });
     expect(line).toContain('subject="Führerbunker"');
     expect(line).toContain("result=no_footage_found");
-    expect(line).toContain("reason=subject_search_returned_nothing");
+    /**
+     * SUPERSEDED BY RONDE 132 — the claim is intact, the single reason is not.
+     *
+     * `subject_search_returned_nothing` asserted that nothing came back. The render that prompted
+     * RONDE 132 reported it five times for "hitler", "germany" and "russia" on a WWII documentary
+     * with a filled archive — where "plenty came back and every candidate was refused" is at least
+     * as likely, and the line could not tell the two apart. One of them is a bug and the other is
+     * the pipeline working.
+     *
+     * What this test was written to guard — the line names the subject and says no footage was
+     * found — is asserted above, unchanged. The reason now says WHICH failure it was, and with no
+     * count available it says that instead of picking one.
+     */
+    expect(line).toContain("reason=subject_search_outcome_unknown");
+    expect(formatSubjectFallbackEmptyLine(2, 0, {
+      subject: "Führerbunker", kind: "place", origin: "semantic_locations",
+    }, { rejected: 0 })).toContain("reason=no_candidate_reached_the_gates");
+    expect(formatSubjectFallbackEmptyLine(2, 0, {
+      subject: "Führerbunker", kind: "place", origin: "semantic_locations",
+    }, { rejected: 3 })).toContain("reason=all_candidates_rejected");
   });
 
   it("and the pipeline falls through to the technical fallback rather than stalling", () => {
+    // Bounded by the function's own end rather than a byte count: RONDE 132 added the scene-context
+    // resolution and the reject snapshot inside this body, which pushed the tail past a fixed
+    // +4200 window — the recurring way a snug slice breaks on a change it should not care about.
     const idx = PIPELINE.indexOf("async function trySubjectFallbackForBeat(");
-    const body = PIPELINE.slice(idx, idx + 4200);
+    expect(idx).toBeGreaterThan(0);
+    const end = PIPELINE.indexOf("const clipPath: string = adopted;", idx);
+    expect(end).toBeGreaterThan(idx);
+    const body = PIPELINE.slice(idx, end);
     expect(body).toContain("if (!adopted) {");
-    expect(body).toContain("formatSubjectFallbackEmptyLine(scene.index, beat.index, subject)");
+    expect(body).toContain("formatSubjectFallbackEmptyLine(scene.index, beat.index, subject");
     expect(body).toContain("return false;");
   });
 });
@@ -402,8 +427,13 @@ describe("RONDE 112 — subject footage never counts as a verified fit", () => {
 describe("RONDE 112 — the whole story reaches the pipeline report", () => {
   it("every coverage decision, including the subject lines, is stored", () => {
     expect(PIPELINE).toContain('pipelineReport.addAll("warnings", visualDedup.coverageDecisions);');
+    // Same rebinding as above: the function's own end, not a byte count. All three decisions —
+    // no subject, no footage, and the successful fallback — must still be stored.
     const idx = PIPELINE.indexOf("async function trySubjectFallbackForBeat(");
-    const body = PIPELINE.slice(idx, idx + 4200);
+    expect(idx).toBeGreaterThan(0);
+    const end = PIPELINE.indexOf("\n}\n", PIPELINE.indexOf("const clipPath: string = adopted;", idx));
+    expect(end).toBeGreaterThan(idx);
+    const body = PIPELINE.slice(idx, end);
     expect((body.match(/dedup\.coverageDecisions\.push\(line\)/g) ?? []).length).toBe(3);
   });
 
