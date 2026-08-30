@@ -1414,6 +1414,27 @@ export async function getMediaArchiveAssetById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/**
+ * RONDE 131 — the assets the search memory remembers, in one round trip.
+ *
+ * `getMediaArchiveAssetById` one-at-a-time would be a query per remembered asset on the beat hot
+ * path. Excludes `annotationJson` for the same reason `getMediaArchiveAssets` does — it can be
+ * 50KB a row and nothing on this path reads it — and honours `isActive`, so an asset deleted or
+ * disabled since it was remembered simply does not come back (RONDE 127's archive-deletion rule,
+ * enforced by the query rather than by a later filter).
+ */
+export async function getMediaArchiveAssetsByIds(ids: number[]) {
+  const db = await getDb();
+  if (!db || ids.length === 0) return [];
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  if (unique.length === 0) return [];
+  const { annotationJson: _skip, ...cols } = getTableColumns(mediaArchiveAssets);
+  return db
+    .select(cols)
+    .from(mediaArchiveAssets)
+    .where(and(inArray(mediaArchiveAssets.id, unique), eq(mediaArchiveAssets.isActive, 1)));
+}
+
 export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
   const db = await getDb();
   if (!db) return undefined;

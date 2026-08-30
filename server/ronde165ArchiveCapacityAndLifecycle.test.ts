@@ -209,11 +209,23 @@ describe("RONDE 165 — wired into the routes render 554 lost assets on", () => 
   });
 
   it("the render report prints the lifecycle audit next to the warnings it summarises", () => {
+    /**
+     * Bounded by the audit block's own end marker rather than by a byte count. RONDE 131 added the
+     * [SearchMemory] summary between the reconcile call and this one, which pushed the audit past
+     * a fixed +900 window — the third time a snug slice has broken on a change it should not care
+     * about.
+     */
     const idx = PIPE.indexOf("const reconciliation = ledger.reconcile();");
-    const block = PIPE.slice(idx, idx + 900);
+    expect(idx).toBeGreaterThan(0);
+    const end = PIPE.indexOf("assertNoSelectedClipWithoutOutcome(ledger)", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = PIPE.slice(idx, end);
     expect(block).toContain("formatAssetLifecycleAudit(ledger)");
     // A clean render logs; a leaking one warns. Both are printed either way.
     expect(block).toContain('line.includes("unresolved=0")');
+    // ...and it still sits after the reconciliation whose warnings it is the denominator for.
+    expect(block.indexOf("formatAuditReport(reconciliation)"))
+      .toBeLessThan(block.indexOf("formatAssetLifecycleAudit(ledger)"));
   });
 });
 

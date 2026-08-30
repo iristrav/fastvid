@@ -330,25 +330,91 @@ export type AdoptedClipSource = {
  * on the hot path — it must never be able to slow a render down or fail one.
  */
 export function recordAdoptedClipSource(input: AdoptedClipSource): void {
-  const source = providerFromContentKey(input.contentKey);
+  const row = adoptedClipMemoryRow(input);
+  if (!row) return;
+  // RONDE 86: queued rather than fired. Same row, same upsert — it shares the module's bounded
+  // writer with the dead-end burst instead of racing it for pool connections.
+  enqueueVisualSearchMemory(row);
+}
+
+/**
+ * What an adopted clip teaches the memory — the decision, separated from the write.
+ *
+ * Extracted so a test can assert on the ROW rather than on a model of it. A test that rebuilt this
+ * mapping itself would keep passing after the mapping was broken, which is precisely how the
+ * curated-winner gap below survived unnoticed in the first place.
+ *
+ * Returns null when there is nothing to learn.
+ */
+export function adoptedClipMemoryRow(
+  input: AdoptedClipSource
+): RecordVisualSearchMemoryInput | null {
   const subject = input.subject?.trim();
   const query = input.query?.trim();
+  if (!subject || !query) return null;
+
+  /**
+   * RONDE 131 — the curated winners were the ones this writer threw away.
+   *
+   * `providerFromContentKey` deliberately excludes "curated", on the reasoning that a curated
+   * clip is not a place you can go and search again. True for a QUERY memory, and exactly
+   * backwards for an ASSET memory: a curated asset is the one kind of hit that needs no search
+   * at all next time, because FastVid already holds the file.
+   *
+   * So a `curated:asset:<id>` winner recorded nothing whatsoever — no query, no source, no asset
+   * — and the next video on the same subject went back to the providers for footage sitting in
+   * its own archive. That is the single most valuable row this table can hold, and it was the one
+   * row never written.
+   */
+  const assetId = curatedAssetIdFromContentKey(input.contentKey);
+  if (assetId != null) {
+    return {
+      entity: subject,
+      entityType: input.subjectType,
+      query,
+      source: CURATED_ARCHIVE_MEMORY_SOURCE,
+      assetId,
+      success: true,
+      qualityScore: qualityScoreFrom(input.score10),
+    };
+  }
+
+  const source = providerFromContentKey(input.contentKey);
   // No provider means a locally-produced clip (a still we rendered, an AI frame). There is no
   // "where to look next time" to record, so silence is the honest answer.
-  if (!source || !subject || !query) return;
-  // RONDE 86: queued rather than fired. Same row, same upsert — it now shares the module's
-  // bounded writer with the dead-end burst instead of racing it for pool connections.
-  enqueueVisualSearchMemory({
+  if (!source) return null;
+  return {
     entity: subject,
     entityType: input.subjectType,
     query,
     source,
     success: true,
-    qualityScore:
-      input.score10 != null && isFinite(input.score10)
-        ? Math.max(0, Math.min(100, Math.round(input.score10 * 10)))
-        : undefined,
-  });
+    qualityScore: qualityScoreFrom(input.score10),
+  };
+}
+
+function qualityScoreFrom(score10: number | null | undefined): number | undefined {
+  return score10 != null && isFinite(score10)
+    ? Math.max(0, Math.min(100, Math.round(score10 * 10)))
+    : undefined;
+}
+
+/**
+ * The source label for a hit that is already in FastVid's own archive.
+ *
+ * Distinct from the provider names on purpose: a row with this source is not an instruction to
+ * search anywhere, it is a pointer to a file FastVid holds. `getProvenAssetIdsForEntity` reads it;
+ * `primeQueriesWithSearchMemory` must NOT prepend its query to a provider search, because there is
+ * no provider to send it to.
+ */
+export const CURATED_ARCHIVE_MEMORY_SOURCE = "curated_archive";
+
+/** `curated:asset:123` → 123. Anything else → null. */
+export function curatedAssetIdFromContentKey(contentKey: string): number | null {
+  const m = /^curated:asset:(\d+)$/.exec(contentKey.trim());
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 /**
@@ -499,6 +565,78 @@ export async function getDeadEndQueries(
  * Prior successful queries/sources for this entity, most-used first — so a future beat about
  * the same entity can try a proven query+source before inventing a new one.
  */
+/**
+ * RONDE 131 — what the memory actually FOUND, not merely what it was asked.
+ *
+ * ── The gap this closes ──────────────────────────────────────────────────────────────────────
+ *
+ * Every successful row here can carry the archive asset the query produced (`assetId`), and until
+ * now nothing in the sourcing path ever read that column. `primeQueriesWithSearchMemory` — the one
+ * reader on the retrieval path — maps proven rows to `m.query` and drops everything else, so a
+ * memory hit reordered the QUESTIONS and never returned the ANSWER. Video B re-asked every
+ * provider for footage Video A had already found and stored.
+ *
+ * ── What this returns, and what it does not ──────────────────────────────────────────────────
+ *
+ * Asset ids and the evidence behind them — nothing that decides anything. The caller feeds these
+ * into the retrieval funnel as ordinary archive candidates, so they meet the same coverage
+ * scoring, ranking, shortlist, preview validation, licence check, VisionGate, beat relevance and
+ * duplicate rules as any other candidate. A remembered asset is a candidate, never a verdict.
+ */
+export type ProvenAssetMemory = {
+  assetId: number;
+  /** The query that found it, for the log line and for nothing else. */
+  query: string;
+  source: string;
+  usageCount: number;
+  qualityScore: number | null;
+};
+
+export async function getProvenAssetIdsForEntity(
+  entity: string,
+  limit = 12
+): Promise<ProvenAssetMemory[]> {
+  try {
+    const db = await getDb();
+    if (!db) return [];
+    const normalized = canonicalEntityKey(entity);
+    if (!normalized) return [];
+    const rows = await db
+      .select()
+      .from(visualSearchMemory)
+      .where(
+        and(
+          eq(visualSearchMemory.entity, normalized),
+          eq(visualSearchMemory.success, 1),
+          // Only rows that name a real file. A proven QUERY without an asset is still useful, and
+          // primeQueriesWithSearchMemory is where it is used; it is of no use here.
+          sql`${visualSearchMemory.assetId} IS NOT NULL`
+        )
+      )
+      .orderBy(desc(visualSearchMemory.usageCount), desc(visualSearchMemory.lastUsedAt))
+      .limit(limit);
+
+    const out: ProvenAssetMemory[] = [];
+    const seen = new Set<number>();
+    for (const row of rows) {
+      const assetId = row.assetId;
+      if (assetId == null || seen.has(assetId)) continue;
+      seen.add(assetId);
+      out.push({
+        assetId,
+        query: row.query,
+        source: row.source,
+        usageCount: row.usageCount ?? 1,
+        qualityScore: row.qualityScore ?? null,
+      });
+    }
+    return out;
+  } catch (err) {
+    console.warn("[VisualSearchMemory] asset lookup failed:", (err as Error).message?.slice(0, 120));
+    return [];
+  }
+}
+
 export async function getVisualSearchMemoryForEntity(entity: string, limit = 10): Promise<VisualSearchMemoryRow[]> {
   try {
     const db = await getDb();

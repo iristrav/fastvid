@@ -503,6 +503,11 @@ import {
 } from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
+import {
+  createSearchMemoryRecallMetrics,
+  formatSearchMemorySummary,
+  type SearchMemoryRecallMetrics,
+} from "./searchMemoryRecall";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
@@ -1018,6 +1023,20 @@ function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx()
 function get_activeVideoTopic() { return getRenderCtx().videoTopic; }
 function get_activeVideoVisualContext(): VideoVisualContext | null { return getRenderCtx().videoVisualContext; }
 function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
+/**
+ * RONDE 131 — the ONE key the persistent search memory is written and read under.
+ *
+ * `recordAdoptedClipSource` writes `primaryPerson || videoTitle`; the funnel recall reads it. When
+ * those two ever drift apart the memory becomes invisible to itself — exactly the failure RONDE 28
+ * had to fix once already, where writes lowercased the entity and reads did not. One function, both
+ * sides, so there is nothing to keep in sync.
+ */
+function activeMemoryEntity(): string | undefined {
+  const topic = get_activeVideoTopic();
+  if (!topic) return undefined;
+  return (topic.primaryPerson || topic.videoTitle)?.trim() || undefined;
+}
+
 /** RONDE 173: the render's sourcing cache, for the provider fetchers that were never handed one. */
 function get_activeSourcingCache(): SourcingCache | null { return getRenderCtx().sourcingCache; }
 function set_activeSourcingCache(v: SourcingCache | null) { const c = getRenderCtx(); c.sourcingCache = v; }
@@ -15365,6 +15384,16 @@ export interface VisualDedupState {
  *   permanently narrow the next one).
  */
   usedCuratedAssetIds: Set<number>;
+  /**
+   * RONDE 131: what the persistent search memory saved this render.
+   *
+   * On VisualDedupState rather than in a new object because this is already the per-render state
+   * every sourcing path threads, and a counter that outlived a render would be a lie the moment
+   * two renders shared a worker.
+   */
+  searchMemoryMetrics: SearchMemoryRecallMetrics;
+  /** Archive assets this render offered because an earlier video proved them (RONDE 131). */
+  recalledAssetIds: Set<number>;
   /** Storage URLs from curated archive — blocks same file twice even with different IDs. */
   usedCuratedStorageUrls: Set<string>;
   /** Cap modern historian interview B-roll (looks like one frozen talking head). */
@@ -15691,6 +15720,8 @@ export function createVisualDedupState(
 ): VisualDedupState {
   const state: VisualDedupState = {
     usedPaths: new Set(),
+    searchMemoryMetrics: createSearchMemoryRecallMetrics(),
+    recalledAssetIds: new Set(),
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
     usedContentKeys: new Set(),
@@ -30063,6 +30094,14 @@ async function fetchSceneVisualsInner(
                 dedup.movingClipCount,
                 dedup.movingClipCount + dedup.stillClipCount
               ),
+              // RONDE 131: the persistent cross-video memory, read under the SAME key it is
+              // written under at the adopt point below — get_activeVideoTopic()'s person, or the
+              // title when the video is not about a person. Write and read must agree or the
+              // memory is invisible to itself, which is how RONDE 28 found it last time.
+              memoryEntity: activeMemoryEntity(),
+              memoryExcludeAssetIds: dedup.usedCuratedAssetIds,
+              memoryMetrics: dedup.searchMemoryMetrics,
+              memoryRecalledInto: dedup.recalledAssetIds,
             }), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
         console.log(
           `[FunnelTimeout] scene=${scene.index} completed elapsedMs=${Date.now() - funnelAwaitT0} ` +
@@ -31028,6 +31067,21 @@ async function fetchSceneVisualsInner(
             // The curated archive route has no registered path — this is its only handle.
             clipContentKey(candidate.clipPath)
           );
+          /**
+           * RONDE 131 — a remembered asset that did not survive the gates, counted as such.
+           *
+           * Only `vision_rejected` counts. Losing to a better candidate is not the memory being
+           * wrong, and counting it as a rejection would make the metric read as a failure rate for
+           * something that is in fact the funnel doing its job.
+           */
+          const recalledId = candidate.candidate.archivePick?.asset?.id;
+          if (
+            reason === "vision_rejected" &&
+            recalledId != null &&
+            dedup.recalledAssetIds.has(recalledId)
+          ) {
+            dedup.searchMemoryMetrics.memoryRejectedAfterValidation++;
+          }
         }
 
         // [VisualDiscovery] audit line — counts + per-source scores + winner, one line per beat.
@@ -34802,6 +34856,16 @@ async function _runVideoPipelineInner(
             // single clip has been adopted, so there is no mix to be behind on yet. The inline
             // funnel call — the one that runs per scene, with clips already on the timeline —
             // is where the measured deficit is passed.
+            //
+            // RONDE 131: the memory IS read here, and this is the call site where it pays best —
+            // during TTS, before a single provider request has been made. No exclude set yet for
+            // the same reason as the deficit: nothing has been adopted.
+            //
+            // No metrics object either: this prefetch runs BEFORE createVisualDedupState, so the
+            // per-render counters do not exist yet. The per-beat [SearchMemory] line still prints
+            // for every scene here — what the summary counts is the inline funnel, which is the
+            // path that actually spends a beat's budget.
+            memoryEntity: activeMemoryEntity(),
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
@@ -37854,6 +37918,15 @@ async function _runVideoPipelineInner(
       for (const line of formatSearchGateReport()) console.log(pipelineReport.add("search", line));
       const reconciliation = ledger.reconcile();
       for (const line of formatAuditReport(reconciliation)) console.log(pipelineReport.add("sourcing", line));
+      /**
+       * RONDE 131 — what the persistent cross-video memory saved this render.
+       *
+       * The one number that answers "is FastVid getting faster per video": beats that found their
+       * subject already proven, against beats that had to start from the providers.
+       */
+      console.log(
+        pipelineReport.add("sourcing", formatSearchMemorySummary(visualDedup.searchMemoryMetrics))
+      );
       /**
        * RONDE 165 — the denominator under the vanished warnings printed just above.
        *

@@ -37,6 +37,12 @@ import {
 } from "./archiveEmbeddingIndex";
 import { cosineSimilarityVectors } from "./semanticVisualMatching";
 import {
+  formatSearchMemoryLine,
+  mergeRecalledIntoArchivePicks,
+  recallProvenAssetsForEntity,
+  type SearchMemoryRecallMetrics,
+} from "./searchMemoryRecall";
+import {
   recordShortlistStage,
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
@@ -688,6 +694,28 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
    * exactly the RONDE 27 behaviour — so callers that don't track the mix are unaffected.
    */
   movingShareDeficit?: number;
+  /**
+   * RONDE 131: the subject this video is about, for the persistent cross-video search memory.
+   *
+   * When set, assets this entity has proven in EARLIER videos are recalled and offered alongside
+   * the archive's own keyword matches for this beat. They are candidates and nothing more — the
+   * coverage scoring, ranking, shortlist, download, preview validation, licence check, VisionGate
+   * and duplicate rules below are the same ones every other candidate meets.
+   *
+   * Absent (the default) the funnel behaves exactly as it did before this round.
+   */
+  memoryEntity?: string;
+  /** Assets already used this render; recall must not re-serve them. */
+  memoryExcludeAssetIds?: Set<number>;
+  /** Injected in tests so the recall path can be driven without a database. */
+  recallProvenAssets?: typeof recallProvenAssetsForEntity;
+  /** Counters for the recall, when the caller is keeping them. */
+  memoryMetrics?: SearchMemoryRecallMetrics;
+  /**
+   * Filled with the asset ids this funnel recalled from memory, so the caller can tell a
+   * remembered candidate apart later — specifically, to count the ones a gate then refused.
+   */
+  memoryRecalledInto?: Set<number>;
 };
 
 /**
@@ -748,10 +776,62 @@ export async function buildRetrievalFunnel(
   // honestly reflects the FRESH archive material: when only recently-used assets match, the
   // coverage drops, the strategy shifts toward internet_dominant, and the pipeline actively
   // pulls new external footage instead of reusing. Degrades gracefully — never starves a beat.
-  const archivePicks = req.crossVideoExcludeIds && req.crossVideoExcludeIds.size > 0
+  const scannedPicks = req.crossVideoExcludeIds && req.crossVideoExcludeIds.size > 0
     ? applyCrossVideoVarietyDegrade(archiveSearchResult.candidates, req.crossVideoExcludeIds)
     : archiveSearchResult.candidates;
   const beatDoc = archiveSearchResult.beatDocument;
+
+  /**
+   * RONDE 131 — what earlier videos already proved about this subject.
+   *
+   * Placed here, BEFORE coverage scoring, deliberately. Coverage decides how hard the funnel leans
+   * on the internet, and a beat whose subject FastVid has good footage for should read as covered
+   * — that is the whole saving. Placed after, the recall would arrive too late to spare anything.
+   *
+   * Excluded from recall: assets this render already used, and (via the query itself) any asset
+   * deleted or deactivated since it was remembered.
+   */
+  const recall = req.memoryEntity
+    ? await (req.recallProvenAssets ?? recallProvenAssetsForEntity)(req.memoryEntity, {
+        excludeAssetIds: req.memoryExcludeAssetIds,
+      })
+    : [];
+  const { picks: archivePicks, added: recalledAdded } = mergeRecalledIntoArchivePicks(
+    scannedPicks,
+    recall
+  );
+  if (req.memoryRecalledInto) {
+    const scanned = new Set(scannedPicks.map((p) => p.asset.id));
+    // Only assets the recall ADDED. One the archive scan found anyway is not a memory hit; it is
+    // a beat whose own keywords matched, and crediting the memory for it would inflate the metric.
+    for (const r of recall) {
+      if (!scanned.has(r.pick.asset.id)) req.memoryRecalledInto.add(r.pick.asset.id);
+    }
+  }
+  if (req.memoryEntity) {
+    const hit = recalledAdded > 0;
+    if (req.memoryMetrics) {
+      if (hit) {
+        req.memoryMetrics.memoryHits++;
+        req.memoryMetrics.assetsReused += recalledAdded;
+        req.memoryMetrics.providerSearchesAvoided++;
+      } else {
+        req.memoryMetrics.memoryMisses++;
+        req.memoryMetrics.newSearches++;
+      }
+    }
+    console.log(
+      formatSearchMemoryLine({
+        query: primaryQuery,
+        hit,
+        provider: recall[0]?.memory.source,
+        assets: recalledAdded,
+        // A recalled asset is already in FastVid's archive: adopting it costs no provider search
+        // and no download from anyone else.
+        networkAvoided: hit,
+      })
+    );
+  }
 
   // ── 2. Coverage scoring ────────────────────────────────────────────────────
   // Score top-5 archive candidates against the beat embedding to get coverage.
