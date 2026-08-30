@@ -717,3 +717,45 @@ export function assertVisualCoverageExportGate(
       `Top reject reasons: ${topReasons}. Worst beats: ${worstBeats}.`
   );
 }
+
+/**
+ * RONDE 132 §10 — the short-montage warning, with the numbers that make it actionable.
+ *
+ * It used to read:
+ *
+ *     short montage: scene(s) 1, 2 had less footage than voice
+ *                    — the tail may be filled by holding the last frame
+ *
+ * No seconds, no clip counts, and a "may" that left the reader unable to tell whether anything
+ * froze at all. A 0.3s shortfall is a rounding artefact and a 12s one is a visible defect; both
+ * produced that same sentence.
+ *
+ * The worst scene is named because that is the one worth looking at, and the total says whether
+ * the render has one bad scene or a systemic shortage.
+ */
+export function formatMontageShortfallWarning(
+  shortfalls: ReadonlyArray<{
+    sceneIndex: number;
+    shortBySec: number;
+    uniqueClips: number;
+    neededClips: number;
+  }>,
+  padScenes: readonly number[]
+): string {
+  if (shortfalls.length === 0) {
+    // The estimate flagged the scene but no shortfall was recorded — keep the old, weaker sentence
+    // rather than inventing a number for it.
+    return (
+      `short montage: scene(s) ${padScenes.join(", ")} had less footage than voice — ` +
+      `the tail may be filled by holding the last frame`
+    );
+  }
+  const worst = [...shortfalls].sort((a, b) => b.shortBySec - a.shortBySec)[0]!;
+  const total = shortfalls.reduce((sum, s) => sum + s.shortBySec, 0);
+  return (
+    `short montage: ${shortfalls.length} scene(s) had less footage than voice — ` +
+    `${total.toFixed(1)}s short in total, worst scene ${worst.sceneIndex} at ` +
+    `${worst.shortBySec.toFixed(1)}s (${worst.uniqueClips} unique clip(s), ` +
+    `${worst.neededClips} needed) — that time is filled by holding the last frame`
+  );
+}

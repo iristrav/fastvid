@@ -47,6 +47,8 @@ import { orderForDiversity, recallProvenAssetsForEntity } from "./searchMemoryRe
 import type { ProvenAssetMemory } from "./visualSearchMemory";
 import type { ArchiveAssetRow } from "./curatedMediaSourcing";
 import { buildBeatVisualStatuses, neverAskedReason } from "./beatVisualStatus";
+import { formatMontageShortfallWarning } from "./videoQualityReport";
+import { formatProviderSkips } from "./scenePool";
 import {
   beatContinuesPreviousThought,
   formatSubjectFallbackEmptyLine,
@@ -636,5 +638,102 @@ describe("RONDE 132 — 'subject search returned nothing' was two failures in on
     const borrowed = { subject: "Hitler", kind: "person", origin: "scene_persons" } as const;
     expect(formatSubjectFallbackEmptyLine(1, 1, borrowed, { rejected: 0 }))
       .toContain("origin=scene_persons");
+  });
+});
+
+/* ═══════════════════════ O/T: the shortfall and the skipped providers ═══════════════════════ */
+
+describe("RONDE 132 §10 — a short montage says HOW short", () => {
+  const short = (sceneIndex: number, shortBySec: number, uniqueClips = 3, neededClips = 5) =>
+    ({ sceneIndex, shortBySec, uniqueClips, neededClips });
+
+  it("THE GAP: the old warning had no number and said 'may'", () => {
+    /**
+     * From the render:
+     *
+     *     short montage: scene(s) 1, 2 had less footage than voice
+     *                    — the tail may be filled by holding the last frame
+     *
+     * A 0.3s shortfall is a rounding artefact; a 12s one is a visible freeze. Both produced that
+     * exact sentence, and the "may" left the reader unable to tell whether anything froze at all.
+     */
+    const line = formatMontageShortfallWarning([short(1, 0.4), short(2, 12.3)], [1, 2]);
+    expect(line).not.toContain("may be filled");
+    expect(line).toContain("12.3s");
+  });
+
+  it("names the worst scene, because that is the one worth looking at", () => {
+    const line = formatMontageShortfallWarning([short(1, 0.4), short(2, 12.3, 2, 6)], [1, 2]);
+    expect(line).toContain("worst scene 2 at 12.3s");
+    expect(line).toContain("2 unique clip(s), 6 needed");
+  });
+
+  it("the total says whether it is one bad scene or a systemic shortage", () => {
+    expect(formatMontageShortfallWarning([short(1, 4), short(2, 6)], [1, 2]))
+      .toContain("10.0s short in total");
+  });
+
+  it("with no shortfall recorded it keeps the old, weaker sentence rather than inventing one", () => {
+    // The estimate can flag a scene without a shortfall being recorded. Printing "0.0s short"
+    // there would be a measurement that was never taken.
+    const line = formatMontageShortfallWarning([], [1, 2]);
+    expect(line).toContain("scene(s) 1, 2");
+    expect(line).toContain("may be filled");
+    expect(line).not.toContain("0.0s");
+  });
+
+  it("O. NOT DONE: the shortfall does not yet send the beat back to sourcing", () => {
+    /**
+     * Stated as a test so it cannot be quietly forgotten.
+     *
+     * §10 asks for `requiredDuration vs availableUniqueDuration` BEFORE the montage, and a return
+     * to sourcing when it falls short. The check exists and is now measured, but the loop back
+     * into sourcing does not: the shortfall is detected inside compose, which sits downstream of
+     * every sourcing route, and re-entering sourcing from there is an architectural change rather
+     * than a patch.
+     *
+     * What this round delivers is the number that says whether it is worth building.
+     */
+    const line = formatMontageShortfallWarning([short(1, 12.3)], [1]);
+    expect(line).toContain("filled by holding the last frame");
+  });
+});
+
+describe("RONDE 132 §13 — a provider that was never asked says so", () => {
+  it("T. the skip reason distinguishes a missing key from a disabled flag", () => {
+    /**
+     * The render reported "Geen Wikimedia-stills" with no way to tell whether Wikimedia had been
+     * asked and found nothing, or had never been called. Those need completely different work:
+     * "the queries are wrong" versus "the key is missing".
+     */
+    expect(formatProviderSkips({ pexels: "no_api_key", europeana: "disabled_by_flag" }))
+      .toBe("europeana=disabled_by_flag pexels=no_api_key");
+  });
+
+  it("nothing skipped produces nothing", () => {
+    expect(formatProviderSkips({})).toBe("");
+  });
+
+  it("every provider guard routes through the recorder", () => {
+    // Source-bound: the guards live inside the pool builder, which needs a whole scene to call.
+    const { readFileSync } = require("fs") as typeof import("fs");
+    const { join } = require("path") as typeof import("path");
+    const pool = readFileSync(join(__dirname, "scenePool.ts"), "utf8");
+    for (const source of [
+      "pexels", "pixabay", "internet_archive", "europeana", "openverse", "nasa", "nara", "loc",
+    ]) {
+      expect(pool, source).toContain(`noteSkip("${source}"`);
+    }
+    expect(pool).toContain("[ProviderSkipped] scene=");
+    /**
+     * And the recorder actually assigns BOTH reasons. Asserting only that `noteSkip` is called
+     * leaves a version that skips the provider and records nothing — which is the state this
+     * round exists to fix, and a mutation proved the test could not see it.
+     */
+    const idx = pool.indexOf("const noteSkip =");
+    expect(idx).toBeGreaterThan(0);
+    const body = pool.slice(idx, pool.indexOf("};", idx));
+    expect(body).toContain('skipped[source] = "disabled_by_flag";');
+    expect(body).toContain('skipped[source] = "no_api_key";');
   });
 });

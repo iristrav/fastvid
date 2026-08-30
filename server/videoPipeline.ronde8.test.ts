@@ -76,9 +76,15 @@ describe("RONDE 8B — a gray pad is registered and reported, not silently shipp
   });
 
   it("the gray-pad warn site registers the scene on the dedup state (deduplicated)", () => {
-    const idx = pipelineSrc.indexOf("gray pad will fill gap");
+    /**
+     * RONDE 132 §10 moved the warning's TEXT into `formatMontageShortfallWarning` so it can carry
+     * the seconds and the clip counts. What these tests exist to protect — the registration on the
+     * dedup state, and the shortfall reaching the persisted report — is unchanged, and is asserted
+     * against the new call rather than against the old inline string.
+     */
+    const idx = pipelineSrc.indexOf("montage est ${estBeforeCompose.toFixed(1)}s < voice");
     expect(idx).toBeGreaterThan(-1);
-    const before = pipelineSrc.slice(idx - 800, idx);
+    const before = pipelineSrc.slice(Math.max(0, idx - 1600), idx);
     expect(before).toContain("composeOptions.dedup.grayPadScenes.push(scene.index)");
     expect(before).toContain("!composeOptions.dedup.grayPadScenes.includes(scene.index)");
   });
@@ -89,7 +95,9 @@ describe("RONDE 8B — a gray pad is registered and reported, not silently shipp
     // and since RONDE 26 the filler holds the last frame rather than going grey. The registration
     // and the report entry — what this test exists to protect — are unchanged.
     expect(pipelineSrc).toContain("visualDedup.grayPadScenes.length > 0");
-    expect(pipelineSrc).toMatch(/qualityReport\.warnings\.push\(\s*`short montage: scene\(s\)/);
+    expect(pipelineSrc).toContain(
+      "qualityReport.warnings.push(formatMontageShortfallWarning(visualDedup.montageShortfalls"
+    );
     expect(pipelineSrc).toContain("scene(s) with a short montage");
   });
 });

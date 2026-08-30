@@ -524,6 +524,7 @@ import type { CachedCandidate } from "./sceneCandidateCache";
 import {
   buildVideoQualityReport,
   computeMeritQualityScore,
+  formatMontageShortfallWarning,
   logVideoQualityReport,
   assertVisualCoverageExportGate,
 } from "./videoQualityReport";
@@ -15351,6 +15352,13 @@ export interface VisualDedupState {
    * persisted quality report instead of only as a mid-render warn line.
    */
   grayPadScenes: number[];
+  /** RONDE 132 §10: how short each montage was, so a 0.3s rounding is not reported like a 12s freeze. */
+  montageShortfalls: Array<{
+    sceneIndex: number;
+    shortBySec: number;
+    uniqueClips: number;
+    neededClips: number;
+  }>;
   /**
    * Production fix (Hitler-render finding, Problem 10): a whole SCENE (not just one beat)
    * that had to fall all the way back to generateColorFallback as its final composed output —
@@ -15762,6 +15770,7 @@ export function createVisualDedupState(
     entityYoutubeFetchesUsed: 0,
     stockBeatsUsed: 0,
     grayPadScenes: [],
+    montageShortfalls: [],
     sceneRescueColorFallbackCount: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
@@ -33522,8 +33531,30 @@ export async function composeSceneVideoInner(
     if (composeOptions?.dedup && !composeOptions.dedup.grayPadScenes.includes(scene.index)) {
       composeOptions.dedup.grayPadScenes.push(scene.index);
     }
+    /**
+     * RONDE 132 §10 — the shortfall, as a number.
+     *
+     * The render report said "the tail may be filled by holding the last frame" and stopped there:
+     * no seconds, no clip count, and a "may" that left the reader unable to tell whether anything
+     * actually froze. A shortfall of 0.3s is a rounding artefact; the same warning covering 12s is
+     * a visible defect, and they read identically.
+     *
+     * Recorded on the render state so the end-of-render warning can name the worst scene rather
+     * than only listing which ones were short.
+     */
+    const shortBySec = outDur - estBeforeCompose;
+    if (composeOptions?.dedup) {
+      composeOptions.dedup.montageShortfalls.push({
+        sceneIndex: scene.index,
+        shortBySec,
+        uniqueClips: safeClips.length,
+        neededClips: minClipsNeeded,
+      });
+    }
     console.warn(
-      `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
+      `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ` +
+        `${outDur.toFixed(1)}s — short by ${shortBySec.toFixed(1)}s ` +
+        `(uniqueClips=${safeClips.length} needed=${minClipsNeeded})`
     );
   }
 
@@ -37240,9 +37271,7 @@ async function _runVideoPipelineInner(
     // which is the thing worth reporting either way.
     if (visualDedup.grayPadScenes.length > 0) {
       const padScenes = [...visualDedup.grayPadScenes].sort((a, b) => a - b);
-      qualityReport.warnings.push(
-        `short montage: scene(s) ${padScenes.join(", ")} had less footage than voice — the tail may be filled by holding the last frame`
-      );
+      qualityReport.warnings.push(formatMontageShortfallWarning(visualDedup.montageShortfalls, padScenes));
       console.warn(
         `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with a short montage (${padScenes.join(", ")}) — visual coverage incomplete`
       );

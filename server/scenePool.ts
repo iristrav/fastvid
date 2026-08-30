@@ -59,6 +59,22 @@ const DETAIL_FETCH_CONCURRENCY = 5;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * RONDE 132 §13 — the providers this beat never asked, and why.
+ *
+ * `[ProviderSkipped] scene=2 pexels=no_api_key europeana=disabled_by_flag`
+ *
+ * "provider had nothing" and "provider was never called" are different findings that lead to
+ * different work, and the render could not tell them apart — which is why "Geen Wikimedia-stills"
+ * had no actionable follow-up.
+ */
+export function formatProviderSkips(skipped: Record<string, string>): string {
+  return Object.entries(skipped)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([source, reason]) => `${source}=${reason}`)
+    .join(" ");
+}
+
 export type PoolCandidateSource =
   | "pexels"
   | "pixabay"
@@ -1310,7 +1326,31 @@ async function buildSceneCandidatePoolInner(
   const liveT0 = Date.now();
   const tasks: Promise<{ candidates: PoolCandidate[]; apiCalls: number; source: string; ms: number }>[] = [];
 
-  if (!skipPexels && pexelsApiKey) {
+  /**
+   * RONDE 132 §13 — a provider that was never asked says so.
+   *
+   * The render reported "Geen Wikimedia-stills" and there was no way to tell whether Wikimedia had
+   * been asked and returned nothing, or had never been asked at all. Every `if (!skipX && key)`
+   * below silently drops a whole provider, and the two cases need completely different work:
+   * "the queries are wrong" versus "the key is missing".
+   *
+   * Recorded here rather than inferred later: this is the one place that knows WHY.
+   */
+  const skipped: Record<string, string> = {};
+  const noteSkip = (source: string, flagged: boolean, hasKey: boolean): boolean => {
+    if (flagged) {
+      skipped[source] = "disabled_by_flag";
+      return true;
+    }
+    if (!hasKey) {
+      skipped[source] = "no_api_key";
+      return true;
+    }
+    return false;
+  };
+
+  // The guard keeps its own key check so the type still narrows; noteSkip only records WHY.
+  if (!noteSkip("pexels", skipPexels, Boolean(pexelsApiKey)) && pexelsApiKey) {
     tasks.push(
       searchPexelsCandidates(queries, pexelsApiKey, maxPerSource).then(r => ({
         ...r,
@@ -1319,7 +1359,7 @@ async function buildSceneCandidatePoolInner(
       }))
     );
   }
-  if (!skipPixabay && pixabayApiKey) {
+  if (!noteSkip("pixabay", skipPixabay, Boolean(pixabayApiKey)) && pixabayApiKey) {
     tasks.push(
       searchPixabayCandidates(queries, pixabayApiKey, maxPerSource).then(r => ({
         ...r,
@@ -1337,7 +1377,7 @@ async function buildSceneCandidatePoolInner(
   );
   // FASE 2 — Priority A historical/open sources: no API key required for Internet Archive
   // (like Wikimedia); Europeana needs a key, same shape as Pexels/Pixabay above.
-  if (!skipInternetArchive) {
+  if (!noteSkip("internet_archive", skipInternetArchive, true)) {
     tasks.push(
       searchInternetArchiveCandidates(queries, maxPerSource).then(r => ({
         ...r,
@@ -1346,7 +1386,7 @@ async function buildSceneCandidatePoolInner(
       }))
     );
   }
-  if (!skipEuropeana && europeanaApiKey) {
+  if (!noteSkip("europeana", skipEuropeana, Boolean(europeanaApiKey)) && europeanaApiKey) {
     tasks.push(
       searchEuropeanaCandidates(queries, europeanaApiKey, maxPerSource).then(r => ({
         ...r,
@@ -1357,7 +1397,7 @@ async function buildSceneCandidatePoolInner(
   }
   // FASE 3 — Priority A historical/open sources: Openverse/NASA/Library of Congress need no
   // API key (same shape as Internet Archive above); NARA needs a key, same shape as Europeana.
-  if (!skipOpenverse) {
+  if (!noteSkip("openverse", skipOpenverse, true)) {
     tasks.push(
       searchOpenverseCandidates(queries, maxPerSource).then(r => ({
         ...r,
@@ -1366,7 +1406,7 @@ async function buildSceneCandidatePoolInner(
       }))
     );
   }
-  if (!skipNasa) {
+  if (!noteSkip("nasa", skipNasa, true)) {
     tasks.push(
       searchNasaCandidates(queries, maxPerSource).then(r => ({
         ...r,
@@ -1375,7 +1415,7 @@ async function buildSceneCandidatePoolInner(
       }))
     );
   }
-  if (!skipNara && naraApiKey) {
+  if (!noteSkip("nara", skipNara, Boolean(naraApiKey)) && naraApiKey) {
     tasks.push(
       searchNaraCandidates(queries, naraApiKey, maxPerSource).then(r => ({
         ...r,
@@ -1384,7 +1424,7 @@ async function buildSceneCandidatePoolInner(
       }))
     );
   }
-  if (!skipLoc) {
+  if (!noteSkip("loc", skipLoc, true)) {
     tasks.push(
       searchLibraryOfCongressCandidates(queries, maxPerSource).then(r => ({
         ...r,
@@ -1392,6 +1432,10 @@ async function buildSceneCandidatePoolInner(
         ms: Date.now() - liveT0,
       }))
     );
+  }
+
+  if (Object.keys(skipped).length > 0) {
+    console.log(`[ProviderSkipped] scene=${sceneIndex} ${formatProviderSkips(skipped)}`);
   }
 
   const results = await Promise.allSettled(tasks);
