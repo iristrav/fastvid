@@ -176,8 +176,25 @@ describe("RONDE 165 — wired into the routes render 554 lost assets on", () => 
     expect(block).toMatch(/winner\s*\n?\s*\?\s*"superseded_by_winner"\s*\n?\s*:\s*"not_chosen"/);
   });
 
-  it("an extension the compose barrier refused is recorded as refused", () => {
-    expect(PIPE).toContain('recordAssetOutcome(\n            dedup.sourcingCache?.lineage, extended, "extended_rejected"');
+  it("an extension pushClip turned away is recorded, and the two reasons are told apart", () => {
+    /**
+     * RONDE 167 rewrote this from a source-text match to the rule it was guarding.
+     *
+     * The original asserted one exact call shape and broke the moment the branch grew. Worse, it
+     * could not see that the branch was writing to a path the ledger did not know — it wrote zero
+     * events, measured — so the assertion passed on dead code for two rounds.
+     *
+     * pushClip refuses for two different reasons and they are different endings: the compose
+     * barrier refusing on content grounds, and the clip's content key already being on the
+     * timeline. An extension hits the second by construction.
+     */
+    const idx = PIPE.indexOf("const extended = await extendLastClip(dedup.lastRealClip");
+    expect(idx).toBeGreaterThan(0);
+    const block = PIPE.slice(idx, PIPE.indexOf("extendLastClip HIT", idx));
+    expect(block).toContain("composeBarrierAllows(");
+    expect(block).toMatch(/barrier\.allow \? "extended_removed" : "extended_rejected"/);
+    // And the outcome is filed with an identity, not just a path — see RONDE 167 F2/F3.
+    expect(block).toContain("clipContentKey(extended)");
   });
 
   it("adoptClip's selected-but-not-adopted exits all file an outcome", () => {

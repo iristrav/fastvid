@@ -297,6 +297,7 @@ import {
   formatFunnelReport,
   formatLineageLine,
   formatSourceSummary,
+  assertNoSelectedClipWithoutOutcome,
   recordAssetOutcome,
   type AssetOutcomeReason,
   type VisualLineageRecord,
@@ -16610,7 +16611,7 @@ let sourcingCacheSeq = 0;
 
 export function createSourcingCache(videoId?: number): SourcingCache {
   sourcingCacheSeq += 1;
-  return {
+  const cache: SourcingCache = {
     queries: new Map(),
     budgetCancelledProviders: new Set(),
     assets: new Map(),
@@ -16639,6 +16640,19 @@ export function createSourcingCache(videoId?: number): SourcingCache {
           : undefined,
     }),
   };
+  /**
+   * RONDE 167 §7 — teach the ledger how a file path maps to an asset identity, once.
+   *
+   * `clipContentKey` already turns `scene_N_bM_curated_a<id>.mp4` into `curated:asset:<id>`, which
+   * is the only handle the curated archive route has: its record is opened from the DB row and the
+   * file it writes is never registered as a path. Every outcome writer looked the clip up by path
+   * alone and wrote nothing — measured at zero events.
+   *
+   * Handing the ledger the resolver rather than patching the five writers is the point. A sixth
+   * writer added next round cannot reintroduce the bug by forgetting an argument.
+   */
+  cache.lineage.setContentKeyResolver(clipContentKey);
+  return cache;
 }
 
 function emptyProviderMetrics(): ProviderSourcingMetrics {
@@ -27753,8 +27767,25 @@ async function rescueBeatVisualWhenEmptyInner(
          * how `extend_s*` files reached render 554's vanished list.
          */
         if (extended && !(await pushClip(extended, holdSec))) {
+          /**
+           * RONDE 167 §2 — pushClip refuses for two different reasons and they are not the same
+           * ending.
+           *
+           * It turns a clip away when the compose barrier refuses it on content grounds, and when
+           * its content key is already on the timeline. For an extension the SECOND is the common
+           * case by construction — the whole point is that it reuses footage already used — and
+           * filing that as a REJECTED refusal would put a content verdict on the record that no
+           * gate ever gave. Asking the barrier directly is how the two are told apart; it is the
+           * same call pushClip made, and it reads state rather than doing work.
+           */
+          const barrier = composeBarrierAllows(
+            dedup.beatRelevance, extended, clipContentKey(extended)
+          );
           recordAssetOutcome(
-            dedup.sourcingCache?.lineage, extended, "extended_rejected", `s${scene.index}b${beat.index}`,
+            dedup.sourcingCache?.lineage,
+            extended,
+            barrier.allow ? "extended_removed" : "extended_rejected",
+            `s${scene.index}b${beat.index}`,
             clipContentKey(extended)
           );
         } else if (extended) {
@@ -37475,6 +37506,40 @@ async function _runVideoPipelineInner(
       for (const line of formatAssetLifecycleAudit(ledger)) {
         if (line.includes("unresolved=0")) console.log(pipelineReport.add("sourcing", line));
         else console.warn(pipelineReport.add("sourcing", line));
+      }
+      /**
+       * RONDE 167 §8 — the hard invariant, stated as a pass or a failure rather than a count.
+       *
+       * The audit above says how many assets are unaccounted for; nothing said whether that is
+       * acceptable. It never is. Every asset this render CHOSE owes it an ending, and a render
+       * that cannot produce one for a clip cannot answer where its pictures came from.
+       *
+       * Logged, never thrown: the whole audit block sits inside a try precisely because reporting
+       * must not be able to destroy a finished video. The line is an error so it cannot be read as
+       * routine, and each offender is named so the route can be found.
+       */
+      const outcomeInvariant = assertNoSelectedClipWithoutOutcome(ledger);
+      if (outcomeInvariant.ok) {
+        console.log(
+          pipelineReport.add("sourcing", "[OutcomeInvariant] OK selectedWithoutOutcome=0")
+        );
+      } else {
+        console.error(
+          pipelineReport.add(
+            "sourcing",
+            `[OutcomeInvariant] FAILED selectedWithoutOutcome=${outcomeInvariant.offenders.length}` +
+              " — every chosen asset must have an outcome"
+          )
+        );
+        for (const o of outcomeInvariant.offenders.slice(0, 12)) {
+          console.error(
+            pipelineReport.add(
+              "sourcing",
+              `[OutcomeInvariant] asset=${o.lineageId} provider=${o.provider} ` +
+                `scene=${o.sceneIndex} beat=${o.beatIndex} route=${o.route} file=${o.filename}`
+            )
+          );
+        }
       }
       console.log(formatGlobalBudget());
       console.log(

@@ -122,8 +122,21 @@ export type AssetOutcomeReason =
   | "vision_rejected"
   /** A curated archive asset refused before adoption. */
   | "curated_rejected"
-  /** An extended clip that could not be used. */
+  /** An extended clip the compose barrier turned away. */
   | "extended_rejected"
+  /**
+   * An extension that was built and adopted, and then dropped before the final video.
+   *
+   * Distinct from `extended_rejected`: nothing refused this clip on content grounds, the montage
+   * simply did not use it. RONDE 167 §2 asks for the extend route's endings to be nameable, and
+   * "the barrier said no" and "it was never needed" are the two that exist.
+   *
+   * There is deliberately no `extended_download_failed`. An extension that fails to build produces
+   * no file and no record, so there is nothing to account for — inventing a reason for it would
+   * add exactly the kind of enum member nothing writes, which is the bug class this round is
+   * about. The test suite asserts no orphan record is created on that path.
+   */
+  | "extended_removed"
   /** The fair-use transform this asset required did not produce a usable file. */
   | "transform_failed"
   // ── Ended by something else winning ─────────────────────────────────────────────────────────
@@ -154,6 +167,7 @@ const OUTCOME_STATUS: Record<AssetOutcomeReason, LineageEventStatus> = {
   vision_rejected: "REJECTED",
   curated_rejected: "REJECTED",
   extended_rejected: "REJECTED",
+  extended_removed: "REMOVED",
   transform_failed: "REJECTED",
   not_chosen: "REMOVED",
   superseded_by_winner: "REPLACED",
@@ -452,6 +466,24 @@ export class VisualSourceLedger {
   private readonly countedStages = new Set<string>();
   private seq = 0;
   private finalVideoProven = false;
+  /**
+   * RONDE 167 §7 — how this ledger turns a file path into an asset identity.
+   *
+   * The curated archive route is the reason this exists. Its record is opened from the DB row and
+   * is reachable only by `curated:asset:<id>`; the file it later writes,
+   * `scene_N_bM_curated_a<id>.mp4`, is never registered as a path. Every terminal-outcome writer
+   * in the pipeline looked the clip up by path alone, found nothing, and wrote nothing — measured
+   * at zero events — so RONDE 165's superseded_by_winner, RONDE 159's and 162's REMOVED events and
+   * RONDE 95's recordReplacement were all inert for archive assets.
+   *
+   * Patching each writer to pass a key would fix today's five and leave the sixth to be forgotten.
+   * Instead the LEDGER knows how to derive the identity, so `resolve` closes the gap for every
+   * caller that exists and every caller that does not exist yet.
+   *
+   * Injected rather than imported: `clipContentKey` lives in videoPipeline, which imports this
+   * module. The dependency stays one-way and this file stays free of fs and ffmpeg.
+   */
+  private contentKeyResolver?: (clipPath: string) => string | undefined;
   private readonly emit?: (line: string) => void;
 
   /**
@@ -533,6 +565,16 @@ export class VisualSourceLedger {
    * has to point at the real file. This changes no provenance — the record already carries the
    * provider it was created with — it only makes the record reachable by the path it now owns.
    */
+  /**
+   * Teach this ledger how to derive an asset identity from a file path. Called once per render.
+   *
+   * Optional by design: a ledger without one behaves exactly as before, which keeps every test and
+   * tool that builds a bare ledger working.
+   */
+  setContentKeyResolver(fn: (clipPath: string) => string | undefined): void {
+    this.contentKeyResolver = fn;
+  }
+
   bindPath(lineageId: string, localPath: string, contentKey?: string): VisualLineageRecord | null {
     const record = this.records.get(lineageId);
     if (!record || !localPath) return null;
@@ -570,11 +612,33 @@ export class VisualSourceLedger {
       cursor = this.derivedFrom.get(cursor);
     }
 
-    if (contentKey) {
-      const byKey = this.byContentKey.get(contentKey);
+    const key = contentKey ?? this.deriveContentKey(clipPath);
+    if (key) {
+      const byKey = this.byContentKey.get(key);
       if (byKey) return this.records.get(byKey) ?? null;
     }
     return null;
+  }
+
+  /**
+   * The asset identity behind a path, when the path itself is not a handle.
+   *
+   * Only reached after the exact path and the derivation chain have both missed, so the cost is
+   * paid on the rare lookup rather than the common one. Never throws: a resolver that fails leaves
+   * the clip unknown, which is the honest answer and the pre-RONDE-167 behaviour.
+   */
+  /** The path a derived file was produced from, or undefined. Read by resolveClipOutcomeIdentity. */
+  derivationOriginOf(clipPath: string): string | undefined {
+    return this.derivedFrom.get(clipPath);
+  }
+
+  private deriveContentKey(clipPath: string): string | undefined {
+    if (!this.contentKeyResolver) return undefined;
+    try {
+      return this.contentKeyResolver(clipPath) || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1071,30 +1135,13 @@ export class VisualSourceLedger {
         this.finalVideoProven &&
         !has(id, "FINAL_VIDEO") &&
         (has(id, "SELECTED") || has(id, "ADOPTED")) &&
-        !stagesByLineage.get(id)?.has("REPLACED") &&
-        !stagesByLineage.get(id)?.has("REMOVED") &&
-        // A rejection is a STATUS on whichever stage the gate maps to, not a stage of its own —
-        // see recordRejection — so it is looked for as one.
-        ![...(stagesByLineage.get(id)?.values() ?? [])].some((st) => st.includes("REJECTED")) &&
         /**
-         * RONDE 167 — a download that never finished is an ending, and this rule called it a
-         * disappearance.
-         *
-         * `preparePooledArchiveClip` files SELECTED, then DOWNLOAD_STARTED, then on failure a
-         * DOWNLOAD_FAILED carrying the reason. Every one of those is honest bookkeeping and the
-         * asset plainly cannot be in the final video — there is no file. But FAILED is not
-         * REPLACED, REMOVED or REJECTED, so the rule counted it as unaccounted for, and every
-         * curated asset whose fetch timed out became a warning that named a real problem it did
-         * not have. Video 554's `scene_N_bM_curated_*` vanished entries are this shape.
-         *
-         * Narrow on purpose: only when nothing later SUCCEEDED. A record that failed once, was
-         * retried, downloaded and then genuinely disappeared must still be caught — otherwise a
-         * single early failure would buy an asset permanent silence.
+         * RONDE 167 — one definition of an ending, in `hasTerminalOutcome`, shared with the
+         * lifecycle audit and the §8 invariant. A rejection is a STATUS on whichever stage the
+         * gate maps to rather than a stage of its own, and a download that never finished is an
+         * ending too; both live there now so the three readers cannot drift apart again.
          */
-        !(
-          stagesByLineage.get(id)?.has("DOWNLOAD_FAILED") &&
-          !stagesByLineage.get(id)?.has("DOWNLOAD_SUCCEEDED")
-        )
+        !hasTerminalOutcome(stagesByLineage.get(id) ?? new Map())
       ) {
         warnings.push({
           code: "VANISHED_WITHOUT_OUTCOME",
@@ -1637,6 +1684,111 @@ export function formatAuditReport(result: ReconciliationResult): string[] {
 }
 
 /**
+ * RONDE 167 §7 — the one place that answers "which asset is this file, and how do we know".
+ *
+ * Every terminal-outcome writer asks this, and `via` is the diagnosis the round was missing: a
+ * clip resolved by `contentKey` is one whose PATH nobody registered, and a clip resolved by
+ * `none` is one no outcome can be written for at all. Before this, both looked like silence.
+ *
+ * The order is the ledger's own: exact path, then the derivation chain, then the asset identity.
+ * The brief asks for identity first; exact-path-first is kept deliberately and is strictly more
+ * precise — a trimmed or overlaid file has its OWN record, and its content key deliberately maps
+ * back to the original, so identity-first would file a derived clip's outcome on its parent and
+ * undo the parent/child separation linkDerivedPath exists to keep. What the brief is actually
+ * asking for — that a missing path must never mean "unknown" — is guaranteed instead by the
+ * ledger deriving the identity itself, so no caller can forget it.
+ */
+export type ClipOutcomeIdentity = {
+  record: VisualLineageRecord | null;
+  /** Which handle worked. "none" means no outcome can be filed for this clip. */
+  via: "path" | "derived" | "contentKey" | "none";
+  /** The identity used or derived, for logging a miss that a caller may want to explain. */
+  contentKey?: string;
+};
+
+export function resolveClipOutcomeIdentity(
+  ledger: VisualSourceLedger | undefined,
+  clipPath: string,
+  contentKey?: string
+): ClipOutcomeIdentity {
+  if (!ledger || !clipPath) return { record: null, via: "none", contentKey };
+  const record = ledger.resolve(clipPath, contentKey);
+  if (!record) return { record: null, via: "none", contentKey };
+  if (record.localPath === clipPath) return { record, via: "path", contentKey };
+  if (ledger.derivationOriginOf(clipPath)) return { record, via: "derived", contentKey };
+  return { record, via: "contentKey", contentKey: contentKey ?? record.contentKey };
+}
+
+/**
+ * RONDE 167 §8 — the hard invariant: a chosen asset owes the render an ending.
+ *
+ * `reconcile()` warns per asset and `formatAssetLifecycleAudit` counts them. Neither can be read
+ * as a pass/fail by a caller, so nothing in the pipeline could ever say "this render's accounting
+ * is sound" or refuse to. This is that answer, computed from the same rule both of those use.
+ *
+ * Deliberately NOT throwing. A render that has already produced a video must not be destroyed by
+ * its own bookkeeping — the whole audit is wrapped in a try that exists for exactly that reason.
+ * It returns the finding so the caller can log it loudly, and so a test can assert on it.
+ */
+export type SelectedWithoutOutcome = {
+  lineageId: string;
+  filename: string;
+  provider: string;
+  sceneIndex?: number;
+  beatIndex?: number;
+  route: string;
+};
+
+export function assertNoSelectedClipWithoutOutcome(
+  ledger: VisualSourceLedger
+): { ok: boolean; offenders: SelectedWithoutOutcome[] } {
+  const offenders = unaccountedRecords(ledger).map((record) => ({
+    lineageId: record.lineageId,
+    filename: record.currentFilename,
+    provider: record.provider ?? UNVERIFIED_PROVIDER,
+    sceneIndex: record.sceneIndex,
+    beatIndex: record.beatIndex,
+    route: record.route,
+  }));
+  return { ok: offenders.length === 0, offenders };
+}
+
+/**
+ * The assets that were chosen, are not in the delivered file, and say nothing about why.
+ *
+ * One implementation, three readers — reconcile()'s warning, the lifecycle audit's `unresolved`
+ * count and the invariant above. RONDE 167 found the audit and the rule disagreeing about
+ * DOWNLOAD_FAILED; sharing the computation is what stops that recurring.
+ */
+function unaccountedRecords(ledger: VisualSourceLedger): VisualLineageRecord[] {
+  const stagesByLineage = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  for (const event of ledger.allEvents()) {
+    let stages = stagesByLineage.get(event.lineageId);
+    if (!stages) stagesByLineage.set(event.lineageId, (stages = new Map()));
+    if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
+  }
+  return ledger.allRecords().filter((record) => {
+    const stages = stagesByLineage.get(record.lineageId);
+    if (!stages) return false;
+    if (stages.has("FINAL_VIDEO")) return false;
+    if (!stages.has("SELECTED") && !stages.has("ADOPTED")) return false;
+    return !hasTerminalOutcome(stages);
+  });
+}
+
+/** The endings that account for an asset. Read by the vanished rule, the audit and the invariant. */
+function hasTerminalOutcome(stages: Map<LineageStage, LineageEventStatus>): boolean {
+  if (stages.has("REPLACED") || stages.has("REMOVED")) return true;
+  if ([...stages.values()].some((st) => st.includes("REJECTED"))) return true;
+  /**
+   * RONDE 167 F1 — a download that never finished is an ending, and the rule called it a
+   * disappearance. Narrow: only when nothing later succeeded, so a failed-then-retried asset that
+   * genuinely vanished is still caught rather than buying permanent silence with one early error.
+   */
+  return stages.has("DOWNLOAD_FAILED") && !stages.has("DOWNLOAD_SUCCEEDED");
+}
+
+/**
  * RONDE 165 — every asset the render touched, and how each one ended.
  *
  * `reconcile()` already emits one VANISHED_WITHOUT_OUTCOME warning per unaccounted asset, and
@@ -1677,14 +1829,9 @@ export function formatAssetLifecycleAudit(ledger: VisualSourceLedger): string[] 
       delivered++;
       continue;
     }
-    const hasOutcome =
-      stages?.has("REPLACED") ||
-      stages?.has("REMOVED") ||
-      [...(stages?.values() ?? [])].some((st) => st.includes("REJECTED")) ||
-      // RONDE 167: a download that never finished, exactly as reconcile() reads it — see the
-      // vanished rule above. The two must agree or this audit reports on a different set.
-      (stages?.has("DOWNLOAD_FAILED") && !stages?.has("DOWNLOAD_SUCCEEDED"));
-    if (hasOutcome) {
+    // RONDE 167: the ONE definition of an ending, shared with reconcile() and the invariant. The
+    // audit and the rule disagreeing about DOWNLOAD_FAILED is exactly what this round found.
+    if (stages && hasTerminalOutcome(stages)) {
       resolved++;
       continue;
     }

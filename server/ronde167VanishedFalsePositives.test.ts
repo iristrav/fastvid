@@ -62,8 +62,10 @@ import { formatVisualFitAudit } from "./beatVisualStatus";
 import { clipContentKey } from "./videoPipeline";
 import {
   VisualSourceLedger,
+  assertNoSelectedClipWithoutOutcome,
   formatAssetLifecycleAudit,
   recordAssetOutcome,
+  resolveClipOutcomeIdentity,
 } from "./visualSourceLineage";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
@@ -255,24 +257,35 @@ describe("RONDE 167 — F3: the curated route has no path, only a key", () => {
     ).toBe(true);
   });
 
-  it("every outcome writer in the pipeline now passes a content key", () => {
+  it("the LEDGER derives the identity, so a writer that forgets the key still lands", () => {
     /**
-     * Five writers, one rule. A new one that forgets the key is the same dead-code bug again, and
-     * it would pass its own source-text test exactly as RONDE 165's did.
+     * The real fix, and the reason it is not five patches. Patching each writer would have fixed
+     * the five that exist and left the sixth to be forgotten — which is how this bug was born.
+     * With the resolver installed, an outcome filed by path alone finds the record anyway.
      */
-    for (const call of [
-      'recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`, contentKey)',
-      'recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey)',
-      "clipContentKey(candidate.clipPath)",
-      "clipContentKey(extended)",
-      "originalContentKey: clipContentKey(dropped.path)",
-    ]) {
-      expect(PIPE, call).toContain(call);
-    }
-    // The two REMOVED writers R159/R162 added carry it as well.
-    expect(
-      (PIPE.match(/recordEventForPath\(clipPath, "REMOVED", \{ status: "REMOVED", reason, contentKey: clipContentKey\(clipPath\) \}\)/g) ?? []).length
-    ).toBe(2);
+    const l = curatedLedger();
+    l.setContentKeyResolver(clipContentKey);
+    const before = l.allEvents().length;
+    recordAssetOutcome(l, CLIP, "superseded_by_winner", "s2b3"); // no key passed
+    expect(l.allEvents().length - before).toBe(1);
+  });
+
+  it("resolveClipOutcomeIdentity says HOW the clip was found", () => {
+    // "contentKey" is the diagnosis this round was missing: the path was never registered.
+    const l = curatedLedger();
+    l.setContentKeyResolver(clipContentKey);
+    expect(resolveClipOutcomeIdentity(l, CLIP).via).toBe("contentKey");
+    expect(resolveClipOutcomeIdentity(l, "/w/nothing.mp4").via).toBe("none");
+    const direct = new VisualSourceLedger({ renderId: "r167" });
+    direct.createLineage({ sceneIndex: 0, beatIndex: 0, localPath: "/w/x.mp4", provider: "loc" });
+    expect(resolveClipOutcomeIdentity(direct, "/w/x.mp4").via).toBe("path");
+    direct.linkDerivedPath("/w/x_pad.mp4", "/w/x.mp4", "PADDED");
+    expect(resolveClipOutcomeIdentity(direct, "/w/x_pad.mp4").via).toBe("path");
+  });
+
+  it("the render installs the resolver on its own ledger", () => {
+    // An optional hook nobody installs is dead code, which is the F2 shape all over again.
+    expect(PIPE).toContain("cache.lineage.setContentKeyResolver(clipContentKey);");
   });
 });
 
@@ -356,5 +369,183 @@ describe("RONDE 167 — what is still open, stated rather than hidden", () => {
     expect(PIPE).toContain("formatAssetLifecycleAudit(ledger)");
     expect(PIPE).toContain("const reprieved = reprieveBeatClip(");
     expect(PIPE).toContain("formatVisualFitAudit(");
+  });
+});
+
+describe("RONDE 167 §4 — render 554's s2b3, end to end", () => {
+  /**
+   * The production case the whole chain of rounds is about, rebuilt from the render's own lines:
+   *
+   *     [ArchiveSourcingAudit] beat=s2b3 downloaded=4 visionJudged=4 visionAccepted=4 adopted=1
+   *     [VisualDiscovery] s2b3 scores={loc:8.0,archive:8.0,archive:8.0,archive:8.0}
+   *                            winner=loc(8.0) runnerUp=archive(8.0)
+   *
+   * One loc winner and three curated archive runners-up, all four approved by VisionGate. The
+   * three losers are the assets RONDE 165 meant to account for and could not.
+   */
+  const RUNNER_UP_IDS = [56153, 56154, 56155];
+  const winnerPath = "/w/scene_2_b3_pool_loc_x__pid_loc-42.mp4";
+
+  function s2b3(): VisualSourceLedger {
+    const l = new VisualSourceLedger({ renderId: "r554" });
+    l.setContentKeyResolver(clipContentKey);
+    // The loc winner: a pool download, registered by path (tagPathWithProviderAsset).
+    const w = l.createLineage({
+      sceneIndex: 2, beatIndex: 3, localPath: winnerPath, provider: "loc",
+      contentKey: "loc:42", providerAssetId: "42",
+    });
+    l.recordEvent(w.lineageId, "SELECTED", { status: "OK" });
+    l.recordEvent(w.lineageId, "ADOPTED", { status: "OK" });
+    // The three archive runners-up: records opened from the DB row, no path ever registered.
+    for (const id of RUNNER_UP_IDS) {
+      const r = l.createLineage({
+        sceneIndex: 2, beatIndex: 3, localPath: `archive-asset:${id}`,
+        contentKey: curatedAssetContentKey(id), provider: "bundesarchiv",
+      });
+      l.recordEvent(r.lineageId, "SELECTED", { status: "OK" });
+    }
+    return l;
+  }
+
+  const clipFor = (id: number): string => `/w/scene_2_b3_curated_a${id}.mp4`;
+
+  it("the funnel's losers each get exactly one outcome, on the file the render wrote", () => {
+    const l = s2b3();
+    for (const id of RUNNER_UP_IDS) {
+      const before = l.allEvents().length;
+      recordAssetOutcome(l, clipFor(id), "superseded_by_winner", "s2b3", clipContentKey(clipFor(id)));
+      expect(l.allEvents().length - before, `asset ${id}`).toBe(1);
+    }
+  });
+
+  it("after the beat, nothing on s2b3 is unaccounted for", () => {
+    const l = s2b3();
+    for (const id of RUNNER_UP_IDS) {
+      recordAssetOutcome(l, clipFor(id), "superseded_by_winner", "s2b3");
+    }
+    l.markFinalVideo([winnerPath]);
+    expect(vanished(l)).toBe(0);
+    expect(assertNoSelectedClipWithoutOutcome(l).ok).toBe(true);
+    expect(formatAssetLifecycleAudit(l)[0]).toContain("delivered=1");
+    expect(formatAssetLifecycleAudit(l)[0]).toContain("resolved=3");
+    expect(formatAssetLifecycleAudit(l)[0]).toContain("unresolved=0");
+  });
+
+  it("the bug, on the same fixture: without the resolver all three go silent", () => {
+    const l = s2b3();
+    // A ledger with no resolver is the pre-RONDE-167 pipeline.
+    const bare = new VisualSourceLedger({ renderId: "r554" });
+    for (const id of RUNNER_UP_IDS) {
+      const r = bare.createLineage({
+        sceneIndex: 2, beatIndex: 3, localPath: `archive-asset:${id}`,
+        contentKey: curatedAssetContentKey(id), provider: "bundesarchiv",
+      });
+      bare.recordEvent(r.lineageId, "SELECTED", { status: "OK" });
+      recordAssetOutcome(bare, clipFor(id), "superseded_by_winner", "s2b3");
+    }
+    bare.markFinalVideo([]);
+    expect(vanished(bare)).toBe(3);
+    // The same three, with the resolver, are accounted for.
+    for (const id of RUNNER_UP_IDS) recordAssetOutcome(l, clipFor(id), "superseded_by_winner", "s2b3");
+    l.markFinalVideo([winnerPath]);
+    expect(vanished(l)).toBe(0);
+  });
+
+  it("a curated REPLACEMENT keeps the whole lineage readable", () => {
+    /**
+     * §4's second half. The original is only reachable by its asset identity and the replacement
+     * by its path; recordReplacement resolved both by path, so archive swaps were invisible.
+     */
+    const l = s2b3();
+    const original = clipFor(56153);
+    expect(l.recordReplacement(original, winnerPath, "validation_replaced")).toBe(true);
+    const record = l.resolve(original, clipContentKey(original))!;
+    const events = l.allEvents().filter((e) => e.lineageId === record.lineageId);
+    expect(events.map((e) => e.stage)).toContain("REPLACED");
+    // The swap names the asset it went to, so the pair reads in both directions.
+    expect(events.find((e) => e.stage === "REPLACED")?.reason).toContain("validation_replaced");
+    expect(record.provider).toBe("bundesarchiv");
+    l.markFinalVideo([winnerPath]);
+    expect(assertNoSelectedClipWithoutOutcome(l).offenders.map((o) => o.filename))
+      .not.toContain("scene_2_b3_curated_a56153.mp4");
+  });
+});
+
+describe("RONDE 167 §8 — a chosen asset owes the render an ending", () => {
+  function chosen(then: (l: VisualSourceLedger, path: string) => void): VisualSourceLedger {
+    const l = new VisualSourceLedger({ renderId: "r167" });
+    l.setContentKeyResolver(clipContentKey);
+    const r = l.createLineage({ sceneIndex: 1, beatIndex: 2, localPath: "/w/a.mp4", provider: "loc" });
+    l.recordEvent(r.lineageId, "SELECTED", { status: "OK" });
+    then(l, "/w/a.mp4");
+    l.markFinalVideo([]);
+    return l;
+  }
+
+  it("fails, and names the offender, when an asset has no ending", () => {
+    const result = assertNoSelectedClipWithoutOutcome(chosen(() => {}));
+    expect(result.ok).toBe(false);
+    expect(result.offenders).toHaveLength(1);
+    expect(result.offenders[0].filename).toBe("a.mp4");
+    expect(result.offenders[0].provider).toBe("loc");
+    expect(result.offenders[0].beatIndex).toBe(2);
+  });
+
+  it("passes for every ending the pipeline can actually write", () => {
+    for (const reason of [
+      "superseded_by_winner", "not_chosen", "vision_rejected", "invalid_file",
+      "transform_failed", "duplicate_content", "extended_rejected", "extended_removed",
+    ] as const) {
+      const l = chosen((led, p) => recordAssetOutcome(led, p, reason));
+      expect(assertNoSelectedClipWithoutOutcome(l).ok, reason).toBe(true);
+    }
+  });
+
+  it("passes for a download that never finished, and for one that reached the film", () => {
+    const failed = chosen((l) => {
+      const r = l.allRecords()[0];
+      l.recordEvent(r.lineageId, "DOWNLOAD_FAILED", { status: "FAILED", reason: "timeout" });
+    });
+    expect(assertNoSelectedClipWithoutOutcome(failed).ok).toBe(true);
+
+    const l = new VisualSourceLedger({ renderId: "r167" });
+    const r = l.createLineage({ sceneIndex: 0, beatIndex: 0, localPath: "/w/f.mp4", provider: "loc" });
+    l.recordEvent(r.lineageId, "SELECTED", { status: "OK" });
+    l.markFinalVideo(["/w/f.mp4"]);
+    expect(assertNoSelectedClipWithoutOutcome(l).ok).toBe(true);
+  });
+
+  it("says nothing about an asset the render never chose", () => {
+    // Found and passed over is not a hole; only a CHOSEN asset owes an ending.
+    const l = new VisualSourceLedger({ renderId: "r167" });
+    l.createLineage({ sceneIndex: 0, beatIndex: 0, localPath: "/w/seen.mp4", provider: "loc" });
+    l.markFinalVideo([]);
+    expect(assertNoSelectedClipWithoutOutcome(l).ok).toBe(true);
+  });
+
+  it("the invariant, the audit and the vanished rule always agree", () => {
+    /**
+     * Three readers, one computation. RONDE 167 found the audit and the rule disagreeing about
+     * DOWNLOAD_FAILED; this is the assertion that stops that recurring.
+     */
+    for (const build of [
+      (l: VisualSourceLedger, p: string) => recordAssetOutcome(l, p, "not_chosen"),
+      () => {},
+      (l: VisualSourceLedger) => {
+        const r = l.allRecords()[0];
+        l.recordEvent(r.lineageId, "DOWNLOAD_FAILED", { status: "FAILED" });
+      },
+    ]) {
+      const l = chosen(build);
+      const offenders = assertNoSelectedClipWithoutOutcome(l).offenders.length;
+      expect(vanished(l)).toBe(offenders);
+      expect(formatAssetLifecycleAudit(l)[0]).toContain(`unresolved=${offenders}`);
+    }
+  });
+
+  it("the render reports the invariant either way", () => {
+    expect(PIPE).toContain("assertNoSelectedClipWithoutOutcome(ledger)");
+    expect(PIPE).toContain("[OutcomeInvariant] OK selectedWithoutOutcome=0");
+    expect(PIPE).toContain("[OutcomeInvariant] FAILED selectedWithoutOutcome=");
   });
 });

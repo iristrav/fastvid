@@ -127,7 +127,14 @@ describe("RONDE 142 BUG 1 — one picture cannot be extended past the limit", ()
   it("H. the production call site is guarded, and charges only on adoption", () => {
     const idx = PIPE.indexOf("// Try extending the last real clip before falling back to color");
     expect(idx).toBeGreaterThan(0);
-    const block = PIPE.slice(idx, idx + 2600);
+    /**
+     * Bounded by the block's own end marker rather than a character count. RONDE 167 documented
+     * the extension's outcome branch inside this block and a fixed +N window stopped reaching
+     * `recordExtension` — a green test turning red on a change that did not touch the rule.
+     */
+    const end = PIPE.indexOf("P0 (final visual coverage & zero-blue-fallback hardening", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = PIPE.slice(idx, end);
     expect(block).toContain("mayExtendAgain({");
     expect(block).toContain("if (!extendDecision.allowed)");
     expect(block).toContain("formatExtendRefusal(");
