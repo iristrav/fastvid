@@ -127,11 +127,20 @@ describe("RONDE 59 — the trim actually receives the offset", () => {
     const idx = src.indexOf("export async function downloadAndTrimPoolCandidate(");
     expect(idx).toBeGreaterThan(-1);
     /**
-     * RONDE 165 added the still-marker note to this function, pushing both calls from ~7.5k to
-     * ~8.8k. Window measured and widened rather than the assertion being softened — the calls
-     * themselves are unchanged and both are still asserted below.
+     * Bounded by the function's OWN end, not by a byte count.
+     *
+     * This was `slice(idx, idx + 10_000)`, widened once already by RONDE 165 and broken again by
+     * RONDE 133, which added the technical-gate checks and their reasoning to this function. Each
+     * time the assertion was about code that had not changed at all — the window had simply
+     * stopped reaching it, and the fix was to guess a bigger number.
+     *
+     * The next declaration after downloadAndTrimPoolCandidate is trimDownloadedStockClip, so its
+     * doc comment is where this function ends. That marker moves only when the file is genuinely
+     * restructured, which is exactly when this test SHOULD be re-read.
      */
-    const block = src.slice(idx, idx + 10_000);
+    const end = src.indexOf("/** Stable stock trim", idx);
+    expect(end, "trimDownloadedStockClip's doc comment no longer follows this function").toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     expect(block).toContain("pickBeatSegmentStartSec(sourceDur, takeSec, beatIndex)");
     expect(block).toContain(
       "trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec)"

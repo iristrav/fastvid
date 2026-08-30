@@ -214,6 +214,12 @@ import {
   type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
 import {
+  fileSizeVerdict,
+  formatTechnicalReject,
+  sourceDurationVerdict,
+  stillResolutionVerdict,
+} from "./technicalMediaGate";
+import {
   analyzeBeatSemanticsFallback,
   analyzeBeatsSemanticsBatch,
   buildSemanticPexelsQueries,
@@ -4316,6 +4322,16 @@ async function downloadFunnelCandidate(
  * Returns the local clip path on success, null on failure.
  * Used only when ENABLE_SCENE_CANDIDATE_POOL=true (never called otherwise).
  */
+/**
+ * RONDE 133 — the pool route's own two thresholds, named rather than inlined.
+ *
+ * Both values are exactly what this function has always used. They are lifted out because a
+ * threshold that only exists as a magic number inside an `if` cannot be pointed at from a test or
+ * a log line, and this round's whole complaint is that the technical standard was invisible.
+ */
+const POOL_MIN_RAW_BYTES = 50_000;
+const POOL_MIN_SOURCE_SEC = 1.5;
+
 export async function downloadAndTrimPoolCandidate(
   candidate: PoolCandidate,
   workDir: string,
@@ -4419,11 +4435,40 @@ export async function downloadAndTrimPoolCandidate(
         if (fs.existsSync(rawPath)) { try { fs.unlinkSync(rawPath); } catch { /* ignore */ } }
         throw err;
       }
-      if (fs.statSync(rawPath).size < 50_000) {
-        try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
-        return null;
-      }
       void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
+    }
+
+    /**
+     * RONDE 133 — the byte floor applies to a cache HIT too, and it says so out loud.
+     *
+     * ── Two defects, one line ────────────────────────────────────────────────────────────────
+     *
+     * This check used to sit INSIDE the `if (!fromCache)` block above, and it printed nothing.
+     *
+     * The placement was the bug. The media cache is keyed by SOURCE URL and is shared by every
+     * route, and the routes do not agree on a floor: fetchWikimediaImages admits a Commons file at
+     * 10 000 bytes and writes it straight into that cache. The very same file, reached later
+     * through the pool route, was restored from cache and skipped this 50 000-byte floor entirely
+     * — one asset, two technical standards, decided by nothing more than which route happened to
+     * see it first.
+     *
+     * The silence was the second bug. A candidate dropped here returned null, the funnel loop did
+     * `usedFunnelCandidateIds.add(id); continue;` and no line was written anywhere, so a beat that
+     * ended with no picture left no record of why its candidates went away.
+     *
+     * The threshold itself is untouched — it is applied where it was always meant to apply.
+     */
+    const rawSize = fs.existsSync(rawPath) ? fs.statSync(rawPath).size : 0;
+    const sizeVerdict = fileSizeVerdict(rawSize, POOL_MIN_RAW_BYTES);
+    if (!sizeVerdict.ok) {
+      console.warn(formatTechnicalReject({
+        beatLabel: `s${sceneIndex}b${beatIndex}`,
+        source: candidate.source,
+        assetId: candidate.assetId,
+        verdict: sizeVerdict,
+      }));
+      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+      return null;
     }
 
     // F3-17: rawPath is a temporary intermediate file (downloaded fresh above, or restored from
@@ -4441,7 +4486,18 @@ export async function downloadAndTrimPoolCandidate(
           const parsed = parseFloat(stdout.trim());
           if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
         } catch { /* use candidate.durationSec */ }
-        if (sourceDur < 1.5) return null;
+        const durVerdict = sourceDurationVerdict(sourceDur, POOL_MIN_SOURCE_SEC);
+        if (!durVerdict.ok) {
+          // RONDE 133: this used to be a bare `return null`. Same threshold, same decision — it
+          // now says which candidate went and why, which is the whole of question 15.
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            verdict: durVerdict,
+          }));
+          return null;
+        }
         // RONDE 59: not the first seconds. This call used to pass no start offset at all, so
         // every pool candidate was cut from second 0 — from render 531's 272-second source it
         // took the opening 3.5 seconds, eight separate times. On archive material that opening
@@ -4454,15 +4510,70 @@ export async function downloadAndTrimPoolCandidate(
         const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec);
         console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
         console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
+        if (!ok) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            verdict: { ok: false, reason: "encode_failed", detail: "ffmpeg produced no usable clip" },
+          }));
+        }
         clearWorkerHeartbeat();
         return ok ? outPath : null;
       } else {
+        /**
+         * RONDE 133 — the still is measured before it is turned into a shot.
+         *
+         * ── The gap this closes ────────────────────────────────────────────────────────────────
+         *
+         * prepareCuratedArchiveClip has always refused an archive still narrower than
+         * VIDRUSH_MIN_STILL_WIDTH. This route — every external provider there is: wikimedia,
+         * internet_archive, loc, nara, nasa, openverse, europeana — had no pixel check at all.
+         * Its only floor was on BYTES, and bytes measure compression, not resolution: a 640×480
+         * JPEG at quality 85 sails past a 50 KB floor and is still unusable at 1920×1080.
+         *
+         * So a 320-pixel Commons thumbnail passed every technical check this route had, was
+         * judged by Vision on its merits, and was upscaled into the montage. Same asset, same
+         * pipeline, two different standards depending on which route fetched it.
+         *
+         * ── Why the file and not the metadata ─────────────────────────────────────────────────
+         *
+         * PoolCandidate carries `width`/`height` from the provider's search response, and that is
+         * exactly what must NOT be trusted here: providers report the ORIGINAL's dimensions while
+         * serving a resized file, so a metadata check would approve a thumbnail on the strength of
+         * the photograph it was made from. probeVideoStreamMeta reads the bytes that were actually
+         * downloaded — the same bytes Vision is about to look at and the montage is about to use.
+         *
+         * It is also free here: that probe is memoised on the file's inode+ctime, so the still
+         * conversion below reuses this measurement instead of paying for a second one.
+         *
+         * An unmeasurable width passes, exactly as it does on the archive route.
+         */
+        const stillMeta = await probeVideoStreamMeta(rawPath);
+        const resVerdict = stillResolutionVerdict(stillMeta?.width ?? 0);
+        if (!resVerdict.ok) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            verdict: resVerdict,
+          }));
+          return null;
+        }
         console.log(`[Hang] downloadAndTrim BEFORE stillImageToVideo s${sceneIndex}b${beatIndex}`);
         const _sv0 = Date.now();
         await stillImageToVideo(rawPath, outPath, holdSec, `pool img s${sceneIndex}b${beatIndex}`, false, sceneIndex, beatIndex);
         console.log(`[Hang] downloadAndTrim AFTER stillImageToVideo s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_sv0}ms`);
         const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
         console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${exists ? "ok" : "null"} total=${Date.now()-_dtT0}ms`);
+        if (!exists) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            verdict: { ok: false, reason: "still_conversion_failed", detail: "no clip written" },
+          }));
+        }
         clearWorkerHeartbeat();
         return exists ? outPath : null;
       }

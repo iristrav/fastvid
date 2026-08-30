@@ -115,9 +115,9 @@ import {
   inferBeatGeoRegion,
   vidrushStillPhotoScale,
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
-  VIDRUSH_MIN_STILL_WIDTH,
   type BeatGeoRegion,
 } from "./vidrushQuality";
+import { stillResolutionVerdict } from "./technicalMediaGate";
 import {
   analyzeBeatSemantics,
   analyzeBeatSemanticsFallback,
@@ -1892,6 +1892,11 @@ async function trimVideoClip(
   }
 }
 
+/**
+ * Measures with THIS file's exec — semaphore-gated and cancellation-aware. The threshold it is
+ * compared against moved to ./technicalMediaGate in RONDE 133, so the external provider routes
+ * apply the same rule; the probe itself stays here on purpose (see that module's note).
+ */
 async function probeImageWidthPx(filePath: string): Promise<number> {
   try {
     const probe = await exec(
@@ -2012,11 +2017,18 @@ export async function prepareCuratedArchiveClip(
     }
 
     if (asset.mediaType === "image") {
+      /**
+       * RONDE 133 — the same verdict function the external provider routes now call.
+       *
+       * The rule is unchanged (an unmeasurable width still passes, the threshold is still
+       * VIDRUSH_MIN_STILL_WIDTH); what changed is that it is no longer written out only here.
+       * The archive used to be the only route in the pipeline that looked at a still's pixel
+       * width at all.
+       */
       const width = await probeImageWidthPx(rawPath);
-      if (width > 0 && width < VIDRUSH_MIN_STILL_WIDTH) {
-        throw new Error(
-          `curated asset ${asset.id} still too low-res (${width}px < ${VIDRUSH_MIN_STILL_WIDTH}px)`
-        );
+      const verdict = stillResolutionVerdict(width);
+      if (!verdict.ok) {
+        throw new Error(`curated asset ${asset.id} still too low-res (${verdict.detail})`);
       }
     }
 
