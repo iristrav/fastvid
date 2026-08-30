@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ARCHIVE_MAX_TAGS,
+  MAX_AI_TAGS_ADDED_PER_CLIP,
   applySharedAiToClipFields,
   flattenArchiveAiMetadata,
   inferArchiveMediaMime,
@@ -102,7 +103,12 @@ describe("archiveAssetTagging", () => {
     expect(flat!.tags.length).toBeLessThanOrEqual(ARCHIVE_MAX_TAGS);
   });
 
-  it("replaceTags mode stores only AI tags (max 4)", () => {
+  it("replaceTags mode stores only AI tags, now capped at the AI-tag limit", () => {
+    /**
+     * The AI-tag limit made this two rather than four. `replaceTags` still does what it says —
+     * the stored tags are the AI's and the old ones are gone — but the same ceiling applies to it
+     * as to the merge path, so it cannot become the way around the limit. See archiveAiTagLimit.
+     */
     const fields = applySharedAiToClipFields({
       baseTitle: "Old title",
       userTags: ["old1", "old2", "old3", "old4", "old5"],
@@ -114,7 +120,7 @@ describe("archiveAssetTagging", () => {
       },
       replaceTags: true,
     });
-    expect(fields.tags).toHaveLength(4);
+    expect(fields.tags).toHaveLength(MAX_AI_TAGS_ADDED_PER_CLIP);
     expect(fields.tags).not.toContain("old1");
     expect(fields.tags[0]).toBe("amsterdam canal bikes");
   });
