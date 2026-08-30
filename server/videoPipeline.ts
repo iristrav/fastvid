@@ -965,6 +965,34 @@ type RenderCtx = {
    *  voiceoverSilentFallbackNotes is here: render state must never leak across concurrent
    *  renders sharing one process. */
   elevenLabsQuotaExhausted: boolean;
+  /**
+   * RONDE 173 — this render's sourcing cache, reachable without threading it through every call.
+   *
+   * ── What render 555 measured ─────────────────────────────────────────────────────────────
+   *
+   *     [SearchGate]      TOTAL built=554 validated=156 rejected=398 sent=156
+   *     [SourcingMetrics] searches=0 providers=5 queryHits=0 queryMisses=0 networkCallsAvoided=0
+   *
+   * A hundred and fifty-six provider searches left the process and the query cache counted none
+   * of them. `cachedProviderSearch` opens with `if (!cache) return search();` — no cache, no
+   * dedup, no counting — and a scan of the seven provider fetchers found 37 of their 72 call
+   * sites passing nothing. Pexels and Pixabay, the two highest-volume providers, passed it at
+   * ZERO of their twenty-one call sites while delivering 94 of the render's assets.
+   *
+   * So a query asked on beat 3 was asked again on beat 7, and again on beat 11, over the network
+   * each time. Nothing was broken — the cache simply was not reachable from most of the code that
+   * needed it.
+   *
+   * ── Why here and not as a 38th argument ──────────────────────────────────────────────────
+   *
+   * The cache sits at parameter index 9, 10, 12 depending on the fetcher, behind optional
+   * arguments with defaults. Threading it through 37 call sites means 37 chances to put a
+   * `usedProviderKeys` where a `stockBeatCtx` belongs, and the 38th site added next round starts
+   * uncovered again. RenderCtx already exists for exactly this — the budget tracker, the
+   * watchdog and the video topic are all reached this way — and it is per-render by construction,
+   * so two concurrent renders on one worker cannot share a cache.
+   */
+  sourcingCache: SourcingCache | null;
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
@@ -979,6 +1007,7 @@ function getRenderCtx(): RenderCtx {
       videoVisualContext: null,
       voiceoverSilentFallbackNotes: [],
       elevenLabsQuotaExhausted: false,
+      sourcingCache: null,
     }
   );
 }
@@ -989,6 +1018,26 @@ function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx()
 function get_activeVideoTopic() { return getRenderCtx().videoTopic; }
 function get_activeVideoVisualContext(): VideoVisualContext | null { return getRenderCtx().videoVisualContext; }
 function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
+/** RONDE 173: the render's sourcing cache, for the provider fetchers that were never handed one. */
+function get_activeSourcingCache(): SourcingCache | null { return getRenderCtx().sourcingCache; }
+function set_activeSourcingCache(v: SourcingCache | null) { const c = getRenderCtx(); c.sourcingCache = v; }
+/**
+ * RONDE 173 — run inside a render context publishing this sourcing cache.
+ *
+ * The render itself does not need this: it is already inside `renderCtxStorage.run` and mutates its
+ * own context. This exists so the ambient fallback can be exercised through the REAL
+ * AsyncLocalStorage and the REAL publisher rather than a stand-in — `set_activeSourcingCache` on no
+ * store at all mutates a throwaway, so without an actual scope there is nothing to read back.
+ */
+export function withRenderSourcingCacheScope<T>(
+  cache: SourcingCache | null,
+  fn: () => Promise<T>
+): Promise<T> {
+  return renderCtxStorage.run({ ...getRenderCtx(), sourcingCache: null }, () => {
+    set_activeSourcingCache(cache);
+    return fn();
+  });
+}
 // Setters mutate only the current render's context object (safe — no shared state)
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
 function set_activeBudgetTracker(v: BudgetTracker | null) { const c = getRenderCtx(); c.budgetTracker = v; }
@@ -16908,13 +16957,23 @@ export async function cachedProviderSearch<T>(
   const decision = searchGateDecision(provider, query, route);
   const text = decision.text;
   if (!decision.admitted) return [] as unknown as T;
-  if (!cache) return search();
+  /**
+   * RONDE 173 — fall back to the render's own cache when the caller had none to give.
+   *
+   * `if (!cache) return search()` was the whole leak: 37 of the seven provider fetchers' 72 call
+   * sites pass nothing, so a hundred and fifty-six searches in render 555 went to the network with
+   * no dedup and no counting. The cache is per-render on RenderCtx, so this changes WHERE the cache
+   * comes from and nothing about what a search returns — a hit replays the identical payload the
+   * miss stored.
+   */
+  const activeCache = cache ?? get_activeSourcingCache() ?? undefined;
+  if (!activeCache) return search();
   const key = providerQueryCacheKey(provider, text);
-  const m = providerMetrics(cache, provider);
-  if (cache.queries.has(key)) {
+  const m = providerMetrics(activeCache, provider);
+  if (activeCache.queries.has(key)) {
     m.queryCacheHits++;
-    cache.totals.queryCacheHits++;
-    return cache.queries.get(key) as T;
+    activeCache.totals.queryCacheHits++;
+    return activeCache.queries.get(key) as T;
   }
   m.queryCacheMisses++;
   const t0 = Date.now();
@@ -16924,12 +16983,12 @@ export async function cachedProviderSearch<T>(
   } catch (err) {
     // RONDE 100B: remember that this provider was cut off, so the search memory does not read a
     // cancellation as "this source has nothing" — see SourcingCache.budgetCancelledProviders.
-    if (isScopeAbortError(err)) cache.budgetCancelledProviders.add(provider.trim().toLowerCase());
+    if (isScopeAbortError(err)) activeCache.budgetCancelledProviders.add(provider.trim().toLowerCase());
     throw err;
   }
   m.searchCount++;
   m.searchLatencyMs += Date.now() - t0;
-  cache.queries.set(key, payload);
+  activeCache.queries.set(key, payload);
   return payload;
 }
 
@@ -34560,6 +34619,7 @@ export async function runVideoPipeline(
     videoVisualContext: null,
     voiceoverSilentFallbackNotes: [],
     elevenLabsQuotaExhausted: false,
+    sourcingCache: null,
   };
   // runWithActiveVideoId makes videoId/userId readable from ANY module in this render's call
   // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
@@ -34980,6 +35040,14 @@ async function _runVideoPipelineInner(
     visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
+    /**
+     * RONDE 173 — publish this render's sourcing cache on its own context.
+     *
+     * Set once, here, next to the dedup state it belongs to. Every provider fetcher that was never
+     * handed a cache through its arguments now finds this one; see the RenderCtx field for the 156
+     * uncached searches render 555 measured.
+     */
+    set_activeSourcingCache(visualDedup.sourcingCache);
 
     // Await the blueprint (started in parallel above) and attach to dedup state
     const videoBlueprint = await blueprintPromise;
@@ -35887,7 +35955,7 @@ async function _runVideoPipelineInner(
       pipelineStepTiming.summarizeAll();
       // Phase 20: sourcing counters alongside the existing timing summary. Synchronous,
       // try/catch-wrapped, no awaits — it can never delay or fail the render.
-      logSourcingMetrics(visualDedup.sourcingCache);
+      logSourcingMetrics(visualDedup.sourcingCache, videoId);
     } else {
     // ── Sequential: Stage 3 (visuals) then Stage 4 (compose), chunked ~60s at a time ──
     // Long videos are processed in small batches through the exact SAME per-scene Stage
@@ -36885,7 +36953,7 @@ async function _runVideoPipelineInner(
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
     profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
-    logSourcingMetrics(visualDedup.sourcingCache);
+    logSourcingMetrics(visualDedup.sourcingCache, videoId);
     } // end else (sequential Stage 3 + Stage 4)
 
     // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────

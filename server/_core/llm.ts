@@ -609,6 +609,49 @@ export function shouldFallbackToNextProvider(status: number, body: string): bool
   return status >= 500 && status < 600;
 }
 
+/**
+ * RONDE 173 — sleep on a rate limit only when there is nobody else to ask.
+ *
+ * Render 555, between 10:37:34 and 10:42:18:
+ *
+ *     26 × [LLM] groq rate limit (attempt N/4) — retry in Ns      (145 seconds of sleep)
+ *      9 × [LLM] Succeeded via groq (after N rate-limit retries)
+ *      1 × [LLM] groq failed (429) — falling back to openai
+ *      1 × [LLM] Succeeded via openai after groq failure
+ *
+ * Those last two lines are the point: OpenAI was in the chain, healthy, and demonstrably able to
+ * serve these calls. `shouldFallbackToNextProvider` has returned true for a rate limit since it was
+ * written — the fallback simply sat BELOW the retry branch, so a 429 slept instead of moving on, on
+ * a render that then refused its research pass for want of budget and finished with three of
+ * nineteen beats holding an approved picture.
+ *
+ * RONDE 129's classification already says this: `isRetryableFailure("RATE_LIMITED")` is false. The
+ * sleep here was the one place that disagreed. It is kept for the single case where R129's rule
+ * would strand a render rather than speed it up — a chain with no next provider, where waiting is
+ * the only alternative to failing outright.
+ *
+ * Nothing about the request changes. The next provider is the same chain every other failure class
+ * already falls through to (500s, 404s, 403s, 413s), carrying the same prompt.
+ *
+ * Extracted rather than inlined so the decision can be tested as itself: the Groq and OpenAI
+ * endpoints are hardcoded, so a two-provider chain cannot be driven against a local stub, and a
+ * test that reimplemented this condition would pass no matter what the call site did.
+ */
+export function rateLimitSleepSeconds(opts: {
+  status: number;
+  attempt: number;
+  retryAfterSec: number | null;
+  skipProviderRetries: boolean;
+  nextProviderAvailable: boolean;
+}): number | null {
+  if (!isRateLimitError(opts.status)) return null;
+  if (opts.skipProviderRetries) return null;
+  if (opts.nextProviderAvailable) return null;
+  if (opts.attempt >= 3) return null;
+  if (opts.retryAfterSec == null || opts.retryAfterSec > 120) return null;
+  return Math.min(90, opts.retryAfterSec);
+}
+
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown() && !geminiModelUnavailable;
@@ -1316,14 +1359,14 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         (provider === "groq" &&
           (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120)));
 
-      if (
-        isRateLimitError(response.status) &&
-        !skipProviderRetries &&
-        attempt < 3 &&
-        retryAfterSec != null &&
-        retryAfterSec <= 120
-      ) {
-        const waitSec = Math.min(90, retryAfterSec);
+      const waitSec = rateLimitSleepSeconds({
+        status: response.status,
+        attempt,
+        retryAfterSec,
+        skipProviderRetries,
+        nextProviderAvailable: i + 1 < chain.length,
+      });
+      if (waitSec != null) {
         console.warn(
           `[LLM] ${provider} rate limit (attempt ${attempt + 1}/4) — retry in ${waitSec}s`
         );
