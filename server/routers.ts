@@ -46,7 +46,8 @@ import {
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
   isGenerationRunSuperseded, bumpGenerationAttempt,
-} from "./db";
+  getVideoScenes,
+  updateVideoScenes,} from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength, videoLengthAllowedForRole } from "@shared/videoLengths";
@@ -89,6 +90,13 @@ import { isRekognitionEnabled } from "./rekognitionCelebrity";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
 import { trimArchiveAsset } from "./archiveTrimToScene";
+// RONDE 139 — the editor's read/write side.
+import { archiveMediaStreamUrl } from "./archiveMediaStream";
+import {
+  formatClipEdit,
+  replaceClipInScenes,
+  type ClipReplacement,
+} from "./videoEditorEdits";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
@@ -1011,6 +1019,96 @@ export const appRouter = router({
       const raw = requireVideoAccess(await getVideoById(input.id), ctx);
       return recoverVideoCompletionState(raw);
     }),
+    /**
+     * RONDE 139 — the editor's read side.
+     *
+     * The manifest has been written at the end of every render for a long time and nothing could
+     * ever read it back. `requireVideoAccess` is the same ownership check `get` uses, so an editor
+     * cannot reach a video its caller does not own.
+     */
+    getScenes: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.id), ctx);
+      const scenes = await getVideoScenes(input.id);
+      return { scenes: scenes ?? [], hasManifest: Boolean(scenes?.length) };
+    }),
+
+    /**
+     * RONDE 139 — replace one clip in the manifest.
+     *
+     * The decision itself lives in videoEditorEdits so it can be tested without a database and
+     * without transport; this procedure adds ownership, persistence and the log line. A refused
+     * edit returns its reason rather than throwing, because every one of them is something the
+     * person clicking can see and correct.
+     */
+    replaceClip: protectedProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          sceneIndex: z.number().int().min(0),
+          clipIndex: z.number().int().min(0),
+          replacement: z.discriminatedUnion("kind", [
+            z.object({
+              kind: z.literal("archive"),
+              archiveAssetId: z.number().int().positive(),
+              mediaType: z.enum(["video", "image"]),
+            }),
+            z.object({
+              kind: z.literal("url"),
+              url: z.string().min(1).max(2048),
+              mediaType: z.enum(["video", "image"]),
+              title: z.string().max(200).optional(),
+            }),
+          ]),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireVideoAccess(await getVideoById(input.id), ctx);
+        const scenes = await getVideoScenes(input.id);
+
+        let replacement: ClipReplacement;
+        if (input.replacement.kind === "archive") {
+          /**
+           * The URL, the provider and the media type come from the ROW, never from the request.
+           *
+           * A client that could name its own provider would be able to launder a source into the
+           * manifest — the one thing videoEditorEdits exists to prevent. Looking the asset up here
+           * also means a replacement can only point at material this system actually holds.
+           */
+          const asset = await getMediaArchiveAssetById(input.replacement.archiveAssetId);
+          if (!asset) {
+            return { ok: false as const, reason: "not_found", detail: "archive asset not found" };
+          }
+          const archive = await getMediaArchiveById(asset.archiveId);
+          replacement = {
+            kind: "archive",
+            archiveAssetId: asset.id,
+            url: archiveMediaStreamUrl(asset.id, asset),
+            mediaType: asset.mediaType === "image" ? "image" : "video",
+            title: asset.title ?? undefined,
+            provider: archive?.slug?.trim() || "archive",
+            storageUrl: asset.storageUrl,
+          };
+        } else {
+          replacement = {
+            kind: "url",
+            url: input.replacement.url,
+            mediaType: input.replacement.mediaType,
+            title: input.replacement.title,
+          };
+        }
+
+        const result = replaceClipInScenes(scenes, input.sceneIndex, input.clipIndex, replacement);
+        if (!result.ok) {
+          return { ok: false as const, reason: result.reason, detail: result.detail };
+        }
+        await updateVideoScenes(input.id, result.scenes);
+        console.log(
+          `[EditorEdit] video=${input.id} ` +
+            formatClipEdit(input.sceneIndex, input.clipIndex, result.previous, result.replaced)
+        );
+        return { ok: true as const, scenes: result.scenes };
+      }),
+
     /** Return a direct presigned CloudFront URL for video playback (bypasses 307 redirect) */
     getVideoUrl: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
       const video = requireVideoAccess(await getVideoById(input.id), ctx);

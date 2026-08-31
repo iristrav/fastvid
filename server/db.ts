@@ -1149,6 +1149,14 @@ export interface EditorClip {
    * before this field existed.
    */
   available?: boolean;
+  /**
+   * RONDE 139 — a person put this clip here, the pipeline did not choose it.
+   *
+   * Read by the quality report so an edited video is not scored as if sourcing had found every
+   * picture itself. A human override and a sourcing success are different facts; counting them
+   * together would make the coverage numbers stop meaning anything.
+   */
+  editedByUser?: boolean;
 }
 
 export interface EditorScene {
