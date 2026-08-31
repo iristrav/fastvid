@@ -209,7 +209,28 @@ export class BudgetTracker {
     );
   }
 
-  /** Call at the end of each stage. Logs actual vs budget and remaining total. */
+  /**
+   * Call at the end of each stage. Logs actual vs budget and remaining total.
+   *
+   * ── RONDE 137: a stage that OVERLAPS another reports how much of it was its own ────────────
+   *
+   * Video 558 reported this, and it sent a whole round of investigation the wrong way:
+   *
+   *     ✓ retrieval  actual=16m 32s / budget=1m 36s   OVER +14m 56s
+   *     ✓ compose    actual=16m 15s / budget=4m 24s   OVER +11m 51s
+   *
+   * Compose looked like the bottleneck. It was not: the three scenes took 22.2s, 26.7s and 8.2s of
+   * ffmpeg — 57 seconds in total. The 16m15 is wall-clock, and compose runs INTERLEAVED with
+   * retrieval (stageStart("compose") sits inside the chunk loop, stageEnd after it), so both
+   * stages were open across the same window and both measured it. The same sixteen minutes,
+   * counted twice, and both blamed.
+   *
+   * `exclusiveMs` is the part of this stage's window during which no earlier stage was still open.
+   * It does not replace `actual` — the wall-clock number is still true and still the one the budget
+   * is compared against — it says how much of that time belongs to this stage alone. For video 558
+   * compose would have reported roughly a minute exclusive against sixteen wall-clock, which is the
+   * distinction between "compose is slow" and "compose is waiting".
+   */
   stageEnd(stage: string): { actualMs: number; budgetMs: number; overBudget: boolean } {
     const entry = [...this.stages].reverse().find(s => s.stage === stage && s.endMs == null);
     if (entry) entry.endMs = Date.now();
@@ -221,12 +242,49 @@ export class BudgetTracker {
     const tag = overBudget
       ? ` ⚠ OVER +${fmtMs(actualMs - bMs)}`
       : ` ✓ saved ${fmtMs(bMs - actualMs)}`;
+    const exclusiveMs = entry ? this.exclusiveMsFor(entry) : 0;
+    // Only worth printing when the two genuinely differ — an unoverlapped stage would just repeat
+    // itself, and a repeated number reads as noise rather than as information.
+    const overlapTag =
+      entry && actualMs - exclusiveMs > 1_000
+        ? `  exclusive=${fmtMs(exclusiveMs)} (overlapped ${fmtMs(actualMs - exclusiveMs)} with an earlier stage)`
+        : "";
     console.log(
       `[Budget] video=${this.videoId} ✓ ${stage}  ` +
       `actual=${fmtMs(actualMs)} / budget=${fmtMs(bMs)}${tag}  ` +
-      `total_remaining=${fmtMs(remainingMs)}`
+      `total_remaining=${fmtMs(remainingMs)}${overlapTag}`
     );
     return { actualMs, budgetMs: bMs, overBudget };
+  }
+
+  /**
+   * How much of `entry`'s window had no OTHER stage open at the same time.
+   *
+   * Overlap is attributed to whichever stage started FIRST, because that is the one still waiting:
+   * in video 558 retrieval was the long pole and compose ran inside its window, so the sixteen
+   * shared minutes belong to retrieval and compose is left with what it alone occupied.
+   *
+   * Pure arithmetic over the stage list this class already keeps; it records nothing new and
+   * changes no decision. A stage still running (endMs null) counts up to this stage's end.
+   */
+  private exclusiveMsFor(entry: { stage: string; startMs: number; endMs: number | null }): number {
+    const end = entry.endMs ?? Date.now();
+    const earlier = this.stages.filter(
+      (s) => s !== entry && s.startMs < entry.startMs
+    );
+    // Merge the earlier stages' windows, clipped to this one, then subtract their union.
+    const spans = earlier
+      .map((s) => [Math.max(s.startMs, entry.startMs), Math.min(s.endMs ?? end, end)] as const)
+      .filter(([a, b]) => b > a)
+      .sort((a, b) => a[0] - b[0]);
+    let covered = 0;
+    let cursor = entry.startMs;
+    for (const [a, b] of spans) {
+      if (b <= cursor) continue;
+      covered += b - Math.max(a, cursor);
+      cursor = Math.max(cursor, b);
+    }
+    return Math.max(0, end - entry.startMs - covered);
   }
 
   /** Record FFmpeg process wall-clock time. Call from execRaw completion. */

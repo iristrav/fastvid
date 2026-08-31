@@ -35631,7 +35631,34 @@ async function _runVideoPipelineInner(
       `AI fallback=${perf.enableAiFallback ? `on (max ${perf.maxAiClipsPerVideo} clips)` : "off"}, ` +
       `minimize stock=${perf.minimizeStockFootage ? `yes (≤${perf.maxStockBeatsPerVideo} Pexels/Pixabay)` : "no"}`
     );
-    if (!perf.enableAiFallback && !cheapAiImageProvidersReady()) {
+    /**
+     * RONDE 137 — "AI fallback: on" must mean a picture can actually be generated.
+     *
+     * ── What video 558 could not explain ─────────────────────────────────────────────────────
+     *
+     * That render shipped seven colour cards and three fallback beats, and nothing in the log said
+     * why. The reason is here: these two facts are independent, and they were joined with `&&`.
+     *
+     *     if (!perf.enableAiFallback && !cheapAiImageProvidersReady())   → "empty beats stay empty"
+     *     else if (perf.enableAiFallback)                                → "AI fallback: cheap tier"
+     *
+     * With the feature ENABLED and no API key, the first branch is false and the second one fires:
+     * the render announces "AI fallback: cheap image tier (Stability Core → Leonardo)" while there
+     * is no Stability key and no Leonardo key to run it with. The one state that most needs saying
+     * out loud is the one state that printed the reassuring line.
+     *
+     * The fallback ladder's own comment says "AI clip when stock/YouTube miss — never grey". That
+     * promise is only keepable with a provider; when there is none, the render must say so, because
+     * the remedy is a key rather than a code change and nobody can act on a line that claims all is
+     * well.
+     */
+    const aiTierReady = cheapAiImageProvidersReady();
+    if (perf.enableAiFallback && !aiTierReady) {
+      console.warn(
+        "[Pipeline] AI fallback is ENABLED but no image provider is configured — empty beats will " +
+        "fall back to a colour card. Set STABILITY_AI_API_KEY or LEONARDO_API_KEY (~$0.03/img)."
+      );
+    } else if (!perf.enableAiFallback && !aiTierReady) {
       console.warn(
         "[Pipeline] No cheap AI keys — empty beats stay empty (set STABILITY_AI_API_KEY, ~$0.03/img)"
       );
