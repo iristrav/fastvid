@@ -35,6 +35,12 @@ import {
   runCinematicPipeline,
 } from "./cinematicPipeline";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
+import {
+  judgeTimeline,
+  formatQualityFindings,
+  formatQualitySummary,
+  type QualityFinding,
+} from "./directorQualityRules";
 import type { ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 
@@ -89,6 +95,8 @@ export type CinematicPlanOutcome =
       unsupported: string[];
       /** Beats and scenes that are not in the plan, with the reason each one is out. */
       dropped: string[];
+      /** RONDE 157B — editorial findings. Advisory: nothing was changed because of them. */
+      quality: QualityFinding[];
       /** Lines for the render log, already formatted. */
       log: string[];
     }
@@ -204,6 +212,17 @@ export async function planAndStoreCinematicTimeline(
     log.push(`[EDL] LOST ${lost}`);
   }
 
+  /**
+   * RONDE 157B — the editorial rules, reported before the technical ones.
+   *
+   * These never block and never repair: §157B puts them in planning so a planner can act on them
+   * and a human can overrule them. A renderer that silently dropped the fourth Ken Burns move would
+   * produce a video better than its plan and a plan that no longer describes the video.
+   */
+  const quality = judgeTimeline(result.timeline);
+  log.push(...formatQualityFindings(quality));
+  log.push(formatQualitySummary(quality));
+
   const validation = validateTimeline(result.timeline);
   const blocking = validation.issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
   for (const issue of validation.issues) {
@@ -260,6 +279,7 @@ export async function planAndStoreCinematicTimeline(
     timelineVersion: nextVersion,
     unsupported: result.unsupported,
     dropped: built.dropped,
+    quality,
     log,
   };
 }

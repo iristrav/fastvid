@@ -358,7 +358,8 @@ describe("RONDE 151 §25 — observability without secrets", () => {
       persist: recordingPersist().persist,
     });
     for (const line of outcome.log) {
-      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline)\]/);
+      /** RONDE 157B added [Director] — the editorial quality findings, reported during planning. */
+      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director)\]/);
     }
   });
 });
