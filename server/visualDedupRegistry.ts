@@ -75,9 +75,58 @@ export type DedupMatch =
 
 export type DedupVerdict = { used: boolean; matchedOn: DedupMatch | null };
 
-/** The same key shape `providerAssetKey` builds, kept here so this module needs no import. */
+import { createHash } from "crypto";
+
+/**
+ * RONDE 135 — the one key format `usedProviderKeys` is written and read with.
+ *
+ * ── The bug this replaces ────────────────────────────────────────────────────────────────────
+ *
+ * `usedProviderKeys` had exactly one writer and exactly one reader, and they did not agree:
+ *
+ *     WRITE (here, RONDE 132)          `${provider.toLowerCase()}:${id}`          raw
+ *     READ  (providerAssetAlreadyUsed) `${provider}:${sha256(id).slice(0,16)}`    hashed
+ *
+ * So the Set was filled with `wikimedia:File:Bundesarchiv_Bild_183.webm` while every reader asked
+ * for `wikimedia:a1b2c3d4e5f6a7b8`. The lookup could never succeed — not once, for any asset, in
+ * any render.
+ *
+ * The consequence is precisely the thing the early-exclusion mechanism exists to prevent. Nine
+ * provider routes call providerAssetAlreadyUsed BEFORE downloading, which is the cheap place to
+ * drop a picture the video already has. That check silently answered "no" every time, so an asset
+ * the funnel had already adopted was searched again, downloaded again, and judged by Vision again
+ * — and was only stopped at the very end by `usedContentKeys` at the adopt point. Nothing shipped
+ * twice, so the fault was invisible in the output; what it cost was a download, a vision call and
+ * one of the beat's six shortlist slots, every time.
+ *
+ * ── Why the hashed form wins ─────────────────────────────────────────────────────────────────
+ *
+ * providerAssetKey is not just a dedup key. The same string is the sourcing cache's asset key, and
+ * it is embedded into downloaded filenames (tagPathWithProviderAsset) so clipContentKey can
+ * recover the provider identity from a path alone. A raw provider id cannot do that: ids contain
+ * colons, slashes and spaces. So the reader's format is the one that has to survive, and this
+ * writer adopts it.
+ *
+ * It lives here because this module is the dedup identity and videoPipeline already imports from
+ * it — the other direction would be a cycle.
+ */
+export function providerAssetIdentityKey(provider: string, id: string): string {
+  const hash = createHash("sha256").update(id.trim()).digest("hex").slice(0, 16);
+  /**
+   * The provider is lower-cased, which the pipeline's own copy did not do.
+   *
+   * That is not a tidy-up: RONDE 132 guards it with a test that marks an asset as "wikimedia" and
+   * asks about it as "WIKIMEDIA", because two routes really do spell a provider differently and a
+   * dedup set that answers "no" to the same picture under a different capitalisation is a dedup
+   * set that does not work. Unifying the two key functions had to keep the stricter of the two
+   * behaviours, not the more convenient one. In practice every call site passes a lower-case
+   * literal, so no existing key changes shape.
+   */
+  return `${provider.trim().toLowerCase()}:${hash}`;
+}
+
 function providerKey(provider: string, id: string): string {
-  return `${provider.trim().toLowerCase()}:${id.trim()}`;
+  return providerAssetIdentityKey(provider, id);
 }
 
 /**

@@ -521,6 +521,7 @@ import {
 } from "./searchMemoryRecall";
 import {
   assetUsedInVideo,
+  providerAssetIdentityKey,
   createVisualDedupStats,
   formatVisualDedupReject,
   formatVisualDedupSummary,
@@ -4680,6 +4681,9 @@ async function trimDownloadedStockClip(
   startOffsetSec = 0,
   stockTrim?: { stockKey?: string; queryEmbedding?: number[] | null; clipIndex?: number }
 ): Promise<boolean> {
+  // RONDE 135: Pexels, Pixabay and the pool route all land here. See
+  // videoSourcePassesTechnicalGate — one probe, memoised, before the encode rather than after it.
+  if (!(await videoSourcePassesTechnicalGate(rawPath, label))) return false;
   let ss = startOffsetSec;
   if (stockTrim?.stockKey && stockInClipOffsetEnabled()) {
     ss = pickStockInClipStartSec(
@@ -9727,6 +9731,55 @@ export async function resolveTrimStartSec(
   return Math.max(0, Math.min(start, latest));
 }
 
+/**
+ * RONDE 135 — the technical gate on the routes RONDE 134 could not reach.
+ *
+ * RONDE 134 put videoResolutionVerdict on two routes: the funnel/pool download and the curated
+ * archive clip. That left every DIRECT provider route without it, and there are eleven of them —
+ * Wikimedia video, Flickr, SepiaSearch, Europeana, Vimeo CC, media.ccc, NASA, NARA, Internet
+ * Archive and YouTube all reach the montage through trimRemoteVideoToClip, and Pexels and Pixabay
+ * through trimDownloadedStockClip.
+ *
+ * Rather than thirteen new call sites, the check goes in the two helpers every one of those routes
+ * already funnels through. It sits BEFORE the ffmpeg encode, so an unusable source costs one
+ * memoised probe instead of a full libx264 pass — which is the "no unnecessary encode" half of the
+ * round as well as the resolution half.
+ *
+ * No new threshold: the same VIDEO_MIN_SHORT_SIDE_PX (144) RONDE 134 grounded in
+ * youtubeMinFormatHeight's own admissible range, and the same 480-line bar that only observes.
+ * probeVideoStreamMeta is memoised on inode+ctime, so where a route has already probed the file
+ * this is free.
+ */
+async function videoSourcePassesTechnicalGate(sourcePath: string, label: string): Promise<boolean> {
+  const meta = await probeVideoStreamMeta(sourcePath);
+  const verdict = videoResolutionVerdict(meta?.width, meta?.height);
+  if (!verdict.ok) {
+    console.warn(
+      formatTechnicalReject({
+        beatLabel: label,
+        source: label,
+        assetId: path.basename(sourcePath),
+        contentKey: clipContentKey(sourcePath),
+        mediaType: "video",
+        verdict,
+      })
+    );
+    return false;
+  }
+  if (verdict.belowQualityBar && meta) {
+    console.log(
+      formatBelowQualityBar({
+        beatLabel: label,
+        source: label,
+        contentKey: clipContentKey(sourcePath),
+        width: meta.width,
+        height: meta.height,
+      })
+    );
+  }
+  return true;
+}
+
 export async function trimRemoteVideoToClip(
   sourcePath: string,
   outputPath: string,
@@ -9734,6 +9787,7 @@ export async function trimRemoteVideoToClip(
   clipStart = 5,
   label = "clip"
 ): Promise<boolean> {
+  if (!(await videoSourcePassesTechnicalGate(sourcePath, label))) return false;
   try {
     await withSceneFetchTimeout(
       () => exec(
@@ -16763,9 +16817,15 @@ function isPublishableChapterTitle(title: string | undefined): boolean {
 // Exported (visibility only, no logic changed) so the visual-dedup test suite can assert on
 // exact key equality/inequality directly, matching the F3-48-style precedent elsewhere in this
 // file for exporting a pure helper purely so a test can cover it without spinning up network mocks.
+/**
+ * RONDE 135 — one definition, in the module that owns dedup identity.
+ *
+ * This function's body used to live here while visualDedupRegistry kept a SECOND, different one
+ * for the very same Set — see providerAssetIdentityKey there for what that cost. Re-exported under
+ * its own long-standing name so every existing caller and test is unchanged.
+ */
 export function providerAssetKey(provider: string, id: string): string {
-  const hash = createHash("sha256").update(id.trim()).digest("hex").slice(0, 16);
-  return `${provider}:${hash}`;
+  return providerAssetIdentityKey(provider, id);
 }
 
 /** Embeds a providerAssetKey into a downloaded clip's filename (right before the extension) so
