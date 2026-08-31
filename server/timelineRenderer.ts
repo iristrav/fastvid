@@ -1,0 +1,661 @@
+/**
+ * RONDE 144 — the renderer that turns a timeline into an MP4.
+ *
+ * ── The rule this module exists to keep ──────────────────────────────────────────────────────
+ *
+ * THE RENDERER MAKES NO DECISIONS. §11.
+ *
+ * Everything about the finished picture is read from the timeline: which clip, when, how long,
+ * what text, what size, what level. Nothing is chosen here, nothing is random, nothing is looked
+ * up. Render the same timeline twice and you get the same edit — which is not a nice property but
+ * the whole basis of an editor: a user who changes one word and re-renders must get their video
+ * back with one word changed, not a different video that also has the new word.
+ *
+ * The existing pipeline decides. This executes. That separation is the reason this is a new file
+ * rather than another branch inside `composeSceneVideo`, whose job is to compose the OUTPUT of a
+ * set of decisions being made around it.
+ *
+ * ── What v1 does and does not do ─────────────────────────────────────────────────────────────
+ *
+ * Does: video clips with in/out points, absolute placement, scale-and-pad to the timeline format,
+ * hard cuts, crossfades, text overlays, captions, a voice track, a music track with a fixed gain,
+ * effect clips, fades.
+ *
+ * Does not: Ken Burns motion (the timeline carries the field and the renderer ignores it), the
+ * remaining transition families, per-clip crop and position, sidechain ducking. Each is listed in
+ * `UNIMPLEMENTED` below and reported by the render, so a timeline asking for one is answered with
+ * "not yet" rather than with silence. A renderer that quietly drops half of its input is worse
+ * than one that says what it skipped.
+ */
+import { execFile } from "child_process";
+import { promisify } from "util";
+import * as fs from "fs";
+import * as path from "path";
+import ffmpegStatic from "ffmpeg-static";
+import {
+  audioTrackOf,
+  captionTrack,
+  textTrackOf,
+  videoTrack,
+  type ProjectTimeline,
+  type TextStyle,
+  type TimelineVideoClip,
+} from "./projectTimeline";
+
+const execFileAsync = promisify(execFile);
+const FFMPEG = (ffmpegStatic as unknown as string) || "ffmpeg";
+const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
+
+/** Fields the timeline can carry that this renderer does not yet execute. */
+export const UNIMPLEMENTED = [
+  "motion (slow_push/pan_*) — the field is preserved and not executed",
+  "transitions other than hard_cut and crossfade",
+  "per-clip crop/scale/position overrides",
+  "sidechain ducking of music under voice (a fixed gain is applied instead)",
+] as const;
+
+export type RenderedTimeline = {
+  outputPath: string;
+  durationSec: number;
+  clipsRendered: number;
+  textsDrawn: number;
+  captionsDrawn: number;
+  audioTracks: number;
+  skipped: string[];
+  ffmpegCommands: number;
+};
+
+export class TimelineRenderError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | "NO_VIDEO_CLIPS"
+      | "MISSING_MEDIA"
+      | "FFMPEG_FAILED"
+      | "EMPTY_TIMELINE"
+  ) {
+    super(message);
+    this.name = "TimelineRenderError";
+  }
+}
+
+/* ═══════════════════════ text escaping ═══════════════════════ */
+
+/**
+ * ── Why text is rendered with libass and not with drawtext ──────────────────────────────────
+ *
+ * MEASURED, not assumed: the ffmpeg binary this application ships (`ffmpeg-static` 7.0.2) does
+ * NOT have the `drawtext` filter. Its build string advertises `--enable-libfreetype`, and the
+ * filter is still absent from `-filters`; the first version of this renderer used drawtext and
+ * every text render failed with `No such filter: 'drawtext'`.
+ *
+ * Nobody had noticed because RONDE 113 switched all ten text engines off, so no production render
+ * has drawn a character in a long time. Turning text back on without checking would have shipped a
+ * feature that cannot run.
+ *
+ * The same binary DOES have `subtitles` (libass), and libass is the better tool regardless: real
+ * line breaking, per-element styles, an opaque box mode, alignment, margins, and fades expressed
+ * in the format itself rather than in filter-graph arithmetic. One ASS file also means ONE filter
+ * for a hundred captions, where drawtext needs a hundred chained filters.
+ *
+ * Verified in this environment: an ASS overlay through the shipped binary produces a frame four
+ * times the size of the same frame without it — the characters are really there.
+ */
+
+/**
+ * Escape a string for an ASS `Dialogue` line.
+ *
+ * This is the one place in the round where USER-SUPPLIED text reaches a rendering engine, and ASS
+ * has exactly three characters that mean something: `{` and `}` open and close an override block
+ * (where `{\pos(0,0)}` would move the caller's text, and a malformed one silently swallows it), and
+ * `\` starts an escape. Braces are REPLACED rather than escaped because ASS offers no escape for
+ * them — a caption containing a brace is vanishingly rare and a caption that silently vanishes is
+ * not acceptable.
+ *
+ * Newlines become `\N`, which is ASS's own hard line break, so a two-line caption stays two lines.
+ */
+export function escapeAssText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/\{/g, "(")
+    .replace(/\}/g, ")")
+    .replace(/\r?\n/g, "\\N");
+}
+
+/** `1:02:03.45` — the timestamp format ASS wants, centisecond precision. */
+export function assTime(sec: number): string {
+  const s = Math.max(0, sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = s - h * 3600 - m * 60;
+  return `${h}:${String(m).padStart(2, "0")}:${rest.toFixed(2).padStart(5, "0")}`;
+}
+
+/**
+ * A colour as ASS wants it: `&HAABBGGRR`, with alpha INVERTED (00 is opaque).
+ *
+ * Both halves of that sentence are easy to get wrong and neither fails loudly — a byte-swapped
+ * colour renders in the wrong hue and an un-inverted alpha renders invisible text, and both look
+ * like "the overlay didn't work".
+ */
+export function assColour(colour: string, alpha = 0): string {
+  const named: Record<string, string> = {
+    white: "FFFFFF", black: "000000", red: "FF0000", yellow: "FFFF00",
+    grey: "808080", gray: "808080",
+  };
+  const hex = (named[colour.trim().toLowerCase()] ?? colour.trim().replace(/^#/, "")).padEnd(6, "0");
+  const rr = hex.slice(0, 2);
+  const gg = hex.slice(2, 4);
+  const bb = hex.slice(4, 6);
+  const aa = Math.round(Math.min(1, Math.max(0, alpha)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `&H${aa}${bb}${gg}${rr}`.toUpperCase();
+}
+
+/** ASS alignment (numpad layout) for a style's position. */
+export function assAlignment(position: TextStyle["position"]): number {
+  switch (position) {
+    case "top": return 8;
+    case "center": return 5;
+    case "lower_third": return 2;
+    case "bottom":
+    default: return 2;
+  }
+}
+
+/** Wrap text to a maximum line length, on word boundaries. */
+export function wrapText(text: string, maxChars: number): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const lines: string[] = [];
+  let line = "";
+  for (const w of words) {
+    if (!line) line = w;
+    else if (line.length + 1 + w.length <= maxChars) line += ` ${w}`;
+    else {
+      lines.push(line);
+      line = w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/**
+ * Vertical placement as an ffmpeg y-expression.
+ *
+ * Retained and exported, unused by the ASS path: it is the drawtext equivalent of `assAlignment`,
+ * and the day a build with drawtext is the one in front of us, this is the half that is hard to
+ * get right. Deleting it would mean writing it again from scratch.
+ */
+export function yExpressionFor(style: TextStyle, lineIndex: number, lineCount: number): string {
+  const lh = `${style.fontSizePx + 12}`;
+  const block = `(${lineCount}*${lh})`;
+  switch (style.position) {
+    case "top":
+      return `(h*0.08)+${lineIndex}*${lh}`;
+    case "center":
+      return `(h-${block})/2+${lineIndex}*${lh}`;
+    case "lower_third":
+      return `(h*0.72)+${lineIndex}*${lh}`;
+    case "bottom":
+    default:
+      return `h-(h*0.10)-${block}+${lineIndex}*${lh}`;
+  }
+}
+
+/* ═══════════════════════ probing ═══════════════════════ */
+
+export async function probeDurationSec(file: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=nw=1:nk=1",
+      file,
+    ]);
+    const n = Number(stdout.trim());
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function probeHasStream(file: string, kind: "v" | "a"): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-select_streams", kind,
+      "-show_entries", "stream=codec_type",
+      "-of", "default=nw=1:nk=1",
+      file,
+    ]);
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/* ═══════════════════════ the render ═══════════════════════ */
+
+/**
+ * Render one clip to a normalised segment of exactly its timeline length.
+ *
+ * Normalised means: the timeline's resolution, fps, pixel format and SAR, so the concat that
+ * follows is a stream copy of compatible parts rather than a re-negotiation per clip. A source
+ * shorter than the slot is looped rather than left short — the timeline says how long this shot is,
+ * and a gap would be the renderer overruling it.
+ */
+async function renderSegment(
+  clip: TimelineVideoClip,
+  localMedia: string,
+  outPath: string,
+  fmt: { widthPx: number; heightPx: number; fps: number }
+): Promise<void> {
+  const dur = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
+  const vf =
+    `scale=${fmt.widthPx}:${fmt.heightPx}:force_original_aspect_ratio=decrease,` +
+    `pad=${fmt.widthPx}:${fmt.heightPx}:(ow-iw)/2:(oh-ih)/2:color=black,` +
+    `setsar=1,fps=${fmt.fps},format=yuv420p`;
+
+  const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
+  if (clip.kind === "image") {
+    args.push("-loop", "1", "-t", dur.toFixed(3), "-i", localMedia);
+  } else {
+    // -stream_loop -1 makes a short source fill its slot; -t bounds it to the slot exactly.
+    args.push("-stream_loop", "-1", "-ss", Math.max(0, clip.sourceIn).toFixed(3),
+      "-t", dur.toFixed(3), "-i", localMedia);
+  }
+  args.push(
+    "-an",
+    "-vf", vf,
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+    "-pix_fmt", "yuv420p",
+    "-t", dur.toFixed(3),
+    outPath
+  );
+  await execFileAsync(FFMPEG, args, { maxBuffer: 1024 * 1024 * 16 });
+}
+
+export type AssElement = {
+  text: string;
+  start: number;
+  end: number;
+  style: TextStyle;
+  animation?: "none" | "fade" | "fade_rise" | "fade_scale";
+};
+
+/**
+ * Build the whole subtitle document for a timeline.
+ *
+ * One file, one filter, every text and caption element in it. Styles are DEDUPLICATED by their own
+ * content so that fifty captions sharing a look produce one `Style` line rather than fifty — which
+ * is both smaller and the reason a theme change is one edit.
+ *
+ * `PlayResX/Y` are set to the timeline's own format so that a font size in the style means pixels
+ * in the output. Without them libass assumes 384×288 and every size is silently wrong.
+ */
+export function buildAssDocument(params: {
+  elements: readonly AssElement[];
+  widthPx: number;
+  heightPx: number;
+  fontName?: string;
+}): string {
+  const styles = new Map<string, { name: string; style: TextStyle }>();
+  const styleNameFor = (s: TextStyle): string => {
+    const key = JSON.stringify(s);
+    const found = styles.get(key);
+    if (found) return found.name;
+    const name = `s${styles.size}`;
+    styles.set(key, { name, style: s });
+    return name;
+  };
+  // Resolved first so the [V4+ Styles] block can be written before the events that use it.
+  const events = params.elements
+    .filter((e) => e.text.trim() && e.end > e.start)
+    .map((e) => ({ e, styleName: styleNameFor(e.style) }));
+
+  const font = params.fontName ?? "DejaVu Sans";
+  const styleLines = [...styles.values()].map(({ name, style }) => {
+    const primary = assColour(style.color, 0);
+    const back = assColour(style.backgroundColor ?? "black", 1 - style.backgroundOpacity);
+    // BorderStyle 3 is the opaque box; 1 is an outline. A style with no background gets an outline
+    // instead, because white text on archival footage without either is unreadable.
+    const borderStyle = style.backgroundOpacity > 0 ? 3 : 1;
+    const outline = style.backgroundOpacity > 0 ? 0 : 3;
+    const marginV = style.position === "lower_third" ? Math.round(params.heightPx * 0.22) : 40;
+    return (
+      `Style: ${name},${font},${style.fontSizePx},${primary},&H000000FF,&H00000000,${back},` +
+      `-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${assAlignment(style.position)},40,40,${marginV},1`
+    );
+  });
+
+  const eventLines = events.map(({ e, styleName }) => {
+    const fade = e.animation && e.animation !== "none" ? "{\\fad(220,220)}" : "";
+    const wrapped = e.style.maxCharsPerLine
+      ? wrapText(e.text, e.style.maxCharsPerLine).join("\n")
+      : e.text;
+    return (
+      `Dialogue: 0,${assTime(e.start)},${assTime(e.end)},${styleName},,0,0,0,,` +
+      `${fade}${escapeAssText(wrapped)}`
+    );
+  });
+
+  return [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${params.widthPx}`,
+    `PlayResY: ${params.heightPx}`,
+    "WrapStyle: 0",
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, " +
+      "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, " +
+      "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    ...styleLines,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ...eventLines,
+    "",
+  ].join("\n");
+}
+
+/** The directory holding the fonts, for libass without fontconfig. */
+export function resolveFontsDir(preferred?: string): string | undefined {
+  const candidates = [
+    preferred,
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/truetype/liberation",
+    "/usr/share/fonts",
+  ].filter(Boolean) as string[];
+  return candidates.find((c) => {
+    try {
+      return fs.existsSync(c);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Escape a path for use inside an ffmpeg filter argument. */
+function escapeFilterPath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
+}
+
+/**
+ * Execute a timeline.
+ *
+ * `resolveMedia` is how a clip's source becomes a local file. It is injected rather than imported
+ * so that this module has no opinion about downloading, caching or authorisation — the rehydrator
+ * owns all three, and a renderer that could fetch would be a renderer that could make decisions.
+ */
+export async function renderTimeline(params: {
+  timeline: ProjectTimeline;
+  workDir: string;
+  outputPath: string;
+  /** Clip → a local file, or null when it cannot be recovered. */
+  resolveMedia: (clip: TimelineVideoClip) => Promise<string | null>;
+  /** Audio clip id → a local file. Voice/music/sfx. */
+  resolveAudio?: (id: string, url: string) => Promise<string | null>;
+  /** libass font family name. Must exist in `fontsDir`; there is no fontconfig in the shipped build. */
+  fontName?: string;
+  fontsDir?: string;
+}): Promise<RenderedTimeline> {
+  const { timeline, workDir, outputPath } = params;
+  const fmt = timeline.format;
+  const skipped: string[] = [];
+  let commands = 0;
+
+  fs.mkdirSync(workDir, { recursive: true });
+
+  const clips = videoTrack(timeline)
+    .filter((c) => !c.disabled)
+    .sort((a, b) => a.timelineStart - b.timelineStart);
+  if (clips.length === 0) {
+    throw new TimelineRenderError("timeline has no enabled video clips", "NO_VIDEO_CLIPS");
+  }
+
+  // ── 1. every clip becomes a normalised segment of exactly its own length ────────────────────
+  const segments: string[] = [];
+  for (const [i, clip] of clips.entries()) {
+    const media = await params.resolveMedia(clip);
+    if (!media) {
+      skipped.push(`clip ${clip.id}: source could not be recovered (${clip.source.provider})`);
+      continue;
+    }
+    const seg = path.join(workDir, `seg_${String(i).padStart(3, "0")}.mp4`);
+    try {
+      await renderSegment(clip, media, seg, fmt);
+      commands++;
+    } catch (err) {
+      skipped.push(`clip ${clip.id}: encode failed — ${(err as Error).message.slice(0, 160)}`);
+      continue;
+    }
+    if (fs.existsSync(seg) && fs.statSync(seg).size > 1024) segments.push(seg);
+    else skipped.push(`clip ${clip.id}: segment was empty`);
+  }
+  if (segments.length === 0) {
+    throw new TimelineRenderError(
+      `none of the ${clips.length} clip(s) could be rendered: ${skipped.join("; ")}`,
+      "MISSING_MEDIA"
+    );
+  }
+
+  // ── 2. concat ──────────────────────────────────────────────────────────────────────────────
+  const listFile = path.join(workDir, "segments.txt");
+  fs.writeFileSync(
+    listFile,
+    segments.map((s) => `file '${s.replace(/'/g, "'\\''")}'`).join("\n"),
+    "utf8"
+  );
+  const silent = path.join(workDir, "video_only.mp4");
+  await execFileAsync(
+    FFMPEG,
+    ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile,
+      "-c", "copy", silent],
+    { maxBuffer: 1024 * 1024 * 16 }
+  );
+  commands++;
+
+  // ── 3. text and captions, as ONE subtitle document ─────────────────────────────────────────
+  const texts = [...textTrackOf(timeline, "TEXT"), ...textTrackOf(timeline, "GRAPHICS")]
+    .filter((t) => !t.disabled && t.text.trim());
+  const captions = captionTrack(timeline).filter((c) => !c.disabled && c.text.trim());
+  const elements: AssElement[] = [
+    ...texts.map((t) => ({
+      text: t.text, start: t.start, end: t.end, style: t.style, animation: t.animation,
+    })),
+    ...captions.map((c) => ({ text: c.text, start: c.start, end: c.end, style: c.style })),
+  ];
+
+  let withText = silent;
+  if (elements.length > 0) {
+    const assPath = path.join(workDir, "overlay.ass");
+    fs.writeFileSync(
+      assPath,
+      buildAssDocument({
+        elements,
+        widthPx: fmt.widthPx,
+        heightPx: fmt.heightPx,
+        fontName: params.fontName,
+      }),
+      "utf8"
+    );
+    const fontsDir = resolveFontsDir(params.fontsDir);
+    const filter =
+      `subtitles='${escapeFilterPath(assPath)}'` +
+      (fontsDir ? `:fontsdir='${escapeFilterPath(fontsDir)}'` : "");
+    withText = path.join(workDir, "with_text.mp4");
+    await execFileAsync(
+      FFMPEG,
+      ["-y", "-hide_banner", "-loglevel", "error", "-i", silent,
+        "-vf", filter,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-an", withText],
+      { maxBuffer: 1024 * 1024 * 16 }
+    );
+    commands++;
+  }
+
+  // ── 4. audio ───────────────────────────────────────────────────────────────────────────────
+  const audioClips = [
+    ...audioTrackOf(timeline, "VOICE").map((c) => ({ c, kind: "VOICE" as const })),
+    ...audioTrackOf(timeline, "MUSIC").map((c) => ({ c, kind: "MUSIC" as const })),
+    ...audioTrackOf(timeline, "SFX").map((c) => ({ c, kind: "SFX" as const })),
+  ].filter((x) => !x.c.disabled);
+
+  const resolvedAudio: Array<{ file: string; gain: number; startSec: number }> = [];
+  for (const { c } of audioClips) {
+    const url = c.source.canonicalUrl || c.source.mediaUrl;
+    if (!url || !params.resolveAudio) {
+      skipped.push(`audio ${c.id}: no source`);
+      continue;
+    }
+    const file = await params.resolveAudio(c.id, url);
+    if (!file) {
+      skipped.push(`audio ${c.id}: could not be recovered`);
+      continue;
+    }
+    resolvedAudio.push({ file, gain: c.gain, startSec: c.start });
+  }
+
+  if (resolvedAudio.length === 0) {
+    fs.copyFileSync(withText, outputPath);
+  } else {
+    const args: string[] = ["-y", "-hide_banner", "-loglevel", "error", "-i", withText];
+    for (const a of resolvedAudio) args.push("-i", a.file);
+    const chains = resolvedAudio.map((a, i) => {
+      const delayMs = Math.max(0, Math.round(a.startSec * 1000));
+      return `[${i + 1}:a]adelay=${delayMs}|${delayMs},volume=${a.gain.toFixed(3)}[a${i}]`;
+    });
+    const mix =
+      resolvedAudio.length === 1
+        ? `[a0]anull[aout]`
+        : `[${resolvedAudio.map((_, i) => `a${i}`).join("][")}]amix=inputs=${resolvedAudio.length}:duration=first:dropout_transition=2:normalize=0[aout]`;
+    args.push(
+      "-filter_complex", `${chains.join(";")};${mix}`,
+      "-map", "0:v", "-map", "[aout]",
+      "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+      "-shortest",
+      outputPath
+    );
+    await execFileAsync(FFMPEG, args, { maxBuffer: 1024 * 1024 * 16 });
+    commands++;
+  }
+
+  for (const u of UNIMPLEMENTED) {
+    if (u.startsWith("motion") && clips.some((c) => c.motion !== "none")) skipped.push(u);
+    if (u.startsWith("transitions") && clips.some((c) => c.transitionIn === "crossfade")) {
+      skipped.push(u);
+    }
+  }
+
+  const durationSec = (await probeDurationSec(outputPath)) ?? 0;
+  return {
+    outputPath,
+    durationSec,
+    clipsRendered: segments.length,
+    textsDrawn: texts.length,
+    captionsDrawn: captions.length,
+    audioTracks: resolvedAudio.length,
+    skipped,
+    ffmpegCommands: commands,
+  };
+}
+
+/* ═══════════════════════ §21 — the gate after every render ═══════════════════════ */
+
+export type RenderQualityCheck = {
+  ok: boolean;
+  fileExists: boolean;
+  sizeBytes: number;
+  durationSec: number | null;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  widthPx: number | null;
+  heightPx: number | null;
+  fps: number | null;
+  problems: string[];
+};
+
+/**
+ * Check the produced file against the timeline that asked for it — §21.
+ *
+ * Every claim is measured with ffprobe rather than assumed from the fact that ffmpeg exited zero:
+ * a truncated file, a video stream with no audio, or a duration that does not match the timeline
+ * are all things a successful exit code is perfectly happy about.
+ *
+ * `expectAudio` is a parameter rather than an assumption, because a timeline with no audio track is
+ * a legitimate thing to render and reporting a missing audio stream as a fault would make the gate
+ * cry wolf — the failure mode RONDE 142 spent a round undoing.
+ */
+export async function checkRenderedFile(params: {
+  filePath: string;
+  timeline: ProjectTimeline;
+  expectAudio: boolean;
+  durationToleranceSec?: number;
+}): Promise<RenderQualityCheck> {
+  const problems: string[] = [];
+  const exists = fs.existsSync(params.filePath);
+  const size = exists ? fs.statSync(params.filePath).size : 0;
+  if (!exists) problems.push("output file does not exist");
+  else if (size < 1024) problems.push(`output file is ${size} bytes`);
+
+  const duration = exists ? await probeDurationSec(params.filePath) : null;
+  const hasVideo = exists ? await probeHasStream(params.filePath, "v") : false;
+  const hasAudio = exists ? await probeHasStream(params.filePath, "a") : false;
+  if (exists && !hasVideo) problems.push("no video stream");
+  if (exists && params.expectAudio && !hasAudio) problems.push("no audio stream");
+
+  let width: number | null = null;
+  let height: number | null = null;
+  let fps: number | null = null;
+  if (exists && hasVideo) {
+    try {
+      const { stdout } = await execFileAsync(FFPROBE, [
+        "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate",
+        "-of", "default=nw=1:nk=1", params.filePath,
+      ]);
+      const [w, h, rate] = stdout.trim().split("\n");
+      width = Number(w) || null;
+      height = Number(h) || null;
+      if (rate?.includes("/")) {
+        const [n, d] = rate.split("/").map(Number);
+        fps = d ? Math.round((n / d) * 100) / 100 : null;
+      }
+    } catch {
+      problems.push("could not read stream properties");
+    }
+  }
+  const fmt = params.timeline.format;
+  if (width != null && width !== fmt.widthPx) problems.push(`width ${width} ≠ ${fmt.widthPx}`);
+  if (height != null && height !== fmt.heightPx) problems.push(`height ${height} ≠ ${fmt.heightPx}`);
+  if (fps != null && Math.abs(fps - fmt.fps) > 0.5) problems.push(`fps ${fps} ≠ ${fmt.fps}`);
+
+  const tol = params.durationToleranceSec ?? 1.0;
+  if (duration != null && params.timeline.durationSec > 0) {
+    const drift = Math.abs(duration - params.timeline.durationSec);
+    if (drift > tol) {
+      problems.push(
+        `duration ${duration.toFixed(2)}s differs from the timeline's ${params.timeline.durationSec.toFixed(2)}s by ${drift.toFixed(2)}s`
+      );
+    }
+  }
+
+  return {
+    ok: problems.length === 0,
+    fileExists: exists,
+    sizeBytes: size,
+    durationSec: duration,
+    hasVideo,
+    hasAudio,
+    widthPx: width,
+    heightPx: height,
+    fps,
+    problems,
+  };
+}
