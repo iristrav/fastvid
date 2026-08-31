@@ -57,7 +57,8 @@ import { timelineFromEditorScenes } from "./timelineFromManifest";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
 import { rehydrateTimelineAssets, formatRehydrationSummary } from "./assetRehydrator";
 import { productionRehydrateDeps } from "./rehydrationDeps";
-import { renderTimeline, checkRenderedFile } from "./timelineRenderer";
+import { renderTimeline, checkRenderedFile, type GraphicsOverlayFile } from "./timelineRenderer";
+import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { storagePutFromFile } from "./storage";
 import { resolveLocalStorageFilePath } from "./storageLocal";
 import { downloadToFileStreaming } from "./videoPipeline";
@@ -88,6 +89,17 @@ export type RenderWorkerDeps = {
   download: (url: string, destPath: string) => Promise<boolean>;
   /** Where work directories go. Overridable so a test does not fight the real temp dir. */
   workRoot: () => string;
+  /**
+   * RONDE 150 §5/§6 — build the Remotion graphics-overlay function for one render, or null.
+   *
+   * Null means "this deployment does not do graphics overlays", and every video then takes the
+   * libass route exactly as it did before this round. A dependency rather than a direct import so
+   * a test can render a real video without a browser, and so a worker with no
+   * chrome-headless-shell is a configuration rather than a crash.
+   */
+  graphicsOverlay: (params: {
+    workDir: string;
+  }) => ((timeline: ProjectTimeline) => Promise<GraphicsOverlayFile | null>) | null;
 };
 
 export function defaultRenderWorkerDeps(): RenderWorkerDeps {
@@ -95,6 +107,12 @@ export function defaultRenderWorkerDeps(): RenderWorkerDeps {
     rehydrate: rehydrateTimelineAssets,
     render: renderTimeline,
     check: checkRenderedFile,
+    /**
+     * Asked ONCE, here, rather than inside the render: a worker with no browser should take the
+     * libass route without paying for a failed bundle on every job.
+     */
+    graphicsOverlay: ({ workDir }) =>
+      graphicsOverlayAvailable() ? productionGraphicsOverlay({ workDir }) : null,
     upload: (key, filePath, contentType) => storagePutFromFile(key, filePath, contentType),
     download: async (url, destPath) => {
       /**
@@ -300,16 +318,34 @@ export async function runRenderJob(params: {
       else console.warn(`[RenderJob] job=${job.id} audio clip ${clip.id} could not be fetched`);
     }
 
-    /* 5. ffmpeg */
+    /* 5. ffmpeg, with the Remotion graphics layer laid over it when there is one */
     await phase("rendering");
     const outputPath = path.join(workDir, "out.mp4");
+    const renderDir = path.join(workDir, "render");
+    const overlay = deps.graphicsOverlay({ workDir: renderDir });
     const rendered = await deps.render({
       timeline,
-      workDir: path.join(workDir, "render"),
+      workDir: renderDir,
       outputPath,
       resolveMedia: async (clip) => rehydration.byClipId.get(clip.id) ?? null,
       resolveAudio: async (id) => audioByClip.get(id) ?? null,
+      graphicsOverlay: overlay
+        ? async (t) => {
+            /**
+             * The phase moves HERE, at the moment ffmpeg actually asks for the overlay — not
+             * before the render, when we would only be predicting that it will.
+             */
+            await phase("compositing");
+            return overlay(t);
+          }
+        : undefined,
     });
+    console.log(
+      `[RenderJob] job=${job.id} graphics drawn by ${rendered.graphicsRenderer}` +
+        (rendered.graphicsRenderer === "ffmpeg_ass" && overlay
+          ? " (the overlay route was available but did not produce a file — see skipped)"
+          : "")
+    );
 
     /* 6. the ffprobe gate — measured, never assumed */
     const check = await deps.check({

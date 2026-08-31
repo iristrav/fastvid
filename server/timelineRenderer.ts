@@ -83,8 +83,34 @@ const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
 export const UNIMPLEMENTED = [
   "visual effects other than film_grain, noise, vignette, letterbox, glow, bloom and chromatic_aberration",
   "transitions other than hard_cut, crossfade, dissolve, dip_to_black and dip_to_white",
-  "motion graphics that are not words on screen (maps, charts, animated icons)",
+  /**
+   * RONDE 150 — still true of the ASS route, and no longer the end of the story.
+   *
+   * libass draws words. A lower third with a role in a second colour underneath the name, a
+   * counter that counts, a card whose subtitle only appears when the payload has one — those are
+   * layout, and layout is what a browser is for. When a Remotion overlay is supplied (see
+   * `graphicsOverlay` on `renderTimeline`) the graphics come from there instead and this line
+   * describes only the fallback.
+   */
+  "motion graphics that are not words on screen (maps, charts, animated icons) — on the ASS route",
 ] as const;
+
+/**
+ * RONDE 150 §5/§6 — a pre-rendered transparent graphics layer, ready to be composited.
+ *
+ * Passed IN rather than produced here, for the same reason `resolveMedia` is: this module must not
+ * acquire an opinion about browsers. A deployment with no chrome-headless-shell simply does not
+ * supply one, the ASS route runs, and the video still gets its captions.
+ */
+export type GraphicsOverlayFile = {
+  /** A video with an alpha channel, exactly as long and as large as the timeline. */
+  overlayPath: string;
+  /** Anything the overlay renderer was asked for and did not draw, with the planner's reason. */
+  skipped: string[];
+};
+
+/** Which engine actually drew this video's text and graphics. */
+export type GraphicsRenderer = "remotion" | "ffmpeg_ass" | "none";
 
 export type RenderedTimeline = {
   outputPath: string;
@@ -99,6 +125,13 @@ export type RenderedTimeline = {
   duckedTracks: number;
   /** How many clips had a camera move that actually produced a zoompan pass. */
   camerasExecuted: number;
+  /**
+   * RONDE 150 — which engine drew the text and graphics.
+   *
+   * Reported rather than inferred, because the two routes produce visibly different typography and
+   * an operator looking at a video that suddenly lost its lower thirds needs to know which one ran.
+   */
+  graphicsRenderer: GraphicsRenderer;
   skipped: string[];
   ffmpegCommands: number;
 };
@@ -469,6 +502,14 @@ export async function renderTimeline(params: {
   /** libass font family name. Must exist in `fontsDir`; there is no fontconfig in the shipped build. */
   fontName?: string;
   fontsDir?: string;
+  /**
+   * RONDE 150 §5/§6 — render the GRAPHICS/TEXT/CAPTIONS layer somewhere else and hand it back.
+   *
+   * Injected rather than imported so this module keeps no dependency on a browser. Return null
+   * (or throw, which is caught and reported) to fall back to the ASS route; when it returns a
+   * file, that file is composited and the ASS pass does not run at all — see phase 3.
+   */
+  graphicsOverlay?: (timeline: ProjectTimeline) => Promise<GraphicsOverlayFile | null>;
 }): Promise<RenderedTimeline> {
   const { timeline, workDir, outputPath } = params;
   const fmt = timeline.format;
@@ -615,8 +656,66 @@ export async function renderTimeline(params: {
     }
   }
 
+  /**
+   * ── 3a. RONDE 150 §5/§6 — composite the Remotion overlay, when there is one ─────────────────
+   *
+   * The overlay carries an alpha channel; `overlay=format=auto` lays it over the picture, honouring
+   * that alpha, and everywhere the graphics layer drew nothing the film shows through untouched.
+   *
+   * The `else` below is not a fallback in the bad sense. Both routes draw the same elements from
+   * the same timeline; one of them can lay out a lower third and one of them cannot. What matters
+   * is that EXACTLY ONE runs: if both did, every caption would be burned in twice, half a pixel
+   * apart, and the result reads as a blurry double-strike rather than as an obvious bug.
+   */
   let withText = silent;
-  if (elements.length > 0) {
+  let graphicsRenderer: GraphicsRenderer = elements.length > 0 ? "ffmpeg_ass" : "none";
+  let overlay: GraphicsOverlayFile | null = null;
+  if (params.graphicsOverlay) {
+    try {
+      overlay = await params.graphicsOverlay(timeline);
+    } catch (err) {
+      /**
+       * A missing browser must not lose a finished edit.
+       *
+       * §2 forbids a SILENT fallback, not a fallback: the reason is pushed into `skipped`, which
+       * goes to the render log and the job record, and the ASS route then draws the same captions
+       * with plainer typography. Failing the whole render because a lower third could not be laid
+       * out would be the worse answer.
+       */
+      skipped.push(
+        `graphics overlay unavailable, fell back to the libass route — ${(err as Error).message.slice(0, 200)}`
+      );
+    }
+  }
+
+  if (overlay && fs.existsSync(overlay.overlayPath)) {
+    skipped.push(...overlay.skipped);
+    withText = path.join(workDir, "with_graphics.mp4");
+    await execFileAsync(
+      ffmpeg(),
+      ["-y", "-hide_banner", "-loglevel", "error",
+        "-i", silent,
+        "-i", overlay.overlayPath,
+        /**
+         * `shortest=1` bounds the result by the PICTURE. The overlay is built to the timeline's own
+         * duration, so the two should already match; if rounding ever leaves the overlay a frame
+         * longer, a video that grew a frame of pure graphics over black would fail the duration
+         * gate for a reason that has nothing to do with the edit.
+         */
+        "-filter_complex", "[0:v][1:v]overlay=format=auto:shortest=1[vout]",
+        "-map", "[vout]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-an", withText],
+      { maxBuffer: 1024 * 1024 * 16 }
+    );
+    commands++;
+    graphicsRenderer = "remotion";
+  } else if (elements.length > 0) {
+    if (overlay) {
+      skipped.push(
+        `graphics overlay ${overlay.overlayPath} was not written, fell back to the libass route`
+      );
+    }
     const assPath = path.join(workDir, "overlay.ass");
     fs.writeFileSync(
       assPath,
@@ -726,6 +825,7 @@ export async function renderTimeline(params: {
     camerasExecuted: rendered.filter((r) => cameraChain(
       r.clip.camera ?? { type: "camera_hold" }, fmt, r.durationSec
     ) !== null).length,
+    graphicsRenderer,
     skipped,
     ffmpegCommands: commands,
   };

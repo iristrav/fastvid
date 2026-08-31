@@ -1,37 +1,38 @@
 /**
- * RONDE 150 §4 — the Remotion entry point.
+ * RONDE 150 §5 — the Remotion entry point.
  *
- * ONE composition, whose dimensions and length come from the props rather than from a constant.
- * `calculateMetadata` is how Remotion asks the props what shape the video is, which is what lets a
- * 9:16 short and a 16:9 documentary go through the same composition without a second registration.
+ * ONE composition, and it renders a transparent GRAPHICS OVERLAY, not a video. Its dimensions and
+ * length come from the props rather than from a constant, which is what lets a 9:16 short and a
+ * 16:9 documentary go through the same registration.
+ *
+ * The id is `FastVidGraphics` rather than `FastVid` on purpose: this bundle cannot produce a
+ * finished video, and a name suggesting otherwise would invite exactly the "render it with
+ * Remotion instead" mistake §5 rules out.
  *
  * The defaults exist only so the composition can be selected before real props arrive; every real
  * render overrides all of them.
  */
 import React from "react";
 import { Composition } from "remotion";
-import { FastVidComposition, type FastVidProps } from "./FastVidComposition";
+import { GraphicsOverlay, type GraphicsOverlayProps } from "./GraphicsOverlay";
 
-const EMPTY: FastVidProps = {
+const EMPTY: GraphicsOverlayProps = {
   fps: 30,
   width: 1920,
   height: 1080,
   durationInFrames: 30,
   durationSec: 1,
-  look: null,
-  clips: [],
   captions: [],
   texts: [],
   graphics: [],
-  audio: [],
   words: [],
   meta: { videoId: 0, timelineVersion: 0, schemaVersion: 1 },
 };
 
 export const RemotionRoot: React.FC = () => (
   <Composition
-    id="FastVid"
-    component={FastVidComposition}
+    id="FastVidGraphics"
+    component={GraphicsOverlay}
     durationInFrames={EMPTY.durationInFrames}
     fps={EMPTY.fps}
     width={EMPTY.width}

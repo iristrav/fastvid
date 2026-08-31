@@ -85,6 +85,18 @@ export const RENDER_PHASES = [
   "planning",
   "validating",
   "rendering",
+  /**
+   * RONDE 150 §18 — the Remotion graphics layer being drawn and laid over the picture.
+   *
+   * A phase of its own because it is genuinely slow (a webpack bundle and a headless browser) and
+   * because the worker can genuinely see it start: it supplies the overlay function, so it knows
+   * the moment ffmpeg asks for one. A video with nothing to draw skips straight past it.
+   *
+   * §18 also lists an "audio" phase and it is deliberately NOT here. Mixing happens inside
+   * `renderTimeline` with no boundary the worker can observe, so reporting it would mean inventing
+   * a moment — a progress bar that moves on a guess is worse than one that moves on a fact.
+   */
+  "compositing",
   "uploading",
   "completed",
 ] as const;

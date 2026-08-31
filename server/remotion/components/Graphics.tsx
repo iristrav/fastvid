@@ -19,7 +19,7 @@
  * dropped in later and immediately have everything it needs. Until then they are reported.
  */
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { positionStyle, type TextStyleLike } from "./Text";
 
 export type GraphicSpec = {
@@ -164,7 +164,31 @@ const QuoteCard: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }
   );
 };
 
-export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
+/**
+ * RONDE 150 — how far a bottom-anchored graphic is lifted to clear the caption band.
+ *
+ * Found by looking at the first real composite this round produced: a `lower_third` and a two-line
+ * caption both live at the bottom of the frame, and drawn at their planned positions the narration
+ * struck straight through the name. Both unreadable.
+ *
+ * The number is derived, not eyeballed. `positionStyle` puts a caption 6% from the bottom and a
+ * lower third at 22%; at 1080p a caption line is 86px, which is 8% of the height. So:
+ *
+ *     a two-line caption reaches   6% + 2 × 8%  =  22% from the bottom
+ *     the lower third sits at                      22%          → they touch exactly
+ *     lifting by 12% puts it at                    34%          → clears with room to spare,
+ *                                                                 and still clears a three-line
+ *                                                                 caption (top at 30%)
+ *
+ * A fraction of the frame height rather than a pixel count, because the positions it separates are
+ * themselves percentages and a fixed pixel gap would only be right at one resolution.
+ */
+export const CAPTION_CLEARANCE = 0.12;
+
+export const Graphic: React.FC<{ g: GraphicSpec; liftForCaption?: boolean }> = ({
+  g,
+  liftForCaption,
+}) => {
   const primary = readString(g, "label", "text", "title", "locationName", "location", "name", "caption");
   // No words, no card. The caller reports it; drawing the type name would be inventing content.
   if (!primary || !RENDERABLE_GRAPHICS.has(g.graphicType)) return null;
@@ -207,7 +231,16 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
 
   return (
     <Sequence from={g.fromFrame} durationInFrames={g.durationInFrames} name={`${g.graphicType} ${g.id}`}>
-      <GraphicBody position={position} fontSizePx={fontSizePx} durationInFrames={g.durationInFrames}>
+      <GraphicBody
+        position={position}
+        fontSizePx={fontSizePx}
+        durationInFrames={g.durationInFrames}
+        /**
+         * Only a graphic anchored to the BOTTOM can collide with a caption. Lifting a `top` or
+         * `center` card as well would move it away from where the planner put it for no reason.
+         */
+        lift={Boolean(liftForCaption) && (position === "lower_third" || position === "bottom")}
+      >
         {body}
       </GraphicBody>
     </Sequence>
@@ -218,9 +251,11 @@ const GraphicBody: React.FC<{
   position: string;
   fontSizePx: number;
   durationInFrames: number;
+  lift?: boolean;
   children: React.ReactNode;
-}> = ({ position, fontSizePx, durationInFrames, children }) => {
+}> = ({ position, fontSizePx, durationInFrames, lift, children }) => {
   const frame = useCurrentFrame();
+  const { height } = useVideoConfig();
   const fade = Math.min(10, Math.max(1, Math.floor(durationInFrames / 6)));
   const opacity = interpolate(
     frame,
@@ -229,9 +264,18 @@ const GraphicBody: React.FC<{
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
   );
   const slide = interpolate(frame, [0, fade], [18, 0], { extrapolateRight: "clamp" });
+  /**
+   * The lift is ADDED to where `positionStyle` put the card, as a transform.
+   *
+   * Not as `paddingBottom`: `positionStyle("lower_third")` already sets the `padding` shorthand, so
+   * a longhand override would REPLACE its 22% rather than add to it — and a "lift" of 16% would
+   * then move the card 6% further down, which is the opposite of the intent and looks like a
+   * working feature until someone measures it.
+   */
+  const liftPx = lift ? -Math.round(height * CAPTION_CLEARANCE) : 0;
   return (
     <AbsoluteFill style={{ ...positionStyle(position), display: "flex", fontSize: fontSizePx }}>
-      <div style={{ opacity, transform: `translateX(${slide}px)` }}>{children}</div>
+      <div style={{ opacity, transform: `translate(${slide}px, ${liftPx}px)` }}>{children}</div>
     </AbsoluteFill>
   );
 };
