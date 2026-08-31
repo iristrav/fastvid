@@ -421,7 +421,67 @@ export type TimelineAudioClip = {
   fadeOutSec?: number;
   /** Duck this under the voice track while the voice is speaking. */
   duckUnderVoice?: boolean;
+
+  /* ── RONDE 154 ────────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Per-track ducking parameters, overriding the calibrated defaults.
+   *
+   * Absent means the tuned `DUCK_MUSIC`/`DUCK_AMBIENT` constants, which is what every existing
+   * timeline gets — so this adds control without changing any render that does not ask for it.
+   */
+  ducking?: AudioDucking;
+  /**
+   * Volume keyframes, in seconds from this clip's own start.
+   *
+   * Interpolated linearly between points, so a level change is a ramp rather than a step: a step
+   * in a gain curve is an audible click, which is the one thing an automation system must never
+   * produce.
+   */
+  automation?: AudioKeyframe[];
+  /** Seconds of silence before the clip's audio begins, on top of `start`. */
+  delaySec?: number;
+  /**
+   * What this clip IS, semantically — a whoosh, a room tone, a crowd.
+   *
+   * The planner chooses it and the renderer never reads it: it exists so an editor can show what a
+   * track is, and so a missing asset can be reported as "the whoosh at 12.4s is unavailable"
+   * rather than as an anonymous id.
+   */
+  role?: string;
   disabled?: boolean;
+};
+
+/**
+ * RONDE 154 — how hard a track ducks under the voice.
+ *
+ * The names are `sidechaincompress`'s own, because that is the filter that executes them and a
+ * second vocabulary would just need translating. Every value is bounded when it reaches the filter
+ * (see `duckingParams` in timelineFilters) — an unbounded ratio can gate a track into silence.
+ */
+export type AudioDucking = {
+  enabled?: boolean;
+  /** 0..1. Below this level in the voice, the compressor stops acting. */
+  threshold?: number;
+  /** 1..20. How hard the track is pushed down while the voice speaks. */
+  ratio?: number;
+  /** Milliseconds. */
+  attack?: number;
+  release?: number;
+  /** Output make-up gain, 1..4. */
+  makeup?: number;
+};
+
+/**
+ * One point on a volume curve.
+ *
+ * `atSec` is relative to the CLIP's own start, not the video's, so moving a clip on the timeline
+ * carries its automation with it rather than leaving the curve behind.
+ */
+export type AudioKeyframe = {
+  atSec: number;
+  /** Linear gain, as everywhere else on the timeline. 1.0 is the file's own level. */
+  gain: number;
 };
 
 /**

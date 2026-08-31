@@ -30,6 +30,8 @@
  * exactly — see the constants, which are copied from it rather than re-invented.
  */
 import type {
+  AudioDucking,
+  AudioKeyframe,
   ClipCamera,
   ClipEffect,
   ClipSourceKind,
@@ -672,7 +674,95 @@ export type MixInput = {
   fadeOutSec?: number;
   durationSec: number;
   duckUnderVoice?: boolean;
+  /* ── RONDE 154 ── */
+  ducking?: AudioDucking;
+  automation?: AudioKeyframe[];
+  delaySec?: number;
 };
+
+/* ═══════════════════════ RONDE 154 — ducking, bounded ═══════════════════════ */
+
+/**
+ * The sidechain parameters for one track: the calibrated default, adjusted by whatever the timeline
+ * asked for, and CLAMPED.
+ *
+ * The clamps are not defensive politeness. `ratio` is the one that matters: sidechaincompress
+ * accepts values into the hundreds, and anything past about 20 stops being a duck and becomes a
+ * gate — the music does not dip under the voice, it vanishes and reappears, which sounds like a
+ * broken file rather than a mix. `threshold` at 0 makes the compressor act on silence, so the
+ * track is permanently suppressed even where there is no narration at all.
+ */
+export function duckingParams(
+  kind: MixInput["kind"],
+  override: AudioDucking | undefined
+): { threshold: number; ratio: number; attack: number; release: number; makeup: number } {
+  const base = kind === "AMBIENT" ? DUCK_AMBIENT : DUCK_MUSIC;
+  const clamp = (v: number | undefined, lo: number, hi: number, fallback: number) =>
+    v == null || !Number.isFinite(v) ? fallback : Math.max(lo, Math.min(hi, v));
+  return {
+    threshold: clamp(override?.threshold, 0.001, 0.5, base.threshold),
+    ratio: clamp(override?.ratio, 1, 20, base.ratio),
+    attack: clamp(override?.attack, 1, 2000, base.attack),
+    release: clamp(override?.release, 1, 5000, base.release),
+    makeup: clamp(override?.makeup, 1, 4, base.makeup),
+  };
+}
+
+/** Is this track ducked at all? An explicit `enabled: false` wins over `duckUnderVoice`. */
+export function duckingEnabled(input: MixInput): boolean {
+  if (input.kind === "VOICE") return false;
+  /**
+   * §154: "SFX: niet automatisch ducking toepassen." A sound effect is a short accent that is
+   * MEANT to cut through — ducking it would remove the thing it was placed for. It can still be
+   * ducked, but only by asking explicitly.
+   */
+  if (input.kind === "SFX") return input.ducking?.enabled === true;
+  if (input.ducking?.enabled === false) return false;
+  return Boolean(input.duckUnderVoice || input.ducking?.enabled);
+}
+
+/* ═══════════════════════ RONDE 154 — volume automation ═══════════════════════ */
+
+/**
+ * A volume curve as a `volume` filter with a time-dependent expression.
+ *
+ * ── Why an expression and not a chain of fades ──────────────────────────────────────────────
+ *
+ * A chain of `afade` segments would need one filter per keyframe pair and would still step at the
+ * boundaries. `volume=eval=frame` evaluates its expression per sample, so the ramp between two
+ * points is genuinely continuous — which is the whole reason §154 asks for interpolation rather
+ * than levels: a step in a gain curve is an audible click.
+ *
+ * The expression is built as nested `if(lt(t,...))` clauses, one per segment, ending in the last
+ * keyframe's value. `t` is seconds into the track, which is what the keyframes are measured in.
+ *
+ * Returns null for fewer than two points — a single keyframe is a level, not a curve, and the
+ * clip's own `gain` already expresses that.
+ */
+export function automationChain(keyframes: readonly AudioKeyframe[] | undefined): string | null {
+  const points = (keyframes ?? [])
+    .filter((k) => Number.isFinite(k.atSec) && Number.isFinite(k.gain) && k.atSec >= 0)
+    .map((k) => ({ atSec: k.atSec, gain: Math.max(0, Math.min(4, k.gain)) }))
+    .sort((a, b) => a.atSec - b.atSec);
+  if (points.length < 2) return null;
+
+  /**
+   * Built from the LAST segment backwards, so each `if` wraps the ones after it. Written forwards
+   * it would need the whole tail before it could emit its own clause.
+   */
+  let expr = points[points.length - 1]!.gain.toFixed(4);
+  for (let i = points.length - 2; i >= 0; i--) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const span = Math.max(0.001, b.atSec - a.atSec);
+    // Linear interpolation between the two points, in the filter's own arithmetic.
+    const ramp =
+      `${a.gain.toFixed(4)}+(${(b.gain - a.gain).toFixed(4)})*` +
+      `((t-${a.atSec.toFixed(4)})/${span.toFixed(4)})`;
+    expr = `if(lt(t,${a.atSec.toFixed(4)}),${a.gain.toFixed(4)},if(lt(t,${b.atSec.toFixed(4)}),${ramp},${expr}))`;
+  }
+  return `volume=eval=frame:volume='${expr}'`;
+}
 
 /**
  * The complete audio filtergraph: delays, gains, fades, ducking and the mix.
@@ -693,16 +783,29 @@ export function buildAudioGraph(inputs: readonly MixInput[]): { filter: string; 
 
   const chains: string[] = [];
   const voices = inputs.filter((i) => i.kind === "VOICE");
-  const ducked = inputs.filter((i) => i.duckUnderVoice && i.kind !== "VOICE" && i.kind !== "SFX");
+  const ducked = inputs.filter((i) => duckingEnabled(i));
   const canDuck = voices.length > 0 && ducked.length > 0;
 
   /** Per-track: delay to its start, set its gain, then its fades. Order matters — a fade is
    *  measured from the track's own start, so it must come after the delay. */
   const prepared = inputs.map((input, n) => {
     const label = `p${n}`;
-    const delayMs = Math.max(0, Math.round(input.startSec * 1000));
+    /**
+     * RONDE 154 — `delaySec` is ADDED to the clip's start, not a replacement for it.
+     *
+     * `startSec` is where the clip sits on the timeline; `delaySec` is an offset the editor applies
+     * on top, for nudging a sound effect a few frames later without moving the clip itself.
+     */
+    const delayMs = Math.max(0, Math.round((input.startSec + (input.delaySec ?? 0)) * 1000));
     const bits = [`[${input.index}:a]`];
     const filters = [`adelay=${delayMs}|${delayMs}`, `volume=${input.gain.toFixed(3)}`];
+    /**
+     * The automation curve runs AFTER the static gain, so the two multiply: `gain` is the track's
+     * level and the curve is a shape applied to it. Ordering them the other way would make the
+     * curve's own values absolute and silently discard whatever gain the editor set.
+     */
+    const curve = automationChain(input.automation);
+    if (curve) filters.push(curve);
     if (input.fadeInSec != null && input.fadeInSec > 0) {
       filters.push(`afade=t=in:st=${input.startSec.toFixed(3)}:d=${input.fadeInSec.toFixed(3)}`);
     }
@@ -727,7 +830,7 @@ export function buildAudioGraph(inputs: readonly MixInput[]): { filter: string; 
       if (p.input.kind === "VOICE") return splitLabels[0]!;
       const at = ducked.indexOf(p.input);
       if (at < 0) return p.label;
-      const params = p.input.kind === "AMBIENT" ? DUCK_AMBIENT : DUCK_MUSIC;
+      const params = duckingParams(p.input.kind, p.input.ducking);
       const out = `d${at}`;
       chains.push(
         `[${p.label}][${splitLabels[at + 1]}]sidechaincompress=` +

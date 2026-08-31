@@ -781,6 +781,10 @@ export async function renderTimeline(params: {
         fadeOutSec: c.fadeOutSec,
         durationSec: Math.max(0, c.end - c.start),
         duckUnderVoice: c.duckUnderVoice,
+        /** RONDE 154 — the timeline's own ducking, automation and delay, carried unchanged. */
+        ...(c.ducking ? { ducking: c.ducking } : {}),
+        ...(c.automation?.length ? { automation: c.automation } : {}),
+        ...(c.delaySec != null ? { delaySec: c.delaySec } : {}),
       },
     });
   }
