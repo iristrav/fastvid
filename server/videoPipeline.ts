@@ -414,6 +414,7 @@ import {
   youtubeLicenseDecision,
   type YoutubeUsageEntry,
 } from "./youtubeLicenseStatus";
+import { composeScopeVerdict, formatComposeScopeDecision } from "./composeEligibility";
 import {
   createOpenWebPolicyStats,
   formatOpenWebPolicyReport,
@@ -18296,15 +18297,41 @@ async function montageClipPassesComposeGate(
      * before this call and have never been probed, so a half-written ffmpeg result cannot slip
      * through on the strength of "we were in a hurry".
      */
+    /**
+     * PHASE 1 — adoption is the stronger fact, and it is asked for first.
+     *
+     * RONDE 138 (above) answered an abandoned scope from a memoised probe, which closed the common
+     * case. What it left unstated is the principle: an expired RETRIEVAL budget may stop new work,
+     * and may never be a verdict on a clip that has already been found, measured, judged and
+     * adopted. A clip whose measurement happened not to be memoised under this exact path was still
+     * thrown away, so the outcome depended on a cache rather than on what was known about the clip.
+     *
+     * `adoptedAtPath` asks the ledger about THIS EXACT PATH — never the derivation chain — so
+     * pad_combined_*.mp4 and the text-overlay output, written moments before this call and never
+     * examined, cannot inherit their parent's clearance. They fall to the same refusal as before.
+     */
     if (sceneFetchAborted()) {
       const known = memoisedVideoStreamMeta(clipPath);
-      if (known && montageStreamMetaUsable(known, montageClipStartSec(sceneIndex, clipIndex))) {
-        console.log(
-          `[ComposeGate] s${sceneIndex} clip ${clipIndex}: scope abandoned — keeping ${base} on a ` +
-            `measurement already taken (${known.width}x${known.height}, ${known.durationSec.toFixed(2)}s)`
-        );
+      const usable = known
+        ? montageStreamMetaUsable(known, montageClipStartSec(sceneIndex, clipIndex))
+        : null;
+      const verdict = composeScopeVerdict({
+        scopeAborted: true,
+        adopted: get_activeSourcingCache()?.lineage?.adoptedAtPath(clipPath) ?? false,
+        priorMeasurementUsable: usable,
+      });
+      const detail =
+        known && verdict.decision === "pass" && verdict.basis === "prior_measurement"
+          ? `${known.width}x${known.height}, ${known.durationSec.toFixed(2)}s`
+          : undefined;
+      const line = formatComposeScopeDecision({
+        sceneIndex, clipIndex, basename: base, verdict, detail,
+      });
+      if (verdict.decision === "pass") {
+        console.log(line);
         return true;
       }
+      console.warn(line);
       return false;
     }
     if (!(await isValidVideoFile(clipPath))) return false;

@@ -645,6 +645,30 @@ export class VisualSourceLedger {
   }
 
   /**
+   * PHASE 1 — was THIS FILE adopted?
+   *
+   * Deliberately narrower than `resolve()`, and the narrowness is the whole point. `resolve()`
+   * walks the derivation chain and the content key so a trimmed or renamed file can still be
+   * traced to where it came from. That is right for provenance and wrong for this question.
+   *
+   * `markAdopted` records ADOPTED against the record for the EXACT final path — creating a derived
+   * record first when a trim or transform renamed the file — so a byPath hit with `adoptedAt` set
+   * means this exact file cleared the technical gate, the vision gate and adoption.
+   *
+   * Files written AFTER adoption (pad_combined_*.mp4, the text-overlay output) are derived from an
+   * adopted parent and would answer `true` through the chain, while never having been examined
+   * themselves. They have no ADOPTED event of their own, so an exact lookup answers false for them
+   * and they still have to prove themselves. A half-written ffmpeg result must not inherit its
+   * parent's clearance.
+   */
+  adoptedAtPath(clipPath: string): boolean {
+    if (!clipPath) return false;
+    const id = this.byPath.get(clipPath);
+    if (!id) return false;
+    return this.records.get(id)?.adoptedAt != null;
+  }
+
+  /**
    * The asset identity behind a path, when the path itself is not a handle.
    *
    * Only reached after the exact path and the derivation chain have both missed, so the cost is

@@ -35,6 +35,7 @@
  * BUILT_IN_FORGE_API_URL that is not set. OpenAI was configured the whole time — as the LLM.
  */
 import { describe, expect, it } from "vitest";
+import { composeScopeVerdict } from "./composeEligibility";
 
 const read = (rel: string) => {
   const { readFileSync } = require("fs") as typeof import("fs");
@@ -82,13 +83,30 @@ describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured cli
     expect(body).toContain("const known = memoisedVideoStreamMeta(clipPath);");
     // The same usability rule the non-aborted path applies — not a looser one.
     expect(body).toContain("montageStreamMetaUsable(known, montageClipStartSec(sceneIndex, clipIndex))");
+    /**
+     * PHASE 1 moved the decision itself into `composeScopeVerdict`, which added a SECOND way to
+     * pass: a clip the ledger records as adopted, whether or not a measurement happens to be
+     * memoised for its path. RONDE 138's rule is unchanged and still here — it is now the second
+     * branch of that function rather than the only one.
+     */
+    expect(body).toContain("composeScopeVerdict({");
+    expect(body).toContain("priorMeasurementUsable: usable");
   });
 
-  it("a file with NO prior measurement is still refused", () => {
+  it("a file that is NEITHER measured NOR adopted is still refused", () => {
     /**
      * The half of the guarantee that keeps derived files honest. pad_combined_*.mp4 and the
      * text-overlay output are written moments before this call and have never been probed, so a
      * half-written ffmpeg result cannot ride through on "we were in a hurry".
+     *
+     * PHASE 1 restated the title of this test rather than its subject. RONDE 138 asked for a
+     * MEASUREMENT because a measurement was the only thing the gate could know under an abandoned
+     * scope; adoption is the stronger fact and is now consulted too, and it is checked by exact
+     * path so a derived file cannot inherit its parent's. What must not change — and is what this
+     * test has always been for — is that a file with NEITHER is refused.
+     *
+     * Asserted through the rule rather than through the branch's shape, because the branch now
+     * delegates: `composeScopeVerdict` is a pure function and can be asked directly.
      */
     const body = composeGateBody();
     const abortBlock = body.slice(
@@ -96,15 +114,24 @@ describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured cli
       body.indexOf("if (!(await isValidVideoFile(clipPath)))")
     );
     expect(abortBlock).toContain("return false;");
-    /**
-     * The block does contain a `return true` — that is the whole point — but it must be reachable
-     * only through the guard. An acceptance that did not depend on `known` would let an unmeasured
-     * file through, which is exactly what this test exists to forbid.
-     */
+    // Every acceptance in the branch goes through the verdict; there is no other way out.
     const accept = abortBlock.indexOf("return true;");
     expect(accept).toBeGreaterThan(0);
     const beforeAccept = abortBlock.slice(0, accept);
-    expect(beforeAccept).toContain("if (known && montageStreamMetaUsable(");
+    expect(beforeAccept).toContain('if (verdict.decision === "pass")');
+    expect(beforeAccept).toContain("composeScopeVerdict({");
+
+    const unmeasuredUnadopted = composeScopeVerdict({
+      scopeAborted: true,
+      adopted: false,
+      priorMeasurementUsable: null,
+    });
+    expect(unmeasuredUnadopted.decision).toBe("fail");
+    // ...and one that was measured and failed the usability rule is refused too.
+    expect(
+      composeScopeVerdict({ scopeAborted: true, adopted: false, priorMeasurementUsable: false })
+        .decision
+    ).toBe("fail");
   });
 
   it("the accessor spawns nothing — that is the entire reason it may run under abort", () => {
