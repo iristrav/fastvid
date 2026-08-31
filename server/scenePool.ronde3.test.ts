@@ -376,11 +376,29 @@ describe("FIX A — scope", () => {
   }
 
   it("all five detail-fetching providers use the batched loop", () => {
+    /**
+     * The property under test is "a batch of search hits does not cost one sequential request
+     * each". `await Promise.all(` was the way every provider achieved that.
+     *
+     * RONDE 136 gave Wikimedia something stronger: MediaWiki's query API takes up to 50
+     * pipe-separated titles, so a whole batch is now ONE request rather than five concurrent ones.
+     * That is the same property, better satisfied — video 558 logged 32 HTTP 429s and 34
+     * provider stand-downs from the old shape, ending with 38 search results and zero downloads.
+     *
+     * So the assertion allows either mechanism, and still demands the batching loop and the cap
+     * from every provider. It has NOT been loosened for the other four: they must still show a
+     * concurrent fan-out.
+     */
     for (const name of batched) {
       const body = codeOnly(bodyOf(name));
       expect(body, name).toContain("i += DETAIL_FETCH_CONCURRENCY");
-      expect(body, name).toContain("await Promise.all(");
       expect(body, name).toContain("if (candidates.length >= max) break;");
+      if (name === "searchWikimediaCandidates") {
+        // One request for the whole batch — the pipe-separated multi-title form.
+        expect(body, name).toContain("batch.join(\"|\")");
+      } else {
+        expect(body, name).toContain("await Promise.all(");
+      }
     }
   });
 
@@ -400,7 +418,12 @@ describe("FIX A — scope", () => {
   it("no request timeout, header or URL was changed", () => {
     expect(src).toContain(`withTimeoutFetch(itemJsonUrl, UA, 8_000, \`Library of Congress pool item`);
     expect(src).toContain(`withTimeoutFetch(metaUrl, UA, 8_000, \`Internet Archive pool metadata`);
-    expect(src).toContain(`withTimeoutFetch(infoUrl, UA, 5_000, \`Wikimedia pool info`);
+    // RONDE 136: Wikimedia now sends ONE request for the whole batch, so its label and timeout
+    // changed with it (8s for up to five titles' worth of metadata instead of 5s for one). Same
+    // endpoint, same UA, same params — asserted here rather than dropped.
+    expect(src).toContain(`withTimeoutFetch(infoUrl, UA, 8_000, \`Wikimedia pool info batch`);
+    expect(src).toContain("https://commons.wikimedia.org/w/api.php?action=query");
+    expect(src).toContain("&prop=imageinfo");
     expect(src).toContain(`withTimeoutFetch(recordUrl, authHeader, 8_000, \`Europeana pool record`);
     expect(src).toContain(`withTimeoutFetch(assetUrl, UA, 8_000, \`NASA pool asset`);
     expect(src).toContain('const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };');

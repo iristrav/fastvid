@@ -432,7 +432,8 @@ describe("RONDE 134 — real video files through the real pool route", () => {
 describe("archive video and external video ask the same question", () => {
   it("both call videoResolutionVerdict", () => {
     expect(read("server/curatedMediaSourcing.ts")).toContain("videoResolutionVerdict(dims?.width, dims?.height)");
-    expect(read("server/videoPipeline.ts")).toContain("videoResolutionVerdict(rawMeta?.width, rawMeta?.height)");
+    // RONDE 136 added the per-source floor as a third argument; the call is still the shared one.
+    expect(read("server/videoPipeline.ts")).toContain("videoResolutionVerdict(\n          rawMeta?.width,\n          rawMeta?.height,\n          minShortSideForSource(candidate.source)\n        )");
   });
 
   it("the archive route had NO video resolution check before this round", () => {

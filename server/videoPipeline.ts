@@ -218,6 +218,7 @@ import {
   formatBelowQualityBar,
   formatTechnicalReject,
   sourceDurationVerdict,
+  minShortSideForSource,
   stillResolutionVerdict,
   videoResolutionVerdict,
 } from "./technicalMediaGate";
@@ -4517,7 +4518,13 @@ export async function downloadAndTrimPoolCandidate(
         const rawMeta = await probeVideoStreamMeta(rawPath);
         console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms meta=${rawMeta ? `${rawMeta.width}x${rawMeta.height}` : "none"}`);
 
-        const resVerdict = videoResolutionVerdict(rawMeta?.width, rawMeta?.height);
+        // RONDE 136: stock is held to the 480-line bar, archive to the absolute 144 floor.
+        // candidate.source is the provider's own name, so this is a fact rather than a guess.
+        const resVerdict = videoResolutionVerdict(
+          rawMeta?.width,
+          rawMeta?.height,
+          minShortSideForSource(candidate.source)
+        );
         if (!resVerdict.ok) {
           console.warn(formatTechnicalReject({
             beatLabel: `s${sceneIndex}b${beatIndex}`,
@@ -7353,6 +7360,82 @@ const MAX_IMAGE_DOWNLOAD_BYTES = 25 * 1024 * 1024;
  */
 const WIKIMEDIA_MAX_CANDIDATE_SCAN = 25;
 
+/**
+ * RONDE 136 — every title's imageinfo in one request.
+ *
+ * MediaWiki's query API accepts up to 50 pipe-separated titles per call and answers with a page
+ * entry per title. Asking once instead of once-per-title is what stops Commons throttling this
+ * route; see the call site for what the N+1 pattern cost in video 558.
+ *
+ * Returns a map keyed by the title as it was ASKED FOR. MediaWiki normalises titles (underscores
+ * to spaces, first letter capitalised) and reports what it changed in `query.normalized`, so that
+ * mapping is applied here — without it a normalised answer would never be found again under the
+ * name the caller holds, and the batch would silently return nothing for every title.
+ *
+ * A failed request yields an empty map, which the caller treats exactly as it treated a failed
+ * per-title call: the candidates are skipped, nothing is invented.
+ */
+export const WIKIMEDIA_IMAGEINFO_BATCH_SIZE = 50;
+
+type WikimediaImageInfo = { url: string; mime: string; size: number };
+
+export async function fetchWikimediaImageInfoBatch(
+  titles: string[],
+  sceneIndex: number
+): Promise<Map<string, WikimediaImageInfo>> {
+  const out = new Map<string, WikimediaImageInfo>();
+  const wanted = titles.filter((t) => t?.trim());
+  for (let i = 0; i < wanted.length; i += WIKIMEDIA_IMAGEINFO_BATCH_SIZE) {
+    const chunk = wanted.slice(i, i + WIKIMEDIA_IMAGEINFO_BATCH_SIZE);
+    try {
+      const infoUrl =
+        `https://commons.wikimedia.org/w/api.php?action=query` +
+        `&titles=${encodeURIComponent(chunk.join("|"))}` +
+        `&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
+      const infoResp = await providerLimiter("wikimedia").run(() =>
+        fetchWithTimeout(infoUrl, 8_000, `Wikimedia info batch scene ${sceneIndex}`, {
+          headers: { "User-Agent": "Fastvid/1.0 (video generation)" },
+        })
+      );
+      if (!infoResp.ok) {
+        logWikimediaHttpFailure("imageinfo", sceneIndex, infoResp);
+        markWikimediaSearchResult(false);
+        continue;
+      }
+      markWikimediaSearchResult(true);
+      const data = (await infoResp.json()) as {
+        query?: {
+          normalized?: Array<{ from: string; to: string }>;
+          pages?: Record<string, { title?: string; imageinfo?: WikimediaImageInfo[] }>;
+        };
+      };
+      // MediaWiki's own record of what it renamed, so the answer can be found under the name the
+      // caller asked with.
+      const askedFor = new Map<string, string>();
+      for (const n of data.query?.normalized ?? []) askedFor.set(n.to, n.from);
+      for (const page of Object.values(data.query?.pages ?? {})) {
+        const info = page?.imageinfo?.[0];
+        if (!info?.url || !page.title) continue;
+        out.set(askedFor.get(page.title) ?? page.title, info);
+        // Also under the normalised name, so a caller holding either form finds it.
+        out.set(page.title, info);
+      }
+    } catch (err) {
+      // RONDE 68/69: a cancellation FastVid caused is not a provider fault, and a failure that is
+      // counted must never be counted silently. Same shape as every other Wikimedia catch site.
+      if (!isScopeAbortError(err)) {
+        console.warn(
+          `[Pipeline] Wikimedia info batch for scene ${sceneIndex}: ${(err as Error).message?.slice(0, 80)}`
+        );
+      }
+      // Single line, matching every other Wikimedia catch site: the counter and its cancellation
+      // guard travel together, which is the shape RONDE 69/70 pin.
+      if (!isScopeAbortError(err)) markWikimediaSearchResult(false);
+    }
+  }
+  return out;
+}
+
 export async function fetchWikimediaImages(
   query: string,
   duration: number,
@@ -7498,27 +7581,45 @@ export async function fetchWikimediaImages(
     // With excludeUrls set, the scan widens to every title the search returned and stops as soon
     // as `count` results are in hand. Without it, maxScan and the loop are exactly as before.
     const maxScan = excludeUrls ? titles.length : Math.min(titles.length, count);
+    /**
+     * RONDE 136 — ONE imageinfo request for all titles, not one per title.
+     *
+     * ── What video 558 measured ──────────────────────────────────────────────────────────────
+     *
+     *     wikimedia: searches=15  results=38  downloads=0  accepted=0
+     *     32x [Pipeline] Wikimedia imageinfo for scene N: HTTP 429 Too Many Requests
+     *     34x [ProviderCooldown] provider=wikimedia reason=RATE_LIMITED standing down for 60s
+     *
+     * Thirty-eight results and not one download. The search was never the problem — every
+     * per-title metadata call was refused, and without imageinfo there is no URL, so every
+     * candidate was dropped before it could become a file.
+     *
+     * ── Why it was rate-limited ──────────────────────────────────────────────────────────────
+     *
+     * This loop asked Commons about ONE title per HTTP request. With the exclusion set open the
+     * scan runs to WIKIMEDIA_MAX_CANDIDATE_SCAN (25) titles, and this route is called per scene
+     * and per beat — hundreds of requests to api.php in a render. Commons throttles that, which
+     * is not a fault in its policy: the API is explicitly built to be asked once.
+     *
+     * ── The fix ──────────────────────────────────────────────────────────────────────────────
+     *
+     * MediaWiki's query API takes up to 50 titles in one `titles=A|B|C` call and returns a page
+     * entry for each. So the whole scan becomes a single request — 25x fewer calls, the same
+     * data, and no new architecture: same endpoint, same params, same parsing, same User-Agent.
+     *
+     * The per-title loop below is unchanged apart from reading its imageinfo out of this map
+     * instead of making its own call. Order, caps, exclusion and early-exit all still behave
+     * exactly as they did.
+     */
+    const infoByTitle = await fetchWikimediaImageInfoBatch(
+      titles.slice(0, maxScan),
+      sceneIndex
+    );
     for (let i = 0; i < maxScan; i++) {
       if (results.length >= count) break;
       try {
         const title = titles[i];
-        const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
-        const infoResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
-          infoUrl,
-          5_000,
-          `Wikimedia info scene ${sceneIndex}`,
-          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
-        ));
-        if (!infoResp.ok) {
-          logWikimediaHttpFailure("imageinfo", sceneIndex, infoResp);
-          markWikimediaSearchResult(false);
-          continue;
-        }
-        markWikimediaSearchResult(true);
-        const infoData = await infoResp.json() as { query?: { pages?: Record<string, { imageinfo?: Array<{ url: string; mime: string; size: number }> }> } };
-        const pages = infoData.query?.pages || {};
-        const page = Object.values(pages)[0];
-        const imageInfo = page?.imageinfo?.[0];
+        const imageInfo = infoByTitle.get(title);
         if (!imageInfo?.url) continue;
         if (excludeUrls?.has(imageInfo.url)) continue;
         // Only use JPEG/PNG images, skip SVG/PDF/audio/video
@@ -9752,7 +9853,16 @@ export async function resolveTrimStartSec(
  */
 async function videoSourcePassesTechnicalGate(sourcePath: string, label: string): Promise<boolean> {
   const meta = await probeVideoStreamMeta(sourcePath);
-  const verdict = videoResolutionVerdict(meta?.width, meta?.height);
+  /**
+   * RONDE 136 — which floor applies depends on where the clip came from.
+   *
+   * These helpers are shared by thirteen routes and receive a `label` rather than a provider name,
+   * but the labels already name their provider: "Trim Pexels clip 0 scene 2", "YouTube CC RapidAPI
+   * scene 2", "Internet Archive scene 1". isStockSource matches on that, and anything it does not
+   * recognise keeps the permissive archive floor — the safe direction, since the failure mode of
+   * guessing "stock" would be refusing genuine archive footage.
+   */
+  const verdict = videoResolutionVerdict(meta?.width, meta?.height, minShortSideForSource(label));
   if (!verdict.ok) {
     console.warn(
       formatTechnicalReject({

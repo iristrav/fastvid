@@ -484,7 +484,7 @@ describe("RONDE 70 §6/§7 — Ronde 69 is still intact", () => {
     const src = PIPELINE();
     expect(
       [...src.matchAll(/if \(!isScopeAbortError\(err\)\) markWikimediaSearchResult\(false\);/g)]
-    ).toHaveLength(3);
+    ).toHaveLength(4); // RONDE 136 added the batched imageinfo helper — see ronde69's note.
     expect(src).toContain("const WIKIMEDIA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;");
     expect(src).toContain("const WIKIMEDIA_COOLDOWN_MS = 3 * 60_000;");
   });

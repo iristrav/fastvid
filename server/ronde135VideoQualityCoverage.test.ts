@@ -176,8 +176,10 @@ describe("RONDE 135 §1 — the technical gate reaches every video route", () =>
       src.indexOf("async function videoSourcePassesTechnicalGate("),
       src.indexOf("export async function trimRemoteVideoToClip(")
     );
-    expect(fn).toContain("videoResolutionVerdict(meta?.width, meta?.height)");
-    // No literal pixel numbers here — the threshold lives in technicalMediaGate.
+    expect(fn).toContain("videoResolutionVerdict(meta?.width, meta?.height,");
+    // RONDE 136: the floor now depends on whether the source is stock or archive, and that
+    // decision also lives in technicalMediaGate — still no threshold written out here.
+    expect(fn).toContain("minShortSideForSource(label)");
     expect(fn).not.toMatch(/\b(144|240|360|480|720|1080)\b/);
   });
 

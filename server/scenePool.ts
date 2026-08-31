@@ -401,23 +401,52 @@ async function searchWikimediaCandidates(
           .slice(i, i + DETAIL_FETCH_CONCURRENCY)
           .filter((title) => !seenTitles.has(title));
 
-        const fetched = await Promise.all(
-          batch.map(async (title) => {
-            let called = false;
-            try {
-              const infoUrl =
-                `https://commons.wikimedia.org/w/api.php?action=query` +
-                `&titles=${encodeURIComponent(title)}&prop=imageinfo` +
-                `&iiprop=url|mime|size|extmetadata&format=json&origin=*`;
-              const infoResp = await withTimeoutFetch(infoUrl, UA, 5_000, `Wikimedia pool info "${title}"`);
-              called = true;
-              if (!infoResp.ok) return { title, called, data: null as WikiInfoData | null };
-              return { title, called, data: (await infoResp.json()) as WikiInfoData };
-            } catch {
-              return { title, called, data: null as WikiInfoData | null };
+        /**
+         * RONDE 136 — one request for the whole batch, not one per title.
+         *
+         * Same defect as the videoPipeline route, same evidence: video 558 logged 32 HTTP 429s on
+         * Wikimedia imageinfo and stood the provider down 34 times, ending with 38 search results
+         * and zero downloads. MediaWiki's query API takes up to 50 pipe-separated titles per call,
+         * so a batch of DETAIL_FETCH_CONCURRENCY titles costs ONE request instead of five.
+         *
+         * The shape below is preserved exactly — a `fetched` array in input order, each entry
+         * carrying its title, whether the API was called, and its own page data — so the loop that
+         * consumes it, the apiCalls accounting and the max-cap behaviour are all untouched.
+         */
+        const fetched = await (async () => {
+          const empty = batch.map((title) => ({ title, called: false, data: null as WikiInfoData | null }));
+          if (batch.length === 0) return empty;
+          try {
+            const infoUrl =
+              `https://commons.wikimedia.org/w/api.php?action=query` +
+              `&titles=${encodeURIComponent(batch.join("|"))}&prop=imageinfo` +
+              `&iiprop=url|mime|size|extmetadata&format=json&origin=*`;
+            const infoResp = await withTimeoutFetch(infoUrl, UA, 8_000, `Wikimedia pool info batch (${batch.length})`);
+            // One request was made, so exactly one entry counts as an API call — see the
+            // `called` accounting in the consumer. Marking all of them would inflate apiCalls
+            // fivefold and misreport the very saving this change makes.
+            if (!infoResp.ok) return batch.map((title, n) => ({ title, called: n === 0, data: null as WikiInfoData | null }));
+            const data = (await infoResp.json()) as WikiInfoData & {
+              query?: { normalized?: Array<{ from: string; to: string }> };
+            };
+            // MediaWiki normalises titles and says so; without applying that mapping back, a
+            // normalised answer is never found again under the name this code asked with.
+            const askedFor = new Map<string, string>();
+            for (const n of data.query?.normalized ?? []) askedFor.set(n.to, n.from);
+            const byTitle = new Map<string, WikiInfoData>();
+            for (const page of Object.values(data.query?.pages ?? {})) {
+              const pageTitle = (page as { title?: string })?.title;
+              if (!pageTitle) continue;
+              // Re-wrap as a single-page payload so the consumer below is unchanged.
+              const single = { query: { pages: { "0": page } } } as WikiInfoData;
+              byTitle.set(askedFor.get(pageTitle) ?? pageTitle, single);
+              byTitle.set(pageTitle, single);
             }
-          })
-        );
+            return batch.map((title, n) => ({ title, called: n === 0, data: byTitle.get(title) ?? null }));
+          } catch {
+            return batch.map((title) => ({ title, called: false, data: null as WikiInfoData | null }));
+          }
+        })();
 
         for (const { title, called, data: infoData } of fetched) {
           if (candidates.length >= max) break;
@@ -1012,6 +1041,29 @@ export async function searchNaraCandidates(
 // deliberately conservative (reject unless an explicit public-domain / no-known-restrictions
 // signal is present) so a wrong or missing field degrades to "0 candidates from this source"
 // rather than ever admitting an item with unclear rights.
+/**
+ * RONDE 136 — the media types this pipeline can actually open.
+ *
+ * A provider listing a file as `image/*` is not a promise that ffmpeg can read it. The Library of
+ * Congress serves newspaper scans as image/jp2 and image/tiff; both are legitimate images and
+ * neither survives the still-to-video conversion, so a candidate offering only those is a wasted
+ * download and a wasted shortlist slot.
+ *
+ * Deliberately a short allow-list rather than a deny-list of the formats seen failing: a new
+ * exotic type should be excluded by default and added here on purpose, not discovered in a render.
+ */
+export function isDecodableMediaMime(
+  mimetype: string | undefined | null,
+  kind: "video" | "image"
+): boolean {
+  const m = (mimetype ?? "").trim().toLowerCase();
+  if (!m) return false;
+  if (kind === "video") {
+    return /^video\/(mp4|webm|quicktime|x-msvideo|mpeg|ogg)\b/.test(m);
+  }
+  return /^image\/(jpeg|jpg|png|webp|gif)\b/.test(m);
+}
+
 export function isAllowedLocRights(rightsText: string | undefined | null): boolean {
   const r = rightsText?.trim().toLowerCase();
   if (!r) return false;
@@ -1112,9 +1164,34 @@ export async function searchLibraryOfCongressCandidates(
           const rightsText = Array.isArray(rawRights) ? rawRights.join(" ") : rawRights;
           if (!isAllowedLocRights(rightsText)) continue;
 
+          /**
+           * RONDE 136 — LOC may only offer a file this pipeline can actually decode.
+           *
+           * ── What video 558 showed, and what it did NOT show ──────────────────────────────────
+           *
+           *     [TechnicalGate] REJECT s2b2 source=loc
+           *       asset=https://www.loc.gov/item/sn81002003/1945-07-09/ed-1/
+           *       type=image reason=file_too_small actual=0B required=50000B
+           *
+           * That `asset=` is the ITEM id, which is the catalogue URL by design — the log prints
+           * the identity, not the download address. This adapter has always required a real file
+           * (`if (!mediaFile?.url) continue`), so a catalogue page was never handed out as
+           * remoteUrl. Worth stating plainly, because the opposite is easy to read into that line.
+           *
+           * ── The real defect ─────────────────────────────────────────────────────────────────
+           *
+           * `mimetype?.includes("image")` accepts EVERY image type LOC publishes, and for
+           * Chronicling America newspaper issues — which is exactly what sn81002003 is — that
+           * means image/jp2 and image/tiff. Nothing downstream can decode a JPEG 2000: it is
+           * downloaded, it fails, and it has cost a request, a shortlist slot and a beat's chance
+           * of a picture. The 0 bytes above is the same story one step earlier.
+           *
+           * So the type test moves from "is it an image" to "can we open it". Absence of a usable
+           * file drops the candidate here, before the download, which is where it costs least.
+           */
           const files = (itemData.resources ?? []).flatMap(r => r.files ?? []).flat();
-          const videoFile = files.find(f => f.mimetype?.includes("video") && f.url);
-          const imageFile = files.find(f => f.mimetype?.includes("image") && f.url);
+          const videoFile = files.find(f => isDecodableMediaMime(f.mimetype, "video") && f.url);
+          const imageFile = files.find(f => isDecodableMediaMime(f.mimetype, "image") && f.url);
           const mediaFile = videoFile ?? imageFile;
           if (!mediaFile?.url) continue;
 

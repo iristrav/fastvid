@@ -92,6 +92,23 @@ describe("RONDE 89 §1/§19 — every provider search passes the gate", () => {
       if (!/fetchWithTimeout\(|[^.\w]fetch\(/.test(lines[i]!)) continue;
       const around = lines.slice(Math.max(0, i - 8), i + 2).join("\n");
       if (!/encodeURIComponent|[?&]q=|srsearch|[?&]query=/i.test(around)) continue;
+      /**
+       * RONDE 136 — a lookup BY ID is not a search, and must not be gated as one.
+       *
+       * The gate exists so that a query carrying beat terms is admitted and audited. A request
+       * whose parameter is `titles=`/`ids=` carries no query at all: it asks about items an
+       * already-gated search returned, which is why the per-title imageinfo call used to sit
+       * inside fetchWikimediaImages and counted as gated by inheritance.
+       *
+       * RONDE 136 extracted that call into fetchWikimediaImageInfoBatch (one request for up to 50
+       * titles instead of one per title — video 558 was throttled to zero Wikimedia downloads by
+       * the old shape), and the heuristic then matched it on `encodeURIComponent` alone.
+       *
+       * Narrowed rather than exempted by name: any call whose only search-shaped signal is
+       * encodeURIComponent AND whose URL is an id lookup is not a provider search. A real search
+       * still trips this, because it carries srsearch/q=/query=.
+       */
+      if (/[?&]titles=|[?&]ids=/i.test(around) && !/srsearch|[?&]q=|[?&]query=/i.test(around)) continue;
       let fn = "";
       for (let j = i; j >= 0; j--) {
         const m = /^(?:export )?(?:async )?function (\w+)/.exec(lines[j]!);

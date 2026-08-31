@@ -135,6 +135,39 @@ function reject(
  * dimension keeps one definition of "how big is this picture" in the codebase, and it is the
  * correct one: a 1920×120 letterbox strip is not a usable shot because it is 1920 wide.
  */
+/**
+ * RONDE 136 — the 480-line bar starts REFUSING, but only for stock.
+ *
+ * ── What video 558 measured, and how it corrected RONDE 134 ──────────────────────────────────
+ *
+ * RONDE 134 set 480 as an observe-only bar and argued that making it refuse "would fall almost
+ * entirely on the archives and almost not at all on stock, because Pexels and Pixabay hand back
+ * 1080p by construction". The first production measurement says the opposite:
+ *
+ *     Pexels             426x226   (three times)
+ *     YouTube CC         640x360   (twice)
+ *     Internet Archive   532x300   (once)
+ *
+ * Four of the six clips under the bar were STOCK, and 426x226 is the worst of them — blown up
+ * almost five times to fill a 1920x1080 frame. The argument for holding back was about archive
+ * material; the material actually under the bar was not archive material.
+ *
+ * ── Which is why the floor is per SOURCE KIND, not global ────────────────────────────────────
+ *
+ * The reasoning that protected the archive is still correct and still applies: a 1945 newsreel
+ * digitised at 352x240 is the only copy there is, and refusing it would remove precisely what
+ * this pipeline exists to find. Nothing about the archive changes here.
+ *
+ * What changes is stock. A stock library that cannot supply 480 lines for a query has not given
+ * us the only copy of anything — it has given us a small file, and there is another one.
+ *
+ *   STOCK    480 lines, refused. pexels, pixabay, youtube_cc and the other modern libraries.
+ *   ARCHIVE  144 lines, unchanged, with 480 still only a NOTE.
+ *
+ * Both numbers remain the ones sourcingPolicy's youtubeMinFormatHeight() has carried since
+ * RONDE 27 for exactly this question. No new threshold is invented here; the 480 that was already
+ * written down is simply allowed to act, on the half of the material the evidence points at.
+ */
 export const VIDEO_MIN_SHORT_SIDE_PX = 144;
 export const VIDEO_QUALITY_BAR_SHORT_SIDE_PX = 480;
 
@@ -144,6 +177,42 @@ export const VIDEO_QUALITY_BAR_SHORT_SIDE_PX = 480;
  * `belowQualityBar` is an observation, never a refusal — see above. Absence is neutral: a file
  * ffprobe could not measure passes, exactly as an unmeasurable still does.
  */
+/**
+ * Stock LIBRARIES — providers that hold many interchangeable copies of a subject.
+ *
+ * Deliberately an explicit list: a source that is not named here is treated as ARCHIVE and keeps
+ * the permissive 144-line floor. Getting that default wrong in the other direction would silently
+ * start refusing archive footage, which is the outcome this whole design exists to avoid.
+ *
+ * ── Why YouTube CC is NOT on this list ───────────────────────────────────────────────────────
+ *
+ * It looks like stock and video 558 measured it at 640x360, under the bar. But sourcingPolicy has
+ * already decided this exact question for YouTube, and decided it the other way:
+ *
+ *     const adequate = mp4.filter((f) => (f.height ?? 720) >= youtubeMinFormatHeight());
+ *     if (adequate.length) return adequate.sort(...)[0];
+ *     return mp4.sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0];   ← take the tallest anyway
+ *
+ * That is "prefer 480, but a lower format beats no shot at all", written down and deliberate. A
+ * hard 480 reject here would silently overrule it, and the round that authorised this floor asked
+ * for it only where it "safely connects to the existing sourcingPolicy". For YouTube it does not.
+ *
+ * The justification for refusing Pexels at 426x226 does not transfer either: a stock library that
+ * cannot supply 480 lines has another clip, whereas a specific YouTube video has one upload.
+ */
+const STOCK_SOURCES = new Set(["pexels", "pixabay", "coverr", "videvo"]);
+
+export function isStockSource(source: string | null | undefined): boolean {
+  const s = (source ?? "").trim().toLowerCase();
+  if (!s) return false;
+  return STOCK_SOURCES.has(s) || [...STOCK_SOURCES].some((k) => s.includes(k));
+}
+
+/** The floor this source is held to. Stock gets the quality bar; everything else the absolute one. */
+export function minShortSideForSource(source: string | null | undefined): number {
+  return isStockSource(source) ? VIDEO_QUALITY_BAR_SHORT_SIDE_PX : VIDEO_MIN_SHORT_SIDE_PX;
+}
+
 export function videoResolutionVerdict(
   width: number | null | undefined,
   height: number | null | undefined,
