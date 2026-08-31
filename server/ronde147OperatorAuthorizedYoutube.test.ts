@@ -23,8 +23,8 @@
  *
  * ── The rule now ─────────────────────────────────────────────────────────────────────────────
  *
- *     ALLOW_OPERATOR_LICENSED_YOUTUBE=false   (default)  RONDE 124's flow, untouched
- *     ALLOW_OPERATOR_LICENSED_YOUTUBE=true               every youtube-* item is allowed
+ *     ALLOW_OPERATOR_LICENSED_YOUTUBE=false              RONDE 124's flow, untouched
+ *     anything else, including unset (RONDE 141)         every youtube-* item is allowed
  *
  * ── The line this file exists to hold ────────────────────────────────────────────────────────
  *
@@ -70,18 +70,33 @@ const decide = (over: Partial<Parameters<typeof youtubeLicenseDecision>[0]> = {}
 // ─── 1 ───────────────────────────────────────────────────────────────────────────────────────
 
 describe("RONDE 147 §1 — flag off: RONDE 124's flow, unchanged", () => {
-  it("1a. the default is false", () => {
+  it("1a. RONDE 141: the default is now ON, and only `false` switches it off", () => {
+    /**
+     * This assertion was inverted in RONDE 141, and the inversion is the point rather than a
+     * repair: RONDE 147 left the switch off because the authorisation was not this code's to
+     * assume, and the FastVid owner has since given it explicitly, for YouTube as a whole.
+     *
+     * What did not move is everything below this line in the file — the metadata verdict is still
+     * recorded, the status is still OPERATOR_AUTHORIZED and never VERIFIED, and the usage report
+     * still marks every one of these. The owner's decision changed; the record did not.
+     *
+     * `false` is the only word that switches it off, so a typo cannot silently disable an
+     * authorisation that has been given.
+     */
     const prev = process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
     try {
       delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
-      expect(allowOperatorLicensedYoutube()).toBe(false);
-      for (const v of ["", "1", "yes", "on", "false", "FALSE"]) {
+      expect(allowOperatorLicensedYoutube()).toBe(true);
+      for (const v of ["false", "FALSE", " false "]) {
         process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = v;
-        expect(allowOperatorLicensedYoutube(), `"${v}" must not arm the override`).toBe(false);
+        expect(allowOperatorLicensedYoutube(), `"${v}" must switch it off`).toBe(false);
       }
-      for (const v of ["true", "TRUE", " true "]) {
+      for (const v of ["", "1", "yes", "on", "true", "TRUE", "no"]) {
         process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = v;
-        expect(allowOperatorLicensedYoutube()).toBe(true);
+        expect(
+          allowOperatorLicensedYoutube(),
+          `"${v}" is not the word "false" and must not disable the authorisation`
+        ).toBe(true);
       }
     } finally {
       if (prev === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;

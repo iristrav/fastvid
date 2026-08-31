@@ -141,8 +141,21 @@ describe("RONDE 124 — VERIFIED / UNVERIFIED / REJECTED", () => {
 describe("RONDE 124 — what the pipeline may do with each status", () => {
   const yt = "youtube-cS2JdEghHDo";
 
+  /**
+   * RONDE 141 — these three pin `allowOperatorLicensed: false` explicitly.
+   *
+   * They were written before RONDE 147's operator authorisation existed, so they injected one flag
+   * and let the other default. RONDE 141 turned that other default ON, which would otherwise make
+   * them describe rule 3 while claiming to describe rule 2. Pinning it keeps each test asserting
+   * exactly the rule it was written for; the new default's own behaviour is asserted separately in
+   * ronde141OperatorAuthorisation.test.ts, where it is visible rather than buried here.
+   */
   it("flag OFF + no licence → rejected, exactly as today", () => {
-    const d = youtubeLicenseDecision({ identifier: yt, allowUnverified: false });
+    const d = youtubeLicenseDecision({
+      identifier: yt,
+      allowUnverified: false,
+      allowOperatorLicensed: false,
+    });
     expect(d.status).toBe("UNVERIFIED");
     expect(d.allowed).toBe(false);
     expect(d.action).toBe("REJECT");
@@ -164,6 +177,9 @@ describe("RONDE 124 — what the pipeline may do with each status", () => {
       identifier: yt,
       licenseUrl: "https://creativecommons.org/licenses/by-nc-nd/4.0/",
       allowUnverified: true,
+      // RONDE 141: rule 2 is what this test is about. Rule 3 DOES override an explicit refusal,
+      // deliberately and on the owner's authorisation — see ronde147/ronde141.
+      allowOperatorLicensed: false,
     });
     expect(d.status).toBe("REJECTED");
     expect(d.allowed).toBe(false);
@@ -249,7 +265,11 @@ describe("RONDE 124 — the whole chain, not the first hit", () => {
 describe("RONDE 124 — an unverified item says so everywhere", () => {
   it("the log line names the video, the status and the action", () => {
     const allow = formatYoutubeLicenseLine(
-      youtubeLicenseDecision({ identifier: "youtube-abc123", allowUnverified: true })
+      youtubeLicenseDecision({
+        identifier: "youtube-abc123",
+        allowUnverified: true,
+        allowOperatorLicensed: false,
+      })
     );
     expect(allow).toContain("[YouTubeLicense] video=abc123");
     expect(allow).toContain("status=UNVERIFIED");
@@ -258,7 +278,11 @@ describe("RONDE 124 — an unverified item says so everywhere", () => {
     expect(allow).toMatch(/rights NOT proven/i);
 
     const reject = formatYoutubeLicenseLine(
-      youtubeLicenseDecision({ identifier: "youtube-abc123", allowUnverified: false })
+      youtubeLicenseDecision({
+        identifier: "youtube-abc123",
+        allowUnverified: false,
+        allowOperatorLicensed: false,
+      })
     );
     expect(reject).toContain("status=UNVERIFIED action=REJECT");
   });

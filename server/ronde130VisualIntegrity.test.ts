@@ -254,12 +254,16 @@ describe("RONDE 130 — earlier rounds, asserted rather than assumed", () => {
     const { classifyArchiveLicense, youtubeLicenseDecision } = await import("./youtubeLicenseStatus");
     expect(classifyArchiveLicense(null, null)).toBe("UNVERIFIED");
     expect(classifyArchiveLicense("https://creativecommons.org/licenses/by-nc-nd/4.0/")).toBe("REJECTED");
-    // The flag can never override an explicit refusal.
+    // ALLOW_UNVERIFIED_YOUTUBE can never override an explicit refusal — RONDE 124's rule, and it
+    // still holds. RONDE 141: the OPERATOR authorisation is a different rule and does override it,
+    // deliberately and on the owner's say-so, so it is pinned off here rather than left to a
+    // default that would silently turn this into a test of the other rule.
     expect(
       youtubeLicenseDecision({
         identifier: "youtube-abc",
         licenseUrl: "https://creativecommons.org/licenses/by-nc-nd/4.0/",
         allowUnverified: true,
+        allowOperatorLicensed: false,
       }).allowed
     ).toBe(false);
   });
