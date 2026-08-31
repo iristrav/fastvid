@@ -17467,11 +17467,57 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
  * TypeError in the middle of a provider fetch. Metrics must never be able to fail a render.
  */
 export function providerMetrics(cache: SourcingCache | undefined, provider: string): ProviderSourcingMetrics {
-  if (!cache) return emptyProviderMetrics();
-  let m = cache.metrics.get(provider);
+  /**
+   * RONDE 142 — the ambient fallback RONDE 173 gave `cachedProviderSearch`, applied here too.
+   *
+   * ── The bug, from video 558's own log ────────────────────────────────────────────────────────
+   *
+   *     [SourcingMetrics]   pexels: searches=13 results=0 …
+   *
+   * while three Pexels clips were downloaded and trimmed in that same render. Two counters about
+   * the same thirteen searches, disagreeing, and one of them impossible.
+   *
+   * The cause is a split that RONDE 173 half-closed. Thirty-seven of the provider fetchers' call
+   * sites pass no `sourcingCache`, so:
+   *
+   *   · `cachedProviderSearch` falls back to the render's own cache (RONDE 173) and counts the
+   *     search there — searches=13 is real;
+   *   · every `providerMetrics(sourcingCache, …)` INSIDE that same fetcher still received the
+   *     undefined parameter, got a fresh throwaway object from the line below, incremented it, and
+   *     dropped it on return — results=0, downloads=0, and every other per-provider number the
+   *     fetcher tried to record.
+   *
+   * So the numbers were not merely low. They were counting two different things: the searches were
+   * booked against the render, the results against a value nobody could read.
+   *
+   * ── Why the fix belongs HERE and not at thirty-seven call sites ──────────────────────────────
+   *
+   * Threading the cache through every fetcher is the same change made thirty-seven times, and the
+   * next fetcher added would reintroduce the bug. One line, in the one function every counter goes
+   * through, fixes it for all of them and for the ones not yet written.
+   *
+   * It cannot double-count: the fallback applies only where `cache` is undefined, which is exactly
+   * where nothing was being counted at all. And it is the same ambient cache `cachedProviderSearch`
+   * already books the searches against, which is precisely what makes the two agree.
+   *
+   * The empty object is still returned when there is no render context either — a call from a test
+   * or a tool must not invent one.
+   *
+   * ── One thing this changes that is NOT a log line ────────────────────────────────────────────
+   *
+   * `claimYoutubeDownloadSlot` reads `downloadCount` through this function. A caller that passed no
+   * cache was handed a fresh zeroed object on every single call, so for those callers the
+   * render-wide YouTube download ceiling counted from zero every time and therefore bounded
+   * nothing — the exact failure RONDE 68 moved the counter off a local to fix, reappearing through
+   * the other door. With the fallback in place the ceiling finally holds for them too. That is a
+   * real behaviour change and it is the intended one, so it has its own test rather than a mention.
+   */
+  const active = cache ?? get_activeSourcingCache() ?? undefined;
+  if (!active) return emptyProviderMetrics();
+  let m = active.metrics.get(provider);
   if (!m) {
     m = emptyProviderMetrics();
-    cache.metrics.set(provider, m);
+    active.metrics.set(provider, m);
   }
   return m;
 }

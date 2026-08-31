@@ -1596,9 +1596,13 @@ export function formatFunnelReport(summary: VisualSourceSummary, finalVideoVerif
  * the question, projected from exactly the same events:
  *
  *     found      = results            a search returned this candidate
- *     validated  = eligible           it passed the licence/format/dedup gates
+ *     validated  = eligible           RONDE 142: it cleared EVERY gate — licence, format, dedup
+ *                                     AND the vision gate — which is recorded in adoptClip and
+ *                                     therefore happens after the download, not before it
  *     selected   = selected           the ranker chose it
- *     downloaded = downloadSucceeded  the file exists on disk
+ *     downloaded = downloadSucceeded  the file exists on disk. Normally far larger than
+ *                                     `validated`: downloading is what makes a candidate
+ *                                     judgeable, so most downloads exist to be refused
  *     assigned   = adopted            a scene/beat took it
  *     rendered   = finalVideo         its scene video went into the concat that produced the
  *                                     delivered file — proven from finalConcatInputs, never
@@ -1635,11 +1639,14 @@ export function formatAssetUsageSummary(
 /**
  * RONDE 94 — the funnel only narrows, and a funnel that widens is a bug in the instrumentation.
  *
- * rendered <= assigned <= downloaded <= selected <= validated <= found. Each stage is a subset of
- * the one before it, so a stage that counts MORE than its predecessor means an event was recorded
- * for an asset that never reached the earlier stage — a miscount, or a stage being marked without
- * the work having happened. Either way the numbers stop meaning what they say, and a report that
- * quietly prints them is worse than one that refuses.
+ * A stage that counts MORE than the stage it follows means an event was recorded for an asset that
+ * never reached the earlier one — a miscount, or a stage being marked without the work having
+ * happened. Either way the numbers stop meaning what they say, and a report that quietly prints
+ * them is worse than one that refuses.
+ *
+ * RONDE 142: which stage follows which is stated per pair below rather than as one chain, because
+ * the routes do not share a single order. `downloaded` is not between `selected` and `validated`;
+ * see the note on PAIRS.
  *
  * Reported, not thrown: this runs after the video is made, and an accounting fault must not fail
  * a render that succeeded.
@@ -1668,31 +1675,55 @@ export function formatUsageInconsistencies(
    * legitimately skip are checked against the last mandatory stage before them instead. A genuine
    * miscount — more rendered than assigned, more selected than validated — still reports.
    */
-  const MANDATORY: Array<[SummaryCounter, string]> = [
-    ["results", "found"],
-    ["eligible", "validated"],
-    ["adopted", "assigned"],
-    ["finalVideo", "rendered"],
-  ];
-  /** Stages a route may skip entirely, bounded by the last stage that is not optional. */
-  const OPTIONAL: Array<[SummaryCounter, string, SummaryCounter, string]> = [
-    ["selected", "selected", "eligible", "validated"],
-    ["downloadSucceeded", "downloaded", "eligible", "validated"],
+  /**
+   * RONDE 142 — the order this check asserted is not the order the pipeline records.
+   *
+   * Video 558 printed, on a render that was fine:
+   *
+   *     provider=TOTAL downloaded=41 exceeds validated=1
+   *
+   * That is not a miscount either. `eligible` is recorded in adoptClip, AFTER the vision gate —
+   * and the vision gate needs the FILE, so the download is what makes a candidate judgeable at
+   * all. Forty-one downloads producing one asset that cleared every gate is the pipeline working
+   * as designed and reporting honestly. The check had download before validation, which is
+   * backwards, so it flagged the normal case.
+   *
+   * RONDE 159 corrected the same class of error and left this one, because it moved `downloaded`
+   * to be BOUNDED by `eligible` rather than noticing that it PRECEDES it. Two rounds of a check
+   * contradicting the code is how a real finding gets ignored, which is RONDE 159's own argument.
+   *
+   * ── What is asserted now: only what the recorded order actually guarantees ───────────────────
+   *
+   * Written as pairs rather than one chain, because there is no single chain. The routes differ:
+   * the curated archive adopts a clip it never searched for and never downloaded, and a rescue clip
+   * skips SELECTED. A stage's own predecessor is the only thing that can be asserted about it.
+   *
+   *   ranked, selected ≤ eligible   all three are recorded on the same three lines of adoptClip,
+   *                                 so any difference at all is an instrumentation fault
+   *   adopted   ≤ eligible          nothing may be adopted that did not clear the gates
+   *   finalVideo ≤ adopted          nothing may be in the file that was not adopted
+   *
+   * `results` is deliberately compared to nothing. A curated or rescue asset has no search event,
+   * so `eligible > results` is routine, and asserting it made the report cry wolf on every render.
+   * The count is still printed; it is simply not evidence about any other stage.
+   *
+   * `downloadSucceeded ≤ downloadStarted` looks like an obvious addition and is deliberately NOT
+   * made. It was tried, and two existing fixtures — RONDE 94's own "well-formed funnel" and RONDE
+   * 95's replacement case — record a succeeded download with no started event, which says the
+   * codebase does not guarantee the pair. Adding a check whose validity is not established would
+   * have replaced one false alarm with another, which is the entire failure this round is undoing.
+   */
+  const PAIRS: Array<[SummaryCounter, string, SummaryCounter, string, boolean]> = [
+    // [later, label, earlier, label, requiresFinalVideoVerified]
+    ["ranked", "ranked", "eligible", "validated", false],
+    ["selected", "selected", "eligible", "validated", false],
+    ["adopted", "assigned", "eligible", "validated", false],
+    ["finalVideo", "rendered", "adopted", "assigned", true],
   ];
   const out: string[] = [];
   const check = (provider: string, c: SummaryCounts): void => {
-    const stages = finalVideoVerified ? MANDATORY : MANDATORY.slice(0, -1);
-    for (let i = 1; i < stages.length; i++) {
-      const [prevKey, prevLabel] = stages[i - 1]!;
-      const [key, label] = stages[i]!;
-      if (c[key] > c[prevKey]) {
-        out.push(
-          `[AssetUsageInconsistency] provider=${provider} ${label}=${c[key]} exceeds ` +
-            `${prevLabel}=${c[prevKey]} — a later stage cannot count more assets than the one it follows`
-        );
-      }
-    }
-    for (const [key, label, boundKey, boundLabel] of OPTIONAL) {
+    for (const [key, label, boundKey, boundLabel, needsFinal] of PAIRS) {
+      if (needsFinal && !finalVideoVerified) continue;
       if (c[key] > c[boundKey]) {
         out.push(
           `[AssetUsageInconsistency] provider=${provider} ${label}=${c[key]} exceeds ` +
