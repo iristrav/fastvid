@@ -31,7 +31,7 @@ import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
@@ -39277,13 +39277,21 @@ async function _runVideoPipelineInner(
      * deliver it because its audio could not be archived would be the wrong trade. But it is never
      * silent — VOICEOVER_PERSISTENCE_FAILED says so in a line built to be grepped.
      */
+    /**
+     * RONDE 151 — hoisted out of the try below so the cinematic plan can read them.
+     *
+     * The narration URL and the measured word boundaries are two of the five inputs that plan
+     * needs, and re-deriving them there would mean a second read of the same alignment file.
+     */
+    let persisted: Awaited<ReturnType<typeof persistVoiceover>> | null = null;
+    let storedAlignment: ReturnType<typeof loadStoredTtsAlignment> = null;
     try {
-      const persisted = await persistVoiceover({
+      persisted = await persistVoiceover({
         videoId,
         workDir,
         upload: (key, filePath, contentType) => storagePutFromFile(key, filePath, contentType),
       });
-      const storedAlignment = loadStoredTtsAlignment(workDir);
+      storedAlignment = loadStoredTtsAlignment(workDir);
       if (persisted.ok) {
         await updateVideoStatus(videoId, "completed", { voiceoverUrl: persisted.url });
         console.log(
@@ -39312,6 +39320,116 @@ async function _runVideoPipelineInner(
       console.error(
         `VOICEOVER_PERSISTENCE_FAILED video=${videoId} reason=unexpected_error ` +
           `detail="${(err as Error)?.message?.slice(0, 300) ?? "unknown"}"`
+      );
+    }
+
+    /**
+     * RONDE 151 §2/§19 — the cinematic route, called from the production pipeline at last.
+     *
+     * ── Why HERE and not earlier ────────────────────────────────────────────────────────────
+     *
+     * This is the first point in the render where all five inputs exist at once: the scenes, each
+     * scene's TTS-aligned beats, the clips that were actually adopted, the lineage records that
+     * prove where those clips came from, and the persisted narration with its measured word
+     * boundaries. Planning any earlier would mean planning around clips that had not been chosen.
+     *
+     * ── Why it does not replace the render (yet) ────────────────────────────────────────────
+     *
+     * The video has already been produced and uploaded by the time this runs. What this adds is
+     * the PLAN: one ProjectTimeline, validated and stored, which the editor opens and the render
+     * job re-renders from. That makes the new-video and existing-video paths use the same editing
+     * model, which is §23's test.
+     *
+     * §19's cutover — the timeline producing the delivered MP4 instead of composeSceneVideo — is
+     * behind `CINEMATIC_RENDER_PATH`, and the line below says which route ran on every render, so
+     * the migration is countable rather than assumed.
+     *
+     * A failure in any of this never costs a finished video. The render is complete; refusing to
+     * deliver it because a caption planner hit an edge case would be the wrong trade every time.
+     */
+    try {
+      const { planAndStoreCinematicTimeline, cinematicPlanningEnabled, cinematicRenderPathEnabled, formatRenderRoute } =
+        await import("./cinematicProduction");
+      if (cinematicPlanningEnabled()) {
+        const lineage = visualDedup.sourcingCache.lineage;
+        const outcome = await planAndStoreCinematicTimeline({
+          videoId,
+          scenes: scenes.map((scene, i) => {
+            const beats = sceneVisualResults[i]?.beats ?? [];
+            const clipPaths = composedUsedClips[i] ?? [];
+            return {
+              scene,
+              beats,
+              clips: beats.map((_, beatIndex) => {
+                const clipPath = clipPaths[beatIndex];
+                if (!clipPath) return null;
+                const record = lineage.resolve(clipPath);
+                const meta = memoisedVideoStreamMeta(clipPath);
+                return {
+                  facts: {
+                    localPath: clipPath,
+                    ...(meta?.width ? { widthPx: meta.width } : {}),
+                    ...(meta?.height ? { heightPx: meta.height } : {}),
+                    ...(meta && meta.durationSec > 0
+                      ? { durationSec: Number(meta.durationSec.toFixed(3)) }
+                      : {}),
+                  },
+                  adoption: record
+                    ? {
+                        provider: record.provider,
+                        providerAssetId: record.providerAssetId,
+                        archiveAssetId: record.archiveAssetId,
+                        sourceUrl: record.sourceUrl,
+                        originalUrl: record.originalUrl,
+                        assetTitle: record.assetTitle,
+                        query: record.query,
+                        candidateId: record.candidateId,
+                      }
+                    : null,
+                };
+              }),
+            };
+          }),
+          /** The pipeline's OWN extractors, injected — never a second copy (§28). */
+          extractors: {
+            people: (text) => extractPersonNamesFromText(text),
+            place: (text) => extractVisualPlacePhrase(text),
+            action: (text) => extractActionCue(text),
+          },
+          voice:
+            persisted?.ok && storedAlignment?.totalDurationSec
+              ? { url: persisted.url, durationSec: storedAlignment.totalDurationSec }
+              : null,
+          words: storedAlignment?.words ?? [],
+          persist: (p) => saveVideoTimeline(p),
+          storedVersion: (await getStoredTimeline(videoId))?.timelineVersion ?? 0,
+        });
+        for (const line of outcome.log) console.log(pipelineReport.add("summary", line));
+        if (!outcome.ok) {
+          console.warn(
+            pipelineReport.add(
+              "summary",
+              `[CinematicPipeline] video=${videoId} plan NOT stored code=${outcome.code} reason=${outcome.reason}`
+            )
+          );
+        }
+        console.log(
+          pipelineReport.add(
+            "summary",
+            formatRenderRoute({
+              videoId,
+              /** Today the delivered file always comes from compose; the flag says when that changes. */
+              route: cinematicRenderPathEnabled() && outcome.ok ? "cinematic_timeline" : "legacy_compose",
+              planOk: outcome.ok,
+              reason: outcome.ok ? undefined : outcome.reason,
+            })
+          )
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[CinematicPipeline] video=${videoId} planning failed, the delivered video is unaffected: ` +
+          `${(err as Error).message.slice(0, 300)}`
       );
     }
 
