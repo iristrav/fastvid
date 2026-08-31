@@ -65,14 +65,23 @@ const read = (rel: string) => {
 };
 
 /**
- * Source with comments removed.
+ * Source with PROSE comments removed.
  *
  * Every "this is gone now" assertion below has to read the CODE, because the comment that explains
  * the removal quotes the removed line verbatim — that is the whole point of the comment, and it is
  * also a false anchor that would keep the assertion green forever after a revert.
+ *
+ * Only block comments that BEGIN a line are stripped, which is what an explanatory comment looks
+ * like. The obvious `/\*[\s\S]*?\*\/` desynchronises on a `*​/` inside a string or a regex, and on a
+ * 37 000-line file that silently swallows real code: measured on videoPipeline.ts it removed
+ * `fetchPexelsClips` entirely and four of six `renderAiStillToClip` call sites, which would make
+ * every `not.toContain` assertion below pass for the wrong reason. Inline `/* ignore *​/` survives,
+ * which is harmless.
  */
 const readCode = (rel: string) =>
-  read(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+  read(rel)
+    .replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
 
 /* ═══════════════════════ the rule ═══════════════════════ */
 

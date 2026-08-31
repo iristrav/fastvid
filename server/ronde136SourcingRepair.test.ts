@@ -47,8 +47,20 @@ const read = (rel: string) => {
   const { join } = require("path") as typeof import("path");
   return readFileSync(join(__dirname, "..", rel), "utf8");
 };
+/**
+ * Source with PROSE comments removed.
+ *
+ * Only block comments that BEGIN a line are stripped, which is what an explanatory comment looks
+ * like. The obvious `/\*[\s\S]*?\*\/` desynchronises on a `*​/` inside a string or a regex, and on a
+ * 37 000-line file that silently swallows real code: measured on videoPipeline.ts it removed
+ * `fetchPexelsClips` entirely and four of six `renderAiStillToClip` call sites, which would make
+ * every `not.toContain` assertion below pass for the wrong reason. Inline `/* ignore *​/` survives,
+ * which is harmless.
+ */
 const readCode = (rel: string) =>
-  read(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+  read(rel)
+    .replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
 
 /* ═══════════════════════ 1. Wikimedia ═══════════════════════ */
 

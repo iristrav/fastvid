@@ -121,6 +121,7 @@ import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
+import { openAiKeyFromEnv } from "./_core/env";
 import {
   extractFullNarrationText,
   parseMarkdownNarrationBlocks,
@@ -829,6 +830,24 @@ function probeMemoSet<T>(memo: Map<string, T>, key: string, value: T): T {
 }
 const validVideoFileMemo = new Map<string, boolean>();
 const videoStreamMetaMemo = new Map<string, { width: number; height: number; durationSec: number } | null>();
+
+/**
+ * RONDE 138 — what this render has ALREADY measured about a file, without spawning anything.
+ *
+ * probeVideoStreamMeta memoises on the file's dev+inode+size+mtime+ctime, so a file it has
+ * successfully measured is knowable again for free. That distinction matters when the scene scope
+ * has been abandoned: a probe cannot be run, but a measurement already taken is still valid.
+ *
+ * Returns undefined when this file has never been measured — which is genuinely "we do not know",
+ * and is treated as such by the caller.
+ */
+function memoisedVideoStreamMeta(
+  filePath: string
+): { width: number; height: number; durationSec: number } | null | undefined {
+  const key = probeMemoKey(filePath);
+  if (key === null) return undefined;
+  return videoStreamMetaMemo.get(key);
+}
 
 export async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (!fs.existsSync(filePath)) return false;
@@ -3809,7 +3828,9 @@ async function tryBeatTopicRealFootageInner(
 
 /** Cheap tier: still image → Ken Burns (~$0.03/beat). Best $/quality for documentaries. */
 function cheapAiImageProvidersReady(): boolean {
-  return Boolean(stabilityAiApiKey() || leonardoApiKey());
+  // RONDE 138: OpenAI images count as a cheap provider, so "AI fallback: on" is true whenever a
+  // picture can genuinely be produced — which is what the readiness line reports.
+  return Boolean(stabilityAiApiKey() || leonardoApiKey() || openAiImageFallbackEnabled());
 }
 
 /** Expensive tier: Grok/Veo/Runway video — off unless ENABLE_AI_VIDEO_FALLBACK=true. */
@@ -6372,6 +6393,182 @@ export async function generateVoiceover(
   return { duration: estimatedDuration, usedSilentFallback: true, provider: "silent" };
 }
 
+/**
+ * RONDE 138 — a generated still becomes a clip, in one place.
+ *
+ * This was the tail of generateStabilityAIClip. Extracted verbatim — same documentary composition,
+ * same simple-Ken-Burns fallback, same encode arguments, same size check — so that a second image
+ * provider produces a clip that is indistinguishable from a Stability one rather than carrying its
+ * own copy of sixty lines of ffmpeg that would drift.
+ */
+async function renderAiStillToClip(
+  pngPath: string,
+  outputPath: string,
+  duration: number,
+  sceneIndex: number
+): Promise<string | null> {
+  // Ken Burns with blur-fill/polaroid when documentary style is enabled.
+    const fps = 25;
+    if (documentaryStyleEnabled()) {
+      const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
+      try {
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
+          90_000,
+          `AI image to video scene ${sceneIndex}`
+        );
+      } catch (docErr) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: AI documentary still failed, using simple Ken Burns:`, (docErr as Error).message);
+        const fallbackFc = buildSimpleKenBurnsVF(duration, false);
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
+          90_000,
+          `AI image to video scene ${sceneIndex} (fallback)`
+        );
+      }
+    } else {
+      const totalFrames = Math.ceil(duration * fps);
+      const zoomStep = 0.0003; // slow 7% zoom over full duration
+      const direction = sceneIndex % 2 === 0 ? 1 : -1;
+      const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
+      await withSceneFetchTimeout(
+        () => exec(
+          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
+          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
+          `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+          `-t ${duration} -r ${fps} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        ),
+        90_000,
+        `AI image to video scene ${sceneIndex}`
+      );
+    }
+
+  try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
+
+  if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+    return outputPath;
+  }
+  return null;
+}
+
+/**
+ * RONDE 138 — the image provider you already pay for.
+ *
+ * ── Why this exists ──────────────────────────────────────────────────────────────────────────
+ *
+ * The fallback ladder's promise is written a few hundred lines below: "AI clip when stock/YouTube
+ * miss — never grey". Video 558 shipped seven colour cards anyway, because that promise needs an
+ * image API and production had none: no STABILITY_AI_API_KEY, no LEONARDO_API_KEY, Kling absent
+ * (adopt audit: kling=0), and generateImage() in _core wants a BUILT_IN_FORGE_API_URL that is not
+ * set — the storage backend is s3.
+ *
+ * OpenAI, meanwhile, was configured and in use all along, as the LLM ("provider=openai, Using
+ * OpenAI (gpt-4o)"). The same key can generate images. So this adds no new dependency and no new
+ * account: it lets the ladder keep its promise with what the deployment already has.
+ *
+ * ── What it is not ───────────────────────────────────────────────────────────────────────────
+ *
+ * Not a new engine. It is a third entry in the existing cheap image tier, next to Stability Core
+ * and Leonardo, with the same signature, the same prompt, and — via renderAiStillToClip — the same
+ * still-to-clip encode. A clip from here is indistinguishable downstream from a Stability one, and
+ * every gate that judges it is unchanged.
+ *
+ * ── Cost, deliberately visible ───────────────────────────────────────────────────────────────
+ *
+ * gpt-image-1 at "low" quality is roughly $0.01–0.02 per 1024x1024 image, which is the same order
+ * as Stability Core's ~$0.03 and cheaper than the premium video tier's ~$0.25. The quality knob is
+ * an env var rather than a constant because it is a money decision, not an engineering one.
+ */
+function openAiImageModel(): string {
+  return process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-1";
+}
+
+/** low | medium | high. Defaults to low — this is a fallback picture, not a hero shot. */
+function openAiImageQuality(): string {
+  const raw = process.env.OPENAI_IMAGE_QUALITY?.trim().toLowerCase();
+  return raw === "medium" || raw === "high" ? raw : "low";
+}
+
+/**
+ * Whether OpenAI images may be used at all.
+ *
+ * Off unless explicitly switched on, because it spends money per beat on an account that was
+ * configured for text. An operator turning this on is making a billing decision and should have
+ * done so on purpose.
+ */
+export function openAiImageFallbackEnabled(): boolean {
+  if (process.env.ENABLE_OPENAI_IMAGE_FALLBACK !== "true") return false;
+  return Boolean(openAiKeyFromEnv());
+}
+
+export async function generateOpenAiImageClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  const key = openAiKeyFromEnv();
+  if (!key) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: no OpenAI key, skipping AI image`);
+    return null;
+  }
+  try {
+    const t = Date.now();
+    console.log(
+      `[Pipeline] Scene ${sceneIndex}: OpenAI ${openAiImageModel()} (${openAiImageQuality()}, ~$0.01–0.04/img)...`
+    );
+    const resp = await withSceneFetchTimeout(
+      () =>
+        fetchWithTimeout("https://api.openai.com/v1/images/generations", 60_000, `OpenAI image scene ${sceneIndex}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: openAiImageModel(),
+            prompt,
+            n: 1,
+            size: "1536x1024", // landscape, closest to 16:9 of the supported sizes
+            quality: openAiImageQuality(),
+          }),
+        }),
+      70_000,
+      `OpenAI image scene ${sceneIndex}`
+    );
+    if (!resp.ok) {
+      // The status is what distinguishes a billing problem from a content refusal from an outage,
+      // and it is the only thing an operator can act on.
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: OpenAI image HTTP ${resp.status} — no image generated`
+      );
+      return null;
+    }
+    const json = (await resp.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
+    const first = json.data?.[0];
+    let imgBuffer: Buffer | null = null;
+    if (first?.b64_json) {
+      imgBuffer = Buffer.from(first.b64_json, "base64");
+    } else if (first?.url) {
+      // dall-e-3 answers with a URL rather than bytes; both shapes are accepted.
+      const imgResp = await fetchWithTimeout(first.url, 30_000, `OpenAI image download scene ${sceneIndex}`);
+      if (imgResp.ok) imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    }
+    if (!imgBuffer || imgBuffer.length < 1000) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: OpenAI returned no usable image`);
+      return null;
+    }
+    const pngPath = outputPath.replace(".mp4", "_ai.png");
+    fs.writeFileSync(pngPath, imgBuffer);
+    console.log(
+      `[Pipeline] Scene ${sceneIndex}: OpenAI image in ${((Date.now() - t) / 1000).toFixed(1)}s ` +
+        `(${(imgBuffer.length / 1024).toFixed(0)}KB)`
+    );
+    // The same encode Stability's stills go through — see renderAiStillToClip.
+    return await renderAiStillToClip(pngPath, outputPath, duration, sceneIndex);
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: OpenAI image clip failed:`, (err as Error).message?.slice(0, 120));
+    return null;
+  }
+}
+
 // ─── 3a. Stability AI Image → Video Loop (PRIMARY visual) ────────────────────
 export async function generateStabilityAIClip(
   prompt: string,
@@ -6471,50 +6668,12 @@ export async function generateStabilityAIClip(
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
-    // Convert to video — Ken Burns with blur-fill/polaroid when documentary style enabled
-    const fps = 25;
-    if (documentaryStyleEnabled()) {
-      const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
-      try {
-        await withSceneFetchTimeout(
-          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
-          90_000,
-          `AI image to video scene ${sceneIndex}`
-        );
-      } catch (docErr) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: AI documentary still failed, using simple Ken Burns:`, (docErr as Error).message);
-        const fallbackFc = buildSimpleKenBurnsVF(duration, false);
-        await withSceneFetchTimeout(
-          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
-          90_000,
-          `AI image to video scene ${sceneIndex} (fallback)`
-        );
-      }
-    } else {
-      const totalFrames = Math.ceil(duration * fps);
-      const zoomStep = 0.0003; // slow 7% zoom over full duration
-      const direction = sceneIndex % 2 === 0 ? 1 : -1;
-      const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
-          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
-          `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-          `-t ${duration} -r ${fps} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
-        ),
-        90_000,
-        `AI image to video scene ${sceneIndex}`
-      );
-    }
-
-    try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
-
-    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-      return outputPath;
-    }
-    return null;
+    // RONDE 138: the still-to-clip step moved to renderAiStillToClip so a second image provider
+    // reuses this exact ffmpeg chain instead of carrying a copy of it.
+    return await renderAiStillToClip(pngPath, outputPath, duration, sceneIndex);
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Stability AI clip failed:`, err);
+
     return null;
   }
 }
@@ -14301,6 +14460,10 @@ async function fetchBeatAIClip(
   if (!generated && leonardoApiKey()) {
     generated = await generateLeonardoAIClip(prompt, dur, outPath, sceneIndex);
   }
+  // RONDE 138: last of the cheap tier, and the only one most deployments have a key for.
+  if (!generated && openAiImageFallbackEnabled()) {
+    generated = await generateOpenAiImageClip(prompt, dur, outPath, sceneIndex);
+  }
   // Premium tier only (Runway/Grok ~$0.25+ per clip) — ENABLE_AI_VIDEO_FALLBACK=true
   if (!generated && premiumAiVideoFallbackEnabled()) {
     if (replicateApiKey()) {
@@ -18014,11 +18177,49 @@ async function montageClipPassesComposeGate(
 
   let resolved = false;
   const work = (async (): Promise<boolean> => {
-    // Scope already abandoned (its withSceneFetchTimeout fired) — every probe below would just
-    // throw immediately and get swallowed as an "unusable stream" false positive. Skip the wasted
-    // probe calls and the noisy per-candidate log line; the caller's loop already logs once that
-    // it's giving up on this beat.
-    if (sceneFetchAborted()) return false;
+    /**
+     * RONDE 138 — an abandoned scope means "cannot check", not "reject".
+     *
+     * ── What this cost in video 558 ──────────────────────────────────────────────────────────
+     *
+     * Fourteen clips were thrown away here, ten of them already-downloaded archive files:
+     *
+     *     Scene 1 beat 4: skipping clip that fails compose gate scene_1_b4_curated_a57618.mp4
+     *     Scene 1 beat 4: skipping clip that fails compose gate scene_1_b4_curated_a57654.mp4
+     *     Scene 2 beat 0: skipping clip that fails compose gate scene_2_b0_curated_a57566.mp4   ...
+     *
+     * Every one of them had already been downloaded, passed the technical gate, been judged by
+     * Vision and been adopted. Scene 1 ended with 2 unique clips for 13 needed, and the render
+     * reported "19 van 22 beats zonder goedgekeurd eigen beeld".
+     *
+     * The original reasoning was sound as far as it went: once the scope's withSceneFetchTimeout
+     * has fired, every probe below would throw immediately and be swallowed as a false "unusable
+     * stream", so running them is waste. But the conclusion did not follow. Skipping a CHECK is not
+     * the same as failing it, and a clip does not become unusable because the scene ran out of time
+     * looking for OTHER clips.
+     *
+     * ── Why this is safe ─────────────────────────────────────────────────────────────────────
+     *
+     * The gate is not skipped. It is answered from a measurement this render already took:
+     * probeVideoStreamMeta memoises on the file's inode and ctime, so a file measured earlier is
+     * knowable without spawning anything — which is the only objection the abort raises.
+     *
+     * A file with no prior measurement is still refused. That is deliberate and it is what keeps
+     * the derived files honest: pad_combined_*.mp4 and the text-overlay output are written moments
+     * before this call and have never been probed, so a half-written ffmpeg result cannot slip
+     * through on the strength of "we were in a hurry".
+     */
+    if (sceneFetchAborted()) {
+      const known = memoisedVideoStreamMeta(clipPath);
+      if (known && montageStreamMetaUsable(known, montageClipStartSec(sceneIndex, clipIndex))) {
+        console.log(
+          `[ComposeGate] s${sceneIndex} clip ${clipIndex}: scope abandoned — keeping ${base} on a ` +
+            `measurement already taken (${known.width}x${known.height}, ${known.durationSec.toFixed(2)}s)`
+        );
+        return true;
+      }
+      return false;
+    }
     if (!(await isValidVideoFile(clipPath))) return false;
     const trimStart = montageClipStartSec(sceneIndex, clipIndex);
     const meta = await probeVideoStreamMeta(clipPath);
