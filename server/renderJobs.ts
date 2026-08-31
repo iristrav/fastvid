@@ -81,7 +81,9 @@ export function canTransition(from: RenderJobStatus, to: RenderJobStatus): boole
 export const RENDER_PHASES = [
   "queued",
   "rehydrating",
-  "preparing",
+  /** RONDE 148 §4 — the cinematic planners run here when the flag is on. */
+  "planning",
+  "validating",
   "rendering",
   "uploading",
   "completed",

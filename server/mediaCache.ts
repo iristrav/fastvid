@@ -161,3 +161,36 @@ export async function reportToMediaCache(
     console.warn("[MediaCache] reportToCache error:", (err as Error).message?.slice(0, 120));
   }
 }
+
+/**
+ * RONDE 148 §17 — drop one entry, so a corrupt cached file cannot poison every future render.
+ *
+ * The rehydrator ffprobes what the cache hands back (RONDE 147 §4). When that file turns out to be
+ * unreadable, refusing it is not enough: the same bad bytes come back on the next attempt, and the
+ * render fails identically for a reason nobody can see. Removing the row sends the next attempt to
+ * the provider.
+ *
+ * The R2 object is deliberately left in place. Deleting it needs a second permission and would make
+ * a cache cleanup able to destroy data; an orphaned object costs a few cents and is swept by the
+ * bucket's own lifecycle rules, while the ROW is the thing that decides what is served.
+ *
+ * Best-effort, like the rest of this module: a cache that cannot be cleaned must never fail a render.
+ */
+export async function invalidateMediaCacheEntry(sourceUrl: string): Promise<void> {
+  if (!mediaCacheEnabled() || !isS3StorageEnabled()) return;
+  try {
+    const db = await getDb();
+    if (!db) return;
+    await db
+      .delete(mediaAssetCache)
+      .where(
+        and(
+          eq(mediaAssetCache.urlHash, urlHash(sourceUrl)),
+          eq(mediaAssetCache.cacheVersion, MEDIA_CACHE_VERSION)
+        )
+      );
+    console.log(`[MediaCache] INVALIDATE: ${sourceUrl.slice(0, 80)}`);
+  } catch (err) {
+    console.warn("[MediaCache] invalidate error:", (err as Error).message?.slice(0, 120));
+  }
+}

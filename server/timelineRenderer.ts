@@ -33,14 +33,26 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveFFmpegBin } from "./ffmpegBinary";
 import {
+  DEFAULT_TEXT_STYLE,
   audioTrackOf,
   captionTrack,
+  graphicsTrack,
+  graphicsWithLabels,
   textTrackOf,
   videoTrack,
   type ProjectTimeline,
   type TextStyle,
   type TimelineVideoClip,
 } from "./projectTimeline";
+import {
+  buildAudioGraph,
+  buildTransitionGraph,
+  buildVideoFilter,
+  cameraChain,
+  transitionIsRenderable,
+  unsupportedEffects,
+  type MixInput,
+} from "./timelineFilters";
 
 const execFileAsync = promisify(execFile);
 /**
@@ -57,12 +69,19 @@ const execFileAsync = promisify(execFile);
 const ffmpeg = (): string => resolveFFmpegBin();
 const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
 
-/** Fields the timeline can carry that this renderer does not yet execute. */
+/**
+ * Fields the timeline can carry that this renderer does not yet execute.
+ *
+ * RONDE 148 emptied most of this list by implementing it: camera moves run through zoompan,
+ * crossfade/dissolve/dip through xfade, crop/cover/scale/position/opacity through the fit chain,
+ * and music now ducks under voice with the sidechain filter `cinematicAudio` already used. What
+ * remains is named per-render in `skipped` with the planner's own reason — see
+ * `unsupported_effect`, `unsupported_transition` and `unsupported_graphic`.
+ */
 export const UNIMPLEMENTED = [
-  "motion (slow_push/pan_*) — the field is preserved and not executed",
-  "transitions other than hard_cut and crossfade",
-  "per-clip crop/scale/position overrides",
-  "sidechain ducking of music under voice (a fixed gain is applied instead)",
+  "visual effects other than film_grain, vignette and letterbox",
+  "transitions other than hard_cut, crossfade, dissolve, dip_to_black and dip_to_white",
+  "motion graphics that are not words on screen (maps, charts, animated icons)",
 ] as const;
 
 export type RenderedTimeline = {
@@ -72,6 +91,12 @@ export type RenderedTimeline = {
   textsDrawn: number;
   captionsDrawn: number;
   audioTracks: number;
+  /** RONDE 148 — how many joins were rendered as a real transition rather than a cut. */
+  transitionsRendered: number;
+  /** How many music/ambient tracks were ducked under the voice with sidechaincompress. */
+  duckedTracks: number;
+  /** How many clips had a camera move that actually produced a zoompan pass. */
+  camerasExecuted: number;
   skipped: string[];
   ffmpegCommands: number;
 };
@@ -265,10 +290,14 @@ async function renderSegment(
   fmt: { widthPx: number; heightPx: number; fps: number }
 ): Promise<void> {
   const dur = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
-  const vf =
-    `scale=${fmt.widthPx}:${fmt.heightPx}:force_original_aspect_ratio=decrease,` +
-    `pad=${fmt.widthPx}:${fmt.heightPx}:(ow-iw)/2:(oh-ih)/2:color=black,` +
-    `setsar=1,fps=${fmt.fps},format=yuv420p`;
+  /**
+   * RONDE 148 — fit, camera, effects, scale and opacity, built in `timelineFilters`.
+   *
+   * For a clip with none of those fields this returns the byte-identical string this function
+   * used to hold inline, which is what keeps the golden render bit-for-bit unchanged. A test
+   * asserts that equality directly rather than trusting the reading.
+   */
+  const vf = buildVideoFilter(clip, fmt, dur);
 
   const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
   if (clip.kind === "image") {
@@ -440,6 +469,9 @@ export async function renderTimeline(params: {
 
   // ── 1. every clip becomes a normalised segment of exactly its own length ────────────────────
   const segments: string[] = [];
+  /** Kept alongside the paths so phase 2 knows each segment's clip and its real length. */
+  const rendered: Array<{ clip: TimelineVideoClip; durationSec: number }> = [];
+  let transitionsRendered = 0;
   for (const [i, clip] of clips.entries()) {
     const media = await params.resolveMedia(clip);
     if (!media) {
@@ -454,8 +486,27 @@ export async function renderTimeline(params: {
       skipped.push(`clip ${clip.id}: encode failed — ${(err as Error).message.slice(0, 160)}`);
       continue;
     }
-    if (fs.existsSync(seg) && fs.statSync(seg).size > 1024) segments.push(seg);
-    else skipped.push(`clip ${clip.id}: segment was empty`);
+    if (fs.existsSync(seg) && fs.statSync(seg).size > 1024) {
+      segments.push(seg);
+      rendered.push({ clip, durationSec: Math.max(0.04, clip.timelineEnd - clip.timelineStart) });
+    } else skipped.push(`clip ${clip.id}: segment was empty`);
+
+    /**
+     * §9/§15 — an effect the renderer cannot execute is REPORTED, and the clip keeps carrying it.
+     *
+     * Deleting it would make the timeline agree with the render by losing what the planner
+     * decided. Saying so costs a line in the log and keeps the plan recoverable.
+     */
+    for (const effect of unsupportedEffects(clip.effects)) {
+      skipped.push(
+        `unsupported_effect ${effect.effectType} on clip ${clip.id}` +
+          (effect.reason ? ` (${effect.reason})` : "") +
+          " — kept on the timeline, not executed"
+      );
+    }
+    if (!transitionIsRenderable(clip.transitionIn)) {
+      skipped.push(`unsupported_transition ${clip.transitionIn} on clip ${clip.id}`);
+    }
   }
   if (segments.length === 0) {
     throw new TimelineRenderError(
@@ -464,32 +515,88 @@ export async function renderTimeline(params: {
     );
   }
 
-  // ── 2. concat ──────────────────────────────────────────────────────────────────────────────
-  const listFile = path.join(workDir, "segments.txt");
-  fs.writeFileSync(
-    listFile,
-    segments.map((s) => `file '${s.replace(/'/g, "'\\''")}'`).join("\n"),
-    "utf8"
-  );
+  // ── 2. join the segments ───────────────────────────────────────────────────────────────────
+  /**
+   * RONDE 148 — two paths, and the choice between them is the whole point.
+   *
+   * A sequence of hard cuts goes through `concat`, which is a STREAM COPY: no re-encode, no
+   * generation loss, and bit-for-bit identical output every time. That is the path RONDE 144's
+   * golden test measures, so it must stay the path a cuts-only timeline takes.
+   *
+   * A timeline that asks for a crossfade cannot be stream-copied — the overlap is new pixels — so
+   * it goes through an xfade graph instead. Building that graph for a video of pure cuts would
+   * re-encode everything to produce exactly the same picture, which is why the builder returns
+   * null when there is nothing to fade.
+   */
   const silent = path.join(workDir, "video_only.mp4");
-  await execFileAsync(
-    ffmpeg(),
-    ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile,
-      "-c", "copy", silent],
-    { maxBuffer: 1024 * 1024 * 16 }
-  );
+  const graph = buildTransitionGraph({
+    durations: rendered.map((r) => r.durationSec),
+    transitions: rendered.map((r) => ({
+      kind: r.clip.transitionIn,
+      durationSec: r.clip.transitionInSec,
+    })),
+  });
+
+  if (graph) {
+    const args = ["-y", "-hide_banner", "-loglevel", "error"];
+    for (const seg of segments) args.push("-i", seg);
+    args.push(
+      "-filter_complex", graph.filter,
+      "-map", "[vout]",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+      "-an", silent
+    );
+    await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+    transitionsRendered = rendered.filter(
+      (r, i) => i > 0 && r.clip.transitionIn !== "hard_cut"
+    ).length;
+  } else {
+    const listFile = path.join(workDir, "segments.txt");
+    fs.writeFileSync(
+      listFile,
+      segments.map((s) => `file '${s.replace(/'/g, "'\\''")}'`).join("\n"),
+      "utf8"
+    );
+    await execFileAsync(
+      ffmpeg(),
+      ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile,
+        "-c", "copy", silent],
+      { maxBuffer: 1024 * 1024 * 16 }
+    );
+  }
   commands++;
 
   // ── 3. text and captions, as ONE subtitle document ─────────────────────────────────────────
-  const texts = [...textTrackOf(timeline, "TEXT"), ...textTrackOf(timeline, "GRAPHICS")]
-    .filter((t) => !t.disabled && t.text.trim());
+  const texts = textTrackOf(timeline, "TEXT").filter((t) => !t.disabled && t.text.trim());
   const captions = captionTrack(timeline).filter((c) => !c.disabled && c.text.trim());
+  /**
+   * RONDE 148 §12 — a graphic that puts WORDS on screen is drawn through the same ASS pass.
+   *
+   * A location card and a date card are text with a box around them, and libass draws exactly
+   * that. A map or a chart is not, and `graphicsWithLabels` leaves those out — they are reported
+   * below rather than rendered as their own label, which would put the word "map" on the screen
+   * where a map was meant to be.
+   */
+  const labelled = graphicsWithLabels(timeline);
   const elements: AssElement[] = [
     ...texts.map((t) => ({
       text: t.text, start: t.start, end: t.end, style: t.style, animation: t.animation,
     })),
+    ...labelled.map((g) => ({
+      text: g.label!, start: g.start, end: g.end,
+      style: g.style ?? DEFAULT_TEXT_STYLE, animation: "fade" as const,
+    })),
     ...captions.map((c) => ({ text: c.text, start: c.start, end: c.end, style: c.style })),
   ];
+  for (const g of graphicsTrack(timeline)) {
+    if (!g.disabled && !g.label?.trim()) {
+      skipped.push(
+        `unsupported_graphic ${g.graphicType} (${g.id})` +
+          (g.reason ? ` — ${g.reason}` : "") +
+          " — kept on the GRAPHICS track, not drawn"
+      );
+    }
+  }
 
   let withText = silent;
   if (elements.length > 0) {
@@ -521,14 +628,21 @@ export async function renderTimeline(params: {
   }
 
   // ── 4. audio ───────────────────────────────────────────────────────────────────────────────
+  /**
+   * RONDE 148 §19/§23 — AMBIENT joins VOICE, MUSIC and SFX as its own track.
+   *
+   * It ducks more gently than music (see `DUCK_AMBIENT`), and a person switching the music off
+   * should not thereby lose the room they are standing in.
+   */
   const audioClips = [
     ...audioTrackOf(timeline, "VOICE").map((c) => ({ c, kind: "VOICE" as const })),
     ...audioTrackOf(timeline, "MUSIC").map((c) => ({ c, kind: "MUSIC" as const })),
+    ...audioTrackOf(timeline, "AMBIENT").map((c) => ({ c, kind: "AMBIENT" as const })),
     ...audioTrackOf(timeline, "SFX").map((c) => ({ c, kind: "SFX" as const })),
   ].filter((x) => !x.c.disabled);
 
-  const resolvedAudio: Array<{ file: string; gain: number; startSec: number }> = [];
-  for (const { c } of audioClips) {
+  const resolvedAudio: Array<{ file: string; input: MixInput }> = [];
+  for (const { c, kind } of audioClips) {
     const url = c.source.canonicalUrl || c.source.mediaUrl;
     if (!url || !params.resolveAudio) {
       skipped.push(`audio ${c.id}: no source`);
@@ -539,48 +653,62 @@ export async function renderTimeline(params: {
       skipped.push(`audio ${c.id}: could not be recovered`);
       continue;
     }
-    resolvedAudio.push({ file, gain: c.gain, startSec: c.start });
+    resolvedAudio.push({
+      file,
+      input: {
+        // Input 0 is the video; audio inputs start at 1.
+        index: resolvedAudio.length + 1,
+        kind,
+        startSec: c.start,
+        gain: c.gain,
+        fadeInSec: c.fadeInSec,
+        fadeOutSec: c.fadeOutSec,
+        durationSec: Math.max(0, c.end - c.start),
+        duckUnderVoice: c.duckUnderVoice,
+      },
+    });
   }
 
-  if (resolvedAudio.length === 0) {
+  const audioGraph = buildAudioGraph(resolvedAudio.map((a) => a.input));
+  if (!audioGraph) {
     fs.copyFileSync(withText, outputPath);
   } else {
     const args: string[] = ["-y", "-hide_banner", "-loglevel", "error", "-i", withText];
     for (const a of resolvedAudio) args.push("-i", a.file);
-    const chains = resolvedAudio.map((a, i) => {
-      const delayMs = Math.max(0, Math.round(a.startSec * 1000));
-      return `[${i + 1}:a]adelay=${delayMs}|${delayMs},volume=${a.gain.toFixed(3)}[a${i}]`;
-    });
-    const mix =
-      resolvedAudio.length === 1
-        ? `[a0]anull[aout]`
-        : `[${resolvedAudio.map((_, i) => `a${i}`).join("][")}]amix=inputs=${resolvedAudio.length}:duration=first:dropout_transition=2:normalize=0[aout]`;
     args.push(
-      "-filter_complex", `${chains.join(";")};${mix}`,
-      "-map", "0:v", "-map", "[aout]",
+      "-filter_complex", audioGraph.filter,
+      "-map", "0:v", "-map", `[${audioGraph.outLabel}]`,
       "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+      /**
+       * §26 — `-shortest` bounded by the VIDEO, which is the timeline's own length.
+       *
+       * The video is input 0 and the mix cannot outlast it; without this a music bed longer than
+       * the edit would extend the file past the picture, and the duration gate would then report a
+       * drift that the timeline never asked for.
+       */
       "-shortest",
       outputPath
     );
     await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
     commands++;
   }
-
-  for (const u of UNIMPLEMENTED) {
-    if (u.startsWith("motion") && clips.some((c) => c.motion !== "none")) skipped.push(u);
-    if (u.startsWith("transitions") && clips.some((c) => c.transitionIn === "crossfade")) {
-      skipped.push(u);
-    }
-  }
+  const ducked = resolvedAudio.filter(
+    (a) => a.input.duckUnderVoice && a.input.kind !== "VOICE" && a.input.kind !== "SFX"
+  ).length;
 
   const durationSec = (await probeDurationSec(outputPath)) ?? 0;
   return {
     outputPath,
     durationSec,
     clipsRendered: segments.length,
-    textsDrawn: texts.length,
+    textsDrawn: texts.length + labelled.length,
     captionsDrawn: captions.length,
     audioTracks: resolvedAudio.length,
+    transitionsRendered,
+    duckedTracks: ducked,
+    camerasExecuted: rendered.filter((r) => cameraChain(
+      r.clip.camera ?? { type: "camera_hold" }, fmt, r.durationSec
+    ) !== null).length,
     skipped,
     ffmpegCommands: commands,
   };

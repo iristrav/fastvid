@@ -64,7 +64,16 @@ export type AssetSourceIdentity = {
 
 /* ═══════════════════════ tracks ═══════════════════════ */
 
-export type TrackKind = "VIDEO" | "VOICE" | "MUSIC" | "SFX" | "CAPTIONS" | "TEXT" | "GRAPHICS";
+export type TrackKind =
+  | "VIDEO"
+  | "VOICE"
+  | "MUSIC"
+  | "SFX"
+  /** RONDE 148 §23 — room tone and atmosphere, which duck more gently than music. */
+  | "AMBIENT"
+  | "CAPTIONS"
+  | "TEXT"
+  | "GRAPHICS";
 
 /** How the editor should show this clip when the original media is gone. */
 export type PreviewSource = "rendered_video" | "asset";
@@ -84,6 +93,77 @@ export type TransitionKind =
   | "dissolve"
   | "dip_to_black"
   | "dip_to_white";
+
+/* ═══════════════════════ RONDE 148 §8 — transforms, camera, effects ═══════════════════════ */
+
+/**
+ * How the source fills the frame, before any camera movement.
+ *
+ * `fit` is the whole-frame decision and the three values are genuinely different pictures:
+ *   contain  the whole source is visible, padded — nothing is lost, bars may appear
+ *   cover    the frame is filled, the overflow is cropped — nothing is padded, edges are lost
+ *   crop     an explicit rectangle of the source, in normalised 0..1 coordinates
+ *
+ * `contain` stays the default because it is what the renderer has always done, so a timeline
+ * written before this round renders identically — which is what keeps the golden test honest.
+ */
+export type FitMode = "contain" | "cover" | "crop";
+
+export type ClipTransform = {
+  fit?: FitMode;
+  /**
+   * The source rectangle, normalised 0..1, used when `fit` is "crop".
+   *
+   * Normalised rather than pixels so a crop survives a source being re-fetched at a different
+   * resolution — which is exactly what rehydration does. Pixel crops would silently mean something
+   * different after the provider re-encoded their file.
+   */
+  crop?: { x: number; y: number; width: number; height: number };
+  /** Extra scale applied after the fit. 1 = none. */
+  scale?: number;
+  /** Where the scaled picture sits in the frame, normalised: 0.5/0.5 is centred. */
+  positionX?: number;
+  positionY?: number;
+  /** 0..1. Below 1 the clip is composited over black. */
+  opacity?: number;
+};
+
+/**
+ * A camera move over the clip's own duration.
+ *
+ * `MotionKind` already existed and stays, because the whole pipeline writes it; this is the
+ * PARAMETERISED form the cameraPlanner actually produces (a zoom from 1.0 to 1.12 with a
+ * direction), and `motion` remains the coarse label. When both are present, `camera` wins and
+ * `motion` is what an older reader sees.
+ */
+export type ClipCamera = {
+  /** The planner's movement name — cameraPlanner's CameraMovementType. */
+  type: string;
+  startScale?: number;
+  endScale?: number;
+  /** Normalised centre of interest at the start and end of the move. */
+  startX?: number;
+  startY?: number;
+  endX?: number;
+  endY?: number;
+  /** 0..1, from the planner. Used to scale the move when explicit scales are absent. */
+  intensity?: number;
+};
+
+/**
+ * A visual effect the planner asked for, carried whether or not the renderer can execute it.
+ *
+ * §9/§15: "Geen stille verwijdering." An effect the renderer cannot do is REPORTED as
+ * `unsupported_effect` with the planner's own reason — it stays in the document so that a later
+ * renderer can execute it and so an operator can see what the plan asked for.
+ */
+export type ClipEffect = {
+  /** cinematicEditingEngine VisualEffectType. */
+  effectType: string;
+  /** 0..1. */
+  intensity: number;
+  reason?: string;
+};
 
 export type TimelineVideoClip = {
   id: string;
@@ -106,8 +186,17 @@ export type TimelineVideoClip = {
   timelineStart: number;
   timelineEnd: number;
   motion: MotionKind;
+  /** RONDE 148 — the parameterised move. When present it supersedes `motion`. */
+  camera?: ClipCamera;
+  /** RONDE 148 — fit, crop, scale, position, opacity. Absent means contain-and-pad, as before. */
+  transform?: ClipTransform;
+  /** RONDE 148 — what the effectsPlanner asked for. Executed where possible, reported otherwise. */
+  effects?: ClipEffect[];
   transitionIn: TransitionKind;
   transitionOut: TransitionKind;
+  /** Seconds the transition takes. The planner decides it; the renderer executes it. */
+  transitionInSec?: number;
+  transitionOutSec?: number;
   /**
    * §2 — how the EDITOR previews this clip; never how the RENDERER sources it.
    *
@@ -177,14 +266,49 @@ export type TimelineAudioClip = {
   disabled?: boolean;
 };
 
+/**
+ * RONDE 148 §12/§18 — GRAPHICS is no longer an alias for text.
+ *
+ * It was `TimelineText[]`, which meant a map, a location card and a callout could only be
+ * represented as a string on screen — and `motionGraphicsPlanner` plans exactly those, with a
+ * `data` payload per graphic type. Aliasing them to text threw that payload away at the door, so
+ * the planner could never have been connected without this.
+ *
+ * `data` is deliberately opaque, mirroring `MotionGraphicInstruction.data` in the engine's own
+ * types: a counter's fromValue/toValue and a map's normX/normY have nothing in common, and a union
+ * of every graphic's payload here would have to be edited every time the planner learns a new one.
+ * Consumers narrow by `graphicType`, which is what the engine already does.
+ */
+export type TimelineGraphic = {
+  id: string;
+  /** The planner's own vocabulary — see cinematicEditingEngine MotionGraphicType. */
+  graphicType: string;
+  data: Record<string, unknown>;
+  start: number;
+  end: number;
+  /** A caption-like label, when the graphic has one. Rendered through ASS like other text. */
+  label?: string;
+  style?: TextStyle;
+  disabled?: boolean;
+  /** Why the planner asked for it, carried so an unsupported graphic can say what was lost. */
+  reason?: string;
+};
+
 export type TimelineTrack =
   | { kind: "VIDEO"; clips: TimelineVideoClip[] }
   | { kind: "VOICE"; clips: TimelineAudioClip[] }
   | { kind: "MUSIC"; clips: TimelineAudioClip[] }
   | { kind: "SFX"; clips: TimelineAudioClip[] }
+  /**
+   * §23 — room tone, atmosphere and environment beds, separate from MUSIC.
+   *
+   * They duck differently (cinematicAudio uses a gentler ratio for ambience than for music) and a
+   * person switching the music off should not lose the room they are standing in.
+   */
+  | { kind: "AMBIENT"; clips: TimelineAudioClip[] }
   | { kind: "CAPTIONS"; captions: TimelineCaption[] }
   | { kind: "TEXT"; texts: TimelineText[] }
-  | { kind: "GRAPHICS"; texts: TimelineText[] };
+  | { kind: "GRAPHICS"; graphics: TimelineGraphic[] };
 
 export type TimelineFormat = {
   widthPx: number;
@@ -265,9 +389,10 @@ export function emptyTimeline(videoId: number, format = DEFAULT_FORMAT): Project
       { kind: "VOICE", clips: [] },
       { kind: "MUSIC", clips: [] },
       { kind: "SFX", clips: [] },
+      { kind: "AMBIENT", clips: [] },
       { kind: "CAPTIONS", captions: [] },
       { kind: "TEXT", texts: [] },
-      { kind: "GRAPHICS", texts: [] },
+      { kind: "GRAPHICS", graphics: [] },
     ],
     createdAt: new Date().toISOString(),
   };
@@ -282,10 +407,14 @@ export function videoTrack(t: ProjectTimeline): TimelineVideoClip[] {
 
 export function audioTrackOf(
   t: ProjectTimeline,
-  kind: "VOICE" | "MUSIC" | "SFX"
+  kind: "VOICE" | "MUSIC" | "SFX" | "AMBIENT"
 ): TimelineAudioClip[] {
   const track = t.tracks.find((x) => x.kind === kind);
-  return track && (track.kind === "VOICE" || track.kind === "MUSIC" || track.kind === "SFX")
+  return track &&
+    (track.kind === "VOICE" ||
+      track.kind === "MUSIC" ||
+      track.kind === "SFX" ||
+      track.kind === "AMBIENT")
     ? track.clips
     : [];
 }
@@ -295,9 +424,65 @@ export function captionTrack(t: ProjectTimeline): TimelineCaption[] {
   return track && track.kind === "CAPTIONS" ? track.captions : [];
 }
 
-export function textTrackOf(t: ProjectTimeline, kind: "TEXT" | "GRAPHICS"): TimelineText[] {
+/**
+ * The TEXT track's elements.
+ *
+ * RONDE 148 — this used to accept "GRAPHICS" too, back when that track was also `TimelineText[]`.
+ * It no longer is: a graphic carries a type and a payload, and squeezing it through a text-shaped
+ * accessor is precisely what stopped `motionGraphicsPlanner` from ever being connected. Graphics
+ * have their own accessor below.
+ */
+export function textTrackOf(t: ProjectTimeline, kind: "TEXT"): TimelineText[] {
   const track = t.tracks.find((x) => x.kind === kind);
-  return track && (track.kind === "TEXT" || track.kind === "GRAPHICS") ? track.texts : [];
+  return track && track.kind === "TEXT" ? track.texts : [];
+}
+
+/**
+ * The GRAPHICS track, reading BOTH shapes.
+ *
+ * RONDE 148 changed this track from `TimelineText[]` to `TimelineGraphic[]`, and every timeline
+ * saved before that change still carries the old shape in its JSON column. Reading `track.graphics`
+ * on one of those gives `undefined`, and the first thing that happens next is `.filter` on nothing —
+ * which is how this was found: eighteen of the golden test's twenty-five cases crashed at once.
+ *
+ * So the old shape is READ, not rejected: a legacy text element becomes a graphic whose label is
+ * its text, which is exactly what it was. The words survive the migration, no timeline needs
+ * rewriting, and nothing has to know which era a document came from.
+ */
+export function graphicsTrack(t: ProjectTimeline): TimelineGraphic[] {
+  const track = t.tracks.find((x) => x.kind === "GRAPHICS");
+  if (!track || track.kind !== "GRAPHICS") return [];
+  return normaliseGraphicsTrack(track);
+}
+
+/**
+ * One GRAPHICS track, read in either shape.
+ *
+ * Exported because two places need it — the accessor above and `timelineStore`'s text edit — and a
+ * second copy of a compatibility shim is how one of them ends up not having the fix.
+ */
+export function normaliseGraphicsTrack(track: {
+  kind: "GRAPHICS";
+  graphics?: TimelineGraphic[];
+}): TimelineGraphic[] {
+  if (Array.isArray(track.graphics)) return track.graphics;
+  const legacy = (track as unknown as { texts?: TimelineText[] }).texts;
+  if (!Array.isArray(legacy)) return [];
+  return legacy.map((t2) => ({
+    id: t2.id,
+    graphicType: "text",
+    data: {},
+    start: t2.start,
+    end: t2.end,
+    label: t2.text,
+    style: t2.style,
+    disabled: t2.disabled,
+  }));
+}
+
+/** Every graphic that also puts words on screen — the ones the ASS pass can draw. */
+export function graphicsWithLabels(t: ProjectTimeline): TimelineGraphic[] {
+  return graphicsTrack(t).filter((g) => !g.disabled && Boolean(g.label?.trim()));
 }
 
 /**

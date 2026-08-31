@@ -206,6 +206,54 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
     expect(body.indexOf("searchGateDecision(")).toBeLessThan(body.indexOf("await fetch("));
   });
 
+  /**
+   * RONDE 148 — functions that talk to a provider WITHOUT searching, and why each is exempt.
+   *
+   * The gate exists so that no unproven search TERM reaches a provider: it tokenises a query,
+   * checks every token against the beat's provenance, and blocks the lot if one is unproven.
+   *
+   * `providerResolver` has no query. It takes a `providerAssetId` that FastVid itself recorded in
+   * the lineage ledger when it adopted the clip, and asks the provider for that exact asset's
+   * current download URL — because a Pexels CDN link expires while the id does not. There is
+   * nothing to prove and nothing to block.
+   *
+   * Sending it through the gate anyway was considered and rejected: `searchGateDecision` would run
+   * the id through `validateSearchQuery` and write a `[SearchQueryAudit]` line claiming a search
+   * happened that never did, which would corrupt the very record RONDE 90/91 built the gate to
+   * keep. Routing rehydration through `fetchPexelsClips` instead would mean SEARCHING for a
+   * replacement, which could return a different clip — the silent substitution the whole
+   * rehydrator exists to prevent.
+   *
+   * The exemption is narrow and it is not a free pass: the assertion below still proves that an
+   * exempted function contains no query-building construct, so it cannot quietly become a search.
+   */
+  const NON_SEARCH_PROVIDER_CALLS: ReadonlyArray<{ file: string; fn: string; why: string }> = [
+    {
+      file: "rehydrationDeps.ts",
+      fn: "providerResolver",
+      why: "fetches ONE known asset by the id in our own lineage ledger; it has no search terms",
+    },
+  ];
+
+  it("TEST 14b — an exempt provider call really is a lookup, not a search in disguise", () => {
+    for (const { file, fn } of NON_SEARCH_PROVIDER_CALLS) {
+      const found = serverSources().find((s) => s.file === file);
+      expect(found, `${file} not found`).toBeTruthy();
+      const idx = found!.src.indexOf(`function ${fn}(`);
+      expect(idx, `${fn} missing from ${file}`).toBeGreaterThan(-1);
+      const body = found!.src.slice(idx, idx + 6000);
+      /**
+       * The properties that make it a lookup: it addresses an asset BY ID, and it builds no query.
+       * If anyone ever adds a search parameter here, this fails and the exemption has to be
+       * re-argued rather than silently inherited.
+       */
+      expect(body, `${fn} must address an asset by id`).toContain("providerAssetId");
+      for (const searchish of ["query=", "&q=", "?q=", "search?", "per_page=", "searchTerm"]) {
+        expect(body.includes(searchish), `${fn} looks like a search: ${searchish}`).toBe(false);
+      }
+    }
+  });
+
   it("TEST 14 — every provider-search function in server/ reaches the gate", () => {
     const HOSTS = [
       "api.pexels.com", "pixabay.com/api", "commons.wikimedia.org", "api.openverse.org",
@@ -234,7 +282,8 @@ describe("RONDE 91 §4 — no provider search has an alternative route", () => {
           body.includes("admitProviderQuery(") ||
           body.includes("cachedProviderSearch(") ||
           body.includes("searchGateDecision(");
-        if (!gated) ungated.push(`${file}:${i + 1} ${current}`);
+        const exempt = NON_SEARCH_PROVIDER_CALLS.some((e) => e.file === file && e.fn === current);
+        if (!gated && !exempt) ungated.push(`${file}:${i + 1} ${current}`);
       }
     }
     expect(ungated, `direct provider calls outside the gate:\n${ungated.join("\n")}`).toEqual([]);

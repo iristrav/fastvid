@@ -56,6 +56,7 @@ import { parseStoredTimeline, storedTimelineIsReadable } from "./timelineStore";
 import { timelineFromEditorScenes } from "./timelineFromManifest";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
 import { rehydrateTimelineAssets, formatRehydrationSummary } from "./assetRehydrator";
+import { productionRehydrateDeps } from "./rehydrationDeps";
 import { renderTimeline, checkRenderedFile } from "./timelineRenderer";
 import { storagePutFromFile } from "./storage";
 import { resolveLocalStorageFilePath } from "./storageLocal";
@@ -248,10 +249,19 @@ export async function runRenderJob(params: {
 
     /* 3. §28 — every clip's ORIGINAL source, from its identity */
     await phase("rehydrating");
+    /**
+     * RONDE 148 §16 — the FULL dependency set, not just a downloader.
+     *
+     * This call used to pass `{ download }` alone, which meant that in production the rehydrator
+     * could reach exactly one of its five routes: the curated archive it holds itself, the media
+     * cache that already exists, the Pexels/Pixabay lookups and the YouTube layer were all
+     * unreachable because the object literal did not have those keys. Every one of them was built
+     * and tested in RONDE 147 and none of them had ever run outside a test.
+     */
     const rehydration = await deps.rehydrate({
       timeline,
       workDir: path.join(workDir, "assets"),
-      deps: { download: deps.download },
+      deps: productionRehydrateDeps({ download: deps.download }),
       failFast: true,
     });
     for (const line of formatRehydrationSummary(rehydration)) console.log(line);
@@ -264,12 +274,14 @@ export async function runRenderJob(params: {
     }
 
     /* 4. audio, when the timeline has any */
-    await phase("preparing");
+    await phase("validating");
     const audioDir = path.join(workDir, "audio");
     fs.mkdirSync(audioDir, { recursive: true });
     const audioClips = [
       ...audioTrackOf(timeline, "VOICE"),
       ...audioTrackOf(timeline, "MUSIC"),
+      // RONDE 148 §23 — room tone and atmosphere are their own track now.
+      ...audioTrackOf(timeline, "AMBIENT"),
       ...audioTrackOf(timeline, "SFX"),
     ];
     const audioByClip = new Map<string, string>();

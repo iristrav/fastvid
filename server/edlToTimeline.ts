@@ -42,12 +42,15 @@ import {
   type ProjectTimeline,
   type TextStyle,
   type TimelineAudioClip,
+  type ClipCamera,
   type TimelineCaption,
+  type TimelineGraphic,
   type TimelineText,
   type TimelineVideoClip,
   type TransitionKind,
 } from "./projectTimeline";
 import type {
+  CameraInstruction,
   CameraMovementType,
   CaptionInstruction,
   EditDecision,
@@ -105,6 +108,85 @@ export const CAMERA_MAP: Readonly<Record<CameraMovementType, MotionKind>> = {
   virtual_dolly: "slow_push",
   camera_drift: "pan_right",
 };
+
+/**
+ * RONDE 148 — the camera move as NUMBERS, from the planner's movement and intensity.
+ *
+ * The scales below are the honest translation of a vocabulary into geometry, and they are small on
+ * purpose: a documentary push that is visible as a push is wrong. `intensity` is the planner's own
+ * 0..1, so a camera_hold (intensity 0) produces no move at all rather than a token one.
+ */
+export function cameraFor(instruction: CameraInstruction): ClipCamera {
+  const i = Math.max(0, Math.min(1, instruction.intensity));
+  /** A full-intensity push travels 12% — beyond that a still starts to look like a zoom effect. */
+  const zoom = 1 + 0.12 * i;
+  const pan = 0.12 * i;
+  const base: ClipCamera = { type: instruction.movement, intensity: i };
+  switch (instruction.movement) {
+    case "camera_hold":
+      return { ...base, startScale: 1, endScale: 1 };
+    case "zoom_in":
+    case "slow_push":
+    case "ken_burns":
+    case "virtual_dolly":
+    case "parallax":
+      return { ...base, startScale: 1, endScale: zoom };
+    case "zoom_out":
+    case "slow_pull":
+      return { ...base, startScale: zoom, endScale: 1 };
+    case "pan_left":
+      return { ...base, startScale: zoom, endScale: zoom, startX: 0.5 + pan, endX: 0.5 - pan, startY: 0.5, endY: 0.5 };
+    case "pan_right":
+    case "camera_drift":
+      return { ...base, startScale: zoom, endScale: zoom, startX: 0.5 - pan, endX: 0.5 + pan, startY: 0.5, endY: 0.5 };
+    case "tilt_up":
+      return { ...base, startScale: zoom, endScale: zoom, startY: 0.5 + pan, endY: 0.5 - pan, startX: 0.5, endX: 0.5 };
+    case "tilt_down":
+      return { ...base, startScale: zoom, endScale: zoom, startY: 0.5 - pan, endY: 0.5 + pan, startX: 0.5, endX: 0.5 };
+    default:
+      return { ...base, startScale: 1, endScale: 1 };
+  }
+}
+
+/**
+ * Effects this renderer can actually execute, as ffmpeg filters that exist in both builds.
+ *
+ * Everything else stays on the clip and is reported. The list is short and honest rather than
+ * aspirational: an effect named here must have a filter behind it in `timelineRenderer`.
+ */
+export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
+  "film_grain",
+  "vignette",
+  "letterbox",
+]);
+
+/** Graphics whose whole content is words — those the ASS pass can draw today. */
+export const GRAPHICS_WITH_A_LABEL: ReadonlySet<string> = new Set([
+  "location_card",
+  "date_card",
+  "chapter_card",
+  "lower_third",
+  "statistic",
+  "quote",
+  "callout",
+  "label",
+  "badge",
+]);
+
+/**
+ * The words a graphic puts on screen, taken from the planner's payload — never invented.
+ *
+ * A map's `locationName` and a counter's `suffix` are what the planner decided this graphic says.
+ * Returning undefined when there is no text is the right answer: it means the graphic is not a
+ * words-on-screen graphic, and it will be reported as undrawn rather than rendered as an empty box.
+ */
+export function graphicLabel(graphicType: string, data: Record<string, unknown>): string | undefined {
+  for (const key of ["text", "label", "title", "locationName", "caption", "name"]) {
+    const v = data[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
 
 /** Caption position → the renderer's text position. */
 function positionFor(caption: CaptionInstruction): TextStyle["position"] {
@@ -174,6 +256,7 @@ export function translateEdl(params: {
   const captions: TimelineCaption[] = [];
   const texts: TimelineText[] = [];
   const sfx: TimelineAudioClip[] = [];
+  const graphics: TimelineGraphic[] = [];
 
   for (const { decision, beatOffsetSec, identity } of params.inputs) {
     const clip = decision.clip;
@@ -198,13 +281,28 @@ export function translateEdl(params: {
       timelineStart: Number(start.toFixed(3)),
       timelineEnd: Number(end.toFixed(3)),
       motion: CAMERA_MAP[decision.camera.movement] ?? "none",
+      /**
+       * RONDE 148 — the camera move, PARAMETERISED, not just labelled.
+       *
+       * `motion` keeps the coarse name for older readers; `camera` carries what the planner
+       * actually decided — the movement type and how pronounced it should be — so the renderer can
+       * execute a 1.00→1.12 push rather than guessing what "slow_push" means.
+       */
+      camera: cameraFor(decision.camera),
+      /**
+       * Carried, not dropped. An effect the renderer cannot execute is reported in `unsupported`
+       * AND kept here, so the plan survives in the document and a later renderer can run it.
+       */
+      effects: decision.effects.map((e) => ({
+        effectType: e.effectType,
+        intensity: e.intensity,
+        reason: e.reason,
+      })),
       transitionIn: mapped ?? "hard_cut",
+      transitionInSec: decision.transitionIn.durationSec,
       transitionOut: "hard_cut",
       previewSource: "asset",
       sceneIndex: decision.sceneIndex,
-      // The planner already recorded whether the timing came from real word alignment or an
-      // estimate; carrying it forward is what lets a later reader tell a measured cut from a guess.
-      ...(clip.timingSource === "tts_word_alignment" ? {} : {}),
     });
 
     for (const caption of decision.captions) {
@@ -237,17 +335,38 @@ export function translateEdl(params: {
       });
     }
 
-    if (decision.motionGraphics.length > 0) {
-      unsupported.push(
-        `${decision.motionGraphics.length} motion graphic(s) on beat ${decision.beatId} ` +
-          `(${decision.motionGraphics.map((g) => g.graphicType).join(", ")}) — the renderer has no ` +
-          "graphics layer yet"
-      );
+    /**
+     * RONDE 148 §12 — motion graphics land on the GRAPHICS track WITH their payload.
+     *
+     * They used to be counted and thrown away, because that track was `TimelineText[]` and a map's
+     * normX/normY has nowhere to live in a string. Now the planner's `data` survives translation
+     * whether or not this renderer can draw it: what the renderer cannot do is reported below, and
+     * what the planner decided stays in the document.
+     */
+    for (const graphic of decision.motionGraphics) {
+      graphics.push({
+        id: timelineElementId("gfx", decision.beatId, graphic.graphicType, graphic.startSec),
+        graphicType: graphic.graphicType,
+        data: graphic.data,
+        start: Number((beatOffsetSec + graphic.startSec).toFixed(3)),
+        end: Number((beatOffsetSec + graphic.startSec + graphic.durationSec).toFixed(3)),
+        label: graphicLabel(graphic.graphicType, graphic.data),
+        reason: graphic.reason,
+      });
+      if (!GRAPHICS_WITH_A_LABEL.has(graphic.graphicType)) {
+        unsupported.push(
+          `motion graphic "${graphic.graphicType}" on beat ${decision.beatId} ` +
+            `(${graphic.reason}) — kept on the GRAPHICS track, not drawn by this renderer`
+        );
+      }
     }
-    if (decision.effects.length > 0) {
-      unsupported.push(
-        `${decision.effects.length} visual effect(s) on beat ${decision.beatId} — not yet executed`
-      );
+    for (const effect of decision.effects) {
+      if (!RENDERABLE_EFFECTS.has(effect.effectType)) {
+        unsupported.push(
+          `visual effect "${effect.effectType}" on beat ${decision.beatId} (${effect.reason}) — ` +
+            "kept on the clip, not executed by this renderer"
+        );
+      }
     }
   }
 
@@ -271,8 +390,9 @@ export function translateEdl(params: {
     { kind: "MUSIC", clips: [] },
     { kind: "SFX", clips: sfx },
     { kind: "CAPTIONS", captions },
+    { kind: "AMBIENT", clips: [] },
     { kind: "TEXT", texts },
-    { kind: "GRAPHICS", texts: [] },
+    { kind: "GRAPHICS", graphics },
   ];
   timeline.durationSec = Number(duration.toFixed(3));
   return { timeline, unsupported };

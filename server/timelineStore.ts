@@ -27,6 +27,7 @@
  */
 import {
   TIMELINE_SCHEMA_VERSION,
+  normaliseGraphicsTrack,
   type AssetSourceIdentity,
   type ProjectTimeline,
 } from "./projectTimeline";
@@ -230,8 +231,34 @@ export function editTimelineText(params: {
 
   const tracks = params.timeline.tracks.map((track) => {
     if (track.kind === "CAPTIONS") return { ...track, captions: track.captions.map(patch) };
-    if (track.kind === "TEXT" || track.kind === "GRAPHICS") {
-      return { ...track, texts: track.texts.map(patch) };
+    if (track.kind === "TEXT") return { ...track, texts: track.texts.map(patch) };
+    /**
+     * RONDE 148 — a graphic's words live in `label`, not `text`.
+     *
+     * A location card is a graphic with a payload; only its label is editable as words, and the
+     * payload it draws from is the planner's, not something a text edit may reach into.
+     */
+    if (track.kind === "GRAPHICS") {
+      /**
+       * `normaliseGraphicsTrack`, not `track.graphics` directly.
+       *
+       * RONDE 148 changed this track's shape, and every timeline saved before it still carries the
+       * old `texts` array — reading `.graphics` on one of those gives undefined and `.map` throws.
+       * Normalising here means an edit to a legacy document works and quietly writes the new shape.
+       */
+      return {
+        ...track,
+        graphics: normaliseGraphicsTrack(track).map((g) => {
+          if (g.id !== params.elementId) return g;
+          found = true;
+          return {
+            ...g,
+            ...(params.text != null ? { label: params.text } : {}),
+            ...(params.start != null ? { start: params.start } : {}),
+            ...(params.end != null ? { end: params.end } : {}),
+          };
+        }),
+      };
     }
     return track;
   });

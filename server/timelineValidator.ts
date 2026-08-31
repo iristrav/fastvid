@@ -28,11 +28,13 @@ import {
   TIMELINE_SCHEMA_VERSION,
   audioTrackOf,
   captionTrack,
+  graphicsTrack,
   textTrackOf,
   videoTrack,
   type ProjectTimeline,
   type TimelineAudioClip,
   type TimelineCaption,
+  type TimelineGraphic,
   type TimelineText,
   type TimelineVideoClip,
 } from "./projectTimeline";
@@ -44,6 +46,14 @@ import {
  */
 import { identityIsRehydratable } from "./assetIdentity";
 import { identityHasRehydrationRoute } from "./assetRehydrator";
+/**
+ * RONDE 148 — the validator asks the RENDERER what it can execute, rather than keeping a list.
+ *
+ * Two lists of supported transitions drift, and the one that drifts wide lets a render start that
+ * cannot finish. `timelineFilters` holds the filter strings, so it is the only honest authority on
+ * what is renderable.
+ */
+import { effectChain, transitionIsRenderable } from "./timelineFilters";
 
 export type TimelineIssueCode =
   | "negative_duration"
@@ -63,11 +73,22 @@ export type TimelineIssueCode =
   | "missing_asset"
   | "duplicate_element_id"
   | "invalid_gain"
-  | "invalid_fade";
+  | "invalid_fade"
+  /* ── RONDE 148 — the fields the timeline gained this round ───────────────────────── */
+  | "invalid_crop"
+  | "invalid_scale"
+  | "invalid_position"
+  | "invalid_camera"
+  | "unsupported_effect"
+  | "unsupported_transition"
+  | "unsupported_graphic"
+  | "missing_audio_source";
 
 export type TimelineIssue = {
   code: TimelineIssueCode;
-  track: "VIDEO" | "VOICE" | "MUSIC" | "SFX" | "CAPTIONS" | "TEXT" | "GRAPHICS" | "TIMELINE";
+  track:
+    | "VIDEO" | "VOICE" | "MUSIC" | "SFX" | "AMBIENT"
+    | "CAPTIONS" | "TEXT" | "GRAPHICS" | "TIMELINE";
   /** The element's own id, or null for a whole-timeline fault. */
   elementId: string | null;
   start: number | null;
@@ -150,6 +171,10 @@ export const TRACK_POLICY: Readonly<Record<TimelineIssue["track"], TrackPolicy>>
   SFX: {
     overlap: "allowed", gap: "normal",
     because: "mixed with amix; overlapping effects are ordinary",
+  },
+  AMBIENT: {
+    overlap: "allowed", gap: "normal",
+    because: "mixed with amix and ducked more gently than music; beds are meant to overlap",
   },
   CAPTIONS: {
     overlap: "allowed", gap: "normal", overlapAdvisory: true,
@@ -391,7 +416,7 @@ function checkTextLike(
 }
 
 function checkAudio(
-  track: "VOICE" | "MUSIC" | "SFX",
+  track: "VOICE" | "MUSIC" | "SFX" | "AMBIENT",
   clips: readonly TimelineAudioClip[],
   issues: TimelineIssue[]
 ): void {
@@ -453,6 +478,192 @@ function checkCaptionOverlap(
   }
 }
 
+/* ═══════════════════════ RONDE 148 — transforms, camera, effects, graphics ═══════════════════════ */
+
+/**
+ * The geometry a clip asks for, checked as NUMBERS before ffmpeg sees them.
+ *
+ * Every one of these produces a filter argument, and ffmpeg's response to a bad one is either a
+ * cryptic parse error four minutes into a render or — worse — a filter that silently does nothing.
+ * A crop of width 0 is the clearest case: `crop=iw*0:...` is accepted and yields no picture.
+ */
+function checkTransform(clip: TimelineVideoClip, issues: TimelineIssue[]): void {
+  const t = clip.transform;
+  if (!t) return;
+
+  const normalised = (v: number | undefined, name: string): boolean => {
+    if (v == null) return true;
+    if (!Number.isFinite(v) || v < 0 || v > 1) {
+      issues.push({
+        code: name.startsWith("position") ? "invalid_position" : "invalid_crop",
+        track: "VIDEO", elementId: clip.id, start: null, end: null,
+        reason: `${name} is ${String(v)} — it must be a fraction between 0 and 1`,
+      });
+      return false;
+    }
+    return true;
+  };
+
+  if (t.crop) {
+    const okAll =
+      normalised(t.crop.x, "crop.x") &&
+      normalised(t.crop.y, "crop.y") &&
+      normalised(t.crop.width, "crop.width") &&
+      normalised(t.crop.height, "crop.height");
+    if (okAll) {
+      // A zero-width crop is accepted by ffmpeg and produces nothing — the silent kind of wrong.
+      if (t.crop.width <= 0 || t.crop.height <= 0) {
+        issues.push({
+          code: "invalid_crop", track: "VIDEO", elementId: clip.id, start: null, end: null,
+          reason: `crop is ${t.crop.width}×${t.crop.height} of the source — it would select no pixels`,
+        });
+      }
+      // A rectangle that runs off the right or bottom edge crops less than it claims to.
+      if (t.crop.x + t.crop.width > 1.001 || t.crop.y + t.crop.height > 1.001) {
+        issues.push({
+          code: "invalid_crop", track: "VIDEO", elementId: clip.id, start: null, end: null,
+          reason:
+            `crop extends past the source (x+width=${(t.crop.x + t.crop.width).toFixed(3)}, ` +
+            `y+height=${(t.crop.y + t.crop.height).toFixed(3)})`,
+        });
+      }
+    }
+  }
+  if (t.fit === "crop" && !t.crop) {
+    issues.push({
+      code: "invalid_crop", track: "VIDEO", elementId: clip.id, start: null, end: null,
+      reason: 'fit is "crop" but no crop rectangle was given',
+    });
+  }
+  if (t.scale != null && (!Number.isFinite(t.scale) || t.scale < 0.1 || t.scale > 4)) {
+    issues.push({
+      code: "invalid_scale", track: "VIDEO", elementId: clip.id, start: null, end: null,
+      reason: `scale ${String(t.scale)} is outside 0.1..4 — beyond that the picture is unusable`,
+    });
+  }
+  normalised(t.positionX, "positionX");
+  normalised(t.positionY, "positionY");
+  if (t.opacity != null && (!Number.isFinite(t.opacity) || t.opacity < 0 || t.opacity > 1)) {
+    issues.push({
+      code: "invalid_position", track: "VIDEO", elementId: clip.id, start: null, end: null,
+      reason: `opacity ${String(t.opacity)} is outside 0..1`,
+    });
+  }
+}
+
+/**
+ * A camera move, checked before it becomes a zoompan expression.
+ *
+ * A scale below 1 is the interesting case: zoompan cannot zoom OUT past the source, so a start or
+ * end scale under 1 asks for something the filter silently clamps — the move then does not travel
+ * as far as the plan said, and nothing anywhere reports it.
+ */
+function checkCamera(clip: TimelineVideoClip, issues: TimelineIssue[]): void {
+  const c = clip.camera;
+  if (!c) return;
+  const fields: Array<[string, number | undefined]> = [
+    ["startScale", c.startScale], ["endScale", c.endScale],
+  ];
+  for (const [name, v] of fields) {
+    if (v == null) continue;
+    if (!Number.isFinite(v) || v < 1 || v > 4) {
+      issues.push({
+        code: "invalid_camera", track: "VIDEO", elementId: clip.id, start: null, end: null,
+        reason:
+          `camera.${name} is ${String(v)} — zoompan works from 1 (the whole frame) upward, and ` +
+          "a value below 1 would be clamped without the move ever saying so",
+      });
+    }
+  }
+  for (const [name, v] of [
+    ["startX", c.startX], ["startY", c.startY], ["endX", c.endX], ["endY", c.endY],
+  ] as Array<[string, number | undefined]>) {
+    if (v == null) continue;
+    if (!Number.isFinite(v) || v < 0 || v > 1) {
+      issues.push({
+        code: "invalid_camera", track: "VIDEO", elementId: clip.id, start: null, end: null,
+        reason: `camera.${name} is ${String(v)} — the centre of interest is normalised 0..1`,
+      });
+    }
+  }
+  if (c.intensity != null && (!Number.isFinite(c.intensity) || c.intensity < 0 || c.intensity > 1)) {
+    issues.push({
+      code: "invalid_camera", track: "VIDEO", elementId: clip.id, start: null, end: null,
+      reason: `camera.intensity is ${String(c.intensity)} — the planner's scale is 0..1`,
+    });
+  }
+}
+
+/**
+ * Effects and transitions the renderer cannot execute — REPORTED, and non-blocking.
+ *
+ * Both are advisory on purpose. An unexecutable film burn produces a video that is slightly
+ * plainer than planned, which is a real loss and not a broken render; refusing to render at all
+ * would make one unsupported flourish cost the whole video. The clip keeps carrying it, so a later
+ * renderer can do what this one cannot.
+ */
+function checkPlannedExtras(clip: TimelineVideoClip, issues: TimelineIssue[]): void {
+  for (const effect of clip.effects ?? []) {
+    if (effect.intensity != null && (!Number.isFinite(effect.intensity) || effect.intensity < 0 || effect.intensity > 1)) {
+      issues.push({
+        code: "unsupported_effect", track: "VIDEO", elementId: clip.id, start: null, end: null,
+        reason: `effect "${effect.effectType}" has intensity ${String(effect.intensity)}, outside 0..1`,
+      });
+      continue;
+    }
+    if (effectChain(effect) === null) {
+      issues.push({
+        code: "unsupported_effect", track: "VIDEO", elementId: clip.id,
+        start: clip.timelineStart, end: clip.timelineEnd,
+        reason:
+          `effect "${effect.effectType}"` + (effect.reason ? ` (${effect.reason})` : "") +
+          " — kept on the clip, not executed by this renderer",
+      });
+    }
+  }
+  for (const [field, kind] of [
+    ["transitionIn", clip.transitionIn], ["transitionOut", clip.transitionOut],
+  ] as const) {
+    if (!transitionIsRenderable(kind)) {
+      issues.push({
+        code: "unsupported_transition", track: "VIDEO", elementId: clip.id,
+        start: clip.timelineStart, end: clip.timelineEnd,
+        reason: `${field}="${String(kind)}" is not one this renderer can execute`,
+      });
+    }
+  }
+}
+
+/**
+ * The GRAPHICS track, which is no longer text.
+ *
+ * A graphic with no label is not a fault — a map is a graphic that draws no words — but this
+ * renderer cannot draw one, so it is reported. That is the §9 rule applied to graphics: nothing
+ * disappears in silence.
+ */
+function checkGraphics(graphics: readonly TimelineGraphic[], issues: TimelineIssue[]): void {
+  for (const g of graphics) {
+    checkRange("GRAPHICS", g.id, g.start, g.end, issues);
+    if (!g.graphicType?.trim()) {
+      issues.push({
+        code: "unsupported_graphic", track: "GRAPHICS", elementId: g.id,
+        start: g.start, end: g.end,
+        reason: "the graphic has no type, so nothing can decide how to draw it",
+      });
+      continue;
+    }
+    if (!g.disabled && !g.label?.trim()) {
+      issues.push({
+        code: "unsupported_graphic", track: "GRAPHICS", elementId: g.id,
+        start: g.start, end: g.end,
+        reason:
+          `"${g.graphicType}" draws no words` + (g.reason ? ` (${g.reason})` : "") +
+          " — kept on the track, not drawn by this renderer",
+      });
+    }
+  }
+}
+
 /** Two elements sharing an id make every later reference ambiguous. */
 function checkUniqueIds(timeline: ProjectTimeline, issues: TimelineIssue[]): void {
   const seen = new Map<string, TimelineIssue["track"]>();
@@ -468,13 +679,12 @@ function checkUniqueIds(timeline: ProjectTimeline, issues: TimelineIssue[]): voi
     }
   };
   for (const c of videoTrack(timeline)) note("VIDEO", c.id, c.timelineStart, c.timelineEnd);
-  for (const k of ["VOICE", "MUSIC", "SFX"] as const) {
+  for (const k of ["VOICE", "MUSIC", "SFX", "AMBIENT"] as const) {
     for (const c of audioTrackOf(timeline, k)) note(k, c.id, c.start, c.end);
   }
   for (const c of captionTrack(timeline)) note("CAPTIONS", c.id, c.start, c.end);
-  for (const k of ["TEXT", "GRAPHICS"] as const) {
-    for (const t of textTrackOf(timeline, k)) note(k, t.id, t.start, t.end);
-  }
+  for (const t of textTrackOf(timeline, "TEXT")) note("TEXT", t.id, t.start, t.end);
+  for (const g of graphicsTrack(timeline)) note("GRAPHICS", g.id, g.start, g.end);
 }
 
 /**
@@ -526,14 +736,17 @@ export function validateTimeline(timeline: ProjectTimeline): TimelineValidation 
   for (const clip of clips) {
     checkVideoClip(clip, issues);
     checkTransitions(clip, issues);
+    checkTransform(clip, issues);
+    checkCamera(clip, issues);
+    checkPlannedExtras(clip, issues);
   }
   checkVideoContinuity(clips.filter((c) => !c.disabled), timeline, issues);
 
   checkTextLike("TEXT", textTrackOf(timeline, "TEXT"), issues);
-  checkTextLike("GRAPHICS", textTrackOf(timeline, "GRAPHICS"), issues);
   checkTextLike("CAPTIONS", captionTrack(timeline), issues);
   checkCaptionOverlap(captionTrack(timeline), issues);
-  for (const k of ["VOICE", "MUSIC", "SFX"] as const) {
+  checkGraphics(graphicsTrack(timeline), issues);
+  for (const k of ["VOICE", "MUSIC", "SFX", "AMBIENT"] as const) {
     checkAudio(k, audioTrackOf(timeline, k), issues);
   }
   checkUniqueIds(timeline, issues);
@@ -557,6 +770,15 @@ export const NON_BLOCKING_ISSUES: ReadonlySet<TimelineIssueCode> = new Set([
    * making an editorial judgement instead of a technical one.
    */
   "caption_overlap",
+  /**
+   * RONDE 148 — an unexecutable flourish is a plainer video, not a broken one.
+   *
+   * Blocking here would let one film burn the planner asked for cost the whole render. The clip
+   * keeps carrying it, the render reports it, and a later renderer can do what this one cannot.
+   */
+  "unsupported_effect",
+  "unsupported_transition",
+  "unsupported_graphic",
 ]);
 
 export function assertRenderableTimeline(timeline: ProjectTimeline): TimelineValidation {

@@ -62,6 +62,30 @@ type VideoClip = {
   previewSource: string;
   disabled?: boolean;
   editedByUser?: boolean;
+  /* RONDE 148 — what the planner decided about framing, movement and treatment. */
+  transform?: {
+    fit?: "contain" | "cover" | "crop";
+    crop?: { x: number; y: number; width: number; height: number };
+    scale?: number;
+    positionX?: number;
+    positionY?: number;
+    opacity?: number;
+  };
+  camera?: { type: string; startScale?: number; endScale?: number; intensity?: number };
+  effects?: Array<{ effectType: string; intensity: number; reason?: string }>;
+  transitionInSec?: number;
+};
+
+/** RONDE 148 §12 — a graphic carries a payload, so it is no longer a text element. */
+type GraphicElement = {
+  id: string;
+  graphicType: string;
+  data: Record<string, unknown>;
+  start: number;
+  end: number;
+  label?: string;
+  disabled?: boolean;
+  reason?: string;
 };
 
 type TextElement = {
@@ -89,7 +113,12 @@ type Track =
   | { kind: "SFX"; clips: AudioClip[] }
   | { kind: "CAPTIONS"; captions: TextElement[] }
   | { kind: "TEXT"; texts: TextElement[] }
-  | { kind: "GRAPHICS"; texts: TextElement[] };
+  | { kind: "AMBIENT"; clips: AudioClip[] }
+  /**
+   * Read in BOTH shapes. Every timeline saved before RONDE 148 holds `texts` here, and the editor
+   * must open those too — reading only `graphics` would crash on every existing video.
+   */
+  | { kind: "GRAPHICS"; graphics?: GraphicElement[]; texts?: TextElement[] };
 
 type Timeline = {
   schemaVersion?: number;
@@ -103,13 +132,14 @@ type Timeline = {
 };
 
 /** §14 — every track kind gets a lane, in the order they stack in the picture and the mix. */
-const TRACK_ORDER = ["VIDEO", "VOICE", "MUSIC", "SFX", "CAPTIONS", "TEXT", "GRAPHICS"] as const;
+const TRACK_ORDER = ["VIDEO", "VOICE", "MUSIC", "AMBIENT", "SFX", "CAPTIONS", "TEXT", "GRAPHICS"] as const;
 type TrackKind = (typeof TRACK_ORDER)[number];
 
 const TRACK_COLOR: Record<TrackKind, string> = {
   VIDEO: "bg-cyan-500/30 border-cyan-400/50 hover:bg-cyan-500/45",
   VOICE: "bg-emerald-500/30 border-emerald-400/50 hover:bg-emerald-500/45",
   MUSIC: "bg-violet-500/30 border-violet-400/50 hover:bg-violet-500/45",
+  AMBIENT: "bg-teal-500/30 border-teal-400/50 hover:bg-teal-500/45",
   SFX: "bg-amber-500/30 border-amber-400/50 hover:bg-amber-500/45",
   CAPTIONS: "bg-sky-500/30 border-sky-400/50 hover:bg-sky-500/45",
   TEXT: "bg-fuchsia-500/30 border-fuchsia-400/50 hover:bg-fuchsia-500/45",
@@ -120,10 +150,11 @@ type Selection =
   | { kind: "VIDEO"; clip: VideoClip }
   | { kind: "CAPTIONS"; element: TextElement }
   | { kind: "TEXT"; element: TextElement }
-  | { kind: "GRAPHICS"; element: TextElement }
+  | { kind: "GRAPHICS"; graphic: GraphicElement }
   | { kind: "VOICE"; clip: AudioClip }
   | { kind: "MUSIC"; clip: AudioClip }
   | { kind: "SFX"; clip: AudioClip }
+  | { kind: "AMBIENT"; clip: AudioClip }
   | null;
 
 /* ═══════════════════════ reading a timeline without rebuilding it ═══════════════════════ */
@@ -146,14 +177,37 @@ function laneItems(timeline: Timeline, kind: TrackKind): LaneItem[] {
   if (track.kind === "CAPTIONS") {
     return track.captions.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.text }));
   }
-  if (track.kind === "TEXT" || track.kind === "GRAPHICS") {
+  if (track.kind === "TEXT") {
     return track.texts.map((t) => ({ id: t.id, start: t.start, end: t.end, label: t.text }));
+  }
+  if (track.kind === "GRAPHICS") {
+    return readGraphics(track).map((g) => ({
+      id: g.id, start: g.start, end: g.end,
+      label: g.label || g.graphicType,
+      /** A graphic with no words cannot be drawn by this renderer — marked, never hidden. */
+      warn: !g.label?.trim(),
+    }));
   }
   return track.clips.map((c) => ({
     id: c.id,
     start: c.start,
     end: c.end,
     label: c.source.title || c.source.provider,
+  }));
+}
+
+/**
+ * The GRAPHICS track in either shape.
+ *
+ * RONDE 148 changed it from text elements to graphics with a payload, and every timeline saved
+ * before that still holds the old array. The editor has to open those, so both are read and a
+ * legacy text element is presented as the graphic it always was.
+ */
+function readGraphics(track: { graphics?: GraphicElement[]; texts?: TextElement[] }): GraphicElement[] {
+  if (Array.isArray(track.graphics)) return track.graphics;
+  return (track.texts ?? []).map((t) => ({
+    id: t.id, graphicType: "text", data: {}, start: t.start, end: t.end,
+    label: t.text, disabled: t.disabled,
   }));
 }
 
@@ -168,9 +222,13 @@ function findSelection(timeline: Timeline, kind: TrackKind, id: string): Selecti
     const el = track.captions.find((c) => c.id === id);
     return el ? { kind: "CAPTIONS", element: el } : null;
   }
-  if (track.kind === "TEXT" || track.kind === "GRAPHICS") {
+  if (track.kind === "TEXT") {
     const el = track.texts.find((t) => t.id === id);
-    return el ? { kind: track.kind, element: el } : null;
+    return el ? { kind: "TEXT", element: el } : null;
+  }
+  if (track.kind === "GRAPHICS") {
+    const g = readGraphics(track).find((x) => x.id === id);
+    return g ? { kind: "GRAPHICS", graphic: g } : null;
   }
   const clip = track.clips.find((c) => c.id === id);
   return clip ? { kind: track.kind, clip } : null;
@@ -183,9 +241,39 @@ function withEditedText(timeline: Timeline, id: string, patch: Partial<TextEleme
     ...timeline,
     tracks: timeline.tracks.map((t) => {
       if (t.kind === "CAPTIONS") return { ...t, captions: t.captions.map(apply) };
-      if (t.kind === "TEXT" || t.kind === "GRAPHICS") return { ...t, texts: t.texts.map(apply) };
+      if (t.kind === "TEXT") return { ...t, texts: t.texts.map(apply) };
       return t;
     }),
+  };
+}
+
+/**
+ * Patch one video clip's transform/camera, leaving every other clip the SAME object.
+ *
+ * §17's rule applied to the geometry too: changing how a shot is framed must not move it, and must
+ * not touch the shot next to it. Mapping rather than rebuilding is what makes that true by
+ * construction rather than by care.
+ */
+function withEditedClip(timeline: Timeline, id: string, patch: Partial<VideoClip>): Timeline {
+  return {
+    ...timeline,
+    tracks: timeline.tracks.map((t) =>
+      t.kind === "VIDEO"
+        ? { ...t, clips: t.clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) }
+        : t
+    ),
+  };
+}
+
+/** Gain on one audio clip. The only audio value the editor lets a person change. */
+function withEditedAudio(timeline: Timeline, id: string, gain: number): Timeline {
+  return {
+    ...timeline,
+    tracks: timeline.tracks.map((t) =>
+      t.kind === "VOICE" || t.kind === "MUSIC" || t.kind === "SFX" || t.kind === "AMBIENT"
+        ? { ...t, clips: t.clips.map((c) => (c.id === id ? { ...c, gain } : c)) }
+        : t
+    ),
   };
 }
 
@@ -471,9 +559,23 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                 {!selection ? (
                   <p className="text-xs text-slate-500">Select an item on the timeline to inspect it.</p>
                 ) : selection.kind === "VIDEO" ? (
-                  <ClipInspector clip={selection.clip} />
-                ) : selection.kind === "VOICE" || selection.kind === "MUSIC" || selection.kind === "SFX" ? (
-                  <AudioInspector kind={selection.kind} clip={selection.clip} />
+                  <ClipInspector
+                    clip={selection.clip}
+                    onChange={(patch) =>
+                      setDraft((t) => (t ? withEditedClip(t, selection.clip.id, patch) : t))
+                    }
+                  />
+                ) : selection.kind === "VOICE" || selection.kind === "MUSIC" ||
+                  selection.kind === "SFX" || selection.kind === "AMBIENT" ? (
+                  <AudioInspector
+                    kind={selection.kind}
+                    clip={selection.clip}
+                    onChange={(gain) =>
+                      setDraft((t) => (t ? withEditedAudio(t, selection.clip.id, gain) : t))
+                    }
+                  />
+                ) : selection.kind === "GRAPHICS" ? (
+                  <GraphicInspector graphic={selection.graphic} />
                 ) : (
                   <TextInspector
                     kind={selection.kind}
@@ -501,15 +603,83 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** A titled block of controls. Keeps the inspector readable as it grows. */
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="pt-2 border-t border-white/5 space-y-2">
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function Select({
+  label, value, options, onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<[string, string]>;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="text-[10px] text-slate-500">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 px-2 py-1.5 text-xs text-white focus:border-cyan-400/50 focus:outline-none"
+      >
+        {options.map(([v, text]) => (
+          <option key={v} value={v} className="bg-slate-900">{text}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function Slider({
+  label, value, min, max, step, onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="flex items-baseline justify-between text-[10px] text-slate-500">
+        {label}
+        {/* Tabular figures so the number does not jog sideways while the slider moves. */}
+        <span className="tabular-nums text-slate-300">{value.toFixed(2)}</span>
+      </span>
+      <input
+        type="range"
+        min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-1 w-full accent-cyan-400"
+      />
+    </label>
+  );
+}
+
 /**
  * §15 — the clip's identity, shown as stored.
  *
  * Including, and especially, when it is not recoverable. Hiding that would mean the person finds
  * out at render time, ten minutes later, about a shot they could have replaced in ten seconds.
  */
-function ClipInspector({ clip }: { clip: VideoClip }) {
+function ClipInspector({
+  clip,
+  onChange,
+}: {
+  clip: VideoClip;
+  onChange: (patch: Partial<VideoClip>) => void;
+}) {
   const recoverable =
     Boolean(clip.source.canonicalUrl || clip.source.mediaUrl) || clip.source.archiveAssetId != null;
+  const slot = clip.timelineEnd - clip.timelineStart;
   return (
     <div className="space-y-3">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -528,18 +698,139 @@ function ClipInspector({ clip }: { clip: VideoClip }) {
         <Field label="Provider" value={clip.source.provider} />
         <Field label="Asset id" value={clip.source.providerAssetId ?? (clip.source.archiveAssetId != null ? `archive:${clip.source.archiveAssetId}` : "—")} />
         <Field label="Timeline" value={`${fmt(clip.timelineStart)} → ${fmt(clip.timelineEnd)}`} />
-        <Field label="Duration" value={`${(clip.timelineEnd - clip.timelineStart).toFixed(2)}s`} />
+        <Field label="Slot" value={`${slot.toFixed(2)}s`} />
         {/* An absent trim is shown as "not recorded", not as 0 — §15 of RONDE 147. */}
         <Field label="Source in" value={clip.sourceIn != null ? `${clip.sourceIn.toFixed(2)}s` : "not recorded"} />
         <Field label="Source out" value={clip.sourceOut != null ? `${clip.sourceOut.toFixed(2)}s` : "not recorded"} />
-        <Field label="Transition" value={`${clip.transitionIn} → ${clip.transitionOut}`} />
         {clip.editedByUser && <Field label="Edited" value="replaced by you" />}
       </div>
+
+      {/* ── §32 — framing ── */}
+      <Group title="Framing">
+        <Select
+          label="Fit"
+          value={clip.transform?.fit ?? "contain"}
+          options={[
+            ["contain", "Contain — whole picture, bars"],
+            ["cover", "Cover — fill, crop the edges"],
+            ["crop", "Crop — an explicit rectangle"],
+          ]}
+          onChange={(v) =>
+            onChange({ transform: { ...clip.transform, fit: v as "contain" | "cover" | "crop" } })
+          }
+        />
+        <Slider
+          label="Scale" min={0.5} max={2} step={0.05}
+          value={clip.transform?.scale ?? 1}
+          onChange={(v) => onChange({ transform: { ...clip.transform, scale: v } })}
+        />
+        <Slider
+          label="Position X" min={0} max={1} step={0.05}
+          value={clip.transform?.positionX ?? 0.5}
+          onChange={(v) => onChange({ transform: { ...clip.transform, positionX: v } })}
+        />
+        <Slider
+          label="Position Y" min={0} max={1} step={0.05}
+          value={clip.transform?.positionY ?? 0.5}
+          onChange={(v) => onChange({ transform: { ...clip.transform, positionY: v } })}
+        />
+      </Group>
+
+      {/* ── §32 — camera ── */}
+      <Group title="Camera">
+        <Select
+          label="Movement"
+          value={clip.camera?.type ?? "camera_hold"}
+          options={[
+            ["camera_hold", "Hold — no movement"],
+            ["slow_push", "Slow push in"],
+            ["slow_pull", "Slow pull out"],
+            ["pan_left", "Pan left"],
+            ["pan_right", "Pan right"],
+            ["tilt_up", "Tilt up"],
+            ["tilt_down", "Tilt down"],
+          ]}
+          onChange={(v) => onChange({ camera: cameraPreset(v) })}
+        />
+        {clip.camera && clip.camera.type !== "camera_hold" && (
+          <p className="text-[10px] text-slate-500">
+            Zoom {(clip.camera.startScale ?? 1).toFixed(2)}× → {(clip.camera.endScale ?? 1).toFixed(2)}×
+            over {slot.toFixed(1)}s
+          </p>
+        )}
+      </Group>
+
+      {/* ── §32 — transition ── */}
+      <Group title="Transition in">
+        <Select
+          label="Type"
+          value={clip.transitionIn}
+          options={[
+            ["hard_cut", "Hard cut"],
+            ["crossfade", "Crossfade"],
+            ["dissolve", "Dissolve"],
+            ["dip_to_black", "Dip to black"],
+            ["dip_to_white", "Dip to white"],
+          ]}
+          onChange={(v) => onChange({ transitionIn: v })}
+        />
+        {clip.transitionIn !== "hard_cut" && (
+          <Slider
+            label="Seconds" min={0.1} max={2} step={0.1}
+            value={clip.transitionInSec ?? 0.5}
+            onChange={(v) => onChange({ transitionInSec: v })}
+          />
+        )}
+      </Group>
+
+      {/*
+        §15 — effects are SHOWN, including the ones this renderer cannot execute.
+        They stay on the clip either way; hiding them would make the plan invisible.
+      */}
+      {clip.effects && clip.effects.length > 0 && (
+        <Group title="Effects">
+          {clip.effects.map((e) => (
+            <div key={e.effectType} className="flex items-baseline justify-between gap-2">
+              <span className="text-xs text-slate-200">{e.effectType.replace(/_/g, " ")}</span>
+              <span className="text-[10px] text-slate-500">
+                {RENDERED_EFFECTS.has(e.effectType) ? `${Math.round(e.intensity * 100)}%` : "not rendered"}
+              </span>
+            </div>
+          ))}
+        </Group>
+      )}
     </div>
   );
 }
 
-function AudioInspector({ kind, clip }: { kind: "VOICE" | "MUSIC" | "SFX"; clip: AudioClip }) {
+/** The three effects the renderer executes. Everything else is shown as planned-but-not-rendered. */
+const RENDERED_EFFECTS = new Set(["film_grain", "vignette", "letterbox"]);
+
+/**
+ * A camera preset, matching the server's own translation of the planner's vocabulary.
+ *
+ * The numbers are the same ones `edlToTimeline.cameraFor` produces at full intensity, so a move a
+ * person picks here looks like a move the planner would have picked — one vocabulary, not two.
+ */
+function cameraPreset(type: string): VideoClip["camera"] {
+  const zoom = 1.12;
+  switch (type) {
+    case "camera_hold": return { type, startScale: 1, endScale: 1, intensity: 0 };
+    case "slow_push": return { type, startScale: 1, endScale: zoom, intensity: 1 };
+    case "slow_pull": return { type, startScale: zoom, endScale: 1, intensity: 1 };
+    default: return { type, startScale: zoom, endScale: zoom, intensity: 1 };
+  }
+}
+
+function AudioInspector({
+  kind,
+  clip,
+  onChange,
+}: {
+  kind: "VOICE" | "MUSIC" | "SFX" | "AMBIENT";
+  clip: AudioClip;
+  onChange: (gain: number) => void;
+}) {
   return (
     <div className="space-y-3">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -548,7 +839,48 @@ function AudioInspector({ kind, clip }: { kind: "VOICE" | "MUSIC" | "SFX"; clip:
       <div>
         <Field label="Source" value={clip.source.title || clip.source.provider} />
         <Field label="Timeline" value={`${fmt(clip.start)} → ${fmt(clip.end)}`} />
-        <Field label="Gain" value={clip.gain.toFixed(2)} />
+      </div>
+      <Slider label="Gain" min={0} max={2} step={0.05} value={clip.gain} onChange={onChange} />
+      {kind === "VOICE" && (
+        <p className="text-[10px] text-slate-500 leading-relaxed">
+          The narration is the permanent voiceover. Music and ambience duck underneath it
+          automatically — you do not need to lower them by hand.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * §12 — a graphic, shown with its payload.
+ *
+ * Read-only on purpose. A location card's coordinates and a chart's series are the planner's
+ * decisions, and an editor that let them be typed over by hand would be inviting a graphic that
+ * says one thing and draws another. What a person CAN change is the words, through the text route.
+ */
+function GraphicInspector({ graphic }: { graphic: GraphicElement }) {
+  const drawn = Boolean(graphic.label?.trim());
+  return (
+    <div className="space-y-3">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
+        <TypeIcon className="w-4 h-4 text-rose-400" /> {graphic.graphicType.replace(/_/g, " ")}
+      </h3>
+      {!drawn && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+          <p className="text-[11px] text-amber-200/90">
+            This renderer draws graphics that are words on screen. This one is not, so it is kept on
+            the timeline and left out of the render.
+          </p>
+        </div>
+      )}
+      <div>
+        {graphic.label && <Field label="Label" value={graphic.label} />}
+        <Field label="Timeline" value={`${fmt(graphic.start)} → ${fmt(graphic.end)}`} />
+        {graphic.reason && <Field label="Planned because" value={graphic.reason} />}
+        {Object.entries(graphic.data).slice(0, 6).map(([k, v]) => (
+          <Field key={k} label={k} value={typeof v === "object" ? JSON.stringify(v) : String(v)} />
+        ))}
       </div>
     </div>
   );
@@ -560,7 +892,7 @@ function TextInspector({
   element,
   onChange,
 }: {
-  kind: "CAPTIONS" | "TEXT" | "GRAPHICS";
+  kind: "CAPTIONS" | "TEXT";
   element: TextElement;
   onChange: (patch: Partial<TextElement>) => void;
 }) {

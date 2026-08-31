@@ -229,13 +229,23 @@ describe("§10 — progress is a real fraction of real phases", () => {
     expect(progressForPhase("completed")).toBe(100);
   });
 
-  it("the numbers come from the PHASE LIST, so no percentage is made up", () => {
+  it("EVERY number is position-in-the-list, so none of them can be hand-picked", () => {
     /**
-     * The check that this is a fraction rather than a guess: rendering is the fourth of six
-     * phases, so it is exactly 3/5. If anyone ever hard-codes a nicer-looking number here, this
-     * fails.
+     * The check that these are fractions rather than guesses.
+     *
+     * An earlier version asserted one hard-coded value (3/5 for "rendering"), and RONDE 148 added
+     * "planning" and "validating" to the list — so the test failed while the code was right. The
+     * assertion now covers EVERY phase against its own index, which still catches the thing it was
+     * written to catch (a hand-written table of nicer-looking numbers) and no longer breaks when a
+     * phase is legitimately added.
      */
-    expect(progressForPhase("rendering")).toBe(Math.round((3 / 5) * 100));
+    const last = RENDER_PHASES.length - 1;
+    RENDER_PHASES.forEach((phase, i) => {
+      expect(progressForPhase(phase), phase).toBe(Math.round((i / last) * 100));
+    });
+    // And the list really is the render's phases, not a decorative constant.
+    expect(RENDER_PHASES).toContain("rehydrating");
+    expect(RENDER_PHASES).toContain("uploading");
   });
 });
 
