@@ -5,6 +5,8 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { resolveAppOrigin } from "./_core/appUrl";
 import { systemRouter } from "./_core/systemRouter";
+import { timelineRouter } from "./timelineRouter";
+import { requireVideoAccess } from "./videoAccess";
 import {
   adminProcedure,
   protectedProcedure,
@@ -22,7 +24,6 @@ import {
   normalizeStoredError,
   pipelineError,
 } from "@shared/appErrors";
-import type { TrpcContext } from "./_core/context";
 import type { Video } from "../drizzle/schema";
 import { invokeLLM } from "./_core/llm";
 import { describeStripeKeyProblem, stripeKeyProblem, stripeSecretKeyFromEnv } from "./_core/env";
@@ -230,16 +231,13 @@ function readEnableSubtitles(video: { enableSubtitles?: number | null }): boolea
   return video.enableSubtitles !== 0;
 }
 
-function requireVideoAccess(
-  video: Video | null | undefined,
-  ctx: TrpcContext & { user: NonNullable<TrpcContext["user"]> }
-): Video {
-  if (!video) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
-  if (video.userId !== ctx.user.id && ctx.user.role !== "admin") {
-    throw appTrpcError("FORBIDDEN", APP_ERROR.FORBIDDEN_RESOURCE, "You do not have access to this resource");
-  }
-  return video;
-}
+/**
+ * RONDE 148 — moved to `videoAccess.ts` so the editor's router can use the SAME check.
+ *
+ * It could not import this one: routers.ts mounts that router, so the import would be a cycle. The
+ * alternative was a second copy of the ownership rule, and two ownership checks drift until one of
+ * them is looser than the other. Behaviour is unchanged, including both error codes.
+ */
 
 
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
@@ -910,6 +908,11 @@ async function _runVideoGeneration(
 
 export const appRouter = router({
   system: systemRouter,
+  /**
+   * RONDE 148 — the editor. Its own module because these procedures share one contract worth
+   * reading in one piece: get never writes, save never overwrites, render never renders.
+   */
+  timeline: timelineRouter,
   auth: router({
     me: publicProcedure.query((opts) => (opts.ctx.user ? sanitizeUser(opts.ctx.user) : null)),
 

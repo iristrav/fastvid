@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { NicheRequestsDashboardCard } from "@/components/niche/DashboardNicheRequests";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
+import { VideoEditor } from "@/components/VideoEditor";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -451,7 +452,12 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
 }
 
 // ─── Video Detail Modal ───────────────────────────────────────────────────────
-function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () => void }) {
+function VideoDetailModal({ videoId, onClose, onEdit }: {
+  videoId: number;
+  onClose: () => void;
+  /** RONDE 148 §12 — hand the video to the editor. */
+  onEdit: (videoId: number) => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { data: video, isLoading } = trpc.video.get.useQuery({ id: videoId });
   // Fetch a direct presigned CloudFront URL for video playback (bypasses 307 redirect)
@@ -525,13 +531,27 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                     <Play className="w-4 h-4 text-green-400" /> Your Video
                   </h3>
-                  <a
-                    href={`/api/download/video/${video.id}`}
-                    download={`${(video.title ?? `fastvid-${formatVideoId(video.id)}`).replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || `fastvid-${formatVideoId(video.id)}`}.mp4`}
-                    className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Download MP4
-                  </a>
+                  <div className="flex items-center gap-2">
+                    {/*
+                      RONDE 148 §12 — the way in.
+                      Only for a completed video: there is nothing to edit until a render has
+                      produced a manifest, and offering the button earlier would open an empty
+                      editor and teach people the feature is broken.
+                    */}
+                    <button
+                      onClick={() => onEdit(video.id)}
+                      className="flex items-center gap-1.5 text-xs text-purple-300 hover:text-purple-200 transition-colors px-2.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/20"
+                    >
+                      <Pencil className="w-3.5 h-3.5" /> Edit video
+                    </button>
+                    <a
+                      href={`/api/download/video/${video.id}`}
+                      download={`${(video.title ?? `fastvid-${formatVideoId(video.id)}`).replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || `fastvid-${formatVideoId(video.id)}`}.mp4`}
+                      className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Download MP4
+                    </a>
+                  </div>
                 </div>
                 {directVideoUrl ? (
                   <video
@@ -779,6 +799,8 @@ export default function Dashboard() {
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
   const [enableSubtitles, setEnableSubtitles] = useState(false);
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
+  /** RONDE 148 — which video the editor is open on. Separate from viewing: only one is up at a time. */
+  const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
 
   const utils = trpc.useUtils();
 
@@ -1147,7 +1169,21 @@ export default function Dashboard() {
 
       {/* ── Video Detail Modal ── */}
       {viewingVideoId !== null && (
-        <VideoDetailModal videoId={viewingVideoId} onClose={() => setViewingVideoId(null)} />
+        <VideoDetailModal
+          videoId={viewingVideoId}
+          onClose={() => setViewingVideoId(null)}
+          onEdit={(id) => {
+            // RONDE 148 §12 — the detail modal closes as the editor opens, so a click on the
+            // editor's backdrop does not land on a modal still sitting behind it.
+            setViewingVideoId(null);
+            setEditingVideoId(id);
+          }}
+        />
+      )}
+
+      {/* ── RONDE 148 — the editor ── */}
+      {editingVideoId !== null && (
+        <VideoEditor videoId={editingVideoId} onClose={() => setEditingVideoId(null)} />
       )}
 
     </DashboardShell>

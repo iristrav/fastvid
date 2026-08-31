@@ -43,7 +43,7 @@ import {
  * is how a timeline passes validation and dies ten minutes into the render.
  */
 import { identityIsRehydratable } from "./assetIdentity";
-import { providerIsRehydratable } from "./assetRehydrator";
+import { identityHasRehydrationRoute } from "./assetRehydrator";
 
 export type TimelineIssueCode =
   | "negative_duration"
@@ -276,12 +276,16 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
       start: clip.timelineStart, end: clip.timelineEnd,
       reason: `no way to fetch this asset: ${where}`,
     });
-  } else if (!providerIsRehydratable(clip.source.provider)) {
+  } else if (!identityHasRehydrationRoute(clip.source)) {
     /**
      * Separate branch, separate sentence: the handle is fine and the PROVIDER is the problem. A
      * clip that says "some_new_api + a media URL" looks complete and is not recoverable, because
      * no route was ever written for that provider — and the operator needs to be told which of the
      * two it is, not just that something is missing.
+     *
+     * The question goes to the IDENTITY rather than the provider name, so an archive clip carrying
+     * its archive's slug is judged on the fact that we hold the file — see
+     * `identityHasRehydrationRoute`.
      */
     issues.push({
       code: "missing_asset", track: "VIDEO", elementId: clip.id,

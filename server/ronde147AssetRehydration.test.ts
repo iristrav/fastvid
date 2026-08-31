@@ -27,6 +27,7 @@ import {
   cacheIdentityKey,
   mediaIsUsable,
   probeMediaFacts,
+  identityHasRehydrationRoute,
   providerIsRehydratable,
   rehydrateAsset,
   rehydrateTimelineAssets,
@@ -354,6 +355,52 @@ describe("TEST 9 — an unauthorised YouTube video is refused, not substituted",
 });
 
 /* ═══════════════════════ TEST 8 — missing identity ═══════════════════════ */
+
+/**
+ * RONDE 148 REGRESSION — an ARCHIVE asset is judged on the file we hold, not on its slug.
+ *
+ * Found by RONDE 148's shot-replacement test, which put a real archive slug into a clip and
+ * watched the render refuse a file sitting on our own disk. `REHYDRATABLE_PROVIDERS` is a fixed
+ * list; archive slugs are data an operator types ("wwii_archive", "nara_films"), so no archive
+ * clip could ever match it — while `archiveAssetId` is the strongest handle there is, because it
+ * means this system ingested the media and serves it itself.
+ */
+describe("RONDE 148 — an archive id is a route on its own", () => {
+  it("an archive slug that is not in the provider list is STILL rehydratable", () => {
+    expect(providerIsRehydratable("wwii_archive")).toBe(false);
+    expect(
+      identityHasRehydrationRoute({ provider: "wwii_archive", archiveAssetId: 4242 })
+    ).toBe(true);
+  });
+
+  it("and without an archive id, the provider list still decides", () => {
+    expect(identityHasRehydrationRoute({ provider: "wwii_archive", mediaUrl: "https://x/y.mp4" })).toBe(false);
+    expect(identityHasRehydrationRoute({ provider: "loc", mediaUrl: "https://x/y.mp4" })).toBe(true);
+  });
+
+  it("REAL I/O: an archive clip with an unlisted slug is recovered from our own storage", async () => {
+    const result = await rehydrateAsset({
+      identity: { provider: "wwii_archive", archiveAssetId: 4242, title: "Landing craft" },
+      workDir: path.join(ROOT, "slug_archive"),
+      deps: {
+        download: async () => false, // no external fetch is allowed to happen
+        archiveAsset: async (id) => ({
+          storageUrl: `/local-storage/archive/${id}.mp4`,
+          storageKey: `archive/${id}.mp4`,
+          mimeType: "video/mp4",
+        }),
+        readStorage: async (_url, dest) => {
+          fs.copyFileSync(REAL_MP4, dest);
+          return true;
+        },
+      },
+    });
+    expect(result.status, result.status === "failed" ? result.errorMessage : "").toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.downloaded).toBe(false);
+    expect(result.hasVideoStream).toBe(true);
+  });
+});
 
 describe("TEST 8 — a missing identity is an explicit error", () => {
   it("REHYDRATION_IDENTITY_MISSING, and nothing is attempted", async () => {

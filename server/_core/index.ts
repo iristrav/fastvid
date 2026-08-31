@@ -1192,6 +1192,9 @@ recoverStuckPipelines()
     }
     const { startVideoQueueWorker } = await import("../queue");
     startVideoQueueWorker();
+    // RONDE 148 — the same process that runs generation jobs also runs editor re-renders.
+    const { startRenderJobWorker } = await import("../renderJobWorker");
+    startRenderJobWorker();
     // Only relevant when this process actually runs jobs — see worker.ts for why this exists
     // (a render killed from outside the process never reaches its own cleanup).
     const { sweepStaleWorkDirs } = await import("../videoPipeline");

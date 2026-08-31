@@ -12,7 +12,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { AssetSourceIdentity } from "./projectTimeline";
 
@@ -1234,6 +1234,238 @@ export async function getVideoScenes(id: number): Promise<EditorScene[] | null> 
   const result = await db.select({ videoScenes: videos.videoScenes }).from(videos).where(eq(videos.id, id)).limit(1);
   if (!result.length || !result[0].videoScenes) return null;
   return result[0].videoScenes as EditorScene[];
+}
+
+/* ═══════════════════════ RONDE 148 — the editor's timeline and its renders ═══════════════════════ */
+
+/** The stored timeline exactly as written, plus the version the row claims for it. */
+export async function getStoredTimeline(
+  id: number
+): Promise<{ raw: unknown; timelineVersion: number } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ videoTimeline: videos.videoTimeline, timelineVersion: videos.timelineVersion })
+    .from(videos)
+    .where(eq(videos.id, id))
+    .limit(1);
+  if (!rows.length) return null;
+  return { raw: rows[0].videoTimeline, timelineVersion: rows[0].timelineVersion ?? 0 };
+}
+
+/**
+ * Store a timeline at a version, and only if the row still holds the version it came from.
+ *
+ * The `WHERE timelineVersion = expected` is what makes the optimistic check real rather than
+ * advisory: two saves racing on the same version both pass the read-side check in
+ * `nextTimelineToStore`, and this write lets exactly one of them through. The loser gets
+ * `saved: false` and its caller reports the conflict — nobody's edits are silently lost.
+ */
+export async function saveVideoTimeline(params: {
+  id: number;
+  timeline: unknown;
+  expectedVersion: number;
+  nextVersion: number;
+}): Promise<{ saved: boolean }> {
+  const db = await getDb();
+  if (!db) return { saved: false };
+  const result = await db
+    .update(videos)
+    .set({ videoTimeline: params.timeline, timelineVersion: params.nextVersion })
+    .where(and(eq(videos.id, params.id), eq(videos.timelineVersion, params.expectedVersion)));
+  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
+  // A driver that does not report rowsAffected must not be read as "it worked" — re-read instead.
+  if (typeof affected === "number") return { saved: affected > 0 };
+  const after = await getStoredTimeline(params.id);
+  return { saved: after?.timelineVersion === params.nextVersion };
+}
+
+/**
+ * Claim the next render attempt for a video.
+ *
+ * Bumps `renderAttempt` and returns the new value, which becomes the job's fencing token. Done
+ * before the job row is inserted so that a job always carries a number the video has already seen
+ * — the ordering `mayPublishRender` relies on.
+ */
+export async function claimRenderAttempt(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  await db
+    .update(videos)
+    .set({ renderAttempt: sql`${videos.renderAttempt} + 1` })
+    .where(eq(videos.id, videoId));
+  const rows = await db
+    .select({ renderAttempt: videos.renderAttempt })
+    .from(videos)
+    .where(eq(videos.id, videoId))
+    .limit(1);
+  return rows.length ? rows[0].renderAttempt : null;
+}
+
+export async function getVideoRenderAttempt(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ renderAttempt: videos.renderAttempt })
+    .from(videos)
+    .where(eq(videos.id, videoId))
+    .limit(1);
+  return rows.length ? rows[0].renderAttempt : null;
+}
+
+export async function createRenderJob(params: {
+  videoId: number;
+  requestedByUserId?: number | null;
+  timelineVersion: number;
+  attempt: number;
+}): Promise<RenderJob | null> {
+  const db = await getDb();
+  if (!db) return null;
+  await db.insert(renderJobs).values({
+    videoId: params.videoId,
+    requestedByUserId: params.requestedByUserId ?? null,
+    timelineVersion: params.timelineVersion,
+    attempt: params.attempt,
+    status: "queued",
+    progressStep: "queued",
+    progress: 0,
+  });
+  const rows = await db
+    .select()
+    .from(renderJobs)
+    .where(eq(renderJobs.videoId, params.videoId))
+    .orderBy(desc(renderJobs.id))
+    .limit(1);
+  return rows.length ? rows[0] : null;
+}
+
+export async function getRenderJobById(id: number): Promise<RenderJob | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(renderJobs).where(eq(renderJobs.id, id)).limit(1);
+  return rows.length ? rows[0] : null;
+}
+
+/** Jobs for one video, newest first. The editor shows the most recent; the rest are history. */
+export async function listRenderJobsForVideo(videoId: number, limit = 10): Promise<RenderJob[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(renderJobs)
+    .where(eq(renderJobs.videoId, videoId))
+    .orderBy(desc(renderJobs.id))
+    .limit(limit);
+}
+
+export async function listActiveRenderJobsForVideo(videoId: number): Promise<RenderJob[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(renderJobs)
+    .where(and(eq(renderJobs.videoId, videoId), inArray(renderJobs.status, ["queued", "running"])));
+}
+
+/**
+ * Take one queued job, and only if it is still queued.
+ *
+ * The `WHERE status = 'queued'` is the claim: two workers polling at the same instant both see the
+ * row, both try to move it, and MySQL lets one win. The loser gets rowsAffected 0 and moves on —
+ * the same claim-by-update pattern `claimQueuedVideo` already uses for the generation queue, so
+ * there is one concurrency idiom in this codebase rather than two.
+ */
+export async function claimQueuedRenderJob(jobId: number): Promise<RenderJob | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db
+    .update(renderJobs)
+    .set({ status: "running", progressStep: "rehydrating", startedAt: new Date() })
+    .where(and(eq(renderJobs.id, jobId), eq(renderJobs.status, "queued")));
+  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
+  if (typeof affected === "number" && affected === 0) return null;
+  const job = await getRenderJobById(jobId);
+  return job && job.status === "running" ? job : null;
+}
+
+export async function listQueuedRenderJobs(limit = 20): Promise<RenderJob[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(renderJobs)
+    .where(eq(renderJobs.status, "queued"))
+    .orderBy(asc(renderJobs.createdAt), asc(renderJobs.id))
+    .limit(limit);
+}
+
+export async function updateRenderJobProgress(
+  id: number,
+  progressStep: string,
+  progress: number
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(renderJobs).set({ progressStep, progress }).where(eq(renderJobs.id, id));
+}
+
+export async function finishRenderJob(params: {
+  id: number;
+  status: "completed" | "failed" | "cancelled";
+  outputUrl?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  progressStep?: string;
+  progress?: number;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(renderJobs)
+    .set({
+      status: params.status,
+      outputUrl: params.outputUrl ?? null,
+      errorCode: params.errorCode ?? null,
+      // Truncated: an ffmpeg failure can carry a very long tail and this column is a `text`.
+      errorMessage: params.errorMessage ? params.errorMessage.slice(0, 4000) : null,
+      progressStep: params.progressStep ?? params.status,
+      progress: params.progress ?? (params.status === "completed" ? 100 : 0),
+      completedAt: new Date(),
+    })
+    .where(eq(renderJobs.id, params.id));
+}
+
+/**
+ * Publish a render's output as the video's current edit — fenced.
+ *
+ * The `WHERE renderAttempt = attempt` is the second half of `mayPublishRender`: the pure function
+ * decides, and this makes the decision atomic against a job that is publishing at the same moment.
+ * A superseded job's UPDATE matches no rows and changes nothing, which is exactly the required
+ * outcome — the newer render's output stays.
+ */
+export async function publishEditedVideo(params: {
+  videoId: number;
+  attempt: number;
+  editedVideoUrl: string;
+  timelineVersion: number;
+}): Promise<{ published: boolean }> {
+  const db = await getDb();
+  if (!db) return { published: false };
+  const result = await db
+    .update(videos)
+    .set({
+      editedVideoUrl: params.editedVideoUrl,
+      editedVideoTimelineVersion: params.timelineVersion,
+    })
+    .where(and(eq(videos.id, params.videoId), eq(videos.renderAttempt, params.attempt)));
+  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
+  if (typeof affected === "number") return { published: affected > 0 };
+  const rows = await db
+    .select({ url: videos.editedVideoUrl })
+    .from(videos)
+    .where(eq(videos.id, params.videoId))
+    .limit(1);
+  return { published: rows[0]?.url === params.editedVideoUrl };
 }
 
 export type VideoEditorSettings = {

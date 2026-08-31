@@ -117,6 +117,25 @@ export function providerIsRehydratable(provider: string): boolean {
   return REHYDRATABLE_PROVIDERS.includes(provider.trim().toLowerCase());
 }
 
+/**
+ * Is there a route to this asset — by provider OR because we hold the file ourselves?
+ *
+ * RONDE 148 found the gap the provider list alone leaves. An archive clip carries the archive's
+ * SLUG as its provider ("wwii_archive", "nara_films", whatever an operator named it), which is
+ * never in `REHYDRATABLE_PROVIDERS` and never can be: the list is fixed and the slugs are data.
+ * Judging those clips on the name refused the one kind of asset that is guaranteed recoverable —
+ * `archiveAssetId` means this system ingested the file and serves it from its own storage, which
+ * is the strongest handle there is.
+ *
+ * So the question is asked about the IDENTITY, not the name: an archive id is a route on its own,
+ * and the provider list decides the rest. Caught by RONDE 148's own replacement test, which put a
+ * real archive slug in and watched the render refuse a file sitting on our own disk.
+ */
+export function identityHasRehydrationRoute(identity: AssetSourceIdentity): boolean {
+  if (identity.archiveAssetId != null) return true;
+  return providerIsRehydratable(identity.provider);
+}
+
 /** Providers whose re-fetch needs a credential this process may not have. */
 const PROVIDERS_NEEDING_AUTH: ReadonlyArray<string> = ["pexels", "pixabay"];
 
@@ -302,7 +321,7 @@ export async function rehydrateAsset(params: {
       `provider=${provider} providerAssetId=${assetId ?? "null"} — no durable handle was recorded`
     );
   }
-  if (!providerIsRehydratable(provider)) {
+  if (!identityHasRehydrationRoute(identity)) {
     return fail(identity, "REHYDRATION_UNSUPPORTED_PROVIDER", `provider=${provider}`);
   }
 
@@ -384,8 +403,16 @@ export async function rehydrateAsset(params: {
    *
    * This system holds the file. Reading it from our own storage is the fastest and the only route
    * that cannot fail because someone else's API is down or has changed.
+   *
+   * RONDE 148 — the condition is `archiveAssetId != null` ALONE, not the provider name.
+   *
+   * It used to also require provider "curated" or "archive", which silently excluded every real
+   * archive clip: `videoEditorEdits` and the editor both record the ARCHIVE'S SLUG as the provider
+   * ("wwii_archive", "nara_films"), because that is the proven origin and the lineage ledger wants
+   * the truth there. So a clip whose bytes were sitting on our own disk fell through to the
+   * external routes, found no fetchable URL, and failed. The id is the route; the name is not.
    */
-  if ((provider === "curated" || provider === "archive") && identity.archiveAssetId != null) {
+  if (identity.archiveAssetId != null) {
     const row = await deps.archiveAsset?.(identity.archiveAssetId).catch(() => null);
     const storageUrl = row?.storageUrl ?? identity.canonicalUrl ?? null;
     if (!row && !identity.canonicalUrl) {

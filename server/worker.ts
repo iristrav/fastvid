@@ -238,6 +238,17 @@ async function main() {
     clipHint: clipStatus.hint,
   }).catch((e) => console.warn("[Worker] Heartbeat (post-CLIP) failed:", (e as Error).message));
   startVideoQueueWorker();
+  /**
+   * RONDE 148 — render jobs poll alongside the generation queue, in the same process.
+   *
+   * A separate poll loop rather than a stage inside the generation queue, because the two have
+   * nothing in common but ffmpeg: a render job has no script, no TTS, no sourcing and no per-user
+   * depth limit, and folding it into `processQueueTick` would put an edit behind every video
+   * waiting to be generated. Its own concurrency cap (MAX_CONCURRENT_RENDER_JOBS, 1 by default)
+   * keeps it from competing with a generation run for the box.
+   */
+  const { startRenderJobWorker } = await import("./renderJobWorker");
+  startRenderJobWorker();
   const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
   scheduleClipEmbeddingBackfill();
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");
