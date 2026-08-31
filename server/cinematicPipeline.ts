@@ -1,0 +1,289 @@
+/**
+ * RONDE 150 §2/§3 — the cinematic route, finally connected.
+ *
+ * ── What was actually wrong ──────────────────────────────────────────────────────────────────
+ *
+ * Nothing. Every part worked and nothing called them.
+ *
+ * `cinematicEditingEngine/featureFlags.ts` says so in its own words: "Nothing in this directory is
+ * called from the live render pipeline — it only produces an Edit Decision List (EDL), never
+ * renders". `aiDirector/featureFlags.ts` says the same. Both flags gated code that was already
+ * unreachable, so turning them on changed nothing.
+ *
+ * This module is the call that was missing. It is short on purpose: every decision below is made
+ * by a planner that already existed and was already tested, and the only thing here is the order
+ * they run in and the shape of what is handed between them.
+ *
+ *     scenes + beats + adopted clips
+ *         → runAIDirector          scene-level narrative judgement          (§3)
+ *         → toDirectorGuidance     one scene's judgement, as engine input
+ *         → generateEDL            per-beat shot/camera/transition/caption/ (§2)
+ *                                  graphics/effects/sound decisions
+ *         → translateEdl           the EDL becomes a ProjectTimeline
+ *
+ * ── §4: ONE timeline ─────────────────────────────────────────────────────────────────────────
+ *
+ * The output is a `ProjectTimeline` and nothing else. No parallel document, no engine-specific
+ * state that outlives this function. Everything downstream — validator, rehydrator, renderer,
+ * editor — reads that one timeline, exactly as it does for a video edited by hand.
+ *
+ * ── §26: this must not be blocked by graphics ────────────────────────────────────────────────
+ *
+ * "Cinematic Engine live > perfecte Remotion graphics." So this module knows nothing about
+ * Remotion. It produces a timeline; how that timeline is drawn is somebody else's decision, made
+ * later, and a graphic that cannot be drawn is reported by the renderer rather than blocking the
+ * plan from being made.
+ */
+import {
+  cinematicEditingEngineEnabled,
+  generateEDL,
+  type CinematicEditingInput,
+} from "./cinematicEditingEngine";
+import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
+import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
+import type { DirectorOutput } from "./aiDirector/types";
+import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
+import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
+import type { TtsWordTiming } from "./voiceTtsAlignment";
+
+/* ═══════════════════════ what a caller must supply ═══════════════════════ */
+
+/**
+ * One beat, with everything the planners need and nothing they do not.
+ *
+ * `identity` is the beat's ADOPTED clip from the lineage ledger — the same identity the rehydrator
+ * will later use to fetch the file again. It is required rather than optional because a beat with
+ * no proven source cannot be rendered from, and discovering that after the plan is made would mean
+ * planning around a shot that does not exist.
+ */
+export type CinematicBeatInput = {
+  input: CinematicEditingInput;
+  identity: AssetSourceIdentity;
+};
+
+export type CinematicSceneInput = {
+  director: SceneInput;
+  beats: CinematicBeatInput[];
+  /**
+   * Where this scene starts on the WHOLE video's clock, in seconds.
+   *
+   * It lives on the SCENE and not on the beat, because that is the unit the engine's own times are
+   * measured against: `CinematicEditingInput.beatVoiceStartSec` is documented as "within the
+   * scene", and every number an `EditDecision` produces is built from it. A per-beat offset would
+   * be added on top of a beat offset that is already there — see the note on
+   * `EdlTranslationInput.sceneOffsetSec`, which is the fault this shape makes unrepresentable.
+   */
+  sceneOffsetSec: number;
+};
+
+export type CinematicPipelineParams = {
+  videoId: number;
+  scenes: CinematicSceneInput[];
+  /** The persisted narration, when there is one. Never regenerated — RONDE 146 stores it. */
+  voice?: { url: string; durationSec: number } | null;
+  /** The measured TTS alignment, carried so captions land on real word boundaries. */
+  words?: TtsWordTiming[];
+  format?: ProjectTimeline["format"];
+};
+
+/* ═══════════════════════ what it produces ═══════════════════════ */
+
+export type CinematicPipelineResult = {
+  timeline: ProjectTimeline;
+  edl: EDL;
+  /** The Director's own output, kept so a caller can log or store WHY the edit looks like it does. */
+  director: DirectorOutput | null;
+  /**
+   * Everything a planner asked for that this renderer cannot execute, with the planner's own
+   * reason. §2: "NIETS mag stil verdwijnen."
+   */
+  unsupported: string[];
+  /** How the route was configured for this run, for the render log. */
+  used: { cinematicEngine: boolean; aiDirector: boolean };
+};
+
+/* ═══════════════════════ the route ═══════════════════════ */
+
+/**
+ * Should a video be planned by the cinematic engine?
+ *
+ * A single named question rather than an inline `process.env` check, so the answer is findable and
+ * so the pipeline can log which route it took. The flag stays OFF by default: §2 asks for the
+ * switch-over to be safe, and safe means an operator turns it on deliberately.
+ */
+export function cinematicRouteEnabled(): boolean {
+  return cinematicEditingEngineEnabled();
+}
+
+/**
+ * Plan a video the cinematic way.
+ *
+ * ── The AI Director's part, and why it is per-scene ──────────────────────────────────────────
+ *
+ * `runAIDirector` reads ALL the scenes at once, because its judgements are about the video as a
+ * whole: where the hook is, how energy should rise and fall, which moments deserve attention. Its
+ * per-scene decision is then narrowed to `DirectorGuidance` and handed to the engine for that
+ * scene's beats.
+ *
+ * That is the existing contract — `toDirectorGuidance` already exists and `CinematicEditingInput`
+ * already has a `directorGuidance` field marked "entirely additive". This function does not invent
+ * a way to combine them; it uses the one that was designed for it.
+ *
+ * ── With AI_DIRECTOR off ─────────────────────────────────────────────────────────────────────
+ *
+ * `directorGuidance` is simply absent and every planner behaves exactly as it does today. That is
+ * the flag's own promise ("every existing caller that omits it keeps its exact current behavior"),
+ * so both settings produce a valid video and only one of them is advised.
+ */
+export function runCinematicPipeline(params: CinematicPipelineParams): CinematicPipelineResult {
+  const useDirector = aiDirectorEnabled();
+
+  /**
+   * The Director runs FIRST and over everything, because pacing is a property of the whole video.
+   * A per-scene call would make each scene decide its own energy in isolation, which is precisely
+   * the flat rhythm the Director exists to fix.
+   */
+  const director: DirectorOutput | null = useDirector
+    ? runAIDirector(params.scenes.map((s) => s.director))
+    : null;
+
+  const inputs: CinematicEditingInput[] = [];
+  const identities: AssetSourceIdentity[] = [];
+  const offsets: number[] = [];
+
+  params.scenes.forEach((scene, sceneIndex) => {
+    const decision = director?.decisions[sceneIndex];
+    const guidance = decision ? toDirectorGuidance(decision) : undefined;
+    scene.beats.forEach((beat, beatIndex) => {
+      inputs.push({
+        ...beat.input,
+        /**
+         * Both are set HERE rather than trusted from the caller, because they are facts about
+         * position that this function knows and a caller could get wrong. `beatIndexInScene` is
+         * what lets the engine look up the matching entry in the Director's shot order.
+         */
+        beatIndexInScene: beatIndex,
+        ...(guidance ? { directorGuidance: guidance } : {}),
+      });
+      identities.push(beat.identity);
+      /** One offset per scene, repeated per beat, because the adapter works decision by decision. */
+      offsets.push(scene.sceneOffsetSec);
+    });
+  });
+
+  /** The engine's own chain: pacing → shot → camera → transition → timing → captions → … */
+  const edl = generateEDL(inputs);
+
+  /**
+   * The EDL becomes the timeline through the adapter that already exists, which makes no editorial
+   * decisions of its own and REPORTS whatever it cannot carry across.
+   */
+  const translationInputs: EdlTranslationInput[] = edl.decisions.map(
+    (decision: EditDecision, i: number) => ({
+      decision,
+      sceneOffsetSec: offsets[i] ?? 0,
+      identity: identities[i]!,
+    })
+  );
+  const { timeline, unsupported } = translateEdl({
+    videoId: params.videoId,
+    inputs: translationInputs,
+    format: params.format,
+    voice: params.voice ?? null,
+  });
+
+  return {
+    timeline,
+    edl,
+    director,
+    unsupported,
+    used: { cinematicEngine: true, aiDirector: useDirector },
+  };
+}
+
+/* ═══════════════════════ §2 — proving nothing was lost ═══════════════════════ */
+
+/**
+ * Compare the EDL with the timeline built from it, and name every editorial decision that did not
+ * survive the crossing.
+ *
+ * ── Why this is production code, not only a test ─────────────────────────────────────────────
+ *
+ * §2 asks for an integration test, and there is one. But a test proves the translation was lossless
+ * for the decisions someone wrote down; this runs on the REAL edit, so a combination no test
+ * covered still gets an answer, and the answer appears in the render log rather than in a silence.
+ *
+ * It deliberately compares COUNTS and INTENT rather than deep equality: the two documents have
+ * different shapes on purpose (beat-relative vs absolute time), so a deep comparison would be all
+ * noise. What must hold is that every decision that was made is still represented.
+ */
+export function lostEditorialIntent(edl: EDL, timeline: ProjectTimeline): string[] {
+  const lost: string[] = [];
+  const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+  const clips = track && track.kind === "VIDEO" ? track.clips : [];
+
+  if (clips.length !== edl.decisions.length) {
+    lost.push(
+      `the EDL made ${edl.decisions.length} shot decision(s) and the timeline has ${clips.length} clip(s)`
+    );
+  }
+
+  const captionCount = timeline.tracks
+    .filter((t) => t.kind === "CAPTIONS" || t.kind === "TEXT")
+    .reduce((n, t) => n + (t.kind === "CAPTIONS" ? t.captions.length : t.kind === "TEXT" ? t.texts.length : 0), 0);
+  const plannedCaptions = edl.decisions.reduce((n, d) => n + d.captions.length, 0);
+  if (captionCount < plannedCaptions) {
+    lost.push(`${plannedCaptions - captionCount} planned caption(s) are not on the timeline`);
+  }
+
+  const graphicsTrackRef = timeline.tracks.find((t) => t.kind === "GRAPHICS");
+  const graphicCount =
+    graphicsTrackRef && graphicsTrackRef.kind === "GRAPHICS" ? graphicsTrackRef.graphics.length : 0;
+  const plannedGraphics = edl.decisions.reduce((n, d) => n + d.motionGraphics.length, 0);
+  if (graphicCount < plannedGraphics) {
+    lost.push(`${plannedGraphics - graphicCount} planned motion graphic(s) are not on the timeline`);
+  }
+
+  const sfxTrack = timeline.tracks.find((t) => t.kind === "SFX");
+  const sfxCount = sfxTrack && sfxTrack.kind === "SFX" ? sfxTrack.clips.length : 0;
+  const plannedSounds = edl.decisions.reduce((n, d) => n + d.sounds.length, 0);
+  if (sfxCount < plannedSounds) {
+    lost.push(`${plannedSounds - sfxCount} planned sound effect(s) are not on the timeline`);
+  }
+
+  /**
+   * Per-clip intent. A count cannot catch these, and losing one produces a video that renders
+   * perfectly and is not the video the planners designed.
+   */
+  edl.decisions.forEach((decision, i) => {
+    const clip = clips[i];
+    if (!clip) return;
+    if (decision.camera.movement !== "camera_hold" && !clip.camera) {
+      lost.push(`beat ${decision.beatId}: camera "${decision.camera.movement}" did not reach the clip`);
+    }
+    if (decision.effects.length !== (clip.effects?.length ?? 0)) {
+      lost.push(`beat ${decision.beatId}: ${decision.effects.length} effect(s) planned, ${clip.effects?.length ?? 0} carried`);
+    }
+    if (clip.sourceIn !== decision.clip.trimStartSec) {
+      lost.push(`beat ${decision.beatId}: the planner's trim was not carried across`);
+    }
+  });
+
+  return lost;
+}
+
+/** One line per planned video, for the render log. Never a payload, never a URL. */
+export function formatCinematicPlan(result: CinematicPipelineResult): string {
+  const track = result.timeline.tracks.find((t) => t.kind === "VIDEO");
+  const clips = track && track.kind === "VIDEO" ? track.clips.length : 0;
+  const withCamera = track && track.kind === "VIDEO" ? track.clips.filter((c) => c.camera).length : 0;
+  const transitions =
+    track && track.kind === "VIDEO" ? track.clips.filter((c) => c.transitionIn !== "hard_cut").length : 0;
+  return (
+    `[CinematicPipeline] video=${result.timeline.videoId} ` +
+    `engine=${result.used.cinematicEngine} director=${result.used.aiDirector} ` +
+    `decisions=${result.edl.decisions.length} clips=${clips} cameras=${withCamera} ` +
+    `transitions=${transitions} duration=${result.timeline.durationSec.toFixed(2)}s ` +
+    `unsupported=${result.unsupported.length}`
+  );
+}

@@ -283,7 +283,14 @@ export type ClipInstruction = {
   trimStartSec: number;
   /** Seconds into the source asset where the used portion ends. */
   trimEndSec: number;
-  /** This clip's position on the beat's own timeline, seconds (0-based, not the whole video). */
+  /**
+   * This clip's position on the SCENE's timeline, seconds — not the beat's, and not the video's.
+   *
+   * RONDE 150 corrected this comment, which used to claim "0-based". It is only 0-based when the
+   * beat itself starts at 0: `planClipTiming` hands `beatVoiceStartSec` (documented on
+   * `CinematicEditingInput` as "within the scene") to `planSubBeatCuts`, which starts counting
+   * there. Anything turning these into whole-video times therefore adds ONE offset, the scene's.
+   */
   startSec: number;
   endSec: number;
   timingSource: "tts_word_alignment" | "proportional_estimate";

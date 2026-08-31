@@ -227,8 +227,20 @@ function styleFor(caption: CaptionInstruction): TextStyle {
 
 export type EdlTranslationInput = {
   decision: EditDecision;
-  /** Where this beat starts on the WHOLE video, seconds. The caller knows; this must not guess. */
-  beatOffsetSec: number;
+  /**
+   * Where this decision's SCENE starts on the whole video, seconds. The caller knows; this must
+   * not guess.
+   *
+   * RONDE 150 — this field used to be called `beatOffsetSec`, and the name was a trap. Every time
+   * value inside an `EditDecision` is SCENE-relative, not beat-relative: `planClipTiming` passes
+   * `beatVoiceStartSec` ("this beat's voice-over start time within the scene") straight into
+   * `planSubBeatCuts`, which begins its first cut at exactly that number. So a caller who read the
+   * old name literally and passed the beat's own start added the beat offset twice, producing a
+   * video of double the length with every clip drifting further from the narration — a fault that
+   * renders perfectly and is silently out of sync. One offset per scene, added to numbers that are
+   * already scene-relative, is the arithmetic that was always intended.
+   */
+  sceneOffsetSec: number;
   /** The permanent identity for the decision's chosen candidate, from the lineage ledger. */
   identity: AssetSourceIdentity;
 };
@@ -263,10 +275,10 @@ export function translateEdl(params: {
   const sfx: TimelineAudioClip[] = [];
   const graphics: TimelineGraphic[] = [];
 
-  for (const { decision, beatOffsetSec, identity } of params.inputs) {
+  for (const { decision, sceneOffsetSec, identity } of params.inputs) {
     const clip = decision.clip;
-    const start = beatOffsetSec + clip.startSec;
-    const end = beatOffsetSec + clip.endSec;
+    const start = sceneOffsetSec + clip.startSec;
+    const end = sceneOffsetSec + clip.endSec;
 
     const mapped = TRANSITION_MAP[decision.transitionIn.type] ?? null;
     if (mapped === null) {
@@ -314,8 +326,8 @@ export function translateEdl(params: {
       const el = {
         id: timelineElementId("cap", decision.beatId, caption.captionType, caption.startSec),
         text: caption.subtitle ? `${caption.text}\n${caption.subtitle}` : caption.text,
-        start: Number((beatOffsetSec + caption.startSec).toFixed(3)),
-        end: Number((beatOffsetSec + caption.endSec).toFixed(3)),
+        start: Number((sceneOffsetSec + caption.startSec).toFixed(3)),
+        end: Number((sceneOffsetSec + caption.endSec).toFixed(3)),
         style: styleFor(caption),
       };
       if (caption.position === "bottom-left" || caption.position === "bottom-right") {
@@ -332,8 +344,8 @@ export function translateEdl(params: {
       sfx.push({
         id: timelineElementId("sfx", decision.beatId, sound.soundType, sound.timeSec),
         source: { provider: "cinematic_audio", providerAssetId: sound.soundType },
-        start: Number((beatOffsetSec + sound.timeSec).toFixed(3)),
-        end: Number((beatOffsetSec + sound.timeSec + 1.5).toFixed(3)),
+        start: Number((sceneOffsetSec + sound.timeSec).toFixed(3)),
+        end: Number((sceneOffsetSec + sound.timeSec + 1.5).toFixed(3)),
         gain: Math.max(0, Math.min(1, sound.volume)),
         fadeInSec: sound.fadeInSec,
         fadeOutSec: sound.fadeOutSec,
@@ -353,8 +365,8 @@ export function translateEdl(params: {
         id: timelineElementId("gfx", decision.beatId, graphic.graphicType, graphic.startSec),
         graphicType: graphic.graphicType,
         data: graphic.data,
-        start: Number((beatOffsetSec + graphic.startSec).toFixed(3)),
-        end: Number((beatOffsetSec + graphic.startSec + graphic.durationSec).toFixed(3)),
+        start: Number((sceneOffsetSec + graphic.startSec).toFixed(3)),
+        end: Number((sceneOffsetSec + graphic.startSec + graphic.durationSec).toFixed(3)),
         label: graphicLabel(graphic.graphicType, graphic.data),
         reason: graphic.reason,
       });

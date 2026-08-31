@@ -404,7 +404,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
   it("the planner's trim points become sourceIn/sourceOut UNCHANGED", () => {
     const { timeline } = translateEdl({
       videoId: 1,
-      inputs: [{ decision: decision(), beatOffsetSec: 10, identity }],
+      inputs: [{ decision: decision(), sceneOffsetSec: 10, identity }],
     });
     const track = timeline.tracks.find((t) => t.kind === "VIDEO");
     const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
@@ -416,7 +416,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
     // The one thing the adapter computes, and it is arithmetic on the planner's own numbers.
     const { timeline } = translateEdl({
       videoId: 1,
-      inputs: [{ decision: decision(), beatOffsetSec: 10, identity }],
+      inputs: [{ decision: decision(), sceneOffsetSec: 10, identity }],
     });
     const track = timeline.tracks.find((t) => t.kind === "VIDEO");
     const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
@@ -428,7 +428,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
   it("the engine's transition and camera vocabularies map to the renderer's", () => {
     const { timeline } = translateEdl({
       videoId: 1,
-      inputs: [{ decision: decision(), beatOffsetSec: 0, identity }],
+      inputs: [{ decision: decision(), sceneOffsetSec: 0, identity }],
     });
     const track = timeline.tracks.find((t) => t.kind === "VIDEO");
     const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
@@ -447,7 +447,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
       videoId: 1,
       inputs: [{
         decision: decision({ transitionIn: { type: "film_burn", durationSec: 0.5, reason: "era shift" } }),
-        beatOffsetSec: 0,
+        sceneOffsetSec: 0,
         identity,
       }],
     });
@@ -472,7 +472,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
             { captionType: "date", text: "APRIL 1945", startSec: 0.5, endSec: 3, animation: "fade", position: "center", reason: "r" },
           ],
         }),
-        beatOffsetSec: 0,
+        sceneOffsetSec: 0,
         identity,
       }],
     });
@@ -498,7 +498,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
           motionGraphics: [{ graphicType: "map", data: {}, startSec: 0, durationSec: 2, reason: "r" }],
           effects: [{ effectType: "lens_flare", startSec: 0, durationSec: 1, intensity: 0.5, reason: "r" } as never],
         }),
-        beatOffsetSec: 0,
+        sceneOffsetSec: 0,
         identity,
       }],
     });
@@ -514,7 +514,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
         decision: decision({
           effects: [{ effectType: "glow", startSec: 0, durationSec: 1, intensity: 0.5, reason: "r" } as never],
         }),
-        beatOffsetSec: 0,
+        sceneOffsetSec: 0,
         identity,
       }],
     });
@@ -526,7 +526,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
   });
 
   it("the translation is DETERMINISTIC — same EDL, same timeline", () => {
-    const input = { decision: decision(), beatOffsetSec: 3, identity };
+    const input = { decision: decision(), sceneOffsetSec: 3, identity };
     const a = translateEdl({ videoId: 1, inputs: [input] });
     const b = translateEdl({ videoId: 1, inputs: [input] });
     expect(timelineDigest(b.timeline)).toBe(timelineDigest(a.timeline));
@@ -536,7 +536,7 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
   it("a persisted voiceover becomes the VOICE track", () => {
     const { timeline } = translateEdl({
       videoId: 1,
-      inputs: [{ decision: decision(), beatOffsetSec: 0, identity }],
+      inputs: [{ decision: decision(), sceneOffsetSec: 0, identity }],
       voice: { url: "/local-storage/videos/1/voiceover.mp3", durationSec: 12 },
     });
     const voice = timeline.tracks.find((t) => t.kind === "VOICE");
