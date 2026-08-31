@@ -74,6 +74,13 @@ type MigrationStatus = "clean" | "ghost" | "partial";
 
 interface SchemaObject {
   kind: "table" | "column" | "index" | "fk";
+  /**
+   * RONDE 178 — this object is TRANSFORMED by the migration, not created by it.
+   *
+   * A MODIFY/CHANGE COLUMN changes a column that already exists, so its existence proves nothing
+   * about whether the migration ran. See the ghost classification below for what that cost.
+   */
+  transform?: boolean;
   /** Table name context (empty for table/fk kinds when unknown) */
   table: string;
   /** Table name for 'table' kind; column/index/fk name otherwise */
@@ -208,17 +215,34 @@ function extractSchemaObjects(rawSql: string): SchemaObject[] {
     )
   ).forEach((m) => add({ kind: "column", table: m[1], name: m[2] }));
 
-  // ALTER TABLE `t` ... MODIFY [COLUMN] `col`
+  /**
+   * ALTER TABLE `t` ... MODIFY / CHANGE [COLUMN] `col`
+   *
+   * RONDE 178 — marked as a TRANSFORM, which is what took production down.
+   *
+   * These two were extracted exactly like an ADD COLUMN, and a column's existence was then read as
+   * "the migration already ran". For an ADD that inference is sound: the column is there because
+   * the migration put it there. For a MODIFY it is worthless — the column is there because the
+   * migration is about to change it, and it was there before too.
+   *
+   * So every MODIFY migration was classified GHOST, recorded as executed, and never run. Migration
+   * 0048 (durationSec int → float) was the first MODIFY this repository ever had, which is why a
+   * latent fault of this size had never fired: all 47 migrations before it were CREATE TABLE or
+   * ADD COLUMN. The schema validator then correctly found int where the code said float and aborted
+   * startup, on every boot, with no way to self-heal — the migration was already recorded, so the
+   * runner skipped it too.
+   */
   Array.from(
     rawSql.matchAll(/ALTER\s+TABLE\s+`([^`]+)`[^;]*?\bMODIFY\s+(?:COLUMN\s+)?`([^`]+)`/gi)
-  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2] }));
+  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2], transform: true }));
 
-  // ALTER TABLE `t` ... CHANGE [COLUMN] `old` `new` — check the NEW column name
+  // CHANGE renames as well as retypes; the new name may not exist yet, but the OLD one does, so
+  // presence is just as uninformative here.
   Array.from(
     rawSql.matchAll(
       /ALTER\s+TABLE\s+`([^`]+)`[^;]*?\bCHANGE\s+(?:COLUMN\s+)?`[^`]+`\s+`([^`]+)`/gi
     )
-  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2] }));
+  ).forEach((m) => add({ kind: "column", table: m[1], name: m[2], transform: true }));
 
   // ADD CONSTRAINT `name` FOREIGN KEY
   Array.from(rawSql.matchAll(/ADD\s+CONSTRAINT\s+`([^`]+)`\s+FOREIGN\s+KEY/gi)).forEach((m) =>
@@ -470,9 +494,25 @@ export async function runMigrationsWithGuard(
       }
     }
 
+    /**
+     * RONDE 178 — a migration that TRANSFORMS an existing object can never be a ghost.
+     *
+     * Ghosting means "these objects are already there, so this migration must have run" and then
+     * recording it as executed. That reasoning only holds for objects the migration CREATES. A
+     * MODIFY COLUMN's target exists either way, so the evidence is empty — and recording it is
+     * unrecoverable, because the runner then skips it forever.
+     *
+     * Letting it run instead is safe in both directions: re-applying `MODIFY COLUMN x float` to a
+     * column that is already float is a no-op in MySQL, whereas skipping it leaves the schema wrong
+     * with no second chance.
+     */
+    const hasTransform = schemaObjects.some((o) => o.transform);
+
     let status: MigrationStatus;
     if (dryRun || checkableTotal === 0) {
       // No checkable objects or dry run → assume clean (let Drizzle decide)
+      status = "clean";
+    } else if (hasTransform) {
       status = "clean";
     } else if (existingObjects.length === checkableTotal && checkableTotal === schemaObjects.length) {
       // GHOST only when every object was checkable AND every one exists

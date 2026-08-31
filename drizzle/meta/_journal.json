@@ -344,6 +344,13 @@
       "when": 1787900200000,
       "tag": "0048_ronde177_archive_trim_duration",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "5",
+      "when": 1787900300000,
+      "tag": "0049_ronde178_archive_trim_duration_repair",
+      "breakpoints": true
     }
   ]
 }

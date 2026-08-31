@@ -1,0 +1,23 @@
+-- RONDE 178: re-apply 0048, which was recorded as executed but never ran.
+--
+-- ── Why a second migration and not a fix to the first ────────────────────────────────────────
+--
+-- 0048 (durationSec int → float) was the first ALTER ... MODIFY COLUMN in this repository. The
+-- migration guard's reconciliation extracts the objects a migration touches and, when all of them
+-- already exist in the live database, classifies it as a GHOST: "these are already here, so this
+-- must have run" — and records it as executed without running it.
+--
+-- That inference is sound for CREATE TABLE and ADD COLUMN, which is all the 47 migrations before
+-- this one ever did. It is worthless for MODIFY: the column exists precisely because the migration
+-- is about to change it. So 0048 was ghosted, recorded, and skipped; the schema validator then
+-- correctly reported int where the code declares float and aborted startup on every boot.
+--
+-- Because 0048 now carries a row in __drizzle_migrations, the runner will never execute it again.
+-- A forward migration is the only thing that can still apply the change, so this is it. The guard's
+-- classification is fixed in the same change (server/migrationGuard.ts), which is what stops THIS
+-- file from being ghosted in turn.
+--
+-- Safe to run more than once: MODIFY COLUMN to float on a column that is already float is a no-op,
+-- and int → float is a lossless widening for every value this column holds.
+ALTER TABLE `media_archive_assets`
+  MODIFY COLUMN `durationSec` float NULL;
