@@ -183,7 +183,19 @@ export type TimelineFormat = {
   fps: number;
 };
 
+/**
+ * RONDE 147 §8 — which SHAPE this document is in.
+ *
+ * Distinct from `version`, and the distinction matters: `version` counts EDITS (v1 → v2 when a
+ * user changes a caption), while this counts SCHEMA changes (a reader from an older build needs
+ * to know which fields exist). Conflating them would make "the user edited this twice" and "the
+ * format changed" the same number.
+ */
+export const TIMELINE_SCHEMA_VERSION = 1;
+
 export type ProjectTimeline = {
+  /** The document's shape. Absent on anything written before RONDE 147; read as 1. */
+  schemaVersion?: number;
   /** Bumped on every save. A render names the version it was made from — §10. */
   version: number;
   videoId: number;
@@ -234,6 +246,7 @@ export function timelineElementId(prefix: string, ...parts: Array<string | numbe
 
 export function emptyTimeline(videoId: number, format = DEFAULT_FORMAT): ProjectTimeline {
   return {
+    schemaVersion: TIMELINE_SCHEMA_VERSION,
     version: 1,
     videoId,
     durationSec: 0,
@@ -323,6 +336,9 @@ export function bumpVersion(t: ProjectTimeline): ProjectTimeline {
  */
 export function timelineDigest(t: ProjectTimeline): string {
   const material = {
+    // `schemaVersion` is excluded along with `version` and `renderedVideoUrl`: a format revision
+    // that leaves every field intact renders the same picture, and a digest that moved when the
+    // schema did would make "same timeline ⇒ same edit" untestable across a build.
     durationSec: t.durationSec,
     format: t.format,
     tracks: t.tracks,
