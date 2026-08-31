@@ -156,8 +156,13 @@ export function cameraFor(instruction: CameraInstruction): ClipCamera {
  */
 export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
   "film_grain",
+  "noise",
   "vignette",
   "letterbox",
+  /** RONDE 149 — split/blur/screen for the two light effects, rgbashift for the lens one. */
+  "glow",
+  "bloom",
+  "chromatic_aberration",
 ]);
 
 /** Graphics whose whole content is words — those the ASS pass can draw today. */

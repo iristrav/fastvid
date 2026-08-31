@@ -122,6 +122,50 @@ export function classifyDocGradeSourceKind(filePath: string): DocGradeSourceKind
   return "archive";
 }
 
+/**
+ * RONDE 149 — the same classification, from a PROVIDER instead of a filename.
+ *
+ * `classifyDocGradeSourceKind` reads a temp filename, which is the only handle the old pipeline
+ * ever had. The timeline has something better: a proven provider from the lineage ledger, which
+ * survives the work directory being deleted and cannot be fooled by a rename.
+ *
+ * Both live here, next to each other and next to the grades they feed, because they answer one
+ * question — "what kind of picture is this, so it can be matched to the others?" — and a second
+ * answer living somewhere else is how two clips from the same source end up graded differently.
+ *
+ * The unknown case returns "unknown" rather than guessing "archive". The three grades differ by
+ * how hard they pull saturation and contrast, and applying an archive grade to a glossy stock clip
+ * leaves it looking glossy next to everything else — the exact mismatch the grade exists to fix.
+ */
+export function docGradeSourceKindForProvider(
+  provider: string | null | undefined,
+  opts: { archiveAssetId?: number | null } = {}
+): DocGradeSourceKind {
+  // A row in our own archive is archive material whatever the archive happens to be called.
+  if (opts.archiveAssetId != null) return "archive";
+  const p = (provider ?? "").trim().toLowerCase();
+  if (!p) return "unknown";
+
+  /** Institutional and public-domain collections: real archival footage and stills. */
+  if (["archive", "curated", "wikimedia", "loc", "internet_archive", "nara", "nasa", "europeana"].includes(p)) {
+    return "archive";
+  }
+  /** Commercial stock and modern uploads: clean, glossy, needs the strongest pull. */
+  if (["pexels", "pixabay", "openverse", "unsplash", "youtube_cc", "youtube"].includes(p)) {
+    return "stock";
+  }
+  /** Generative sources read plasticky next to real footage and get the hardest correction. */
+  if (["ai", "ai_generated", "grok", "kling", "higgsfield", "runway", "luma", "pika", "veo", "stability", "leonardo"].includes(p)) {
+    return "ai_generated";
+  }
+  /**
+   * An archive an operator named themselves ("wwii_archive", "nara_films") is archive material.
+   * Checked last so it cannot shadow a known provider that happens to contain the word.
+   */
+  if (p.includes("archive")) return "archive";
+  return "unknown";
+}
+
 export function stillOutputFrameCount(duration: number, fps = 25): number {
   return Math.max(25, Math.round(duration * fps));
 }

@@ -95,6 +95,20 @@ const timelinePayload = z.object({
   durationSec: z.number(),
   format: z.object({ widthPx: z.number(), heightPx: z.number(), fps: z.number() }),
   tracks: z.array(z.record(z.string(), z.unknown())),
+  /**
+   * RONDE 149 — the look MUST be listed here or it is silently lost on save.
+   *
+   * `z.object()` strips keys it does not know about, so a field that exists on the type and not in
+   * this schema survives the round trip in the browser and vanishes the moment it reaches the
+   * server — the person picks a grade, presses Save, and gets no grade and no error. Every field
+   * the editor can change belongs in this list.
+   */
+  look: z
+    .object({
+      grade: z.enum(["none", "documentary"]),
+      strength: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
   renderedVideoUrl: z.string().optional(),
   createdAt: z.string(),
 });

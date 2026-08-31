@@ -32,10 +32,20 @@
 import type {
   ClipCamera,
   ClipEffect,
+  ClipSourceKind,
   ClipTransform,
   TimelineFormat,
+  TimelineLook,
   TimelineVideoClip,
 } from "./projectTimeline";
+/**
+ * The grade itself comes from `documentaryStyle`, which has held these calibrations for a long
+ * time. RONDE 149 connects them to the timeline; it does not re-tune them.
+ */
+import {
+  buildPerClipDocumentaryGradeVF,
+  type DocGradeSourceKind,
+} from "./documentaryStyle";
 
 /* ═══════════════════════ video ═══════════════════════ */
 
@@ -138,13 +148,18 @@ export function cameraChain(
 /**
  * The effects this renderer can execute, and only those.
  *
- * Each is a filter that exists in both ffmpeg builds. An effect not in this table is not silently
- * dropped — `unsupportedEffects` names it, the clip keeps carrying it, and the render reports it.
+ * Each is a filter that exists in both ffmpeg builds — CHECKED, not assumed: zoompan, xfade,
+ * sidechaincompress, vignette, noise, rgbashift, gblur, blend, split and colorchannelmixer were all
+ * confirmed present in the system build AND in the bundled ffmpeg-static before being used here.
+ *
+ * An effect not in this table is not silently dropped — `unsupportedEffects` names it, the clip
+ * keeps carrying it, and the render reports it with the planner's own reason.
  */
 export function effectChain(effect: ClipEffect): string | null {
   const i = Math.max(0, Math.min(1, effect.intensity));
   switch (effect.effectType) {
     case "film_grain":
+    case "noise":
       // noise strength is 0..100; a documentary grain lives at the very bottom of that range.
       return `noise=alls=${Math.round(4 + 16 * i)}:allf=t+u`;
     case "vignette":
@@ -153,9 +168,98 @@ export function effectChain(effect: ClipEffect): string | null {
     case "letterbox":
       // A 2.39:1 crop-and-pad, the cinematic bar. Independent of intensity: it is on or it is not.
       return `crop=iw:ih*0.836:0:ih*0.082,pad=iw:ih/0.836:0:(oh-ih)/2:color=black`;
+
+    /**
+     * RONDE 149 — glow and bloom, as the classic split-blur-screen sandwich.
+     *
+     * The picture is split in two, one copy is blurred, and the blurred copy is screen-blended back
+     * over the original. Screen only ever brightens, so the effect gathers in the highlights and
+     * leaves the shadows alone — which is what makes it read as light bleeding rather than as a
+     * soft-focus filter over everything.
+     *
+     * The two differ by radius and weight, which is genuinely what separates them: a glow is a tight
+     * halo around bright edges, a bloom is a wide wash across the frame.
+     */
+    case "glow":
+      return (
+        `split[glowa][glowb];[glowb]gblur=sigma=${(2 + 6 * i).toFixed(2)}[glowblur];` +
+        `[glowa][glowblur]blend=all_mode=screen:all_opacity=${(0.25 + 0.35 * i).toFixed(3)}`
+      );
+    case "bloom":
+      return (
+        `split[blooma][bloomb];[bloomb]gblur=sigma=${(8 + 18 * i).toFixed(2)}[bloomblur];` +
+        `[blooma][bloomblur]blend=all_mode=screen:all_opacity=${(0.2 + 0.3 * i).toFixed(3)}`
+      );
+
+    /**
+     * Chromatic aberration: the red and blue channels pulled apart by a pixel or two.
+     *
+     * `rgbashift` does exactly this natively, so there is no channel-splitting graph to get wrong.
+     * Red goes one way and blue the other, which is how a real lens disperses — shifting them the
+     * same way would just look like a misregistered print.
+     *
+     * Deliberately capped at 3px. Beyond that it stops reading as a lens and starts reading as a
+     * broken video, and this is a documentary tool.
+     */
+    case "chromatic_aberration": {
+      const shift = Math.max(1, Math.round(3 * i));
+      return `rgbashift=rh=${shift}:bh=${-shift}`;
+    }
     default:
       return null;
   }
+}
+
+/* ═══════════════════════ RONDE 149 — the look ═══════════════════════ */
+
+/**
+ * The video's colour treatment, from `documentaryStyle`'s own calibration.
+ *
+ * NOT re-derived here. Those saturation and contrast numbers were tuned per source kind so that
+ * archive, stock and generated material end up looking like one film, and inventing a second set
+ * would mean two answers to the same question with the tested one losing.
+ *
+ * `strength` scales the grade toward neutral — 1 is the shipped calibration, 0 is no grade at all.
+ * It interpolates rather than switching, so a strength of 0.5 is genuinely half the correction and
+ * not a different look.
+ */
+export function gradeChain(
+  look: TimelineLook | undefined,
+  sourceKind: ClipSourceKind | undefined
+): string | null {
+  if (!look || look.grade === "none") return null;
+  const strength = look.strength == null ? 1 : Math.max(0, Math.min(1, look.strength));
+  if (strength <= 0.001) return null;
+
+  const kind: DocGradeSourceKind =
+    sourceKind === "archive" || sourceKind === "stock" || sourceKind === "ai_generated"
+      ? sourceKind
+      : "unknown";
+
+  const full = buildPerClipDocumentaryGradeVF(kind);
+  if (strength >= 0.999) return full;
+
+  /**
+   * Interpolating a filter string is not possible, so the NUMBERS are interpolated instead and the
+   * chain rebuilt. Each parameter moves from its neutral value toward the graded one:
+   * contrast and saturation from 1, brightness and the colour balance from 0, gamma from 1.
+   */
+  const mix = (neutral: number, graded: number) => neutral + (graded - neutral) * strength;
+  const { saturation, contrast } =
+    kind === "ai_generated"
+      ? { saturation: 0.78, contrast: 1.08 }
+      : kind === "stock"
+        ? { saturation: 0.82, contrast: 1.15 }
+        : { saturation: 0.88, contrast: 1.12 };
+  const angle = kind === "ai_generated" || kind === "stock" ? 0.55 : 0.62;
+  return (
+    `eq=contrast=${mix(1, contrast).toFixed(4)}:saturation=${mix(1, saturation).toFixed(4)}:` +
+    `brightness=${mix(0, -0.03).toFixed(4)}:gamma=${mix(1, 1.02).toFixed(4)},` +
+    `colorbalance=rs=${mix(0, -0.02).toFixed(4)}:gs=0:bs=${mix(0, 0.04).toFixed(4)}:` +
+    `rm=${mix(0, -0.01).toFixed(4)}:gm=0:bm=${mix(0, 0.02).toFixed(4)}:` +
+    `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)},` +
+    `vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`
+  );
 }
 
 export function unsupportedEffects(effects: readonly ClipEffect[] | undefined): ClipEffect[] {
@@ -177,7 +281,9 @@ export function unsupportedEffects(effects: readonly ClipEffect[] | undefined): 
 export function buildVideoFilter(
   clip: TimelineVideoClip,
   fmt: TimelineFormat,
-  durationSec: number
+  durationSec: number,
+  /** RONDE 149 — the video's look. Absent leaves the pixels untouched. */
+  look?: TimelineLook
 ): string {
   const t = clip.transform;
   const parts: string[] = [];
@@ -188,6 +294,19 @@ export function buildVideoFilter(
 
   const camera = clip.camera ? cameraChain(clip.camera, fmt, durationSec) : null;
   if (camera) parts.push(camera);
+
+  /**
+   * The grade goes AFTER the camera and BEFORE the effects, and both halves of that matter.
+   *
+   * After the camera, because zoompan resamples: grading first would grade pixels that are then
+   * thrown away, and the correction would drift as the frame moves.
+   *
+   * Before the effects, because grain and glow are meant to sit ON the graded picture. Grading a
+   * frame that already has synthetic grain in it pulls the saturation of the grain itself, which
+   * turns a subtle texture into visible coloured speckle.
+   */
+  const grade = gradeChain(look, clip.sourceKind);
+  if (grade) parts.push(grade);
 
   for (const effect of clip.effects ?? []) {
     const chain = effectChain(effect);

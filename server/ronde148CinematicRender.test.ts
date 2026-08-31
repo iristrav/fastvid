@@ -341,7 +341,12 @@ describe("§15 — effects that run, and effects that are reported", () => {
   });
 
   it("AN UNSUPPORTED EFFECT IS NAMED, not silently dropped", () => {
-    for (const t of ["lens_flare", "particles", "chromatic_aberration", "bloom", "dust"]) {
+    /**
+     * RONDE 149 moved glow, bloom, chromatic_aberration and noise OUT of this list by implementing
+     * them. What remains needs an overlay ASSET (a flare sprite, a dust plate) rather than a
+     * filter, which is a content problem and not an engine one.
+     */
+    for (const t of ["lens_flare", "particles", "dust"]) {
       expect(effectChain({ effectType: t, intensity: 0.5 }), t).toBeNull();
     }
     const unsupported = unsupportedEffects([

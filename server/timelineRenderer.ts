@@ -42,8 +42,10 @@ import {
   videoTrack,
   type ProjectTimeline,
   type TextStyle,
+  type TimelineLook,
   type TimelineVideoClip,
 } from "./projectTimeline";
+import { docGradeSourceKindForProvider } from "./documentaryStyle";
 import {
   buildAudioGraph,
   buildTransitionGraph,
@@ -79,7 +81,7 @@ const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
  * `unsupported_effect`, `unsupported_transition` and `unsupported_graphic`.
  */
 export const UNIMPLEMENTED = [
-  "visual effects other than film_grain, vignette and letterbox",
+  "visual effects other than film_grain, noise, vignette, letterbox, glow, bloom and chromatic_aberration",
   "transitions other than hard_cut, crossfade, dissolve, dip_to_black and dip_to_white",
   "motion graphics that are not words on screen (maps, charts, animated icons)",
 ] as const;
@@ -287,17 +289,32 @@ async function renderSegment(
   clip: TimelineVideoClip,
   localMedia: string,
   outPath: string,
-  fmt: { widthPx: number; heightPx: number; fps: number }
+  fmt: { widthPx: number; heightPx: number; fps: number },
+  look?: TimelineLook
 ): Promise<void> {
   const dur = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
   /**
-   * RONDE 148 — fit, camera, effects, scale and opacity, built in `timelineFilters`.
+   * RONDE 148/149 — fit, camera, grade, effects, scale and opacity, built in `timelineFilters`.
    *
-   * For a clip with none of those fields this returns the byte-identical string this function
-   * used to hold inline, which is what keeps the golden render bit-for-bit unchanged. A test
-   * asserts that equality directly rather than trusting the reading.
+   * For a clip with none of those fields, and a timeline with no look, this returns the
+   * byte-identical string this function used to hold inline — which is what keeps the golden
+   * render bit-for-bit unchanged. A test asserts that equality directly rather than trusting the
+   * reading.
+   *
+   * `sourceKind` is DERIVED when the clip does not carry it, so a timeline written before RONDE 149
+   * is graded correctly without being migrated: the provider is already in the identity, and the
+   * provider is what the grade is calibrated against.
    */
-  const vf = buildVideoFilter(clip, fmt, dur);
+  const graded: TimelineVideoClip =
+    clip.sourceKind || !look || look.grade === "none"
+      ? clip
+      : {
+          ...clip,
+          sourceKind: docGradeSourceKindForProvider(clip.source.provider, {
+            archiveAssetId: clip.source.archiveAssetId,
+          }),
+        };
+  const vf = buildVideoFilter(graded, fmt, dur, look);
 
   const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
   if (clip.kind === "image") {
@@ -480,7 +497,7 @@ export async function renderTimeline(params: {
     }
     const seg = path.join(workDir, `seg_${String(i).padStart(3, "0")}.mp4`);
     try {
-      await renderSegment(clip, media, seg, fmt);
+      await renderSegment(clip, media, seg, fmt, timeline.look);
       commands++;
     } catch (err) {
       skipped.push(`clip ${clip.id}: encode failed — ${(err as Error).message.slice(0, 160)}`);

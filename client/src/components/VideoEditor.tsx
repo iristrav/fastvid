@@ -29,6 +29,7 @@ import {
   Film,
   Loader2,
   Music,
+  Palette,
   Play,
   RefreshCw,
   Save,
@@ -72,6 +73,7 @@ type VideoClip = {
     opacity?: number;
   };
   camera?: { type: string; startScale?: number; endScale?: number; intensity?: number };
+  sourceKind?: "archive" | "ai_generated" | "stock" | "unknown";
   effects?: Array<{ effectType: string; intensity: number; reason?: string }>;
   transitionInSec?: number;
 };
@@ -127,6 +129,8 @@ type Timeline = {
   durationSec: number;
   format: { widthPx: number; heightPx: number; fps: number };
   tracks: Track[];
+  /** RONDE 149 — the video's colour treatment. Absent means untouched pixels. */
+  look?: { grade: "none" | "documentary"; strength?: number };
   renderedVideoUrl?: string;
   createdAt: string;
 };
@@ -434,6 +438,27 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {/*
+              RONDE 149 — the look sits in the HEADER, not in the clip inspector, because it is a
+              choice about the whole video. Its job is to make archive, stock and generated material
+              look like one film, which per-clip control would defeat exactly.
+            */}
+            <label className="flex items-center gap-1.5">
+              <Palette className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <select
+                value={draft?.look?.grade ?? "none"}
+                onChange={(e) =>
+                  setDraft((t) =>
+                    t ? { ...t, look: { ...t.look, grade: e.target.value as "none" | "documentary" } } : t
+                  )
+                }
+                className="rounded-lg bg-black/40 border border-white/10 px-2 py-1.5 text-xs text-white focus:border-amber-400/50 focus:outline-none"
+                title="Colour treatment for the whole video"
+              >
+                <option value="none" className="bg-slate-900">No grade</option>
+                <option value="documentary" className="bg-slate-900">Documentary</option>
+              </select>
+            </label>
             <button
               onClick={() => void save()}
               disabled={!dirty || saveMutation.isPending}
@@ -804,7 +829,9 @@ function ClipInspector({
 }
 
 /** The three effects the renderer executes. Everything else is shown as planned-but-not-rendered. */
-const RENDERED_EFFECTS = new Set(["film_grain", "vignette", "letterbox"]);
+const RENDERED_EFFECTS = new Set([
+  "film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration",
+]);
 
 /**
  * A camera preset, matching the server's own translation of the planner's vocabulary.

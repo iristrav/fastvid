@@ -485,19 +485,44 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
   });
 
   it("motion graphics and effects are reported as not executed, never dropped in silence", () => {
+    /**
+     * RONDE 149 note: this used to use `glow` as the unexecutable effect, and glow now RENDERS
+     * (split/gblur/screen). The test failed while the code had improved — so the example moved to
+     * `lens_flare`, which genuinely cannot be done with a filter because it needs an overlay
+     * sprite. What is being tested is unchanged: an effect the renderer cannot run is REPORTED.
+     */
     const { unsupported } = translateEdl({
       videoId: 1,
       inputs: [{
         decision: decision({
           motionGraphics: [{ graphicType: "map", data: {}, startSec: 0, durationSec: 2, reason: "r" }],
-          effects: [{ effectType: "glow", startSec: 0, durationSec: 1, intensity: 0.5, reason: "r" } as never],
+          effects: [{ effectType: "lens_flare", startSec: 0, durationSec: 1, intensity: 0.5, reason: "r" } as never],
         }),
         beatOffsetSec: 0,
         identity,
       }],
     });
     expect(unsupported.some((u) => u.includes("map"))).toBe(true);
-    expect(unsupported.some((u) => u.includes("effect"))).toBe(true);
+    expect(unsupported.some((u) => u.includes("lens_flare"))).toBe(true);
+  });
+
+  it("RONDE 149: an effect the renderer CAN run is not reported as missing", () => {
+    // The other half of the same rule — reporting a supported effect would be crying wolf.
+    const { timeline, unsupported } = translateEdl({
+      videoId: 1,
+      inputs: [{
+        decision: decision({
+          effects: [{ effectType: "glow", startSec: 0, durationSec: 1, intensity: 0.5, reason: "r" } as never],
+        }),
+        beatOffsetSec: 0,
+        identity,
+      }],
+    });
+    expect(unsupported.some((u) => u.includes("glow"))).toBe(false);
+    // And it is still carried on the clip, so the renderer can execute it.
+    const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
+    expect(clip!.effects?.[0]?.effectType).toBe("glow");
   });
 
   it("the translation is DETERMINISTIC — same EDL, same timeline", () => {

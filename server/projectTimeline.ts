@@ -165,6 +165,38 @@ export type ClipEffect = {
   reason?: string;
 };
 
+/* ═══════════════════════ RONDE 149 — the look ═══════════════════════ */
+
+/**
+ * The colour treatment applied to every clip in the video.
+ *
+ * A LOOK IS A PROPERTY OF THE VIDEO, NOT OF A CLIP — and that is the whole point. Its job is to
+ * make a Library of Congress scan, a Pexels drone shot and a generated establishing shot look like
+ * they belong in the same film. Letting each clip choose its own grade would defeat it exactly.
+ *
+ * What varies per clip is not the look but how hard it has to work, and that follows from where
+ * the clip CAME FROM: glossy stock needs its saturation pulled harder than a 1940s scan that is
+ * already washed out. `documentaryStyle` has held those three calibrations for a long time; this
+ * is the timeline finally being able to say which one a clip needs.
+ */
+export type TimelineLook = {
+  /**
+   * "none" is the default and means the pixels are untouched — which is what every timeline
+   * written before this round gets, so their renders do not change.
+   */
+  grade: "none" | "documentary";
+  /** 0..1, scaling the grade toward neutral. 1 is the calibration documentaryStyle ships. */
+  strength?: number;
+};
+
+/**
+ * Where a clip's picture came from, in the vocabulary the grade is calibrated against.
+ *
+ * Derived from the provider rather than chosen, so it is a fact and not an editorial decision —
+ * and so an old timeline gets the right grade without anyone editing it.
+ */
+export type ClipSourceKind = "archive" | "ai_generated" | "stock" | "unknown";
+
 export type TimelineVideoClip = {
   id: string;
   kind: "video" | "image";
@@ -192,6 +224,13 @@ export type TimelineVideoClip = {
   transform?: ClipTransform;
   /** RONDE 148 — what the effectsPlanner asked for. Executed where possible, reported otherwise. */
   effects?: ClipEffect[];
+  /**
+   * RONDE 149 — which calibration of the video's look this clip needs.
+   *
+   * Absent is not a problem: the renderer derives it from the provider, so a timeline written
+   * before this field existed is graded correctly without being migrated.
+   */
+  sourceKind?: ClipSourceKind;
   transitionIn: TransitionKind;
   transitionOut: TransitionKind;
   /** Seconds the transition takes. The planner decides it; the renderer executes it. */
@@ -335,6 +374,10 @@ export type ProjectTimeline = {
   durationSec: number;
   format: TimelineFormat;
   tracks: TimelineTrack[];
+  /**
+   * RONDE 149 — the colour treatment for the whole video. Absent means untouched pixels.
+   */
+  look?: TimelineLook;
   /**
    * The final MP4 this timeline was last rendered to, when there is one.
    *

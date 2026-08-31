@@ -430,6 +430,27 @@ describe("§6 — timeline.save", () => {
     ).rejects.toThrow(/belongs to video 999/);
   });
 
+  it("RONDE 149 REGRESSION: THE LOOK SURVIVES A SAVE", async () => {
+    /**
+     * `z.object()` strips keys it does not list, so a field on the type but not in the payload
+     * schema round-trips fine in the browser and vanishes the moment it reaches the server — the
+     * person picks a grade, presses Save, and gets no grade and no error at all.
+     *
+     * Every field the editor can change needs this test, and this is the one that nearly shipped
+     * without it.
+     */
+    const t = goodTimeline();
+    t.look = { grade: "documentary", strength: 0.8 };
+    const saved = await owner().timeline.save({
+      videoId: VIDEO_ID,
+      timeline: t as never,
+      expectedTimelineVersion: 0,
+    });
+    expect(saved.timeline.look).toEqual({ grade: "documentary", strength: 0.8 });
+    const stored = store.timelines.get(VIDEO_ID)!.raw as ProjectTimeline;
+    expect(stored.look?.grade).toBe("documentary");
+  });
+
   it("a save round-trips: what comes back is what timeline.get then returns", async () => {
     const caller = owner();
     const edited = goodTimeline();
