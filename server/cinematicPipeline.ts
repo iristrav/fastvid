@@ -59,6 +59,12 @@ import type { TtsWordTiming } from "./voiceTtsAlignment";
 export type CinematicBeatInput = {
   input: CinematicEditingInput;
   identity: AssetSourceIdentity;
+  /**
+   * RONDE 151 §7 — the cut this render already made into the provider's original, when it did.
+   * Carried through untouched so the timeline's sourceIn is relative to what the rehydrator
+   * returns rather than to a temp file that will not exist tomorrow.
+   */
+  sourceTrim?: { inSec: number; outSec?: number };
 };
 
 export type CinematicSceneInput = {
@@ -149,6 +155,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
 
   const inputs: CinematicEditingInput[] = [];
   const identities: AssetSourceIdentity[] = [];
+  const trims: Array<{ inSec: number; outSec?: number } | undefined> = [];
   const offsets: number[] = [];
 
   params.scenes.forEach((scene, sceneIndex) => {
@@ -166,6 +173,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
         ...(guidance ? { directorGuidance: guidance } : {}),
       });
       identities.push(beat.identity);
+      trims.push(beat.sourceTrim);
       /** One offset per scene, repeated per beat, because the adapter works decision by decision. */
       offsets.push(scene.sceneOffsetSec);
     });
@@ -183,6 +191,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       decision,
       sceneOffsetSec: offsets[i] ?? 0,
       identity: identities[i]!,
+      ...(trims[i] ? { sourceTrim: trims[i]! } : {}),
     })
   );
   const { timeline, unsupported } = translateEdl({

@@ -10087,7 +10087,29 @@ export async function trimRemoteVideoToClip(
       90_000,
       `Trim ${label}`
     );
-    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
+    const written = fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
+    /**
+     * RONDE 151 §7 — the offset into the provider's original, written down at last.
+     *
+     * `clipStart` is a real number: `resolveTrimStartSec` probed the source and clamped it. Until
+     * now it was used by the ffmpeg command above and then discarded, which is invisible while the
+     * trimmed file exists and becomes a wrong shot the moment a re-render rehydrates the FULL
+     * asset from the provider and starts at second 0.
+     *
+     * Recorded here rather than at thirteen call sites because every direct provider route reaches
+     * the montage through this helper — one writer, standing next to the cut it describes.
+     */
+    if (written) {
+      try {
+        get_activeSourcingCache()?.lineage.recordSourceTrim(outputPath, {
+          inSec: clipStart,
+          outSec: clipStart + duration,
+        });
+      } catch {
+        /* provenance bookkeeping must never fail a clip that was produced correctly */
+      }
+    }
+    return written;
   } catch (err) {
     console.warn(`[Pipeline] trimRemoteVideoToClip failed (${label}):`, (err as Error).message);
     return false;
@@ -39384,6 +39406,9 @@ async function _runVideoPipelineInner(
                         assetTitle: record.assetTitle,
                         query: record.query,
                         candidateId: record.candidateId,
+                        /** §7 — the cut this render made into the provider's original, if any. */
+                        sourceInSec: record.sourceInSec,
+                        sourceOutSec: record.sourceOutSec,
                       }
                     : null,
                 };

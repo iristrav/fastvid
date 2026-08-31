@@ -111,6 +111,12 @@ export type AdoptionFacts = {
   assetTitle?: string;
   query?: string;
   candidateId?: string;
+  /**
+   * §7 — where inside the PROVIDER'S ORIGINAL the adopted clip was cut from, when this render
+   * measured it. Absent means unmeasured, never zero.
+   */
+  sourceInSec?: number;
+  sourceOutSec?: number;
 };
 
 /**
@@ -408,7 +414,7 @@ export function buildCinematicSceneInputs(params: {
       }
 
       if (adopted.facts.durationSec != null) stats.withProbe++;
-      if (adopted.facts.sourceInSec != null || adopted.facts.sourceOutSec != null) stats.withTrim++;
+      if (adopted.adoption?.sourceInSec != null) stats.withTrim++;
 
       beats.push({
         input: {
@@ -419,6 +425,21 @@ export function buildCinematicSceneInputs(params: {
           beatVoiceDurationSec: durationSec,
         },
         identity,
+        /**
+         * §7 — only when this render actually measured the cut. An absent trim reaches the
+         * timeline as the planner's own numbers, which is right for a clip nobody pre-trimmed and
+         * is not a claim about one that was.
+         */
+        ...(adopted.adoption?.sourceInSec != null
+          ? {
+              sourceTrim: {
+                inSec: adopted.adoption.sourceInSec,
+                ...(adopted.adoption.sourceOutSec != null
+                  ? { outSec: adopted.adoption.sourceOutSec }
+                  : {}),
+              },
+            }
+          : {}),
       });
       stats.planned++;
     });

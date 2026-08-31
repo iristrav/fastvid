@@ -274,6 +274,50 @@ describe("RONDE 151 §19/§20 — the two switches, and the line that counts the
   });
 });
 
+/* ═══════════════════════ §7 — the ledger records the cut ═══════════════════════ */
+
+describe("RONDE 151 §7 — the lineage ledger stores the trim into the original", () => {
+  it("records a measured cut against the clip's own record", async () => {
+    const { VisualSourceLedger } = await import("./visualSourceLineage");
+    const ledger = new VisualSourceLedger({ renderId: "r1" });
+    ledger.createLineage({
+      sceneIndex: 0,
+      beatIndex: 0,
+      candidateId: "pexels:1",
+      contentKey: "k1",
+      localPath: "/tmp/clip.mp4",
+    });
+
+    const updated = ledger.recordSourceTrim("/tmp/clip.mp4", { inSec: 37.5, outSec: 41.5 });
+    expect(updated?.sourceInSec).toBe(37.5);
+    expect(updated?.sourceOutSec).toBe(41.5);
+  });
+
+  /**
+   * A path with no record gets no record invented for it. Provenance built out of a filename is
+   * exactly what the ledger exists to prevent.
+   */
+  it("does nothing for a path nobody registered", async () => {
+    const { VisualSourceLedger } = await import("./visualSourceLineage");
+    const ledger = new VisualSourceLedger({ renderId: "r1" });
+    expect(ledger.recordSourceTrim("/tmp/never-seen.mp4", { inSec: 5 })).toBeNull();
+  });
+
+  it("refuses a nonsense offset rather than storing it", async () => {
+    const { VisualSourceLedger } = await import("./visualSourceLineage");
+    const ledger = new VisualSourceLedger({ renderId: "r1" });
+    ledger.createLineage({
+      sceneIndex: 0, beatIndex: 0, candidateId: "c", contentKey: "k", localPath: "/tmp/c.mp4",
+    });
+    expect(ledger.recordSourceTrim("/tmp/c.mp4", { inSec: -3 })?.sourceInSec).toBeUndefined();
+    expect(ledger.recordSourceTrim("/tmp/c.mp4", { inSec: Number.NaN })?.sourceInSec).toBeUndefined();
+    // An end before the start is not stored either — the start still is, because it is valid.
+    const r = ledger.recordSourceTrim("/tmp/c.mp4", { inSec: 10, outSec: 4 });
+    expect(r?.sourceInSec).toBe(10);
+    expect(r?.sourceOutSec).toBeUndefined();
+  });
+});
+
 /* ═══════════════════════ §25 — the log leaks nothing ═══════════════════════ */
 
 describe("RONDE 151 §25 — observability without secrets", () => {

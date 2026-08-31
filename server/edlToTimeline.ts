@@ -243,6 +243,14 @@ export type EdlTranslationInput = {
   sceneOffsetSec: number;
   /** The permanent identity for the decision's chosen candidate, from the lineage ledger. */
   identity: AssetSourceIdentity;
+  /**
+   * RONDE 151 §7 — the cut the RENDER already made into the provider's original, when it made one.
+   *
+   * Absent means this render did not pre-trim the asset, or did not measure the offset. It never
+   * means zero: see the composition in `translateEdl` for why the difference matters on a
+   * re-render.
+   */
+  sourceTrim?: { inSec: number; outSec?: number };
 };
 
 export type EdlTranslation = {
@@ -275,7 +283,7 @@ export function translateEdl(params: {
   const sfx: TimelineAudioClip[] = [];
   const graphics: TimelineGraphic[] = [];
 
-  for (const { decision, sceneOffsetSec, identity } of params.inputs) {
+  for (const { decision, sceneOffsetSec, identity, sourceTrim } of params.inputs) {
     const clip = decision.clip;
     const start = sceneOffsetSec + clip.startSec;
     const end = sceneOffsetSec + clip.endSec;
@@ -292,9 +300,25 @@ export function translateEdl(params: {
       id: timelineElementId("vc", decision.beatId, clip.candidateId, clip.startSec),
       kind: clip.assetType === "image" ? "image" : "video",
       source: identity,
-      // Straight from the planner. `trimStartSec/trimEndSec` are its own words for sourceIn/out.
-      sourceIn: clip.trimStartSec,
-      sourceOut: clip.trimEndSec,
+      /**
+       * RONDE 151 §7 — the planner's trim, composed with the trim the RENDER already applied.
+       *
+       * `trimStartSec/trimEndSec` are the planner's words for sourceIn/out, and they are relative
+       * to the file the pipeline handed it — which for most provider routes is not the provider's
+       * asset but a clip already cut out of it by `trimRemoteVideoToClip`. `sourceTrim` is that
+       * first cut, from the lineage record.
+       *
+       * The timeline's `sourceIn` must be relative to what the REHYDRATOR will produce, and the
+       * rehydrator fetches the provider's original. So the two offsets are added. Without this a
+       * re-render starts at second 0 of the full asset and shows a different shot, with nothing
+       * anywhere reporting a problem.
+       *
+       * With no recorded first cut the planner's numbers stand unchanged — which is correct for a
+       * clip that was never pre-trimmed, and is not a guess about one that was: an unmeasured trim
+       * leaves the record's field absent, and absent reaches here as `undefined`.
+       */
+      sourceIn: sourceTrim ? Number((sourceTrim.inSec + clip.trimStartSec).toFixed(3)) : clip.trimStartSec,
+      sourceOut: sourceTrim ? Number((sourceTrim.inSec + clip.trimEndSec).toFixed(3)) : clip.trimEndSec,
       timelineStart: Number(start.toFixed(3)),
       timelineEnd: Number(end.toFixed(3)),
       motion: CAMERA_MAP[decision.camera.movement] ?? "none",

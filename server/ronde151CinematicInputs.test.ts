@@ -257,6 +257,61 @@ describe("RONDE 151 §6 — the adoption record is the only source of identity",
   });
 });
 
+/* ═══════════════════════ §7 — the trim into the provider's original ═══════════════════════ */
+
+describe("RONDE 151 §7 — sourceIn is relative to what the rehydrator returns", () => {
+  /**
+   * The defect this closes, stated as a scenario.
+   *
+   * `trimRemoteVideoToClip` cuts a new file with `-ss clipStart`, so the adopted clip on disk
+   * begins at second `clipStart` of the provider's asset. The planner then works in that file's
+   * own time and says "use from 0". A re-render rehydrates the FULL asset from the provider and,
+   * with no recorded offset, starts at second 0 of THAT — a different shot, in a video that
+   * reports no error at all.
+   */
+  it("adds the render's own cut to the planner's trim", () => {
+    const s = sceneFacts(0, 1);
+    s.clips[0] = {
+      facts: facts({ localPath: "/tmp/a.mp4", durationSec: 4 }),
+      // The render cut this clip out of the original starting at 37.5 seconds.
+      adoption: adoption({ sourceInSec: 37.5, sourceOutSec: 41.5 }),
+    };
+    const built = buildCinematicSceneInputs({ scenes: [s] });
+    expect(built.scenes[0]!.beats[0]!.sourceTrim).toEqual({ inSec: 37.5, outSec: 41.5 });
+
+    const result = runCinematicPipeline({ videoId: 1, scenes: built.scenes });
+    const track = result.timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
+
+    const planned = result.edl.decisions[0]!.clip;
+    expect(clip!.sourceIn).toBeCloseTo(37.5 + planned.trimStartSec, 3);
+    expect(clip!.sourceOut).toBeCloseTo(37.5 + planned.trimEndSec, 3);
+    // The proof that the bug is gone: sourceIn is NOT the planner's 0.
+    expect(clip!.sourceIn).toBeGreaterThan(30);
+  });
+
+  /** §7's other half: an unmeasured trim must not become a confident zero. */
+  it("leaves the planner's own numbers alone when no cut was recorded", () => {
+    const s = sceneFacts(0, 1);
+    s.clips[0] = { facts: facts({ durationSec: 4 }), adoption: adoption() };
+    const built = buildCinematicSceneInputs({ scenes: [s] });
+    expect(built.scenes[0]!.beats[0]!.sourceTrim).toBeUndefined();
+
+    const result = runCinematicPipeline({ videoId: 1, scenes: built.scenes });
+    const track = result.timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
+    expect(clip!.sourceIn).toBe(result.edl.decisions[0]!.clip.trimStartSec);
+  });
+
+  it("counts how many clips carried a measured trim, for the render log", () => {
+    const s = sceneFacts(0, 2);
+    s.clips[0] = { facts: facts({ durationSec: 4 }), adoption: adoption({ sourceInSec: 12 }) };
+    const built = buildCinematicSceneInputs({ scenes: [s] });
+    expect(built.stats.withTrim).toBe(1);
+    expect(formatCinematicInputs(built)).toContain("trimmed=1");
+  });
+});
+
 /* ═══════════════════════ the provider classification ═══════════════════════ */
 
 describe("RONDE 151 — the engine's source token is a classification, not the provider", () => {

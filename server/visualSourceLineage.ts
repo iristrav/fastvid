@@ -335,6 +335,25 @@ export type VisualLineageRecord = {
   /** Curated-archive row id, when the clip came from the own archive. */
   archiveAssetId?: number;
   assetTitle?: string;
+  /**
+   * RONDE 151 §7 — WHERE INSIDE THE PROVIDER'S ORIGINAL the used portion begins and ends.
+   *
+   * ── The defect this closes ─────────────────────────────────────────────────────────────────
+   *
+   * `resolveTrimStartSec` picks a real, probed, clamped offset into the downloaded source, and
+   * `trimRemoteVideoToClip` then writes a NEW file starting there (`-ss clipStart -i src -t dur`).
+   * The adopted clip is therefore a different file from the provider's asset, and until now the
+   * offset between them was computed, used once, and thrown away.
+   *
+   * That is invisible while the trimmed file survives. It stops being invisible on a re-render:
+   * the rehydrator fetches the provider's FULL asset again, and with no recorded offset the
+   * renderer starts at second 0 — a different shot from the one the viewer approved, in a video
+   * that reports no error at all.
+   *
+   * Absent means "this render did not measure it", never "zero" (§7).
+   */
+  sourceInSec?: number;
+  sourceOutSec?: number;
   route: VisualLineageRoute;
   /** The adopt-audit source label. A ROUTE LABEL, never a provider. */
   sourceLabel?: string;
@@ -721,6 +740,32 @@ export class VisualSourceLedger {
   providerBucketFor(clipPath: string, contentKey?: string): string {
     const record = this.resolve(clipPath, contentKey);
     return record ? providerBucket(record) : UNVERIFIED_PROVIDER;
+  }
+
+  /**
+   * RONDE 151 §7 — record where inside the provider's original this clip was cut from.
+   *
+   * Called at the moment of the trim, by the one helper every provider route funnels through, so
+   * there is exactly one writer and it is next to the ffmpeg command that does the cutting. Both
+   * numbers are seconds into the ORIGINAL asset, which is what a rehydrated re-render needs: the
+   * file on disk begins at `inSec`, but the file a provider hands back tomorrow does not.
+   *
+   * Silently does nothing when the path has no record — a clip nobody registered has no identity
+   * to attach a trim to, and inventing a record here would create provenance out of a filename.
+   */
+  recordSourceTrim(
+    clipPath: string,
+    trim: { inSec: number; outSec?: number },
+    contentKey?: string
+  ): VisualLineageRecord | null {
+    const record = this.resolve(clipPath, contentKey);
+    if (!record) return null;
+    if (!Number.isFinite(trim.inSec) || trim.inSec < 0) return record;
+    record.sourceInSec = Number(trim.inSec.toFixed(3));
+    if (trim.outSec != null && Number.isFinite(trim.outSec) && trim.outSec > trim.inSec) {
+      record.sourceOutSec = Number(trim.outSec.toFixed(3));
+    }
+    return record;
   }
 
   /** Walks up the derivation chain to the record this one ultimately came from. */
