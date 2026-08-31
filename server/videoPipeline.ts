@@ -415,6 +415,17 @@ import {
   type YoutubeUsageEntry,
 } from "./youtubeLicenseStatus";
 import {
+  createOpenWebPolicyStats,
+  formatOpenWebPolicyReport,
+  formatOpenWebReject,
+  formatOpenWebUsageReport,
+  noteOpenWebDecision,
+  openWebHost,
+  openWebSourceDecision,
+  type OpenWebPolicyStats,
+  type OpenWebUsageEntry,
+} from "./openWebSourcePolicy";
+import {
   formatArchiveLearningIndexed,
   formatArchiveRetrieval,
   formatNoStrongMatch,
@@ -8381,6 +8392,27 @@ async function fetchSerpAPIImages(
       if (!imgUrl) continue;
       const urlKey = normalizeImageSourceUrl(imgUrl);
       if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
+      /**
+       * RONDE 140 — which SITE this picture is on, decided before the request goes out.
+       *
+       * This is not a licence check and there is none on this route: FastVid has never asked a
+       * rights question of a Google Images result and still does not. What it refuses is the
+       * material that was already going to fail — a watermarked agency comp (the baked-text
+       * detector's job, one download later) and a re-host with no findable origin — plus whatever
+       * the operator has excluded through OPEN_WEB_BLOCKED_DOMAINS / OPEN_WEB_ALLOWED_DOMAINS.
+       *
+       * Placed above the extension checks so that a host refusal is counted even for URLs the
+       * next few lines would have dropped anyway: the policy report's `considered` has to mean
+       * "results this policy looked at", not "results that happened to reach it".
+       */
+      const webDecision = openWebSourceDecision({ url: imgUrl });
+      noteOpenWebDecision(opts.dedup?.openWebPolicyStats, webDecision);
+      if (!webDecision.allowed) {
+        console.log(
+          formatOpenWebReject({ sceneIndex, beatIndex: opts.beatIndex, decision: webDecision })
+        );
+        continue;
+      }
       // Skip SVG, GIF, and non-image URLs
       const lowerUrl = imgUrl.toLowerCase();
       if (lowerUrl.endsWith('.svg') || lowerUrl.endsWith('.gif') || lowerUrl.endsWith('.webp')) continue;
@@ -15939,6 +15971,14 @@ export interface VisualDedupState {
   /** RONDE 132 §2: unique/reused/refused counts across every dedup identity. */
   visualDedupStats: VisualDedupStats;
   /**
+   * RONDE 140: what the open-web source policy refused this render, and how much it looked at.
+   *
+   * Here for the same reason searchMemoryMetrics is: this is the per-render state every sourcing
+   * path already threads, and a counter that outlived a render would be a lie the moment two
+   * renders shared a worker.
+   */
+  openWebPolicyStats: OpenWebPolicyStats;
+  /**
    * RONDE 132 §2 — provider+id, render-wide.
    *
    * The provider axis existed only as a `usedProviderKeys` PARAMETER threaded into each fetcher,
@@ -16277,6 +16317,7 @@ export function createVisualDedupState(
     searchMemoryMetrics: createSearchMemoryRecallMetrics(),
     recalledAssetIds: new Set(),
     visualDedupStats: createVisualDedupStats(),
+    openWebPolicyStats: createOpenWebPolicyStats(),
     usedProviderKeys: new Set(),
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
@@ -38705,6 +38746,67 @@ async function _runVideoPipelineInner(
       // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
       // and how many calls arrived without a context and were counted as bypass attempts.
       for (const line of formatSearchGateReport()) console.log(pipelineReport.add("search", line));
+      /**
+       * RONDE 140 — the two rights-check lists, for the two sources that carry no proof.
+       *
+       * `formatYoutubeUsageReport` has existed since RONDE 124 and was never called once. It was
+       * written to be the starting point of a manual rights check, and a report nobody prints is
+       * not a starting point for anything — which matters a great deal more now that the operator
+       * may switch the blanket YouTube authorisation on (its flag lives in youtubeLicenseStatus.ts,
+       * where RONDE 147 put it, and is deliberately not named here) and needs to be able to see
+       * what that decision actually admitted.
+       *
+       * Both lists are built from the ledger rather than from a new collector: `finalVideoAt` is
+       * already the record of what reached the delivered file, and a second count of the same
+       * thing is exactly how two numbers start disagreeing.
+       *
+       * What the YouTube entries deliberately do NOT claim: a licence. The ledger records where a
+       * clip came from, not which licence pass found it, and YouTube's own
+       * `videoLicense=creativeCommon` filter is YouTube's assertion rather than a verification
+       * FastVid performed. So every live-YouTube clip is reported UNVERIFIED with a null licence,
+       * which is precisely what is known about it. (The archive `youtube-*` route is the one with
+       * real metadata, and it has said so on its own line since RONDE 124.)
+       */
+      {
+        const rendered = allRecords.filter((r) => r.finalVideoAt != null);
+        const verdictOf = (r: { sceneIndex: number; beatIndex: number }) =>
+          verdictForRecord(r)?.verdict ?? "never_asked";
+        const youtubeEntries: YoutubeUsageEntry[] = rendered
+          .filter((r) => r.provider === "youtube_cc" && r.providerAssetId)
+          .map((r) => ({
+            sceneIndex: r.sceneIndex,
+            beatIndex: r.beatIndex,
+            youtubeVideoId: r.providerAssetId!,
+            title: r.assetTitle,
+            licenseStatus: "UNVERIFIED" as const,
+            licenseUrl: null,
+            rights: null,
+            previewStatus: "not_recorded",
+            visionVerdict: verdictOf(r),
+          }));
+        for (const line of formatYoutubeUsageReport(youtubeEntries).split("\n")) {
+          console.log(pipelineReport.add("sourcing", line));
+        }
+        const openWebEntries: OpenWebUsageEntry[] = rendered
+          .filter((r) => r.provider === "serpapi")
+          .map((r) => ({
+            sceneIndex: r.sceneIndex,
+            beatIndex: r.beatIndex,
+            host: openWebHost(r.sourceUrl),
+            sourceUrl: r.sourceUrl ?? null,
+            title: r.assetTitle,
+            visionVerdict: verdictOf(r),
+          }));
+        for (const line of formatOpenWebUsageReport(openWebEntries).split("\n")) {
+          console.log(pipelineReport.add("sourcing", line));
+        }
+        console.log(
+          pipelineReport.add(
+            "sourcing",
+            formatOpenWebPolicyReport(visualDedup.openWebPolicyStats)
+          )
+        );
+      }
       const reconciliation = ledger.reconcile();
       for (const line of formatAuditReport(reconciliation)) console.log(pipelineReport.add("sourcing", line));
       /**
