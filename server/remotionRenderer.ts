@@ -51,7 +51,10 @@ import {
   type RemotionGraphicsProps,
   type RemotionWordTiming,
 } from "./remotionProps";
-import { RENDERABLE_GRAPHICS } from "./remotion/components/Graphics";
+import {
+  graphicIsRenderable,
+  RENDERABLE_GRAPHICS as RENDERABLE_GRAPHIC_TYPES,
+} from "./remotion/components/Graphics";
 
 /* ═══════════════════════ the browser ═══════════════════════ */
 
@@ -142,12 +145,19 @@ export function hasGraphicsLayer(timeline: ProjectTimeline): boolean {
 export function remotionUnsupported(props: RemotionGraphicsProps): string[] {
   const out: string[] = [];
   for (const g of props.graphics) {
-    const known = RENDERABLE_GRAPHICS.has(g.graphicType);
-    const hasWords = Boolean(g.label?.trim());
-    if (known && hasWords) continue;
+    /**
+     * RONDE 155 — the SAME function the component uses to decide.
+     *
+     * This used to ask a narrower question (is the type known, and does it have a label), which
+     * was right when every graphic was words on screen. A chart is not: it needs values, a map
+     * needs a coordinate, a shape needs a path this build has. When the two questions drifted
+     * apart, an empty bar chart with a label counted as drawn and appeared nowhere.
+     */
+    if (graphicIsRenderable(g.graphicType, g.data, g.label)) continue;
+    const known = RENDERABLE_GRAPHIC_TYPES.has(g.graphicType);
     out.push(
       `unsupported_graphic ${g.graphicType} (${g.id})` +
-        (known ? " — no text in its payload" : " — no component draws this type") +
+        (known ? " — its payload has nothing to draw" : " — no component draws this type") +
         (g.reason ? ` — planner's reason: ${g.reason}` : "") +
         " — payload kept on the timeline, nothing drawn in its place"
     );
@@ -277,8 +287,8 @@ export async function renderGraphicsOverlay(
     heightPx: props.height,
     textsDrawn: props.texts.length,
     captionsDrawn: props.captions.length,
-    graphicsDrawn: props.graphics.filter(
-      (g) => RENDERABLE_GRAPHICS.has(g.graphicType) && Boolean(g.label?.trim())
+    graphicsDrawn: props.graphics.filter((g) =>
+      graphicIsRenderable(g.graphicType, g.data, g.label)
     ).length,
     skipped,
     browserExecutable,

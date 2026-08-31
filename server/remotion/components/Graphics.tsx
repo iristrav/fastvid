@@ -22,6 +22,19 @@ import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion";
 import { animationAt } from "./animation";
 import { positionStyle, type TextStyleLike } from "./Text";
+import {
+  BarChart,
+  DonutChart,
+  LineChart,
+  MapPoint,
+  PercentageRing,
+  RouteMap,
+  Shape,
+  SHAPE_PATHS,
+  chartPayloadIsRenderable,
+  readNumber,
+  readText,
+} from "./Charts";
 
 export type GraphicSpec = {
   id: string;
@@ -58,12 +71,71 @@ export const RENDERABLE_GRAPHICS: ReadonlySet<string> = new Set([
   "badge",
   "counter",
   "text",
+  /* ── RONDE 155/155B — cards, charts, maps and shapes ──────────────────────────────────────
+   *
+   * `map_point`, `route` and `multi_point` are now HERE, where RONDE 150 deliberately left them
+   * out. What changed is not the rule but the fact behind it: there is now a real component that
+   * draws an abstract coordinate map from the planner's own normX/normY. §14 forbids pretending
+   * to have geographic data; it does not forbid drawing the data that genuinely exists.
+   *
+   * A graphic of these types with no usable payload is STILL unsupported — see
+   * `chartPayloadIsRenderable`, which the renderer and the component both consult.
+   */
+  "date_card",
+  "stat",
+  "progress",
+  "warning",
+  "timeline_event",
+  "bar_chart",
+  "horizontal_bar",
+  "line_chart",
+  "pie_chart",
+  "donut_chart",
+  "percentage_ring",
+  "map_point",
+  "route",
+  "multi_point",
+  "shape",
+  "icon",
 ]);
 
+/**
+ * Graphic types whose renderability depends on their PAYLOAD, not just their name.
+ *
+ * A bar chart is drawable if and only if it has values; a map point if and only if it has a
+ * coordinate. Text-shaped graphics answer the same question by having words, which is what
+ * `readString` already checks — these need a different one.
+ */
+export const DATA_DRIVEN_GRAPHICS: ReadonlySet<string> = new Set([
+  "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart",
+  "percentage_ring", "map_point", "route", "multi_point",
+]);
+
+/** Graphic types drawn as a shape rather than as words. */
+export const SHAPE_GRAPHICS: ReadonlySet<string> = new Set(["shape", "icon"]);
+
+/**
+ * Can this specific graphic be drawn, payload and all?
+ *
+ * One answer, used by the component to decide and by the renderer to report, so the two can never
+ * disagree about whether something was drawn.
+ */
+export function graphicIsRenderable(
+  graphicType: string,
+  data: Record<string, unknown>,
+  label: string | null
+): boolean {
+  if (!RENDERABLE_GRAPHICS.has(graphicType)) return false;
+  if (DATA_DRIVEN_GRAPHICS.has(graphicType)) return chartPayloadIsRenderable(graphicType, data);
+  if (SHAPE_GRAPHICS.has(graphicType)) {
+    const name = readText(data, "shape", "icon", "name") ?? label ?? "";
+    return name in SHAPE_PATHS;
+  }
+  return Boolean(label?.trim() || readText(data, "label", "text", "title"));
+}
+
 export function unsupportedGraphicsIn(graphics: readonly GraphicSpec[]): GraphicSpec[] {
-  return graphics.filter(
-    (g) => !RENDERABLE_GRAPHICS.has(g.graphicType) || !readString(g, "label", "text", "title")
-  );
+  return graphics.filter((g) => !graphicIsRenderable(g.graphicType, g.data, g.label));
 }
 
 /** Read the first named field that is a non-empty string. Never falls back to a made-up value. */
@@ -179,34 +251,96 @@ const QuoteCard: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }
  */
 export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
   const primary = readString(g, "label", "text", "title", "locationName", "location", "name", "caption");
-  // No words, no card. The caller reports it; drawing the type name would be inventing content.
-  if (!primary || !RENDERABLE_GRAPHICS.has(g.graphicType)) return null;
+  /**
+   * One gate for every kind of graphic, payload included.
+   *
+   * A card needs words; a chart needs values; a map needs a coordinate; a shape needs a name this
+   * build has a path for. `graphicIsRenderable` answers all four, and the renderer calls the same
+   * function to decide what to report — so a graphic is never drawn without being reportable, or
+   * reported as drawn without appearing.
+   */
+  if (!graphicIsRenderable(g.graphicType, g.data, g.label)) return null;
 
   const fontSizePx = g.style?.fontSizePx ?? 46;
   const position = g.style?.position ?? (g.graphicType === "lower_third" ? "lower_third" : "bottom");
 
+  /**
+   * The words a text-shaped graphic draws.
+   *
+   * `graphicIsRenderable` has already established that a text-shaped type HAS words, so this is
+   * never empty for the branches that use it. Charts, maps and shapes ignore it entirely — they
+   * draw from `g.data`.
+   */
+  const words = primary ?? "";
+
   let body: React.ReactNode;
   switch (g.graphicType) {
+    /* ── RONDE 155B — charts, maps and shapes draw from the payload ─────────────────────── */
+    case "bar_chart":
+      body = <BarChart data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "horizontal_bar":
+      body = <BarChart data={g.data} durationInFrames={g.durationInFrames} horizontal />;
+      break;
+    case "line_chart":
+      body = <LineChart data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "pie_chart":
+      body = <DonutChart data={g.data} durationInFrames={g.durationInFrames} filled />;
+      break;
+    case "donut_chart":
+      body = <DonutChart data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "percentage_ring":
+    case "progress":
+      body = <PercentageRing data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "map_point":
+      body = <MapPoint data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "route":
+      body = <RouteMap data={g.data} durationInFrames={g.durationInFrames} />;
+      break;
+    case "multi_point":
+      body = <RouteMap data={g.data} durationInFrames={g.durationInFrames} pointsOnly />;
+      break;
+    case "shape":
+    case "icon":
+      body = (
+        <Shape
+          shape={readText(g.data, "shape", "icon", "name") ?? g.label ?? ""}
+          durationInFrames={g.durationInFrames}
+          colour={g.style?.color}
+        />
+      );
+      break;
+    /**
+     * A stat is a number with a label under it, and it reads the SAME payload a counter does — so
+     * it counts when the payload says from/to and simply shows the number when it does not.
+     */
+    case "stat":
+      body = <NumberCounter g={g} primary={words || String(readNumber(g.data, "value") ?? "")} />;
+      break;
     case "location_card":
-      body = <LocationCard g={g} primary={primary} />;
+      body = <LocationCard g={g} primary={words} />;
       break;
     case "lower_third":
     case "name":
-      body = <LowerThird g={g} primary={primary} />;
+      body = <LowerThird g={g} primary={words} />;
       break;
     case "counter":
     case "statistic":
-      body = <NumberCounter g={g} primary={primary} />;
+      body = <NumberCounter g={g} primary={words} />;
       break;
     case "quote":
-      body = <QuoteCard g={g} primary={primary} />;
+      body = <QuoteCard g={g} primary={words} />;
       break;
     case "chapter_card":
     case "chapter_title":
       body = (
         <div style={{ textAlign: "center" }}>
           <div style={{ fontFamily: CARD_FONT, fontSize: "1.2em", fontWeight: 800, color: "white", letterSpacing: "0.06em" }}>
-            {primary.toUpperCase()}
+            {words.toUpperCase()}
           </div>
           <div style={{ height: 3, width: 90, background: "#ffd54a", margin: "14px auto 0" }} />
         </div>

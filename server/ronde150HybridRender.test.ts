@@ -40,7 +40,7 @@ import {
   resolveRemotionBrowser,
   RemotionUnavailableError,
 } from "./remotionRenderer";
-import { RENDERABLE_GRAPHICS } from "./remotion/components/Graphics";
+import { RENDERABLE_GRAPHICS, graphicIsRenderable } from "./remotion/components/Graphics";
 import { renderTimeline } from "./timelineRenderer";
 import { RENDER_PHASES, progressForPhase } from "./renderJobs";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
@@ -181,10 +181,27 @@ describe("RONDE 150 §5 — Remotion receives the graphics layer and nothing els
 /* ═══════════════════════ §12 — a map is never faked ═══════════════════════ */
 
 describe("RONDE 150 §12 — an undrawable graphic is reported, never substituted", () => {
-  it("a map is not in the renderable set — deliberately", () => {
+  /**
+   * RONDE 155 changed the answer for `route`, and the RULE is what stayed the same.
+   *
+   * When this was written no component could draw a map, so the type was absent from the vocabulary
+   * and that absence WAS the honesty. RONDE 155B added a real component that draws an abstract
+   * coordinate map — a graticule and a marker at the planner's own normX/normY — so `route` and
+   * `map_point` are now renderable when they carry coordinates.
+   *
+   * §14 forbids pretending to have geographic data, not drawing the data that genuinely exists. A
+   * map graphic with only a place NAME still cannot be drawn, and the assertion below is now about
+   * the payload rather than about the type — which is the stronger form of the same rule.
+   */
+  it("a map without coordinates is still refused; the plain `map` type has no component at all", () => {
     expect(RENDERABLE_GRAPHICS.has("map")).toBe(false);
-    expect(RENDERABLE_GRAPHICS.has("route")).toBe(false);
     expect(RENDERABLE_GRAPHICS.has("lower_third")).toBe(true);
+    // Renderable as a TYPE, but only with a payload that actually locates something.
+    expect(RENDERABLE_GRAPHICS.has("route")).toBe(true);
+    expect(graphicIsRenderable("route", { label: "Berlin to Moscow" }, "Berlin to Moscow")).toBe(false);
+    expect(
+      graphicIsRenderable("route", { points: [{ normX: 0.2, normY: 0.3 }, { normX: 0.8, normY: 0.4 }] }, null)
+    ).toBe(true);
   });
 
   it("reports a map with the planner's own reason, and keeps its payload", () => {
@@ -215,7 +232,11 @@ describe("RONDE 150 §12 — an undrawable graphic is reported, never substitute
       graphics: [{ id: "g9", graphicType: "location_card", label: "", data: {}, start: 0, end: 1 }],
     });
     const unsupported = remotionUnsupported(timelineToRemotionProps({ timeline: t }));
-    expect(unsupported[0]).toContain("no text in its payload");
+    /**
+     * The wording generalised in RONDE 155: "no text" was right when every graphic was words, and
+     * is wrong for a chart, whose payload holds values. The property under test is unchanged.
+     */
+    expect(unsupported[0]).toContain("its payload has nothing to draw");
     // The failure §12 names by hand: never the word "location_card" on screen.
     expect(unsupported[0]).not.toMatch(/drawn as/);
   });
