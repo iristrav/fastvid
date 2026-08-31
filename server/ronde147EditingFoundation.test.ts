@@ -27,7 +27,6 @@ import * as path from "path";
 import ffmpegStatic from "ffmpeg-static";
 
 import {
-  DEFAULT_CAPTION_STYLE,
   DEFAULT_FORMAT,
   DEFAULT_TEXT_STYLE,
   TIMELINE_SCHEMA_VERSION,
@@ -44,10 +43,10 @@ import {
   validateTimeline,
 } from "./timelineValidator";
 import {
-  formatRehydration,
+  cacheIdentityKey,
   formatRehydrationSummary,
   providerIsRehydratable,
-  rehydrateAsset,
+  rehydrateTimelineAssets,
   rehydratedFileName,
   rehydrationUrlFor,
 } from "./assetRehydrator";
@@ -182,7 +181,8 @@ describe("PHASE 9 — the timeline validator reports and never repairs", () => {
   it("a gap is caught — and is reported WITHOUT blocking the render", () => {
     /**
      * A gap produces black, which is visible and recoverable. Refusing to render because of one
-     * would make a small imperfection cost the whole render, so it is the single non-blocking code.
+     * would make a small imperfection cost the whole render, so it is reported without blocking —
+     * as is `caption_overlap`, for the same reason. Everything else stops the render.
      */
     const t = goodTimeline();
     const track = t.tracks.find((x) => x.kind === "VIDEO");
@@ -294,15 +294,13 @@ describe("PHASE 9 — the timeline validator reports and never repairs", () => {
 
 /* ═══════════════════════ PHASE 6/7 — the rehydrator ═══════════════════════ */
 
-describe("PHASE 6 — an identity becomes a file again", () => {
-  const deps = (over: Partial<Parameters<typeof rehydrateAsset>[0]["deps"]> = {}) => ({
-    download: async (_url: string, dest: string) => {
-      fs.writeFileSync(dest, Buffer.alloc(2048, 5));
-      return true;
-    },
-    ...over,
-  });
-
+/**
+ * The rehydrator's BEHAVIOUR — cache order, provider auth, YouTube authorisation, corrupt files,
+ * "asset B is never used for asset A" — is proven in `ronde147AssetRehydration.test.ts`, TEST 1–12.
+ * What stays here is the part this file is about: the pure functions the rest of the chain reads,
+ * with no I/O and no dependencies.
+ */
+describe("PHASE 6 — the identity → URL rules, as pure functions", () => {
   it("every provider the audit called rehydratable is supported", () => {
     for (const p of [
       "curated", "archive", "wikimedia", "loc", "internet_archive",
@@ -350,149 +348,26 @@ describe("PHASE 6 — an identity becomes a file again", () => {
     expect(rehydrationUrlFor({ provider: "wikimedia" })).toBeNull();
   });
 
-  it("REAL I/O: a download produces a validated local file", async () => {
-    const result = await rehydrateAsset({
-      identity: { provider: "loc", providerAssetId: "item/1", mediaUrl: "https://loc/x.mp4" },
-      workDir: path.join(ROOT, "rehy1"),
-      deps: deps({ validate: async () => true }),
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(fs.existsSync(result.localPath)).toBe(true);
-    expect(fs.statSync(result.localPath).size).toBe(2048);
-    expect(result.via).toBe("provider");
-  });
-
-  it("the existing media_asset_cache is consulted BEFORE the provider", async () => {
-    // §13: geen tweede asset cache. The cache that exists is spent, not reimplemented.
-    let downloads = 0;
-    const result = await rehydrateAsset({
-      identity: { provider: "nasa", providerAssetId: "n1", mediaUrl: "https://nasa/x.mp4" },
-      workDir: path.join(ROOT, "rehy2"),
-      deps: {
-        cacheRestore: async (_u, dest) => {
-          fs.writeFileSync(dest, Buffer.alloc(512, 1));
-          return true;
-        },
-        download: async () => {
-          downloads++;
-          return true;
-        },
-      },
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.via).toBe("cache");
-    expect(downloads, "the provider was called despite a cache hit").toBe(0);
-  });
-
-  it("a file already on disk is used without any network at all", async () => {
-    const existing = path.join(ROOT, "already.mp4");
-    fs.writeFileSync(existing, Buffer.alloc(10, 1));
-    let downloads = 0;
-    const result = await rehydrateAsset({
-      identity: { provider: "pexels", providerAssetId: "1", mediaUrl: "https://x/y.mp4" },
-      workDir: path.join(ROOT, "rehy3"),
-      existingLocalPath: existing,
-      deps: { download: async () => { downloads++; return true; } },
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.via).toBe("already_local");
-    expect(downloads).toBe(0);
-  });
-
-  it("§15: A FAILURE NAMES THE ASSET AND SUBSTITUTES NOTHING", async () => {
+  it("§5: THE CACHE KEY IS THE IDENTITY, so an expiring URL cannot fragment it", () => {
     /**
-     * The rule that matters most. Quietly rendering a different clip is the single worst thing a
-     * re-render could do to someone's video, so every failure is an explicit result carrying the
-     * provider and the id.
+     * The same Pexels clip handed out under two CDN links is ONE asset. Keying the cache on the URL
+     * would store it twice and hit neither; keying it on provider:id is why the cache works at all
+     * across renders.
      */
-    const result = await rehydrateAsset({
-      identity: { provider: "pexels", providerAssetId: "3195394", mediaUrl: "https://x/y.mp4" },
-      workDir: path.join(ROOT, "rehy4"),
-      deps: { download: async () => false },
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reason).toBe("download_failed");
-    expect(result.identity.providerAssetId).toBe("3195394");
-    const line = formatRehydration(result);
-    expect(line).toContain("FAILED");
-    expect(line).toContain("provider=pexels");
-    expect(line).toContain("assetId=3195394");
-  });
-
-  it("a file that fails the EXISTING technical gate is refused, not used", async () => {
-    const result = await rehydrateAsset({
-      identity: { provider: "loc", providerAssetId: "i", mediaUrl: "https://loc/x.mp4" },
-      workDir: path.join(ROOT, "rehy5"),
-      deps: deps({ validate: async () => false }),
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("failed_validation");
-  });
-
-  it("an unrecoverable identity is refused before anything is attempted", async () => {
-    let downloads = 0;
-    const result = await rehydrateAsset({
-      identity: { provider: "wikimedia" },
-      workDir: path.join(ROOT, "rehy6"),
-      deps: { download: async () => { downloads++; return true; } },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("not_rehydratable");
-    expect(downloads).toBe(0);
-  });
-
-  it("PHASE 7: YouTube goes through the EXISTING route, or is refused", async () => {
-    /**
-     * §7 — no new downloader. Without the existing resolver there is no licence decision and no
-     * operator authorisation, so the answer is a refusal that says exactly that, never a direct
-     * fetch that would bypass the machtigingsmodel.
-     */
-    const noResolver = await rehydrateAsset({
-      identity: { provider: "youtube_cc", providerAssetId: "cS2JdEghHDo" },
-      workDir: path.join(ROOT, "yt1"),
-      deps: { download: async () => true },
-    });
-    expect(noResolver.ok).toBe(false);
-    if (!noResolver.ok) {
-      expect(noResolver.reason).toBe("authorization_refused");
-      expect(noResolver.detail).toContain("operator-authorisation");
-    }
-
-    let seenVideoId = "";
-    const withResolver = await rehydrateAsset({
-      identity: { provider: "youtube_cc", providerAssetId: "cS2JdEghHDo" },
-      workDir: path.join(ROOT, "yt2"),
-      deps: {
-        download: async () => false,
-        youtubeResolver: async (videoId, dest) => {
-          seenVideoId = videoId;
-          fs.writeFileSync(dest, Buffer.alloc(64, 2));
-          return true;
-        },
-      },
-    });
-    expect(withResolver.ok).toBe(true);
-    expect(seenVideoId, "the videoId is the handle, not a stream URL").toBe("cS2JdEghHDo");
+    const monday = { provider: "pexels", providerAssetId: "3195394", mediaUrl: "https://cdn/a.mp4?exp=1" };
+    const friday = { provider: "pexels", providerAssetId: "3195394", mediaUrl: "https://cdn/b.mp4?exp=2" };
+    expect(cacheIdentityKey(friday)).toBe(cacheIdentityKey(monday));
+    expect(cacheIdentityKey(monday)).not.toBe(
+      cacheIdentityKey({ provider: "pexels", providerAssetId: "999" })
+    );
+    // §16 — an identity is all that is ever keyed on; no credential can reach the key.
+    expect(cacheIdentityKey(monday)).not.toContain("exp=");
   });
 
   it("the filename is stable across renders and distinct per asset", () => {
     const a = { provider: "pexels", providerAssetId: "1" };
     expect(rehydratedFileName(a)).toBe(rehydratedFileName(a));
     expect(rehydratedFileName(a)).not.toBe(rehydratedFileName({ provider: "pexels", providerAssetId: "2" }));
-  });
-
-  it("the summary counts where the bytes came from", () => {
-    const line = formatRehydrationSummary([
-      { ok: true, localPath: "/a", via: "cache", identity: { provider: "p" } },
-      { ok: true, localPath: "/b", via: "provider", identity: { provider: "p" } },
-      { ok: false, reason: "download_failed", detail: "", identity: { provider: "p" } },
-    ]);
-    expect(line).toContain("requested=3");
-    expect(line).toContain("recovered=2");
-    expect(line).toContain("failed=1");
-    expect(line).toContain("cache=1");
   });
 });
 
@@ -687,30 +562,32 @@ describe("END TO END — identity → rehydrate → validate → render → MP4"
 
     // 2. rehydrate every clip from its identity alone
     const workDir = path.join(ROOT, "e2e_work");
+    /**
+     * Keyed on the URL the rehydrator DERIVES, not on the id — because that derivation is the
+     * thing under test. Wikimedia becomes Special:FilePath/A.mp4 from the title alone; `loc` keeps
+     * its stored media URL, which shares nothing with its id "item/2".
+     */
     const bySource = new Map<string, string>([
-      ["File:A.mp4", SOURCE_A],
-      ["item/2", SOURCE_B],
+      ["Special:FilePath/A.mp4", SOURCE_A],
+      ["https://loc/b.mp4", SOURCE_B],
     ]);
-    const recovered = new Map<string, string>();
-    const results = [];
-    for (const clip of track && track.kind === "VIDEO" ? track.clips : []) {
-      const result = await rehydrateAsset({
-        identity: clip.source,
-        workDir,
-        deps: {
-          download: async (_url, dest) => {
-            const src = bySource.get(clip.source.providerAssetId ?? "");
-            if (!src) return false;
-            fs.copyFileSync(src, dest);
-            return true;
-          },
-          validate: async (p) => fs.existsSync(p) && fs.statSync(p).size > 1000,
+    const rehydration = await rehydrateTimelineAssets({
+      timeline: t,
+      workDir,
+      deps: {
+        download: async (url, dest) => {
+          // Stands in for the network: the URL the rehydrator derived decides which file arrives.
+          const src = [...bySource.entries()].find(([key]) => url.includes(key))?.[1];
+          if (!src) return false;
+          fs.copyFileSync(src, dest);
+          return true;
         },
-      });
-      results.push(result);
-      if (result.ok) recovered.set(clip.id, result.localPath);
-    }
-    expect(formatRehydrationSummary(results)).toContain("recovered=2");
+      },
+    });
+    expect(rehydration.failures).toEqual([]);
+    expect(rehydration.ok).toBe(true);
+    expect(formatRehydrationSummary(rehydration)[0]).toContain("recovered=2");
+    const recovered = rehydration.byClipId;
 
     // 3. render from the rehydrated files
     const out = path.join(ROOT, "e2e.mp4");

@@ -275,7 +275,16 @@ async function renderSegment(
     args.push("-loop", "1", "-t", dur.toFixed(3), "-i", localMedia);
   } else {
     // -stream_loop -1 makes a short source fill its slot; -t bounds it to the slot exactly.
-    args.push("-stream_loop", "-1", "-ss", Math.max(0, clip.sourceIn).toFixed(3),
+    /**
+     * RONDE 147 §15 — an ABSENT trim means "nobody wrote it down", and the renderer says what it
+     * does about that rather than pretending it was zero.
+     *
+     * Starting at 0 is the right behaviour for a source whose trim was never recorded — it is the
+     * only defensible default — but it is the RENDERER's decision, taken here, and not a value the
+     * validator or the rehydrator invented upstream and passed along as if it were known.
+     */
+    const startAt = clip.sourceIn != null ? Math.max(0, clip.sourceIn) : 0;
+    args.push("-stream_loop", "-1", "-ss", startAt.toFixed(3),
       "-t", dur.toFixed(3), "-i", localMedia);
   }
   args.push(

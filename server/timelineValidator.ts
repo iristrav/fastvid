@@ -18,15 +18,14 @@
  *
  * ── What counts as a fault, and what deliberately does not ───────────────────────────────────
  *
- * Overlaps and gaps on the VIDEO track are faults, because that track is concatenated: two clips
- * claiming the same second cannot both be shown, and an unclaimed second is a hole. On the TEXT,
- * CAPTIONS and GRAPHICS tracks they are not faults at all — overlapping text is a legitimate
- * composition, and a silent stretch between two captions is what silence looks like.
- *
- * Audio is between the two: SFX overlap freely, and it is normal for a music bed to run under
- * everything. So only ordering and range are checked there.
+ * Which faults exist depends on the track, so the per-track rules are written down as data in
+ * `TRACK_POLICY` below rather than left implicit in the shape of the checking code. Each entry
+ * carries the reason, and every reason is read off what `timelineRenderer.ts` actually does with
+ * that track — concat for VIDEO, amix for the audio tracks, libass for the text ones — not off a
+ * general theory of how editing ought to work.
  */
 import {
+  TIMELINE_SCHEMA_VERSION,
   audioTrackOf,
   captionTrack,
   textTrackOf,
@@ -37,11 +36,21 @@ import {
   type TimelineText,
   type TimelineVideoClip,
 } from "./projectTimeline";
-import { canRehydrate } from "./projectTimeline";
+/**
+ * The validator asks the two modules that will actually do the work, rather than keeping its own
+ * idea of what is recoverable. `identityIsRehydratable` knows what a usable handle looks like;
+ * `providerIsRehydratable` knows which providers have a route at all. A private third answer here
+ * is how a timeline passes validation and dies ten minutes into the render.
+ */
+import { identityIsRehydratable } from "./assetIdentity";
+import { providerIsRehydratable } from "./assetRehydrator";
 
 export type TimelineIssueCode =
   | "negative_duration"
   | "end_before_start"
+  | "non_finite_time"
+  | "unsupported_schema_version"
+  | "caption_overlap"
   | "zero_duration"
   | "invalid_source_range"
   | "source_out_before_in"
@@ -93,6 +102,73 @@ export function formatTimelineIssue(issue: TimelineIssue): string {
 /** Seconds under which two boundaries are the same instant. One frame at 30fps is 0.0333. */
 const EPSILON = 0.012;
 
+/* ═══════════════════════ §11/§12 — the track policy, written down ═══════════════════════ */
+
+export type TrackPolicy = {
+  /**
+   * `exclusive` — two elements may not claim the same instant.
+   * `allowed`   — they may, and the renderer composes them.
+   */
+  overlap: "exclusive" | "allowed";
+  /** Whether an unclaimed stretch is a fault or simply what that track sounds/looks like. */
+  gap: "fault" | "normal";
+  /** Reported without blocking, so an operator can see it without it costing the render. */
+  overlapAdvisory?: boolean;
+  /** WHY — read off the renderer, not chosen. */
+  because: string;
+};
+
+/**
+ * Derived from what `timelineRenderer.ts` actually does with each track — deliberately not from a
+ * general theory of editing. The brief asked for the rules to be explicit rather than implied by
+ * the shape of the checking code, and this is that list:
+ *
+ *   VIDEO             rendered as segments joined by concat (`renderTimeline`, phase 1→2). A
+ *                     concatenated track shows exactly one picture at a time, so a second clip
+ *                     claiming the same instant cannot be honoured and a hole shows as black.
+ *   VOICE/MUSIC/SFX   all three are collected into ONE `amix=inputs=N` filter with per-clip
+ *                     `adelay` and `volume`. The mixer supports overlap, so overlap is legal here
+ *                     as a matter of fact, not of taste — a music bed under narration is the
+ *                     normal case. Silence between clips is silence.
+ *   CAPTIONS/TEXT/    all drawn by libass in one pass; overlapping events are composited. Legal,
+ *   GRAPHICS          but two captions on screen at once is usually a planner mistake, so CAPTIONS
+ *                     overlap is REPORTED and never blocks.
+ */
+export const TRACK_POLICY: Readonly<Record<TimelineIssue["track"], TrackPolicy>> = {
+  VIDEO: {
+    overlap: "exclusive", gap: "fault",
+    because: "segments are joined with concat; one picture at a time, and a hole renders black",
+  },
+  VOICE: {
+    overlap: "allowed", gap: "normal",
+    because: "mixed with amix, so simultaneous voice clips are summed rather than lost",
+  },
+  MUSIC: {
+    overlap: "allowed", gap: "normal",
+    because: "mixed with amix; a bed running under everything else is the intended use",
+  },
+  SFX: {
+    overlap: "allowed", gap: "normal",
+    because: "mixed with amix; overlapping effects are ordinary",
+  },
+  CAPTIONS: {
+    overlap: "allowed", gap: "normal", overlapAdvisory: true,
+    because: "libass composites overlapping events, but two captions at once usually means a planning error",
+  },
+  TEXT: {
+    overlap: "allowed", gap: "normal",
+    because: "libass composites; a title over a lower third is a legitimate composition",
+  },
+  GRAPHICS: {
+    overlap: "allowed", gap: "normal",
+    because: "libass composites; graphics are meant to sit over other elements",
+  },
+  TIMELINE: {
+    overlap: "allowed", gap: "normal",
+    because: "not a track — the bucket for faults that belong to the document as a whole",
+  },
+};
+
 function checkRange(
   track: TimelineIssue["track"],
   id: string,
@@ -100,10 +176,20 @@ function checkRange(
   end: number,
   issues: TimelineIssue[]
 ): void {
+  /**
+   * §10 — NaN and Infinity get their OWN code.
+   *
+   * They used to be filed as `end_before_start`, which reads like an ordering mistake and sends
+   * whoever is debugging to the wrong place. `NaN` on a boundary is a different disease: every
+   * comparison against it is false, so it slips silently past every ordering check written after
+   * this one and reaches ffmpeg as the string "NaN".
+   */
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
     issues.push({
-      code: "end_before_start", track, elementId: id, start, end,
-      reason: "start or end is not a finite number",
+      code: "non_finite_time", track, elementId: id, start, end,
+      reason:
+        `start=${String(start)} end=${String(end)} — not finite numbers; no comparison against ` +
+        "these is meaningful and ffmpeg would receive the literal text",
     });
     return;
   }
@@ -130,26 +216,46 @@ function checkRange(
 function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void {
   checkRange("VIDEO", clip.id, clip.timelineStart, clip.timelineEnd, issues);
 
-  if (!Number.isFinite(clip.sourceIn) || !Number.isFinite(clip.sourceOut)) {
+  /**
+   * §15 — AN ABSENT TRIM IS NOT ZERO, AND IS NOT A FAULT.
+   *
+   * `sourceIn`/`sourceOut` are optional because most of the pipeline does not record them yet.
+   * Absent means "unknown", and the validator must neither read it as 0 nor report it as an
+   * error — doing either would turn a gap in the instrumentation into a wrong number or a false
+   * alarm. Only a trim that IS present gets checked.
+   */
+  const hasIn = clip.sourceIn != null;
+  const hasOut = clip.sourceOut != null;
+  if (hasIn && !Number.isFinite(clip.sourceIn)) {
     issues.push({
       code: "invalid_source_range", track: "VIDEO", elementId: clip.id,
-      start: clip.sourceIn, end: clip.sourceOut,
-      reason: "sourceIn/sourceOut is not a finite number",
+      start: null, end: null,
+      reason: `sourceIn is ${String(clip.sourceIn)}`,
     });
-    return;
   }
-  if (clip.sourceIn < 0) {
+  if (hasOut && !Number.isFinite(clip.sourceOut)) {
+    issues.push({
+      code: "invalid_source_range", track: "VIDEO", elementId: clip.id,
+      start: null, end: null,
+      reason: `sourceOut is ${String(clip.sourceOut)}`,
+    });
+  }
+  if (hasIn && Number.isFinite(clip.sourceIn) && clip.sourceIn! < 0) {
     issues.push({
       code: "negative_source_in", track: "VIDEO", elementId: clip.id,
-      start: clip.sourceIn, end: clip.sourceOut,
-      reason: `sourceIn is negative (${clip.sourceIn.toFixed(3)}s)`,
+      start: clip.sourceIn!, end: clip.sourceOut ?? null,
+      reason: `sourceIn is negative (${clip.sourceIn!.toFixed(3)}s)`,
     });
   }
-  if (clip.sourceOut <= clip.sourceIn) {
+  if (
+    hasIn && hasOut &&
+    Number.isFinite(clip.sourceIn) && Number.isFinite(clip.sourceOut) &&
+    clip.sourceOut! <= clip.sourceIn!
+  ) {
     issues.push({
       code: "source_out_before_in", track: "VIDEO", elementId: clip.id,
-      start: clip.sourceIn, end: clip.sourceOut,
-      reason: `sourceOut (${clip.sourceOut.toFixed(3)}s) is not after sourceIn (${clip.sourceIn.toFixed(3)}s)`,
+      start: clip.sourceIn!, end: clip.sourceOut!,
+      reason: `sourceOut (${clip.sourceOut!.toFixed(3)}s) is not after sourceIn (${clip.sourceIn!.toFixed(3)}s)`,
     });
   }
   /**
@@ -159,14 +265,28 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
    * is skipped with a reason). Catching it HERE means the operator finds out before ten minutes of
    * rendering rather than after.
    */
-  if (!canRehydrate(clip)) {
+  const where =
+    `provider=${clip.source.provider} ` +
+    `providerAssetId=${clip.source.providerAssetId ?? "null"} ` +
+    `archiveAssetId=${clip.source.archiveAssetId ?? "null"} ` +
+    `mediaUrl=${clip.source.mediaUrl ? "yes" : "null"}`;
+  if (!identityIsRehydratable(clip.source)) {
     issues.push({
       code: "missing_asset", track: "VIDEO", elementId: clip.id,
       start: clip.timelineStart, end: clip.timelineEnd,
-      reason:
-        `no way to fetch this asset: provider=${clip.source.provider} ` +
-        `providerAssetId=${clip.source.providerAssetId ?? "null"} ` +
-        `archiveAssetId=${clip.source.archiveAssetId ?? "null"} mediaUrl=${clip.source.mediaUrl ? "yes" : "null"}`,
+      reason: `no way to fetch this asset: ${where}`,
+    });
+  } else if (!providerIsRehydratable(clip.source.provider)) {
+    /**
+     * Separate branch, separate sentence: the handle is fine and the PROVIDER is the problem. A
+     * clip that says "some_new_api + a media URL" looks complete and is not recoverable, because
+     * no route was ever written for that provider — and the operator needs to be told which of the
+     * two it is, not just that something is missing.
+     */
+    issues.push({
+      code: "missing_asset", track: "VIDEO", elementId: clip.id,
+      start: clip.timelineStart, end: clip.timelineEnd,
+      reason: `no rehydration route exists for this provider: ${where}`,
     });
   }
 }
@@ -202,7 +322,11 @@ function checkVideoContinuity(
   timeline: ProjectTimeline,
   issues: TimelineIssue[]
 ): void {
-  const ordered = [...clips].sort((a, b) => a.timelineStart - b.timelineStart);
+  // The rule this function enforces, stated where it is enforced. See TRACK_POLICY.
+  if (TRACK_POLICY.VIDEO.overlap !== "exclusive") return;
+  const ordered = [...clips]
+    .filter((c) => Number.isFinite(c.timelineStart) && Number.isFinite(c.timelineEnd))
+    .sort((a, b) => a.timelineStart - b.timelineStart);
   for (let i = 1; i < ordered.length; i++) {
     const prev = ordered[i - 1]!;
     const cur = ordered[i]!;
@@ -296,6 +420,35 @@ function checkAudio(
   }
 }
 
+/**
+ * §12 — CAPTIONS overlap is legal and still worth saying out loud.
+ *
+ * libass will happily composite two subtitle events, and the result is two lines of narration on
+ * screen at once — always a planning error, never a style. Advisory, so it costs a render nothing.
+ */
+function checkCaptionOverlap(
+  captions: ReadonlyArray<TimelineCaption>,
+  issues: TimelineIssue[]
+): void {
+  if (!TRACK_POLICY.CAPTIONS.overlapAdvisory) return;
+  const ordered = [...captions]
+    .filter((c) => !c.disabled && Number.isFinite(c.start) && Number.isFinite(c.end))
+    .sort((a, b) => a.start - b.start);
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = ordered[i - 1]!;
+    const cur = ordered[i]!;
+    if (cur.start < prev.end - EPSILON) {
+      issues.push({
+        code: "caption_overlap", track: "CAPTIONS", elementId: cur.id,
+        start: cur.start, end: cur.end,
+        reason:
+          `overlaps ${prev.id} by ${(prev.end - cur.start).toFixed(3)}s — libass will draw both, ` +
+          "which puts two lines of narration on screen at the same time",
+      });
+    }
+  }
+}
+
 /** Two elements sharing an id make every later reference ambiguous. */
 function checkUniqueIds(timeline: ProjectTimeline, issues: TimelineIssue[]): void {
   const seen = new Map<string, TimelineIssue["track"]>();
@@ -337,6 +490,26 @@ export function validateTimeline(timeline: ProjectTimeline): TimelineValidation 
       reason: `durationSec is ${String(timeline.durationSec)}`,
     });
   }
+  /**
+   * §10 — an ABSENT schema version reads as 1; a version from the FUTURE is a fault.
+   *
+   * Everything written before RONDE 147 has no `schemaVersion`, and treating that as an error
+   * would condemn every existing timeline. A number ABOVE this build's is the opposite case: the
+   * document was written by a newer build and may carry fields this one drops on save, so it is
+   * refused rather than half-read.
+   */
+  const schema = timeline.schemaVersion ?? 1;
+  if (!Number.isInteger(schema) || schema < 1 || schema > TIMELINE_SCHEMA_VERSION) {
+    issues.push({
+      code: "unsupported_schema_version", track: "TIMELINE", elementId: null,
+      start: null, end: null,
+      reason:
+        `schemaVersion ${String(timeline.schemaVersion)} — this build reads up to ` +
+        `${TIMELINE_SCHEMA_VERSION}; reading a newer document would silently drop the fields it ` +
+        "has that this build does not know about",
+    });
+  }
+
   const fmt = timeline.format;
   if (!(fmt?.widthPx > 0) || !(fmt?.heightPx > 0) || !(fmt?.fps > 0)) {
     issues.push({
@@ -355,6 +528,7 @@ export function validateTimeline(timeline: ProjectTimeline): TimelineValidation 
   checkTextLike("TEXT", textTrackOf(timeline, "TEXT"), issues);
   checkTextLike("GRAPHICS", textTrackOf(timeline, "GRAPHICS"), issues);
   checkTextLike("CAPTIONS", captionTrack(timeline), issues);
+  checkCaptionOverlap(captionTrack(timeline), issues);
   for (const k of ["VOICE", "MUSIC", "SFX"] as const) {
     checkAudio(k, audioTrackOf(timeline, k), issues);
   }
@@ -371,7 +545,15 @@ export function validateTimeline(timeline: ProjectTimeline): TimelineValidation 
  * imperfection cost the whole render. Everything else stops the render, because everything else
  * produces a video that silently differs from what the timeline says.
  */
-export const NON_BLOCKING_ISSUES: ReadonlySet<TimelineIssueCode> = new Set(["video_gap"]);
+export const NON_BLOCKING_ISSUES: ReadonlySet<TimelineIssueCode> = new Set([
+  "video_gap",
+  /**
+   * §12 — advisory by policy. Two captions at once is almost always wrong, but it renders exactly
+   * as the timeline says it should, and refusing the whole video over it would be the validator
+   * making an editorial judgement instead of a technical one.
+   */
+  "caption_overlap",
+]);
 
 export function assertRenderableTimeline(timeline: ProjectTimeline): TimelineValidation {
   const result = validateTimeline(timeline);

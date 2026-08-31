@@ -90,9 +90,18 @@ export type TimelineVideoClip = {
   kind: "video" | "image";
   /** Where the media came from, and how to get it back. */
   source: AssetSourceIdentity;
-  /** In/out points WITHIN the source media, in seconds. */
-  sourceIn: number;
-  sourceOut: number;
+  /**
+   * In/out points WITHIN the source media, in seconds.
+   *
+   * RONDE 147 §15 — OPTIONAL, and absent is not zero.
+   *
+   * "we used the whole file" and "nobody wrote the trim down" are different facts, and a
+   * re-render has to tell them apart: the first means start at 0, the second means the renderer
+   * must decide what to do and say that it did. Typing these as required numbers forced every
+   * unknown trim to be spelled `0`, which is the silent invention §15 forbids.
+   */
+  sourceIn?: number;
+  sourceOut?: number;
   /** Absolute position on the timeline, in seconds. */
   timelineStart: number;
   timelineEnd: number;
@@ -306,13 +315,15 @@ export function renderSourceFor(clip: TimelineVideoClip): { url: string } | null
   return null;
 }
 
-/** Can this clip be fetched again from what the timeline wrote down? */
-export function canRehydrate(clip: TimelineVideoClip): boolean {
-  const s = clip.source;
-  return Boolean(
-    s.archiveAssetId != null || s.canonicalUrl || s.mediaUrl || (s.provider && s.providerAssetId)
-  );
-}
+/*
+ * "Can this clip be fetched again?" lives in `assetIdentity.identityIsRehydratable`, NOT here.
+ *
+ * A `canRehydrate` used to sit at this spot and it was a second, weaker answer to the same
+ * question: it accepted an UNVERIFIED provider that carried a media URL, while the rehydrator
+ * refuses exactly that clip. The validator asked the weak one, so a timeline could pass validation
+ * and then die at rehydration — the failure the validator exists to prevent. One definition, in
+ * the module that owns identities.
+ */
 
 /* ═══════════════════════ versioning ═══════════════════════ */
 
