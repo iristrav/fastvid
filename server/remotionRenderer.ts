@@ -232,7 +232,17 @@ export async function renderGraphicsOverlay(
    * combination nobody tested, on the video where it actually happened.
    */
   const lost = missingEditorialFields(params.timeline, props);
-  const skipped = [...remotionUnsupported(props), ...lost.map((l) => `LOST: ${l}`)];
+  /**
+   * RONDE 152 — a caption the layout engine could not place without an overlap is REPORTED here.
+   *
+   * It is still drawn: a crowded caption beats a missing one. What §152 forbids is the overlap
+   * going unmentioned, and `unresolvedCollisions` names the caption and what it clashes with.
+   */
+  const skipped = [
+    ...remotionUnsupported(props),
+    ...props.unresolvedCollisions,
+    ...lost.map((l) => `LOST: ${l}`),
+  ];
   console.log(formatRemotionProps(props));
 
   const serveUrl = params.serveUrl ?? (await bundleFastVid(params.cacheDir));

@@ -32,12 +32,23 @@
  * from a filled-in one.
  */
 import {
+  DEFAULT_TEXT_STYLE,
   captionTrack,
   graphicsTrack,
   textTrackOf,
   type ProjectTimeline,
   type TextStyle,
 } from "./projectTimeline";
+import {
+  boxForPosition,
+  formatUnresolvedCollision,
+  layoutCaption,
+  measureText,
+  type Obstacle,
+} from "./captionLayout";
+
+/** The style a graphic is measured at when it carries none of its own. */
+const DEFAULT_GRAPHIC_STYLE: TextStyle = { ...DEFAULT_TEXT_STYLE, fontSizePx: 46 };
 
 /* ═══════════════════════ the props Remotion receives ═══════════════════════ */
 
@@ -51,6 +62,17 @@ export type RemotionTextElement = {
   animation: string;
   /** Which family of text this is, so the component can style it: caption or free text. */
   role: "caption" | "text";
+  /* ── RONDE 152 ── */
+  /** How the caption is broken up over time. Absent means the whole sentence at once. */
+  mode?: string;
+  emphasisWordIndices?: number[];
+  /**
+   * Where `captionLayout` decided this goes, in pixels, after resolving collisions.
+   *
+   * Absent means "nothing was in the way, use the named position" — which is the common case and
+   * keeps a video with no graphics rendering exactly as it did before this round.
+   */
+  layout?: { x: number; y: number; width: number; height: number };
 };
 
 export type RemotionGraphic = {
@@ -83,6 +105,14 @@ export type RemotionGraphicsProps = {
   texts: RemotionTextElement[];
   graphics: RemotionGraphic[];
   words: RemotionWordTiming[];
+  /**
+   * RONDE 152 — captions the layout engine could not place without an overlap.
+   *
+   * On the props rather than thrown, because the caption is still DRAWN: a viewer who has to read a
+   * crowded caption is better served than one who gets none. What must not happen is the overlap
+   * going unmentioned, so the renderer copies these into its `skipped` report.
+   */
+  unresolvedCollisions: string[];
   /** Carried for the render log and the report; never used to make a picture. */
   meta: { videoId: number; timelineVersion: number; schemaVersion: number };
 };
@@ -109,20 +139,91 @@ export function timelineToRemotionProps(params: {
 }): RemotionGraphicsProps {
   const { timeline } = params;
   const fps = timeline.format.fps;
+  const unresolvedCollisions: string[] = [];
+
+  const frame = { widthPx: timeline.format.widthPx, heightPx: timeline.format.heightPx };
+
+  /**
+   * RONDE 152 — the obstacles a caption must not cover, measured as real boxes.
+   *
+   * Graphics and free text are obstacles; captions are not obstacles to each other by default,
+   * because two captions at once is a `caption_overlap` the validator already reports as advisory
+   * and re-solving it here would move captions the planner deliberately stacked.
+   */
+  const obstacles: Obstacle[] = [
+    ...graphicsTrack(timeline)
+      .filter((g) => !g.disabled && g.label?.trim())
+      .map((g) => {
+        const style = g.style ?? DEFAULT_GRAPHIC_STYLE;
+        const size = measureText(g.label!, style, frame);
+        return {
+          id: g.id,
+          kind: "graphic" as const,
+          box: boxForPosition(style.position, size, frame, style),
+          startSec: g.start,
+          endSec: g.end,
+        };
+      }),
+    ...textTrackOf(timeline, "TEXT")
+      .filter((t) => !t.disabled && t.text.trim())
+      .map((t) => ({
+        id: t.id,
+        kind: "text" as const,
+        box: boxForPosition(t.style.position, measureText(t.text, t.style, frame), frame, t.style),
+        startSec: t.start,
+        endSec: t.end,
+      })),
+  ];
 
   const textElement = (
-    el: { id: string; text: string; start: number; end: number; style: TextStyle; animation?: string },
+    el: {
+      id: string;
+      text: string;
+      start: number;
+      end: number;
+      style: TextStyle;
+      animation?: string;
+      mode?: string;
+      emphasisWordIndices?: number[];
+    },
     role: "caption" | "text"
-  ): RemotionTextElement => ({
-    id: el.id,
-    text: el.text,
-    fromFrame: toFrames(el.start, fps),
-    durationInFrames: Math.max(1, toFrames(Math.max(0, el.end - el.start), fps)),
-    style: el.style,
-    /** The renderer's existing default when a planner expressed no preference. Named, not silent. */
-    animation: el.animation ?? "fade",
-    role,
-  });
+  ): RemotionTextElement => {
+    /**
+     * Only CAPTIONS are laid out against the obstacles. A free text element IS an obstacle — moving
+     * it would mean moving the thing the caption was moved to avoid, and the two would chase each
+     * other around the frame.
+     */
+    const placed =
+      role === "caption"
+        ? layoutCaption({
+            text: el.text,
+            style: el.style,
+            startSec: el.start,
+            endSec: el.end,
+            frame,
+            obstacles,
+          })
+        : null;
+    if (placed?.unresolved) unresolvedCollisions.push(formatUnresolvedCollision(el.id, placed));
+
+    return {
+      id: el.id,
+      text: el.text,
+      fromFrame: toFrames(el.start, fps),
+      durationInFrames: Math.max(1, toFrames(Math.max(0, el.end - el.start), fps)),
+      style: el.style,
+      /** The renderer's existing default when a planner expressed no preference. Named, not silent. */
+      animation: el.animation ?? "fade",
+      role,
+      ...(el.mode ? { mode: el.mode } : {}),
+      ...(el.emphasisWordIndices?.length ? { emphasisWordIndices: el.emphasisWordIndices } : {}),
+      /**
+       * Only carried when the layout actually MOVED it. An unmoved caption keeps its named
+       * position, so a video with no graphics produces byte-identical props to before this round.
+       */
+      ...(placed && placed.moved && !placed.unresolved ? { layout: placed.box } : {}),
+    };
+  };
 
   return {
     fps,
@@ -156,6 +257,7 @@ export function timelineToRemotionProps(params: {
         reason: g.reason ?? null,
       })),
     words: params.words ?? [],
+    unresolvedCollisions,
     meta: {
       videoId: timeline.videoId,
       timelineVersion: timeline.version,

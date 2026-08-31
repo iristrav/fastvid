@@ -19,7 +19,8 @@
  * dropped in later and immediately have everything it needs. Until then they are reported.
  */
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
+import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion";
+import { animationAt } from "./animation";
 import { positionStyle, type TextStyleLike } from "./Text";
 
 export type GraphicSpec = {
@@ -165,30 +166,18 @@ const QuoteCard: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }
 };
 
 /**
- * RONDE 150 — how far a bottom-anchored graphic is lifted to clear the caption band.
+ * RONDE 152 — the constant lift is gone; geometry replaced it.
  *
- * Found by looking at the first real composite this round produced: a `lower_third` and a two-line
- * caption both live at the bottom of the frame, and drawn at their planned positions the narration
- * struck straight through the name. Both unreadable.
+ * RONDE 150 lifted a bottom-anchored card by a derived 12% of the frame height whenever a caption
+ * shared its window. The number was reasoned about, but it was still one constant applied to every
+ * case, and §152 asked for the real thing: measure both boxes, compute the free space, choose a
+ * position, and report when there is none.
  *
- * The number is derived, not eyeballed. `positionStyle` puts a caption 6% from the bottom and a
- * lower third at 22%; at 1080p a caption line is 86px, which is 8% of the height. So:
- *
- *     a two-line caption reaches   6% + 2 × 8%  =  22% from the bottom
- *     the lower third sits at                      22%          → they touch exactly
- *     lifting by 12% puts it at                    34%          → clears with room to spare,
- *                                                                 and still clears a three-line
- *                                                                 caption (top at 30%)
- *
- * A fraction of the frame height rather than a pixel count, because the positions it separates are
- * themselves percentages and a fixed pixel gap would only be right at one resolution.
+ * `captionLayout.ts` now does that BEFORE the render starts, and moves the CAPTION rather than the
+ * card — the card is where the planner put it, and a caption has somewhere else it can legibly go.
+ * So this component draws a graphic at its own position and nothing else.
  */
-export const CAPTION_CLEARANCE = 0.12;
-
-export const Graphic: React.FC<{ g: GraphicSpec; liftForCaption?: boolean }> = ({
-  g,
-  liftForCaption,
-}) => {
+export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
   const primary = readString(g, "label", "text", "title", "locationName", "location", "name", "caption");
   // No words, no card. The caller reports it; drawing the type name would be inventing content.
   if (!primary || !RENDERABLE_GRAPHICS.has(g.graphicType)) return null;
@@ -235,11 +224,6 @@ export const Graphic: React.FC<{ g: GraphicSpec; liftForCaption?: boolean }> = (
         position={position}
         fontSizePx={fontSizePx}
         durationInFrames={g.durationInFrames}
-        /**
-         * Only a graphic anchored to the BOTTOM can collide with a caption. Lifting a `top` or
-         * `center` card as well would move it away from where the planner put it for no reason.
-         */
-        lift={Boolean(liftForCaption) && (position === "lower_third" || position === "bottom")}
       >
         {body}
       </GraphicBody>
@@ -251,31 +235,33 @@ const GraphicBody: React.FC<{
   position: string;
   fontSizePx: number;
   durationInFrames: number;
-  lift?: boolean;
   children: React.ReactNode;
-}> = ({ position, fontSizePx, durationInFrames, lift, children }) => {
+  animation?: string;
+}> = ({ position, fontSizePx, durationInFrames, animation, children }) => {
   const frame = useCurrentFrame();
-  const { height } = useVideoConfig();
-  const fade = Math.min(10, Math.max(1, Math.floor(durationInFrames / 6)));
-  const opacity = interpolate(
-    frame,
-    [0, fade, Math.max(fade, durationInFrames - fade), durationInFrames],
-    [0, 1, 1, 0],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
-  );
-  const slide = interpolate(frame, [0, fade], [18, 0], { extrapolateRight: "clamp" });
   /**
-   * The lift is ADDED to where `positionStyle` put the card, as a transform.
+   * RONDE 155 — the same animation vocabulary the captions use, from the same pure functions.
    *
-   * Not as `paddingBottom`: `positionStyle("lower_third")` already sets the `padding` shorthand, so
-   * a longhand override would REPLACE its 22% rather than add to it — and a "lift" of 16% would
-   * then move the card 6% further down, which is the opposite of the intent and looks like a
-   * working feature until someone measures it.
+   * A graphic that wants to slide, pop or mask-reveal uses `animationAt` rather than a second set
+   * of curves living here. `fade_rise` is the default because it is what every graphic did before
+   * this round, so a timeline that names no animation still renders identically.
    */
-  const liftPx = lift ? -Math.round(height * CAPTION_CLEARANCE) : 0;
+  const state = animationAt(animation ?? "fade_rise", frame, durationInFrames);
   return (
     <AbsoluteFill style={{ ...positionStyle(position), display: "flex", fontSize: fontSizePx }}>
-      <div style={{ opacity, transform: `translate(${slide}px, ${liftPx}px)` }}>{children}</div>
+      <div
+        style={{
+          opacity: state.opacity,
+          transform:
+            `translate(${state.translateX}px, ${state.translateY}px) scale(${state.scale})`,
+          clipPath:
+            state.revealFraction < 1
+              ? `inset(0 ${((1 - state.revealFraction) * 100).toFixed(2)}% 0 0)`
+              : undefined,
+        }}
+      >
+        {children}
+      </div>
     </AbsoluteFill>
   );
 };

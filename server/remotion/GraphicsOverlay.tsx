@@ -56,32 +56,10 @@ export type GraphicsOverlayProps = {
   texts: Array<Record<string, unknown>>;
   graphics: Array<Record<string, unknown>>;
   words: Array<{ word: string; startSec: number; endSec: number }>;
+  /** RONDE 152 — reported by the layout engine, carried for the render report only. */
+  unresolvedCollisions?: string[];
   meta: { videoId: number; timelineVersion: number; schemaVersion: number };
 };
-
-/**
- * Is a caption on screen at any point while this graphic is?
- *
- * A pure function of the two frame ranges, so it is deterministic and needs no measurement of the
- * rendered text. It answers the collision the first real composite of this round showed: a lower
- * third and a two-line caption both live at the bottom of the frame, and drawn at their planned
- * positions they struck through each other. When the answer is yes, the graphic is lifted clear
- * (see `CAPTION_CLEARANCE`); when it is no, the graphic stays exactly where the planner put it.
- *
- * This is layout, not editing. It does not change WHICH graphic appears or WHEN — only where a
- * card sits when something else is already occupying that part of the screen.
- */
-function overlapsACaption(
-  captions: GraphicsOverlayProps["captions"],
-  fromFrame: number,
-  durationInFrames: number
-): boolean {
-  const end = fromFrame + durationInFrames;
-  return captions.some((raw) => {
-    const c = raw as unknown as { fromFrame: number; durationInFrames: number };
-    return c.fromFrame < end && c.fromFrame + c.durationInFrames > fromFrame;
-  });
-}
 
 /** The words spoken inside one caption's window — its own slice of the measured alignment. */
 function wordsWithin(
@@ -102,6 +80,10 @@ type TextLike = {
   durationInFrames: number;
   style: never;
   animation: string;
+  /** RONDE 152 — set by remotionProps; absent means the defaults this file already had. */
+  mode?: string;
+  emphasisWordIndices?: number[];
+  layout?: { x: number; y: number; width: number; height: number };
 };
 
 export const GraphicsOverlay: React.FC<GraphicsOverlayProps> = (props) => {
@@ -116,15 +98,7 @@ export const GraphicsOverlay: React.FC<GraphicsOverlayProps> = (props) => {
      */
     <AbsoluteFill>
       {props.graphics.map((raw, i) => (
-        <Graphic
-          key={(raw.id as string) ?? `g${i}`}
-          g={raw as never}
-          liftForCaption={overlapsACaption(
-            props.captions,
-            raw.fromFrame as number,
-            raw.durationInFrames as number
-          )}
-        />
+        <Graphic key={(raw.id as string) ?? `g${i}`} g={raw as never} />
       ))}
 
       {props.texts.map((raw, i) => {
@@ -138,6 +112,7 @@ export const GraphicsOverlay: React.FC<GraphicsOverlayProps> = (props) => {
             style={t.style}
             animation={t.animation}
             fps={fps}
+            layout={t.layout}
           />
         );
       })}
@@ -155,6 +130,10 @@ export const GraphicsOverlay: React.FC<GraphicsOverlayProps> = (props) => {
             fps={fps}
             /** §13 — the caption gets the MEASURED word boundaries for its own window. */
             words={wordsWithin(props.words, c.fromFrame, c.durationInFrames, fps)}
+            /** RONDE 152 — the caption's own mode, emphasis and resolved position. */
+            mode={c.mode}
+            emphasisWordIndices={c.emphasisWordIndices}
+            layout={c.layout}
           />
         );
       })}

@@ -40,7 +40,7 @@ import {
   resolveRemotionBrowser,
   RemotionUnavailableError,
 } from "./remotionRenderer";
-import { RENDERABLE_GRAPHICS, CAPTION_CLEARANCE } from "./remotion/components/Graphics";
+import { RENDERABLE_GRAPHICS } from "./remotion/components/Graphics";
 import { renderTimeline } from "./timelineRenderer";
 import { RENDER_PHASES, progressForPhase } from "./renderJobs";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
@@ -452,43 +452,77 @@ describeHybrid("RONDE 150 §5 — FFmpeg picture + Remotion graphics → one MP4
 
   /**
    * The clearance is a layout rule, so the honest test of it is a rendered pixel, not the constant.
-   * The band between the caption and the lifted lower third must contain neither.
+   * The band between the caption and the lower third must contain neither.
+   *
+   * ── RONDE 152 changed WHICH element moves, deliberately ──────────────────────────────────
+   *
+   * RONDE 150 lifted the CARD by a constant 12% of the frame height whenever a caption shared its
+   * window, and the test here asserted the card had moved. §152 replaced that with real geometry
+   * in `captionLayout.ts`, which measures both boxes and moves the CAPTION instead: the card is
+   * where the planner put it, and a caption has other places it can legibly go.
+   *
+   * So the old assertion ("the card sits higher") is now false BY DESIGN, and asserting it would
+   * be pinning the wrong behaviour in place. This asserts the property both designs were really
+   * after — the two things do not overlap — which is stronger than either, because it would fail
+   * whichever element moved the wrong way.
    */
-  it("lifts a lower third clear of the caption instead of striking through it", async () => {
-    const t = timelineWith({
+  it("keeps a lower third and a caption from overlapping, by moving one of them", async () => {
+    const together = timelineWith({
       graphics: [LOWER_THIRD],
       captions: [A_CAPTION],
       widthPx: 640,
       heightPx: 360,
     });
-    const lifted = path.join(workDir, "lifted.mov");
-    await renderGraphicsOverlay({ timeline: t, overlayPath: lifted, serveUrl });
-
-    const alone = timelineWith({ graphics: [LOWER_THIRD], widthPx: 640, heightPx: 360 });
-    const unlifted = path.join(workDir, "unlifted.mov");
-    await renderGraphicsOverlay({ timeline: alone, overlayPath: unlifted, serveUrl });
+    const overlayPath = path.join(workDir, "together.mov");
+    await renderGraphicsOverlay({ timeline: together, overlayPath, serveUrl });
 
     /**
-     * Compare where the card's ink actually is in the two renders. With a caption present it must
-     * sit HIGHER; with no caption it must stay exactly where the planner put it.
+     * Which rows carry ink, over the WHOLE frame. Two elements that do not overlap leave a gap of
+     * blank rows between them; two that do leave one continuous band.
      */
-    const inkRow = async (file: string): Promise<number> => {
-      const raw = path.join(workDir, `${path.basename(file)}.gray`);
-      await execFileAsync(resolveFFmpegBin(), [
-        "-y", "-hide_banner", "-loglevel", "error", "-i", file,
-        // One column through the left edge, where the card is and the centred caption is not.
-        "-vf", "select=eq(n\\,24),crop=40:360:60:0,scale=1:360",
-        "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", raw,
-      ]);
-      const rows = fs.readFileSync(raw);
-      for (let y = 0; y < rows.length; y++) if (rows[y]! > 24) return y;
-      return rows.length;
-    };
+    const raw = path.join(workDir, "together.gray");
+    await execFileAsync(resolveFFmpegBin(), [
+      "-y", "-hide_banner", "-loglevel", "error", "-i", overlayPath,
+      "-vf", "select=eq(n\\,24),scale=1:360",
+      "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", raw,
+    ]);
+    const rows = [...fs.readFileSync(raw)];
+    const inked = rows.map((v) => v > 12);
 
-    const withCaption = await inkRow(lifted);
-    const without = await inkRow(unlifted);
-    expect(without).toBeLessThan(360);
-    expect(withCaption).toBeLessThan(without);
-    expect(without - withCaption).toBeGreaterThan(Math.round(360 * CAPTION_CLEARANCE * 0.6));
+    // Count the separate horizontal bands of ink.
+    let bands = 0;
+    for (let y = 0; y < inked.length; y++) {
+      if (inked[y] && !inked[y - 1]) bands++;
+    }
+
+    /**
+     * Two elements were drawn, so there must be two bands. One band means they merged into each
+     * other — the exact failure this whole mechanism exists to prevent.
+     */
+    expect(inked.some(Boolean)).toBe(true);
+    expect(bands).toBeGreaterThanOrEqual(2);
+  }, 300_000);
+
+  it("reports a collision it genuinely cannot solve, rather than overlapping in silence", async () => {
+    /**
+     * A frame packed with cards at every anchor, so no position is free. The caption is still
+     * drawn — a crowded caption beats a missing one — and `skipped` must name it.
+     */
+    const crowded = timelineWith({
+      widthPx: 640,
+      heightPx: 360,
+      captions: [{ ...A_CAPTION, style: { ...DEFAULT_CAPTION_STYLE, fontSizePx: 120 } }],
+      graphics: [
+        { ...LOWER_THIRD, id: "g1", start: 0, end: 2, style: { ...DEFAULT_TEXT_STYLE, fontSizePx: 120, position: "top" } },
+        { ...LOWER_THIRD, id: "g2", start: 0, end: 2, style: { ...DEFAULT_TEXT_STYLE, fontSizePx: 120, position: "center" } },
+        { ...LOWER_THIRD, id: "g3", start: 0, end: 2, style: { ...DEFAULT_TEXT_STYLE, fontSizePx: 120, position: "bottom" } },
+      ],
+    });
+    const result = await renderGraphicsOverlay({
+      timeline: crowded,
+      overlayPath: path.join(workDir, "crowded.mov"),
+      serveUrl,
+    });
+    expect(result.skipped.join(" ")).toContain("caption_collision_unresolved");
   }, 300_000);
 });

@@ -255,6 +255,22 @@ export type TimelineVideoClip = {
   disabled?: boolean;
 };
 
+/**
+ * RONDE 152 — where text can sit.
+ *
+ * `lower_center` and `custom` are new. `custom` is only meaningful with a `safeZone`, and falls
+ * back to `bottom` without one rather than defaulting to a corner nobody chose.
+ */
+export type TextPosition = "top" | "center" | "bottom" | "lower_third" | "lower_center" | "custom";
+
+/** A caller-defined region, in fractions of the frame. Used by `position: "custom"`. */
+export type TextSafeZone = {
+  xPct: number;
+  yPct: number;
+  widthPct: number;
+  heightPct: number;
+};
+
 export type TextStyle = {
   fontFamily?: string;
   fontSizePx: number;
@@ -262,11 +278,67 @@ export type TextStyle = {
   /** 0–1. 0 means no box. */
   backgroundOpacity: number;
   backgroundColor?: string;
-  position: "top" | "center" | "bottom" | "lower_third";
+  position: TextPosition;
   maxCharsPerLine?: number;
+
+  /* ── RONDE 152 — the typographic controls, every one optional ────────────────────────────
+   *
+   * Optional is not laziness here: absence means "the renderer's existing default", which is what
+   * every timeline written before this round means, and what keeps the golden test rendering the
+   * same pixels. A field that appears is a decision somebody made.
+   */
+  fontWeight?: number;
+  italic?: boolean;
+  align?: "left" | "center" | "right";
+  /** Fraction of the frame width the text may occupy. */
+  maxWidthPct?: number;
+  /** Multiple of the font size. */
+  lineHeight?: number;
+  letterSpacingEm?: number;
+  outlineColor?: string;
+  outlineWidthPx?: number;
+  shadow?: boolean;
+  /** The colour a word takes while it is being spoken. */
+  highlightColor?: string;
+  /** How an emphasised word is marked, when the planner marks one. */
+  emphasisColor?: string;
+  /** Cap on lines before the text is truncated by the layout engine rather than overflowing. */
+  maxLines?: number;
+  safeZone?: TextSafeZone;
 };
 
-export type TextAnimation = "none" | "fade" | "fade_rise" | "fade_scale";
+/**
+ * RONDE 152 — how a caption is broken up over time.
+ *
+ * `sentence` is the behaviour every existing timeline has, and stays the default when the field is
+ * absent. The others need word timing to mean anything; a caption asking for `karaoke` on a video
+ * with no measured alignment is reported as unsupported rather than silently shown as a sentence.
+ */
+export type CaptionMode =
+  | "sentence"
+  | "phrase"
+  | "word_by_word"
+  | "karaoke"
+  | "highlight_word"
+  | "emphasis_word";
+
+export type TextAnimation =
+  | "none"
+  | "fade"
+  | "fade_rise"
+  | "fade_scale"
+  /* ── RONDE 152 ── */
+  | "pop"
+  | "scale"
+  | "slide_up"
+  | "slide_down"
+  | "slide_left"
+  | "slide_right"
+  | "bounce"
+  | "type_on"
+  | "word_reveal"
+  | "character_reveal"
+  | "mask_reveal";
 
 export type TimelineText = {
   id: string;
@@ -285,6 +357,18 @@ export type TimelineCaption = {
   start: number;
   end: number;
   style: TextStyle;
+  /* ── RONDE 152 ── */
+  /** Absent means `sentence` — what every caption written before this round does. */
+  mode?: CaptionMode;
+  animation?: TextAnimation;
+  /** Played as the caption arrives and leaves. Absent means the animation handles both. */
+  entrance?: TextAnimation;
+  exit?: TextAnimation;
+  /**
+   * Words the planner marked for emphasis, by their index within this caption's own text.
+   * Indices rather than strings so a word that occurs twice can be emphasised once.
+   */
+  emphasisWordIndices?: number[];
   editedByUser?: boolean;
   disabled?: boolean;
 };
