@@ -31,7 +31,7 @@ import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
@@ -376,7 +376,17 @@ import {
   type GraphicsUsageSummary,
   type GraphicPlan,
 } from "./editorialGraphicsEngine";
-import { buildEditorScenesFromPipeline } from "./editorClips";
+import {
+  buildEditorScenesFromPipeline,
+  formatManifestIdentityReport,
+  manifestRehydrationSummary,
+} from "./editorClips";
+import {
+  buildNarrationPersistence,
+  formatVoicePersistFailure,
+  formatVoicePersistSuccess,
+  persistVoiceover,
+} from "./renderPersistence";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import {
   judgeBeatImage,
@@ -657,93 +667,29 @@ import {
   pickMontageXfadeTransition,
   pickStockMontageXfadeTransition,
 } from "./montageTransitions";
-import ffmpegStatic from "ffmpeg-static";
 import { execSync } from "child_process";
+import {
+  ffmpegFallbackCandidates,
+  ffmpegRetryReason,
+  retryReasonIsPermanent,
+  describeFFmpegCapabilities,
+  resolveFFmpegBin,
+  testBinary,
+} from "./ffmpegBinary";
 
 // Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
 // ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
 
-// Helper: test if a binary actually runs (not just exists on disk)
-const testBinary = (binPath: string): boolean => {
-  try {
-    execSync(`"${binPath}" -version`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const resolveFFmpegBin = (): string => {
-  // Check NODE_ENV for Railway
-  const envPath = process.env.FFMPEG_BIN || '';
-  if (envPath && fs.existsSync(envPath)) {
-    console.log(`[Fastvid] Using FFMPEG_BIN env: ${envPath}`);
-    return envPath;
-  }
-  // PRIORITY 1: Try system ffmpeg FIRST - it has drawtext/libfreetype support needed for text overlays
-  // ffmpeg-static does NOT have drawtext support (compiled without libfreetype)
-  const candidatePaths = [
-    "/usr/bin/ffmpeg",
-    "/usr/local/bin/ffmpeg",
-    "/nix/var/nix/profiles/default/bin/ffmpeg",
-  ];
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p) && testBinary(p)) {
-      console.log(`[Fastvid] Using system FFmpeg (drawtext-capable): ${p}`);
-      return p;
-    }
-  }
-  // PRIORITY 2: Try ffmpeg-static as fallback (no drawtext, but works for basic encoding)
-  const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
-  if (staticPath && fs.existsSync(staticPath)) {
-    try {
-      execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
-    } catch { /* ignore */ }
-    if (testBinary(staticPath)) {
-      console.warn(`[Fastvid] Using ffmpeg-static (NO drawtext support): ${staticPath}`);
-      return staticPath;
-    } else {
-      console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
-    }
-  }
-  // PRIORITY 3: Try which command
-  try {
-    const systemPath = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (systemPath && testBinary(systemPath)) {
-      console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
-      return systemPath;
-    }
-  } catch {
-    // system ffmpeg not found via which
-  }
-  // PRIORITY 4: Try nix store — Railway Nixpacks installs ffmpeg here (use shell:true for glob)
-  try {
-    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (nixPath && fs.existsSync(nixPath) && testBinary(nixPath)) {
-      console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
-      return nixPath;
-    }
-  } catch {
-    // nix store not available
-  }
-  // PRIORITY 5: Try find as last resort
-  try {
-    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (found && fs.existsSync(found) && testBinary(found)) {
-      console.log(`[Fastvid] Using found FFmpeg: ${found}`);
-      return found;
-    }
-  } catch {
-    // find failed
-  }
-  // PRIORITY 6: Last resort: try 'ffmpeg' from PATH
-  if (testBinary('ffmpeg')) {
-    console.log(`[Fastvid] Using 'ffmpeg' from PATH`);
-    return 'ffmpeg';
-  }
-  console.error(`[Fastvid] CRITICAL: No working FFmpeg binary found! staticPath=${staticPath}`);
-  return staticPath; // return anyway so error messages show the path
-};
+/**
+ * RONDE 146 §1 — the resolver moved to ./ffmpegBinary so every renderer asks the same question.
+ *
+ * It used to live here, and RONDE 144's timeline renderer could not see it: that renderer imported
+ * `ffmpeg-static` directly and therefore always ran on the binary WITHOUT drawtext, even on hosts
+ * where a system ffmpeg was present. One resolver, one answer — see the module note.
+ *
+ * The behaviour is unchanged: env FFMPEG_BIN, then the system paths (which have libfreetype),
+ * then ffmpeg-static, then which/nix/find.
+ */
 let FFMPEG_BIN: string = resolveFFmpegBin();
 
 // Fallback binary list for the execFileRaw-based luma probes — mirrors FFPROBE_PATHS. exec()
@@ -2071,6 +2017,13 @@ export const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): 
     });
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
+    /**
+     * RONDE 146 — ffmpeg prints "No such filter" to STDERR, not into the Error message.
+     *
+     * Read here rather than inside the fork-pressure branch below, because the capability check
+     * needs it on every failure and not only on the ones that were retried for fork pressure.
+     */
+    const errStderr = (err as { stderr?: string })?.stderr ?? "";
     if (isForkPressureError(err)) {
       if (eagainRetriesLeft > 0) {
         console.warn(`[FFmpegForkPressure] Transient failure, retrying (${eagainRetriesLeft} left): ${errMsg.slice(0, 150)}`);
@@ -2083,24 +2036,58 @@ export const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): 
       // always identical and comes first, while the actual error is the last couple of lines —
       // logging the full blob on every failure is exactly what was tripping Railway's log-rate
       // limit ("Messages dropped: ...") under heavy concurrent failures.
-      const stderr = (err as { stderr?: string })?.stderr ?? "";
-      console.error(`[FFmpegForkPressure] Still failing after ${EXEC_FORK_RETRIES} retries — stderr tail:\n${stderr.slice(-800)}`);
+      console.error(`[FFmpegForkPressure] Still failing after ${EXEC_FORK_RETRIES} retries — stderr tail:\n${errStderr.slice(-800)}`);
     }
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
     // Only treat as binary-not-found if the error mentions the FFmpeg binary path itself,
     // NOT if it's an input file ENOENT (which would incorrectly trigger binary switching)
-    const isBinaryNotFound = (
-      errMsg.includes('not found') || errMsg.includes('Permission denied')
-    ) && !errMsg.includes('ENOENT') && !errMsg.includes('No such file or directory');
-    if (isBinaryNotFound) {
-      console.warn(`[Fastvid] FFmpeg binary failed (${FFMPEG_BIN}), trying alternatives...`);
-      const alternatives = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg'];
+    /**
+     * RONDE 146 §1 — two different failures, and only one of them is worth another binary.
+     *
+     *   binary_not_found     the executable is missing or unrunnable
+     *   capability_missing   the executable ran and this BUILD lacks the filter/codec asked for,
+     *                        e.g. "No such filter: 'drawtext'" — which ffmpeg-static really does
+     *                        emit, and which the old check ignored entirely (audit BUG B1). Every
+     *                        text render on a host without a system ffmpeg failed silently, per
+     *                        command, and nothing ever tried the other binary.
+     *
+     * Everything else returns null and is rethrown. A fallback that fired on any ffmpeg error
+     * would retry a corrupt input or a bad argument against a second binary, fail identically, and
+     * bury the real cause under a switch that was never going to help.
+     */
+    const retryReason = ffmpegRetryReason(errMsg + "\n" + errStderr);
+    if (retryReason) {
+      console.warn(
+        `[Fastvid] FFmpeg failed on ${FFMPEG_BIN} (${retryReason}), trying alternatives...`
+      );
+      const alternatives = ffmpegFallbackCandidates(FFMPEG_BIN);
+      const permanent = retryReasonIsPermanent(retryReason);
       for (const alt of alternatives) {
         if (alt === FFMPEG_BIN) continue;
         if (testBinary(alt)) {
-          console.log(`[Fastvid] Switching to alternative FFmpeg: ${alt}`);
           const oldBin = FFMPEG_BIN;
-          FFMPEG_BIN = alt;
+          /**
+           * RONDE 146 — a missing BINARY is permanent; a missing CAPABILITY is not.
+           *
+           * The original switch was written for a binary that is not there, and for that it is
+           * right: it will still not be there on the next command. A capability gap is a property
+           * of one command, and making it permanent downgrades every later command in this worker
+           * to whatever binary happened to answer — measurably changing the picture, since
+           * ffmpeg-static and the system build do not produce identical output for the same
+           * filter graph (RONDE 158's repair: 17.04s versus 21.20s).
+           *
+           * So the alternative is used for THIS command, and `FFMPEG_BIN` only moves when the
+           * failure says the binary itself is gone.
+           */
+          if (permanent) {
+            console.log(`[Fastvid] Switching to alternative FFmpeg: ${alt}`);
+            FFMPEG_BIN = alt;
+          } else {
+            console.warn(
+              `[Fastvid] Borrowing ${alt} for one command (${retryReason}); ` +
+                `${oldBin} stays this worker's FFmpeg`
+            );
+          }
           // Replace the old binary path at the start of the command with the new one
           // Commands are built as: `${FFMPEG_BIN} -y ...` so the first token is the binary
           const retryCmd = cmd.startsWith(oldBin)
@@ -38369,6 +38356,14 @@ async function _runVideoPipelineInner(
      * existed only as console output on whichever worker happened to render it.
      */
     pipelineReport.add("summary", describeOnScreenTextPolicy());
+    /**
+     * RONDE 146 — which ffmpeg this render used, and whether it can draw a character.
+     *
+     * The fact that silently decided whether ten text engines worked, and that nothing ever
+     * reported. A render on a host without a system ffmpeg has no `drawtext`, and until now the
+     * only way to find that out was to read a failure message that never reached anybody.
+     */
+    pipelineReport.add("summary", describeFFmpegCapabilities(FFMPEG_BIN));
     pipelineReport.addAll("warnings", visualDedup.coverageDecisions);
     /**
      * RONDE 112 — the clips that were refused for LENGTH, named separately.
@@ -39216,12 +39211,108 @@ async function _runVideoPipelineInner(
 
     let editorScenes: EditorScene[] = [];
     try {
-      editorScenes = await buildEditorScenesFromPipeline(scenes, composedUsedClips, (clipPath) =>
-        visualDedup.sourcingCache.lineage.providerFor(clipPath)
+      /**
+       * RONDE 146 — the manifest carries the ADOPTION RECORD, not just the provider's name.
+       *
+       * Both resolvers read the same ledger entry. `providerFor` has answered "which provider"
+       * since RONDE 87; the second one answers "which file at that provider", which is the half
+       * that was being discarded — and the half a re-render needs. Nothing here reads a filename:
+       * `resolve()` finds the record the downloader opened with the provider's own data in hand.
+       */
+      editorScenes = await buildEditorScenesFromPipeline(
+        scenes,
+        composedUsedClips,
+        (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
+        (clipPath) => {
+          const record = visualDedup.sourcingCache.lineage.resolve(clipPath);
+          if (!record) return null;
+          return {
+            provider: record.provider,
+            providerAssetId: record.providerAssetId,
+            sourceUrl: record.sourceUrl,
+            originalUrl: record.originalUrl,
+            assetTitle: record.assetTitle,
+            archiveAssetId: record.archiveAssetId,
+          };
+        },
+        /**
+         * Trim, only where the render measured it.
+         *
+         * `memoisedVideoStreamMeta` returns a probe this render already took, or undefined. An
+         * undefined answer produces NO trim fields rather than 0/duration — §9's "NIET gokken".
+         * The in/out points inside the source are not recorded anywhere today, so they are absent
+         * rather than fabricated; the on-screen duration is, and it is written.
+         */
+        (clipPath) => {
+          const meta = memoisedVideoStreamMeta(clipPath);
+          if (!meta || !(meta.durationSec > 0)) return null;
+          return { durationSec: Number(meta.durationSec.toFixed(3)) };
+        }
       );
       await updateVideoScenes(videoId, editorScenes);
+      for (const line of formatManifestIdentityReport(editorScenes)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      const coverage = manifestRehydrationSummary(editorScenes);
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          `[AssetIdentity] TOTAL clips=${coverage.total} rehydratable=${coverage.rehydratable} ` +
+            `unrecoverable=${coverage.total - coverage.rehydratable} schema=v${coverage.schemaVersion}`
+        )
+      );
     } catch (err) {
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
+    }
+
+    /**
+     * RONDE 146 §5/§6 — the narration outlives the work directory.
+     *
+     * This runs BEFORE the `finally` that deletes workDir, and only on a render that reached
+     * completion. Until now the only thing a render ever made permanent was final.mp4, so
+     * `full_voiceover.mp3` and `tts_word_alignment.json` were destroyed along with the directory —
+     * and `videos.voiceoverUrl` has existed as a column without a writer for that entire time.
+     *
+     * A failure here does not fail the render: the video is finished and uploaded, and refusing to
+     * deliver it because its audio could not be archived would be the wrong trade. But it is never
+     * silent — VOICEOVER_PERSISTENCE_FAILED says so in a line built to be grepped.
+     */
+    try {
+      const persisted = await persistVoiceover({
+        videoId,
+        workDir,
+        upload: (key, filePath, contentType) => storagePutFromFile(key, filePath, contentType),
+      });
+      const storedAlignment = loadStoredTtsAlignment(workDir);
+      if (persisted.ok) {
+        await updateVideoStatus(videoId, "completed", { voiceoverUrl: persisted.url });
+        console.log(
+          pipelineReport.add(
+            "summary",
+            formatVoicePersistSuccess(videoId, persisted, storedAlignment?.words.length ?? 0)
+          )
+        );
+      } else {
+        console.error(pipelineReport.add("summary", formatVoicePersistFailure(videoId, persisted)));
+      }
+      await mergeVideoMetadata(videoId, {
+        manifestSchemaVersion: MANIFEST_SCHEMA_VERSION,
+        narration: buildNarrationPersistence({
+          voiceoverUrl: persisted.ok ? persisted.url : null,
+          durationSec: storedAlignment?.totalDurationSec ?? null,
+          // Only what the render actually knows. The TTS ladder picks its own tier at call time
+          // and does not report which one answered, so this stays null rather than guessing
+          // "elevenlabs" for a clip that may have come from the Google or Fish fallback.
+          provider: null,
+          voiceId: voiceId ?? null,
+          words: storedAlignment?.words ?? [],
+        }),
+      });
+    } catch (err) {
+      console.error(
+        `VOICEOVER_PERSISTENCE_FAILED video=${videoId} reason=unexpected_error ` +
+          `detail="${(err as Error)?.message?.slice(0, 300) ?? "unknown"}"`
+      );
     }
 
     // Budget summary + history persistence (non-fatal — never block URL persistence)

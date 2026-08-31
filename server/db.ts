@@ -14,6 +14,7 @@ import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallCl
 import type { Video } from "../drizzle/schema";
 import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import type { AssetSourceIdentity } from "./projectTimeline";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -1157,6 +1158,31 @@ export interface EditorClip {
    * together would make the coverage numbers stop meaning anything.
    */
   editedByUser?: boolean;
+  /**
+   * RONDE 146 — where this picture came from, and whether it can be fetched again.
+   *
+   * Taken from the ADOPTION RECORD in the lineage ledger, never reconstructed from the filename:
+   * the downloader put the provider's own id and media URL there at the moment it had them in
+   * hand. Before this round only the provider's NAME survived a render, which is why no existing
+   * video could be re-rendered.
+   *
+   * `AssetSourceIdentity` is reused rather than redefined — projectTimeline.ts already owns that
+   * type and a second one would immediately start to drift. Optional, because every manifest
+   * written before this round has none, and those must still load (§15).
+   */
+  sourceIdentity?: AssetSourceIdentity;
+  /**
+   * The portion of the SOURCE media this clip used, in seconds.
+   *
+   * Written only where the render actually knows it — a trimmed archive clip, a YouTube segment
+   * cut at a planned start. Absent means the render did not record a trim for this clip, and it
+   * is deliberately NOT filled with 0/duration, because "we used the whole file" and "we did not
+   * write it down" are different facts and a re-render needs to tell them apart (§9).
+   */
+  sourceIn?: number;
+  sourceOut?: number;
+  /** This clip's own on-screen duration in seconds, when the render measured it. */
+  durationSec?: number;
 }
 
 export interface EditorScene {
@@ -1167,7 +1193,26 @@ export interface EditorScene {
   clips: EditorClip[];
   thumbnailUrl?: string; // first clip thumbnail
   chapterTitle?: string; // if this scene is preceded by a chapter card
+  /**
+   * RONDE 146 — which shape this scene's clips are written in.
+   *
+   * `videoScenes` is a bare JSON array with nowhere to put a header, so the version rides on each
+   * scene. Absent means version 1: a manifest from before this round, whose clips carry no
+   * identity and no trim. A reader can therefore tell "this render predates identity" from
+   * "this render had identity and this clip had none", which are different problems.
+   */
+  manifestSchemaVersion?: number;
 }
+
+/**
+ * The manifest shape this build writes.
+ *
+ *   1  (absent)  pre-RONDE-146: url/type/source only. No identity, no trim.
+ *   2            adds EditorClip.sourceIdentity, sourceIn, sourceOut, durationSec.
+ *
+ * Bumped only when a reader would need to behave differently — not on every field added.
+ */
+export const MANIFEST_SCHEMA_VERSION = 2;
 
 export async function updateVideoScenes(id: number, scenes: EditorScene[]) {
   const db = await getDb();

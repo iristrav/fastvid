@@ -31,7 +31,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
-import ffmpegStatic from "ffmpeg-static";
+import { resolveFFmpegBin } from "./ffmpegBinary";
 import {
   audioTrackOf,
   captionTrack,
@@ -43,7 +43,18 @@ import {
 } from "./projectTimeline";
 
 const execFileAsync = promisify(execFile);
-const FFMPEG = (ffmpegStatic as unknown as string) || "ffmpeg";
+/**
+ * RONDE 146 — the SHARED resolution, not `ffmpeg-static` straight from the package.
+ *
+ * This module used to take the bundled binary unconditionally, which made the newest renderer the
+ * one guaranteed to run without `drawtext` even on a host where /usr/bin/ffmpeg was sitting right
+ * there. The audit recorded it as BUG B2. `resolveFFmpegBin` is the same function the rest of the
+ * pipeline has always used, and it prefers a system build for exactly this reason.
+ *
+ * Resolved lazily, per call, so a test can change the environment and be believed — the resolver
+ * memoises internally, so this costs one lookup per process and not one per render.
+ */
+const ffmpeg = (): string => resolveFFmpegBin();
 const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
 
 /** Fields the timeline can carry that this renderer does not yet execute. */
@@ -275,7 +286,7 @@ async function renderSegment(
     "-t", dur.toFixed(3),
     outPath
   );
-  await execFileAsync(FFMPEG, args, { maxBuffer: 1024 * 1024 * 16 });
+  await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
 }
 
 export type AssElement = {
@@ -453,7 +464,7 @@ export async function renderTimeline(params: {
   );
   const silent = path.join(workDir, "video_only.mp4");
   await execFileAsync(
-    FFMPEG,
+    ffmpeg(),
     ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile,
       "-c", "copy", silent],
     { maxBuffer: 1024 * 1024 * 16 }
@@ -490,7 +501,7 @@ export async function renderTimeline(params: {
       (fontsDir ? `:fontsdir='${escapeFilterPath(fontsDir)}'` : "");
     withText = path.join(workDir, "with_text.mp4");
     await execFileAsync(
-      FFMPEG,
+      ffmpeg(),
       ["-y", "-hide_banner", "-loglevel", "error", "-i", silent,
         "-vf", filter,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
@@ -542,7 +553,7 @@ export async function renderTimeline(params: {
       "-shortest",
       outputPath
     );
-    await execFileAsync(FFMPEG, args, { maxBuffer: 1024 * 1024 * 16 });
+    await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
     commands++;
   }
 

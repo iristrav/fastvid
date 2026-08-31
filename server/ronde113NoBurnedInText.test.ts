@@ -248,6 +248,21 @@ describe("RONDE 113 — every drawtext module is accounted for", () => {
     "professionalRenderEngine/motionGraphicsRenderer.ts",
     "motionGraphicsLayer.ts",
     "ffmpegSanitize.ts",
+    /**
+     * RONDE 146 — mentions `drawtext` and cannot draw it.
+     *
+     * `ffmpegBinary.ts` is the shared binary resolver. It names the filter in two places: a
+     * comment explaining WHY a system ffmpeg is preferred over ffmpeg-static, and
+     * `ffmpegHasFilter(bin, "drawtext")`, which ASKS a binary whether the filter exists so a
+     * render can report its own capabilities. Neither builds a filter graph, and this module emits
+     * no ffmpeg command that renders anything.
+     *
+     * Listed here rather than gated behind `burnedInTextAllowed()` because gating it would be
+     * wrong in an interesting way: the capability REPORT is most useful exactly when text is
+     * switched off, since that is when nobody would otherwise discover that this build could not
+     * have drawn text anyway.
+     */
+    "ffmpegBinary.ts",
   ];
 
   it("the sweep finds no module outside those two lists", () => {
