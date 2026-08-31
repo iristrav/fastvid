@@ -205,9 +205,142 @@ export function effectChain(effect: ClipEffect): string | null {
       const shift = Math.max(1, Math.round(3 * i));
       return `rgbashift=rh=${shift}:bh=${-shift}`;
     }
+
+    /* ══════════ RONDE 153B — the tone and colour effects ══════════
+     *
+     * Every one of these is a single, well-understood ffmpeg filter with a BOUNDED parameter, and
+     * the bound is the interesting part. `eq` will happily take a contrast of 1000 and produce a
+     * frame of pure primaries; `intensity` is 0..1 and each range below was chosen so that
+     * intensity 1 is the strongest setting that still looks like a graded shot rather than a
+     * broken one. A documentary tool should not be able to express a broken frame.
+     */
+    case "blur":
+      return `gblur=sigma=${(0.5 + 7.5 * i).toFixed(2)}`;
+    case "sharpen":
+      // unsharp's amount, kept under 2.0 — past that it rings visibly on any compressed source.
+      return `unsharp=5:5:${(0.3 + 1.5 * i).toFixed(2)}`;
+    case "exposure":
+      // A stop either way. `intensity` is the magnitude; `direction` chooses the sign.
+      return `eq=brightness=${signed(effect, 0.35 * i).toFixed(4)}`;
+    case "contrast":
+      return `eq=contrast=${(1 + signed(effect, 0.6 * i)).toFixed(4)}`;
+    case "saturation":
+      return `eq=saturation=${Math.max(0, 1 + signed(effect, 0.8 * i)).toFixed(4)}`;
+    /**
+     * Temperature and tint move the picture on the two axes a colourist uses. Implemented with
+     * `colorbalance`'s midtone controls rather than `colorchannelmixer`, because midtones are where
+     * a white-balance error actually lives — pushing the whole channel would tint the blacks too.
+     */
+    case "temperature": {
+      const t = signed(effect, 0.3 * i);
+      return `colorbalance=rm=${t.toFixed(4)}:bm=${(-t).toFixed(4)}`;
+    }
+    case "tint": {
+      const t = signed(effect, 0.3 * i);
+      return `colorbalance=gm=${t.toFixed(4)}:rm=${(t / 2).toFixed(4)}`;
+    }
+    case "monochrome":
+      return `hue=s=${Math.max(0, 1 - i).toFixed(3)}`;
+    /**
+     * Sepia is a fixed matrix, so `intensity` blends toward it rather than scaling it — a
+     * half-strength sepia is half-way between the original and the full tone, which is what the
+     * word means. Scaling the matrix itself would produce a different, muddier colour.
+     */
+    case "sepia": {
+      const k = i;
+      const mix = (a: number, b: number) => (a + (b - a) * k).toFixed(4);
+      return (
+        `colorchannelmixer=` +
+        `rr=${mix(1, 0.393)}:rg=${mix(0, 0.769)}:rb=${mix(0, 0.189)}:` +
+        `gr=${mix(0, 0.349)}:gg=${mix(1, 0.686)}:gb=${mix(0, 0.168)}:` +
+        `br=${mix(0, 0.272)}:bg=${mix(0, 0.534)}:bb=${mix(1, 0.131)}`
+      );
+    }
+    /**
+     * Scanlines: a horizontal comb, drawn by squeezing the picture to half height and back with
+     * nearest-neighbour sampling so alternate rows keep their own value.
+     *
+     * `intensity` controls how dark the dropped rows go, via a blend against the original.
+     */
+    case "scanlines":
+      return (
+        `split[scana][scanb];` +
+        `[scanb]scale=iw:ih/2:flags=neighbor,scale=iw:ih*2:flags=neighbor[scanl];` +
+        `[scana][scanl]blend=all_mode=multiply:all_opacity=${(0.15 + 0.45 * i).toFixed(3)}`
+      );
+
     default:
       return null;
   }
+}
+
+/**
+ * An effect's direction, for the ones that can go either way.
+ *
+ * Exposure, contrast, saturation, temperature and tint are all signed: a colourist warms OR cools.
+ * `intensity` carries the magnitude, so the sign needs its own field, and `direction: "down"` is
+ * the only thing that makes it negative. Absent means up — which is what every effect written
+ * before this round meant.
+ */
+function signed(effect: ClipEffect, magnitude: number): number {
+  return effect.direction === "down" ? -magnitude : magnitude;
+}
+
+/* ═══════════════════════ RONDE 153B §"gebruik schema-validatie" ═══════════════════════ */
+
+/**
+ * Every effect this renderer can execute, and nothing else.
+ *
+ * A closed set rather than an open string is the whole defence against the injection §153B names:
+ * `effectChain` is the only place an effect name becomes part of an ffmpeg command, it switches on
+ * this vocabulary, and an unknown name falls through to `null` — it cannot reach the command line.
+ * The numbers are computed from a CLAMPED 0..1 and formatted with `toFixed`, so no caller-supplied
+ * string is ever interpolated into a filter.
+ */
+export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
+  "film_grain", "noise", "vignette", "letterbox", "glow", "bloom", "chromatic_aberration",
+  "blur", "sharpen", "exposure", "contrast", "saturation", "temperature", "tint",
+  "monochrome", "sepia", "scanlines",
+]);
+
+/**
+ * Effects that need a real overlay ASSET and are therefore never approximated.
+ *
+ * `film_dust` is footage of dust and scratches on a print; `vhs` is a tape artefact chain that
+ * genuinely needs a reference. ffmpeg can composite either perfectly once the asset exists — what
+ * it cannot do is invent one. Reported with this reason, never faked.
+ */
+export const OVERLAY_EFFECTS: Readonly<Record<string, string>> = {
+  film_dust: "needs a dust-and-scratches overlay clip; none is configured",
+  vhs: "needs a VHS artefact reference; a procedural approximation would be a different effect",
+};
+
+/** Why an effect cannot be executed, in the planner's terms. Null when it can. */
+export function effectUnsupportedReason(effectType: string): string | null {
+  if (RENDERABLE_EFFECTS.has(effectType)) return null;
+  if (effectType in OVERLAY_EFFECTS) return OVERLAY_EFFECTS[effectType]!;
+  return "no ffmpeg filter chain implements this effect";
+}
+
+/**
+ * Validate an effect before it is allowed near a filtergraph.
+ *
+ * Returns the effect with its intensity clamped, or a reason it was refused. Deliberately
+ * conservative about non-finite numbers: NaN formats as "NaN" through `toFixed`, which ffmpeg
+ * parses as a filter syntax error and takes the whole render down.
+ */
+export function validateEffect(
+  effect: ClipEffect
+): { ok: true; effect: ClipEffect } | { ok: false; reason: string } {
+  const reason = effectUnsupportedReason(effect.effectType);
+  if (reason) return { ok: false, reason };
+  if (!Number.isFinite(effect.intensity)) {
+    return { ok: false, reason: `intensity is ${String(effect.intensity)}, not a number` };
+  }
+  if (effect.direction != null && effect.direction !== "up" && effect.direction !== "down") {
+    return { ok: false, reason: `direction "${String(effect.direction)}" is neither up nor down` };
+  }
+  return { ok: true, effect: { ...effect, intensity: Math.max(0, Math.min(1, effect.intensity)) } };
 }
 
 /* ═══════════════════════ RONDE 149 — the look ═══════════════════════ */
@@ -223,11 +356,46 @@ export function effectChain(effect: ClipEffect): string | null {
  * It interpolates rather than switching, so a strength of 0.5 is genuinely half the correction and
  * not a different look.
  */
+/**
+ * RONDE 153 — what each look ADDS on top of the documentary calibration.
+ *
+ * Every value is a small `eq`/`colorbalance` adjustment applied AFTER the source-aware grade, and
+ * that ordering is the whole design: the calibration is what makes mixed sources belong together,
+ * so a look modifies the result rather than replacing the correction. §153 forbids a second colour
+ * system, and this is how that promise is kept structurally rather than by convention.
+ *
+ * The numbers are small on purpose. A look is a mood, not a filter — anything strong enough to be
+ * obvious in isolation is strong enough to fight the calibration underneath it.
+ */
+export const LOOK_MODIFIERS: Readonly<Record<string, string | null>> = {
+  /** The calibration alone. */
+  documentary: null,
+  /** Cooler shadows, a little more contrast, slightly desaturated — the feature-film reading. */
+  cinematic: "eq=contrast=1.08:saturation=0.94,colorbalance=bs=0.06:rs=-0.04",
+  /** Warm highlights, lifted blacks, softer colour: the look of an aged print. */
+  vintage: "eq=contrast=0.95:saturation=0.82:brightness=0.02,colorbalance=rm=0.10:bm=-0.08",
+  /** Nearly monochrome with a cool cast, for material that should read as a record. */
+  archival: "eq=contrast=1.05:saturation=0.55,colorbalance=bs=0.05",
+  cold: "colorbalance=bm=0.12:rm=-0.08",
+  warm: "colorbalance=rm=0.12:bm=-0.08",
+  high_contrast: "eq=contrast=1.25:saturation=1.05",
+  muted: "eq=contrast=0.96:saturation=0.7",
+};
+
+/** Every look this renderer can execute. `none` is handled before the table is consulted. */
+export const RENDERABLE_LOOKS: ReadonlySet<string> = new Set(["none", ...Object.keys(LOOK_MODIFIERS)]);
+
+export function lookUnsupportedReason(grade: string): string | null {
+  return RENDERABLE_LOOKS.has(grade) ? null : `no grade chain implements the look "${grade}"`;
+}
+
 export function gradeChain(
   look: TimelineLook | undefined,
   sourceKind: ClipSourceKind | undefined
 ): string | null {
   if (!look || look.grade === "none") return null;
+  /** An unknown look leaves the pixels alone and is reported — never approximated by a near one. */
+  if (!RENDERABLE_LOOKS.has(look.grade)) return null;
   const strength = look.strength == null ? 1 : Math.max(0, Math.min(1, look.strength));
   if (strength <= 0.001) return null;
 
@@ -236,8 +404,19 @@ export function gradeChain(
       ? sourceKind
       : "unknown";
 
+  /**
+   * RONDE 153 — the look's modifier is appended at EVERY exit, not just one.
+   *
+   * An earlier version of this appended it only to the interpolated branch below, so a look at full
+   * strength — the common case — returned through `buildPerClipDocumentaryGradeVF` and quietly lost
+   * its modifier. The video graded, looked plausible, and was not the look that was chosen. Hence
+   * one helper used by both returns.
+   */
+  const modifier = LOOK_MODIFIERS[look.grade];
+  const withLook = (calibration: string) => (modifier ? `${calibration},${modifier}` : calibration);
+
   const full = buildPerClipDocumentaryGradeVF(kind);
-  if (strength >= 0.999) return full;
+  if (strength >= 0.999) return withLook(full);
 
   /**
    * Interpolating a filter string is not possible, so the NUMBERS are interpolated instead and the
@@ -252,14 +431,15 @@ export function gradeChain(
         ? { saturation: 0.82, contrast: 1.15 }
         : { saturation: 0.88, contrast: 1.12 };
   const angle = kind === "ai_generated" || kind === "stock" ? 0.55 : 0.62;
-  return (
+  const calibration =
     `eq=contrast=${mix(1, contrast).toFixed(4)}:saturation=${mix(1, saturation).toFixed(4)}:` +
     `brightness=${mix(0, -0.03).toFixed(4)}:gamma=${mix(1, 1.02).toFixed(4)},` +
     `colorbalance=rs=${mix(0, -0.02).toFixed(4)}:gs=0:bs=${mix(0, 0.04).toFixed(4)}:` +
     `rm=${mix(0, -0.01).toFixed(4)}:gm=0:bm=${mix(0, 0.02).toFixed(4)}:` +
     `rh=${mix(0, -0.01).toFixed(4)}:gh=0:bh=${mix(0, 0.02).toFixed(4)},` +
-    `vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`
-  );
+    `vignette=angle=${mix(Math.PI / 2, angle).toFixed(4)}:mode=forward`;
+
+  return withLook(calibration);
 }
 
 export function unsupportedEffects(effects: readonly ClipEffect[] | undefined): ClipEffect[] {
@@ -343,10 +523,73 @@ export const XFADE_TRANSITIONS: Readonly<Record<string, string>> = {
   dissolve: "dissolve",
   dip_to_black: "fadeblack",
   dip_to_white: "fadewhite",
+
+  /* ── RONDE 153 — every one of these is a real xfade mode, VERIFIED present ────────────────
+   *
+   * Checked against BOTH binaries this repo can run: the system ffmpeg 6.1.1 and the bundled
+   * ffmpeg-static 5.3.0. Nothing here is aspirational — an xfade name that only one binary knows
+   * would produce a video on a developer's machine and a filtergraph error in production.
+   */
+  slide_left: "slideleft",
+  slide_right: "slideright",
+  slide_up: "slideup",
+  slide_down: "slidedown",
+  /** `push` is a cover: the incoming shot pushes the outgoing one out of frame. */
+  push: "coverleft",
+  push_right: "coverright",
+  wipe: "wipeleft",
+  wipe_right: "wiperight",
+  wipe_up: "wipeup",
+  wipe_down: "wipedown",
+  /** A blurred dissolve — the honest reading of "blur" as a transition between two shots. */
+  blur: "hblur",
+  /**
+   * `whip` is a fast horizontal wind smear, which is what a whip pan looks like between two
+   * locked-off shots. It is NOT a camera move; the engine's camera vocabulary handles those.
+   */
+  whip: "hlwind",
+  whip_right: "hrwind",
+  zoom: "zoomin",
+  /**
+   * `flash` uses fadewhite. A flash is a dip to white with a much shorter duration, and the
+   * duration is the planner's to choose — so this is the same filter, not a different one, and
+   * saying so here stops someone adding a duplicate.
+   */
+  flash: "fadewhite",
+  radial: "radial",
+  pixelize: "pixelize",
+  squeeze: "squeezeh",
+};
+
+/**
+ * RONDE 153 — transitions that need a real overlay asset, and are therefore NOT faked.
+ *
+ * `film_burn` and `light_leak` are optical effects: real ones are footage of film burning or light
+ * striking a lens, composited over the join. ffmpeg can composite such a clip perfectly well — what
+ * it cannot do is invent one, and a procedural approximation would be a different effect wearing
+ * the name of the one the planner chose.
+ *
+ * So they stay OUT of `XFADE_TRANSITIONS` and are reported as `unsupported_transition` with this
+ * reason attached. `transitionOverlayAsset` below is the hook a real asset plugs into.
+ */
+export const OVERLAY_TRANSITIONS: Readonly<Record<string, string>> = {
+  film_burn: "needs a film-burn overlay clip; none is configured",
+  light_leak: "needs a light-leak overlay clip; none is configured",
 };
 
 export function transitionIsRenderable(kind: string): boolean {
   return kind === "hard_cut" || kind in XFADE_TRANSITIONS;
+}
+
+/**
+ * Why a transition cannot be executed, in the planner's terms. Null when it can.
+ *
+ * §153: "Niet terugvallen naar hard_cut zonder melding." This is the melding.
+ */
+export function transitionUnsupportedReason(kind: string): string | null {
+  if (transitionIsRenderable(kind)) return null;
+  if (kind in OVERLAY_TRANSITIONS) return OVERLAY_TRANSITIONS[kind]!;
+  return "no ffmpeg xfade mode implements this transition";
 }
 
 /** The default a planner-less timeline gets. Short enough to read as a cut with a soft edge. */

@@ -162,6 +162,14 @@ export type ClipEffect = {
   effectType: string;
   /** 0..1. */
   intensity: number;
+  /**
+   * RONDE 153B — which way a signed effect goes.
+   *
+   * Exposure, contrast, saturation, temperature and tint are all two-directional: a colourist warms
+   * OR cools, brightens OR darkens. `intensity` carries only the magnitude, so the sign needs its
+   * own field. Absent means "up", which is what every effect written before this round meant.
+   */
+  direction?: "up" | "down";
   reason?: string;
 };
 
@@ -184,10 +192,37 @@ export type TimelineLook = {
    * "none" is the default and means the pixels are untouched — which is what every timeline
    * written before this round gets, so their renders do not change.
    */
-  grade: "none" | "documentary";
+  grade: TimelineGrade;
   /** 0..1, scaling the grade toward neutral. 1 is the calibration documentaryStyle ships. */
   strength?: number;
 };
+
+/**
+ * RONDE 153 — the video-level looks.
+ *
+ * ── Why these are MODIFIERS of the documentary grade, not rivals to it ──────────────────────
+ *
+ * `documentaryStyle.ts` holds the calibration that makes a Library of Congress scan, a Pexels drone
+ * shot and a generated establishing shot look like one film — per source kind, tuned, tested. §153
+ * says explicitly: "GEEN tweede kleurcorrectiesysteem maken."
+ *
+ * So every look below runs that same source-aware grade FIRST and then applies one small, named
+ * adjustment on top. `cinematic` is the documentary grade plus a touch more contrast and a cooler
+ * shadow; `warm` is the documentary grade pushed warm. What varies is the modifier, not the
+ * calibration, so a look can never undo the thing that makes mixed sources belong together.
+ *
+ * `none` leaves the pixels untouched, which is what every timeline written before RONDE 149 gets.
+ */
+export type TimelineGrade =
+  | "none"
+  | "documentary"
+  | "cinematic"
+  | "vintage"
+  | "archival"
+  | "cold"
+  | "warm"
+  | "high_contrast"
+  | "muted";
 
 /**
  * Where a clip's picture came from, in the vocabulary the grade is calibrated against.

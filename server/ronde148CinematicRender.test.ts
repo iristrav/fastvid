@@ -274,9 +274,26 @@ describe("§9 — transitions the renderer can execute, and those it cannot", ()
     expect(XFADE_TRANSITIONS.hard_cut).toBeUndefined();
   });
 
-  it("an unknown transition is reported as unrenderable rather than silently downgraded", () => {
+  /**
+   * RONDE 153 changed the answer for `whip`, deliberately.
+   *
+   * When this test was written neither transition had an implementation, so both were unrenderable
+   * and either served as the example. §153 then asked for `whip` specifically, and ffmpeg's
+   * `hlwind` xfade mode — verified present in both binaries — is genuinely what a whip pan between
+   * two locked-off shots looks like. So `whip` renders now.
+   *
+   * `film_burn` still does not, and for a reason that will not change with effort: a film burn is
+   * FOOTAGE of film burning. ffmpeg can composite such a clip once it exists; it cannot invent one,
+   * and a procedural approximation would be a different effect wearing the planner's chosen name.
+   * That makes it the better permanent example of the rule this test is really about.
+   */
+  it("a transition needing an overlay asset is reported, never silently downgraded", () => {
     expect(transitionIsRenderable("film_burn")).toBe(false);
-    expect(transitionIsRenderable("whip")).toBe(false);
+    expect(transitionIsRenderable("light_leak")).toBe(false);
+    // Implemented in RONDE 153 — see the note above.
+    expect(transitionIsRenderable("whip")).toBe(true);
+    // And a name nobody has implemented is still refused.
+    expect(transitionIsRenderable("kaleidoscope")).toBe(false);
   });
 
   it("THE OFFSETS ARE CUMULATIVE, because each overlap shortens the running total", () => {
