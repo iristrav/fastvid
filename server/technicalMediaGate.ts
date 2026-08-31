@@ -64,15 +64,120 @@ export type TechnicalRejectReason =
   | "http_error"
   | "file_too_small"
   | "still_too_low_res"
+  | "video_too_low_res"
   | "duration_too_short"
   | "encode_failed"
   | "still_conversion_failed";
 
 export type TechnicalVerdict =
   | { ok: true }
-  | { ok: false; reason: TechnicalRejectReason; detail: string };
+  | {
+      ok: false;
+      reason: TechnicalRejectReason;
+      /** What was measured, e.g. "320x240" or "1.20s". */
+      actual: string;
+      /** What was required, e.g. "144 lines" or "1.50s". */
+      required: string;
+      /** `actual < required` — the human form the log prints. */
+      detail: string;
+    };
 
 const OK: TechnicalVerdict = { ok: true };
+
+function reject(
+  reason: TechnicalRejectReason,
+  actual: string,
+  required: string
+): Extract<TechnicalVerdict, { ok: false }> {
+  return { ok: false, reason, actual, required, detail: `${actual} < ${required}` };
+}
+
+/* ═══════════════════════ RONDE 134 — video ═══════════════════════ */
+
+/**
+ * ── The floor, and why it is THIS number ─────────────────────────────────────────────────────
+ *
+ * Until now the only thing standing between a video file and the montage was
+ * montageStreamMetaUsable's `width < 2 || height < 2`. That is a check for a file that is not a
+ * picture at all; it is not a quality bar. A 128×96 clip cleared it, was judged by Vision, and was
+ * blown up fifteen times into a 1920×1080 frame.
+ *
+ * The number below is not invented for this round. sourcingPolicy's youtubeMinFormatHeight() has
+ * carried this exact judgement since RONDE 27 — for the identical situation, a source scaled into
+ * a 1920×1080 frame as B-roll behind narration — and its own validator states the two bounds this
+ * codebase has already committed to:
+ *
+ *     n >= 144 && n <= 1080     the admissible range; nothing below 144 has ever been allowed
+ *     return 480                the preferred bar, "below this the source starts to look soft"
+ *
+ * Both are used here, for different jobs:
+ *
+ *   144  REJECTS.   No configuration in this pipeline has ever been permitted to go below it, so
+ *                   refusing it takes nothing away that any existing rule would have kept.
+ *   480  OBSERVES.  Logged, never refused.
+ *
+ * ── Why 480 does not reject ──────────────────────────────────────────────────────────────────
+ *
+ * Because the material this pipeline exists to find would be the first casualty. A genuine 1945
+ * newsreel digitised at 352×240 is not a technically bad file — it is the only copy there is, and
+ * it beats a pristine modern stock shot on the one thing that matters. Internet Archive, the
+ * Library of Congress and NARA are full of exactly that, while Pexels and Pixabay hand back 1080p
+ * by construction. A 480-line rejection would therefore fall almost entirely on the archives and
+ * almost not at all on stock — the precise inversion of what this pipeline is for.
+ *
+ * So the bar is measured and printed instead. After one production render the log says how much
+ * material actually sits between 144 and 480, and THAT is the evidence for raising the floor —
+ * rather than a number chosen here because it sounded safe.
+ *
+ * ── The shorter dimension, not the height ────────────────────────────────────────────────────
+ *
+ * candidateRanking already scores resolution as `Math.min(width, height) / 1080`. Using the same
+ * dimension keeps one definition of "how big is this picture" in the codebase, and it is the
+ * correct one: a 1920×120 letterbox strip is not a usable shot because it is 1920 wide.
+ */
+export const VIDEO_MIN_SHORT_SIDE_PX = 144;
+export const VIDEO_QUALITY_BAR_SHORT_SIDE_PX = 480;
+
+/**
+ * Is this video big enough to scale into the 1920×1080 frame at all?
+ *
+ * `belowQualityBar` is an observation, never a refusal — see above. Absence is neutral: a file
+ * ffprobe could not measure passes, exactly as an unmeasurable still does.
+ */
+export function videoResolutionVerdict(
+  width: number | null | undefined,
+  height: number | null | undefined,
+  minShortSidePx: number = VIDEO_MIN_SHORT_SIDE_PX
+): TechnicalVerdict & { belowQualityBar?: boolean } {
+  const w = Number(width) || 0;
+  const h = Number(height) || 0;
+  if (!(w > 0) || !(h > 0)) return OK;
+  const shortSide = Math.min(w, h);
+  if (shortSide < minShortSidePx) {
+    return reject("video_too_low_res", `${w}x${h}`, `${minShortSidePx} lines`);
+  }
+  return { ok: true, belowQualityBar: shortSide < VIDEO_QUALITY_BAR_SHORT_SIDE_PX };
+}
+
+/**
+ * `[TechnicalGate] NOTE s2b0 source=loc type=video below_quality_bar actual=352x240 bar=480 lines`
+ *
+ * The evidence a future round needs to decide whether 480 should start refusing. Deliberately a
+ * different verb from REJECT: nothing was thrown away.
+ */
+export function formatBelowQualityBar(params: {
+  beatLabel: string;
+  source: string;
+  contentKey: string;
+  width: number;
+  height: number;
+}): string {
+  return (
+    `[TechnicalGate] NOTE ${params.beatLabel} source=${params.source} ` +
+    `contentKey=${params.contentKey} type=video below_quality_bar ` +
+    `actual=${params.width}x${params.height} bar=${VIDEO_QUALITY_BAR_SHORT_SIDE_PX} lines`
+  );
+}
 
 /**
  * Is this still big enough to be worth showing?
@@ -89,31 +194,55 @@ export function stillResolutionVerdict(
   // Absence is neutral — see the module comment.
   if (!(widthPx > 0)) return OK;
   if (widthPx >= minWidthPx) return OK;
-  return {
-    ok: false,
-    reason: "still_too_low_res",
-    detail: `${widthPx}px < ${minWidthPx}px`,
-  };
+  return reject("still_too_low_res", `${widthPx}px`, `${minWidthPx}px`);
 }
 
 /** Is the downloaded file big enough to be a real asset rather than an error page or a stub? */
 export function fileSizeVerdict(sizeBytes: number, minBytes: number): TechnicalVerdict {
   if (sizeBytes >= minBytes) return OK;
-  return {
-    ok: false,
-    reason: "file_too_small",
-    detail: `${sizeBytes}B < ${minBytes}B`,
-  };
+  return reject("file_too_small", `${sizeBytes}B`, `${minBytes}B`);
 }
 
-/** Is there enough footage to cut a shot out of? */
-export function sourceDurationVerdict(durationSec: number, minSec: number): TechnicalVerdict {
-  if (!(durationSec < minSec)) return OK;
-  return {
-    ok: false,
-    reason: "duration_too_short",
-    detail: `${durationSec.toFixed(2)}s < ${minSec.toFixed(2)}s`,
-  };
+/**
+ * Is there enough footage to cut a shot out of?
+ *
+ * ── RONDE 134: the duration has to come off the FILE ─────────────────────────────────────────
+ *
+ * The pool route used to do this:
+ *
+ *     let sourceDur = candidate.durationSec ?? 0;         // what the provider CLAIMED
+ *     try { sourceDur = <ffprobe format=duration> } catch { }
+ *     if (sourceDur < 1.5) return null;
+ *
+ * so a file ffprobe could not read at all still cleared the duration check — on the strength of a
+ * number from a search response, which says nothing whatsoever about whether the bytes on disk are
+ * readable. Worse, it made the SAME unreadable file pass or fail depending on metadata: a provider
+ * that reported 12s got through and spent a full libx264 encode before failing; a provider that
+ * reported nothing was refused. Two answers to one question about one file.
+ *
+ * Three states, and the middle one is the point:
+ *
+ *   measured, below the floor   → refuse. The file is genuinely too short.
+ *   measured, at or above       → accept.
+ *   NOT MEASURED (pass null)    → unknown, and unknown is neutral. Accept, and say so.
+ *
+ * Unknown may not refuse, because ffprobe times out under exactly the memory pressure this
+ * pipeline creates for itself — turning "the machine was busy" into "throw the shot away" would
+ * lose good footage at the worst possible moment. And unknown may not be ANSWERED by the
+ * provider either. It stays unknown.
+ */
+export function sourceDurationVerdict(
+  measuredDurationSec: number | null,
+  minSec: number
+): TechnicalVerdict {
+  if (measuredDurationSec == null || !Number.isFinite(measuredDurationSec)) return OK;
+  if (!(measuredDurationSec > 0)) return OK;
+  if (!(measuredDurationSec < minSec)) return OK;
+  return reject(
+    "duration_too_short",
+    `${measuredDurationSec.toFixed(2)}s`,
+    `${minSec.toFixed(2)}s`
+  );
 }
 
 /**
@@ -131,11 +260,20 @@ export function formatTechnicalReject(params: {
   beatLabel: string;
   source: string;
   assetId: string;
+  /** RONDE 134: the asset's identity across routes, so a refusal can be traced to one file. */
+  contentKey?: string;
+  /** RONDE 134: a still and a video are refused for different reasons and read differently. */
+  mediaType?: "video" | "image";
   verdict: Extract<TechnicalVerdict, { ok: false }>;
 }): string {
-  const asset = params.assetId.length > 60 ? `${params.assetId.slice(0, 57)}...` : params.assetId;
+  const trim = (s: string) => (s.length > 60 ? `${s.slice(0, 57)}...` : s);
   return (
-    `[TechnicalGate] REJECT ${params.beatLabel} source=${params.source} asset=${asset} ` +
-    `reason=${params.verdict.reason} detail=${params.verdict.detail}`
+    `[TechnicalGate] REJECT ${params.beatLabel} source=${params.source} ` +
+    `asset=${trim(params.assetId)} ` +
+    (params.contentKey ? `contentKey=${trim(params.contentKey)} ` : "") +
+    (params.mediaType ? `type=${params.mediaType} ` : "") +
+    `reason=${params.verdict.reason} ` +
+    `actual=${params.verdict.actual} required=${params.verdict.required} ` +
+    `detail=${params.verdict.detail}`
   );
 }

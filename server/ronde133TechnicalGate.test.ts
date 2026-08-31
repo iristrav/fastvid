@@ -92,6 +92,8 @@ describe("the technical rule, on its own", () => {
     expect(fileSizeVerdict(50_000, 50_000).ok).toBe(true);
     expect(sourceDurationVerdict(1.49, 1.5).ok).toBe(false);
     expect(sourceDurationVerdict(1.5, 1.5).ok).toBe(true);
+    // RONDE 134: an unmeasurable duration is unknown, and unknown never refuses.
+    expect(sourceDurationVerdict(null, 1.5).ok).toBe(true);
   });
 
   it("G — the technical gate cannot express a content verdict", () => {
@@ -123,13 +125,17 @@ describe("the technical rule, on its own", () => {
     const verdicts: TechnicalVerdict[] = [
       stillResolutionVerdict(10),
       fileSizeVerdict(1, 2),
-      sourceDurationVerdict(0, 1),
+      // RONDE 134 changed this argument from 0 to 0.5 on purpose. `0` used to mean "zero seconds
+      // long, refuse"; it now means "ffprobe could not determine a duration", which is unknown and
+      // therefore neutral — see sourceDurationVerdict. A real measured 0.5s still refuses, which
+      // is what this line is here to check.
+      sourceDurationVerdict(0.5, 1),
     ];
     for (const v of verdicts) {
       expect(v.ok).toBe(false);
       if (!v.ok) {
         // Every reason names a property of the FILE, never of the picture's content.
-        expect(v.reason).toMatch(/^(http_error|file_too_small|still_too_low_res|duration_too_short|encode_failed|still_conversion_failed)$/);
+        expect(v.reason).toMatch(/^(http_error|file_too_small|still_too_low_res|video_too_low_res|duration_too_short|encode_failed|still_conversion_failed)$/);
       }
     }
   });

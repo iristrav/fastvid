@@ -215,9 +215,11 @@ import {
 } from "./curatedMediaSourcing";
 import {
   fileSizeVerdict,
+  formatBelowQualityBar,
   formatTechnicalReject,
   sourceDurationVerdict,
   stillResolutionVerdict,
+  videoResolutionVerdict,
 } from "./technicalMediaGate";
 import {
   analyzeBeatSemanticsFallback,
@@ -4465,6 +4467,8 @@ export async function downloadAndTrimPoolCandidate(
         beatLabel: `s${sceneIndex}b${beatIndex}`,
         source: candidate.source,
         assetId: candidate.assetId,
+        contentKey: candidate.id,
+        mediaType: isVideo ? "video" : "image",
         verdict: sizeVerdict,
       }));
       try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
@@ -4476,17 +4480,73 @@ export async function downloadAndTrimPoolCandidate(
     // with it, on both the success and failure path.
     try {
       if (isVideo) {
-        const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
-        let sourceDur = candidate.durationSec ?? 0;
-        try {
-          console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
-          const _p0 = Date.now();
-          const { stdout } = await withSceneFetchTimeout(() => exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
-          console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
-          const parsed = parseFloat(stdout.trim());
-          if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
-        } catch { /* use candidate.durationSec */ }
-        const durVerdict = sourceDurationVerdict(sourceDur, POOL_MIN_SOURCE_SEC);
+        /**
+         * RONDE 134 — one probe, on the real file, answering both questions.
+         *
+         * ── What this replaces ────────────────────────────────────────────────────────────────
+         *
+         *     const probeCmd = `ffprobe -show_entries format=duration ... rawPath`;
+         *     let sourceDur = candidate.durationSec ?? 0;       // the provider's CLAIM
+         *     try { sourceDur = <probe> } catch { }             // ...kept on failure
+         *     if (sourceDur < 1.5) return null;
+         *
+         * Two things were wrong with it and one thing was missing.
+         *
+         *  · The claim survived a failed probe. A file ffprobe could not read still cleared the
+         *    duration check on a number out of a search response, then spent a full libx264
+         *    encode before failing. And the same unreadable file was accepted or refused
+         *    depending on whether its provider happened to report a duration — two answers to one
+         *    question about one file.
+         *
+         *  · Nothing measured the RESOLUTION. montageStreamMetaUsable's `width < 2` was the only
+         *    thing between a video and the montage, so a 128×96 clip was upscaled fifteen times
+         *    into a 1920×1080 frame and nobody could see why the render looked soft.
+         *
+         *  · It was a SECOND ffprobe. probeVideoStreamMeta already reads width, height and
+         *    duration in one call and memoises the answer on the file's inode+ctime — so this is
+         *    now one probe where there were two, and the montage's later probe of the same file
+         *    reuses it. Fewer processes, not more.
+         *
+         * Absence stays neutral in both directions: a null probe means "the machine could not
+         * tell us", which under this pipeline's own memory pressure is routinely a timeout on a
+         * perfectly good file. It does not refuse, and the provider does not get to answer for it.
+         */
+        console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
+        const _p0 = Date.now();
+        const rawMeta = await probeVideoStreamMeta(rawPath);
+        console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms meta=${rawMeta ? `${rawMeta.width}x${rawMeta.height}` : "none"}`);
+
+        const resVerdict = videoResolutionVerdict(rawMeta?.width, rawMeta?.height);
+        if (!resVerdict.ok) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            contentKey: candidate.id,
+            mediaType: "video",
+            verdict: resVerdict,
+          }));
+          return null;
+        }
+        if (resVerdict.belowQualityBar && rawMeta) {
+          // Never a refusal — the evidence a later round needs to decide whether the 480-line bar
+          // should start refusing. See technicalMediaGate for why it does not refuse today.
+          console.log(formatBelowQualityBar({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            contentKey: candidate.id,
+            width: rawMeta.width,
+            height: rawMeta.height,
+          }));
+        }
+
+        /**
+         * The MEASURED duration decides, or nothing does. ffprobe reports 0 for a stream whose
+         * duration it cannot determine (montageStreamMetaUsable says so in as many words), so a
+         * measured 0 is "unknown", not "zero seconds long".
+         */
+        const measuredDur = rawMeta && rawMeta.durationSec > 0 ? rawMeta.durationSec : null;
+        const durVerdict = sourceDurationVerdict(measuredDur, POOL_MIN_SOURCE_SEC);
         if (!durVerdict.ok) {
           // RONDE 133: this used to be a bare `return null`. Same threshold, same decision — it
           // now says which candidate went and why, which is the whole of question 15.
@@ -4494,10 +4554,19 @@ export async function downloadAndTrimPoolCandidate(
             beatLabel: `s${sceneIndex}b${beatIndex}`,
             source: candidate.source,
             assetId: candidate.assetId,
+            contentKey: candidate.id,
+            mediaType: "video",
             verdict: durVerdict,
           }));
           return null;
         }
+        /**
+         * The trim still needs a length to cut against, and when nothing could be measured the
+         * provider's figure is the only one there is. That is a legitimate use of it — a HINT for
+         * arithmetic that ffmpeg will clamp anyway — and a different thing entirely from letting
+         * it satisfy a technical check, which is what this round removed.
+         */
+        const sourceDur = measuredDur ?? candidate.durationSec ?? 0;
         // RONDE 59: not the first seconds. This call used to pass no start offset at all, so
         // every pool candidate was cut from second 0 — from render 531's 272-second source it
         // took the opening 3.5 seconds, eight separate times. On archive material that opening
@@ -4515,7 +4584,13 @@ export async function downloadAndTrimPoolCandidate(
             beatLabel: `s${sceneIndex}b${beatIndex}`,
             source: candidate.source,
             assetId: candidate.assetId,
-            verdict: { ok: false, reason: "encode_failed", detail: "ffmpeg produced no usable clip" },
+            mediaType: "video",
+            contentKey: candidate.id,
+            verdict: {
+              ok: false, reason: "encode_failed",
+              actual: "no output", required: "a playable clip",
+              detail: "ffmpeg produced no usable clip",
+            },
           }));
         }
         clearWorkerHeartbeat();
@@ -4556,6 +4631,8 @@ export async function downloadAndTrimPoolCandidate(
             beatLabel: `s${sceneIndex}b${beatIndex}`,
             source: candidate.source,
             assetId: candidate.assetId,
+            contentKey: candidate.id,
+            mediaType: "image",
             verdict: resVerdict,
           }));
           return null;
@@ -4571,7 +4648,13 @@ export async function downloadAndTrimPoolCandidate(
             beatLabel: `s${sceneIndex}b${beatIndex}`,
             source: candidate.source,
             assetId: candidate.assetId,
-            verdict: { ok: false, reason: "still_conversion_failed", detail: "no clip written" },
+            mediaType: "image",
+            contentKey: candidate.id,
+            verdict: {
+              ok: false, reason: "still_conversion_failed",
+              actual: "no output", required: "a playable clip",
+              detail: "no clip written",
+            },
           }));
         }
         clearWorkerHeartbeat();

@@ -181,6 +181,43 @@ describe("RONDE 133 — the media cache cannot smuggle a file past the technical
     expect(fs.existsSync(out!)).toBe(true);
   }, 120_000);
 
+  it("RONDE 134 — a cached VIDEO gets the same resolution rule as a fresh download", async () => {
+    /**
+     * Point 5 of RONDE 134: a file may not be judged differently because of the route it arrived
+     * through. The video resolution check sits after the cache branch for the same reason the byte
+     * floor now does — a cache hit is a file, and a file gets measured.
+     */
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "r134-cache-video-"));
+    const seed = fs.mkdtempSync(path.join(os.tmpdir(), "r134-cache-seed-"));
+    const p = path.join(seed, "tiny.mp4");
+    execSync(
+      `ffmpeg -y -f lavfi -i "nullsrc=s=128x96,geq=random(1)*255:128:128" -t 4 -c:v libx264 -pix_fmt yuv420p "${p}" 2>/dev/null`
+    );
+    hoisted.payload = fs.readFileSync(p);
+    fs.rmSync(seed, { recursive: true, force: true });
+    // Above the byte floor, so only the RESOLUTION rule can refuse it.
+    expect(hoisted.payload.length).toBeGreaterThan(50_000);
+
+    const lines: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+      lines.push(a.map(String).join(" "));
+    });
+    let out: string | null;
+    try {
+      out = await downloadAndTrimPoolCandidate(
+        { ...candidate(), mediaType: "video", durationSec: 30 } as PoolCandidate,
+        dir, 5, 0, 4
+      );
+    } finally {
+      warn.mockRestore();
+    }
+    expect(hoisted.restores).toBe(1);
+    expect(out, "a cache hit skipped the video resolution rule").toBeNull();
+    const reject = lines.find((l) => l.includes("[TechnicalGate] REJECT"));
+    expect(reject!).toContain("reason=video_too_low_res");
+    expect(reject!).toContain("type=video");
+  }, 120_000);
+
   it("a cached file that is big enough but too LOW-RES is refused on resolution, not size", async () => {
     /**
      * Both floors now apply to a cache hit, and they are distinguishable in the log — which is

@@ -117,7 +117,12 @@ import {
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
   type BeatGeoRegion,
 } from "./vidrushQuality";
-import { stillResolutionVerdict } from "./technicalMediaGate";
+import {
+  formatBelowQualityBar,
+  formatTechnicalReject,
+  stillResolutionVerdict,
+  videoResolutionVerdict,
+} from "./technicalMediaGate";
 import {
   analyzeBeatSemantics,
   analyzeBeatSemanticsFallback,
@@ -1910,6 +1915,28 @@ async function probeImageWidthPx(filePath: string): Promise<number> {
   }
 }
 
+/**
+ * RONDE 134 — the same measurement for archive video that the pool route now makes.
+ *
+ * One ffprobe, both dimensions, through this file's semaphore-gated exec. Returns nulls when it
+ * cannot tell, which the shared verdict treats as neutral.
+ */
+async function probeVideoDimensions(
+  filePath: string
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const probe = await exec(
+      `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${filePath}"`,
+      EXEC_TIMEOUT_PROBE_MS
+    );
+    const [w, h] = String(probe.stdout).trim().split(",").map((n) => parseInt(n, 10));
+    if (!Number.isFinite(w) || !Number.isFinite(h) || !(w > 0) || !(h > 0)) return null;
+    return { width: w, height: h };
+  } catch {
+    return null;
+  }
+}
+
 // F3-19: prepareCuratedArchiveClip's rawPath is deterministic — workDir + asset.id + ext only —
 // so that a popular archive asset picked by more than one scene/beat in the same render job can
 // share a single download instead of each caller fetching its own copy. The previous guard for
@@ -2029,6 +2056,44 @@ export async function prepareCuratedArchiveClip(
       const verdict = stillResolutionVerdict(width);
       if (!verdict.ok) {
         throw new Error(`curated asset ${asset.id} still too low-res (${verdict.detail})`);
+      }
+    } else {
+      /**
+       * RONDE 134 — archive VIDEO is measured too, by the same rule as every external provider.
+       *
+       * The archive had a resolution check for stills and none at all for video, so an ingested
+       * clip of any size whatsoever went straight through to Vision and the montage. That is the
+       * same one-route-only asymmetry RONDE 133 removed for stills, in the other direction.
+       *
+       * The floor is deliberately the absolute one (144 lines), not the 480-line quality bar: an
+       * archive is precisely where a genuine 352×240 newsreel lives, and refusing that would throw
+       * away the material this pipeline exists to find. See technicalMediaGate.
+       */
+      const dims = await probeVideoDimensions(rawPath);
+      const verdict = videoResolutionVerdict(dims?.width, dims?.height);
+      if (!verdict.ok) {
+        console.warn(
+          formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: "archive",
+            assetId: String(asset.id),
+            contentKey: `archive:${asset.id}`,
+            mediaType: "video",
+            verdict,
+          })
+        );
+        throw new Error(`curated asset ${asset.id} video too low-res (${verdict.detail})`);
+      }
+      if (verdict.belowQualityBar && dims) {
+        console.log(
+          formatBelowQualityBar({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: "archive",
+            contentKey: `archive:${asset.id}`,
+            width: dims.width,
+            height: dims.height,
+          })
+        );
       }
     }
 
