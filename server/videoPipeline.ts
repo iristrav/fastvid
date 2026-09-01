@@ -4614,6 +4614,37 @@ export async function downloadAndTrimPoolCandidate(
         );
         return null;
       }
+      /**
+       * RONDE 203 — an HTML page is not a video, however cheerfully it arrives with HTTP 200.
+       *
+       * ── The failure this names ────────────────────────────────────────────────────────────
+       *
+       * A provider that has moved, expired or rate-limited an asset often answers a media URL with
+       * a 200 and a courtesy page — a login wall, a "this item is no longer available", a captcha.
+       * Nothing above catches that: `resp.ok` is true, `resp.body` exists, and the bytes get
+       * streamed into a file named `.mp4`.
+       *
+       * What happened next depended on the page's SIZE, which is the worst kind of behaviour. A
+       * small page was rejected by the byte floor and reported as "file too small" — a technically
+       * true sentence that sends an operator to look at the provider's encoding settings. A large
+       * one reached ffprobe and failed there, blamed on the file.
+       *
+       * The content type is the provider's own statement about what it just sent, so this asks it
+       * rather than inferring from length. The candidate is refused with the RIGHT reason, which is
+       * the whole difference: "the provider sent a web page" is actionable and "the file is too
+       * small" is not.
+       *
+       * YouTube never reaches here — its watch page is fetched by `downloadYouTubeCCClip` in the
+       * branch above, which is R179's fix and the reason this check is about the OTHER providers.
+       */
+      const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+      if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
+        console.warn(
+          `[FunnelDownload] rejected source=${candidate.source} assetId=${candidate.assetId} ` +
+            `reason=html_not_media contentType=${contentType.split(";")[0]}`
+        );
+        return null;
+      }
       // Streams straight to rawPath instead of Buffer.from(await resp.arrayBuffer()), so the
       // download is never fully buffered in memory. On a timeout/stream error the partial file
       // is removed before the error propagates, matching the existing F3-10/F3-13/F3-14/F3-16
