@@ -51,6 +51,34 @@ export type QueryTokenSource =
   | "beat_text"
   | "scene_text"
   | "proven_entity"
+  /**
+   * RONDE 160 — THE USER'S OWN WORDS: `videos.prompt`, exactly as typed into the form.
+   *
+   * ── The bug this closes ────────────────────────────────────────────────────────────────────
+   *
+   * A production log rejected the query "WWII archival footage" with UNVERIFIED_TERM on a video
+   * whose whole subject was WWII. Reproduced: a beat reading "German commanders redrew the front
+   * line in the winter of 1942" proves "German", "commanders" and "1942", and does not contain the
+   * string "WWII" anywhere. The evidence was the beat plus its scene, and nothing else, so the one
+   * word that names the subject of the entire video was the one word the query could not use.
+   *
+   * ── Why this is not the title hole re-opening ──────────────────────────────────────────────
+   *
+   * RONDE 90 deliberately refused the video's TITLE as evidence, and that stays refused —
+   * `title_inference` is still on the forbidden list below. The distinction is who wrote it:
+   *
+   *   videos.title    LLM-GENERATED. A claim the model made about the video. Admitting it let
+   *                   "Adolf Hitler France" be measured on a beat that names neither. Forbidden.
+   *
+   *   videos.prompt   WHAT THE USER TYPED. Not a derivation, not an inference — it is the
+   *                   authorisation itself. A person who asks for a documentary about WWII has
+   *                   authorised the word "WWII".
+   *
+   * So this admits INPUT and still refuses DERIVED CONTENT. Note for anyone wiring a new call
+   * site: this must be fed from `videos.prompt`. Feeding it a title, a summary or any other
+   * model output would silently turn it into the hole RONDE 90 closed.
+   */
+  | "topic"
   /** Allowed for technical terms only — "archival footage", provider syntax. Never for content. */
   | "technical"
   /** Present so a rejection can NAME the route that produced the term, never to permit it. */
@@ -97,17 +125,36 @@ export type VerifiedQueryContext = {
    * the script; a word that does not is not, no matter which builder produced it.
    */
   evidence: string;
+  /**
+   * RONDE 160 — the user's own prompt (`videos.prompt`), verbatim.
+   *
+   * Held SEPARATELY from `evidence` rather than concatenated into it, because the two answer
+   * different questions and the audit log has to be able to tell them apart: `evidence` is what
+   * this beat says, `topic` is what the person asked for. A term proven only by the topic is a
+   * term the script never used — legitimate, but worth being able to see.
+   *
+   * Empty when the caller has no prompt to hand, which changes nothing: a term then has to be
+   * proven by the script exactly as before.
+   */
+  topic?: string;
 };
 
-export function emptyQueryContext(evidence = ""): VerifiedQueryContext {
+export function emptyQueryContext(evidence = "", topic = ""): VerifiedQueryContext {
   return {
     persons: [], places: [], countries: [], events: [], actions: [], objects: [], time: [], years: [],
     evidence,
+    ...(topic.trim() ? { topic: topic.trim() } : {}),
   };
 }
 
 /** Only these sources may put a CONTENT word into a query. */
-const PROVEN_SOURCES: ReadonlySet<QueryTokenSource> = new Set(["beat_text", "scene_text", "proven_entity"]);
+const PROVEN_SOURCES: ReadonlySet<QueryTokenSource> = new Set([
+  "beat_text",
+  "scene_text",
+  "proven_entity",
+  /** RONDE 160 — the user's own prompt. See `QueryTokenSource` for why this is not the title. */
+  "topic",
+]);
 
 export function isProvenSource(source: QueryTokenSource): boolean {
   return PROVEN_SOURCES.has(source);
@@ -876,6 +923,16 @@ export function validateSearchQuery(
   for (const w of (ctx.evidence ?? "").split(/[^\p{L}\p{N}'’-]+/u)) {
     if (w) addProven(w);
   }
+  /**
+   * ── C (topic). RONDE 160 — the words the USER typed prove themselves too.
+   *
+   * A person who asked for a documentary about WWII authorised the word "WWII", whether or not any
+   * individual beat happens to spell it out. See `QueryTokenSource` for why this is the prompt and
+   * never the title.
+   */
+  for (const w of (ctx.topic ?? "").split(/[^\p{L}\p{N}'’-]+/u)) {
+    if (w) addProven(w);
+  }
 
   const rejected = new Map<string, QueryTokenSource>();
   for (const list of [ctx.persons, ctx.places, ctx.countries, ctx.events, ctx.actions, ctx.objects]) {
@@ -941,6 +998,79 @@ export function validateSearchQuery(
     return { ok: false, reason: "NO_CONTENT_ANCHOR", offendingTerm: q, blockedTerms: [] };
   }
   return { ok: true };
+}
+
+/**
+ * RONDE 160 — WHY is this term allowed to be in a query?
+ *
+ * `validateSearchQuery` answers yes/no for a whole query. This answers, for one word, the question
+ * an audit actually needs: which channel proved it, and what text is the receipt. The order below
+ * is the order of authority — a term the beat itself uses is proven by the beat even if the topic
+ * also happens to contain it, because the narrower claim is the stronger one.
+ *
+ *   term: "WWII"  ->  { provenance: "topic",     source: "video.prompt", approved: true  }
+ *   term: "1942"  ->  { provenance: "beat_text", source: "beat.text",    approved: true  }
+ *   term: "panzer" -> { provenance: "unknown",   source: null,           approved: false }
+ */
+export type TermProvenance = {
+  term: string;
+  provenance: QueryTokenSource;
+  /** The field this came out of, for a human reading the log. Null when nothing proved it. */
+  source: string | null;
+  approved: boolean;
+};
+
+export function termProvenance(term: string, ctx: VerifiedQueryContext): TermProvenance {
+  const raw = term.trim();
+  const w = raw.toLowerCase().replace(/[^\p{L}\p{N}'’-]/gu, "");
+  const deny = (): TermProvenance => ({ term: raw, provenance: "unknown", source: null, approved: false });
+  if (!w) return deny();
+
+  /** Camera and provider vocabulary is allowed without content evidence, and is never content. */
+  if (isProductionWord(w)) {
+    return { term: raw, provenance: "technical", source: "production_vocabulary", approved: true };
+  }
+  if (isFunctionWord(w)) {
+    return { term: raw, provenance: "technical", source: "function_word", approved: true };
+  }
+
+  const stems = evidenceStems(w);
+  const containsStem = (text: string | undefined): boolean => {
+    if (!text) return false;
+    for (const piece of text.split(/[^\p{L}\p{N}'’-]+/u)) {
+      if (!piece) continue;
+      const forms = evidenceStems(piece.toLowerCase());
+      if (stems.some((s) => forms.includes(s))) return true;
+    }
+    return false;
+  };
+
+  /** A typed token the extractors proved — the most specific answer available. */
+  for (const list of allTokenLists(ctx)) {
+    for (const token of list) {
+      if (!token.verified) continue;
+      if (containsStem(token.term)) {
+        return { term: raw, provenance: token.source, source: `${token.type}_token`, approved: true };
+      }
+    }
+  }
+  if (containsStem(ctx.evidence)) {
+    return { term: raw, provenance: "beat_text", source: "beat.text/scene.text", approved: true };
+  }
+  if (containsStem(ctx.topic)) {
+    return { term: raw, provenance: "topic", source: "video.prompt", approved: true };
+  }
+
+  /** Traceable to a route that is not allowed to introduce content — named, still refused. */
+  for (const list of allTokenLists(ctx)) {
+    for (const token of list) {
+      if (token.verified) continue;
+      if (containsStem(token.term)) {
+        return { term: raw, provenance: token.source, source: null, approved: false };
+      }
+    }
+  }
+  return deny();
 }
 
 /** Every typed list of a context, in the mandated priority order. */

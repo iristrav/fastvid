@@ -2390,6 +2390,62 @@ function youtubeFairUseEnabled(): boolean {
 }
 
 /**
+ * RONDE 160 — the EXPLICIT standard-licence pass (`videoLicense=youtube`).
+ *
+ * ── How this differs from the two passes that already exist ────────────────────────────────
+ *
+ * `creative_common` asks YouTube for CC-licensed videos only. `any` sends no licence filter at
+ * all, so it returns whatever ranks best — CC and standard mixed, with no way to tell which is
+ * which from the search response. This third mode asks for the OPPOSITE of the first: videos
+ * YouTube reports as carrying its standard licence, and nothing else.
+ *
+ * That makes it useful for two things the other two cannot do: sourcing material that is
+ * deliberately outside CC, and — because the mode is now recorded on the lineage — being able to
+ * answer afterwards WHICH licence a clip in a finished video was retrieved under.
+ *
+ * Off by default. It is the one pass that can only ever return non-CC material, so switching it on
+ * is a licensing decision the operator makes deliberately, not something a deploy inherits.
+ */
+function youtubeStandardLicenseEnabled(): boolean {
+  return envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE");
+}
+
+/** The three retrieval modes, in this codebase's own words. */
+export type YoutubeLicenseMode = "creative_common" | "youtube" | "any";
+
+/**
+ * RONDE 160 (FASE 4) — the mode, as the YouTube Data API's `videoLicense` parameter.
+ *
+ * `null` means SEND NOTHING, and that is the whole meaning of `any`: no filter. Sending
+ * `videoLicense=any` would be the same request under a different cache key, and would make the
+ * unfiltered pass look like a licence assertion when it is precisely the absence of one.
+ */
+export function youtubeLicenseParam(mode: YoutubeLicenseMode): string | null {
+  switch (mode) {
+    case "creative_common": return "creativeCommon";
+    case "youtube": return "youtube";
+    case "any": return null;
+  }
+}
+
+/**
+ * RONDE 160 (FASE 4) — what a clip found under this mode may honestly claim about its licence.
+ *
+ * `retrievedUnder` is always recorded, because "which question did we ask" is always known.
+ * `reported` is set ONLY for the two modes that are licence assertions by YouTube; the unfiltered
+ * pass filters nothing, so attaching a licence to what it returns would be inventing one.
+ *
+ * This is metadata, never permission: `licenseAllowed` remains this pipeline's separate verdict.
+ */
+export function youtubeLicenseMetadata(mode: YoutubeLicenseMode): {
+  reported?: string;
+  retrievedUnder: string;
+} {
+  const param = youtubeLicenseParam(mode);
+  return { retrievedUnder: mode, ...(param ? { reported: param } : {}) };
+}
+
+/**
  * RONDE 10: quota-free RapidAPI search fallback. The official YouTube Data API search costs 100
  * quota units per call (~100/day), so it 429s after a few renders — that is the sole reason
  * YouTube contributed nothing in renders 512-518. This opt-in fallback uses the existing
@@ -13169,7 +13225,13 @@ async function searchYoutubeViaRapidApi(
 export async function searchYoutubeVideoCandidates(
   query: string,
   sceneIndex: number,
-  license: "creative_common" | "any",
+  /**
+   * RONDE 160 — three modes, mapped one-to-one onto the YouTube Data API's own `videoLicense`:
+   *   creative_common -> videoLicense=creativeCommon   (CC only)
+   *   youtube         -> videoLicense=youtube          (standard licence only)
+   *   any             -> no filter at all              (whatever ranks best)
+   */
+  license: YoutubeLicenseMode,
   relevanceKeywords: string[],
   minRelevanceScore: number,
   requiredPersonName: string,
@@ -13179,7 +13241,10 @@ export async function searchYoutubeVideoCandidates(
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (!youtubeApiKey) return [];
 
-  const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
+  const label =
+    license === "creative_common" ? "YouTube CC"
+      : license === "youtube" ? "YouTube standard"
+        : "YouTube fair-use";
   // Phase 5 query cache. Cached at the raw API-payload level, before any relevance/person
   // filtering below — that filtering is caller-specific (relevanceKeywords, requiredPersonName,
   // minRelevanceScore), so two callers sharing a query still get their own ranking from the one
@@ -13201,9 +13266,9 @@ export async function searchYoutubeVideoCandidates(
       searchUrl.searchParams.set("key", youtubeApiKey);
       searchUrl.searchParams.set("q", query);
       searchUrl.searchParams.set("type", "video");
-      if (license === "creative_common") {
-        searchUrl.searchParams.set("videoLicense", "creativeCommon");
-      }
+      /** One decision, shared with the metadata recorded on adoption. `null` means send nothing. */
+      const licenseParam = youtubeLicenseParam(license);
+      if (licenseParam) searchUrl.searchParams.set("videoLicense", licenseParam);
       searchUrl.searchParams.set("maxResults", String(maxResults));
       searchUrl.searchParams.set("part", "snippet");
       searchUrl.searchParams.set("videoDuration", "medium");
@@ -13238,6 +13303,11 @@ export async function searchYoutubeVideoCandidates(
   let effectiveSearchData = searchData;
   if (
     (!effectiveSearchData || (effectiveSearchData.items?.length ?? 0) === 0) &&
+    /**
+     * Only the unfiltered pass. RapidAPI's scraped search reports no licence at all, so routing a
+     * licence-SPECIFIC mode through it would return results this code would then have to label
+     * with a licence nobody verified — which is the silent substitution §8 forbids.
+     */
     license === "any" &&
     youtubeRapidSearchFallbackEnabled()
   ) {
@@ -13340,9 +13410,20 @@ export async function fetchYouTubeCCClips(
       ? Date.now() + scriptGuidedBudgetMs(scriptGuided.fastMode ?? IS_RAILWAY)
       : ytDeadline;
 
-  const licensePasses: Array<{ license: "creative_common" | "any"; tag: string; fileTag: string }> = [
+  /**
+   * RONDE 160 — the licence passes, most permissive LAST.
+   *
+   * CC first because it is the only material whose reuse the licence itself grants. The explicit
+   * standard-licence pass sits before the unfiltered one so that, when it is switched on, a clip
+   * that IS standard-licensed is retrieved under a mode that says so rather than arriving
+   * anonymously through `any`.
+   */
+  const licensePasses: Array<{ license: YoutubeLicenseMode; tag: string; fileTag: string }> = [
     { license: "creative_common", tag: "YouTube CC", fileTag: "ytcc" },
   ];
+  if (youtubeStandardLicenseEnabled()) {
+    licensePasses.push({ license: "youtube", tag: "YouTube standard", fileTag: "ytstd" });
+  }
   if (youtubeFairUseEnabled()) {
     licensePasses.push({ license: "any", tag: "YouTube fair-use", fileTag: "ytfu" });
   }
@@ -13368,6 +13449,19 @@ export async function fetchYouTubeCCClips(
           requiredPersonName,
           Math.max(5, (count - fetched) * 4),
           sourcingCache
+        );
+        /**
+         * RONDE 160 (FASE 8/15) — one line per SOURCE ATTEMPT, in the [Retrieval] vocabulary.
+         *
+         * A production log has to be able to answer "why was YouTube used for this beat" and "why
+         * was it not", and the [Pipeline] lines below answer neither: they say what happened but
+         * not which licence mode was tried, so a beat that got nothing from YouTube looked the
+         * same as a beat where YouTube was never attempted. Counts and the mode only — never a
+         * key, never a URL.
+         */
+        console.log(
+          `[Retrieval] s${sceneIndex} source=youtube mode=${pass.license} attempted=true ` +
+            `candidates=${items.length} query=${JSON.stringify(query.slice(0, 80))}`
         );
         if (!items.length) {
           console.warn(
@@ -13482,6 +13576,12 @@ export async function fetchYouTubeCCClips(
             // AssetDirector ranking and the entity gate.
             putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
               providerText: { title, description: row.desc },
+              /**
+               * RONDE 160 (FASE 4) — WHICH mode found this clip, recorded at the moment it is
+               * found. `creative_common` and `youtube` are licence assertions by YouTube; `any`
+               * is not one, so no `reported` licence is claimed for it.
+               */
+              license: youtubeLicenseMetadata(pass.license),
             });
             // RONDE 69: the ceiling is enforced HERE, with nothing awaited between the read and
             // the write. The loop-level checks above stay as cheap early exits; this is the one
@@ -15369,7 +15469,20 @@ export function typedQueryLadder(
  */
 export function buildVerifiedQueryContextForBeat(
   beatText: string,
-  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
+  opts: {
+    scenePersons?: string[];
+    forcePerson?: string;
+    sceneText?: string;
+    /**
+     * RONDE 160 — the USER'S OWN PROMPT (`videos.prompt`), verbatim. Never the title.
+     *
+     * Threaded so that the word naming the video's subject is usable in a query even on a beat
+     * that does not happen to repeat it — the "WWII" rejection this round reproduced. See
+     * `QueryTokenSource` in searchQueryContract.ts for why the prompt is admissible and the title
+     * is not. Omitting it leaves behaviour exactly as it was.
+     */
+    topic?: string;
+  } = {}
 ): VerifiedQueryContext {
   const text = (beatText ?? "").trim();
   /**
@@ -15379,8 +15492,14 @@ export function buildVerifiedQueryContextForBeat(
    * about this sentence, and admitting it as evidence is exactly how "Adolf Hitler France" was
    * measured on a beat that names neither. A term the title supplies and the script does not is
    * unproven, and stays unproven.
+   *
+   * RONDE 160 — the user's PROMPT is a different thing and travels in its own field, not in the
+   * evidence, so a log can still tell "the beat said this" from "the person asked for this".
    */
-  const ctx = emptyQueryContext([text, (opts.sceneText ?? "").trim()].filter(Boolean).join(" "));
+  const ctx = emptyQueryContext(
+    [text, (opts.sceneText ?? "").trim()].filter(Boolean).join(" "),
+    (opts.topic ?? "").trim()
+  );
   if (!text) return ctx;
 
   /**
@@ -17284,6 +17403,27 @@ export interface ProviderAssetCacheEntry {
   /** Result of the provider's license check — false is cached too, so a rejected asset
    *  surfaced again by another cascade is not re-fetched just to be rejected again. */
   licenseAllowed?: boolean;
+  /**
+   * RONDE 160 (FASE 4) — the licence the provider ITSELF reports, kept as metadata.
+   *
+   * Deliberately separate from `licenseAllowed`, which is this pipeline's yes/no verdict. The two
+   * answer different questions and only one of them survives a policy change: "YouTube says this
+   * carries its standard licence" is a fact about the asset, while "we were allowed to use it" is
+   * a fact about the settings at the moment it was fetched. Recording only the verdict is how a
+   * finished video ends up unable to say what it was made of.
+   *
+   * `retrievedUnder` is the search mode that surfaced it, which is not the same claim: a clip
+   * found by the unfiltered `any` pass has no licence assertion attached to it at all, and saying
+   * so is more honest than guessing one.
+   */
+  license?: {
+    /** The provider's own licence string, verbatim. Absent when the provider did not say. */
+    reported?: string;
+    /** The retrieval mode that returned it — "creative_common" | "youtube" | "any". */
+    retrievedUnder?: string;
+    embeddable?: boolean;
+    syndicated?: boolean;
+  };
   localPath?: string;
   storageUrl?: string;
   durationSec?: number;

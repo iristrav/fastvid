@@ -42,10 +42,23 @@ describe("RONDE 10 — the CC guarantee is never routed through the scraped sear
   it("the fallback fires only for the fair-use path (license === 'any')", () => {
     const idx = pipelineSrc.indexOf("let effectiveSearchData = searchData;");
     expect(idx).toBeGreaterThan(-1);
-    const block = codeOnly(pipelineSrc.slice(idx, idx + 500));
+    /**
+     * RONDE 160 — bounded by the statement that ENDS the fallback, not by a character count.
+     *
+     * This used to slice a fixed 500 characters, so adding a comment inside the guard pushed the
+     * assignment out of the window and failed a test whose subject had not changed. A guard that
+     * breaks on reformatting teaches people to edit the guard. The delimiter below is the next
+     * real statement, so the whole fallback is always in view however it is commented.
+     */
+    const block = codeOnly(
+      pipelineSrc.slice(idx, pipelineSrc.indexOf("if (!effectiveSearchData)", idx))
+    );
     expect(block).toContain('license === "any"');
     expect(block).toContain("youtubeRapidSearchFallbackEnabled()");
     expect(block).toContain("searchYoutubeViaRapidApi(query, sceneIndex, maxResults)");
+    /** RONDE 160 — and no licence-SPECIFIC mode may reach the scraped search. */
+    expect(block).not.toContain('license === "youtube"');
+    expect(block).not.toContain('license === "creative_common"');
   });
 
   it("the fallback only fires when the official search yielded nothing (429/empty)", () => {

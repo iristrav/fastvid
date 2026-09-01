@@ -525,11 +525,47 @@ describe("RONDE 90 §16 — M1–M15, each pinned to one thing that must not be 
     expect(ctx.evidence.length).toBeGreaterThan(0);
   });
 
+  /**
+   * RONDE 160 — the same guard, made whitespace-insensitive and given a second half.
+   *
+   * The original asserted one exact source string. That broke when the call gained a second
+   * argument and wrapped across lines, while the thing it protects — the video's TITLE must never
+   * become evidence — was still true. A guard that fails on reformatting teaches people to edit
+   * the guard, which is the last thing this one should teach.
+   *
+   * So it now normalises whitespace before matching, and additionally pins the SECOND argument:
+   * RONDE 160 added a `topic` channel that can prove terms, and feeding it a title instead of
+   * `videos.prompt` would re-open exactly the hole this test exists to keep shut.
+   */
   it("M5 — letting the video title back in as evidence is caught", () => {
     const src = PIPELINE_SRC.slice(PIPELINE_SRC.indexOf("export function buildVerifiedQueryContextForBeat("));
     const body = src.slice(0, src.indexOf("\n}\n"));
-    expect(body).toContain("emptyQueryContext([text, (opts.sceneText ?? \"\").trim()]");
-    expect(body).not.toMatch(/emptyQueryContext\(\[[^\]]*videoTitle/);
+    const flat = body.replace(/\s+/g, " ");
+
+    // The evidence is the beat plus its scene, and nothing else.
+    expect(flat).toContain('emptyQueryContext( [text, (opts.sceneText ?? "").trim()]');
+    expect(flat).not.toMatch(/emptyQueryContext\(\s*\[[^\]]*videoTitle/);
+
+    // And the second argument is the user's own prompt — never a title, never a summary.
+    expect(flat).toContain('(opts.topic ?? "").trim()');
+    expect(flat, "a title must not be fed into the topic channel").not.toMatch(
+      /emptyQueryContext\([^)]*\b(videoTitle|title)\b/
+    );
+  });
+
+  /**
+   * RONDE 160 — the topic channel is a channel, not a wildcard.
+   *
+   * M5 above checks the wiring; this checks the behaviour that wiring produces. A word the user
+   * typed is provable and a word nobody typed is not, which is the whole distinction the round
+   * turns on.
+   */
+  it("M5b — turning the topic channel into an allow-all is caught", () => {
+    const ctx = buildVerifiedQueryContextForBeat("German commanders redrew the front line.", {
+      topic: "wwii",
+    });
+    expect(validateSearchQuery("WWII archival footage", ctx).ok).toBe(true);
+    expect(validateSearchQuery("WWII panzer archival footage", ctx).ok).toBe(false);
   });
 
   it("M6 — weakening the pronoun check is caught", () => {
