@@ -90,6 +90,7 @@ const MUST_BE_REACHED: ReadonlyArray<[string, string]> = [
   ["transitionUnsupportedReason", "R183 — an unsupported transition says WHY"],
   ["newRenderId", "R172 — a render has a correlation id"],
   ["formatFallback", "R176 — a fallback names why, from and to"],
+  ["formatSelection", "R202 — [Selection] says which asset won this beat, and what it beat"],
 ];
 
 describe("R183 — every link in the cinematic chain has a production caller", () => {
@@ -152,10 +153,20 @@ describe("R183 — §28: exactly one implementation of each", () => {
  * A comment claiming the same thing would rot the first time anybody wired one up.
  */
 const KNOWN_UNREACHED: ReadonlyArray<[string, string]> = [
+  /**
+   * RONDE 202 — the three that remain, each with WHY it is not called.
+   *
+   * "Unreached" is not one thing. `formatRoute` and `assertRenderableTimeline` have working
+   * equivalents that ARE called — `formatRenderRoute` and `validateTimeline` — so wiring them would
+   * put a second answer to one question into the log. `validateEffect` and `yExpressionFor` are
+   * superseded outright. Recording the reason is what stops a future round from "fixing" a
+   * duplicate into existence.
+   */
   ["replacementSideEffects", "smart replacement's side-effect hook — the editor route does its own"],
   ["validateEffect", "per-effect validation; the renderer reports unsupported effects instead"],
   ["yExpressionFor", "a caption y-position helper superseded by captionLayout's boxes"],
-  ["formatSelection", "R172's 'why this clip' line — the pool route logs its own fit decision"],
+  ["formatRoute", "REDUNDANT — formatRenderRoute answers the same question and is called"],
+  ["assertRenderableTimeline", "REDUNDANT — validateTimeline is the called equivalent"],
 ];
 
 describe("R183 — the functions that are still not called, listed rather than hidden", () => {

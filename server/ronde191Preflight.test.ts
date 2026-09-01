@@ -46,6 +46,15 @@ function everyVariable(): string[] {
 function fullyConfigured(value: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const n of everyVariable()) env[n] = value;
+  /**
+   * RONDE 205 — DATABASE_URL has to be a real MySQL URL, because the capability now checks the
+   * SCHEME and not merely the presence. `getDb()` opens a mysql2 pool and returns null for
+   * anything else, so "configured with a non-MySQL URL" is a state the preflight has to catch —
+   * see the scheme test below. This fixture is the CONFIGURED-CORRECTLY environment, so it
+   * carries a URL the production code would actually accept. No host or credentials in it: the
+   * probes are injected, so nothing here is ever dialled.
+   */
+  env.DATABASE_URL = "mysql://localhost:3306/fastvid";
   for (const f of ROUTE_FLAGS) env[f] = "true";
   return env;
 }
@@ -98,12 +107,24 @@ describe("R191 — the verdict says what is blocked and why", () => {
     expect(report.blockers).toEqual([]);
   });
 
-  it("an empty environment is blocked, and names every fatal capability", async () => {
+  /**
+   * RONDE 205 — "fatal" is now conditional, and the test says so rather than assuming otherwise.
+   *
+   * A capability can be fatal AND not apply: `queue` blocks the boot when QUEUE_BACKEND=bullmq is
+   * set without a REDIS_URL, and is irrelevant on every other deployment. So the rule is not
+   * "every fatal capability is a blocker" — it is "every fatal capability that this configuration
+   * actually requires is a blocker", which is a sharper statement and the one that is true.
+   */
+  it("an empty environment is blocked, and names every fatal capability it requires", async () => {
     const report = await productionPreflight(ALL_GOOD, {});
     expect(report.verdict).toBe("PRODUCTION_RENDER_BLOCKED");
     for (const cap of CAPABILITIES.filter((c) => c.fatal)) {
-      expect(report.blockers.join("\n"), `${cap.id} is fatal and unmentioned`).toContain(cap.id);
+      const status = report.capabilities.find((c) => c.id === cap.id)!;
+      if (status.state === "not_required") continue;
+      expect(report.blockers.join("\n"), `${cap.id} is fatal, required and unmentioned`).toContain(cap.id);
     }
+    /** And the conditional one really is reported as not applying, rather than silently dropped. */
+    expect(report.capabilities.find((c) => c.id === "queue")!.state).toBe("not_required");
   });
 
   /**
@@ -116,16 +137,22 @@ describe("R191 — the verdict says what is blocked and why", () => {
     delete env.EUROPEANA_API_KEY;
     delete env.NARA_API_KEY;
     const report = await productionPreflight(ALL_GOOD, env);
-    expect(report.verdict).toBe("PRODUCTION_RENDER_POSSIBLE");
+    /**
+     * RONDE 205 — DEGRADED, which is a third verdict rather than a nicer word for BLOCKED.
+     * The render runs; it runs with four archival sources instead of six.
+     */
+    expect(report.verdict).toBe("PRODUCTION_RENDER_DEGRADED");
     const archival = report.capabilities.find((c) => c.id === "archival_sources")!;
     expect(archival.available).toBe(false);
+    expect(archival.state).toBe("degraded");
     expect(archival.fatal).toBe(false);
+    expect(report.blockers, "a degradation was counted as a blocker").toEqual([]);
   });
 
   it("either of an any-of pair is enough", async () => {
     const env = fullyConfigured("value");
     delete env.OPENAI_API_KEY;
-    expect((await productionPreflight(ALL_GOOD, env)).verdict).toBe("PRODUCTION_RENDER_POSSIBLE");
+    expect((await productionPreflight(ALL_GOOD, env)).blockers).toEqual([]);
     delete env.GEMINI_API_KEY;
     expect((await productionPreflight(ALL_GOOD, env)).verdict).toBe("PRODUCTION_RENDER_BLOCKED");
   });
@@ -163,13 +190,13 @@ describe("R191 — a service that is configured but down is not ready", () => {
 
   it("says NOT CONFIGURED and UNREACHABLE differently, because the fix differs", async () => {
     const unset = await productionPreflight(ALL_GOOD, {});
-    expect(unset.host.find((h) => h.id === "postgres")!.detail).toContain("not configured");
+    expect(unset.host.find((h) => h.id === "mysql")!.detail).toContain("not configured");
 
     const down = await productionPreflight(
       { ...ALL_GOOD, canReachDatabase: async () => false },
       fullyConfigured("value")
     );
-    expect(down.host.find((h) => h.id === "postgres")!.detail).toContain("UNREACHABLE");
+    expect(down.host.find((h) => h.id === "mysql")!.detail).toContain("UNREACHABLE");
   });
 
   it("no ffmpeg means no render at all", async () => {
@@ -186,7 +213,9 @@ describe("R191 — a service that is configured but down is not ready", () => {
       { ...ALL_GOOD, hasBrowser: () => false },
       fullyConfigured("value")
     );
-    expect(report.verdict).toBe("PRODUCTION_RENDER_POSSIBLE");
+    /** DEGRADED, not POSSIBLE: the render runs, and the graphics are not drawn. */
+    expect(report.verdict).toBe("PRODUCTION_RENDER_DEGRADED");
+    expect(report.blockers, "a missing browser was treated as a blocker").toEqual([]);
     const browser = report.host.find((h) => h.id === "chrome_headless_shell")!;
     expect(browser.available).toBe(false);
     expect(browser.detail).toContain("libass");

@@ -260,10 +260,33 @@ export function isFunctionWord(token: string): boolean {
 export const PRODUCTION_VOCABULARY: ReadonlySet<string> = new Set([
   "archival", "footage", "film", "video", "clip", "clips", "reel", "stock",
   "documentary", "broll", "b-roll", "newsreel", "archive", "archives",
-  "aerial", "drone", "wide", "closeup", "close-up", "close", "up", "medium", "shot", "shots",
+  "aerial", "wide", "closeup", "close-up", "close", "up", "medium", "shot", "shots",
   "establishing", "pan", "tilt", "tracking", "handheld", "static", "overhead", "topdown",
   "timelapse", "time-lapse", "slowmotion", "slow-motion", "montage", "cutaway",
-  "hd", "4k", "1080p", "colour", "color", "black", "white", "monochrome", "restored",
+  "colour", "color", "black", "white", "monochrome", "restored",
+  /*
+   * ── RONDE 205: "drone", "4k", "hd" and "1080p" are NOT era-neutral, and are not here ───────
+   *
+   * Everything in this set is a word that describes the FILM rather than its subject, and is
+   * therefore allowed on any query without evidence. These four break that rule: they describe
+   * the film in a way that dates it.
+   *
+   * A drone did not exist in 1945. 4K, HD and 1080p are modern capture formats, and no genuine
+   * 1945 archival material is any of them. So "Berlin 1945 drone footage" and "Berlin 1945 4k"
+   * were queries the gate waved through unconditionally, and they can only be answered by modern
+   * re-creations, colourised uploads or footage of somewhere else entirely — the exact modern
+   * mismatch the visual gates exist to catch, licensed at the source.
+   *
+   * They are not BANNED: they are ordinary content words now. A beat that says "a drone surveyed
+   * the site in 2019" proves "drone" and may search for it, exactly like any other word the
+   * script actually said. What changed is that a beat which never mentioned one can no longer
+   * borrow it.
+   *
+   * Reachability at the time of the change: the only builder that emitted "aerial drone" is
+   * `buildVidrushOpeningQueries`, which has no production caller, so this closed a hole rather
+   * than changing a live query. It is fixed anyway — a gate that permits a wrong query is a bug
+   * whether or not something currently walks through it.
+   */
   // Words that describe the FOOTAGE rather than its subject. "historical footage of X" makes
   // one claim about X (that it exists) and one about the film (that it is old); only the
   // first needs proving, and X still has to prove itself.

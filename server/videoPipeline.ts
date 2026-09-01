@@ -334,7 +334,7 @@ import {
   provenToken,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
-import { formatFallback } from "./renderCorrelation";
+import { formatFallback, formatSelection } from "./renderCorrelation";
 import type { YoutubePoolSearch } from "./scenePool";
 
 /**
@@ -4611,6 +4611,37 @@ export async function downloadAndTrimPoolCandidate(
         // (403 UA policy, 404 URL shape, 429, 5xx) — nothing acts on it yet.
         console.warn(
           `[FunnelDownload] rejected source=${candidate.source} assetId=${candidate.id ?? "unknown"} status=${resp.status} url=${candidate.remoteUrl}`
+        );
+        return null;
+      }
+      /**
+       * RONDE 203 — an HTML page is not a video, however cheerfully it arrives with HTTP 200.
+       *
+       * ── The failure this names ────────────────────────────────────────────────────────────
+       *
+       * A provider that has moved, expired or rate-limited an asset often answers a media URL with
+       * a 200 and a courtesy page — a login wall, a "this item is no longer available", a captcha.
+       * Nothing above catches that: `resp.ok` is true, `resp.body` exists, and the bytes get
+       * streamed into a file named `.mp4`.
+       *
+       * What happened next depended on the page's SIZE, which is the worst kind of behaviour. A
+       * small page was rejected by the byte floor and reported as "file too small" — a technically
+       * true sentence that sends an operator to look at the provider's encoding settings. A large
+       * one reached ffprobe and failed there, blamed on the file.
+       *
+       * The content type is the provider's own statement about what it just sent, so this asks it
+       * rather than inferring from length. The candidate is refused with the RIGHT reason, which is
+       * the whole difference: "the provider sent a web page" is actionable and "the file is too
+       * small" is not.
+       *
+       * YouTube never reaches here — its watch page is fetched by `downloadYouTubeCCClip` in the
+       * branch above, which is R179's fix and the reason this check is about the OTHER providers.
+       */
+      const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+      if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
+        console.warn(
+          `[FunnelDownload] rejected source=${candidate.source} assetId=${candidate.assetId} ` +
+            `reason=html_not_media contentType=${contentType.split(";")[0]}`
         );
         return null;
       }
@@ -32557,6 +32588,42 @@ async function fetchSceneVisualsInner(
               dedup.usageLedger,
               { provider: adopted.source, providerAssetId: adopted.assetId },
               { sceneIndex: scene.index, beatIndex: beat.index }
+            );
+            /**
+             * RONDE 202 — the [Selection] line: WHICH asset won this beat, and why.
+             *
+             * ── What was missing ───────────────────────────────────────────────────────────
+             *
+             * `formatSelection` was written in R172 for exactly this and had no caller anywhere
+             * but its own test. So a render could say a clip was adopted and never say what it
+             * beat or by how much — and "why is this picture on screen" was answerable only by
+             * re-running the ranking by hand.
+             *
+             * The runner-up is the second candidate the SELECTOR returned, which is the one this
+             * beat would have used had the winner failed to download. That margin is the honest
+             * answer to "why not something better": a 0.002 margin and a 0.30 margin are the
+             * difference between a coin toss and a decision.
+             *
+             * Every value here is scrubbed by `formatSelection` itself — a provider name and an
+             * asset id are how you find the asset again, and neither is a secret.
+             */
+            const runnerUp = poolCandidates.find((c) => c !== adopted);
+            console.log(
+              formatSelection({
+                renderId: dedup.sourcingCache?.lineage?.renderId ?? "-",
+                sceneIndex: scene.index,
+                beatIndex: beat.index,
+                ...(beat.searchQuery ? { query: beat.searchQuery } : {}),
+                provider: adopted.source,
+                providerAssetId: adopted.assetId,
+                ...(adopted.rankingScore != null ? { score: adopted.rankingScore } : {}),
+                ...(runnerUp
+                  ? {
+                      runnerUpProvider: runnerUp.source,
+                      ...(runnerUp.rankingScore != null ? { runnerUpScore: runnerUp.rankingScore } : {}),
+                    }
+                  : {}),
+              })
             );
           }
         } else {

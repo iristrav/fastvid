@@ -12,7 +12,7 @@
  */
 import { execFileSync } from "child_process";
 
-import { formatPreflight, productionPreflight, type HostProbes } from "./productionPreflight";
+import { formatPreflight, preflightJson, productionPreflight, type HostProbes } from "./productionPreflight";
 import { graphicsOverlayAvailable } from "./graphicsOverlayDeps";
 
 const probes: HostProbes = {
@@ -59,8 +59,17 @@ const probes: HostProbes = {
 
 async function main(): Promise<void> {
   const report = await productionPreflight(probes);
-  console.log(formatPreflight(report));
-  process.exit(report.verdict === "PRODUCTION_RENDER_POSSIBLE" ? 0 : 1);
+  /** `--json` for a deploy script or a dashboard; the text form stays the default for a human. */
+  console.log(process.argv.includes("--json") ? preflightJson(report) : formatPreflight(report));
+  /**
+   * RONDE 205 — DEGRADED exits 0.
+   *
+   * The exit code answers "can this environment attempt a real render", and a degraded one can:
+   * it produces a real video with fewer retrieval sources, or no karaoke, or on ephemeral storage.
+   * Failing the gate on that would stop a deployment that works, and an operator who cannot start
+   * at all learns nothing from a signal that is always red.
+   */
+  process.exit(report.verdict === "PRODUCTION_RENDER_BLOCKED" ? 1 : 0);
 }
 
 void main();

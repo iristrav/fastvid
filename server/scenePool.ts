@@ -1843,26 +1843,7 @@ export function selectCandidatesFromPool(
       ...(ctx.entityTerms ? { entityTerms: ctx.entityTerms } : {}),
     });
 
-    /**
-     * RONDE 170 — repetition is settled AFTER relevance, never inside it.
-     *
-     * The ranking engine owns relevance and `penaliseDuplicates` owns repetition. Keeping them
-     * apart is the only way RULE 6 and RULE 7 can both hold: a second scorer would have its own
-     * opinion about relevance and start disagreeing with the first one. The penalty is small
-     * enough to settle a near-tie and too small to overturn a real difference in relevance.
-     *
-     * Without a ledger there is nothing to be a duplicate OF, and the engine's order stands.
-     */
-    if (!ctx.usageLedger) return ranked.slice(0, count);
-    return penaliseDuplicates({
-      ranked,
-      identityOf: (c) => ({ provider: c.source, providerAssetId: c.assetId }),
-      scoreOf: (c) => c.rankingScore ?? 0,
-      ledger: ctx.usageLedger,
-      at: ctx.at ?? { sceneIndex: pool.sceneIndex, beatIndex: 0 },
-    })
-      .map((r) => r.candidate)
-      .slice(0, count);
+    return settleRepetition(ranked, (c) => c.rankingScore ?? 0, pool, ctx).slice(0, count);
   }
 
   const scored = pool.candidates.map(c => ({
@@ -1871,7 +1852,64 @@ export function selectCandidatesFromPool(
   }));
 
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, count).map(s => s.candidate);
+  /**
+   * RONDE 206 — the keyword branch settles repetition too.
+   *
+   * ── What was wrong ────────────────────────────────────────────────────────────────────────
+   *
+   * The penalty used to live inside the branch above, which runs only when
+   * `poolRankingV2Enabled()` — and that follows `CINEMATIC_EDITING_ENGINE`, off by default. So on
+   * the route that actually ships, R180 handed this function a usage ledger and nothing ever read
+   * it. Every beat of a scene ranked the SAME pool by keyword overlap alone and sorted it stably,
+   * which is deterministic and deterministically returns the same candidate first.
+   *
+   * The damage lands precisely where it is hardest to see: on a TIE. Two stock clips whose titles
+   * both carry the beat's nouns score identically, so beat 0 and beat 1 both took the first one —
+   * the same picture twice, a few seconds apart, with a perfectly good alternative in the pool.
+   *
+   * ── Why applying it here is safe ─────────────────────────────────────────────────────────
+   *
+   * This scorer returns a COUNT: one per matched stem, three extra for a power word in the title.
+   * The largest duplicate penalty is 0.35. A candidate that is more relevant by even a single
+   * matched word therefore cannot be displaced by having been used before — repetition settles
+   * ties and never overrules the picture being right, which is RULE 7 exactly.
+   *
+   * And it is not a second ranker. Relevance is decided entirely by the sort above; this only
+   * adjusts the order that sort produced, the same way it has always adjusted the engine's.
+   */
+  const keywordScores = new Map(scored.map((s) => [s.candidate, s.score] as const));
+  return settleRepetition(
+    scored.map((s) => s.candidate),
+    (c) => keywordScores.get(c) ?? 0,
+    pool,
+    ctx
+  ).slice(0, count);
+}
+
+/**
+ * Apply R170's duplicate penalty to an order that has already been decided.
+ *
+ * Shared by both branches of `selectCandidatesFromPool` so there is ONE place that decides what a
+ * repeat costs. The alternative — a copy in each branch — is how the two routes would end up
+ * disagreeing about whether a shot counts as repeated, which is the kind of difference that only
+ * shows up as a finished video with the same clip in it twice.
+ *
+ * Without a ledger there is nothing to be a duplicate OF, and the incoming order stands untouched.
+ */
+function settleRepetition<T extends { source: PoolCandidateSource; assetId: string }>(
+  ordered: readonly T[],
+  scoreOf: (candidate: T) => number,
+  pool: SceneCandidatePool,
+  ctx?: PoolSelectionContext
+): T[] {
+  if (!ctx?.usageLedger) return [...ordered];
+  return penaliseDuplicates({
+    ranked: ordered,
+    identityOf: (c) => ({ provider: c.source, providerAssetId: c.assetId }),
+    scoreOf,
+    ledger: ctx.usageLedger,
+    at: ctx.at ?? { sceneIndex: pool.sceneIndex, beatIndex: 0 },
+  }).map((r) => r.candidate);
 }
 
 // ─── P2: Thumbnail-first CLIP ranking ────────────────────────────────────────
