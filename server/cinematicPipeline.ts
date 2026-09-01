@@ -45,7 +45,8 @@ import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
 import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
-import { newRenderId } from "./renderCorrelation";
+import { formatGraphics, newRenderId } from "./renderCorrelation";
+import { graphicIsRenderable } from "./graphicsVocabulary";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 
@@ -397,6 +398,36 @@ export function lostEditorialIntent(edl: EDL, timeline: ProjectTimeline): string
   });
 
   return lost;
+}
+
+/**
+ * RONDE 178 — what the planners asked for in graphics, and what this renderer can actually draw.
+ *
+ * ── Why this line has to exist separately from the plan line ─────────────────────────────────
+ *
+ * `formatCinematicPlan` prints `unsupported=N`, which is a count over effects, transitions, caption
+ * positions and graphics together. That number was 3 on every render of the end-to-end fixture and
+ * it told nobody that all three were graphics, or which graphics, or why.
+ *
+ * `formatGraphics` was built in R172 for exactly this and had no caller — the failure mode this
+ * whole series keeps finding. This is its caller. The counts come from the finished document rather
+ * than from the planners' intentions: `rendered` asks `graphicIsRenderable`, the renderer's own
+ * predicate, of each graphic that is actually on the track.
+ */
+export function formatCinematicGraphics(result: CinematicPipelineResult): string {
+  const track = result.timeline.tracks.find((t) => t.kind === "GRAPHICS");
+  const graphics = track && track.kind === "GRAPHICS" ? track.graphics : [];
+  const rendered = graphics.filter((g) =>
+    graphicIsRenderable(g.graphicType, g.data, g.label ?? null)
+  ).length;
+  return formatGraphics({
+    renderId: result.renderId,
+    planned: result.edl.decisions.reduce((n, d) => n + d.motionGraphics.length, 0),
+    rendered,
+    skipped: result.unsupported.filter((u) => u.startsWith("motion graphic ")),
+    /** The hybrid architecture draws every graphic in Remotion; ffmpeg only composites the alpha. */
+    renderer: "remotion",
+  });
 }
 
 /** One line per planned video, for the render log. Never a payload, never a URL. */

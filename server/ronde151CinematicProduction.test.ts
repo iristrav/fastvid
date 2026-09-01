@@ -358,8 +358,13 @@ describe("RONDE 151 §25 — observability without secrets", () => {
       persist: recordingPersist().persist,
     });
     for (const line of outcome.log) {
-      /** RONDE 157B added [Director] — the editorial quality findings, reported during planning. */
-      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director)\]/);
+      /**
+       * RONDE 157B added [Director] — the editorial quality findings, reported during planning.
+       * RONDE 178 added [Graphics] — planned/rendered/skipped, with each skip's own reason. Its
+       * continuation lines carry the same prefix, so the rule this test enforces is unchanged: a
+       * reader can tell which subsystem produced any line without counting brackets.
+       */
+      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics)\]/);
     }
   });
 });

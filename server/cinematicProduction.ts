@@ -30,6 +30,7 @@ import {
 } from "./cinematicPipelineInputs";
 import {
   cinematicRouteEnabled,
+  formatCinematicGraphics,
   formatCinematicPlan,
   lostEditorialIntent,
   runCinematicPipeline,
@@ -202,6 +203,15 @@ export async function planAndStoreCinematicTimeline(
   }
 
   log.push(formatCinematicPlan(result));
+  /**
+   * RONDE 178 — the graphics line, so a plan/render mismatch is visible per render.
+   *
+   * `formatCinematicPlan` prints one `unsupported=N` covering effects, transitions, caption
+   * positions and graphics together, which cannot tell anyone that all N were graphics, or which
+   * ones, or why. This names each skipped graphic with the planner's own reason, and carries the
+   * render's correlation id so it joins the rest of that render's log.
+   */
+  log.push(formatCinematicGraphics(result));
   for (const line of result.unsupported) log.push(`[EDL] unsupported ${line}`);
 
   /**

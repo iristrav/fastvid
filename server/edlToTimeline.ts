@@ -204,6 +204,24 @@ export const RENDERER_GRAPHIC_TYPE: Readonly<Partial<Record<MotionGraphicType, s
   progress_bar: "progress",
   statistic_counter: "counter",
   map: "map_point",
+  /**
+   * RONDE 178 — `timeline` is the graphic the live route plans most often, and it was undrawable.
+   *
+   * R160 translated the three types its own fixtures produced. The end-to-end test on real beat
+   * text then showed which types a REAL render plans, and `timeline` — a dated historical event —
+   * was top of the list and reached no component at all.
+   *
+   * `timeline_event` is a declared renderable name and draws the event as a card. The planner's
+   * words survive: `graphicLabel` reads the year and label out of the `events` entry the planner
+   * itself wrote, and the original name stays in `reason` as `[planned as "timeline"]`.
+   *
+   * The other five planner types — chart, comparison, animated_icon, highlight_box, arrow — are
+   * deliberately NOT translated. There is no component that draws a highlight box or a side-by-side
+   * comparison, and pointing them at a text card would substitute one graphic for another. They
+   * stay on the GRAPHICS track and are reported as undrawn, which is the honest answer and the one
+   * `formatGraphics` now puts in the render log.
+   */
+  timeline: "timeline_event",
 };
 
 /** The renderer's name for a planned graphic, or the planner's own when there is no translation. */
@@ -222,6 +240,21 @@ export function graphicLabel(graphicType: string, data: Record<string, unknown>)
   for (const key of ["text", "label", "title", "locationName", "caption", "name"]) {
     const v = data[key];
     if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  /**
+   * RONDE 178 — a timeline's words live one level down, inside its own `events` entry.
+   *
+   * The planner writes `{ events: [{ year, label }] }`, so every key above misses and the graphic
+   * was reported undrawable for having no words while carrying exactly the words it wanted on
+   * screen. Read from the planner's payload, joined the way the card shows it — nothing added.
+   */
+  const events = data.events;
+  if (Array.isArray(events) && events.length > 0) {
+    const first = events[0] as Record<string, unknown> | undefined;
+    const year = typeof first?.year === "string" ? first.year.trim() : "";
+    const label = typeof first?.label === "string" ? first.label.trim() : "";
+    const joined = [year, label].filter(Boolean).join(" — ");
+    if (joined) return joined;
   }
   return undefined;
 }
@@ -482,6 +515,43 @@ export function translateEdl(params: {
             "kept on the clip, not executed by this renderer"
         );
       }
+    }
+  }
+
+  /**
+   * RONDE 178 — two text overlays in the same place at the same moment, named.
+   *
+   * ── What the end-to-end test found ────────────────────────────────────────────────────────
+   *
+   * On a dated historical beat the caption planner produces a timeline label at `bottom` and a
+   * location tag at `bottom-left`. Those are two DIFFERENT positions as far as the planner is
+   * concerned. `positionFor` collapses both to `bottom`, because the renderer centres text and has
+   * no horizontal alignment — and the two are then drawn on top of each other, unreadably, in a
+   * render nobody had looked at.
+   *
+   * ── Why this reports rather than moves ────────────────────────────────────────────────────
+   *
+   * `captionLayout` already resolves collisions geometrically, and `remotionProps` already applies
+   * it — to CAPTIONS. Free text is deliberately excluded there, with a reason: a text element is an
+   * OBSTACLE that captions are moved to avoid, so moving the text would move the thing the caption
+   * was moved away from. Overruling that here would be a layout decision made in the wrong module.
+   *
+   * And moving one changes what a customer sees, on a question — which vertical band a location tag
+   * belongs in — that cannot be settled without looking at a rendered frame. So the collision is
+   * named, in the same channel as the position collapse that causes it, and stays visible per render
+   * in the `[EDL] unsupported` lines until somebody can look at one.
+   */
+  for (let i = 0; i < texts.length; i++) {
+    for (let j = i + 1; j < texts.length; j++) {
+      const a = texts[i]!;
+      const b = texts[j]!;
+      if (a.style.position !== b.style.position) continue;
+      if (a.start >= b.end || b.start >= a.end) continue;
+      unsupported.push(
+        `two text overlays share position "${a.style.position}" between ` +
+          `${Math.max(a.start, b.start).toFixed(2)}s and ${Math.min(a.end, b.end).toFixed(2)}s — ` +
+          `they are drawn on top of each other`
+      );
     }
   }
 
