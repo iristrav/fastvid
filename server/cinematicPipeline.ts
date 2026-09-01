@@ -45,6 +45,7 @@ import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
 import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
+import { newRenderId } from "./renderCorrelation";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 
@@ -102,6 +103,15 @@ export type CinematicPipelineParams = {
   look?: ProjectTimeline["look"];
   /** Emit a narration subtitle per beat. On by default — see the note at the generateEDL call. */
   includeSubtitles?: boolean;
+  /**
+   * RONDE 172 — the render's correlation id.
+   *
+   * Passed in rather than minted here whenever the caller already has one: the sourcing ledger
+   * mints a `renderId` for every render and `[SourceLineage]`/`[SearchQuery]` already print it, so
+   * generating a second id here would split one render's log into two stories. One is minted only
+   * when the caller has none to give.
+   */
+  renderId?: string;
 };
 
 /* ═══════════════════════ what it produces ═══════════════════════ */
@@ -136,6 +146,8 @@ export type CinematicPipelineResult = {
    * `music` is always present and always states whether a track was available, so a caller can
    * report `musicSourceUnavailable` rather than leaving a silent gap where music was expected.
    */
+  /** RONDE 172 — the id that joins this plan to the retrieval, render and upload logs. */
+  renderId: string;
   audio: CinematicAudioPlan;
   /**
    * RONDE 166 (§3) — one entry per beat, in beat order; null where the beat carries no evidence.
@@ -193,6 +205,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     ? runAIDirector(params.scenes.map((s) => s.director))
     : null;
 
+  const renderId = params.renderId?.trim() || newRenderId();
   const inputs: CinematicEditingInput[] = [];
   const identities: AssetSourceIdentity[] = [];
   const trims: Array<{ inSec: number; outSec?: number } | undefined> = [];
@@ -308,6 +321,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     edl,
     director,
     unsupported,
+    renderId,
     audio: audioPlan,
     attention,
     used: { cinematicEngine: true, aiDirector: useDirector },
