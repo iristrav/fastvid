@@ -889,8 +889,23 @@ export function buildAudioGraph(inputs: readonly MixInput[]): { filter: string; 
       if (at < 0) return p.label;
       const params = duckingParams(p.input.kind, p.input.ducking);
       const out = `d${at}`;
+      /**
+       * RONDE 189 — the SIDECHAIN is padded with silence, or it truncates the track it ducks.
+       *
+       * `sidechaincompress` ends when EITHER of its inputs ends, and the sidechain here is the
+       * narration. So a 6s room tone ducked under a voice that stops at 5s came out 5s long, the
+       * mix followed it, and the final mux's `-shortest` cut the PICTURE to 5s as well. A 6.00s
+       * timeline rendered as a 4.97s file — measured, not inferred.
+       *
+       * The sidechain is a CONTROL signal that nobody hears, so padding it costs nothing audible,
+       * and silence is exactly the right control value: no signal means no ducking, which is the
+       * ambience returning to its own level once the narration is over. That is the behaviour the
+       * mix was always meant to have.
+       */
+      const key = `k${at}`;
+      chains.push(`[${splitLabels[at + 1]}]apad[${key}]`);
       chains.push(
-        `[${p.label}][${splitLabels[at + 1]}]sidechaincompress=` +
+        `[${p.label}][${key}]sidechaincompress=` +
           `threshold=${params.threshold}:ratio=${params.ratio}:attack=${params.attack}:` +
           `release=${params.release}:makeup=${params.makeup}[${out}]`
       );
@@ -898,10 +913,34 @@ export function buildAudioGraph(inputs: readonly MixInput[]): { filter: string; 
     });
   }
 
+  /**
+   * RONDE 189 — `duration=longest`, because `first` truncated the whole video.
+   *
+   * ── The defect, measured ──────────────────────────────────────────────────────────────────
+   *
+   * A 6.00s timeline with narration from 1s to 5s and room tone across the whole video rendered as
+   * a 4.97s file: picture 4.97s, audio 5.00s. `amix=duration=first` ends the mix when its FIRST
+   * input ends — the VOICE, because that is the track order — so the mix stopped at 5s, and the
+   * final mux's `-shortest` then cut the PICTURE down to match it.
+   *
+   * Every documentary whose narration finishes before the last shot does had its ending removed.
+   * The ambience was already there and already long enough; nothing was missing but this word.
+   *
+   * `longest` is also the only ORDER-INDEPENDENT answer. With `first`, whether a video kept its
+   * ending depended on which track happened to be built first — the same timeline with its tracks
+   * in another order would have rendered correctly, which is the worst kind of bug to be handed.
+   *
+   * The final mux still carries `-shortest` bounded by the video, so a mix that runs past the
+   * picture is trimmed to the picture. That is what §26 says it does, and it can only be true if the
+   * mix is allowed to be the longer of the two.
+   *
+   * The legacy `videoPipeline` graphs keep `duration=first`: there the music is `aloop=-1`, endless
+   * by construction, and `longest` would never terminate. Different graph, different correct answer.
+   */
   const mix =
     mixLabels.length === 1
       ? `[${mixLabels[0]}]anull[aout]`
-      : `[${mixLabels.join("][")}]amix=inputs=${mixLabels.length}:duration=first:` +
+      : `[${mixLabels.join("][")}]amix=inputs=${mixLabels.length}:duration=longest:` +
         `dropout_transition=2:normalize=0[aout]`;
 
   return { filter: `${chains.join(";")};${mix}`, outLabel: "aout" };

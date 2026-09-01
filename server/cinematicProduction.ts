@@ -36,6 +36,7 @@ import {
   runCinematicPipeline,
 } from "./cinematicPipeline";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
+import { formatCinematicAudio } from "./cinematicAmbient";
 import {
   judgeTimeline,
   formatQualityFindings,
@@ -212,6 +213,19 @@ export async function planAndStoreCinematicTimeline(
    * render's correlation id so it joins the rest of that render's log.
    */
   log.push(formatCinematicGraphics(result));
+  /**
+   * RONDE 189 — the audio verdict, including the one thing this build cannot do.
+   *
+   * `formatCinematicAudio` was written in R166 and had no caller, so `musicSourceUnavailable` — the
+   * honest statement that this build has no music catalogue and lays down no music — appeared in no
+   * render log. A silent MUSIC track and a deliberately empty one look identical to a reader, and
+   * §1 is explicit that the difference must be stated rather than guessed at.
+   */
+  log.push(formatCinematicAudio(result.audio));
+  for (const missing of result.audio.unavailable) {
+    log.push(`[Audio] unavailable ${missing}`);
+  }
+  log.push(`[Audio] music ${result.audio.music.reason}`);
   for (const line of result.unsupported) log.push(`[EDL] unsupported ${line}`);
 
   /**
