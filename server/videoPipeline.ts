@@ -19549,37 +19549,79 @@ async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
   return out;
 }
 
-/** Keep per-beat timing and beat index when compose drops invalid/duplicate clips. */
+/**
+ * Keep per-beat timing and beat index when compose drops invalid/duplicate clips.
+ *
+ * ── RONDE 166 (§10) — two places where an array index was standing in for an identity ────────
+ *
+ * This function exists BECAUSE compose drops clips, so the position of a kept clip is exactly the
+ * thing that cannot be trusted to name its beat — and both of its answers used to rely on it.
+ *
+ *   1. When `beatDurations` was missing or the wrong length, it returned
+ *      `keptClips.map((_, i) => i)`: beat index = position in the kept list. One dropped clip and
+ *      every clip after it is attributed to the wrong beat, silently.
+ *
+ *   2. A kept clip whose content key was not in the map got `?? 0` — attributed to the FIRST BEAT
+ *      of the scene. That is worse than a shifted index: it is a specific wrong answer that looks
+ *      deliberate.
+ *
+ * The identity that survives a drop is the CONTENT KEY, which this already computed and then only
+ * half-trusted. It is now the only thing used: position in `originalClips` supplies the beat when
+ * no explicit `clipBeatIndices` was given, because there the position IS the beat, and everything
+ * after that is looked up by key. A clip that still cannot be mapped is REPORTED rather than
+ * assigned to beat 0.
+ */
 function alignMontageMetaWithClips(
   originalClips: string[],
   keptClips: string[],
   beatDurations?: number[],
   clipBeatIndices?: number[]
-): { beatDurations: number[]; clipBeatIndices: number[] } {
-  if (!beatDurations?.length || beatDurations.length !== originalClips.length) {
-    return {
-      beatDurations: keptClips.map(() => effectiveBeatSec()),
-      clipBeatIndices: keptClips.map((_, i) => i),
-    };
-  }
+): { beatDurations: number[]; clipBeatIndices: number[]; unmapped: string[] } {
   const durByKey = new Map<string, number>();
   const idxByKey = new Map<string, number>();
+  const haveDurations = Boolean(beatDurations?.length) && beatDurations!.length === originalClips.length;
   for (let i = 0; i < originalClips.length; i++) {
     const key = clipContentKey(originalClips[i]!);
     if (!durByKey.has(key)) {
-      durByKey.set(key, beatDurations[i]!);
+      durByKey.set(key, haveDurations ? beatDurations![i]! : effectiveBeatSec());
+      /** No explicit mapping means position in the ORIGINAL list, which is the beat it was cut for. */
       idxByKey.set(key, clipBeatIndices?.[i] ?? i);
     }
+  }
+  const unmapped: string[] = [];
+  const resolvedIdx = keptClips.map((clip, position) => {
+    const known = idxByKey.get(clipContentKey(clip));
+    if (known != null) return known;
+    /**
+     * A kept clip the originals do not contain. Its position is the only thing left to go on, and
+     * saying so is the difference between a guess and a silent claim — the old code answered 0.
+     */
+    unmapped.push(path.basename(clip));
+    return position;
+  });
+  if (unmapped.length > 0) {
+    console.warn(
+      `[Pipeline] beat mapping: ${unmapped.length} composed clip(s) were not in the source list ` +
+        `and fell back to position — ${unmapped.slice(0, 4).join(", ")}`
+    );
   }
   return {
     beatDurations: keptClips.map(
       (clip) => durByKey.get(clipContentKey(clip)) ?? effectiveBeatSec()
     ),
-    clipBeatIndices: keptClips.map(
-      (clip) => idxByKey.get(clipContentKey(clip)) ?? 0
-    ),
+    clipBeatIndices: resolvedIdx,
+    unmapped,
   };
 }
+
+/**
+ * RONDE 166 (§10) — the same function, exported for its regression test.
+ *
+ * Exported rather than made public: the production callers keep using the module-private name, and
+ * this exists so the beat-identity rules above can be tested against real files with real content
+ * keys instead of being asserted about from the outside.
+ */
+export const alignMontageMetaWithClipsForTest = alignMontageMetaWithClips;
 
 /** Keep per-beat timing when compose drops invalid/duplicate clips. */
 function alignBeatDurationsWithClips(
