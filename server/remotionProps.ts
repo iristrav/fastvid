@@ -44,11 +44,33 @@ import {
   formatUnresolvedCollision,
   layoutCaption,
   measureText,
+  safeArea,
+  type Frame,
   type Obstacle,
 } from "./captionLayout";
 
-/** The style a graphic is measured at when it carries none of its own. */
-const DEFAULT_GRAPHIC_STYLE: TextStyle = { ...DEFAULT_TEXT_STYLE, fontSizePx: 46 };
+/**
+ * The style a graphic is measured at when it carries none of its own.
+ *
+ * ── RONDE 185: the anchor here has to be the one the COMPONENT falls back to ─────────────────
+ *
+ * It used to inherit `DEFAULT_TEXT_STYLE.position`, which is `center`, while `Graphics.tsx` draws a
+ * style-less graphic at `bottom` (or `lower_third` for a lower third). So the layout engine was
+ * placing an obstacle in the middle of the frame for something the renderer drew along the bottom:
+ * captions were moved out of the way of a box that was not there, and left sitting on top of the
+ * graphic that was.
+ *
+ * One default, agreed with the drawing code. `graphicDefaultStyle` reproduces the component's own
+ * two-branch fallback rather than approximating it with a single value.
+ */
+const DEFAULT_GRAPHIC_STYLE: TextStyle = { ...DEFAULT_TEXT_STYLE, fontSizePx: 46, position: "bottom" };
+
+/** The style a graphic is laid out with — its own, or the one the renderer would fall back to. */
+function graphicDefaultStyle(graphicType: string): TextStyle {
+  return graphicType === "lower_third"
+    ? { ...DEFAULT_GRAPHIC_STYLE, position: "lower_third" }
+    : DEFAULT_GRAPHIC_STYLE;
+}
 
 /* ═══════════════════════ the props Remotion receives ═══════════════════════ */
 
@@ -84,6 +106,14 @@ export type RemotionGraphic = {
   fromFrame: number;
   durationInFrames: number;
   style: TextStyle | null;
+  /**
+   * RONDE 185 — where the layout engine put it, when it had to move it out of another's way.
+   *
+   * Absent when nothing collided, which is the overwhelming majority of graphics and the reason a
+   * video with no crowding produces byte-identical props to before this round. Same shape and same
+   * meaning as `RemotionTextElement.layout`: one mechanism for both, not two.
+   */
+  layout?: { x: number; y: number; width: number; height: number };
   reason: string | null;
 };
 
@@ -126,6 +156,49 @@ export function toFrames(sec: number, fps: number): number {
 }
 
 /**
+ * How big a graphic actually is on screen, in the frame's own pixels.
+ *
+ * ── RONDE 185: why this had to exist before collisions could be detected at all ──────────────
+ *
+ * Two graphics cannot be found to overlap without boxes to compare, and only LABELLED graphics had
+ * one — they were measured as text so that captions could be moved out of their way. A chart, a map
+ * or a percentage ring was invisible to the layout engine entirely: nothing avoided it and it
+ * avoided nothing.
+ *
+ * The sizes below are the components' OWN dimensions, not estimates: `Charts.tsx` draws its chart
+ * and map SVGs at 900×520 and its ring at 140×140, and `Shape` uses the same 140 box. Reading them
+ * from the drawing code is what keeps this honest — a guessed rectangle would move graphics out of
+ * each other's way at the wrong moment and leave real overlaps alone.
+ */
+function graphicBoxSize(
+  graphicType: string,
+  label: string | null | undefined,
+  style: TextStyle,
+  frame: Frame
+): { width: number; height: number } {
+  /**
+   * Bounded by the SAFE AREA, not by the raw frame.
+   *
+   * A chart's natural 900×520 does not fit inside the safe area of a small preview frame, and a box
+   * the layout engine can never contain is rejected at every anchor — which made every chart come
+   * back "no free position" with nothing listed as the thing it collided with. The component scales
+   * its SVG to the space it is given, so the honest box is "its natural size, or the room there is".
+   */
+  const safe = safeArea(frame);
+  /** The chart and map family: one SVG, drawn at its own natural size. */
+  if (["bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart",
+       "map_point", "route", "multi_point"].includes(graphicType)) {
+    return { width: Math.min(900, safe.width), height: Math.min(520, safe.height) };
+  }
+  /** The round ones and the shapes share a 140px box in the component. */
+  if (["percentage_ring", "progress", "shape", "icon"].includes(graphicType)) {
+    return { width: Math.min(140, safe.width), height: Math.min(140, safe.height) };
+  }
+  /** Everything else is words on screen, measured the way a caption is. */
+  return measureText(label?.trim() || graphicType, style, frame);
+}
+
+/**
  * Build the graphics props for one timeline.
  *
  * There is no `resolveMedia` parameter and no injected downloader, because this layer needs no
@@ -150,20 +223,80 @@ export function timelineToRemotionProps(params: {
    * because two captions at once is a `caption_overlap` the validator already reports as advisory
    * and re-solving it here would move captions the planner deliberately stacked.
    */
+  /**
+   * RONDE 185 — the graphics are placed against EACH OTHER first, and then become the obstacles.
+   *
+   * ── The defect ────────────────────────────────────────────────────────────────────────────
+   *
+   * `translateEdl` writes no style onto a graphic, and `Graphics.tsx` falls back to `bottom` for
+   * everything that is not a lower third. So every graphic on a beat landed on the same anchor: the
+   * showcase's dated beat drew a timeline card, a highlight box and a brand icon on top of one
+   * another, and nothing anywhere said so. Captions were laid out against graphics, but no graphic
+   * was ever laid out against anything.
+   *
+   * ── Order, and why it is this way round ───────────────────────────────────────────────────
+   *
+   * Graphics settle FIRST and captions move around the result. That is the existing contract —
+   * `layoutCaption` already treats a graphic as furniture — and reversing it would have the two
+   * chasing each other. Within the graphics the order is by start time then id, so the same
+   * timeline always produces the same placement; nothing here consults a clock or a random source.
+   *
+   * ── Nothing moves silently ────────────────────────────────────────────────────────────────
+   *
+   * Every relocation is recorded with the anchor it wanted, the anchor it got and what it collided
+   * with, and an unresolvable one is still DRAWN and reported. A missing graphic is worse than a
+   * crowded one; an unexplained move is worse than either.
+   */
+  const graphicMoves = new Map<string, { box: { x: number; y: number; width: number; height: number } }>();
+  const placedGraphics: Obstacle[] = [];
+  for (const g of graphicsTrack(timeline)
+    .filter((x) => !x.disabled)
+    .slice()
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))) {
+    const style = g.style ?? graphicDefaultStyle(g.graphicType);
+    const size = graphicBoxSize(g.graphicType, g.label, style, frame);
+    const placed = layoutCaption({
+      /** Its own words when it has them — the box comes from `size`, which is already correct. */
+      text: g.label?.trim() || g.graphicType,
+      style,
+      startSec: g.start,
+      endSec: g.end,
+      frame,
+      obstacles: placedGraphics,
+      measuredSize: size,
+    });
+    placedGraphics.push({
+      id: g.id,
+      kind: "graphic",
+      box: placed.box,
+      startSec: g.start,
+      endSec: g.end,
+    });
+    if (placed.unresolved) {
+      unresolvedCollisions.push(
+        `graphic_collision_unresolved ${g.id} (${g.graphicType}) at ${g.start.toFixed(2)}s — ` +
+          `no free position; drawn at ${placed.position} over ${placed.collidedWith.join(", ")}`
+      );
+    } else if (placed.moved) {
+      /**
+       * The relocation, named the way it actually happened. The resolver answers in two forms: a
+       * different ANCHOR when one is free, and a pixel OFFSET from the planned anchor when it had
+       * to find a gap between obstacles instead. Reporting both as "bottom → bottom" — which an
+       * anchor-only line does — would say a graphic moved and name no movement.
+       */
+      graphicMoves.set(g.id, { box: placed.box });
+      unresolvedCollisions.push(
+        `graphic_moved ${g.id} (${g.graphicType}) at ${g.start.toFixed(2)}s — ` +
+          (placed.position !== style.position
+            ? `${style.position} → ${placed.position}`
+            : `${style.position} shifted ${placed.offsetYPx.toFixed(0)}px`) +
+          ` to clear ${placed.collidedWith.join(", ") || "an earlier graphic"}`
+      );
+    }
+  }
+
   const obstacles: Obstacle[] = [
-    ...graphicsTrack(timeline)
-      .filter((g) => !g.disabled && g.label?.trim())
-      .map((g) => {
-        const style = g.style ?? DEFAULT_GRAPHIC_STYLE;
-        const size = measureText(g.label!, style, frame);
-        return {
-          id: g.id,
-          kind: "graphic" as const,
-          box: boxForPosition(style.position, size, frame, style),
-          startSec: g.start,
-          endSec: g.end,
-        };
-      }),
+    ...placedGraphics,
     ...textTrackOf(timeline, "TEXT")
       .filter((t) => !t.disabled && t.text.trim())
       .map((t) => ({
@@ -246,16 +379,35 @@ export function timelineToRemotionProps(params: {
       .map((t) => textElement(t, "text")),
     graphics: graphicsTrack(timeline)
       .filter((g) => !g.disabled)
-      .map((g) => ({
-        id: g.id,
-        graphicType: g.graphicType,
-        data: g.data ?? {},
-        label: g.label ?? null,
-        fromFrame: toFrames(g.start, fps),
-        durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - g.start), fps)),
-        style: g.style ?? null,
-        reason: g.reason ?? null,
-      })),
+      .map((g) => {
+        /**
+         * RONDE 185 — a graphic the layout moved carries its new anchor, and only then.
+         *
+         * A graphic that did not have to move keeps `style` exactly as the timeline wrote it —
+         * including `null` — so a video whose graphics never collide produces the same props it
+         * produced before this round.
+         */
+        const move = graphicMoves.get(g.id);
+        return {
+          id: g.id,
+          graphicType: g.graphicType,
+          data: g.data ?? {},
+          label: g.label ?? null,
+          fromFrame: toFrames(g.start, fps),
+          durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - g.start), fps)),
+          style: g.style ?? null,
+          /**
+           * RONDE 185 — the resolved BOX, exactly the way a moved caption already carries one.
+           *
+           * A pixel box says where the graphic ended up whether the resolver changed its anchor or
+           * shifted it within one; an anchor alone cannot express the second case, which is the
+           * resolver's answer whenever it had to find a gap. Carried only when it MOVED, so a video
+           * whose graphics never collide produces the props it produced before this round.
+           */
+          ...(move ? { layout: move.box } : {}),
+          reason: g.reason ?? null,
+        };
+      }),
     words: params.words ?? [],
     unresolvedCollisions,
     meta: {

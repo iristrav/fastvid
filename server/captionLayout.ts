@@ -284,9 +284,21 @@ export function layoutCaption(params: {
   endSec: number;
   frame: Frame;
   obstacles: readonly Obstacle[];
+  /**
+   * RONDE 185 — the element's real size, when the caller knows it better than `measureText` can.
+   *
+   * A caption's box IS its text, so callers omit this and nothing changes. A graphic's is not: a
+   * chart is a 900×520 SVG whose label, if it has one at all, says nothing about how much of the
+   * frame it covers. Measuring one as if it were its own caption would place a chart by the width
+   * of the word "chart" and leave real overlaps undetected.
+   *
+   * Only the SIZE is injected. Which anchors are tried, in what order, and what counts as a
+   * collision all stay here — one layout engine, not two.
+   */
+  measuredSize?: { width: number; height: number };
 }): LayoutOutcome {
   const { style, frame } = params;
-  const size = measureText(params.text, style, frame);
+  const size = params.measuredSize ?? measureText(params.text, style, frame);
   const safe = safeArea(frame);
   const gap = frame.heightPx * MIN_GAP;
 

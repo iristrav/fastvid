@@ -45,6 +45,11 @@ export type GraphicSpec = {
   fromFrame: number;
   durationInFrames: number;
   style: TextStyleLike | null;
+  /**
+   * RONDE 185 — where the layout engine put this graphic, when it had to move it out of another's
+   * way. Absent when nothing collided, which is the ordinary case.
+   */
+  layout?: { x: number; y: number; width: number; height: number };
   reason: string | null;
 };
 
@@ -286,6 +291,7 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
     <Sequence from={g.fromFrame} durationInFrames={g.durationInFrames} name={`${g.graphicType} ${g.id}`}>
       <GraphicBody
         position={position}
+        layout={g.layout}
         fontSizePx={fontSizePx}
         durationInFrames={g.durationInFrames}
       >
@@ -297,11 +303,19 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
 
 const GraphicBody: React.FC<{
   position: string;
+  /**
+   * RONDE 185 — where the layout engine decided this goes, when it had to move it.
+   *
+   * A resolved box WINS over the named anchor, exactly as it does for a text element: the engine
+   * that knows what else is on screen at this moment outranks a name chosen before anything else
+   * was placed. Absent means nothing collided and the anchor is used, unchanged.
+   */
+  layout?: { x: number; y: number; width: number; height: number };
   fontSizePx: number;
   durationInFrames: number;
   children: React.ReactNode;
   animation?: string;
-}> = ({ position, fontSizePx, durationInFrames, animation, children }) => {
+}> = ({ position, layout, fontSizePx, durationInFrames, animation, children }) => {
   const frame = useCurrentFrame();
   /**
    * RONDE 155 — the same animation vocabulary the captions use, from the same pure functions.
@@ -311,7 +325,17 @@ const GraphicBody: React.FC<{
    * this round, so a timeline that names no animation still renders identically.
    */
   const state = animationAt(animation ?? "fade_rise", frame, durationInFrames);
-  return (
+  /**
+   * RONDE 185 — a resolved box is an INNER absolutely-positioned div, not a restyled AbsoluteFill.
+   *
+   * The first attempt put `left`/`top` on the AbsoluteFill itself and the graphic did not move: an
+   * AbsoluteFill sets its own inset, so the offsets were overridden and two graphics still drew in
+   * one band. The pixel test caught it — the props were right and the picture was not, which is
+   * exactly the difference that test exists to find.
+   *
+   * `Text.tsx` already had the correct shape for the same job, so this is that shape.
+   */
+  const body = (
     <AbsoluteFill style={{ ...positionStyle(position), display: "flex", fontSize: fontSizePx }}>
       <div
         style={{
@@ -322,6 +346,26 @@ const GraphicBody: React.FC<{
             state.revealFraction < 1
               ? `inset(0 ${((1 - state.revealFraction) * 100).toFixed(2)}% 0 0)`
               : undefined,
+        }}
+      >
+        {children}
+      </div>
+    </AbsoluteFill>
+  );
+  if (!layout) return body;
+  return (
+    <AbsoluteFill style={{ fontSize: fontSizePx }}>
+      <div
+        style={{
+          position: "absolute",
+          left: layout.x,
+          top: layout.y,
+          width: layout.width,
+          display: "flex",
+          justifyContent: "center",
+          transform:
+            `translate(${state.translateX}px, ${state.translateY}px) scale(${state.scale})`,
+          opacity: state.opacity,
         }}
       >
         {children}
