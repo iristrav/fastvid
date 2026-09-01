@@ -218,8 +218,20 @@ describe("RONDE 95 §2 — provider and route travel together", () => {
   });
 
   it("TEST 13 — the scene pool passes the source it actually searched", () => {
+    /**
+     * RONDE 183 — bounded by the function, not by a byte count.
+     *
+     * This used to read 3000 characters from the declaration. RONDE 179 added a comment above the
+     * path construction and the tag fell outside the window, so the test failed while the code it
+     * guards was untouched — and the same window would have hidden a REMOVED tag just as easily
+     * once the function grew. Anchored to the next top-level declaration instead, which is a
+     * boundary the function's own length cannot move past.
+     */
     const idx = PIPELINE_SRC.indexOf("function downloadAndTrimPoolCandidate(");
-    const body = PIPELINE_SRC.slice(idx, idx + 3000);
+    expect(idx, "downloadAndTrimPoolCandidate is gone").toBeGreaterThan(-1);
+    const end = PIPELINE_SRC.indexOf("\nasync function trimDownloadedStockClip(", idx);
+    expect(end, "the function's end marker moved").toBeGreaterThan(idx);
+    const body = PIPELINE_SRC.slice(idx, end);
     expect(body).toContain("searchRoute: `scenePool:${candidate.source}`");
   });
 

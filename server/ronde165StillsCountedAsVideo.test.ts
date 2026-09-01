@@ -107,8 +107,20 @@ describe("RONDE 165 — the mis-count was switching off the correction", () => {
 describe("RONDE 165 — wired at the one place that knows", () => {
   it("the download stamps the marker from its own mediaType", () => {
     expect(PIPE).toContain('const stillSuffix = isVideo ? "" : "_still";');
-    expect(PIPE).toContain(
-      "`scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}${stillSuffix}.mp4`"
+    /**
+     * RONDE 183 — the marker's PLACE in the name, not the whole literal.
+     *
+     * RONDE 179 added a `${licenceTag}` between the source and the id, so a YouTube clip carries
+     * the `_ytcc` the fair-use rule reads. That changed the literal without changing anything this
+     * test is about: the still marker still sits at the end, after the asset id and before the
+     * extension, which is where `classifyClipMixKind` looks for it.
+     *
+     * Asserting the two ends rather than the exact string keeps the guard on the thing that
+     * matters — a name that ends `${stillSuffix}.mp4` — and stops it failing every time an
+     * unrelated segment is added in the middle.
+     */
+    expect(PIPE).toMatch(
+      /`scene_\$\{sceneIndex\}_b\$\{beatIndex\}_pool_\$\{candidate\.source\}[^`]*\$\{safeId\}\$\{stillSuffix\}\.mp4`/
     );
   });
 
