@@ -5,6 +5,7 @@ import * as path from "path";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { minClipQualityScore } from "./visualQualityGate";
 import { strictVoiceVisualMatchEnabled } from "./sourcingPolicy";
+import { coverageOfAdoptEntry } from "./beatVisualStatus";
 
 export type VoiceVisualMatchSummary = {
   ok: boolean;
@@ -71,8 +72,24 @@ export function buildVoiceVisualMatchSummary(
   const fallbackBeats = adoptAudit?.filter((e) => e.source === "fallback").length ?? 0;
   const rescueEntries = adoptAudit?.filter((e) => e.source.startsWith("rescue_")) ?? [];
   const rescueBeats = rescueEntries.length;
-  const degradedBeats = rescueEntries.filter((e) => isDegradedRescueSource(e.source)).length;
-  const rescueSourcedBeats = rescueBeats - degradedBeats;
+  /**
+   * RONDE 105 — "beat without its own picture" is now defined in ONE place.
+   *
+   * This used to count only rescue routes whose name was on DEGRADED_RESCUE_SOURCES, while the
+   * quality score counted only the routes "fallback" and "rescue_placeholder", and the two
+   * disagreed: a render reported "13 beat(s) zonder eigen beeld" next to a score of 100/100 that
+   * had seen none of them. Both now read `coverageOfAdoptEntry` from ./beatVisualStatus, so the
+   * warning and the number are answering the same question.
+   */
+  const degradedBeats = (adoptAudit ?? []).filter(
+    (e) => coverageOfAdoptEntry(e) !== "own_footage"
+  ).length;
+  // Clamped: `degradedBeats` now counts every beat without its own footage, which includes
+  // non-rescue routes, so the subtraction could otherwise go negative and report a nonsense count.
+  const rescueSourcedBeats = Math.max(
+    0,
+    rescueEntries.filter((e) => coverageOfAdoptEntry(e) === "own_footage").length
+  );
   const guaranteedClips = countGuaranteedClipsInPaths(composedClipPaths);
   const lowVisionBeats = (adoptAudit ?? []).filter(
     (e) =>

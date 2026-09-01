@@ -29,12 +29,33 @@ describe("visualDirector", () => {
     expect(hasDirectorPlan(intent)).toBe(true);
   });
 
-  it("search queries come from visual plan not spoken Dutch text", () => {
-    const intent = directorSceneToIntent(sampleScene);
+  it("search queries come from visual plan not spoken narration", () => {
+    // The plan's own sentence states the subject, so the plan is only selecting from it — which
+    // is all a director plan is allowed to do. Note the queries still never carry the spoken
+    // words themselves: the route searches on what the viewer should SEE.
+    const englishScene: VisualDirectorScene = {
+      ...sampleScene,
+      spoken_text: "A frustrated entrepreneur grinds through repetitive computer work all day.",
+    };
+    const intent = directorSceneToIntent(englishScene);
     expect(hasDirectorPlan(intent)).toBe(true);
     const queries = directorSearchQueries(intent);
     expect(queries[0]).toMatch(/frustrated entrepreneur/);
-    expect(queries.join(" ")).not.toMatch(/ondernemers|repetitieve|taken/);
+  });
+
+  it("RONDE 91 §3 — a plan term its own sentence does not state is discarded", () => {
+    // The sample plan is English and its sentence is Dutch, so not one of "frustrated",
+    // "entrepreneur", "repetitive" or "computer" stands in the sentence the plan was written for.
+    //
+    // This is a real capability loss and it is deliberate: nothing in the pipeline can tell a
+    // TRANSLATION of a stated subject apart from an INVENTED one, and the round's rule is that an
+    // unprovable term does not reach a provider. It did not reach one before this change either —
+    // RONDE 90's gate refused it against the same Dutch beat — so what changed is that the
+    // pipeline no longer spends a round building queries it may not send, and the refusal is now
+    // logged as LLM_UNPROVEN_CONTENT instead of an anonymous UNVERIFIED_TERM.
+    const intent = directorSceneToIntent(sampleScene);
+    expect(hasDirectorPlan(intent)).toBe(true);
+    expect(directorSearchQueries(intent)).toEqual([]);
   });
 
   it("hold duration stays within 3-5 seconds", () => {

@@ -122,6 +122,50 @@ export function classifyDocGradeSourceKind(filePath: string): DocGradeSourceKind
   return "archive";
 }
 
+/**
+ * RONDE 149 — the same classification, from a PROVIDER instead of a filename.
+ *
+ * `classifyDocGradeSourceKind` reads a temp filename, which is the only handle the old pipeline
+ * ever had. The timeline has something better: a proven provider from the lineage ledger, which
+ * survives the work directory being deleted and cannot be fooled by a rename.
+ *
+ * Both live here, next to each other and next to the grades they feed, because they answer one
+ * question — "what kind of picture is this, so it can be matched to the others?" — and a second
+ * answer living somewhere else is how two clips from the same source end up graded differently.
+ *
+ * The unknown case returns "unknown" rather than guessing "archive". The three grades differ by
+ * how hard they pull saturation and contrast, and applying an archive grade to a glossy stock clip
+ * leaves it looking glossy next to everything else — the exact mismatch the grade exists to fix.
+ */
+export function docGradeSourceKindForProvider(
+  provider: string | null | undefined,
+  opts: { archiveAssetId?: number | null } = {}
+): DocGradeSourceKind {
+  // A row in our own archive is archive material whatever the archive happens to be called.
+  if (opts.archiveAssetId != null) return "archive";
+  const p = (provider ?? "").trim().toLowerCase();
+  if (!p) return "unknown";
+
+  /** Institutional and public-domain collections: real archival footage and stills. */
+  if (["archive", "curated", "wikimedia", "loc", "internet_archive", "nara", "nasa", "europeana"].includes(p)) {
+    return "archive";
+  }
+  /** Commercial stock and modern uploads: clean, glossy, needs the strongest pull. */
+  if (["pexels", "pixabay", "openverse", "unsplash", "youtube_cc", "youtube"].includes(p)) {
+    return "stock";
+  }
+  /** Generative sources read plasticky next to real footage and get the hardest correction. */
+  if (["ai", "ai_generated", "grok", "kling", "higgsfield", "runway", "luma", "pika", "veo", "stability", "leonardo"].includes(p)) {
+    return "ai_generated";
+  }
+  /**
+   * An archive an operator named themselves ("wwii_archive", "nara_films") is archive material.
+   * Checked last so it cannot shadow a known provider that happens to contain the word.
+   */
+  if (p.includes("archive")) return "archive";
+  return "unknown";
+}
+
 export function stillOutputFrameCount(duration: number, fps = 25): number {
   return Math.max(25, Math.round(duration * fps));
 }
@@ -179,8 +223,87 @@ export function resolveStillKenBurnsVariant(sceneIndex: number, beatIndex: numbe
  *  pattern for the dormant engine's new camera movements (Phase 7) — duplicated here as a
  *  standalone expression rather than imported, since documentaryStyle.ts is live production
  *  code with no dependency on that dormant, feature-flagged directory. */
+/**
+ * RONDE 111 — the share of the eased curve that is allowed to decelerate.
+ *
+ * Pure `sin(PI/2 * t)` reaches its target with zero velocity: its derivative at t=1 is
+ * cos(PI/2) = 0. On a six-second still that measures as
+ *
+ *     first second   crop window travels 71.8 px   (2.87 px/frame)
+ *     middle         43.8 px                       (1.75 px/frame)
+ *     LAST second     7.5 px                       (0.30 px/frame)
+ *
+ * and under about one pixel per frame the eye reads stillness. So every photo in every video
+ * ended on a still — a small freeze, arriving from the opposite direction to the montage one.
+ *
+ * Blending the eased curve with a linear one fixes the endpoint without giving back the constant
+ * velocity that made stills look machine-made in the first place (the Phase 10 finding this
+ * easing exists for). With EASE_SHARE = 0.35 the velocity runs from 1.20x the average at the
+ * start to 0.65x at the end: still a visible ease, never a stop.
+ */
+const KEN_BURNS_EASE_SHARE = 0.35;
+
 function easeOutProgress(totalFrames: number): string {
-  return `sin(PI/2*min(on/${totalFrames},1))`;
+  const eased = KEN_BURNS_EASE_SHARE.toFixed(2);
+  const linear = (1 - KEN_BURNS_EASE_SHARE).toFixed(2);
+  const t = `min(on/${totalFrames},1)`;
+  return `(${eased}*sin(PI/2*${t})+${linear}*${t})`;
+}
+
+/**
+ * RONDE 147 — how far a pan may travel: only as far as the zoom has actually made room for.
+ *
+ * ── The defect ───────────────────────────────────────────────────────────────────────────────
+ *
+ * The pan distance was `panStep * totalFrames`, and `panStep` was itself `totalFrames * 0.06`.
+ * That makes the travel QUADRATIC in duration — the longer the shot, the further it slides:
+ *
+ *     3s    75 frames    300px
+ *     5s   125 frames   1000px
+ *     8s   200 frames   2400px
+ *    12s   300 frames   5400px
+ *
+ * At the zoom these stills actually use (1.04), a 1920-wide image affords a half-range of
+ * (1920 − 1920/1.04) / 2 ≈ 37px before the sampling window runs off the edge of the picture. So
+ * the pan asked for between 8× and 146× more travel than existed. ffmpeg clamps x rather than
+ * erroring, which is why this shipped: the window simply pinned itself against the edge and stayed
+ * there for the rest of the shot. That is the reported symptom — the image zooms toward the edge
+ * and part of it leaves the frame.
+ *
+ * ── The fix ──────────────────────────────────────────────────────────────────────────────────
+ *
+ * Express the offset as a FRACTION OF WHAT THE ZOOM AFFORDS, inside the expression, rather than as
+ * a pixel count computed in TypeScript:
+ *
+ *     centre           iw/2-(iw/zoom/2)
+ *     affordable half  (iw-iw/zoom)/2        ← evaluated per frame, at that frame's zoom
+ *
+ * ffmpeg evaluates both per frame, so the bound holds at every zoom level by construction and
+ * cannot be got wrong by arithmetic here. Three properties follow, and they are the brief's:
+ *
+ *  · at zoom 1.0 the affordable range is ZERO, so a shot opens perfectly centred and full-frame;
+ *  · the centre stays the focus point, because the offset is a fraction of a range that is itself
+ *    centred on it;
+ *  · the sampling window can never leave the image, whatever the duration or the zoom.
+ *
+ * The share is below 1 so the pan stops short of the very edge rather than grazing it.
+ */
+export const KEN_BURNS_MAX_PAN_SHARE = 0.6;
+
+/**
+ * The x expression for a Ken Burns move: centred, optionally drifting within the zoom's own room.
+ *
+ * `direction` null is a pure centre-zoom — the case every non-panning variant uses, and the one
+ * the still-image paths want.
+ */
+export function kenBurnsCenterXExpr(
+  direction: "left" | "right" | null,
+  progress: string
+): string {
+  const centre = "iw/2-(iw/zoom/2)";
+  if (!direction) return centre;
+  const sign = direction === "left" ? "-" : "+";
+  return `${centre}${sign}(iw-iw/zoom)/2*${KEN_BURNS_MAX_PAN_SHARE}*${progress}`;
 }
 
 /** Ken Burns zoompan — zoom 100%→120%, optional pan left/right.
@@ -204,18 +327,18 @@ export function buildKenBurnsTail(
   const zoomTarget = variant === "zoom-out" ? 1.0 : zoomEnd;
   const zoomDelta = zoomTarget - zoomStart;
   const yExpr = yAnchor === "top" ? "ih/4-(ih/zoom/4)" : "ih/2-(ih/zoom/2)";
-  // Same total pan distance as the previous linear version (panStep px/frame * totalFrames
-  // frames) — only now reached via the eased progress curve instead of a constant per-frame
-  // step.
-  const panStep = Math.max(1, Math.round(totalFrames * 0.06));
-  const panDistance = panStep * totalFrames;
+  /**
+   * RONDE 147 — the travel is now bounded by the zoom's own room; see kenBurnsCenterXExpr.
+   *
+   * The pixel distance that used to be computed here was quadratic in duration and exceeded the
+   * affordable range by up to 146×, so the frame pinned itself against the edge of the picture.
+   * The eased progress curve is unchanged — only how far it is allowed to carry the frame.
+   */
   const progress = easeOutProgress(totalFrames);
-  const xExpr =
-    variant === "pan-left"
-      ? `iw/2-(iw/zoom/2)-${panDistance}*${progress}`
-      : variant === "pan-right"
-        ? `iw/2-(iw/zoom/2)+${panDistance}*${progress}`
-        : "iw/2-(iw/zoom/2)";
+  const xExpr = kenBurnsCenterXExpr(
+    variant === "pan-left" ? "left" : variant === "pan-right" ? "right" : null,
+    progress
+  );
   const zExpr = `(${zoomStart.toFixed(4)}+(${zoomDelta.toFixed(7)})*${progress})`;
   return (
     `select='eq(n\\,0)',` +

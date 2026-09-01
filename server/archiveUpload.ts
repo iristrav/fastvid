@@ -36,6 +36,11 @@ import {
 } from "./archiveUploadProgress";
 import { getUserFromRequest } from "./_core/context";
 import {
+  formatPreviewRefusal,
+  verifyArchivePreviewBuffer,
+} from "./archivePreviewCheck";
+import { extractFrameAtFraction } from "./localClipVision";
+import {
   createMediaArchiveAsset,
   getMediaArchiveAssetById,
   getMediaArchiveAssets,
@@ -304,12 +309,34 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
       }
       console.log(`[ArchiveUploadTiming] clip ${suffix} storagePut: ${((Date.now() - storeT0) / 1000).toFixed(1)}s`);
 
+      /**
+       * RONDE 118 — no row until the preview is proven readable.
+       *
+       * The bytes are in hand and nothing has been written yet, so this is the last moment at
+       * which refusing costs nothing. A clip that cannot yield a frame is not an archive item:
+       * it would sit in the grid as an error placeholder and still be returned by candidate
+       * selection, because that query only looks at isActive.
+       */
+      const previewT0 = Date.now();
+      const preview = await verifyArchivePreviewBuffer({
+        buffer: clipBuffer,
+        mediaType: "video",
+        extension: ".mp4",
+        extractFrame: extractFrameAtFraction,
+      });
+      if (!preview.ok) {
+        console.warn(formatPreviewRefusal(`clip ${suffix}`, preview));
+        return;
+      }
+      console.log(`[ArchiveUploadTiming] clip ${suffix} previewCheck: ${((Date.now() - previewT0) / 1000).toFixed(1)}s`);
+
       let assetId: number | null | undefined;
       try {
         assetId = await createMediaArchiveAsset({
           archiveId: input.archiveId,
           title: enriched.title,
           mediaType: "video",
+          previewCheckedAt: new Date(),
           mixKind,
           mimeType: "video/mp4",
           storageUrl: url,
@@ -533,12 +560,36 @@ export async function processArchiveAssetUpload(input: ArchiveUploadInput): Prom
   const { url, key: storedKey } = await storagePut(key, buf, mimeType);
   console.log(`[ArchiveUploadTiming] storagePut: ${((Date.now() - storeT0) / 1000).toFixed(1)}s`);
 
+  /**
+   * RONDE 118 — same rule for the single-file route: prove the preview, then write the row.
+   *
+   * For an image "readable preview" and "readable image" are the same fact, so the check is the
+   * decode itself. For a video it is a probe plus one real extracted frame.
+   */
+  const preview = await verifyArchivePreviewBuffer({
+    buffer: buf,
+    mediaType,
+    extension: `.${ext}`,
+    extractFrame: extractFrameAtFraction,
+  });
+  if (!preview.ok) {
+    console.warn(formatPreviewRefusal(input.filename ?? "upload", preview));
+    throw new ArchiveUploadError(
+      400,
+      appErrorMessage(
+        APP_ERROR.SERVICE_ERROR,
+        `Dit bestand heeft geen leesbare preview (${preview.reason}) en is daarom niet opgeslagen.`
+      )
+    );
+  }
+
   let assetId: number | null | undefined;
   try {
     assetId = await createMediaArchiveAsset({
       archiveId: input.archiveId,
       title: enriched.title,
       mediaType,
+      previewCheckedAt: new Date(),
       mixKind,
       mimeType,
       storageUrl: url,

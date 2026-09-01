@@ -336,10 +336,16 @@ describe("RONDE 60 #3 — YouTube finally reaches the beat-image gate", () => {
     const src = SRC();
     const idx = src.indexOf("async function youtubeClipPassesImageGate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2200);
+    const block = src.slice(idx, idx + 4200);
     expect(block).toContain("JUDGEMENT_FRAME_FRACTIONS");
     expect(block).toContain("judgeBeatImage({");
     expect(block).toContain('return judgement.verdict !== "does_not_fit";');
+    /**
+     * RONDE 103: this check runs before a clip is in any beat's pool, so it has narration but no
+     * beat slot — and it must not therefore share a cache bucket with every beat that later
+     * judges the same video. Its identity comes from the narration it does have.
+     */
+    expect(block).toContain("beatIdentity: beatIdentityKey({");
   });
 
   it("it fails open in every direction, exactly like the funnel's copy", () => {

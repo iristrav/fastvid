@@ -269,8 +269,11 @@ describe("RONDE 34 #4 — only a successful compose reports its clips", () => {
     // Staged where the old code published it...
     expect(s).toContain("pendingUsedClips = uniqueClipsInOrder(safeClips);");
     // ...and committed inside returnComposed, which every success path goes through.
+    // RONDE 158 made the funnel async and gave it the scene's own length, so it can check that the
+    // finished picture covers the voice before publishing. The property asserted here is unchanged:
+    // the staged list is committed as the FIRST thing the funnel does, so no path publishes early.
     expect(s).toMatch(
-      /const returnComposed = \(composedPath: string\): string => \{\s*\n\s*if \(usedClipsOut\) \{\s*\n\s*usedClipsOut\.length = 0;\s*\n\s*usedClipsOut\.push\(\.\.\.pendingUsedClips\);/
+      /const returnComposed = async \(composedPath: string, targetDur\?: number\): Promise<string> => \{\s*\n\s*if \(usedClipsOut\) \{\s*\n\s*usedClipsOut\.length = 0;\s*\n\s*usedClipsOut\.push\(\.\.\.pendingUsedClips\);/
     );
     // The old unconditional publish is gone.
     expect(s).not.toMatch(/usedClipsOut\.push\(\.\.\.uniqueClipsInOrder\(safeClips\)\)/);

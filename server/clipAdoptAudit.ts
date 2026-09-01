@@ -34,6 +34,19 @@ export type AdoptAuditSummary = {
   archiveBeats: number;
   klingBeats: number;
   fallbackBeats: number;
+  /**
+   * RONDE 177 — YouTube gets its own bucket, because it belongs in none of the others.
+   *
+   * R169 added `youtube_cc` to `FunnelCandidateSource` and the pool started producing it, but no
+   * branch below matched the label, so a YouTube-filled beat counted toward `beatsFilled` and
+   * toward no category at all. That is precisely the render-530 shape this function was fixed for
+   * once already ("beats=13 wiki=0 arch=7 stock=0"), reappearing for a new source.
+   *
+   * A sixth bucket rather than a home in an existing one: YouTube is neither an archive nor stock
+   * footage, and folding it into `archiveBeats` would put a number in front of a person that says
+   * the render found archival material when it found a YouTube video.
+   */
+  youtubeBeats: number;
   hints: string[];
 };
 
@@ -153,7 +166,13 @@ export function adoptRouteForSource(source: string): "primary" | "fallback" | "r
   const s = (source ?? "").trim().toLowerCase();
   if (s === "fallback" || s === "rescue_placeholder") return "fallback";
   if (s.startsWith("rescue_")) return "rescue";
-  if (s === "guaranteed" || s.startsWith("backfill") || s === "rescue_extend" || s === "extend") {
+  if (
+    s === "guaranteed" || s.startsWith("backfill") || s === "rescue_extend" || s === "extend" ||
+    // RONDE 112: real footage, but not of what the beat claimed — the beat was filled by
+    // something other than the route that was supposed to fill it, which is what "backfill"
+    // means here. Calling it "primary" would report a match that was never made.
+    s === "subject_fallback"
+  ) {
     return "backfill";
   }
   if (s === "motion_graphic" || s === "graphic" || s === "mgfx") return "graphic";
@@ -197,6 +216,7 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
   let archiveBeats = 0;
   let klingBeats = 0;
   let fallbackBeats = 0;
+  let youtubeBeats = 0;
 
   for (const source of finalSourceByBeat.values()) {
     if (source === "pexels" || source === "pixabay" || source === "stock" || source === "rescue_stock") {
@@ -217,6 +237,14 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
       source === "flickr" || source === "rescue_wikimedia"
     ) {
       archiveBeats += 1;
+    } else if (source === "youtube_cc" || source === "youtube") {
+      /**
+       * Both spellings, because both exist in this codebase already: the pool emits `youtube_cc`
+       * and `assetRehydrator` fetches a clip back under either provider name. Pairing them here
+       * follows what the rehydrator already treats as one source rather than inventing a second
+       * vocabulary for the same thing.
+       */
+      youtubeBeats += 1;
     } else if (source === "kling" || source === "rescue_ai") {
       klingBeats += 1;
     } else if (source === "fallback" || source === "rescue_placeholder") {
@@ -226,8 +254,20 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
 
   const beatsFilled = finalSourceByBeat.size;
   const hints: string[] = [];
-  if (beatsFilled > 0 && wikiBeats === 0 && archiveBeats === 0) {
+  /**
+   * RONDE 177 — the hint names what actually filled the beats.
+   *
+   * "Alle beats via stock/Kling" was true while those were the only two non-archive buckets. With
+   * YouTube counted it can be false, and a hint that misnames the source sends the reader off to
+   * upload archive material to fix something that is not the problem. So the hint only fires when
+   * no YouTube beat is in the mix either, and there is a separate line for that case.
+   */
+  if (beatsFilled > 0 && wikiBeats === 0 && archiveBeats === 0 && youtubeBeats === 0) {
     hints.push("Alle beats via stock/Kling — upload meer relevant archief (vision + semantic match).");
+  } else if (youtubeBeats > 0 && wikiBeats === 0 && archiveBeats === 0) {
+    hints.push(
+      `${youtubeBeats}/${beatsFilled} beats van YouTube — geen archief/Commons materiaal gevonden voor deze scènes.`
+    );
   }
   if (stockBeats > beatsFilled * 0.5 && beatsFilled >= 3) {
     hints.push(`${stockBeats}/${beatsFilled} beats uit stock — meer archiefclips helpen (geen geo-tags nodig).`);
@@ -247,6 +287,7 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
     archiveBeats,
     klingBeats,
     fallbackBeats,
+    youtubeBeats,
     hints,
   };
 }

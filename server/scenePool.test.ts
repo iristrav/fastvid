@@ -1,6 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { isAllowedInternetArchiveLicensePool } from "./scenePool";
 
+/**
+ * RONDE 91 — this file calls the scene candidate pool's provider searches directly, outside any
+ * beat.
+ *
+ * In production those searches run inside a beat's provenance scope (withSearchProvenance), which
+ * is what lets the gate verify a query against what the script actually says. A direct call has no
+ * such scope, so strict mode refuses it — correctly: a query nobody can trace is exactly what the
+ * gate exists to stop.
+ *
+ * That refusal is not this file's subject. It tests what happens AFTER a query is admitted — the
+ * response parsing, the per-source dedup, the concurrency ceiling, the allSettled isolation. The
+ * gate's own behaviour, including the refusal above, is covered by ronde89ProviderGate,
+ * ronde90SearchProvenance and ronde91SearchCleanup.
+ *
+ * Set at module scope, not in beforeAll: suites here snapshot process.env while the file is being
+ * evaluated and restore it before every test.
+ */
+process.env.SEARCH_GATE_STRICT = "false";
+
+
 // FASE 2 — Unified Multi-Source Discovery: Internet Archive candidates must be license-gated
 // before they ever enter the pool (no paid/restricted sources, per the FASE 2 constraint).
 // This mirrors videoPipeline.ts's isAllowedInternetArchiveLicense rules exactly (duplicated,

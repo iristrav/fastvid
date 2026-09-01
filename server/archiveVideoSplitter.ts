@@ -103,8 +103,32 @@ const INTERNAL_RESCAN_PASSES = 2;
 const SINGLE_SCENE_VALIDATE_MAX_DEPTH = 4;
 const DEFAULT_SCENE_THRESHOLD = 0.3; // 30% pixel change = real editorial cut
 const DEFAULT_SCDET_THRESHOLD = 5.0; // scdet 0–100 scale; 5 catches real cuts, ignores flicker
-/** Split any clip longer than this into fixed intervals — catches scenes without hard cuts. */
+/**
+ * Interval size used ONLY where there is no scene information at all — see splitLongRanges.
+ *
+ * RONDE 98: this used to be applied to every range, detected or not, with the comment "Always
+ * split any range longer than maxClipDurationSec". A genuine 38-second shot — one continuous
+ * scene, no cuts anywhere in it, confirmed by two rescan passes — came out as seven clips of 5.4
+ * seconds. The archive then held seven rows for one scene, and a beat that wanted the whole thing
+ * could only have a seventh of it.
+ *
+ * A scene ends where the picture changes, not where a timer expires.
+ */
 const DEFAULT_MAX_CLIP_DURATION_SEC = 6;
+
+/**
+ * The absolute ceiling on a single clip, and the only duration limit that still applies to a
+ * DETECTED scene.
+ *
+ * It exists for one reason: a source whose shot detection returns nothing usable — a corrupt file,
+ * a static camera on a wall, a stream whose duration probe lies — must not produce one clip the
+ * length of the whole video. It is deliberately far above any editorial length, so that reaching
+ * it means something went wrong rather than that a scene was long.
+ *
+ * Ninety seconds is not a claim about how long a shot should be. It is the point past which "one
+ * continuous scene" stops being the likeliest explanation.
+ */
+const DEFAULT_SCENE_SAFETY_MAX_SEC = 90;
 const DEFAULT_CUT_MERGE_GAP_SEC = 0.12; // merge near-duplicate detections
 const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
@@ -247,6 +271,22 @@ export function maxClipDurationSec(): number {
   return DEFAULT_MAX_CLIP_DURATION_SEC;
 }
 
+/**
+ * RONDE 98 — the safety ceiling for a scene the detector DID find.
+ *
+ * Applied after detection and after the rescan passes, so a range that reaches it has already been
+ * examined twice for interior cuts and none were found. Splitting it is the pipeline admitting it
+ * cannot tell where this scene ends, which is a different statement from "clips are six seconds".
+ */
+export function sceneSafetyMaxSec(): number {
+  const raw = process.env.ARCHIVE_SCENE_SAFETY_MAX_SEC?.trim();
+  if (raw) {
+    const n = parseFloat(raw);
+    if (!isNaN(n) && n >= 10 && n <= 600) return n;
+  }
+  return DEFAULT_SCENE_SAFETY_MAX_SEC;
+}
+
 /** Split any range exceeding maxDur into equal sub-intervals. */
 export function splitLongRanges(
   ranges: Array<{ start: number; end: number }>,
@@ -341,9 +381,22 @@ async function probeActualVideoDuration(filePath: string, declaredDur: number): 
   const hasFrameAt = async (posSec: number): Promise<boolean> => {
     try {
       const ffprobe = ffprobeBin();
+      /**
+       * RONDE 100B — the same bad command as the readability check, and very likely the reason
+       * this function was abandoned.
+       *
+       * `-ss` and `-frames:v 1` are ffmpeg options; ffprobe rejects them outright, so every probe
+       * threw, the catch below returned false, and the binary search concluded that a perfectly
+       * complete file had no data anywhere. The note at the call site records the symptom —
+       * "ffprobe timed out at 90% of duration and the binary search converged to ~10s, falsely
+       * truncating all processing to a tiny window" — and blames sparse keyframes. It was this.
+       *
+       * The function is currently unreferenced; the command is corrected so it is not a trap for
+       * whoever revives it, not because anything calls it today.
+       */
       const { stdout } = await ffmpegSemaphore.run(() => execPromise(
-        `${ffprobe} -v error -ss ${posSec.toFixed(2)} -i "${filePath}" ` +
-          `-select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
+        `${ffprobe} -v error -read_intervals ${posSec.toFixed(2)}%+#1 ` +
+          `-select_streams v:0 -show_frames -show_entries frame=pts_time -of json "${filePath}"`,
         { timeout: 12_000 }
       ));
       const data = JSON.parse(String(stdout)) as { frames?: unknown[] };
@@ -903,6 +956,53 @@ async function detectSceneCutTimes(inputPath: string, totalDur: number, deadline
   return cuts;
 }
 
+/** Below this a file cannot hold an mp4 container at all, let alone a frame. */
+const MIN_PLAUSIBLE_MP4_BYTES = 512;
+
+/**
+ * Did the extract produce a real clip?
+ *
+ * RONDE 100B. This was `fileSize >= 8000` — a flat byte floor, and the only thing standing
+ * between a valid clip and `fs.unlinkSync`. Size is not the property we care about: h.264 is a
+ * compressor, and a shot with almost no motion or detail compresses to almost nothing. A real
+ * 4-second clip measured 3191 bytes here and was deleted as "empty output" while ffmpeg had
+ * exited 0 and written a perfectly playable file. Fades to black, leaders, title cards, single
+ * held frames and the low-resolution material that fills much of the Internet Archive all land
+ * in that range.
+ *
+ * So ask the file what it is. ffprobe reports a video stream and a duration, or it does not; a
+ * clip that has both is usable no matter how few bytes it took to store. The byte floor survives
+ * only as a cheap pre-check for a file too small to be a container, which saves spawning ffprobe
+ * on an obvious zero-length write.
+ */
+async function extractedClipIsUsable(
+  outputPath: string,
+  fileSize: number,
+  expectedDurationSec: number
+): Promise<boolean> {
+  if (fileSize < MIN_PLAUSIBLE_MP4_BYTES) return false;
+  try {
+    const ffprobe = process.env.FFPROBE_BIN || process.env.FFPROBE_PATH || "ffprobe";
+    const { stdout } = await exec(
+      `${ffprobe} -v error -select_streams v:0 -show_entries stream=codec_type ` +
+        `-show_entries format=duration -of json "${outputPath}"`,
+      { timeout: 15_000 }
+    );
+    const probe = JSON.parse(String(stdout)) as {
+      streams?: Array<{ codec_type?: string }>;
+      format?: { duration?: string };
+    };
+    if (probe.streams?.[0]?.codec_type !== "video") return false;
+    const dur = Number(probe.format?.duration ?? 0);
+    if (!Number.isFinite(dur) || dur <= 0) return false;
+    // A clip far shorter than asked for means the cut landed past the end of the source.
+    return dur >= Math.min(MIN_SCENE_SEC, expectedDurationSec * 0.5);
+  } catch {
+    // ffprobe could not read it — that IS the unusable case the old size check was reaching for.
+    return false;
+  }
+}
+
 export async function extractVideoSegment(
   inputPath: string,
   outputPath: string,
@@ -934,10 +1034,10 @@ export async function extractVideoSegment(
     try {
       const { stderr: ffstderr } = await exec(cmd, { maxBuffer: 8 * 1024 * 1024, timeout: perClipTimeout });
       const fileSize = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
-      if (fileSize >= 8000) return;
+      if (await extractedClipIsUsable(outputPath, fileSize, durationSec)) return;
       // FFmpeg exited 0 but produced no usable output — log stderr so we can diagnose.
       const stderrSnip = (ffstderr ?? "").slice(-400).replace(/\n/g, " ").trim();
-      console.warn(`[ArchiveSplit] ffmpeg exit0 empty output (ss=${start} size=${fileSize}B): ${stderrSnip.slice(0, 350)}`);
+      console.warn(`[ArchiveSplit] ffmpeg exit0 unusable output (ss=${start} size=${fileSize}B): ${stderrSnip.slice(0, 350)}`);
       try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
     } catch (err) {
       const errMsg = (err as Error).message ?? "";
@@ -1004,7 +1104,8 @@ async function splitSegmentBufferAtInteriorCuts(
     }
     if (!fs.existsSync(outPath)) continue;
     const buf = fs.readFileSync(outPath);
-    if (buf.length < 8000) continue;
+    // RONDE 100B: ffprobe decides, not the byte count — see extractedClipIsUsable.
+    if (!(await extractedClipIsUsable(outPath, buf.length, end - start))) continue;
     const subSeg: VideoClipSegment = {
       buffer: buf,
       startSec: seg.startSec + start,
@@ -1101,7 +1202,9 @@ async function normalizeSourceForAnalysis(
     );
   }
 
-  if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 8000) {
+  // RONDE 100B: a proxy of a short, flat source is legitimately tiny — ask whether it decodes.
+  const proxySize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
+  if (!(await extractedClipIsUsable(outPath, proxySize, totalDur))) {
     throw new ArchiveSplitError("Video analysis proxy failed — check that the file is playable.");
   }
   return outPath;
@@ -1255,10 +1358,11 @@ async function extractAllClipsSinglePass(
       continue;
     }
 
-    if (fileSize < 8000) {
+    // RONDE 100B: ask ffprobe, not the byte count — see extractedClipIsUsable.
+    if (!(await extractedClipIsUsable(filePath, fileSize, slot.end - slot.start))) {
       if (si < 5 || si % 50 === 0) {
         console.warn(
-          `[ArchiveSplit] single-pass clip ${si} (${formatTimecode(slot.start)}–${formatTimecode(slot.end)}) empty (${fileSize}B)`
+          `[ArchiveSplit] single-pass clip ${si} (${formatTimecode(slot.start)}–${formatTimecode(slot.end)}) unusable (${fileSize}B)`
         );
       }
       failedCount++;
@@ -1499,19 +1603,46 @@ export async function splitVideoBySceneChanges(
       );
       ranges = splitLongRanges([{ start: 0, end: effectiveDur }]);
       ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
+    } else if (ranges.length <= 1 && cuts.length === 0) {
+      console.warn(
+        `[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — falling back to fixed intervals`
+      );
     } else if (ranges.length <= 1) {
-      console.warn(`[ArchiveSplit] no shot boundaries detected in ${effectiveDur.toFixed(1)}s video — will split on max duration`);
+      // RONDE 98: one range and real cuts behind it means the whole video is one scene. That is a
+      // finding, not a failure, and it stays one clip.
+      console.log(
+        `[ArchiveSplit] ${effectiveDur.toFixed(1)}s video is a single continuous scene — kept as one clip`
+      );
     }
 
-    // Always split any range longer than maxClipDurationSec into equal sub-intervals.
-    // This catches shots without hard cuts (dissolves, fades, long uncut scenes).
+    /**
+     * RONDE 98 — a detected scene is kept whole; only the safety ceiling still applies.
+     *
+     * This step used to read "Always split any range longer than maxClipDurationSec", six seconds,
+     * applied to every range whether or not the detector had found its boundaries. A 38-second
+     * shot with no cuts in it — confirmed by scdet, by the scene filter, and by two rescan passes
+     * that went looking for interior cuts and found none — was cut into seven equal pieces anyway.
+     * The archive stored seven rows for one scene, and nothing downstream could tell they belonged
+     * together.
+     *
+     * The detector's answer is now the answer. What remains is sceneSafetyMaxSec: a range that
+     * survives detection AND both rescan passes and is still longer than that is not a long scene,
+     * it is a detection that failed, and splitting it is the honest fallback rather than the rule.
+     *
+     * `cuts.length === 0` means the detector found nothing anywhere in the video, so there is no
+     * scene information to preserve and the interval split is all there is — that path is
+     * unchanged.
+     */
     const beforeMaxDur = ranges.length;
-    ranges = splitLongRanges(ranges);
+    const sceneAware = cuts.length > 0;
+    const splitCeiling = sceneAware ? sceneSafetyMaxSec() : maxClipDurationSec();
+    ranges = splitLongRanges(ranges, splitCeiling);
     ranges = filterClipRangesBelowMinDuration(ranges, 2.0);
     ranges = capClipRanges(ranges, maxArchiveClips());
     if (ranges.length !== beforeMaxDur) {
       console.log(
-        `[ArchiveSplit] max-duration split: ${beforeMaxDur} → ${ranges.length} clip(s) (max ${maxClipDurationSec()}s each)`
+        `[ArchiveSplit] ${sceneAware ? "safety-ceiling" : "fixed-interval"} split: ` +
+          `${beforeMaxDur} → ${ranges.length} clip(s) (ceiling ${splitCeiling}s)`
       );
       // Re-scan the interval-split clips to find real cut boundaries inside them.
       if (hasBudget()) {
@@ -1535,16 +1666,26 @@ export async function splitVideoBySceneChanges(
 
     throwIfCancelled();
 
-    // Pre-extraction readability check: probe 1 frame at 1/3 and 2/3 of the container duration
-    // using slow-seek (ss after -i) so keyframe gaps don't cause false misses.
-    // This diagnoses genuinely truncated files without affecting extraction.
+    /**
+     * Pre-extraction readability check: can a frame be read a third and two thirds of the way in?
+     * Purely diagnostic — it tells a truncated upload apart from a source the splitter simply
+     * found no cuts in, and never changes what gets extracted.
+     *
+     * RONDE 100B fixed the command. It used `-i FILE -ss POS -frames:v 1`, and ffprobe has
+     * neither of those options: it answers `Failed to set value '6.7' for option 'ss': Option not
+     * found` and exits non-zero. So the check could never pass, on any file, ever — every
+     * "readability check at Ns failed" line in production was this bug reporting itself, on
+     * sources that went on to split correctly. Seeking in ffprobe is `-read_intervals`, and a
+     * frame list needs `-show_frames`; with those it returns the frame as intended.
+     */
     {
       const ffp = ffprobeBin();
       for (const frac of [1 / 3, 2 / 3]) {
         const pos = (totalDur * frac).toFixed(1);
         try {
           const { stdout } = await ffmpegSemaphore.run(() => execPromise(
-            `${ffp} -v error -i "${inputPath}" -ss ${pos} -select_streams v:0 -frames:v 1 -show_entries frame=pts_time -of json`,
+            `${ffp} -v error -read_intervals ${pos}%+#1 -select_streams v:0 -show_frames ` +
+              `-show_entries frame=pts_time -of json "${inputPath}"`,
             { timeout: 60_000 }
           ));
           const d = JSON.parse(String(stdout)) as { frames?: Array<{ pts_time?: string }> };
@@ -1607,9 +1748,10 @@ export async function splitVideoBySceneChanges(
         try {
           await extractVideoSegment(inputPath, outPath, start, end, streamCopyExtract);
           const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
-          if (fileSize < 8000) {
+          // RONDE 100B: ask ffprobe, not the byte count — see extractedClipIsUsable.
+          if (!(await extractedClipIsUsable(outPath, fileSize, end - start))) {
             if (i < 5 || i % 50 === 0) {
-              console.warn(`[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) empty (${fileSize}B)`);
+              console.warn(`[ArchiveSplit] clip ${i} (${formatTimecode(start)}–${formatTimecode(end)}) unusable (${fileSize}B)`);
             }
             failedCount++;
             try { fs.unlinkSync(outPath); } catch { /* ignore */ }
@@ -1672,7 +1814,11 @@ export async function splitVideoBySceneChanges(
             try {
               await extractVideoSegment(reencPath, outPath, start, end, false);
               const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
-              if (fileSize < 8000) { try { fs.unlinkSync(outPath); } catch { /* ignore */ } return null; }
+              // RONDE 100B: ffprobe decides, not the byte count — see extractedClipIsUsable.
+              if (!(await extractedClipIsUsable(outPath, fileSize, end - start))) {
+                try { fs.unlinkSync(outPath); } catch { /* ignore */ }
+                return null;
+              }
               const meta: Omit<VideoClipSegment, "buffer" | "localPath"> = {
                 startSec: start, endSec: end, durationSec: end - start, index: i,
                 timeFallback: skipRangeSubjectFilter || undefined,
@@ -1708,8 +1854,14 @@ export async function splitVideoBySceneChanges(
       console.warn(`[ArchiveSplit] partial extract: ${segments.length}/${extractRanges.length} clips — continuing`);
     }
 
-    // enforceSingleSceneClipSegments disabled — with low thresholds + splitLongRanges,
-    // clips are already ≤10s and re-scanning creates false-positive sub-3s fragments.
+    // enforceSingleSceneClipSegments disabled — the low detection thresholds plus the two rescan
+    // passes above already resolve interior cuts, and re-scanning the extracted files creates
+    // false-positive sub-3s fragments.
+    //
+    // RONDE 98: this comment used to say "clips are already ≤10s", which was true only because
+    // splitLongRanges capped everything at six seconds. That cap no longer applies to a detected
+    // scene, so a clip here can legitimately be much longer — the reason for leaving the extra
+    // pass off is the false positives, not the length.
     console.log(`[ArchiveSplit] returning ${segments.length} clip(s)`);
 
     const cleanup = () => {

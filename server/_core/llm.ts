@@ -91,6 +91,15 @@ export type InvokeResult = {
   id: string;
   created: number;
   model: string;
+  /**
+   * RONDE 119 — which provider actually produced this answer.
+   *
+   * The chain can move on twice before something replies, and until now the result carried no
+   * trace of that: a caller logging a verdict could name the model string but not the provider
+   * that served it, so "Groq is exhausted, did Gemini really pick it up?" was unanswerable from a
+   * production log. Optional because a caller that does not care must not have to change.
+   */
+  provider?: LlmProvider;
   choices: Array<{
     index: number;
     message: {
@@ -339,6 +348,34 @@ export function isGroqInCooldown(): boolean {
   return Date.now() < groqCooldownUntilMs;
 }
 
+/**
+ * RONDE 117 — set when Groq's cooldown is a DAILY exhaustion rather than a burst limit.
+ *
+ * The distinction matters in exactly one place: the all-providers-blocked recovery in invokeLLM
+ * wipes the cooldown and forces one more Groq attempt, on the reasoning that a cooldown is a soft
+ * guard. That is true of a per-minute limit and false of a spent daily budget — there the retry
+ * cannot succeed AND the wipe erases the cooldown, so the next call repeats the whole discovery.
+ */
+let groqDailyExhaustedUntilMs = 0;
+export function isGroqDailyExhausted(): boolean {
+  return Date.now() < groqDailyExhaustedUntilMs;
+}
+
+/**
+ * Clear the per-process provider cool-offs.
+ *
+ * These are module-level on purpose — a cooldown that reset per call would not be a cooldown —
+ * which makes them leak between tests in one file. Exported for that, and named so nothing is
+ * tempted to call it from the pipeline.
+ */
+export function __resetProviderCooldownsForTests(): void {
+  groqCooldownUntilMs = 0;
+  groqDailyExhaustedUntilMs = 0;
+  geminiCooldownUntilMs = 0;
+  geminiModelUnavailable = false;
+  openAiCooldownUntilMs = 0;
+}
+
 function isGroqDailyQuotaError(body: string): boolean {
   const lower = body.toLowerCase();
   return (
@@ -348,20 +385,86 @@ function isGroqDailyQuotaError(body: string): boolean {
   );
 }
 
-function markGroqCooldown(errorText: string): void {
-  if (!isGroqDailyQuotaError(errorText) && !isRateLimitError(429)) return;
-  const waitSec = parseRetryAfterSeconds(errorText);
-  const cooldownMs =
-    waitSec != null && waitSec > 0
-      ? waitSec * 1000
-      : isGroqDailyQuotaError(errorText)
-        ? 60 * 60 * 1000
-        : 5 * 60 * 1000;
+/** How long Groq is left alone once its DAILY token budget is gone. */
+const GROQ_DAILY_COOLDOWN_MS = 60 * 60 * 1000;
+/** Default cool-off for a burst (per-minute) limit that carried no retry hint. */
+const GROQ_BURST_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * RONDE 117 — a daily exhaustion is not a burst, and Groq's retry hint does not know the
+ * difference.
+ *
+ * From production:
+ *
+ *   429 – Rate limit reached for model `openai/gpt-oss-20b` … on tokens per day (TPD):
+ *   Limit 200000, Used 199683, Requested 3630. Please try again in 23m51.216s.
+ *
+ * 317 tokens left of the day's 200 000. "Try again in 23m51s" is Groq's rolling-window estimate:
+ * after that window a trickle frees up, enough for the next call to burn it and fail again, all
+ * day. The old arithmetic preferred that hint over everything else —
+ *
+ *   waitSec != null && waitSec > 0 ? waitSec * 1000 : (daily ? 1h : 5min)
+ *
+ * — and Groq puts a hint in every one of these bodies, so the `daily ? 1h` branch, written for
+ * exactly this case, was unreachable. A spent day got a 24-minute cool-off.
+ *
+ * The hint is still used, as a FLOOR rather than a ceiling: never shorter than Groq asked for,
+ * and never shorter than an hour when the DAY is what ran out.
+ *
+ * Exported for RONDE 117's regression test — this is the arithmetic that was unreachable.
+ */
+export function markGroqCooldown(status: number, errorText: string): void {
+  // The caller's status is what makes this a rate-limit response. The previous version asked
+  // `!isRateLimitError(429)` — a literal 429 === 429, always true, so `!true` was false and the
+  // guard never fired. It only read as one.
+  const daily = isGroqDailyQuotaError(errorText);
+  if (!isRateLimitError(status) && !daily) return;
+  const hintMs = Math.max(0, (parseRetryAfterSeconds(errorText) ?? 0) * 1000);
+  const cooldownMs = daily
+    ? Math.max(hintMs, GROQ_DAILY_COOLDOWN_MS)
+    : hintMs > 0
+      ? hintMs
+      : GROQ_BURST_COOLDOWN_MS;
   groqCooldownUntilMs = Math.max(groqCooldownUntilMs, Date.now() + cooldownMs);
+  if (daily) {
+    groqDailyExhaustedUntilMs = Math.max(groqDailyExhaustedUntilMs, Date.now() + cooldownMs);
+    console.warn(
+      `[LLM] Groq daily token budget exhausted — standing down for ` +
+        `${Math.round(cooldownMs / 60_000)}min (Groq's own hint was ${Math.round(hintMs / 1000)}s)`
+    );
+  }
 }
 
-/** OpenAI quota exhausted — skip for remainder of process lifetime. */
-let openAiQuotaExhausted = false;
+/**
+ * RONDE 120 — OpenAI's cool-off, which used to be "forever".
+ *
+ * From the worker log, three seconds into render 543 — the FIRST LLM call of the process:
+ *
+ *   [LLM] OpenAI quota exhausted — skipping OpenAI for remainder of process lifetime.
+ *   [LLM] openai failed (429) — falling back to gemini
+ *
+ * OpenAI is the configured provider on that worker (provider=openai, gpt-4o, key present). One
+ * 429 and it was gone for the whole process — a Railway worker that stays up for days. Everything
+ * after that ran on two free tiers: Groq, whose day ran out fourteen seconds later, and Gemini,
+ * whose free tier is twenty requests per day. The render died at "Planning visuals", 25%.
+ *
+ * A permanent flag was defensible when it was the only guard against burning money on a dead
+ * account. But it is the strictest treatment in the file applied to the only PAID provider: Groq
+ * gets an hour, Gemini a minute, OpenAI got the rest of time. Topping up the account could not
+ * bring it back without a redeploy.
+ *
+ * So it expires. Half an hour for a spent quota — one wasted round trip every thirty minutes is
+ * nothing next to a worker that cannot make a video until someone notices and restarts it — and a
+ * short one for an ordinary burst, which OpenAI never had at all before this.
+ */
+let openAiCooldownUntilMs = 0;
+export function isOpenAiInCooldown(): boolean {
+  return Date.now() < openAiCooldownUntilMs;
+}
+/** How long OpenAI is left alone once it reports the account's quota is spent. */
+const OPENAI_QUOTA_COOLDOWN_MS = 30 * 60 * 1000;
+/** Cool-off for an ordinary OpenAI rate limit — previously none at all. */
+const OPENAI_BURST_COOLDOWN_MS = 60 * 1000;
 
 function parseRetryAfterSeconds(body: string): number | null {
   const minSec = body.match(/try again in (\d+)m(\d+(?:\.\d+)?)s/i);
@@ -395,25 +498,165 @@ function isOpenAiQuotaError(status: number, body: string): boolean {
   );
 }
 
-function markOpenAiQuotaExhausted(body: string): void {
-  if (isOpenAiQuotaError(429, body) || isOpenAiQuotaError(402, body)) {
-    openAiQuotaExhausted = true;
-    console.warn("[LLM] OpenAI quota exhausted — skipping OpenAI for remainder of process lifetime.");
+/**
+ * RONDE 120 — cool OpenAI down for a while, rather than for good.
+ *
+ * The retry hint is a FLOOR, never a ceiling, for the same reason as RONDE 117: the provider's own
+ * "try again in Ns" describes a rolling window, and a spent account's window frees a trickle that
+ * the next call burns immediately.
+ *
+ * Exported so the regression test can drive it with the verbatim production body.
+ */
+export function markOpenAiCooldown(status: number, body: string): void {
+  const quota = isOpenAiQuotaError(429, body) || isOpenAiQuotaError(402, body);
+  if (!quota && !isRateLimitError(status)) return;
+  const hintMs = Math.max(0, (parseRetryAfterSeconds(body) ?? 0) * 1000);
+  const cooldownMs = quota
+    ? Math.max(hintMs, OPENAI_QUOTA_COOLDOWN_MS)
+    : Math.max(hintMs, OPENAI_BURST_COOLDOWN_MS);
+  openAiCooldownUntilMs = Math.max(openAiCooldownUntilMs, Date.now() + cooldownMs);
+  if (quota) {
+    console.warn(
+      `[LLM] OpenAI quota spent — standing down for ${Math.round(cooldownMs / 60_000)}min ` +
+        `(it is retried automatically after that; no redeploy needed)`
+    );
   }
 }
 
-function shouldFallbackToNextProvider(status: number, body: string): boolean {
+/**
+ * RONDE 116 — "this request is bigger than my per-minute allowance".
+ *
+ * Groq answers an oversize prompt with 413, not 429:
+ *
+ *   413 Payload Too Large – Request too large for model `openai/gpt-oss-120b` … service tier
+ *   `on_demand` on tokens per minute (TPM): Limit 8000, Requested 17076
+ *
+ * That is a statement about GROQ's tier, not about the request. Gemini has no 8k-per-minute cap
+ * and would have served the same prompt. Classifying it separately from 429 matters because the
+ * two need opposite handling: a 429 is worth waiting out, while re-sending an oversize payload to
+ * the same provider is guaranteed to fail again no matter how long you wait.
+ */
+export function isCapacityTooLargeError(status: number, body: string): boolean {
+  if (status !== 413) return false;
+  const lower = body.toLowerCase();
+  return (
+    lower.includes("too large") ||
+    lower.includes("tokens per minute") ||
+    lower.includes("tpm") ||
+    lower.includes("reduce your message size")
+  );
+}
+
+/**
+ * RONDE 119 — "this provider had no capacity for the request" versus "this provider answered and
+ * the answer was no good".
+ *
+ * The production line that started this round:
+ *
+ *   LLM invoke failed (groq, model=openai/gpt-oss-20b): 429 … tokens per day (TPD):
+ *   Limit 200000, Used 199683, Requested 3630.
+ *
+ * The vision gate booked that as a FAILED judgement. It is not one: no model looked at the frame.
+ * A render whose model is broken and a render whose account is out of tokens need opposite work,
+ * and RONDE 105/115 built the counters to keep them apart — this is the predicate that lets the
+ * chain say which of the two it hit.
+ *
+ * Deliberately narrow. A 400, a 500, a timeout, a truncated body and a malformed answer all stay
+ * genuine failures: the provider was reachable and something else went wrong, and calling that
+ * "unavailable" would hide a broken prompt behind a quota story.
+ */
+export function isProviderCapacityFailure(status: number, body: string): boolean {
+  if (isRateLimitError(status)) return true; // 429 — TPD, TPM and RPM all land here
+  if (isOpenAiQuotaError(status, body)) return true; // 402 insufficient_quota / billing
+  if (isCapacityTooLargeError(status, body)) return true; // 413 — request over the tier's TPM
+  // A model the account cannot reach is the same fact as no capacity: nothing judged anything.
+  if (status === 404) return true;
+  /**
+   * RONDE 120 — 403, from the same worker log:
+   *
+   *   [LLM] Gemini failed: Gemini API error 403: { code: 403,
+   *     message: "Your project has been denied access. Please contact support.",
+   *     status: "PERMISSION_DENIED" }
+   *
+   * The provider refused to serve the request. Whatever the cause — a blocked project, a key
+   * without rights, a region restriction — no model looked at anything, which is exactly the
+   * condition this predicate exists to name.
+   */
+  if (status === 403) return true;
+  return false;
+}
+
+/** Exported for RONDE 116's regression test: this is the predicate the provider chain consults. */
+export function shouldFallbackToNextProvider(status: number, body: string): boolean {
   if (isRateLimitError(status)) return true;
   if (isOpenAiQuotaError(status, body)) return true;
   if (status === 404) return true; // model not found → try next provider
+  /**
+   * RONDE 120: a refused request must move on rather than end the call.
+   *
+   * 403 was in none of these buckets, so an OpenAI-compatible provider answering PERMISSION_DENIED
+   * stopped the chain dead at `throw` with the other providers untouched — the same shape of bug
+   * RONDE 116 found for 413. Gemini escaped it only because it is called from a different function
+   * that continues on any error.
+   */
+  if (status === 403) return true;
+  /**
+   * RONDE 116: 413 was in none of the buckets above, so it fell past this check to `throw
+   * lastError` — ending the whole call at the first provider while a provider that could serve
+   * the request sat unused in the chain. Confirmed in production against Groq's 8000 TPM tier.
+   */
+  if (isCapacityTooLargeError(status, body)) return true;
   return status >= 500 && status < 600;
+}
+
+/**
+ * RONDE 173 — sleep on a rate limit only when there is nobody else to ask.
+ *
+ * Render 555, between 10:37:34 and 10:42:18:
+ *
+ *     26 × [LLM] groq rate limit (attempt N/4) — retry in Ns      (145 seconds of sleep)
+ *      9 × [LLM] Succeeded via groq (after N rate-limit retries)
+ *      1 × [LLM] groq failed (429) — falling back to openai
+ *      1 × [LLM] Succeeded via openai after groq failure
+ *
+ * Those last two lines are the point: OpenAI was in the chain, healthy, and demonstrably able to
+ * serve these calls. `shouldFallbackToNextProvider` has returned true for a rate limit since it was
+ * written — the fallback simply sat BELOW the retry branch, so a 429 slept instead of moving on, on
+ * a render that then refused its research pass for want of budget and finished with three of
+ * nineteen beats holding an approved picture.
+ *
+ * RONDE 129's classification already says this: `isRetryableFailure("RATE_LIMITED")` is false. The
+ * sleep here was the one place that disagreed. It is kept for the single case where R129's rule
+ * would strand a render rather than speed it up — a chain with no next provider, where waiting is
+ * the only alternative to failing outright.
+ *
+ * Nothing about the request changes. The next provider is the same chain every other failure class
+ * already falls through to (500s, 404s, 403s, 413s), carrying the same prompt.
+ *
+ * Extracted rather than inlined so the decision can be tested as itself: the Groq and OpenAI
+ * endpoints are hardcoded, so a two-provider chain cannot be driven against a local stub, and a
+ * test that reimplemented this condition would pass no matter what the call site did.
+ */
+export function rateLimitSleepSeconds(opts: {
+  status: number;
+  attempt: number;
+  retryAfterSec: number | null;
+  skipProviderRetries: boolean;
+  nextProviderAvailable: boolean;
+}): number | null {
+  if (!isRateLimitError(opts.status)) return null;
+  if (opts.skipProviderRetries) return null;
+  if (opts.nextProviderAvailable) return null;
+  if (opts.attempt >= 3) return null;
+  if (opts.retryAfterSec == null || opts.retryAfterSec > 120) return null;
+  return Math.min(90, opts.retryAfterSec);
 }
 
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
   const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown() && !geminiModelUnavailable;
   const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
-  const openAiAvailable = Boolean(openAiKeyFromEnv()) && !openAiQuotaExhausted;
+  const openAiAvailable = Boolean(openAiKeyFromEnv()) && !isOpenAiInCooldown();
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
@@ -438,9 +681,100 @@ function providersToTry(primary: LlmProvider): LlmProvider[] {
   return out;
 }
 
+/**
+ * RONDE 115 — the marker that separates "no provider was ever contacted" from "a provider failed".
+ *
+ * invokeLLM can refuse before it opens a socket: no key configured anywhere, every provider in
+ * cooldown or quota-exhausted, or the daily spend budget already spent. Those are the same
+ * OUTCOME as a provider error for the caller — no answer — but they are a different FACT, and a
+ * caller that counts them together reports a model outage where there was none.
+ *
+ * The knowledge lives here because this is the module that produces these throws. A caller
+ * matching on message substrings would rot the moment one of them is reworded.
+ */
+export class LlmUnavailableError extends Error {
+  readonly preflight = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmUnavailableError";
+  }
+}
+
+/** True when the call never reached a provider, so no attempt was actually made. */
+export function isLlmPreflightRefusal(err: unknown): boolean {
+  return err instanceof LlmUnavailableError || (err as { preflight?: boolean })?.preflight === true;
+}
+
+/**
+ * RONDE 119 — every provider in the chain was out of capacity.
+ *
+ * A separate class from LlmUnavailableError on purpose. That one means "nothing was sent"; this
+ * one means "a provider was contacted and told us it has nothing to give" — a 429 on the day's
+ * tokens, a 413 over the tier's per-minute ceiling, an exhausted OpenAI quota. The OUTCOME is the
+ * same (no answer) and both belong on the never-judged side of the counters, but the two are
+ * different facts and RONDE 115's preflight predicate must keep meaning exactly what it meant.
+ *
+ * It carries the per-provider reasons so a log line can name all of them at once instead of the
+ * one that happened to be last.
+ */
+export class LlmProviderUnavailableError extends Error {
+  readonly providerUnavailable = true as const;
+  constructor(
+    message: string,
+    readonly providers: ReadonlyArray<{ provider: LlmProvider; status: number; detail: string }> = []
+  ) {
+    super(message);
+    this.name = "LlmProviderUnavailableError";
+  }
+}
+
+/**
+ * True when no answer came back because no provider had capacity — including the pre-flight case,
+ * where the chain was empty before a socket was opened.
+ *
+ * This is the predicate a caller that counts judgements should use: it is exactly the set of
+ * outcomes that must NOT be recorded as a failed model judgement.
+ */
+export function isLlmProviderUnavailable(err: unknown): boolean {
+  if (isLlmPreflightRefusal(err)) return true;
+  return (
+    err instanceof LlmProviderUnavailableError ||
+    (err as { providerUnavailable?: boolean })?.providerUnavailable === true
+  );
+}
+
+/**
+ * The provider's own HTTP answer, kept with the error.
+ *
+ * Gemini speaks a different API and is called from a different function, so its failures used to
+ * arrive at the chain as a bare Error whose only evidence was a message string. Classifying by
+ * substring would rot the first time a message is reworded; these fields are the response itself.
+ */
+type ProviderHttpError = Error & { llmProvider: LlmProvider; llmStatus: number; llmBody: string };
+
+function providerHttpError(
+  provider: LlmProvider,
+  status: number,
+  body: string,
+  message: string
+): ProviderHttpError {
+  const err = new Error(message) as ProviderHttpError;
+  err.llmProvider = provider;
+  err.llmStatus = status;
+  err.llmBody = body;
+  return err;
+}
+
+/** Was this thrown error a provider saying it had no capacity? */
+function isCapacityError(err: unknown): boolean {
+  const e = err as Partial<ProviderHttpError>;
+  if (typeof e?.llmStatus !== "number") return false;
+  return isProviderCapacityFailure(e.llmStatus, e.llmBody ?? "");
+}
+
 const assertApiKey = () => {
   if (!ENV.forgeApiKey && !geminiKeyFromEnv() && !groqKeyFromEnv() && !openAiKeyFromEnv()) {
-    throw new Error(
+    throw new LlmUnavailableError(
       "LLM API key is not configured. Set GEMINI_API_KEY (free, Google AI Studio) or GROQ_API_KEY " +
       "(free) on Railway, or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
     );
@@ -476,13 +810,79 @@ export function isGeminiInCooldown(): boolean {
 // the same render (and every later render in the same worker process) re-discovers the identical
 // 404 before falling back, each one wasting a full request/response round trip first. Confirmed in
 // production: 16 identical 404s across one render's log. Same permanent-until-process-restart
-// pattern already used for openAiQuotaExhausted below.
+// pattern already used for the OpenAI cool-off below.
 let geminiModelUnavailable = false;
 export function isGeminiModelUnavailable(): boolean {
   return geminiModelUnavailable;
 }
 function isGeminiModelNotFoundError(status: number, body: string): boolean {
   return status === 404 && body.toUpperCase().includes("NOT_FOUND");
+}
+
+/**
+ * RONDE 120 — Gemini's DAY is gone, not its minute.
+ *
+ * Verbatim from the worker log, the answer that ended render 543:
+ *
+ *   429 RESOURCE_EXHAUSTED — "Quota exceeded for metric:
+ *   generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20,
+ *   model: gemini-3.6-flash. Please retry in 29.141733906s."
+ *   quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: "20"
+ *
+ * Twenty requests per DAY, and the body's own advice is to retry in 29 seconds. Every 429 got the
+ * same 60-second cool-off, so a spent day was re-discovered a minute later, and a minute after
+ * that, for the rest of the day — with two 4s/8s in-call retries burning twelve seconds of wall
+ * clock each time before the chain even moved on.
+ *
+ * This is RONDE 117's Groq arithmetic applied to the provider it was not applied to. The
+ * distinction is the quotaId, not the status: a per-minute Gemini limit still gets its minute.
+ */
+function isGeminiDailyQuotaError(body: string): boolean {
+  const lower = body.toLowerCase();
+  return (
+    lower.includes("perday") ||
+    lower.includes("per day") ||
+    lower.includes("free_tier_requests") ||
+    lower.includes("requestsperdayperprojectpermodel")
+  );
+}
+
+/** How long Gemini is left alone once its DAILY request quota is gone. */
+const GEMINI_DAILY_COOLDOWN_MS = 60 * 60 * 1000;
+/** Cool-off for a Gemini burst (per-minute) limit — unchanged from before RONDE 120. */
+const GEMINI_BURST_COOLDOWN_MS = 60 * 1000;
+/**
+ * Cool-off for a refused project (403 PERMISSION_DENIED).
+ *
+ * Deliberately minutes, not an hour: the same worker log shows Gemini answering 403 twice and then
+ * serving real quota errors seconds later, so the denial was not permanent. Long enough to stop
+ * every call re-discovering it, short enough that a transient refusal costs one render, not a day.
+ */
+const GEMINI_DENIED_COOLDOWN_MS = 5 * 60 * 1000;
+
+/** Exported for RONDE 120's regression test: the arithmetic that treated a day as a minute. */
+export function markGeminiCooldown(status: number, body: string): void {
+  const daily = status === 429 && isGeminiDailyQuotaError(body);
+  const denied = status === 403;
+  if (status !== 429 && !denied) return;
+  const hintMs = Math.max(0, (parseRetryAfterSeconds(body) ?? 0) * 1000);
+  const cooldownMs = daily
+    ? Math.max(hintMs, GEMINI_DAILY_COOLDOWN_MS)
+    : denied
+      ? GEMINI_DENIED_COOLDOWN_MS
+      : Math.max(hintMs, GEMINI_BURST_COOLDOWN_MS);
+  geminiCooldownUntilMs = Math.max(geminiCooldownUntilMs, Date.now() + cooldownMs);
+  if (daily) {
+    console.warn(
+      `[LLM] Gemini daily request quota spent — standing down for ` +
+        `${Math.round(cooldownMs / 60_000)}min (Gemini's own hint was ${Math.round(hintMs / 1000)}s)`
+    );
+  } else if (denied) {
+    console.warn(
+      `[LLM] Gemini refused the request (403 PERMISSION_DENIED) — standing down for ` +
+        `${Math.round(cooldownMs / 60_000)}min instead of retrying it on every call`
+    );
+  }
 }
 
 /** Call Google's Generative Language API — different format from OpenAI-compatible APIs.
@@ -568,22 +968,29 @@ async function invokeGemini(
     // repeat the same wasted round trip.
     if (isGeminiModelNotFoundError(response.status, lastErrorText)) {
       geminiModelUnavailable = true;
-      throw new Error(`Gemini API error ${response.status}: ${lastErrorText}`);
+      throw providerHttpError("gemini", response.status, lastErrorText,
+        `Gemini API error ${response.status}: ${lastErrorText}`);
     }
     // Free-tier RPM (429/RESOURCE_EXHAUSTED) is a short-lived burst limit, not exhaustion of the
     // daily quota — worth one or two short retries before giving up on this call entirely.
-    if (response.status === 429 && attempt < 2) {
+    //
+    // RONDE 120: unless the DAY is what ran out. Those two retries cost twelve seconds of wall
+    // clock and cannot succeed — the quota resets tomorrow, not in eight seconds — so a spent day
+    // moves on to the next provider immediately.
+    if (response.status === 429 && attempt < 2 && !isGeminiDailyQuotaError(lastErrorText)) {
       const waitSec = 4 * (attempt + 1);
       console.warn(`[LLM] Gemini rate limit (attempt ${attempt + 1}/3) — retry in ${waitSec}s`);
       await sleep(waitSec * 1000);
       continue;
     }
-    if (response.status === 429) {
-      // Retries exhausted this call — cool down briefly so the next several calls in this
-      // render skip straight to the next provider instead of each re-discovering the same limit.
-      geminiCooldownUntilMs = Date.now() + 60_000;
-    }
-    throw new Error(`Gemini API error ${response.status}: ${lastErrorText}`);
+    // Cool down so the next several calls in this render skip straight to the next provider
+    // instead of each re-discovering the same limit. RONDE 120: how long depends on WHICH limit —
+    // an hour for a spent day, a minute for a burst, five minutes for a refused project.
+    markGeminiCooldown(response.status, lastErrorText);
+    // RONDE 119: the status and body travel with the error, so the chain can tell "out of quota"
+    // from "answered badly" without reading the sentence.
+    throw providerHttpError("gemini", response.status, lastErrorText,
+      `Gemini API error ${response.status}: ${lastErrorText}`);
   }
   throw new Error(`Gemini API error: ${lastErrorText}`);
 }
@@ -637,7 +1044,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   assertApiKey();
   const { isLlmBudgetExceeded, llmDailyBudgetUsd } = await import("./llmBudget");
   if (await isLlmBudgetExceeded()) {
-    throw new Error(
+    // Pre-flight: nothing is sent, so a caller must not record this as a provider failure.
+    throw new LlmUnavailableError(
       `LLM daily spend budget ($${llmDailyBudgetUsd()}) reached — refusing further calls until the ` +
       `UTC day rolls over. Override with LLM_DAILY_BUDGET_USD, or set LLM_BUDGET_ENFORCE=false to disable.`
     );
@@ -665,12 +1073,45 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     // All providers blocked (cooldown / quota). A cooldown is a soft rate-limit guard, not a
     // hard failure — retry ignoring it rather than give up entirely.
     const groqKey = groqKeyFromEnv();
-    if (!hasVision && groqKey) {
+    /**
+     * RONDE 117 — ignoring a cooldown is a gamble, and a spent DAILY budget is the one case where
+     * it cannot pay off.
+     *
+     * A per-minute limit clears by itself, so one more attempt may well succeed and is worth the
+     * round trip. A day's tokens do not come back within the render. Worse, the reset below sets
+     * groqCooldownUntilMs to 0 — so the cooldown that was protecting every later call is erased,
+     * and each one repeats the whole discovery (primary fails, fallback fails, Groq fails) for
+     * the rest of the day.
+     */
+    if (!hasVision && groqKey && !isGroqDailyExhausted()) {
       console.warn("[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown.");
       groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["groq"];
+    } else if (groqKey && isGroqDailyExhausted()) {
+      // Say what is actually wrong. "API key is not configured" sent the last investigation to
+      // the wrong place, and the key is plainly set.
+      throw new LlmUnavailableError(
+        "Groq's daily token budget is spent and no other provider is available. Set " +
+        "GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY (OpenAI) so calls can fall " +
+        "through, or wait for Groq's daily quota to reset."
+      );
+    } else if (hasVision && groqKey) {
+      /**
+       * RONDE 119 — say what is actually missing.
+       *
+       * Groq is removed from every vision chain a few lines above (its vision models 404), so a
+       * vision call with only a Groq key configured arrives here with the key plainly set and got
+       * told "LLM API key is not configured". That is the same wrong signpost RONDE 117 removed
+       * from the daily-quota branch, on the route the picture editor actually uses.
+       */
+      throw new LlmUnavailableError(
+        "No vision-capable provider is available: Groq is excluded from image calls and no other " +
+        "provider is usable right now. Set GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY " +
+        "(OpenAI) so image judgements can be made."
+      );
     } else {
-      throw new Error(
+      // Every provider is keyless, cooled down or quota-exhausted — again, nothing is sent.
+      throw new LlmUnavailableError(
         "LLM API key is not configured. Set GROQ_API_KEY or GEMINI_API_KEY on Railway (free), " +
         "or LLM_API_KEY / BUILT_IN_FORGE_API_KEY"
       );
@@ -678,6 +1119,56 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   let lastError: Error | null = null;
+  /**
+   * RONDE 119 — why each provider dropped out, so the final throw can say which kind of failure
+   * this was rather than only what the last one said.
+   */
+  const capacityBlocked: Array<{ provider: LlmProvider; status: number; detail: string }> = [];
+  /** True once a provider fails for a reason that is NOT lack of capacity. */
+  let sawRealFailure = false;
+  const noteCapacityBlock = (provider: LlmProvider, status: number, body: string) => {
+    capacityBlocked.push({ provider, status, detail: body.slice(0, 160) });
+  };
+
+  /**
+   * RONDE 119 — the throw that told the caller the wrong thing.
+   *
+   * Both exits used to hand back the raw `lastError`: a plain Error reading
+   *
+   *   LLM invoke failed (groq, model=openai/gpt-oss-20b): 429 … tokens per day (TPD) …
+   *
+   * A caller cannot tell that apart from "the model answered rubbish", so the vision gate counted
+   * a spent Groq day as a failed picture judgement — forty-four times over, in a render where no
+   * model had looked at anything at all.
+   *
+   * When EVERY provider that dropped out did so for lack of capacity, the answer is that the
+   * chain was unavailable, and it is thrown as such with all the reasons attached. If any provider
+   * failed for another reason, that failure is the honest headline and is thrown unchanged, so a
+   * genuine outage can never be dressed up as a quota problem.
+   */
+  function finalError(): Error {
+    if (capacityBlocked.length > 0 && !sawRealFailure) {
+      const summary = capacityBlocked
+        .map((b) => `${b.provider} ${b.status}`)
+        .join(", ");
+      const err = new LlmProviderUnavailableError(
+        `No LLM provider had capacity for this request (${summary}). ` +
+          `Last response: ${lastError?.message ?? "unknown"}`,
+        capacityBlocked
+      );
+      console.warn(`[LLM] chain exhausted — every provider out of capacity: ${summary}`);
+      return err;
+    }
+    return (
+      lastError ??
+      new Error(
+        groqKeyFromEnv() && geminiKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown() && isGeminiInCooldown()
+          ? "LLM invoke failed: Gemini and Groq daily quotas exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
+          : "LLM invoke failed: no provider available"
+      )
+    );
+  }
+
   const maxTokens = params.maxTokens ?? params.max_tokens;
 
   for (let i = 0; i < chain.length; i++) {
@@ -696,10 +1187,17 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
           const { recordLlmUsage } = await import("./llmBudget");
           recordLlmUsage(model, result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
         }
-        return result;
+        return { ...result, provider: "gemini" };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         console.warn(`[LLM] Gemini failed:`, lastError.message);
+        // RONDE 119: a 429/404 from Gemini is the same class of fact as Groq's spent day — the
+        // model never judged anything. Anything else is a real failure and stays one.
+        if (isCapacityError(err)) {
+          noteCapacityBlock("gemini", (err as { llmStatus: number }).llmStatus, (err as { llmBody?: string }).llmBody ?? "");
+        } else {
+          sawRealFailure = true;
+        }
         continue;
       }
     }
@@ -769,6 +1267,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         console.warn(`[LLM] ${provider} network/timeout failure:`, lastError.message);
+        // A network fault is not a capacity fact — the provider never got to say anything about
+        // its quota, so this stays a real failure.
+        sawRealFailure = true;
         break;
       }
 
@@ -789,19 +1290,36 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           console.warn(`[LLM] ${provider} returned malformed JSON:`, lastError.message);
+          // The provider answered; the answer was unusable. That is a real failure.
+          sawRealFailure = true;
           break;
         }
         if (result.usage) {
           const { recordLlmUsage } = await import("./llmBudget");
           recordLlmUsage(String(payload.model), result.usage.prompt_tokens, result.usage.completion_tokens, getActiveUserId() ?? null);
         }
-        return result;
+        return { ...result, provider };
       }
 
       const errorText = await response.text();
-      lastError = new Error(
+      lastError = providerHttpError(
+        provider,
+        response.status,
+        errorText,
         `LLM invoke failed (${provider}, model=${payload.model}): ${response.status} ${response.statusText} – ${errorText}`
       );
+      /**
+       * RONDE 119 — record WHY this provider is dropping out, right where the answer is in hand.
+       *
+       * `isProviderCapacityFailure` is deliberately narrow: a 429 (TPD/TPM/RPM), a 413 over the
+       * tier's ceiling, an exhausted OpenAI quota, or a model this account cannot reach. Those are
+       * "no capacity". A 400, a 500 or a malformed body are not, and stay failures.
+       */
+      if (isProviderCapacityFailure(response.status, errorText)) {
+        noteCapacityBlock(provider, response.status, errorText);
+      } else {
+        sawRealFailure = true;
+      }
 
       // Groq 404: configured vision model no longer available — retry once with fallback model.
       if (provider === "groq" && response.status === 404 && hasVision && payload.model !== GROQ_VISION_FALLBACK_MODEL) {
@@ -811,25 +1329,44 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       }
 
       if (provider === "groq" && isRateLimitError(response.status)) {
-        markGroqCooldown(errorText);
+        markGroqCooldown(response.status, errorText);
+      }
+      /**
+       * RONDE 116 — stop re-discovering the same ceiling.
+       *
+       * A TPM rejection means Groq cannot take a request of this size right now. Without a
+       * cooldown every remaining large call in the render pays a full round trip to learn the
+       * same thing — the exact pattern already documented and fixed for Gemini's 404s ("16
+       * identical 404s across one render's log"). Short, because a TPM window is a minute.
+       */
+      if (provider === "groq" && isCapacityTooLargeError(response.status, errorText)) {
+        const waitSec = parseRetryAfterSeconds(errorText) ?? 60;
+        groqCooldownUntilMs = Math.max(groqCooldownUntilMs, Date.now() + waitSec * 1000);
+        console.warn(
+          `[LLM] Groq TPM ceiling hit (${payload.model}) — request too large for this tier; ` +
+            `falling through to the next provider and cooling Groq down for ${waitSec}s`
+        );
       }
       if (provider === "openai") {
-        markOpenAiQuotaExhausted(errorText);
+        markOpenAiCooldown(response.status, errorText);
       }
 
       const retryAfterSec = parseRetryAfterSeconds(errorText);
       const skipProviderRetries =
-        provider === "groq" &&
-        (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120));
+        // RONDE 116: an oversize payload is not a wait-and-retry condition — the same bytes will
+        // be exactly as oversize in ninety seconds. Move on rather than sleeping for nothing.
+        isCapacityTooLargeError(response.status, errorText) ||
+        (provider === "groq" &&
+          (isGroqDailyQuotaError(errorText) || (retryAfterSec != null && retryAfterSec > 120)));
 
-      if (
-        isRateLimitError(response.status) &&
-        !skipProviderRetries &&
-        attempt < 3 &&
-        retryAfterSec != null &&
-        retryAfterSec <= 120
-      ) {
-        const waitSec = Math.min(90, retryAfterSec);
+      const waitSec = rateLimitSleepSeconds({
+        status: response.status,
+        attempt,
+        retryAfterSec,
+        skipProviderRetries,
+        nextProviderAvailable: i + 1 < chain.length,
+      });
+      if (waitSec != null) {
         console.warn(
           `[LLM] ${provider} rate limit (attempt ${attempt + 1}/4) — retry in ${waitSec}s`
         );
@@ -846,13 +1383,9 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         break;
       }
 
-      throw lastError;
+      throw finalError();
     }
   }
 
-  throw lastError ?? new Error(
-    groqKeyFromEnv() && geminiKeyFromEnv() && !openAiKeyFromEnv() && isGroqInCooldown() && isGeminiInCooldown()
-      ? "LLM invoke failed: Gemini and Groq daily quotas exhausted — set LLM_API_KEY (OpenAI sk-...) for fallback"
-      : "LLM invoke failed: no provider available"
-  );
+  throw finalError();
 }

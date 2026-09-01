@@ -18,6 +18,12 @@ import {
   type BeatVisionQueryContext,
 } from "./localClipVision";
 import type { BeatSemanticProfile } from "./semanticVisualMatching";
+import {
+  cachedClipEmbedding,
+  persistClipEmbedding,
+  prefetchClipEmbeddings,
+  recordClipIndexFailure,
+} from "./archiveClipEmbeddingStore";
 
 export type StoredClipEmbedding = {
   assetId: number;
@@ -26,6 +32,8 @@ export type StoredClipEmbedding = {
   frameEmbeddings?: number[][];
   updatedAt: string;
 };
+
+const CLIP_INDEX_MODEL = "Xenova/clip-vit-base-patch32";
 
 function indexDir(): string {
   const dir = path.join(LOCAL_UPLOADS_DIR, "archive-clip-embeddings");
@@ -39,17 +47,36 @@ function indexPath(assetId: number): string {
 
 export { clipEmbeddingIndexEnabled };
 
+/**
+ * Synchronous read: the durable store's in-process cache first, then the legacy file store.
+ *
+ * The cache is filled by prefetchClipEmbeddings() — see archiveClipEmbeddingStore.ts for why
+ * the DB is the store of record and the files under LOCAL_UPLOADS_DIR are only a local cache.
+ * A file hit is migrated into the DB best-effort so a pre-RONDE-99 container's index is not
+ * thrown away on the deploy that introduces the table.
+ */
 export function loadStoredClipEmbedding(assetId: number): StoredClipEmbedding | null {
   if (!clipEmbeddingIndexEnabled()) return null;
+
+  const cached = cachedClipEmbedding(assetId);
+  if (cached) return cached;
+
   const p = indexPath(assetId);
   if (!fs.existsSync(p)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as StoredClipEmbedding;
     if (!Array.isArray(parsed.embedding) || parsed.embedding.length === 0) return null;
+    void persistClipEmbedding(parsed).catch(() => undefined);
     return parsed;
   } catch {
     return null;
   }
+}
+
+/** Warm the synchronous read path for a known set of assets in one query. */
+export async function prefetchArchiveClipEmbeddings(assetIds: number[]): Promise<number> {
+  if (!clipEmbeddingIndexEnabled()) return 0;
+  return prefetchClipEmbeddings(assetIds);
 }
 
 export function loadStoredFrameEmbeddings(assetId: number): number[][] {
@@ -77,19 +104,35 @@ export async function indexArchiveClipEmbedding(
       workDir,
       `a${assetId}`
     );
-    if (frameEmbeddings.length === 0) return false;
+    if (frameEmbeddings.length === 0) {
+      // No extractable frame is a property of the asset, not of this attempt — record it so the
+      // next process does not download and re-probe the same unreadable file.
+      await recordClipIndexFailure(assetId, "no_frame_embeddings");
+      return false;
+    }
 
     const embedding = meanEmbedding(frameEmbeddings);
-    if (!embedding) return false;
+    if (!embedding) {
+      await recordClipIndexFailure(assetId, "mean_embedding_failed");
+      return false;
+    }
 
     const record: StoredClipEmbedding = {
       assetId,
-      model: "Xenova/clip-vit-base-patch32",
+      model: CLIP_INDEX_MODEL,
       embedding,
       frameEmbeddings,
       updatedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(indexPath(assetId), JSON.stringify(record), "utf8");
+    // DB first — it is the store of record and the only copy that survives a redeploy. The file
+    // stays as a local read cache (and as the whole store when no DATABASE_URL is configured),
+    // and archiveIntelligencePipeline's near-duplicate scan still reads that directory.
+    await persistClipEmbedding(record);
+    try {
+      fs.writeFileSync(indexPath(assetId), JSON.stringify(record), "utf8");
+    } catch {
+      /* best-effort local cache */
+    }
     console.log(`[ClipEmbedding] Indexed asset ${assetId} (${frameEmbeddings.length} frames)`);
     const { scheduleAuditForAsset } = await import("./clipBackgroundAuditor");
     scheduleAuditForAsset(assetId);
@@ -98,6 +141,7 @@ export async function indexArchiveClipEmbedding(
     if (!opts?.quiet) {
       console.warn(`[ClipEmbedding] asset ${assetId}:`, (err as Error).message?.slice(0, 80));
     }
+    await recordClipIndexFailure(assetId, (err as Error).message?.slice(0, 200) ?? "index_error");
     return false;
   } finally {
     try {
@@ -193,6 +237,13 @@ export async function preRankCuratedCandidatesByClipEmbedding<
   const head = candidates.slice(0, maxPool);
   const tail = candidates.slice(maxPool);
 
+  // The scoring below is synchronous (scoreAssetClipPreRank → loadStoredFrameEmbeddings), and
+  // the durable store can only be read from the in-process cache. This is the point where the
+  // candidate set is known and bounded, so one query warms every asset the beat will look at —
+  // including the ones the trim picker (clipInClipOffset) and the vision gate read later from
+  // their own synchronous call sites.
+  await prefetchArchiveClipEmbeddings(head.map((pick) => pick.asset.id));
+
   const scored = head.map((pick) => ({
     pick,
     pr: scoreAssetClipPreRank(pick.asset.id, queryEmb, minScore10),
@@ -239,17 +290,4 @@ export function beatVisionContextForSearch(
   semanticProfile?: BeatSemanticProfile
 ): BeatVisionQueryContext {
   return beatVisionContextFromProfile(beat, videoTitle, semanticProfile);
-}
-
-export async function scoreAssetClipSimilarity(
-  assetId: number,
-  queryEmbedding: number[]
-): Promise<number> {
-  const frames = loadStoredFrameEmbeddings(assetId);
-  if (!frames.length || queryEmbedding.length === 0) return 0;
-  let best = 0;
-  for (const emb of frames) {
-    best = Math.max(best, scoreEmbeddingSimilarity(queryEmbedding, emb));
-  }
-  return Math.round(best * 100);
 }

@@ -44,7 +44,11 @@ function minimalCtx(overrides: Partial<AssetDirectorContext> = {}): AssetDirecto
 
 function extractFunctionSource(fnName: string): string {
   const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-  const marker = `function ${fnName}(`;
+  // RONDE 90: several beat entry points are now thin wrappers that put the beat's proven search
+  // context in scope and delegate to `<name>Inner`. The body these tests assert about is the
+  // implementation, not the four-line wrapper, so resolve to Inner wherever it exists.
+  const resolved = src.includes(`function ${fnName}Inner(`) ? `${fnName}Inner` : fnName;
+  const marker = `function ${resolved}(`;
   const startIdx = src.indexOf(marker);
   if (startIdx === -1) throw new Error(`function ${fnName} not found in videoPipeline.ts`);
   // Find the end of the parameter list by paren-depth (not just the first "{"), since a

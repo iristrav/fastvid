@@ -4,6 +4,8 @@
 import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
+import { stitchSourceFloorSec } from "./coverageFillPlan";
+import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
 import {
   extractVisualSearchTags,
   extractSceneSearchTags,
@@ -69,6 +71,7 @@ import {
   archiveStillKenBurnsVariant,
   resolveStillKenBurnsVariant,
   standardArchiveKenBurnsZoomEnd,
+  kenBurnsCenterXExpr,
 } from "./documentaryStyle";
 import {
   resolveStillImageFilterComplex,
@@ -112,9 +115,14 @@ import {
   inferBeatGeoRegion,
   vidrushStillPhotoScale,
   VIDRUSH_MIN_SOURCE_VIDEO_SEC,
-  VIDRUSH_MIN_STILL_WIDTH,
   type BeatGeoRegion,
 } from "./vidrushQuality";
+import {
+  formatBelowQualityBar,
+  formatTechnicalReject,
+  stillResolutionVerdict,
+  videoResolutionVerdict,
+} from "./technicalMediaGate";
 import {
   analyzeBeatSemantics,
   analyzeBeatSemanticsFallback,
@@ -265,6 +273,15 @@ export function isCuratedPreparedStillClip(filePath: string): boolean {
 export function isPipelineBlurFillStillClip(filePath: string): boolean {
   if (isCuratedPreparedStillClip(filePath)) return true;
   const base = path.basename(filePath);
+  /**
+   * RONDE 165 — `_still` is the marker every still now carries.
+   *
+   * The provider list below names the sources that had a filename rule; loc, nara, nasa,
+   * internet_archive and europeana never did, so their photographs were labelled as whatever came
+   * next. The download stamps `_still` for any image-derived clip, so the marker answers for all
+   * of them without a sixth provider pattern.
+   */
+  if (/_still\.mp4$/i.test(base)) return true;
   return /_wiki_|_openverse_|_serp_|_unsplash_|_p0_|_p2_/i.test(base) && /\.mp4$/i.test(base);
 }
 
@@ -1541,6 +1558,15 @@ export type CuratedClipStyleContext = StillStyleContext & {
   rawCache?: Map<number, string>;
   /** Lighter FFmpeg trim for 1-min fast path. */
   fastTrim?: boolean;
+  /**
+   * RONDE 111 — override the slot length the source floor is measured against.
+   *
+   * Defaults to the requested duration, which is the right answer almost everywhere. A caller
+   * that KNOWS the clip is going to be concatenated (the montage coverage backfill) can lower it
+   * explicitly, so several short on-topic clips can be stitched instead of the scene falling back
+   * to slowed frames. See stitchSourceFloorSec.
+   */
+  minSourceSec?: number;
 };
 
 /** Ken Burns motion — visible pan/zoom for full beat duration (avoids frozen stills). */
@@ -1552,6 +1578,24 @@ async function convertImageToKenBurns(
   beatIndex: number,
   styleContext?: CuratedClipStyleContext
 ): Promise<void> {
+  /**
+   * RONDE 128 — a photograph is a shot, not a slide.
+   *
+   * `duration` is whatever the beat asked for, and it had no ceiling: the measured render put a
+   * single archive still on screen for tens of seconds. Five seconds is a shot length; past that
+   * the pipeline has to find another picture, and the caller reports a coverage gap if it cannot.
+   *
+   * Capped HERE, at the one function that turns an image into a clip, rather than at each of its
+   * callers — a cap a caller has to remember to apply is a cap that eventually gets forgotten.
+   */
+  const cap = stillImageMaxSec();
+  if (duration > cap) {
+    console.log(
+      `[StillPlan] s${sceneIndex}b${beatIndex}: still capped at ${cap.toFixed(1)}s ` +
+        `(asked ${duration.toFixed(1)}s) — the rest of this beat needs another picture`
+    );
+    duration = cap;
+  }
   const styled = resolveStillImageFilterComplex(duration, sceneIndex, beatIndex, styleContext);
   if (styled) {
     await exec(
@@ -1614,7 +1658,13 @@ async function convertImageToKenBurns(
         throw err;
       }
     }
-  } else {
+  } else if (stillKenBurnsEnabled()) {
+    /**
+     * The previous behaviour, kept behind ENABLE_STILL_KEN_BURNS so RONDE 128 is reversible in
+     * production without a redeploy. Off by default from that round on — see stillImagePolicy.ts
+     * for why a five-second cap makes the motion unnecessary rather than the motion making the
+     * length bearable.
+     */
     const fps = 25;
     const totalFrames = Math.max(50, Math.round(duration * fps));
     const zoomEnd =
@@ -1626,10 +1676,18 @@ async function convertImageToKenBurns(
     const padH = Math.round(VIDEO_HEIGHT * 1.12);
     const variant = resolveStillKenBurnsVariant(sceneIndex, beatIndex);
     const yExpr = "ih/2-(ih/zoom/2)";
-    const xExpr =
-      variant === "pan-left"
-        ? `iw/2-(iw/zoom/2)-on*${Math.max(1, Math.round(totalFrames * 0.04))}`
-        : "iw/2-(iw/zoom/2)";
+    /**
+     * RONDE 147 — the same quadratic overshoot as buildKenBurnsTail had, fixed the same way.
+     *
+     * `on * round(totalFrames * 0.04)` reaches `0.04 * totalFrames²` by the last frame: 500px on a
+     * 5-second still, against roughly 37px of room at this zoom. The frame slid to the edge of the
+     * picture and stayed there. kenBurnsCenterXExpr bounds the drift by what the zoom affords at
+     * each frame, so the image stays centred and whole.
+     */
+    const xExpr = kenBurnsCenterXExpr(
+      variant === "pan-left" ? "left" : null,
+      `min(on/${totalFrames},1)`
+    );
     const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
     await exec(
       `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
@@ -1639,6 +1697,62 @@ async function convertImageToKenBurns(
         `x='${xExpr}':y='${yExpr}':` +
         `d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
         `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an -pix_fmt yuv420p "${outPath}"`,
+      EXEC_TIMEOUT_ENCODE_MS
+    );
+  } else {
+    /**
+     * RONDE 128 — the whole picture, in the middle, at its own shape.
+     *
+     * What this replaces did three things to every archive photograph: scaled it PAST the frame
+     * (`force_original_aspect_ratio=increase` on a 1.12x canvas), cropped the overflow away, and
+     * then zoomed and panned across what was left. A documentary shows an archive photograph
+     * whole; it does not enlarge it and slide around inside it.
+     *
+     * `decrease` is the single word that turns cover into contain — the image scales until it
+     * fits and never past it — and the pad offsets centre what is left over. No crop, because
+     * after a contain scale there is nothing outside the frame to cut. No zoompan at all.
+     */
+    /**
+     * RONDE 152 — the whole picture, in the middle, and MOVING.
+     *
+     * RONDE 128 removed the crop and the zoom together, because the zoom of the day was the thing
+     * sliding around inside a cropped photograph. Removing the crop was right. Removing the motion
+     * with it left this branch — the one that actually runs, since ENABLE_STILL_KEN_BURNS is unset
+     * in production — emitting a literally frozen picture for up to five seconds.
+     *
+     * Video 550 measured what that costs once the coverage fill gets hold of one:
+     *
+     *     scene 1 montage:  loop=loop=3:size=124, setpts=2.0*PTS, trim=38.245
+     *                       → 4.96s of source, looped 4× and slowed 2×
+     *     stillness audit:  longest still 34.13s at 23.25s, imagesOver5Sec 3, passed NO
+     *
+     * Looping a motionless source produces a motionless montage. RONDE 130 replaced the frozen
+     * tail-pad with a loop precisely to avoid held frames, and that fix is sound — but it can only
+     * work if the footage it loops actually moves. This is the missing half.
+     *
+     * ── Why a zoom OUT ───────────────────────────────────────────────────────────────────────
+     *
+     * The photograph has to end whole, which is RONDE 128's rule and still right. A zoom that
+     * pushes IN finishes on a cropped picture; a zoom that eases OUT finishes on exactly the
+     * contained frame — the same last frame this branch produced before, arrived at through
+     * movement instead of stillness. The motion is applied AFTER the contain, so it works on the
+     * padded 1920×1080 composite: for any image narrower than 16:9 the early frames eat padding
+     * rather than picture.
+     *
+     * `kenBurnsCenterXExpr(null, …)` is RONDE 147/149's centred expression, so the frame cannot
+     * drift toward an edge at any zoom or duration — the defect that made the old zoom worth
+     * removing cannot come back through this door.
+     */
+    const preset = process.env.RAILWAY_ENVIRONMENT ? "ultrafast" : "veryfast";
+    const contain = containCenterFilter({ widthPx: VIDEO_WIDTH, heightPx: VIDEO_HEIGHT });
+    const stillFrames = Math.max(2, Math.round(duration * 25));
+    const drift = stillZoomOutExpr(stillFrames);
+    await exec(
+      `${ffmpegBin()} -y -loop 1 -i "${imgPath}" -t ${duration.toFixed(3)} ` +
+        `-vf "${contain},zoompan=z='${drift}':` +
+        `x='${kenBurnsCenterXExpr(null, "1")}':y='ih/2-(ih/zoom/2)':` +
+        `d=${stillFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=25,format=yuv420p" ` +
+        `-c:v libx264 ${ffmpegThreadFlag()} -preset ${preset} -crf 18 -an "${outPath}"`,
       EXEC_TIMEOUT_ENCODE_MS
     );
   }
@@ -1695,8 +1809,27 @@ async function trimVideoClip(
 ): Promise<void> {
   const sourceDur = await probeMediaDurationSec(inPath);
   const minDur = archiveVisualMinClipSec();
-  if (sourceDur > 0 && sourceDur < VIDRUSH_MIN_SOURCE_VIDEO_SEC) {
-    throw new Error(`source video too short (${sourceDur.toFixed(2)}s)`);
+  /**
+   * RONDE 111 — never demand more source than this slot is going to use.
+   *
+   * This was a flat 2.8s for every request. Render 536 refused 594 clips against it in one video,
+   * while thirteen of that render's eighteen scenes ended up too short for their own voice track
+   * and were padded with slowed frames. Some of those refusals were a 2.2-second clip turned away
+   * from a 1.5-second gap: a safeguard about whether a clip can carry a beat ON ITS OWN, applied
+   * to a slot where it would have been concatenated between two others.
+   *
+   * stitchSourceFloorSec keeps 2.8s wherever the slot is long enough to want it — so the ordinary
+   * beat path is untouched — and lowers it to the slot's own length, never below the point where
+   * a clip stops being an edit and becomes a flash frame.
+   */
+  const minSource = stitchSourceFloorSec(
+    styleContext?.minSourceSec ?? duration,
+    VIDRUSH_MIN_SOURCE_VIDEO_SEC
+  );
+  if (sourceDur > 0 && sourceDur < minSource) {
+    throw new Error(
+      `source video too short (${sourceDur.toFixed(2)}s < ${minSource.toFixed(2)}s for a ${duration.toFixed(2)}s slot)`
+    );
   }
   const take = sourceDur > 0 ? Math.max(minDur, Math.min(duration, sourceDur)) : Math.max(minDur, duration);
   let startSec = styleContext?.trimStartSec;
@@ -1751,8 +1884,10 @@ async function trimVideoClip(
   );
 
   const outDur = await probeMediaDurationSec(outPath);
-  if (outDur < VIDRUSH_MIN_SOURCE_VIDEO_SEC) {
-    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${VIDRUSH_MIN_SOURCE_VIDEO_SEC.toFixed(2)}s)`);
+  // RONDE 111: the same slot-relative floor as the source check above — a 1.5s result for a 1.5s
+  // gap is exactly right, and rejecting it sent the scene back to slowed frames instead.
+  if (outDur < minSource) {
+    throw new Error(`trimmed clip too short (${outDur.toFixed(2)}s < ${minSource.toFixed(2)}s)`);
   }
   if (outDur < take * 0.8) {
     // Short of the requested duration but still usable — accept it and let
@@ -1762,6 +1897,11 @@ async function trimVideoClip(
   }
 }
 
+/**
+ * Measures with THIS file's exec — semaphore-gated and cancellation-aware. The threshold it is
+ * compared against moved to ./technicalMediaGate in RONDE 133, so the external provider routes
+ * apply the same rule; the probe itself stays here on purpose (see that module's note).
+ */
 async function probeImageWidthPx(filePath: string): Promise<number> {
   try {
     const probe = await exec(
@@ -1772,6 +1912,28 @@ async function probeImageWidthPx(filePath: string): Promise<number> {
     return Number.isFinite(w) && w > 0 ? w : 0;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * RONDE 134 — the same measurement for archive video that the pool route now makes.
+ *
+ * One ffprobe, both dimensions, through this file's semaphore-gated exec. Returns nulls when it
+ * cannot tell, which the shared verdict treats as neutral.
+ */
+async function probeVideoDimensions(
+  filePath: string
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const probe = await exec(
+      `${ffprobeBin()} -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${filePath}"`,
+      EXEC_TIMEOUT_PROBE_MS
+    );
+    const [w, h] = String(probe.stdout).trim().split(",").map((n) => parseInt(n, 10));
+    if (!Number.isFinite(w) || !Number.isFinite(h) || !(w > 0) || !(h > 0)) return null;
+    return { width: w, height: h };
+  } catch {
+    return null;
   }
 }
 
@@ -1882,10 +2044,55 @@ export async function prepareCuratedArchiveClip(
     }
 
     if (asset.mediaType === "image") {
+      /**
+       * RONDE 133 — the same verdict function the external provider routes now call.
+       *
+       * The rule is unchanged (an unmeasurable width still passes, the threshold is still
+       * VIDRUSH_MIN_STILL_WIDTH); what changed is that it is no longer written out only here.
+       * The archive used to be the only route in the pipeline that looked at a still's pixel
+       * width at all.
+       */
       const width = await probeImageWidthPx(rawPath);
-      if (width > 0 && width < VIDRUSH_MIN_STILL_WIDTH) {
-        throw new Error(
-          `curated asset ${asset.id} still too low-res (${width}px < ${VIDRUSH_MIN_STILL_WIDTH}px)`
+      const verdict = stillResolutionVerdict(width);
+      if (!verdict.ok) {
+        throw new Error(`curated asset ${asset.id} still too low-res (${verdict.detail})`);
+      }
+    } else {
+      /**
+       * RONDE 134 — archive VIDEO is measured too, by the same rule as every external provider.
+       *
+       * The archive had a resolution check for stills and none at all for video, so an ingested
+       * clip of any size whatsoever went straight through to Vision and the montage. That is the
+       * same one-route-only asymmetry RONDE 133 removed for stills, in the other direction.
+       *
+       * The floor is deliberately the absolute one (144 lines), not the 480-line quality bar: an
+       * archive is precisely where a genuine 352×240 newsreel lives, and refusing that would throw
+       * away the material this pipeline exists to find. See technicalMediaGate.
+       */
+      const dims = await probeVideoDimensions(rawPath);
+      const verdict = videoResolutionVerdict(dims?.width, dims?.height);
+      if (!verdict.ok) {
+        console.warn(
+          formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: "archive",
+            assetId: String(asset.id),
+            contentKey: `archive:${asset.id}`,
+            mediaType: "video",
+            verdict,
+          })
+        );
+        throw new Error(`curated asset ${asset.id} video too low-res (${verdict.detail})`);
+      }
+      if (verdict.belowQualityBar && dims) {
+        console.log(
+          formatBelowQualityBar({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: "archive",
+            contentKey: `archive:${asset.id}`,
+            width: dims.width,
+            height: dims.height,
+          })
         );
       }
     }

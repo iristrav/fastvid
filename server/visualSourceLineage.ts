@@ -89,6 +89,158 @@ export type LineageStage = (typeof LINEAGE_STAGES)[number];
 export type LineageEventStatus = "OK" | "FAILED" | "REJECTED" | "REPLACED" | "REMOVED";
 
 /**
+ * RONDE 165 — the one vocabulary every terminal outcome is written in.
+ *
+ * Four rounds fixed VANISHED_WITHOUT_OUTCOME one route at a time (RONDE 95 built the rule, 159
+ * closed the compose filter, 162 closed validation and placeholders) and render 554 still reported
+ * seventeen. Each fix invented its own reason string at its own call site, so the next route to be
+ * added started silent again by default.
+ *
+ * These are the reasons, named once. `recordAssetOutcome` below is the only way to file one, so a
+ * route that ends an asset's life either uses a reason from this list or does not compile.
+ *
+ * Deliberately NOT a second audit system: this is a typed front door onto recordEventForPath, the
+ * ledger that already holds every asset's history and already computes the vanished warning.
+ */
+export type AssetOutcomeReason =
+  // ── Refused by a check ──────────────────────────────────────────────────────────────────────
+  /** The file could not be read at all. */
+  | "invalid_file"
+  /** Readable, but the montage cannot use this video stream. */
+  | "unusable_stream"
+  /** Nearly all black — a picture with nothing in it. */
+  | "mostly_black"
+  /** A placeholder card that failed its own validation. */
+  | "placeholder_rejected"
+  /** A placeholder card that was made and then not needed. */
+  | "placeholder_not_used"
+  /** Refused by the compose barrier. */
+  | "compose_gate"
+  /** The same content is already in this scene. */
+  | "duplicate_content"
+  /** VisionGate judged it and refused it. */
+  | "vision_rejected"
+  /** A curated archive asset refused before adoption. */
+  | "curated_rejected"
+  /** An extended clip the compose barrier turned away. */
+  | "extended_rejected"
+  /**
+   * An extension that was built and adopted, and then dropped before the final video.
+   *
+   * Distinct from `extended_rejected`: nothing refused this clip on content grounds, the montage
+   * simply did not use it. RONDE 167 §2 asks for the extend route's endings to be nameable, and
+   * "the barrier said no" and "it was never needed" are the two that exist.
+   *
+   * There is deliberately no `extended_download_failed`. An extension that fails to build produces
+   * no file and no record, so there is nothing to account for — inventing a reason for it would
+   * add exactly the kind of enum member nothing writes, which is the bug class this round is
+   * about. The test suite asserts no orphan record is created on that path.
+   */
+  | "extended_removed"
+  /** The fair-use transform this asset required did not produce a usable file. */
+  | "transform_failed"
+  // ── Ended by something else winning ─────────────────────────────────────────────────────────
+  /** Downloaded and judged, but another candidate won the beat. */
+  | "superseded_by_winner"
+  /**
+   * RONDE 168 — the beat's look budget ran out before anyone judged this candidate.
+   *
+   * Distinct from `not_chosen`, and the distinction is the whole finding: "we looked and preferred
+   * another" and "we never looked" are opposite facts, and video 555 shipped a picture on the
+   * second while its audit read like the first.
+   */
+  | "never_judged"
+  /**
+   * Judged, kept nothing against it, and the beat still went elsewhere.
+   *
+   * Deliberately distinct from `superseded_by_winner`: "another candidate was better" and "this
+   * beat found no winner at all" need opposite fixes, and a single reason covering both would
+   * hide which of the two a render is actually suffering from.
+   */
+  | "not_chosen"
+  /** Swapped out for a specific replacement. */
+  | "replaced_by_candidate"
+  /**
+   * RONDE 169 — the scene this clip was adopted for was re-sourced, and it was not carried over.
+   *
+   * Twelve places assign `sceneVisualResults[i]`, several of them rebuilding a scene's picture
+   * list from scratch after a coverage repair or a strict-voice refill. The clips of the previous
+   * list were ADOPTED and then simply stopped being referenced — no gate refused them, nothing
+   * replaced them one-for-one, and nothing said a word. Render 555 ended with eighteen assets in
+   * that state and every one of them carried provider=UNVERIFIED, which is the signature of the
+   * backfill, rescue and fallback routes that rebuild lists.
+   *
+   * Its own reason rather than `replaced_by_candidate`, because there is no single candidate that
+   * took its place: the whole scene was re-cut.
+   */
+  | "scene_resourced"
+  /** A derived clip took over from the source it was made from. */
+  | "superseded_by_derived";
+
+/** Which lineage status each reason files. Kept beside the reasons so the two cannot drift. */
+const OUTCOME_STATUS: Record<AssetOutcomeReason, LineageEventStatus> = {
+  invalid_file: "REJECTED",
+  unusable_stream: "REJECTED",
+  mostly_black: "REJECTED",
+  placeholder_rejected: "REJECTED",
+  placeholder_not_used: "REMOVED",
+  compose_gate: "REJECTED",
+  duplicate_content: "REMOVED",
+  vision_rejected: "REJECTED",
+  curated_rejected: "REJECTED",
+  extended_rejected: "REJECTED",
+  extended_removed: "REMOVED",
+  transform_failed: "REJECTED",
+  never_judged: "REMOVED",
+  not_chosen: "REMOVED",
+  superseded_by_winner: "REPLACED",
+  replaced_by_candidate: "REPLACED",
+  scene_resourced: "REPLACED",
+  superseded_by_derived: "REPLACED",
+};
+
+/**
+ * File the one terminal outcome an asset gets.
+ *
+ * `context` is free text for the beat or scene it happened in — never a second reason. A caller
+ * with no ledger is a no-op, exactly as every other audit call in this file is.
+ */
+export function recordAssetOutcome(
+  ledger: VisualSourceLedger | undefined,
+  clipPath: string,
+  reason: AssetOutcomeReason,
+  context?: string,
+  /**
+   * RONDE 167 — the second handle, and for a whole route it is the ONLY one that works.
+   *
+   * `resolve` tries the exact path, then the derivation chain, then the content key. The curated
+   * archive route never registers a path at all: `ensureCuratedAssetLineage` opens the record from
+   * the DB row under `archive-asset:<id>` and its content key, and `prepareCuratedArchiveClip`
+   * writes `scene_N_bM_curated_a<id>.mp4` without touching the ledger. So an outcome filed by path
+   * alone found nothing and wrote nothing — measured: zero events — which made RONDE 165's
+   * `superseded_by_winner` dead for every archive candidate, the exact case render 554's s2b3
+   * evidence was about.
+   *
+   * The record was always reachable. `clipContentKey` maps that filename straight back to
+   * `curated:asset:<id>`; nobody was passing it.
+   */
+  contentKey?: string
+): void {
+  const status = OUTCOME_STATUS[reason];
+  /**
+   * REJECTED is a STATUS, not a stage — see rejectionStageForGate. A refusal is filed as a
+   * REMOVED stage carrying the REJECTED status, which is exactly the shape the vanished rule
+   * looks for ("a stage whose status includes REJECTED"), and a hand-off is filed as REPLACED.
+   */
+  const stage: LineageStage = status === "REPLACED" ? "REPLACED" : "REMOVED";
+  ledger?.recordEventForPath(clipPath, stage, {
+    status,
+    reason: context ? `${reason}:${context}` : reason,
+    contentKey,
+  });
+}
+
+/**
  * The gate that produced a rejection, §E.
  *
  * Kept separate from `stage`: the stage says WHERE in the clip's life the refusal happened, the
@@ -165,6 +317,15 @@ export type VisualLineageRecord = {
   mediaType: VisualLineageMediaType;
   /** The query that produced this candidate. */
   query?: string;
+  /**
+   * RONDE 95 (§2) — the gate route that ran that query.
+   *
+   * `query` says WHAT was asked; this says WHICH call site asked it, in the same vocabulary the
+   * [SearchGate] report uses (fetchWikimediaVideos, scenePool:searchPexelsCandidates, …). Without
+   * it a clip can be traced back to its words but not to the code that chose them, which is the
+   * half of the question that matters when a provider starts returning the wrong thing.
+   */
+  searchRoute?: string;
   /** The retrieval/ranking score it won on. */
   candidateScore?: number;
   /** Vision-gate verdict, 0–10. */
@@ -174,6 +335,25 @@ export type VisualLineageRecord = {
   /** Curated-archive row id, when the clip came from the own archive. */
   archiveAssetId?: number;
   assetTitle?: string;
+  /**
+   * RONDE 151 §7 — WHERE INSIDE THE PROVIDER'S ORIGINAL the used portion begins and ends.
+   *
+   * ── The defect this closes ─────────────────────────────────────────────────────────────────
+   *
+   * `resolveTrimStartSec` picks a real, probed, clamped offset into the downloaded source, and
+   * `trimRemoteVideoToClip` then writes a NEW file starting there (`-ss clipStart -i src -t dur`).
+   * The adopted clip is therefore a different file from the provider's asset, and until now the
+   * offset between them was computed, used once, and thrown away.
+   *
+   * That is invisible while the trimmed file survives. It stops being invisible on a re-render:
+   * the rehydrator fetches the provider's FULL asset again, and with no recorded offset the
+   * renderer starts at second 0 — a different shot from the one the viewer approved, in a video
+   * that reports no error at all.
+   *
+   * Absent means "this render did not measure it", never "zero" (§7).
+   */
+  sourceInSec?: number;
+  sourceOutSec?: number;
   route: VisualLineageRoute;
   /** The adopt-audit source label. A ROUTE LABEL, never a provider. */
   sourceLabel?: string;
@@ -208,6 +388,8 @@ export type CreateLineageInput = {
   sourceUrl?: string;
   originalUrl?: string;
   query?: string;
+  /** RONDE 95 (§2): the gate route that ran the query — see VisualLineageRecord.searchRoute. */
+  searchRoute?: string;
   candidateScore?: number;
   visionScore?: number;
   selectedScore?: number;
@@ -327,6 +509,24 @@ export class VisualSourceLedger {
   private readonly countedStages = new Set<string>();
   private seq = 0;
   private finalVideoProven = false;
+  /**
+   * RONDE 167 §7 — how this ledger turns a file path into an asset identity.
+   *
+   * The curated archive route is the reason this exists. Its record is opened from the DB row and
+   * is reachable only by `curated:asset:<id>`; the file it later writes,
+   * `scene_N_bM_curated_a<id>.mp4`, is never registered as a path. Every terminal-outcome writer
+   * in the pipeline looked the clip up by path alone, found nothing, and wrote nothing — measured
+   * at zero events — so RONDE 165's superseded_by_winner, RONDE 159's and 162's REMOVED events and
+   * RONDE 95's recordReplacement were all inert for archive assets.
+   *
+   * Patching each writer to pass a key would fix today's five and leave the sixth to be forgotten.
+   * Instead the LEDGER knows how to derive the identity, so `resolve` closes the gap for every
+   * caller that exists and every caller that does not exist yet.
+   *
+   * Injected rather than imported: `clipContentKey` lives in videoPipeline, which imports this
+   * module. The dependency stays one-way and this file stays free of fs and ffmpeg.
+   */
+  private contentKeyResolver?: (clipPath: string) => string | undefined;
   private readonly emit?: (line: string) => void;
 
   /**
@@ -377,6 +577,7 @@ export class VisualSourceLedger {
       currentFilename: basename,
       mediaType: input.mediaType ?? parent?.mediaType ?? "unknown",
       query: input.query ?? parent?.query,
+      searchRoute: input.searchRoute ?? parent?.searchRoute,
       candidateScore: input.candidateScore,
       visionScore: input.visionScore,
       selectedScore: input.selectedScore,
@@ -407,6 +608,16 @@ export class VisualSourceLedger {
    * has to point at the real file. This changes no provenance — the record already carries the
    * provider it was created with — it only makes the record reachable by the path it now owns.
    */
+  /**
+   * Teach this ledger how to derive an asset identity from a file path. Called once per render.
+   *
+   * Optional by design: a ledger without one behaves exactly as before, which keeps every test and
+   * tool that builds a bare ledger working.
+   */
+  setContentKeyResolver(fn: (clipPath: string) => string | undefined): void {
+    this.contentKeyResolver = fn;
+  }
+
   bindPath(lineageId: string, localPath: string, contentKey?: string): VisualLineageRecord | null {
     const record = this.records.get(lineageId);
     if (!record || !localPath) return null;
@@ -444,11 +655,75 @@ export class VisualSourceLedger {
       cursor = this.derivedFrom.get(cursor);
     }
 
-    if (contentKey) {
-      const byKey = this.byContentKey.get(contentKey);
+    const key = contentKey ?? this.deriveContentKey(clipPath);
+    if (key) {
+      const byKey = this.byContentKey.get(key);
       if (byKey) return this.records.get(byKey) ?? null;
     }
     return null;
+  }
+
+  /**
+   * PHASE 1 — was THIS FILE adopted?
+   *
+   * Deliberately narrower than `resolve()`, and the narrowness is the whole point. `resolve()`
+   * walks the derivation chain and the content key so a trimmed or renamed file can still be
+   * traced to where it came from. That is right for provenance and wrong for this question.
+   *
+   * `markAdopted` records ADOPTED against the record for the EXACT final path — creating a derived
+   * record first when a trim or transform renamed the file — so a byPath hit with `adoptedAt` set
+   * means this exact file cleared the technical gate, the vision gate and adoption.
+   *
+   * Files written AFTER adoption (pad_combined_*.mp4, the text-overlay output) are derived from an
+   * adopted parent and would answer `true` through the chain, while never having been examined
+   * themselves. They have no ADOPTED event of their own, so an exact lookup answers false for them
+   * and they still have to prove themselves. A half-written ffmpeg result must not inherit its
+   * parent's clearance.
+   */
+  adoptedAtPath(clipPath: string): boolean {
+    if (!clipPath) return false;
+    const id = this.byPath.get(clipPath);
+    if (!id) return false;
+    return this.records.get(id)?.adoptedAt != null;
+  }
+
+  /**
+   * The asset identity behind a path, when the path itself is not a handle.
+   *
+   * Only reached after the exact path and the derivation chain have both missed, so the cost is
+   * paid on the rare lookup rather than the common one. Never throws: a resolver that fails leaves
+   * the clip unknown, which is the honest answer and the pre-RONDE-167 behaviour.
+   */
+  /**
+   * RONDE 169 — does this clip already have an ending?
+   *
+   * Asked by the scene-replacement writer so a clip that a compose gate already refused is not
+   * given a second, weaker ending on top. Same `hasTerminalOutcome` the vanished rule, the
+   * lifecycle audit and the §8 invariant use, so "accounted for" means one thing everywhere.
+   */
+  hasOutcomeFor(clipPath: string, contentKey?: string): boolean {
+    const record = this.resolve(clipPath, contentKey);
+    if (!record) return false;
+    const stages = new Map<LineageStage, LineageEventStatus>();
+    for (const event of this.events) {
+      if (event.lineageId !== record.lineageId) continue;
+      if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
+    }
+    return stages.has("FINAL_VIDEO") || hasTerminalOutcome(stages);
+  }
+
+  /** The path a derived file was produced from, or undefined. Read by resolveClipOutcomeIdentity. */
+  derivationOriginOf(clipPath: string): string | undefined {
+    return this.derivedFrom.get(clipPath);
+  }
+
+  private deriveContentKey(clipPath: string): string | undefined {
+    if (!this.contentKeyResolver) return undefined;
+    try {
+      return this.contentKeyResolver(clipPath) || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -465,6 +740,32 @@ export class VisualSourceLedger {
   providerBucketFor(clipPath: string, contentKey?: string): string {
     const record = this.resolve(clipPath, contentKey);
     return record ? providerBucket(record) : UNVERIFIED_PROVIDER;
+  }
+
+  /**
+   * RONDE 151 §7 — record where inside the provider's original this clip was cut from.
+   *
+   * Called at the moment of the trim, by the one helper every provider route funnels through, so
+   * there is exactly one writer and it is next to the ffmpeg command that does the cutting. Both
+   * numbers are seconds into the ORIGINAL asset, which is what a rehydrated re-render needs: the
+   * file on disk begins at `inSec`, but the file a provider hands back tomorrow does not.
+   *
+   * Silently does nothing when the path has no record — a clip nobody registered has no identity
+   * to attach a trim to, and inventing a record here would create provenance out of a filename.
+   */
+  recordSourceTrim(
+    clipPath: string,
+    trim: { inSec: number; outSec?: number },
+    contentKey?: string
+  ): VisualLineageRecord | null {
+    const record = this.resolve(clipPath, contentKey);
+    if (!record) return null;
+    if (!Number.isFinite(trim.inSec) || trim.inSec < 0) return record;
+    record.sourceInSec = Number(trim.inSec.toFixed(3));
+    if (trim.outSec != null && Number.isFinite(trim.outSec) && trim.outSec > trim.inSec) {
+      record.sourceOutSec = Number(trim.outSec.toFixed(3));
+    }
+    return record;
   }
 
   /** Walks up the derivation chain to the record this one ultimately came from. */
@@ -496,7 +797,17 @@ export class VisualSourceLedger {
     derivedPath: string,
     originPath: string,
     stage: Extract<LineageStage, "TRIMMED" | "PADDED" | "OVERLAYED" | "TRANSFORMED">,
-    opts: { contentKey?: string; reason?: string } = {}
+    /**
+     * RONDE 167 — `supersedesParent` says whether the parent stops being a file in its own right.
+     *
+     * A trim, an overlay and a fair-use transform all REPLACE the clip they were made from, so the
+     * parent record should be known by the derived file's name; that is the default and it is
+     * unchanged. An extension does not: `extendLastClip` loops a clip that is already on screen
+     * under its own beat to fill a second one, and both files are live. Renaming the parent there
+     * would mislabel a clip that is still in the montage, in the manifest and in every warning
+     * that names a file.
+     */
+    opts: { contentKey?: string; reason?: string; supersedesParent?: boolean } = {}
   ): VisualLineageRecord | null {
     if (!derivedPath || !originPath || derivedPath === originPath) return null;
     this.derivedFrom.set(derivedPath, originPath);
@@ -523,7 +834,7 @@ export class VisualSourceLedger {
       parentLineageId: parent.lineageId,
       // Provider is inherited by createLineage from the parent; nothing is invented here.
     });
-    parent.currentFilename = path.basename(derivedPath);
+    if (opts.supersedesParent !== false) parent.currentFilename = path.basename(derivedPath);
     derived.currentFilename = path.basename(derivedPath);
     this.recordEvent(derived.lineageId, stage, { status: "OK", reason: opts.reason });
     return derived;
@@ -569,6 +880,18 @@ export class VisualSourceLedger {
     };
     this.events.push(event);
     this.emit?.(formatLineageEvent(event, this.renderId));
+    /**
+     * RONDE 95 (§3) — one line per milestone, always on.
+     *
+     * formatLineageEvent above prints EVERY event (trims, pads, overlays) and is behind a flag
+     * because a render produces thousands. This prints only the transitions the lifecycle question
+     * is about, so the trail from FOUND to RENDERED is readable in a normal production log without
+     * turning anything on. It is emitted from inside recordEvent deliberately: a status that is
+     * logged anywhere else could be logged without the event having happened, which is exactly the
+     * "fake success" §1 forbids.
+     */
+    const trace = ASSET_TRACE_STATUS[stage];
+    if (trace && event.status === "OK") console.log(formatAssetTrace(record, trace, event));
     if (event.status === "OK") {
       if (stage === "SELECTED") record.selectedAt ??= event.timestamp;
       else if (stage === "ADOPTED") record.adoptedAt ??= event.timestamp;
@@ -597,6 +920,54 @@ export class VisualSourceLedger {
    * to see. Inventing a record with a guessed provider so the count looks complete is the exact
    * behaviour this round removes.
    */
+  /**
+   * RONDE 95 (§4/§8) — asset A was chosen, asset B was delivered, and now that is on the record.
+   *
+   * REPLACED has been a declared lineage stage since RONDE 86 and was counted in every summary,
+   * but nothing in the pipeline ever recorded one: a scan found three references, all of them the
+   * declaration itself. Every fallback, rescue and heal swap therefore happened invisibly — the
+   * ledger showed asset A selected and asset B in the final video with nothing joining them, which
+   * is precisely the silent substitution §8 exists to catch.
+   *
+   * The event goes on the ORIGINAL, because the original is the thing that stopped being true. The
+   * replacement is named in the event so the pair can be read in either direction, and the reason
+   * is required rather than optional: "replaced" without a why is a fact nobody can act on.
+   *
+   * Returns false when the ledger does not know the original. That is a finding — something was
+   * replaced that was never recorded as chosen — and inventing a record to make the pair look
+   * complete would defeat the point.
+   */
+  recordReplacement(
+    originalPath: string,
+    replacementPath: string | null,
+    reason: string,
+    /**
+     * RONDE 167 — the curated route has no registered path, only a content key. Without this a
+     * replacement of an archive clip resolved to nothing and the swap went unrecorded, which is
+     * the silent substitution §8 exists to catch. See recordAssetOutcome for the measurement.
+     */
+    keys: { originalContentKey?: string; replacementContentKey?: string } = {}
+  ): boolean {
+    const original = this.resolve(originalPath, keys.originalContentKey);
+    if (!original) return false;
+    const replacement = replacementPath
+      ? this.resolve(replacementPath, keys.replacementContentKey)
+      : null;
+    this.recordEvent(original.lineageId, "REPLACED", {
+      status: "REPLACED",
+      reason: `${reason} -> ${replacement?.lineageId ?? path.basename(replacementPath ?? "none")}`,
+      currentPath: originalPath,
+    });
+    console.log(
+      `[AssetTrace] assetId=${original.lineageId} status=REPLACED ` +
+        `provider=${original.provider ?? UNVERIFIED_PROVIDER} ` +
+        `scene=${original.sceneIndex} beat=${original.beatIndex} ` +
+        `originalAssetId=${original.lineageId} ` +
+        `replacementAssetId=${replacement?.lineageId ?? NOT_VERIFIED} reason=${reason}`
+    );
+    return true;
+  }
+
   recordRejection(clipPath: string, gate: string, contentKey?: string): boolean {
     const record = this.resolve(clipPath, contentKey);
     if (!record) return false;
@@ -828,6 +1199,68 @@ export class VisualSourceLedger {
         });
       }
 
+      /**
+       * RONDE 95 (§4) — the stage order, as findings rather than assumptions.
+       *
+       * The funnel narrows in one direction: a clip is adopted because it was selected, and it
+       * reaches the final video because it was adopted. A record that holds a later stage without
+       * the one before it means an event was filed for work that never happened, or a step ran
+       * without being recorded. Both are holes, and both were invisible until now — the summary
+       * counted each stage independently, so a clip could be ADOPTED with no SELECTED and nothing
+       * anywhere said so.
+       *
+       * Warnings, not errors: a rescue clip legitimately skips SELECTED, having been chosen by a
+       * different route. What matters is that the skip is visible and countable rather than
+       * silently absorbed into a total.
+       */
+      if (has(id, "ADOPTED") && !has(id, "SELECTED")) {
+        warnings.push({
+          code: "ADOPTED_WITHOUT_SELECTED",
+          message: `${record.currentFilename} was adopted with no SELECTED event`,
+          lineageId: id,
+        });
+      }
+      if (has(id, "FINAL_VIDEO") && !has(id, "ADOPTED")) {
+        warnings.push({
+          code: "RENDERED_WITHOUT_ADOPTED",
+          message: `${record.currentFilename} reached the final video with no ADOPTED event`,
+          lineageId: id,
+        });
+      }
+      if (has(id, "DOWNLOAD_SUCCEEDED") && !has(id, "FOUND")) {
+        errors.push({
+          code: "DOWNLOADED_WITHOUT_LINEAGE",
+          message: `${record.currentFilename} was downloaded with no FOUND event`,
+          lineageId: id,
+        });
+      }
+      /**
+       * RONDE 95 (§4) — an asset that was chosen, was not delivered, and says nothing about why.
+       *
+       * REPLACED, REMOVED and REJECTED are the three honest endings. A record that has none of
+       * them, never reached FINAL_VIDEO, and was selected or adopted simply disappeared, which is
+       * the case the round exists to surface. Only checked once the render has actually proven its
+       * final video — before that, "not in the final video" is not yet a fact.
+       */
+      if (
+        this.finalVideoProven &&
+        !has(id, "FINAL_VIDEO") &&
+        (has(id, "SELECTED") || has(id, "ADOPTED")) &&
+        /**
+         * RONDE 167 — one definition of an ending, in `hasTerminalOutcome`, shared with the
+         * lifecycle audit and the §8 invariant. A rejection is a STATUS on whichever stage the
+         * gate maps to rather than a stage of its own, and a download that never finished is an
+         * ending too; both live there now so the three readers cannot drift apart again.
+         */
+        !hasTerminalOutcome(stagesByLineage.get(id) ?? new Map())
+      ) {
+        warnings.push({
+          code: "VANISHED_WITHOUT_OUTCOME",
+          message: `${record.currentFilename} was chosen and is not in the final video, with no REPLACED/REMOVED/REJECTED event`,
+          lineageId: id,
+        });
+      }
+
       // Rule 6: a derived file must carry the record it came from.
       const isDerived = [...(stagesByLineage.get(id)?.keys() ?? [])].some(
         (s) => s === "TRIMMED" || s === "PADDED" || s === "OVERLAYED" || s === "TRANSFORMED"
@@ -946,6 +1379,229 @@ export function formatLineageEvent(event: VisualLineageEvent, renderId: string):
   return `[VisualLineageEvent] ${parts.join(" ")}`;
 }
 
+/**
+ * RONDE 95 (§3/§7) — the lifecycle statuses, and the lineage stages that earn them.
+ *
+ * Only these eight stages produce an [AssetTrace] line. The others (RANKED, TRIMMED, PADDED,
+ * OVERLAYED, TRANSFORMED, DOWNLOAD_STARTED, DOWNLOAD_FAILED, REMOVED) are real events and stay in
+ * the ledger, but they are steps WITHIN a status rather than a change of it — a clip that gets
+ * padded has not become more or less rendered.
+ *
+ * The mapping is one-way and total: a status can only appear because its stage was recorded, and
+ * each stage was recorded because the work happened. §7's chain — FOUND ≠ VALIDATED ≠ SELECTED ≠
+ * DOWNLOADED ≠ ASSIGNED ≠ RENDERED — is enforced by there being no other way to produce them.
+ */
+export const ASSET_TRACE_STATUS: Partial<Record<LineageStage, string>> = {
+  FOUND: "FOUND",
+  ELIGIBLE: "VALIDATED",
+  SELECTED: "SELECTED",
+  DOWNLOAD_SUCCEEDED: "DOWNLOADED",
+  ADOPTED: "ASSIGNED",
+  COMPOSED: "RENDER_INPUT",
+  FINAL_VIDEO: "RENDERED",
+};
+
+/** One line per lifecycle transition, carrying the identity that makes it traceable (§2). */
+export function formatAssetTrace(
+  record: VisualLineageRecord,
+  status: string,
+  event: VisualLineageEvent
+): string {
+  const parts = [
+    `assetId=${record.lineageId}`,
+    `status=${status}`,
+    `provider=${record.provider ?? UNVERIFIED_PROVIDER}`,
+    record.providerAssetId ? `providerAssetId=${record.providerAssetId}` : null,
+    `scene=${record.sceneIndex}`,
+    `beat=${record.beatIndex}`,
+    record.candidateId ? `candidateId=${record.candidateId}` : null,
+    record.query ? `query="${record.query}"` : null,
+    record.searchRoute ? `searchRoute=${record.searchRoute}` : null,
+    record.sourceUrl ? `sourceUrl=${record.sourceUrl}` : null,
+    `route=${record.route}`,
+    event.reason ? `reason=${event.reason}` : null,
+    event.gate ? `gate=${event.gate}` : null,
+  ].filter(Boolean);
+  return `[AssetTrace] ${parts.join(" ")}`;
+}
+
+/**
+ * RONDE 95 (§5) — the manifest: every asset the delivered file actually contains.
+ *
+ * Built from the FINAL_VIDEO events, which markFinalVideo sets only from the clips whose scene
+ * video was in the concat that produced the validated output. Nothing here is inferred from having
+ * been selected, adopted or composed — those are earlier and weaker facts, and three of them can
+ * be true of a clip that a heal pass replaced before the concat ran.
+ *
+ * Returns [] when the render never reached the point where FINAL_VIDEO is knowable. An empty
+ * manifest and a manifest of zero assets are different claims; the caller prints NOT_VERIFIED.
+ */
+export function formatRenderManifest(
+  records: readonly VisualLineageRecord[],
+  finalVideoVerified: boolean,
+  /**
+   * RONDE 105 — what the content decider said about each rendered asset.
+   *
+   * The manifest already answered "what is in the delivered file and where did it come from".
+   * The question it could not answer was "and did anybody check that it belongs" — which is the
+   * one that matters most now that the vision model is the only content decider. Supplied as a
+   * lookup rather than a new record field so the ledger keeps its single responsibility and the
+   * relevance data keeps living where RONDE 103 put it.
+   *
+   * Optional: a caller without it gets exactly the pre-RONDE-105 line.
+   */
+  verdictFor?: (record: VisualLineageRecord) => {
+    verdict: string;
+    cached: boolean;
+    reprieved: boolean;
+  } | null
+): string[] {
+  if (!finalVideoVerified) return [];
+  return records
+    .filter((r) => r.finalVideoAt != null)
+    .sort((a, b) => a.sceneIndex - b.sceneIndex || a.beatIndex - b.beatIndex)
+    .map((r) => {
+      const v = verdictFor?.(r) ?? null;
+      return [
+        `[RenderAsset] assetId=${r.lineageId}`,
+        `provider=${r.provider ?? UNVERIFIED_PROVIDER}`,
+        r.providerAssetId ? `providerAssetId=${r.providerAssetId}` : null,
+        `scene=${r.sceneIndex}`,
+        `beat=${r.beatIndex}`,
+        r.query ? `query="${r.query}"` : null,
+        r.searchRoute ? `searchRoute=${r.searchRoute}` : null,
+        r.sourceUrl ? `sourceUrl=${r.sourceUrl}` : null,
+        `file=${r.currentFilename}`,
+        // A rendered asset with no verdict is not "fine" — it is unexamined, and the manifest
+        // says so in the same word the counters use.
+        `verdict=${v ? (v.reprieved ? "reprieved_after_refusal" : v.verdict) : "never_asked"}`,
+        `cached=${v ? v.cached : false}`,
+        `reprieved=${v ? v.reprieved : false}`,
+        "rendered=true",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    });
+}
+
+/**
+ * RONDE 105 (§16) — the one block that answers every question about the delivered file.
+ *
+ * A render used to print its evidence in six places: source counts here, beat warnings in the
+ * quality report, vision counters in the pipeline, the manifest below. Reading them together took
+ * knowing which line meant what, and the production render that shipped `100/100 (Excellent)` on
+ * an unexamined montage is what that costs. This is the summary a person actually reads.
+ *
+ * Every number comes from a record that already exists. Nothing here judges, counts a provider
+ * twice, or invents a category — `source_unknown` is the ledger's own UNVERIFIED bucket, and the
+ * per-provider counts are required to add up to `final_clips`.
+ */
+export function formatFinalVisualReport(input: {
+  finalVideoVerified: boolean;
+  records: readonly VisualLineageRecord[];
+  beats: number;
+  verifiedOwnVisual: number;
+  verification: Record<string, number>;
+  coverage: Record<string, number>;
+  attempts: number;
+  answered: number;
+  unavailable: number;
+  neverAsked: number;
+  qualityStatus: string;
+  score: number;
+}): string[] {
+  const rendered = input.records.filter((r) => r.finalVideoAt != null);
+  const byProvider = new Map<string, number>();
+  for (const r of rendered) {
+    const key = (r.provider ?? "").trim().toLowerCase() || UNVERIFIED_PROVIDER.toLowerCase();
+    byProvider.set(key, (byProvider.get(key) ?? 0) + 1);
+  }
+  const unknownCount =
+    (byProvider.get(UNVERIFIED_PROVIDER.toLowerCase()) ?? 0) + (byProvider.get("unknown") ?? 0);
+  const sourceLines = [...byProvider.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([p, n]) => `  source_${p}=${n}`);
+  const totalAttributed = [...byProvider.values()].reduce((a, b) => a + b, 0);
+
+  const lines = [
+    "[FinalVisualReport]",
+    `  final_video_verified=${input.finalVideoVerified}`,
+    `  beats=${input.beats}`,
+    `  verified_own_visual=${input.verifiedOwnVisual}`,
+    `  verified_fit=${input.verification.verified_fit ?? 0}`,
+    `  verified_mismatch=${input.verification.verified_mismatch ?? 0}`,
+    `  reprieved=${input.verification.reprieved_after_refusal ?? 0}`,
+    `  unknown=${input.verification.unknown ?? 0}`,
+    `  never_asked=${input.verification.never_asked ?? 0}`,
+    `  coverage_own_footage=${input.coverage.own_footage ?? 0}`,
+    `  coverage_held_frame=${input.coverage.held_frame ?? 0}`,
+    `  coverage_graphic=${input.coverage.graphic ?? 0}`,
+    `  coverage_placeholder=${input.coverage.placeholder ?? 0}`,
+    `  coverage_generated=${input.coverage.generated ?? 0}`,
+    `  gate_attempts=${input.attempts}`,
+    `  gate_answered=${input.answered}`,
+    `  gate_failed=${input.unavailable}`,
+    `  gate_never_asked=${input.neverAsked}`,
+    `  final_clips=${rendered.length}`,
+    ...sourceLines,
+    `  unverified_final_clips=${unknownCount}`,
+    `  quality_status=${input.qualityStatus}`,
+    `  quality_score=${input.score}`,
+  ];
+  /**
+   * §14's cross-check, stated by the render rather than left to the reader.
+   *
+   * The old report showed Archive 7, Wikimedia 1, Stock 1 next to "Clips 15" and nobody could see
+   * that six clips were missing from the breakdown, because the breakdown was a filename reading
+   * of three buckets out of many. These counts come from the ledger and must sum to the clip
+   * count; when they do not, that is the finding.
+   */
+  if (totalAttributed !== rendered.length) {
+    lines.push(
+      `  SOURCE_COUNT_MISMATCH: providers sum to ${totalAttributed}, final clips ${rendered.length}`
+    );
+  }
+  return lines;
+}
+
+/**
+ * RONDE 95 (§4) — assets the pipeline chose and the video does not contain.
+ *
+ * A clip that reached SELECTED or ADOPTED and has no FINAL_VIDEO event did not make it into the
+ * delivered file, and the interesting question is always which of the two it was:
+ *
+ *   · REPLACED  — a fallback or heal pass swapped it, and recordReplacement says for what and why
+ *   · dropped   — nothing says. That is the case worth finding: an asset that was chosen, possibly
+ *                 downloaded, and then quietly left out with no event to explain it.
+ *
+ * Reported, never thrown. This runs after the video exists.
+ */
+export function formatSelectedButNotRendered(
+  records: readonly VisualLineageRecord[],
+  events: readonly VisualLineageEvent[],
+  finalVideoVerified: boolean
+): string[] {
+  if (!finalVideoVerified) return [];
+  const replaced = new Map<string, string>();
+  for (const e of events) {
+    if (e.stage === "REPLACED") replaced.set(e.lineageId, e.reason ?? "no reason recorded");
+  }
+  const out: string[] = [];
+  for (const r of records) {
+    if (r.finalVideoAt != null) continue;
+    if (r.selectedAt == null && r.adoptedAt == null) continue;
+    const why = replaced.get(r.lineageId);
+    out.push(
+      `[AssetNotRendered] assetId=${r.lineageId} provider=${r.provider ?? UNVERIFIED_PROVIDER} ` +
+        `scene=${r.sceneIndex} beat=${r.beatIndex} ` +
+        `reachedSelected=${r.selectedAt != null} reachedAssigned=${r.adoptedAt != null} ` +
+        `outcome=${why ? "REPLACED" : "DROPPED_WITHOUT_EVENT"}` +
+        (why ? ` reason=${why}` : "")
+    );
+  }
+  return out;
+}
+
 /** The per-provider summary block, §F. */
 export function formatSourceSummary(summary: VisualSourceSummary, finalVideoVerified: boolean): string[] {
   const lines = ["[VisualSourceSummary]"];
@@ -999,6 +1655,157 @@ export function formatFunnelReport(summary: VisualSourceSummary, finalVideoVerif
   return lines;
 }
 
+/**
+ * RONDE 94 — the per-provider lifecycle, in the words the question is usually asked in.
+ *
+ * "How many YouTube clips did we find, and how many actually ended up in the video?" The ledger
+ * has answered that since RONDE 86 — every stage below is a real recorded event, not a count
+ * inferred from a list — but it answered in its own vocabulary (results/eligible/adopted/
+ * finalVideo) spread across two report blocks. This is one line per provider in the vocabulary of
+ * the question, projected from exactly the same events:
+ *
+ *     found      = results            a search returned this candidate
+ *     validated  = eligible           RONDE 142: it cleared EVERY gate — licence, format, dedup
+ *                                     AND the vision gate — which is recorded in adoptClip and
+ *                                     therefore happens after the download, not before it
+ *     selected   = selected           the ranker chose it
+ *     downloaded = downloadSucceeded  the file exists on disk. Normally far larger than
+ *                                     `validated`: downloading is what makes a candidate
+ *                                     judgeable, so most downloads exist to be refused
+ *     assigned   = adopted            a scene/beat took it
+ *     rendered   = finalVideo         its scene video went into the concat that produced the
+ *                                     delivered file — proven from finalConcatInputs, never
+ *                                     assumed from having been adopted
+ *     unused     = found - rendered
+ *
+ * `rendered` prints NOT_VERIFIED, never 0, when the render could not reach the point where
+ * FINAL_VIDEO is knowable. Zero would be a claim; NOT_VERIFIED is the truth.
+ */
+export function formatAssetUsageSummary(
+  summary: VisualSourceSummary,
+  finalVideoVerified: boolean
+): string[] {
+  const line = (provider: string, c: SummaryCounts): string => {
+    const rendered = finalVideoVerified ? String(c.finalVideo) : NOT_VERIFIED;
+    const unused = finalVideoVerified ? String(Math.max(0, c.results - c.finalVideo)) : NOT_VERIFIED;
+    return (
+      `[AssetUsageSummary] provider=${provider} found=${c.results} validated=${c.eligible} ` +
+      `selected=${c.selected} downloaded=${c.downloadSucceeded} assigned=${c.adopted} ` +
+      `rendered=${rendered} unused=${unused}`
+    );
+  };
+  const providers = Object.entries(summary.byProvider).sort((a, b) => {
+    if (a[0] === UNVERIFIED_PROVIDER) return 1;
+    if (b[0] === UNVERIFIED_PROVIDER) return -1;
+    return b[1].results - a[1].results;
+  });
+  const lines = providers.map(([provider, counts]) => line(provider, counts));
+  lines.push(line("TOTAL", summary.total));
+  lines.push(...formatUsageInconsistencies(summary, finalVideoVerified));
+  return lines;
+}
+
+/**
+ * RONDE 94 — the funnel only narrows, and a funnel that widens is a bug in the instrumentation.
+ *
+ * A stage that counts MORE than the stage it follows means an event was recorded for an asset that
+ * never reached the earlier one — a miscount, or a stage being marked without the work having
+ * happened. Either way the numbers stop meaning what they say, and a report that quietly prints
+ * them is worse than one that refuses.
+ *
+ * RONDE 142: which stage follows which is stated per pair below rather than as one chain, because
+ * the routes do not share a single order. `downloaded` is not between `selected` and `validated`;
+ * see the note on PAIRS.
+ *
+ * Reported, not thrown: this runs after the video is made, and an accounting fault must not fail
+ * a render that succeeded.
+ */
+export function formatUsageInconsistencies(
+  summary: VisualSourceSummary,
+  finalVideoVerified: boolean
+): string[] {
+  /**
+   * RONDE 159 — two of these stages are optional, and treating them as mandatory made every
+   * render report a fault it did not have.
+   *
+   * Video 552 printed, on a render that was fine:
+   *
+   *     provider=TOTAL assigned=32 exceeds downloaded=11
+   *     provider=TOTAL downloaded=11 exceeds selected=4
+   *     provider=unsplash downloaded=1 exceeds selected=0
+   *
+   * Those are not miscounts. The curated archive route prepares a clip from the archive store and
+   * adopts it without ever downloading anything, and the rescue route adopts without a SELECTED
+   * event — which this file's own lineage audit already states in as many words ("a rescue clip
+   * legitimately skips SELECTED"). The funnel check contradicted the audit standing three hundred
+   * lines above it, and did so on every render, which is how a real finding gets ignored.
+   *
+   * So the strict chain is kept for the stages every asset must pass, and the two a route may
+   * legitimately skip are checked against the last mandatory stage before them instead. A genuine
+   * miscount — more rendered than assigned, more selected than validated — still reports.
+   */
+  /**
+   * RONDE 142 — the order this check asserted is not the order the pipeline records.
+   *
+   * Video 558 printed, on a render that was fine:
+   *
+   *     provider=TOTAL downloaded=41 exceeds validated=1
+   *
+   * That is not a miscount either. `eligible` is recorded in adoptClip, AFTER the vision gate —
+   * and the vision gate needs the FILE, so the download is what makes a candidate judgeable at
+   * all. Forty-one downloads producing one asset that cleared every gate is the pipeline working
+   * as designed and reporting honestly. The check had download before validation, which is
+   * backwards, so it flagged the normal case.
+   *
+   * RONDE 159 corrected the same class of error and left this one, because it moved `downloaded`
+   * to be BOUNDED by `eligible` rather than noticing that it PRECEDES it. Two rounds of a check
+   * contradicting the code is how a real finding gets ignored, which is RONDE 159's own argument.
+   *
+   * ── What is asserted now: only what the recorded order actually guarantees ───────────────────
+   *
+   * Written as pairs rather than one chain, because there is no single chain. The routes differ:
+   * the curated archive adopts a clip it never searched for and never downloaded, and a rescue clip
+   * skips SELECTED. A stage's own predecessor is the only thing that can be asserted about it.
+   *
+   *   ranked, selected ≤ eligible   all three are recorded on the same three lines of adoptClip,
+   *                                 so any difference at all is an instrumentation fault
+   *   adopted   ≤ eligible          nothing may be adopted that did not clear the gates
+   *   finalVideo ≤ adopted          nothing may be in the file that was not adopted
+   *
+   * `results` is deliberately compared to nothing. A curated or rescue asset has no search event,
+   * so `eligible > results` is routine, and asserting it made the report cry wolf on every render.
+   * The count is still printed; it is simply not evidence about any other stage.
+   *
+   * `downloadSucceeded ≤ downloadStarted` looks like an obvious addition and is deliberately NOT
+   * made. It was tried, and two existing fixtures — RONDE 94's own "well-formed funnel" and RONDE
+   * 95's replacement case — record a succeeded download with no started event, which says the
+   * codebase does not guarantee the pair. Adding a check whose validity is not established would
+   * have replaced one false alarm with another, which is the entire failure this round is undoing.
+   */
+  const PAIRS: Array<[SummaryCounter, string, SummaryCounter, string, boolean]> = [
+    // [later, label, earlier, label, requiresFinalVideoVerified]
+    ["ranked", "ranked", "eligible", "validated", false],
+    ["selected", "selected", "eligible", "validated", false],
+    ["adopted", "assigned", "eligible", "validated", false],
+    ["finalVideo", "rendered", "adopted", "assigned", true],
+  ];
+  const out: string[] = [];
+  const check = (provider: string, c: SummaryCounts): void => {
+    for (const [key, label, boundKey, boundLabel, needsFinal] of PAIRS) {
+      if (needsFinal && !finalVideoVerified) continue;
+      if (c[key] > c[boundKey]) {
+        out.push(
+          `[AssetUsageInconsistency] provider=${provider} ${label}=${c[key]} exceeds ` +
+            `${boundLabel}=${c[boundKey]} — a later stage cannot count more assets than the one it follows`
+        );
+      }
+    }
+  };
+  for (const [provider, counts] of Object.entries(summary.byProvider)) check(provider, counts);
+  check("TOTAL", summary.total);
+  return out;
+}
+
 /** The audit block, §I, plus every finding reconcile() produced. */
 export function formatAuditReport(result: ReconciliationResult): string[] {
   const lines = [
@@ -1014,6 +1821,187 @@ export function formatAuditReport(result: ReconciliationResult): string[] {
   }
   for (const e of result.errors) {
     lines.push(`[VisualAuditError] ${e.code} ${e.lineageId ? `lineageId=${e.lineageId} ` : ""}${e.message}${e.detail ? ` — ${e.detail}` : ""}`);
+  }
+  return lines;
+}
+
+/**
+ * RONDE 167 §7 — the one place that answers "which asset is this file, and how do we know".
+ *
+ * Every terminal-outcome writer asks this, and `via` is the diagnosis the round was missing: a
+ * clip resolved by `contentKey` is one whose PATH nobody registered, and a clip resolved by
+ * `none` is one no outcome can be written for at all. Before this, both looked like silence.
+ *
+ * The order is the ledger's own: exact path, then the derivation chain, then the asset identity.
+ * The brief asks for identity first; exact-path-first is kept deliberately and is strictly more
+ * precise — a trimmed or overlaid file has its OWN record, and its content key deliberately maps
+ * back to the original, so identity-first would file a derived clip's outcome on its parent and
+ * undo the parent/child separation linkDerivedPath exists to keep. What the brief is actually
+ * asking for — that a missing path must never mean "unknown" — is guaranteed instead by the
+ * ledger deriving the identity itself, so no caller can forget it.
+ */
+export type ClipOutcomeIdentity = {
+  record: VisualLineageRecord | null;
+  /** Which handle worked. "none" means no outcome can be filed for this clip. */
+  via: "path" | "derived" | "contentKey" | "none";
+  /** The identity used or derived, for logging a miss that a caller may want to explain. */
+  contentKey?: string;
+};
+
+export function resolveClipOutcomeIdentity(
+  ledger: VisualSourceLedger | undefined,
+  clipPath: string,
+  contentKey?: string
+): ClipOutcomeIdentity {
+  if (!ledger || !clipPath) return { record: null, via: "none", contentKey };
+  const record = ledger.resolve(clipPath, contentKey);
+  if (!record) return { record: null, via: "none", contentKey };
+  if (record.localPath === clipPath) return { record, via: "path", contentKey };
+  if (ledger.derivationOriginOf(clipPath)) return { record, via: "derived", contentKey };
+  return { record, via: "contentKey", contentKey: contentKey ?? record.contentKey };
+}
+
+/**
+ * RONDE 167 §8 — the hard invariant: a chosen asset owes the render an ending.
+ *
+ * `reconcile()` warns per asset and `formatAssetLifecycleAudit` counts them. Neither can be read
+ * as a pass/fail by a caller, so nothing in the pipeline could ever say "this render's accounting
+ * is sound" or refuse to. This is that answer, computed from the same rule both of those use.
+ *
+ * Deliberately NOT throwing. A render that has already produced a video must not be destroyed by
+ * its own bookkeeping — the whole audit is wrapped in a try that exists for exactly that reason.
+ * It returns the finding so the caller can log it loudly, and so a test can assert on it.
+ */
+export type SelectedWithoutOutcome = {
+  lineageId: string;
+  filename: string;
+  provider: string;
+  sceneIndex?: number;
+  beatIndex?: number;
+  route: string;
+};
+
+export function assertNoSelectedClipWithoutOutcome(
+  ledger: VisualSourceLedger
+): { ok: boolean; offenders: SelectedWithoutOutcome[] } {
+  const offenders = unaccountedRecords(ledger).map((record) => ({
+    lineageId: record.lineageId,
+    filename: record.currentFilename,
+    provider: record.provider ?? UNVERIFIED_PROVIDER,
+    sceneIndex: record.sceneIndex,
+    beatIndex: record.beatIndex,
+    route: record.route,
+  }));
+  return { ok: offenders.length === 0, offenders };
+}
+
+/**
+ * The assets that were chosen, are not in the delivered file, and say nothing about why.
+ *
+ * One implementation, three readers — reconcile()'s warning, the lifecycle audit's `unresolved`
+ * count and the invariant above. RONDE 167 found the audit and the rule disagreeing about
+ * DOWNLOAD_FAILED; sharing the computation is what stops that recurring.
+ */
+function unaccountedRecords(ledger: VisualSourceLedger): VisualLineageRecord[] {
+  const stagesByLineage = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  for (const event of ledger.allEvents()) {
+    let stages = stagesByLineage.get(event.lineageId);
+    if (!stages) stagesByLineage.set(event.lineageId, (stages = new Map()));
+    if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
+  }
+  return ledger.allRecords().filter((record) => {
+    const stages = stagesByLineage.get(record.lineageId);
+    if (!stages) return false;
+    if (stages.has("FINAL_VIDEO")) return false;
+    if (!stages.has("SELECTED") && !stages.has("ADOPTED")) return false;
+    return !hasTerminalOutcome(stages);
+  });
+}
+
+/** The endings that account for an asset. Read by the vanished rule, the audit and the invariant. */
+function hasTerminalOutcome(stages: Map<LineageStage, LineageEventStatus>): boolean {
+  if (stages.has("REPLACED") || stages.has("REMOVED")) return true;
+  if ([...stages.values()].some((st) => st.includes("REJECTED"))) return true;
+  /**
+   * RONDE 167 F1 — a download that never finished is an ending, and the rule called it a
+   * disappearance. Narrow: only when nothing later succeeded, so a failed-then-retried asset that
+   * genuinely vanished is still caught rather than buying permanent silence with one early error.
+   */
+  return stages.has("DOWNLOAD_FAILED") && !stages.has("DOWNLOAD_SUCCEEDED");
+}
+
+/**
+ * RONDE 165 — every asset the render touched, and how each one ended.
+ *
+ * `reconcile()` already emits one VANISHED_WITHOUT_OUTCOME warning per unaccounted asset, and
+ * render 554 emitted seventeen of them. Seventeen warnings is a list; what nobody could read off
+ * it is the denominator — whether seventeen out of twenty is a broken pipeline or seventeen out of
+ * two hundred is a narrow leak, and which route the leak is on.
+ *
+ * So the same records are counted instead of listed, in the four states an asset can end in:
+ *
+ *   delivered    it is in the final video
+ *   resolved     it is not, and something says why (REPLACED / REMOVED / a REJECTED status)
+ *   neverChosen  it was found and no route ever selected it — nothing to explain
+ *   unresolved   it was chosen, is not in the film, and says nothing: the number to drive to zero
+ *
+ * `unresolved` is exactly the set reconcile() warns about, counted from the same rule rather than
+ * recomputed differently — this reports on that audit, it is not a second one. Nothing here reads
+ * the disk, asks a provider, or changes a record.
+ */
+export function formatAssetLifecycleAudit(ledger: VisualSourceLedger): string[] {
+  const records = ledger.allRecords();
+  if (records.length === 0) return [];
+  const stagesByLineage = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  for (const event of ledger.allEvents()) {
+    let stages = stagesByLineage.get(event.lineageId);
+    if (!stages) stagesByLineage.set(event.lineageId, (stages = new Map()));
+    // The terminal status wins over an earlier OK on the same stage: a REPLACED stage filed after
+    // a plain one is the outcome, and reading the first would hide it.
+    if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
+  }
+  let delivered = 0;
+  let resolved = 0;
+  let neverChosen = 0;
+  const unresolved: VisualLineageRecord[] = [];
+  const unresolvedByRoute = new Map<string, number>();
+  for (const record of records) {
+    const stages = stagesByLineage.get(record.lineageId);
+    if (stages?.has("FINAL_VIDEO")) {
+      delivered++;
+      continue;
+    }
+    // RONDE 167: the ONE definition of an ending, shared with reconcile() and the invariant. The
+    // audit and the rule disagreeing about DOWNLOAD_FAILED is exactly what this round found.
+    if (stages && hasTerminalOutcome(stages)) {
+      resolved++;
+      continue;
+    }
+    if (!stages?.has("SELECTED") && !stages?.has("ADOPTED")) {
+      neverChosen++;
+      continue;
+    }
+    unresolved.push(record);
+    unresolvedByRoute.set(record.route, (unresolvedByRoute.get(record.route) ?? 0) + 1);
+  }
+  const lines = [
+    `[AssetLifecycleAudit] assets=${records.length} delivered=${delivered} ` +
+      `resolved=${resolved} neverChosen=${neverChosen} unresolved=${unresolved.length}`,
+  ];
+  if (unresolvedByRoute.size > 0) {
+    const byRoute = [...unresolvedByRoute.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([route, count]) => `${route}=${count}`)
+      .join(" ");
+    lines.push(`[AssetLifecycleAudit] unresolvedByRoute ${byRoute}`);
+  }
+  // Named, not just counted: a route with a leak is fixed by looking at one of its files.
+  for (const record of unresolved.slice(0, 12)) {
+    lines.push(
+      `[AssetLifecycleAudit] unresolved asset=${record.lineageId} route=${record.route} ` +
+        `provider=${record.provider ?? UNVERIFIED_PROVIDER} scene=${record.sceneIndex} ` +
+        `beat=${record.beatIndex} file=${record.currentFilename}`
+    );
   }
   return lines;
 }

@@ -8,6 +8,7 @@ import { getUserFromRequest } from "./_core/context";
 import { getMediaArchiveAssetById } from "./db";
 import { getStorageBackend, normalizeStorageKey } from "./storageBackend";
 import { storageGetSignedUrl } from "./storage";
+import { withArchiveMediaVersion, type ArchiveMediaIdentity } from "@shared/archiveMediaVersion";
 
 function streamLocalFileWithRange(req: Request, res: Response, filePath: string, contentType: string): void {
   const stat = statSync(filePath);
@@ -38,13 +39,22 @@ function streamLocalFileWithRange(req: Request, res: Response, filePath: string,
   createReadStream(filePath).pipe(res);
 }
 
-export function archiveMediaStreamUrl(assetId: number): string {
-  return `/api/admin/archive/media/${assetId}`;
+/**
+ * RONDE 177 — pass the asset row whenever the caller has it.
+ *
+ * Both routes answer with a private cache directive (an hour for a streamed file, five minutes for
+ * the redirect to a signed URL), and both addresses are built from the id alone — so a trimmed clip
+ * kept its address and the browser kept replaying the untrimmed bytes it already had. The optional
+ * `asset` appends a token that changes exactly when storagePut writes a new file. Left out, the
+ * behaviour is what it always was.
+ */
+export function archiveMediaStreamUrl(assetId: number, asset?: ArchiveMediaIdentity): string {
+  return withArchiveMediaVersion(`/api/admin/archive/media/${assetId}`, asset);
 }
 
 /** User-facing stream URL for the video editor (authenticated users). */
-export function editorArchiveMediaUrl(assetId: number): string {
-  return `/api/editor/archive/media/${assetId}`;
+export function editorArchiveMediaUrl(assetId: number, asset?: ArchiveMediaIdentity): string {
+  return withArchiveMediaVersion(`/api/editor/archive/media/${assetId}`, asset);
 }
 
 async function streamArchiveAsset(req: Request, res: Response, assetId: number): Promise<void> {

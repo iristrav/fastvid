@@ -360,15 +360,40 @@ export function clipPassesDocumentaryBeatGate(
   beatText = "",
   videoTitle?: string
 ): boolean {
-  if (!vidrushDocumentaryQualityEnabled()) return true;
-  if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return false;
+  return judgeDocumentaryBeatGate(clipPath, sourceQuery, beatText, videoTitle).passes;
+}
+
+/**
+ * RONDE 174 — the same verdict, plus whether the gate had a rule that could apply at all.
+ *
+ * This gate is a set of blocklists about particular subjects: non-documentary filename patterns,
+ * off-topic geo-urban visuals (pharmacies, retail, Columbus/Ohio/Wisconsin), and a Dutch/US region
+ * lock. On a WWII documentary not one of them can match — so "asked 20 times, rejected nothing"
+ * is the gate being out of scope, not the gate being broken.
+ *
+ * Without that distinction the silent-gate detector reports it as a suspected defect on every
+ * render of every topic outside its scope, which is how a real alarm gets trained away. `armed`
+ * says whether any rule was live for this candidate; the boolean verdict is unchanged.
+ */
+export function judgeDocumentaryBeatGate(
+  clipPath: string,
+  sourceQuery = "",
+  beatText = "",
+  videoTitle?: string
+): { passes: boolean; armed: boolean } {
+  if (!vidrushDocumentaryQualityEnabled()) return { passes: true, armed: false };
+  if (isNonDocumentaryClipPath(clipPath, sourceQuery, beatText)) return { passes: false, armed: true };
   const hay = `${sourceQuery} ${pathBasename(clipPath)} ${beatText} ${asVideoTitleString(videoTitle)}`.toLowerCase();
-  if (isOffTopicGeoUrbanVisual(hay) && !offTopicVisualAllowedForBeat(hay, beatText)) return false;
+  const geoUrban = isOffTopicGeoUrbanVisual(hay);
+  if (geoUrban && !offTopicVisualAllowedForBeat(hay, beatText)) return { passes: false, armed: true };
   const lockRegion = resolveBeatRegionLock(beatText, videoTitle);
-  if (lockRegion !== "neutral" && lockRegion !== "both" && isWrongRegionForSegmentLock(hay, lockRegion)) {
-    return false;
+  const regionLocked = lockRegion !== "neutral" && lockRegion !== "both";
+  if (regionLocked && isWrongRegionForSegmentLock(hay, lockRegion)) {
+    return { passes: false, armed: true };
   }
-  return true;
+  // Nothing this gate knows about was present: no non-documentary pattern, no geo-urban visual and
+  // no region to be on the wrong side of. It passed the candidate because it had nothing to say.
+  return { passes: true, armed: geoUrban || regionLocked };
 }
 
 /** @deprecated Use clipPassesDocumentaryBeatGate — kept as alias for imports. */

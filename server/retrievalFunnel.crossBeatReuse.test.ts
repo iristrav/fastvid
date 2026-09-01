@@ -194,9 +194,19 @@ describe("FIX 2 — Test 5: shortlist excludes already-used assets", () => {
       6,
       used
     );
-    expect(out.filter((c) => c.source === "loc")).toHaveLength(2);
+    /**
+     * RONDE 170 amended the tail of this list, never its head.
+     *
+     * The caps still settle the first three — loc 2, pexels 1 — and that is what this test was
+     * written to guard. What changed is that the three remaining slots of a six-slot budget used
+     * to be discarded; they are now filled from the non-stock candidates the cap refused, which
+     * on this fixture is one more loc. Stock is deliberately not backfilled, so pexels stays at 1.
+     */
+    expect(out.slice(0, 3).filter((c) => c.source === "loc")).toHaveLength(2);
     expect(out.filter((c) => c.source === "pexels")).toHaveLength(1);
-    expect(out.map((c) => c.id)).toEqual(["loc:B", "loc:C", "pexels:1"]);
+    expect(out.map((c) => c.id)).toEqual(["loc:B", "loc:C", "pexels:1", "loc:D"]);
+    // The exclusion still holds: the used candidate never comes back.
+    expect(out.map((c) => c.id)).not.toContain("loc:A");
   });
 
   it("ranking order inside the reduced set is untouched (still rankingScore desc)", () => {
@@ -258,8 +268,14 @@ describe("wiring + scope", () => {
   it("the pipeline passes usedFunnelCandidateIds to both functions and registers the winner", () => {
     expect(pipelineSrc).toContain("usedFunnelCandidateIds: Set<string>;");
     expect(pipelineSrc).toContain("usedFunnelCandidateIds: new Set(),");
+    /**
+     * RONDE 176 wraps the pool in `reorderShortlistForBeat` before the cut, so the first argument
+     * is no longer the bare `funnelCandidates`. What this test guards — the used-set reaches the
+     * shortlist so a later beat cannot re-take an earlier beat's pick — is unchanged, and the
+     * wrapper is asserted to be a REORDERING rather than a filter in ronde175BeatFitJudgement.
+     */
     expect(pipelineSrc).toMatch(
-      /buildDownloadShortlist\(\s*funnelCandidates,\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds\s*\)/
+      /buildDownloadShortlist\(\s*reorderShortlistForBeat\(funnelCandidates, beatContext\),\s*MAX_FUNNEL_CANDIDATES_TO_SCORE,\s*dedup\.usedFunnelCandidateIds,\s*sourcingAudit\s*\)/
     );
     expect(pipelineSrc).toMatch(
       // RONDE 61 added a third argument (the gate's refusal set); the used-set is still passed.
@@ -272,14 +288,33 @@ describe("wiring + scope", () => {
     expect(funnelSrc).toContain("export const STOCK_TIER_WIN_MARGIN = 1.0;");
     expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;");
     expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;");
+    /**
+     * RONDE 163 gave the curated archive its own cap. The two constants above are unchanged —
+     * every other source is still capped exactly as before — and the point of this guard, that
+     * the caps are stated as constants rather than scattered as literals, still holds.
+     */
+    expect(funnelSrc).toContain("const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;");
     expect(funnelSrc).toContain("export const FUNNEL_CANDIDATE_POOL_LIMIT = 15;");
+    /**
+     * RONDE 170: the caps are still constants and still applied one source at a time. The counter
+     * this used to look for by name (`cutByCap++`) was an implementation detail of the old
+     * single-pass loop; the rule it stood for — that what the cap refuses is counted separately
+     * from what the budget refuses — is asserted on the audit itself in ronde163/164/170.
+     */
+    expect(funnelSrc).toContain("const cutByCap = capOverflow.length - backfilledFromCap;");
+    expect(funnelSrc).toContain("if (STOCK_SOURCES.has(c.source)) continue;");
     expect(funnelSrc).toContain("export const MAX_FUNNEL_CANDIDATES_TO_SCORE = 6;");
     expect(funnelSrc).toContain("internet_archive: 0.15,");
     expect(funnelSrc).toContain("wikimedia: 0.10,");
     expect(funnelSrc).toContain("pexels: 0,");
-    // The sort and the cap loop are still the original ones.
+    // The sort is still the original one — relevance decides who fills the slots.
     expect(funnelSrc).toContain("const sorted = [...pool].sort((a, b) => b.rankingScore - a.rankingScore);");
-    expect(funnelSrc).toContain("if (used >= capFor(c.source)) continue;");
+    /**
+     * The cap loop still consults capFor and still skips a candidate whose source is full. RONDE
+     * 163 counts the skip on the way past so a log can say where candidates were lost, which is
+     * why the statement is no longer a one-liner. The rule it enforces is identical.
+     */
+    expect(funnelSrc).toContain("if (used >= capFor(c.source)) {");
   });
 
   it("no score is mutated, no penalty and no randomisation were introduced", () => {

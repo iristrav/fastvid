@@ -46,8 +46,25 @@ export function healQualityReportForExport(
   if (exportReady && healed < minScore) {
     healed = Math.max(healed, minScore);
   }
+  /**
+   * RONDE 124 — keep the number the quality inputs actually produced.
+   *
+   * `report.score = healed` used to be the whole story, and the pre-policy value survived only in
+   * a console line that nothing stored. The two are different claims and both are now on the
+   * report: the raw one can never be raised by a policy, and the adjusted one is recorded only
+   * when a policy genuinely moved it.
+   *
+   * Set BEFORE the assignment below, and set unconditionally — a render the policy did not touch
+   * still has to be able to say what its raw score was, or a reader cannot tell "the policy did
+   * not fire" from "this field was never written".
+   */
+  if (report.rawVisualQualityScore === undefined) report.rawVisualQualityScore = report.score;
   if (healed > report.score) {
-    report.warnings.push(`Quality score self-healed to ${healed}/100 for export`);
+    report.warnings.push(
+      `Visual quality raw=${report.rawVisualQualityScore}/100, raised to ${healed}/100 by the ` +
+        `export-availability policy (availability, not picture quality)`
+    );
+    report.availabilityAdjustedScore = healed;
   }
   report.score = healed;
   return report;
@@ -210,10 +227,20 @@ export function enforceQualityExportGate(
     const beatsFilled = report.adoptAuditSummary?.beatsFilled ?? 0;
     const fallbackRatio = beatsFilled > 0 ? fallbackBeats / beatsFilled : 0;
     const realClipRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
+    /**
+     * RONDE 124 — the same two numbers, laid out so neither can be read as the other.
+     *
+     * `raw` is what the quality inputs measured. `availabilityAdjusted` is what the
+     * export-availability policy raised it to, and the ratios below are the two signals that
+     * policy actually consults — a montage of real archive clips with no fallback beats reaches
+     * 85 on source type alone, which says nothing about whether the pictures fit the narration.
+     */
     console.warn(
-      `[Quality] Video ${videoId}: rawScore=${before} healedScore=${report.score}/100 (min ${minScore}) ` +
-        `fallbackRatio=${fallbackRatio.toFixed(2)} realClipRatio=${realClipRatio.toFixed(2)} — continuing export ` +
-        `(healed score reflects export-availability policy, not actual visual quality)`
+      `[Quality] Video ${videoId}: visual quality raw=${before}/100, ` +
+        `availabilityAdjusted=${report.score}/100 (export minimum ${minScore}) | ` +
+        `availability: realClipRatio=${realClipRatio.toFixed(2)} fallbackRatio=${fallbackRatio.toFixed(2)} ` +
+        `— continuing export. The adjusted number is an availability decision, NOT a measurement ` +
+        `of picture quality; raw is the measurement.`
     );
   }
 

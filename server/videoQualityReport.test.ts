@@ -110,12 +110,40 @@ describe("buildVideoQualityReport", () => {
       }
     );
     expect(report.visualTopic).toBe("wwii");
-    expect(report.score).toBeGreaterThanOrEqual(85);
+    /**
+     * SUPERSEDED BY RONDE 105, deliberately — this asserted the defect.
+     *
+     * The claim was "archive-only WWII with vision-tracked adopts scores high", and the score it
+     * measured was `45 + avg*5.5 + min*0.5` over CLIP's `visionScore10`. RONDE 103 removed CLIP as
+     * the content decider because its verdicts on exactly this material are inverted (RONDE 58:
+     * a white-lives-matter sticker 0.2226 against a signed photograph of Hitler 0.2116, same
+     * beat), and the report went on grading renders with it. A production render shipped
+     * `100/100 (Excellent)` on a montage the vision model had approved not one frame of.
+     *
+     * This call supplies no relevance ledger, so nothing here was ever checked by the one content
+     * decider this pipeline has. The honest score for that is a floor with a status attached, and
+     * that is now what it gets. The geo assertion below is untouched and is what this case was
+     * really about.
+     */
+    expect(report.qualityStatus).toBe("INSUFFICIENT_VERIFICATION");
+    expect(report.score).toBeLessThan(85);
+    expect(report.qualityReason).toContain("beats");
     expect(report.criticalGeoViolations ?? []).toHaveLength(0);
   });
 
-  it("computeMeritQualityScore rewards strong vision averages", () => {
-    const score = computeMeritQualityScore({
+  it("computeMeritQualityScore no longer rewards strong CLIP averages", () => {
+    /**
+     * SUPERSEDED BY RONDE 105, deliberately — the rule is inverted, on purpose.
+     *
+     * This asserted that two adopts with CLIP scores of 8 and 9 earn at least 88. That is the
+     * mechanism that produced `100/100` for a render nobody had looked at: only four of the
+     * pipeline's adopt sites record a CLIP score at all, so the average was over a handful of
+     * clips and the base term reached its ceiling whenever those few scored well.
+     *
+     * The base is now the share of beats with their OWN footage that the vision model approved.
+     * A high CLIP average with no relevance verdicts must not move it.
+     */
+    const verdict = computeMeritQualityScore({
       totalClips: 3,
       archiveCount: 3,
       stockCount: 0,
@@ -130,7 +158,26 @@ describe("buildVideoQualityReport", () => {
         { sceneIndex: 0, beatIndex: 1, beatText: "b", basename: "b.mp4", source: "archive", visionScore10: 9 },
       ],
     });
-    expect(score).toBeGreaterThanOrEqual(88);
+    expect(verdict.status).toBe("INSUFFICIENT_VERIFICATION");
+    expect(verdict.score).toBeLessThan(85);
+
+    // A perfect CLIP score changes nothing, which is the whole point.
+    const perfect = computeMeritQualityScore({
+      totalClips: 3,
+      archiveCount: 3,
+      stockCount: 0,
+      fallbackBeats: 0,
+      offTopicCount: 0,
+      geoViolationCount: 0,
+      archiveOnly: true,
+      fastShort: true,
+      byMixKind: { real_video: 3, photo: 0, stock: 0, screenshot: 0, motion_graphics: 0 },
+      adoptAudit: [
+        { sceneIndex: 0, beatIndex: 0, beatText: "a", basename: "a.mp4", source: "archive", visionScore10: 10 },
+        { sceneIndex: 0, beatIndex: 1, beatText: "b", basename: "b.mp4", source: "archive", visionScore10: 10 },
+      ],
+    });
+    expect(perfect.score).toBe(verdict.score);
   });
 
   it("Singapore geo violations are detected in report", () => {

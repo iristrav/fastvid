@@ -6,13 +6,17 @@ import type { Express, Request, Response } from "express";
 import express from "express";
 import Stripe from "stripe";
 import { updateUserSubscription, getUserByStripeCustomerId } from "./db";
+import { describeStripeKeyProblem, stripeKeyProblem, stripeSecretKeyFromEnv } from "./_core/env";
 
 // Lazy Stripe initialization — prevents crash on startup when STRIPE_SECRET_KEY is not yet set
 let _stripe: Stripe | null = null;
 function getStripe(): Stripe {
   if (!_stripe) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+    const key = stripeSecretKeyFromEnv();
+    // Same guard as the tRPC side, from the same validator — a key that is refused for the admin
+    // panel must not be quietly accepted for webhooks.
+    const problem = stripeKeyProblem(key);
+    if (problem) throw new Error(describeStripeKeyProblem(problem, key));
     _stripe = new Stripe(key);
   }
   return _stripe;

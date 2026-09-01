@@ -2,6 +2,11 @@ import fs from "fs";
 import path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBeatImageGateState } from "./beatImageRelevanceGate";
+import {
+  createBeatRelevanceLedger,
+  recordExternalRelevanceVerdict,
+  reprieveBeatClip,
+} from "./beatVisualRelevance";
 import { fetchYoutubeVideoContext, _resetYoutubeVideoContextCache } from "./youtubeVideoContext";
 
 /**
@@ -35,13 +40,18 @@ const PIPELINE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"),
 describe("RONDE 67 — a refused clip beats a placeholder", () => {
   it("the adoption loop moves a refusal to the back of the queue instead of dropping it", () => {
     const src = PIPELINE();
-    const idx = src.indexOf("const gateReprieved = new Set<string>();");
+    const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 14000);
-    expect(block).toContain("gateReprieved.add(p);");
+    const block = src.slice(idx, idx + 15500);
+    expect(block).toContain("requeuedAfterRefusal.add(p);");
     expect(block).toContain("finalPaths.push(p);");
     // The gate is not applied a second time to a clip that has already been refused.
-    expect(block).toContain("!gateReprieved.has(p) &&");
+    // RONDE 104 renamed this set to say what it is: bookkeeping about what this loop has
+    // already RE-OFFERED, which is not the same fact as the ledger's verdict. Deriving it from
+    // the ledger would adopt a clip another route refused on this beat immediately instead of
+    // putting it last, and the reprieve exists precisely to make a refused picture the last
+    // resort rather than the first.
+    expect(block).toContain("!requeuedAfterRefusal.has(p) &&");
   });
 
   it("the queue it appends to is a copy it owns", () => {
@@ -62,15 +72,61 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
   });
 
   it("a reprieve is announced, so it is never silent", () => {
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately — and the rule got stricter.
+     *
+     * RONDE 67 required the reprieve to be announced. That was necessary but not sufficient: the
+     * announcement went to the log while the pipeline itself carried the clip forward as though
+     * it had passed, so nothing downstream — and nothing in the quality report — could tell a
+     * shot used over the picture editor's objection from one nobody objected to. The reprieve is
+     * now recorded against the clip, with the verdict left as the model gave it.
+     */
     const src = PIPELINE();
-    expect(src).toContain("[BeatImageGate] reprieve s${sceneIndex}b${beatIndex}");
+    expect(src).toContain("reprieveBeatClip(dedup.beatRelevance,");
     expect(src).toContain("a real picture beats a placeholder");
+
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    const idx = mod.indexOf("export function reprieveBeatClip(");
+    expect(idx).toBeGreaterThan(-1);
+    const block = mod.slice(idx, mod.indexOf("\n}", idx));
+    // The verdict is NOT relabelled — that is the RONDE 103 addition.
+    expect(block).toContain("allowed: true, reprieved: true");
+    expect(block).not.toContain('verdict: "fits"');
+
+    /**
+     * RONDE 166 moved the announcement into the shared [VisualFitDecision] line, so the rule is
+     * asserted on the line the function actually emits rather than on the string it used to
+     * build. Same rule, checked one level closer: a reprieve is announced, and the announcement
+     * names the verdict it is overruling.
+     */
+    const ledger = createBeatRelevanceLedger();
+    recordExternalRelevanceVerdict(
+      ledger, "/w/r67.mp4", "k:r67",
+      { sceneIndex: 1, beatIndex: 6, beatText: "the beat" },
+      {
+        verdict: "does_not_fit",
+        depicts: "a newsreel crowd",
+        reason: "this is from a different decade than the narration describes",
+      },
+      "funnel"
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(reprieveBeatClip(ledger, "/w/r67.mp4", "nothing else passed")).toBe(true);
+      const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes("decision=REPRIEVED"));
+      expect(line, "a reprieve must never be silent").toBeTruthy();
+      expect(line).toContain("verdict=does_not_fit");
+      expect(line).not.toContain("verdict=fits");
+    } finally {
+      log.mockRestore();
+    }
+    expect(ledger.byClipPath.get("/w/r67.mp4")!.decision.verdict).toBe("does_not_fit");
   });
 
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
     const src = PIPELINE();
-    const idx = src.indexOf("const gateReprieved = new Set<string>();");
-    const block = src.slice(idx, idx + 14000);
+    const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
+    const block = src.slice(idx, idx + 15500);
     expect(block).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });
 
@@ -186,13 +242,30 @@ describe("RONDE 67 — 'said no' and 'could not look' are different numbers now"
 
   it("the quality report separates the two, and warns when the verdicts were mostly unobtainable", () => {
     const src = PIPELINE();
-    expect(src).toContain("beat image gate — judged=${g.judgementsUsed} unavailable=${g.judgementsFailed}");
+    /**
+     * SUPERSEDED BY RONDE 105, deliberately — the rule got sharper.
+     *
+     * RONDE 67's rule is that "the gate looked and said no" and "the gate could not look" are
+     * different numbers. That holds. What was wrong was the arithmetic around them: `judgementsUsed`
+     * counted ATTEMPTS and `judgementsFailed` counted the failures among them, so the report
+     * divided by used+failed and printed "44 of 88" for a render where the model had answered
+     * nothing at all. The counters now partition, and the line prints the partition.
+     */
+    expect(src).toContain("beat image gate — attempts=${t.attempts} ");
+    expect(src).toContain("answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch})");
+    // SUPERSEDED BY RONDE 119: the counter this label names is `judgementsFailed`, which now
+    // means only what it says — a provider answered and the judgement itself failed. Provider
+    // exhaustion (Groq's spent day, an out-of-capacity chain) moved to `never_asked`, so calling
+    // this one "unavailable" pointed at the wrong number.
+    expect(src).toContain("failed=${t.failed} never_asked=${t.skipped}");
     expect(src).toContain("ONGEZIEN aangenomen");
   });
 
   it("the warning does not fire on a render where the model was merely slow once or twice", () => {
     const src = PIPELINE();
     // Needs at least 3 failures AND a quarter of the total before it is worth saying.
-    expect(src).toContain("g.judgementsFailed >= Math.max(3, g.judgementsUsed * 0.25)");
+    expect(src).toContain("t.failed >= Math.max(3, t.attempts * 0.25)");
+    // ...and a render where NOTHING was answered gets its own, louder line.
+    expect(src).toContain("t.attempts > 0 && t.answered === 0");
   });
 });

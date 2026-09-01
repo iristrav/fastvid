@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { canonicalEntityKey, providerFromContentKey } from "./visualSearchMemory";
+import { adoptedClipMemoryRow, canonicalEntityKey, providerFromContentKey } from "./visualSearchMemory";
 
 // RONDE 28 — the search memory ("which source found usable footage for this subject") existed
 // but barely recorded anything, and part of what it did record was wrong.
@@ -343,13 +343,38 @@ describe("RONDE 28b — dead ends are readable, and kept apart from the proven l
 });
 
 describe("RONDE 28 — the score is stored on the scale the column expects", () => {
+  /**
+   * Was a source-text window between two markers. RONDE 131 split the write out of
+   * `recordAdoptedClipSource` into `adoptedClipMemoryRow`, which moved the arithmetic out of the
+   * slice — and, better, made the row itself something a test can simply look at. Asserting on the
+   * value beats asserting on the expression that computes it.
+   */
+  const row = (score10: number | null | undefined) =>
+    adoptedClipMemoryRow({
+      subject: "Hermann Göring",
+      subjectType: "person",
+      query: "Göring 1936",
+      contentKey: "wikimedia:File_Goering.jpg",
+      score10,
+    });
+
   it("converts the gate's 0-10 into the column's 0-100", () => {
-    const fn = memorySrc.slice(
-      memorySrc.indexOf("export function recordAdoptedClipSource("),
-      memorySrc.indexOf("Prior successful queries/sources"),
-    );
-    expect(fn).toContain("input.score10 * 10");
-    expect(fn).toContain("Math.max(0, Math.min(100,");
+    expect(row(8.2)?.qualityScore).toBe(82);
+    expect(row(10)?.qualityScore).toBe(100);
+    expect(row(0)?.qualityScore).toBe(0);
+    expect(row(7.55)?.qualityScore).toBe(76); // rounded, not truncated
+  });
+
+  it("clamps rather than storing a value the column cannot hold", () => {
+    expect(row(12)?.qualityScore).toBe(100);
+    expect(row(-3)?.qualityScore).toBe(0);
+  });
+
+  it("no score at all stores no score, rather than a zero that reads as 'bad'", () => {
+    expect(row(undefined)?.qualityScore).toBeUndefined();
+    expect(row(null)?.qualityScore).toBeUndefined();
+    expect(row(Number.NaN)?.qualityScore).toBeUndefined();
+    expect(row(Number.POSITIVE_INFINITY)?.qualityScore).toBeUndefined();
   });
 });
 

@@ -8,6 +8,26 @@ import {
   searchOpenverseCandidates,
 } from "./scenePool";
 
+/**
+ * RONDE 91 — this file calls the scene candidate pool's provider searches directly, outside any
+ * beat.
+ *
+ * In production those searches run inside a beat's provenance scope (withSearchProvenance), which
+ * is what lets the gate verify a query against what the script actually says. A direct call has no
+ * such scope, so strict mode refuses it — correctly: a query nobody can trace is exactly what the
+ * gate exists to stop.
+ *
+ * That refusal is not this file's subject. It tests what happens AFTER a query is admitted — the
+ * response parsing, the per-source dedup, the concurrency ceiling, the allSettled isolation. The
+ * gate's own behaviour, including the refusal above, is covered by ronde89ProviderGate,
+ * ronde90SearchProvenance and ronde91SearchCleanup.
+ *
+ * Set at module scope, not in beforeAll: suites here snapshot process.env while the file is being
+ * evaluated and restore it before every test.
+ */
+process.env.SEARCH_GATE_STRICT = "false";
+
+
 // FASE 3 — Maximum Real Footage Discovery: 4 new metadata-only sources (Openverse, NASA, NARA,
 // Library of Congress) added to the unified Retrieval Funnel, mirroring the FASE 2 pattern for
 // Internet Archive/Europeana. These tests cover discovery (success/empty/malformed/timeout/
@@ -402,7 +422,10 @@ describe("buildSceneCandidatePool — FASE 3 new-source integration", () => {
     }) as unknown as typeof fetch;
     const pool = await buildSceneCandidatePool({
       sceneIndex: 0,
-      sceneText: "test",
+      // RONDE 93: the pool now searches inside a scope built from its own sceneText, exactly as
+      // production does — the pool's queries come from the scene. A fixture whose scene text does
+      // not contain its own query is not a lighter test, it is a scene that never existed.
+      sceneText: "test query",
       primaryQuery: "test query",
       skipPexels: true,
       skipPixabay: true,
@@ -422,7 +445,10 @@ describe("buildSceneCandidatePool — FASE 3 new-source integration", () => {
     global.fetch = fetchSpy as unknown as typeof fetch;
     await buildSceneCandidatePool({
       sceneIndex: 0,
-      sceneText: "test",
+      // RONDE 93: the pool now searches inside a scope built from its own sceneText, exactly as
+      // production does — the pool's queries come from the scene. A fixture whose scene text does
+      // not contain its own query is not a lighter test, it is a scene that never existed.
+      sceneText: "test query",
       primaryQuery: "test query",
       skipPexels: true,
       skipPixabay: true,

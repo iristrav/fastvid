@@ -644,14 +644,28 @@ describe("RONDE 87 §L — observability only", () => {
     expect(PIPELINE_SRC).toContain("return withGlobalMediaFetch(() => downloadToFileStreamingInner(");
     // RONDE 84 candidate depth and RONDE 85's moving filler.
     expect(PIPELINE_SRC).toContain("export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;");
-    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(1);
+    // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD
+    // =freeze override, and the remainder after slowing is capped at 2x (the absolute last
+    // technical fallback). A THIRD would still mean a freeze had leaked back in.
+    expect((PIPELINE_SRC.match(/tpad=stop_mode=clone/g) ?? []).length).toBe(2);
     // RONDE 86 search-performance cap.
     expect(PIPELINE_SRC).toContain("if (queue.length >= prepareCap) break;");
   });
 
   it("TEST 44 — the audit can never fail a render", () => {
     const idx = PIPELINE_SRC.indexOf("const deliveredScenes = new Set(finalConcatInputs");
-    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), idx + 3600);
+    /**
+     * The window is bounded by the block's OWN end marker, not by a character count.
+     *
+     * RONDE 94 (AssetUsageSummary), 105 ([FinalVisualReport] and the per-beat problems) and 165
+     * (the lifecycle audit) each added lines inside this same try, and each time a fixed +N window
+     * stopped reaching the catch — a green test turning red on a change that did not break the
+     * rule it guards. The rule is unchanged: everything the audit prints sits inside a try whose
+     * catch is non-fatal, so the assertion runs to where that block actually ends.
+     */
+    const end = PIPELINE_SRC.indexOf("── P6: Gather async reviews", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = PIPELINE_SRC.slice(Math.max(0, idx - 600), end);
     expect(block).toContain("try {");
     expect(block).toContain("[VisualAudit] audit reporting failed (non-fatal)");
   });

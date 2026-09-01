@@ -56,6 +56,29 @@ async function frozenSegments(file: string): Promise<number> {
   return (stderr.match(/freeze_start/g) ?? []).length;
 }
 
+/**
+ * RONDE 111 — how many genuinely NEW pictures a second the file shows.
+ *
+ * freezedetect answers "did the picture stop for at least d seconds", which misses the failure
+ * this round is about: a stretch that holds every frame for 0.4s is a slideshow and never trips a
+ * 0.5s (let alone the production 2.5s) threshold. mpdecimate drops frames that duplicate their
+ * predecessor, so what survives is the real picture rate.
+ */
+async function distinctFramesPerSecond(file: string): Promise<number> {
+  const decimated = `${file}.decimated.mp4`;
+  await exec(FFMPEG, [
+    "-y", "-i", file, "-vf", "mpdecimate=hi=64*12:lo=64*5:frac=0.33",
+    "-vsync", "vfr", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", decimated,
+  ], { maxBuffer: 32 * 1024 * 1024 });
+  const { stdout } = await exec(FFPROBE, [
+    "-v", "error", "-select_streams", "v:0", "-count_frames",
+    "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", decimated,
+  ]);
+  const frames = parseInt(String(stdout).trim(), 10);
+  const seconds = await probeDuration(file);
+  return seconds > 0 ? frames / seconds : 0;
+}
+
 async function renderWith(vf: string, outDur: number, name: string): Promise<string> {
   const out = path.join(workDir, `${name}.mp4`);
   await exec(FFMPEG, [
@@ -88,18 +111,35 @@ afterAll(() => {
 /* ═════════════ §A — the filter no longer freezes ═════════════ */
 
 describe("RONDE 85 §A — the tail filler is a slow-down, not a held frame", () => {
+  /**
+   * SUPERSEDED BY RONDE 111 — the same goal, reached without the trap this version walked into.
+   *
+   * RONDE 85 removed the held frame by slowing the montage instead, and left the ratio uncapped
+   * on purpose: a cap leaves a remainder, and the only fillers for a remainder were the two this
+   * round existed to delete. Measured later against real ffmpeg, with no interpolation anywhere
+   * in the chain, that was a freeze arriving through a different filter:
+   *
+   *     1.5x → each picture holds 0.10s     6x  → 0.32s
+   *     3.0x → 0.18s                        10x → 0.59s
+   *
+   * So the ratio is capped at 2x. Under the cap this round's behaviour is unchanged, which is
+   * what these two now assert; over it, the answer has to be real footage, which is why the
+   * coverage backfill spends its extra searches exactly there (see RONDE 111).
+   */
   it("a short montage is stretched to the voice length", () => {
-    const chain = montageTailPadFilterChain(3, 8, "test");
+    const chain = montageTailPadFilterChain(6, 8, "test");
     expect(chain).toContain("setpts=");
     expect(chain).toContain("*PTS,");
     expect(chain, "the held frame is gone").not.toContain("tpad=stop_mode=clone");
   });
 
-  it("the ratio is the gap it has to fill", () => {
-    // 3s of footage under an 8s voice track has to run at 8/3 = 2.666667x its own length.
-    expect(montageTailPadFilterChain(3, 8, "test")).toBe("setpts=2.666667*PTS,");
+  it("the ratio is the gap it has to fill, up to the 2x cap", () => {
+    // 6s of footage under an 8s voice track runs at 8/6 = 1.333333x its own length.
+    expect(montageTailPadFilterChain(6, 8, "test")).toBe("setpts=1.333333*PTS,");
     expect(montageTailPadFilterChain(10, 12, "test")).toBe("setpts=1.200000*PTS,");
     expect(montageTailPadFilterChain(20, 20.5, "test")).toBe("setpts=1.025000*PTS,");
+    // Exactly at the cap is still pure slowing.
+    expect(montageTailPadFilterChain(4, 8, "test")).toBe("setpts=2.000000*PTS,");
   });
 
   it("the whole video-filter chain keeps its shape", () => {
@@ -174,17 +214,17 @@ describe("RONDE 85 §C — ffmpeg's own freezedetect confirms it", () => {
   it("the old filler produced a frozen frame and the new one does not", async () => {
     expect(ffmpegAvailable, "ffmpeg unavailable in this environment").toBe(true);
 
-    // Same 3-second source, same 8-second target, both fillers.
+    // Same 3-second source, same 6-second target (2x — within RONDE 111's cap), both fillers.
     const held = await renderWith(
-      `tpad=stop_mode=clone:stop_duration=5.000,${FPS_FORMAT_VF}`, 8, "held"
+      `tpad=stop_mode=clone:stop_duration=3.000,${FPS_FORMAT_VF}`, 6, "held"
     );
     const slowed = await renderWith(
-      `${montageTailPadFilterChain(3, 8, "test")}${FPS_FORMAT_VF}`, 8, "slowed"
+      `${montageTailPadFilterChain(3, 6, "test")}${FPS_FORMAT_VF}`, 6, "slowed"
     );
 
     // Both fill the voice track exactly — the fix must not shorten the scene.
-    expect(await probeDuration(held)).toBeCloseTo(8, 1);
-    expect(await probeDuration(slowed)).toBeCloseTo(8, 1);
+    expect(await probeDuration(held)).toBeCloseTo(6, 1);
+    expect(await probeDuration(slowed)).toBeCloseTo(6, 1);
 
     // And this is the whole point of the round.
     expect(await frozenSegments(held), "the old filler should freeze — otherwise this test proves nothing")
@@ -192,13 +232,53 @@ describe("RONDE 85 §C — ffmpeg's own freezedetect confirms it", () => {
     expect(await frozenSegments(slowed), "the new filler must not freeze").toBe(0);
   }, 180_000);
 
-  it("a large gap still produces moving picture", async () => {
+  it("slowing within the cap keeps moving", async () => {
     expect(ffmpegAvailable).toBe(true);
-    // Scene 16 from render 536: 7.0s of footage under a 20.8s voice track, ratio ~2.97x.
-    const vf = `${montageTailPadFilterChain(3, 12, "test")}${FPS_FORMAT_VF}`;
-    const out = await renderWith(vf, 12, "wide");
-    expect(await probeDuration(out)).toBeCloseTo(12, 1);
-    expect(await frozenSegments(out), "even a 4x stretch must keep moving").toBe(0);
+    // The source really is 3 seconds, so the filter has to be asked for a 3s montage.
+    const vf = `${montageTailPadFilterChain(3, 6, "test")}${FPS_FORMAT_VF}`;
+    const out = await renderWith(vf, 6, "wide");
+    expect(await probeDuration(out)).toBeCloseTo(6, 1);
+    expect(await frozenSegments(out), "a 2x stretch must keep moving").toBe(0);
+    /**
+     * ...and it is still real motion. Measured against the SOURCE's own picture rate rather than
+     * an absolute number: mpdecimate's threshold makes the absolute count depend on the material,
+     * so only the ratio between the two is meaningful. At 2x, half the source's rate is the
+     * arithmetic floor and anything near it is honest slow motion.
+     */
+    const sourceRate = await distinctFramesPerSecond(sourceClip);
+    expect(await distinctFramesPerSecond(out)).toBeGreaterThan(sourceRate * 0.4);
+  }, 180_000);
+
+  /**
+   * RONDE 111 — the measurement that made the cap necessary.
+   *
+   * This is the case RONDE 85 believed it had solved: a gap far wider than the footage. The
+   * uncapped stretch it produced is frozen by ffmpeg's own definition, which is exactly why the
+   * remainder is now answered with real footage instead.
+   */
+  it("an UNCAPPED stretch is a slideshow — the measurement behind the 2x cap", async () => {
+    expect(ffmpegAvailable).toBe(true);
+    // What RONDE 85 emitted for 1.2s of footage under a 12s voice track: 10x, uncapped.
+    const uncapped = await renderWith(`setpts=10.000000*PTS,${FPS_FORMAT_VF}`, 12, "uncapped");
+    expect(await probeDuration(uncapped)).toBeCloseTo(12, 1);
+
+    // There is no interpolation in the chain: setpts spreads the timeline and fps=25 fills the
+    // space by repeating frames. At 10x each source frame is held for ten output frames — 0.4s —
+    // so the viewer gets fewer than three new pictures a second where footage would give 25.
+    const rate = await distinctFramesPerSecond(uncapped);
+    expect(rate, "10x must collapse the new-picture rate").toBeLessThan(5);
+    const capped = await renderWith(`setpts=2.000000*PTS,${FPS_FORMAT_VF}`, 6, "capped");
+    expect(
+      await distinctFramesPerSecond(capped),
+      "the capped stretch must show markedly more new pictures than the uncapped one"
+    ).toBeGreaterThan(rate * 2);
+
+    /**
+     * And this is why it went unnoticed for so long: postRenderSpotCheck runs freezedetect with
+     * d=2.5, and even at d=0.5 a 0.4-second hold does not reach the threshold. The render's own
+     * QA reports a clean file. The number to watch is the one above, not this one.
+     */
+    expect(await frozenSegments(uncapped)).toBe(0);
   }, 180_000);
 });
 
@@ -207,12 +287,23 @@ describe("RONDE 85 §C — ffmpeg's own freezedetect confirms it", () => {
 describe("RONDE 85 §D — the rest of the compose path is untouched", () => {
   const SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("the only remaining clone-pad is behind the explicit override", () => {
+  it("clone-padding exists in exactly two places, both of them named", () => {
+    /**
+     * SUPERSEDED BY RONDE 111: there are two now, and that is the design rather than a leak.
+     *   1. the MONTAGE_TAIL_PAD=freeze operator override, unchanged;
+     *   2. the remainder after slowing has been capped at 2x — the absolute last technical
+     *      fallback, reached only when every search, the short-clip round and re-using the
+     *      scene's own footage in motion have all come back empty.
+     * A third would be a leak, which is what this still guards.
+     */
     const occurrences = (SRC.match(/tpad=stop_mode=clone/g) ?? []).length;
-    expect(occurrences, "a second freeze site would defeat the round").toBe(1);
-    const idx = SRC.indexOf("tpad=stop_mode=clone");
-    const guard = SRC.slice(Math.max(0, idx - 700), idx);
-    expect(guard).toContain('mode === "freeze"');
+    expect(occurrences, "a third freeze site would defeat the round").toBe(2);
+    const first = SRC.indexOf("tpad=stop_mode=clone");
+    expect(SRC.slice(Math.max(0, first - 700), first)).toContain('mode === "freeze"');
+    const second = SRC.indexOf("tpad=stop_mode=clone", first + 1);
+    expect(SRC.slice(Math.max(0, second - 900), second)).toContain(
+      "The absolute last technical fallback."
+    );
   });
 
   it("the single-clip montage fills its gap too", () => {

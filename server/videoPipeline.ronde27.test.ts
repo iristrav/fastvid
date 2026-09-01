@@ -238,7 +238,12 @@ describe("RONDE 27d — the quality report describes what actually happened", ()
   });
 
   it("reports the shortfall itself, which is true either way", () => {
-    expect(pipelineSrc).toContain("had less footage than voice");
+    // The sentence moved into videoQualityReport with RONDE 132 §10, which added the seconds and
+    // the clip counts to it. The claim — the render reports its own shortfall — is unchanged.
+    const { readFileSync } = require("fs") as typeof import("fs");
+    const { join } = require("path") as typeof import("path");
+    const report = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
+    expect(report).toContain("had less footage than voice");
     expect(pipelineSrc).toContain("visual coverage incomplete");
   });
 });

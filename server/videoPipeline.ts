@@ -22,7 +22,6 @@
  */
 import { createHash } from "crypto";
 import { exec as execCb, execFile as execFileCb } from "child_process";
-import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -32,12 +31,20 @@ import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
+import { personNameForGap } from "./archiveGapNames";
+import { stillImageMaxSec } from "./stillImagePolicy";
+import {
+  classifyProviderFailure,
+  cooldownMsForFailure,
+  formatProviderCooldown,
+  formatRetryGuard,
+  shouldRetryAfterFailure,
+} from "./providerFailureClass";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
-import { generateHiggsfieldTextToVideo, generateHiggsfieldImageToVideo } from "./_core/higgsfieldVideo";
 import {
   generateKlingBeatVideo,
   klingBeatFallbackEnabled,
@@ -52,8 +59,6 @@ import {
   buildStillEncodeArgs,
   buildWikimediaDocumentaryVF,
   documentaryStyleEnabled,
-  renderHighlightCaptionOverlay,
-  renderNameBadgeOverlay,
   resolveStillCompositionVF,
   stillOutputFrameCount,
   type TimedOverlay,
@@ -71,7 +76,6 @@ import {
   extractPrimaryGeoSearchTag,
   extractPrimaryVisualAnchor,
   extractSceneSearchTags,
-  extractVisualSearchTags,
   inferVideoVisualTopic,
   isOffTopicProtestForBeat,
 } from "./visualBeatTags";
@@ -83,7 +87,10 @@ import {
 } from "./visualMixPolicy";
 import {
   createGateFiringStats,
+  describeSilentGate,
+  findOutOfScopeGates,
   findSilentGates,
+  summarizeDemotedGates,
   formatGateFiringSummary,
   getActiveGateFiringStats,
   recordGateVerdict,
@@ -91,12 +98,7 @@ import {
 } from "./gateFiringStats";
 import {
   buildCinematicOverlays,
-  buildBeatAlignedYearOverlays,
-  planBeatAlignedYears,
-  planIntervalScreenLabels,
   planVoiceSyncedScreenLabels,
-  computeVoiceBeatWindows,
-  computeVoiceSyncedClipDurations,
   pickVoiceBackfillBeatIndex,
   finalizeVoiceSyncedMontageDurations,
   resolveVoiceSyncMontagePlan,
@@ -119,6 +121,7 @@ import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
+import { openAiKeyFromEnv } from "./_core/env";
 import {
   extractFullNarrationText,
   parseMarkdownNarrationBlocks,
@@ -130,7 +133,6 @@ import {
   buildHistoricalArchivalQueries,
   buildMediaSearchIntent,
   buildTypedRetrievalContext,
-  combinedTypedQueriesForBeat,
   extractPeriodPhrase,
   type TypedRetrievalContext,
   extractEventCue,
@@ -139,7 +141,6 @@ import {
   inferTopicKind,
   isHistoricalDocumentary,
   partitionCandidatesForIntent,
-  prefersArchivalVideo,
   prefersRealFootageOnly,
   realFootageFirstEnabled,
   rankMediaCandidates,
@@ -176,8 +177,15 @@ import {
   uniqueCoercedQueries,
 } from "./stringCoercion";
 import { createPipelineProfiler } from "./pipelineProfiler";
+import {
+  createArchiveSourcingAudit,
+  formatArchiveSourcingAudit,
+  recordBeatOutcome,
+  summarizeArchiveSourcing,
+  type ArchiveSourcingAudit,
+} from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, curatedPerfBeatsFloor, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, screenLabelIntervalSec, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, pipelineComposeGraceMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatTryTimeoutMs, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, semanticRerankClipSkipMin, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -191,11 +199,8 @@ import {
   markCuratedAssetUsed,
   prepareCuratedArchiveClip,
   isCuratedPreparedVideoClip,
-  listCuratedArchiveCandidates,
   buildVideoArchiveCandidatePool,
   buildBeatMatchTags,
-  extractTopicAnchorTags,
-  orderCuratedCandidatesForBeat,
   searchCuratedCandidatesForBeat,
   resolvePrefetchedArchiveCandidates,
   hashVarietySeed,
@@ -209,6 +214,15 @@ import {
   type CuratedCandidatePick,
   type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
+import {
+  fileSizeVerdict,
+  formatBelowQualityBar,
+  formatTechnicalReject,
+  sourceDurationVerdict,
+  minShortSideForSource,
+  stillResolutionVerdict,
+  videoResolutionVerdict,
+} from "./technicalMediaGate";
 import {
   analyzeBeatSemanticsFallback,
   analyzeBeatsSemanticsBatch,
@@ -231,7 +245,6 @@ import {
   getShotForBeat,
   enrichBeatFromShot,
   editorialSequencePlannerEnabled,
-  clearStoryboardCache,
   clearStoryboardCacheForVideo,
 } from "./editorialSequencePlanner";
 import {
@@ -239,7 +252,7 @@ import {
   editorialReorderEnabled,
 } from "./editorialReorder";
 import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequenceOptimizer";
-import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
+import { applyVisualRhythm, visualRhythmEngineEnabled } from "./visualRhythmEngine";
 import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
@@ -262,11 +275,10 @@ import {
   warnComposeTimeNetwork,
   isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
-import { clipPassesDocumentaryBeatGate, resolveBeatRegionLock, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
+import { clipPassesDocumentaryBeatGate, judgeDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectAudit } from "./clipRejectAudit";
 import {
   recordClipReject,
-  summarizeClipRejectAudit,
   createClipRejectAudit,
   beatRejectCount,
   beatRejectReasons,
@@ -288,11 +300,18 @@ import { bindLineageLedger, createClipAdoptAudit, recordClipAdopt } from "./clip
 import {
   UNVERIFIED_PROVIDER,
   VisualSourceLedger,
+  formatAssetLifecycleAudit,
+  formatAssetUsageSummary,
   formatAuditReport,
+  formatFinalVisualReport,
+  formatRenderManifest,
+  formatSelectedButNotRendered,
   formatFunnelReport,
-  formatLineageEvent,
   formatLineageLine,
   formatSourceSummary,
+  assertNoSelectedClipWithoutOutcome,
+  recordAssetOutcome,
+  type AssetOutcomeReason,
   type VisualLineageRecord,
 } from "./visualSourceLineage";
 import {
@@ -300,6 +319,48 @@ import {
   withGlobalMediaFetch,
   withGlobalVisionGate,
 } from "./globalResourceBudget";
+import {
+  buildBeatSearchLadder,
+  buildPrioritisedQueries,
+  checkPersonName,
+  formatSearchGateReport,
+  type VerifiedSearchQuery,
+  emptyQueryContext,
+  getSearchProvenance,
+  searchGateDecision,
+  withSearchProvenance,
+  isFunctionWord,
+  isPronounToken,
+  provenToken,
+  type VerifiedQueryContext,
+} from "./searchQueryContract";
+import { formatFallback } from "./renderCorrelation";
+import type { YoutubePoolSearch } from "./scenePool";
+
+/**
+ * RONDE 177 — the YouTube search the SCENE POOL should use, or nothing.
+ *
+ * R175 gave `buildSceneCandidatePool` a YouTube task and R176's audit then found the last missing
+ * link: no production call site passed the search function in, so the pool could call YouTube and
+ * never did. This is that argument, in one place so both call sites cannot drift.
+ *
+ * Returns undefined — rather than a function that returns [] — when YouTube is not configured or
+ * not enabled. The two are different facts to the pool: an absent function is recorded as
+ * `no_search_function_supplied`, while a function returning nothing is a search that happened and
+ * found nothing. Collapsing them would lose exactly the distinction §8 keeps asking for.
+ *
+ * The function itself is the pipeline's own `searchYoutubeVideoCandidates`, so the quota cooldown,
+ * the RapidAPI fallback, the licence modes and the per-render budget are the ones already in use.
+ */
+function scenePoolYoutubeSearch(sourcingCache?: SourcingCache): YoutubePoolSearch | undefined {
+  if (!youtubeSourcingEnabled() || !process.env.YOUTUBE_API_KEY) return undefined;
+  return (query, sceneIndex, license, relevanceKeywords, minRelevanceScore, requiredPersonName, maxResults) =>
+    searchYoutubeVideoCandidates(
+      query, sceneIndex, license, relevanceKeywords, minRelevanceScore,
+      requiredPersonName, maxResults, sourcingCache
+    );
+}
+export { getSearchProvenance, withSearchProvenance } from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
@@ -329,10 +390,7 @@ import {
   applyDocumentaryTasteModel,
   recordTasteModelAdoption,
   resetTasteModelScene,
-  detectDocumentaryType,
-  documentaryTasteModelEnabled,
   type TasteModelContext,
-  type TasteModelResult,
 } from "./documentaryTasteModel";
 import {
   editorialGraphicsEnabled,
@@ -344,20 +402,110 @@ import {
   type GraphicsUsageSummary,
   type GraphicPlan,
 } from "./editorialGraphicsEngine";
-import { buildEditorScenesFromPipeline } from "./editorClips";
+import {
+  buildEditorScenesFromPipeline,
+  formatManifestIdentityReport,
+  manifestRehydrationSummary,
+} from "./editorClips";
+import {
+  buildNarrationPersistence,
+  formatVoicePersistFailure,
+  formatVoicePersistSuccess,
+  persistVoiceover,
+} from "./renderPersistence";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 import {
   judgeBeatImage,
   createBeatImageGateState,
   beatImageRelevanceGateEnabled,
   MAX_JUDGEMENTS_PER_BEAT,
+  judgementTally,
+  formatNoVerdictReasons,
+  formatVerdictProviders,
   maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
+import {
+  beatIdentityKey,
+  checkBeatRelevance,
+  composeBarrierAllows,
+  createBeatRelevanceLedger,
+  recordExternalRelevanceVerdict,
+  formatRelevanceSummary,
+  inheritBeatRelevance,
+  reprieveBeatClip,
+  beatClipSeverity,
+  formatAdoptedFitDecision,
+  type BeatRelevanceLedger,
+  type BeatVisualContext,
+} from "./beatVisualRelevance";
+import { formatBeatVisualProblems, formatVisualFitAudit } from "./beatVisualStatus";
+import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
+import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
+import { isNameParticleToken } from "./searchQueryContract";
+import { formatSceneSearchBudget, sceneSearchBudgetMs } from "./sceneSearchBudget";
+import {
+  formatYoutubeLicenseLine,
+  formatYoutubeUsageReport,
+  youtubeLicenseDecision,
+  type YoutubeUsageEntry,
+} from "./youtubeLicenseStatus";
+import { composeScopeVerdict, formatComposeScopeDecision } from "./composeEligibility";
+import {
+  createOpenWebPolicyStats,
+  formatOpenWebPolicyReport,
+  formatOpenWebReject,
+  formatOpenWebUsageReport,
+  noteOpenWebDecision,
+  openWebHost,
+  openWebSourceDecision,
+  type OpenWebPolicyStats,
+  type OpenWebUsageEntry,
+} from "./openWebSourcePolicy";
+import {
+  formatArchiveLearningIndexed,
+  formatArchiveRetrieval,
+  formatNoStrongMatch,
+} from "./archiveLearningLog";
+import {
+  buildClosingTail,
+  closingTailFrameSeek,
+  closingTailSeconds,
+  formatClosingTailPlan,
+  formatClosingTailSeek,
+  trailingBlackTrimReachesClosingTail,
+} from "./closingTail";
+import {
+  SUBJECT_FALLBACK_ROUTE,
+  formatNoSubjectLine,
+  formatSubjectFallbackEmptyLine,
+  formatSubjectFallbackLine,
+  resolveBeatSubject,
+} from "./beatSubjectFallback";
+import {
+  MAX_COVERAGE_SLOWDOWN,
+  MIN_STITCHABLE_SOURCE_SEC,
+  coverageFloorSec,
+  formatCoverageFillPlan,
+  planCoverageFill,
+} from "./coverageFillPlan";
+import {
+  createPipelineReportCollector,
+  type PipelineGlance,
+} from "./renderPipelineReport";
 import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
+/**
+ * RONDE 180 — the duplicate ledger and the intent builder, both already owned elsewhere.
+ *
+ * `newLedger`/`recordUse` come from duplicateGuard, the module that also owns the penalty; and the
+ * ranking intent is built by `intentFrom`, the same function the cinematic plan uses, so the intent
+ * the ranking sees and the intent the plan records cannot describe different beats.
+ */
+import { newLedger, recordUse, type UsageLedger } from "./duplicateGuard";
+import { intentFrom } from "./cinematicPipelineInputs";
 import {
   buildRetrievalFunnel,
   findBestArchiveScoreForBeat,
@@ -365,19 +513,88 @@ import {
   orderCandidatesForBeatGap,
   pickBestFunnelCandidate,
   buildDownloadShortlist,
+  reorderShortlistForBeat,
   MAX_FUNNEL_CANDIDATES_TO_SCORE,
+  keepOnlyJudgedWinner,
   FUNNEL_CANDIDATE_POOL_LIMIT,
   type FunnelCandidate,
   type RetrievalFunnelResult,
   type ScoredFunnelCandidate,
+  BEAT_ARCHIVE_STOP_THRESHOLD,
 } from "./retrievalFunnel";
+import {
+  classifyMismatch,
+  createMismatchTally,
+  formatMismatchFeedback,
+  formatMismatchSummary,
+  formatVisualFitDecision,
+  mismatchFaultSplit,
+  recordMismatch,
+  reorderAfterMismatch,
+  reorderChangedOrder,
+  repeatOffenderSources,
+  type MismatchKind,
+  type MismatchTally,
+} from "./visualMismatchFeedback";
+import {
+  buildResearchContext,
+  createResearchTally,
+  FORCE_EXPORT_RESEARCH_MARGIN,
+  RESEARCH_ESTIMATED_COST_MS,
+  decideResearch,
+  formatResearchContext,
+  formatResearchDecision,
+  formatResearchOutcome,
+  formatResearchQuery,
+  formatResearchSummary,
+  recordResearchAttempt,
+  recordResearchOutcome,
+  recordResearchSkip,
+  type ResearchTally,
+} from "./mismatchResearch";
+import { formatVisualSourcingAudit, findUnproductiveProviders, summarizeProviderOutcomes } from "./visualSourcingAudit";
+import {
+  createExtendHoldState,
+  formatExtendRefusal,
+  mayExtendAgain,
+  recordExtension,
+  resetExtendHold,
+  type ExtendHoldState,
+} from "./extendHoldBudget";
+import {
+  auditVideoStillness,
+  checkStillnessLimit,
+  formatStillnessReport,
+} from "./videoStillnessAudit";
+import {
+  auditVideoRepeats,
+  checkRepeatLimit,
+  formatRepeatReport,
+} from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
+import {
+  createSearchMemoryRecallMetrics,
+  formatSearchMemorySummary,
+  type SearchMemoryRecallMetrics,
+} from "./searchMemoryRecall";
+import {
+  assetUsedInVideo,
+  providerAssetIdentityKey,
+  createVisualDedupStats,
+  formatVisualDedupReject,
+  formatVisualDedupSummary,
+  markAssetUsedInVideo,
+  noteDuplicateAttempt,
+  type VisualDedupStats,
+} from "./visualDedupRegistry";
 import { applyCoverageWarningIfNeeded } from "./archiveCoverageWarning";
+import { yearsIn } from "./candidatePeriodMatch";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
   buildVideoQualityReport,
   computeMeritQualityScore,
+  formatMontageShortfallWarning,
   logVideoQualityReport,
   assertVisualCoverageExportGate,
 } from "./videoQualityReport";
@@ -385,9 +602,7 @@ import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postR
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
 import {
   auditSceneVoiceMontageSync,
-  voiceMontageSyncAuditEnabled,
   summarizeVoiceMontageSyncAudits,
-  strictVoiceMontageSyncExport,
   type VoiceMontageSyncAuditResult,
 } from "./voiceMontageSyncAudit";
 import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
@@ -457,8 +672,6 @@ function leonardoApiKey(): string {
 }
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY || "";
-const HIGGSFIELD_API_KEY = process.env.HIGGSFIELD_API_KEY || "";
-const HIGGSFIELD_API_SECRET = process.env.HIGGSFIELD_API_SECRET || "";
 const SERPAPI_KEY = process.env.SERPAPI_KEY || "";
 /** Optional: CC-licensed event/interview videos (https://www.flickr.com/services/api/) */
 const FLICKR_API_KEY = process.env.FLICKR_API_KEY || "";
@@ -489,93 +702,29 @@ import {
   pickMontageXfadeTransition,
   pickStockMontageXfadeTransition,
 } from "./montageTransitions";
-import ffmpegStatic from "ffmpeg-static";
 import { execSync } from "child_process";
+import {
+  ffmpegFallbackCandidates,
+  ffmpegRetryReason,
+  retryReasonIsPermanent,
+  describeFFmpegCapabilities,
+  resolveFFmpegBin,
+  testBinary,
+} from "./ffmpegBinary";
 
 // Prefer system FFmpeg (installed via nixpacks.toml on Railway) over ffmpeg-static.
 // ffmpeg-static can fail on some Linux environments due to missing glibc/libatomic.
 
-// Helper: test if a binary actually runs (not just exists on disk)
-const testBinary = (binPath: string): boolean => {
-  try {
-    execSync(`"${binPath}" -version`, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const resolveFFmpegBin = (): string => {
-  // Check NODE_ENV for Railway
-  const envPath = process.env.FFMPEG_BIN || '';
-  if (envPath && fs.existsSync(envPath)) {
-    console.log(`[Fastvid] Using FFMPEG_BIN env: ${envPath}`);
-    return envPath;
-  }
-  // PRIORITY 1: Try system ffmpeg FIRST - it has drawtext/libfreetype support needed for text overlays
-  // ffmpeg-static does NOT have drawtext support (compiled without libfreetype)
-  const candidatePaths = [
-    "/usr/bin/ffmpeg",
-    "/usr/local/bin/ffmpeg",
-    "/nix/var/nix/profiles/default/bin/ffmpeg",
-  ];
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p) && testBinary(p)) {
-      console.log(`[Fastvid] Using system FFmpeg (drawtext-capable): ${p}`);
-      return p;
-    }
-  }
-  // PRIORITY 2: Try ffmpeg-static as fallback (no drawtext, but works for basic encoding)
-  const staticPath = (ffmpegStatic as unknown as string) || "ffmpeg";
-  if (staticPath && fs.existsSync(staticPath)) {
-    try {
-      execSync(`chmod +x "${staticPath}"`, { shell: "/bin/sh" });
-    } catch { /* ignore */ }
-    if (testBinary(staticPath)) {
-      console.warn(`[Fastvid] Using ffmpeg-static (NO drawtext support): ${staticPath}`);
-      return staticPath;
-    } else {
-      console.warn(`[Fastvid] ffmpeg-static exists but CANNOT RUN (missing glibc?): ${staticPath}`);
-    }
-  }
-  // PRIORITY 3: Try which command
-  try {
-    const systemPath = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (systemPath && testBinary(systemPath)) {
-      console.log(`[Fastvid] Using system FFmpeg (which): ${systemPath}`);
-      return systemPath;
-    }
-  } catch {
-    // system ffmpeg not found via which
-  }
-  // PRIORITY 4: Try nix store — Railway Nixpacks installs ffmpeg here (use shell:true for glob)
-  try {
-    const nixPath = execSync("ls /nix/store/*/bin/ffmpeg 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (nixPath && fs.existsSync(nixPath) && testBinary(nixPath)) {
-      console.log(`[Fastvid] Using nix store FFmpeg: ${nixPath}`);
-      return nixPath;
-    }
-  } catch {
-    // nix store not available
-  }
-  // PRIORITY 5: Try find as last resort
-  try {
-    const found = execSync("find /nix /usr /opt -name ffmpeg -type f 2>/dev/null | head -1", { encoding: "utf8", shell: "/bin/sh" }).trim();
-    if (found && fs.existsSync(found) && testBinary(found)) {
-      console.log(`[Fastvid] Using found FFmpeg: ${found}`);
-      return found;
-    }
-  } catch {
-    // find failed
-  }
-  // PRIORITY 6: Last resort: try 'ffmpeg' from PATH
-  if (testBinary('ffmpeg')) {
-    console.log(`[Fastvid] Using 'ffmpeg' from PATH`);
-    return 'ffmpeg';
-  }
-  console.error(`[Fastvid] CRITICAL: No working FFmpeg binary found! staticPath=${staticPath}`);
-  return staticPath; // return anyway so error messages show the path
-};
+/**
+ * RONDE 146 §1 — the resolver moved to ./ffmpegBinary so every renderer asks the same question.
+ *
+ * It used to live here, and RONDE 144's timeline renderer could not see it: that renderer imported
+ * `ffmpeg-static` directly and therefore always ran on the binary WITHOUT drawtext, even on hosts
+ * where a system ffmpeg was present. One resolver, one answer — see the module note.
+ *
+ * The behaviour is unchanged: env FFMPEG_BIN, then the system paths (which have libfreetype),
+ * then ffmpeg-static, then which/nix/find.
+ */
 let FFMPEG_BIN: string = resolveFFmpegBin();
 
 // Fallback binary list for the execFileRaw-based luma probes — mirrors FFPROBE_PATHS. exec()
@@ -674,6 +823,24 @@ function probeMemoSet<T>(memo: Map<string, T>, key: string, value: T): T {
 }
 const validVideoFileMemo = new Map<string, boolean>();
 const videoStreamMetaMemo = new Map<string, { width: number; height: number; durationSec: number } | null>();
+
+/**
+ * RONDE 138 — what this render has ALREADY measured about a file, without spawning anything.
+ *
+ * probeVideoStreamMeta memoises on the file's dev+inode+size+mtime+ctime, so a file it has
+ * successfully measured is knowable again for free. That distinction matters when the scene scope
+ * has been abandoned: a probe cannot be run, but a measurement already taken is still valid.
+ *
+ * Returns undefined when this file has never been measured — which is genuinely "we do not know",
+ * and is treated as such by the caller.
+ */
+function memoisedVideoStreamMeta(
+  filePath: string
+): { width: number; height: number; durationSec: number } | null | undefined {
+  const key = probeMemoKey(filePath);
+  if (key === null) return undefined;
+  return videoStreamMetaMemo.get(key);
+}
 
 export async function isValidVideoFile(filePath: string): Promise<boolean> {
   if (!fs.existsSync(filePath)) return false;
@@ -839,6 +1006,34 @@ type RenderCtx = {
    *  voiceoverSilentFallbackNotes is here: render state must never leak across concurrent
    *  renders sharing one process. */
   elevenLabsQuotaExhausted: boolean;
+  /**
+   * RONDE 173 — this render's sourcing cache, reachable without threading it through every call.
+   *
+   * ── What render 555 measured ─────────────────────────────────────────────────────────────
+   *
+   *     [SearchGate]      TOTAL built=554 validated=156 rejected=398 sent=156
+   *     [SourcingMetrics] searches=0 providers=5 queryHits=0 queryMisses=0 networkCallsAvoided=0
+   *
+   * A hundred and fifty-six provider searches left the process and the query cache counted none
+   * of them. `cachedProviderSearch` opens with `if (!cache) return search();` — no cache, no
+   * dedup, no counting — and a scan of the seven provider fetchers found 37 of their 72 call
+   * sites passing nothing. Pexels and Pixabay, the two highest-volume providers, passed it at
+   * ZERO of their twenty-one call sites while delivering 94 of the render's assets.
+   *
+   * So a query asked on beat 3 was asked again on beat 7, and again on beat 11, over the network
+   * each time. Nothing was broken — the cache simply was not reachable from most of the code that
+   * needed it.
+   *
+   * ── Why here and not as a 38th argument ──────────────────────────────────────────────────
+   *
+   * The cache sits at parameter index 9, 10, 12 depending on the fetcher, behind optional
+   * arguments with defaults. Threading it through 37 call sites means 37 chances to put a
+   * `usedProviderKeys` where a `stockBeatCtx` belongs, and the 38th site added next round starts
+   * uncovered again. RenderCtx already exists for exactly this — the budget tracker, the
+   * watchdog and the video topic are all reached this way — and it is per-render by construction,
+   * so two concurrent renders on one worker cannot share a cache.
+   */
+  sourcingCache: SourcingCache | null;
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
@@ -853,6 +1048,7 @@ function getRenderCtx(): RenderCtx {
       videoVisualContext: null,
       voiceoverSilentFallbackNotes: [],
       elevenLabsQuotaExhausted: false,
+      sourcingCache: null,
     }
   );
 }
@@ -863,6 +1059,40 @@ function get_activeRenderBudget(): RenderBudget | null   { return getRenderCtx()
 function get_activeVideoTopic() { return getRenderCtx().videoTopic; }
 function get_activeVideoVisualContext(): VideoVisualContext | null { return getRenderCtx().videoVisualContext; }
 function get_activeBudgetTracker(): BudgetTracker | null { return getRenderCtx().budgetTracker; }
+/**
+ * RONDE 131 — the ONE key the persistent search memory is written and read under.
+ *
+ * `recordAdoptedClipSource` writes `primaryPerson || videoTitle`; the funnel recall reads it. When
+ * those two ever drift apart the memory becomes invisible to itself — exactly the failure RONDE 28
+ * had to fix once already, where writes lowercased the entity and reads did not. One function, both
+ * sides, so there is nothing to keep in sync.
+ */
+function activeMemoryEntity(): string | undefined {
+  const topic = get_activeVideoTopic();
+  if (!topic) return undefined;
+  return (topic.primaryPerson || topic.videoTitle)?.trim() || undefined;
+}
+
+/** RONDE 173: the render's sourcing cache, for the provider fetchers that were never handed one. */
+function get_activeSourcingCache(): SourcingCache | null { return getRenderCtx().sourcingCache; }
+function set_activeSourcingCache(v: SourcingCache | null) { const c = getRenderCtx(); c.sourcingCache = v; }
+/**
+ * RONDE 173 — run inside a render context publishing this sourcing cache.
+ *
+ * The render itself does not need this: it is already inside `renderCtxStorage.run` and mutates its
+ * own context. This exists so the ambient fallback can be exercised through the REAL
+ * AsyncLocalStorage and the REAL publisher rather than a stand-in — `set_activeSourcingCache` on no
+ * store at all mutates a throwaway, so without an actual scope there is nothing to read back.
+ */
+export function withRenderSourcingCacheScope<T>(
+  cache: SourcingCache | null,
+  fn: () => Promise<T>
+): Promise<T> {
+  return renderCtxStorage.run({ ...getRenderCtx(), sourcingCache: null }, () => {
+    set_activeSourcingCache(cache);
+    return fn();
+  });
+}
 // Setters mutate only the current render's context object (safe — no shared state)
 function set_activeRenderBudget(v: RenderBudget | null)   { const c = getRenderCtx(); c.renderBudget = v; }
 function set_activeBudgetTracker(v: BudgetTracker | null) { const c = getRenderCtx(); c.budgetTracker = v; }
@@ -896,6 +1126,20 @@ type SceneFetchScope = {
   deadlineAtMs: number;
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
+
+/*
+ * RONDE 91 (§4) — the provenance scope and the gate decision moved to searchQueryContract.
+ *
+ * They lived here because that is where the beat loop is. The re-scan found what that cost: eight
+ * provider searches in scenePool.ts and a Commons geosearch in wikimediaGeoSearch.ts never passed
+ * the gate, and they could not have — videoPipeline imports both of those modules, so importing
+ * the gate back out of it would close a cycle. A gate that some modules are structurally unable
+ * to reach is not one gate.
+ *
+ * searchQueryContract has no imports of its own, so every module can reach it. getSearchProvenance
+ * and withSearchProvenance are re-exported below because the beat loop here is still what sets the
+ * scope, and callers should not have to know the storage moved.
+ */
 
 // Once a scene/beat's fetch scope is abandoned (its withSceneFetchTimeout fired), every
 // exec()/execFileRaw() call in that scope starts throwing immediately (by design — see
@@ -953,6 +1197,30 @@ function isWikimediaInCooldown(): boolean {
   return Date.now() < wikimediaCooldownUntilMs;
 }
 
+/**
+ * RONDE 129 — a 429 does not have to happen three times to be believed.
+ *
+ * The streak breaker below needs three consecutive failures, which is right for an ambiguous
+ * one: a timeout might have been bad luck. A 429 is not ambiguous — the server has said in words
+ * that it is being asked too often — and waiting for two more means sending two more requests
+ * into a server that already refused. Scenes are searched in parallel, so those two can be in
+ * flight before the first is even counted, which is the shape the production log shows.
+ *
+ * Deliberately separate from markWikimediaSearchResult: this applies a stand-down, it does not
+ * count a failure. The callers already count, and counting in both places would trip the breaker
+ * a request early.
+ *
+ * Only Wikimedia stands down. Every other provider carries on, which is the point.
+ */
+function markWikimediaRateLimited(status?: number): void {
+  const kind = classifyProviderFailure({ status });
+  const rateCooldownMs = cooldownMsForFailure(kind);
+  if (rateCooldownMs <= 0) return;
+  wikimediaCooldownUntilMs = Math.max(wikimediaCooldownUntilMs, Date.now() + rateCooldownMs);
+  wikimediaFailureStreak = 0;
+  console.warn(formatProviderCooldown("wikimedia", kind, rateCooldownMs));
+}
+
 function markWikimediaSearchResult(success: boolean): void {
   if (success) {
     wikimediaFailureStreak = 0;
@@ -990,6 +1258,14 @@ function logWikimediaHttpFailure(
   sceneIndex: number,
   resp: { status: number; statusText?: string }
 ): void {
+  /**
+   * RONDE 129: the STATUS reaches the breaker as well as the log — but only to apply an immediate
+   * rate-limit stand-down, never to count a failure. Every caller of this already calls
+   * markWikimediaSearchResult(false) itself, and counting here too would trip the three-strike
+   * breaker after two requests instead of three. RONDE 69's note above still holds: this function
+   * does not change the counting.
+   */
+  markWikimediaRateLimited(typeof resp.status === "number" ? resp.status : undefined);
   const status = typeof resp.status === "number" ? resp.status : 0;
   const reason = typeof resp.statusText === "string" && resp.statusText.trim()
     ? ` ${resp.statusText.trim()}`
@@ -1776,6 +2052,13 @@ export const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): 
     });
   } catch (err: unknown) {
     const errMsg = (err as Error)?.message || '';
+    /**
+     * RONDE 146 — ffmpeg prints "No such filter" to STDERR, not into the Error message.
+     *
+     * Read here rather than inside the fork-pressure branch below, because the capability check
+     * needs it on every failure and not only on the ones that were retried for fork pressure.
+     */
+    const errStderr = (err as { stderr?: string })?.stderr ?? "";
     if (isForkPressureError(err)) {
       if (eagainRetriesLeft > 0) {
         console.warn(`[FFmpegForkPressure] Transient failure, retrying (${eagainRetriesLeft} left): ${errMsg.slice(0, 150)}`);
@@ -1788,24 +2071,58 @@ export const exec = async (cmd: string, eagainRetriesLeft = EXEC_FORK_RETRIES): 
       // always identical and comes first, while the actual error is the last couple of lines —
       // logging the full blob on every failure is exactly what was tripping Railway's log-rate
       // limit ("Messages dropped: ...") under heavy concurrent failures.
-      const stderr = (err as { stderr?: string })?.stderr ?? "";
-      console.error(`[FFmpegForkPressure] Still failing after ${EXEC_FORK_RETRIES} retries — stderr tail:\n${stderr.slice(-800)}`);
+      console.error(`[FFmpegForkPressure] Still failing after ${EXEC_FORK_RETRIES} retries — stderr tail:\n${errStderr.slice(-800)}`);
     }
     // If current FFMPEG_BIN failed with a binary-not-found error, try alternatives
     // Only treat as binary-not-found if the error mentions the FFmpeg binary path itself,
     // NOT if it's an input file ENOENT (which would incorrectly trigger binary switching)
-    const isBinaryNotFound = (
-      errMsg.includes('not found') || errMsg.includes('Permission denied')
-    ) && !errMsg.includes('ENOENT') && !errMsg.includes('No such file or directory');
-    if (isBinaryNotFound) {
-      console.warn(`[Fastvid] FFmpeg binary failed (${FFMPEG_BIN}), trying alternatives...`);
-      const alternatives = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'ffmpeg'];
+    /**
+     * RONDE 146 §1 — two different failures, and only one of them is worth another binary.
+     *
+     *   binary_not_found     the executable is missing or unrunnable
+     *   capability_missing   the executable ran and this BUILD lacks the filter/codec asked for,
+     *                        e.g. "No such filter: 'drawtext'" — which ffmpeg-static really does
+     *                        emit, and which the old check ignored entirely (audit BUG B1). Every
+     *                        text render on a host without a system ffmpeg failed silently, per
+     *                        command, and nothing ever tried the other binary.
+     *
+     * Everything else returns null and is rethrown. A fallback that fired on any ffmpeg error
+     * would retry a corrupt input or a bad argument against a second binary, fail identically, and
+     * bury the real cause under a switch that was never going to help.
+     */
+    const retryReason = ffmpegRetryReason(errMsg + "\n" + errStderr);
+    if (retryReason) {
+      console.warn(
+        `[Fastvid] FFmpeg failed on ${FFMPEG_BIN} (${retryReason}), trying alternatives...`
+      );
+      const alternatives = ffmpegFallbackCandidates(FFMPEG_BIN);
+      const permanent = retryReasonIsPermanent(retryReason);
       for (const alt of alternatives) {
         if (alt === FFMPEG_BIN) continue;
         if (testBinary(alt)) {
-          console.log(`[Fastvid] Switching to alternative FFmpeg: ${alt}`);
           const oldBin = FFMPEG_BIN;
-          FFMPEG_BIN = alt;
+          /**
+           * RONDE 146 — a missing BINARY is permanent; a missing CAPABILITY is not.
+           *
+           * The original switch was written for a binary that is not there, and for that it is
+           * right: it will still not be there on the next command. A capability gap is a property
+           * of one command, and making it permanent downgrades every later command in this worker
+           * to whatever binary happened to answer — measurably changing the picture, since
+           * ffmpeg-static and the system build do not produce identical output for the same
+           * filter graph (RONDE 158's repair: 17.04s versus 21.20s).
+           *
+           * So the alternative is used for THIS command, and `FFMPEG_BIN` only moves when the
+           * failure says the binary itself is gone.
+           */
+          if (permanent) {
+            console.log(`[Fastvid] Switching to alternative FFmpeg: ${alt}`);
+            FFMPEG_BIN = alt;
+          } else {
+            console.warn(
+              `[Fastvid] Borrowing ${alt} for one command (${retryReason}); ` +
+                `${oldBin} stays this worker's FFmpeg`
+            );
+          }
           // Replace the old binary path at the start of the command with the new one
           // Commands are built as: `${FFMPEG_BIN} -y ...` so the first token is the binary
           const retryCmd = cmd.startsWith(oldBin)
@@ -2108,6 +2425,62 @@ function youtubeFairUseEnabled(): boolean {
 }
 
 /**
+ * RONDE 160 — the EXPLICIT standard-licence pass (`videoLicense=youtube`).
+ *
+ * ── How this differs from the two passes that already exist ────────────────────────────────
+ *
+ * `creative_common` asks YouTube for CC-licensed videos only. `any` sends no licence filter at
+ * all, so it returns whatever ranks best — CC and standard mixed, with no way to tell which is
+ * which from the search response. This third mode asks for the OPPOSITE of the first: videos
+ * YouTube reports as carrying its standard licence, and nothing else.
+ *
+ * That makes it useful for two things the other two cannot do: sourcing material that is
+ * deliberately outside CC, and — because the mode is now recorded on the lineage — being able to
+ * answer afterwards WHICH licence a clip in a finished video was retrieved under.
+ *
+ * Off by default. It is the one pass that can only ever return non-CC material, so switching it on
+ * is a licensing decision the operator makes deliberately, not something a deploy inherits.
+ */
+function youtubeStandardLicenseEnabled(): boolean {
+  return envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE");
+}
+
+/** The three retrieval modes, in this codebase's own words. */
+export type YoutubeLicenseMode = "creative_common" | "youtube" | "any";
+
+/**
+ * RONDE 160 (FASE 4) — the mode, as the YouTube Data API's `videoLicense` parameter.
+ *
+ * `null` means SEND NOTHING, and that is the whole meaning of `any`: no filter. Sending
+ * `videoLicense=any` would be the same request under a different cache key, and would make the
+ * unfiltered pass look like a licence assertion when it is precisely the absence of one.
+ */
+export function youtubeLicenseParam(mode: YoutubeLicenseMode): string | null {
+  switch (mode) {
+    case "creative_common": return "creativeCommon";
+    case "youtube": return "youtube";
+    case "any": return null;
+  }
+}
+
+/**
+ * RONDE 160 (FASE 4) — what a clip found under this mode may honestly claim about its licence.
+ *
+ * `retrievedUnder` is always recorded, because "which question did we ask" is always known.
+ * `reported` is set ONLY for the two modes that are licence assertions by YouTube; the unfiltered
+ * pass filters nothing, so attaching a licence to what it returns would be inventing one.
+ *
+ * This is metadata, never permission: `licenseAllowed` remains this pipeline's separate verdict.
+ */
+export function youtubeLicenseMetadata(mode: YoutubeLicenseMode): {
+  reported?: string;
+  retrievedUnder: string;
+} {
+  const param = youtubeLicenseParam(mode);
+  return { retrievedUnder: mode, ...(param ? { reported: param } : {}) };
+}
+
+/**
  * RONDE 10: quota-free RapidAPI search fallback. The official YouTube Data API search costs 100
  * quota units per call (~100/day), so it 429s after a few renders — that is the sole reason
  * YouTube contributed nothing in renders 512-518. This opt-in fallback uses the existing
@@ -2141,6 +2514,17 @@ function capYoutubeClipDuration(duration: number, fileTag: string): number {
 function clipRequiresFairUseTransform(filePath: string): boolean {
   const base = path.basename(filePath).toLowerCase();
   return /_ytfu_|_ytcc_|_archive_|_wikivid_|_septube_|_gdelt_/i.test(base);
+}
+
+/**
+ * RONDE 179 — the same predicate, exposed so a test can check the POOL's filename against it.
+ *
+ * The pool now tags its YouTube downloads `_ytcc` so this rule applies to them, and a test that
+ * only greps for both strings could pass while they failed to line up. This lets the real name be
+ * run through the real predicate.
+ */
+export function poolClipRequiresFairUseTransformForTest(filePath: string): boolean {
+  return clipRequiresFairUseTransform(filePath);
 }
 
 function ffmpegSupportsDrawtext(): boolean {
@@ -2253,6 +2637,7 @@ async function fetchBeatYoutubeOnly(
           videoTitle,
           fastMode: dedup.perf.fastStockMode,
           imageGate: dedup.beatImageGate,
+          relevanceLedger: dedup.beatRelevance,
         },
         dedup.usedContentKeys,
         dedup.sourcingCache
@@ -2378,7 +2763,7 @@ export async function fetchBeatArchivalThenPexels(
           usedArchiveNames: dedup.usedArchiveNames,
         }
       ),
-      archiveBeatTryTimeoutMs(dedup.videoLength),
+      archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
       `archive s${sceneIndex} b${beat.index}`
     );
   } catch (err) {
@@ -2604,8 +2989,100 @@ export async function fetchBeatArchivalThenPexels(
   return null;
 }
 
-/** Primary beat path: archival (default) or YouTube-only when explicitly enabled. */
+/**
+ * RONDE 90 (§2) — what this beat proves, scoped around everything it fetches.
+ *
+ * personName and the scene's own person list arrive as scenePersons, never as forcePerson: a
+ * scene-level hint is a claim about the SCENE, and §7 is explicit that it only becomes a search
+ * term when the scene text states the connection. forcePerson means something narrower — the
+ * caller is fetching footage OF this person by definition — and no caller here is doing that.
+ */
+function beatSearchProvenance(
+  beat: { text?: string },
+  scene: { text?: string; personNames?: string[] },
+  personName = "",
+  scenePersons: string[] = []
+): VerifiedQueryContext {
+  return buildVerifiedQueryContextForBeat(beat.text ?? "", {
+    scenePersons: [personName, ...scenePersons, ...(scene.personNames ?? [])].filter(Boolean),
+    sceneText: scene.text ?? "",
+  });
+}
+
+/**
+ * Put this beat's proof in scope — unless a caller further up already did.
+ *
+ * RONDE 100B. RONDE 90 wrapped the primary sourcing ladders and left the fallback, rescue,
+ * refill and fill ladders alone, on the assumption that everything reached a provider through a
+ * primary path. The production render disproved it: 425 provider searches ran with no ambient
+ * scope at all (the SearchGate reports them as LEGACY_QUERY_BUILDER, which is only ever minted
+ * when getSearchProvenance() returns undefined). Pexels 242, Wikimedia 64, Pixabay 62,
+ * SerpAPI 45, Unsplash 12 — and every one of those routes is also reached WITH a scope from a
+ * primary caller, which is why the same fetcher shows both behaviours in one render.
+ *
+ * So the scope is opened at the leaves instead of at the entry points: the functions that
+ * actually call a provider. Whichever ladder reaches them — primary, fallback, rescue, refill,
+ * scene-level, emergency — the beat is proven by the time a query is built.
+ *
+ * The guard is what makes that safe to do everywhere. Nesting a second scope inside a primary
+ * ladder's scope would replace a context built with the caller's person names and scene text
+ * with a thinner one built from the same beat, quietly narrowing what the beat can prove. Same
+ * rule, and the same reason, as buildSceneCandidatePool in scenePool.ts.
+ */
+function withBeatProvenance<T>(
+  /**
+   * Structural rather than SceneBeat/Scene: beatSearchProvenance only reads `text` and
+   * `personNames`, and the second audit turned up a provider caller that carries the beat's TEXT
+   * without the objects — generateGuaranteedBeatClip, which takes (sceneIndex, beatText). It has
+   * what the proof needs; requiring the full types would have left it the last route out.
+   */
+  beat: { text?: string },
+  scene: { text?: string; personNames?: string[] },
+  fn: () => Promise<T>,
+  opts?: { personName?: string; scenePersons?: string[] }
+): Promise<T> {
+  if (getSearchProvenance()) return fn();
+  return withSearchProvenance(
+    beatSearchProvenance(beat, scene, opts?.personName ?? "", opts?.scenePersons ?? []),
+    fn
+  );
+}
+
+/**
+ * Primary beat path: archival (default) or YouTube-only when explicitly enabled.
+ *
+ * RONDE 90: this is where a beat's proof is put in scope. Every provider search made anywhere
+ * beneath it — through fetchBeatArchivalThenPexels, the curated archive, Wikimedia, the stock
+ * fallback, any of the legacy query builders — is validated against THIS beat's context without
+ * a single one of those call sites having to pass it along. Eleven call sites reach this
+ * function; wrapping the function rather than the call sites is what makes that exhaustive
+ * instead of best-effort.
+ */
 async function beatPrimaryFetch(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  tag: string,
+  stockReason: string
+): Promise<string | null> {
+  return withSearchProvenance(
+    beatSearchProvenance(beat, scene, personName, scenePersons),
+    () =>
+      beatPrimaryFetchInner(
+        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
+        adoptOpts, scenePersons, tag, stockReason
+      )
+  );
+}
+
+async function beatPrimaryFetchInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -2692,27 +3169,49 @@ async function fetchBeatInternetStillsFirst(
   adoptOpts: VisualAdoptOptions,
   tag: string
 ): Promise<string | null> {
-  return fetchBeatScriptImageClip(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    clipFetchDur,
-    dedup,
-    scenePersons,
-    videoTitle,
-    {
-      ...adoptOpts,
-      requireBeatMatch: false,
-      scriptAnchored: false,
-      scriptImageFallback: true,
-    },
-    tag
+  // RONDE 90 (§2): reached directly as well as through beatPrimaryFetch, so it puts the beat's
+  // proof in scope itself rather than relying on who called it.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, "", scenePersons), () =>
+    fetchBeatScriptImageClip(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      {
+        ...adoptOpts,
+        requireBeatMatch: false,
+        scriptAnchored: false,
+        scriptImageFallback: true,
+      },
+      tag
+    )
   );
 }
 
 /** Real still photos (Wiki/SerpAPI/Openverse) before licensed stock. */
 async function fetchBeatAuthenticStills(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  tag: string,
+  historicalDoc: boolean
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatAuthenticStillsInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, scenePersons, tag, historicalDoc), { personName, scenePersons });
+}
+
+async function fetchBeatAuthenticStillsInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -2826,7 +3325,8 @@ async function fetchBeatAuthenticStills(
         workDir,
         sceneIndex,
         1,
-        `${tag}_still`
+        `${tag}_still`,
+        { dedup, beatIndex: beat.index }
       );
       addToPool(wikiPaths, q);
       if (wikiPaths.some(strongEnoughToStopPooling)) break;
@@ -3092,6 +3592,7 @@ async function tryBeatRealYouTubeFootage(
                 videoTitle: adoptOpts.videoTitle,
                 fastMode: dedup.perf.fastStockMode,
                 imageGate: dedup.beatImageGate,
+                relevanceLedger: dedup.beatRelevance,
               },
               dedup.usedContentKeys,
               dedup.sourcingCache
@@ -3130,8 +3631,9 @@ function buildTopicDocumentaryYoutubeQueries(
     ...new Set(
       [
         `${topic} documentary footage`,
+        // RONDE 93 (§6): "news report" and "documentary footage" describe the FOOTAGE; an
+        // "interview" is an event, and the topic alone is no evidence that one took place.
         `${topic} news report`,
-        `${topic} interview`,
         topic,
         beat.searchQuery,
         scene.pexelsQuery,
@@ -3162,6 +3664,24 @@ function buildTopicRealMediaQuery(
  * Runs before licensed stock when minimize-stock is on.
  */
 async function tryBeatTopicRealFootage(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  adoptOpts: VisualAdoptOptions,
+  videoTitle: string | undefined,
+  personName: string,
+  opts: { includeTopicYoutube?: boolean; fileTag?: string } = {}
+): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, personName), () =>
+    tryBeatTopicRealFootageInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, videoTitle, personName, opts)
+  );
+}
+
+async function tryBeatTopicRealFootageInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -3255,7 +3775,7 @@ async function tryBeatTopicRealFootage(
   }
 
   if (!dedup.personTopicLock) {
-    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
+    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`, { dedup, beatIndex: beat.index });
     clip = await adoptClip(
       wikiImg,
       dedup,
@@ -3337,32 +3857,23 @@ async function tryBeatTopicRealFootage(
     }
   }
 
-  if (youtubeSourcingEnabled() && process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
-    const thumbQ = buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] || wikiQuery;
-    const ytThumb = await fetchYouTubeThumbnails(
-      thumbQ,
-      clipFetchDur,
-      workDir,
-      sceneIndex,
-      1,
-      `${tag}_ytt`
-    );
-    clip = await adoptClip(
-      ytThumb,
-      dedup,
-      sceneIndex,
-      beat.index,
-      beat.text,
-      workDir,
-      thumbQ,
-      loose
-    );
-    if (clip) {
-      dedup.stillPhotosThisScene++;
-      console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube thumbnail`);
-      return clip;
-    }
-  }
+  /*
+   * A YouTube THUMBNAIL was never a YouTube video.
+   *
+   * fetchYouTubeThumbnails downloaded the still image YouTube shows on a search result, ran it
+   * through ffmpeg with `-loop 1 … zoompan`, and produced an .mp4: a slow pan across a promotional
+   * picture, handed to adoptClip exactly like real footage. The research ladder even labelled the
+   * result "youtube_cc" — the source label the genuine video route uses — so nothing downstream,
+   * including the audit, could tell a documentary clip from a thumbnail with a face and a caption
+   * burned into it.
+   *
+   * FastVid uses YouTube for footage it can cut a fragment out of. That is downloadYouTubeCCClip:
+   * a real stream, fetched by videoId, seeked to clipStart and trimmed. A thumbnail supports none
+   * of that — there is no fragment in a still, only a manufactured zoom.
+   *
+   * The route is removed rather than disabled: a flag would leave the same picture one environment
+   * variable away from the final video. ronde97YouTubeVideoOnly asserts it stays gone.
+   */
 
   if (perf.enableNasa && spaceTopic) {
     const nasaPaths = await fetchNasaVideoClips(
@@ -3418,7 +3929,9 @@ async function tryBeatTopicRealFootage(
 
 /** Cheap tier: still image → Ken Burns (~$0.03/beat). Best $/quality for documentaries. */
 function cheapAiImageProvidersReady(): boolean {
-  return Boolean(stabilityAiApiKey() || leonardoApiKey());
+  // RONDE 138: OpenAI images count as a cheap provider, so "AI fallback: on" is true whenever a
+  // picture can genuinely be produced — which is what the readiness line reports.
+  return Boolean(stabilityAiApiKey() || leonardoApiKey() || openAiImageFallbackEnabled());
 }
 
 /** Expensive tier: Grok/Veo/Runway video — off unless ENABLE_AI_VIDEO_FALLBACK=true. */
@@ -3498,7 +4011,21 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
     profile = applyAiFallbackToProfile({
       targetWallClockMin: 10,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
-      maxTopicQueries: IS_RAILWAY ? 1 : 3,
+      /**
+       * RONDE 153 — one topical query was too few, measured.
+       *
+       * Video 550 filled five consecutive slots of scene 1 from a single query. The asset dedup
+       * held, so they were five DIFFERENT clips — but all five came out of one query's result
+       * set, which is as much variety as that query happened to contain. Six of fifteen beats
+       * ended on a placeholder and four on a colour card.
+       *
+       * Raised to two rather than to the three used off-Railway: the same render finished in
+       * 10m 45s of a 22m budget (49%, 11m 15s unused), so there is measured room for a second
+       * query, and stopping short of the off-Railway value keeps a margin against the
+       * peak-memory pressure the parallelism comment above is about. Revert to 1 if a fresh
+       * render shows the wall clock creeping toward its target.
+       */
+      maxTopicQueries: IS_RAILWAY ? 2 : 3,
       skipFairUseTransform: true,
       transformTimeoutMs: 12_000,
       enableArchival: true,
@@ -3640,6 +4167,21 @@ async function runBeatClipFetch(
 
 /** Quick script-ordered rescue: YouTube CC first, then capped Pexels. */
 async function resolveBeatClipFast(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => resolveBeatClipFastInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, adoptOpts), { scenePersons });
+}
+
+async function resolveBeatClipFastInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -3823,6 +4365,46 @@ async function downloadFunnelCandidate(
 ): Promise<string | null> {
   try {
     if (candidate.archivePick) {
+      /**
+       * RONDE 170 — the curated route now opens its lineage BEFORE the download, like every other.
+       *
+       * ── What render 555 measured ─────────────────────────────────────────────────────────────
+       *
+       *     [Quality] Video 555: score=14/100, clips=16 [UNVERIFIED=14, loc=1, nasa=1]
+       *     [Quality] Video 555: 14 clip(s) met niet-bewezen bron (UNVERIFIED).
+       *
+       * Fourteen of sixteen delivered clips could not say where they came from, on a render with
+       * exactly ONE colour card — so thirteen of them were real pictures whose provenance was lost
+       * on the way in.
+       *
+       * ── Why ──────────────────────────────────────────────────────────────────────────────────
+       *
+       * `prepareCuratedArchiveClip` lives in curatedMediaSourcing, which contains no reference to
+       * `lineage` at all. Every other download route opens a record at the one instant the provider
+       * name, the asset id and the destination path are all in hand — `tagPathWithProviderAsset`
+       * for the eleven external providers, `ensureCuratedAssetLineage` + `bindPath` inside
+       * `preparePooledArchiveClip` for the curated pool. The FUNNEL's curated branch called
+       * `prepareCuratedArchiveClip` directly and did neither.
+       *
+       * So a curated clip adopted through the funnel reached `recordClipAdopt` as a file the ledger
+       * had never seen, and that function's hole-filling branch opens a record with NO provider on
+       * purpose — RONDE 87's rule that a route label is not a provider. Correct behaviour on a
+       * record that should never have been needed.
+       *
+       * ── The fix ──────────────────────────────────────────────────────────────────────────────
+       *
+       * The same two calls `preparePooledArchiveClip` already makes, in the same order: the record
+       * from the DB row before the download, then `bindPath` onto the file that came out. The
+       * provider is the archive the row was ingested into — a fact about the row, not a guess about
+       * a filename. Nothing new is invented and no second mechanism is added.
+       */
+      const lineage = sourcingCache?.lineage;
+      const pending = lineage
+        ? ensureCuratedAssetLineageOn(lineage, candidate.archivePick, sceneIndex, beatIndex)
+        : null;
+      if (pending && lineage) {
+        lineage.recordEvent(pending.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
+      }
       const clip = await prepareCuratedArchiveClip(
         candidate.archivePick.asset,
         workDir,
@@ -3830,7 +4412,20 @@ async function downloadFunnelCandidate(
         beatIndex,
         holdSec
       );
-      return clip && fs.existsSync(clip) ? clip : null;
+      const ok = clip && fs.existsSync(clip);
+      if (pending && lineage) {
+        if (ok) {
+          lineage.bindPath(pending.lineageId, clip, curatedAssetContentKey(candidate.archivePick.asset.id));
+          lineage.recordEvent(pending.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
+        } else {
+          // RONDE 167 F1: a download that never finished is an ending, and it names the asset.
+          lineage.recordEvent(pending.lineageId, "DOWNLOAD_FAILED", {
+            status: "FAILED",
+            reason: "curated_clip_not_produced",
+          });
+        }
+      }
+      return ok ? clip : null;
     }
     if (candidate.poolCandidate) {
       return downloadAndTrimPoolCandidate(candidate.poolCandidate, workDir, sceneIndex, beatIndex, holdSec, sourcingCache);
@@ -3853,6 +4448,16 @@ async function downloadFunnelCandidate(
  * Returns the local clip path on success, null on failure.
  * Used only when ENABLE_SCENE_CANDIDATE_POOL=true (never called otherwise).
  */
+/**
+ * RONDE 133 — the pool route's own two thresholds, named rather than inlined.
+ *
+ * Both values are exactly what this function has always used. They are lifted out because a
+ * threshold that only exists as a magic number inside an `if` cannot be pointed at from a test or
+ * a log line, and this round's whole complaint is that the technical standard was invisible.
+ */
+const POOL_MIN_RAW_BYTES = 50_000;
+const POOL_MIN_SOURCE_SEC = 1.5;
+
 export async function downloadAndTrimPoolCandidate(
   candidate: PoolCandidate,
   workDir: string,
@@ -3865,24 +4470,107 @@ export async function downloadAndTrimPoolCandidate(
   const safeId = candidate.assetId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
   const isVideo = candidate.mediaType === "video";
   const ext = isVideo ? "mp4" : "jpg";
-  const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}_raw.${ext}`);
+  /**
+   * RONDE 179 — a YouTube clip carries the SAME marker whichever route fetched it.
+   *
+   * `clipRequiresFairUseTransform` reads `_ytcc_` out of the filename, and it is what stops fast
+   * mode from skipping the transform on YouTube material. The cascade's downloads carry that tag;
+   * the pool's were named `..._pool_youtube_cc_...`, which the regex does not match — so the same
+   * video adopted through the pool could skip a transform the cascade would have applied to it.
+   *
+   * One asset, two licence treatments, decided by which route happened to find it. The marker is
+   * added here rather than the rule widened, because the rule is the one both routes already agree
+   * on and a second spelling is a second thing to keep in step.
+   */
+  const licenceTag = candidate.source === "youtube_cc" ? "_ytcc" : "";
+  const rawPath = path.join(
+    workDir,
+    `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}${licenceTag}_${safeId}_raw.${ext}`
+  );
   // RONDE 27: stamp the provider-asset identity into the filename, like every other download
   // route already does. Without it the scene/beat prefix is the only thing distinguishing two
   // copies of the SAME source item, so the cross-scene dedup could not tell them apart: render
   // 528 downloaded internet_archive/white-lives-matter-montana four times and cut it into two
   // different scenes, and pexels_32021142 landed in two scenes as well.
+  /**
+   * RONDE 165 — a still says so in its own name, like every other still already does.
+   *
+   * `isVideo` is known right here and was thrown away: both a film clip and a scanned photograph
+   * came out as `..._pool_<source>_<id>.mp4`. classifyClipMixKind has no rule for loc/nara/nasa/
+   * internet_archive, so those fell through to its `.mp4$` fallback and were counted as REAL
+   * VIDEO. Render 554 shipped a Library of Congress newspaper scan
+   * (`..._pool_loc_..._sn86089716_1941__pid_loc.mp4`, a Chronicling America serial) and the
+   * quality report called the render "11/13 moving (85%)".
+   *
+   * That mis-count does not just misreport — it disables the correction. RONDE 161's push toward
+   * moving footage is scaled by movingShareDeficit, which is 0 once the measured share passes the
+   * target. A render full of photographs that measures 85% moving therefore stops asking for
+   * video, which is the opposite of what the owner asked for.
+   *
+   * `_still` is the marker the curated route has always used (isCuratedPreparedStillClip,
+   * isPipelineBlurFillStillClip), and classifyClipMixKind already reads it. No new naming scheme,
+   * no second classifier — the one that exists is simply told the truth.
+   */
+  const stillSuffix = isVideo ? "" : "_still";
   const outPath = tagPathWithProviderAsset(
-    path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}.mp4`),
+    path.join(
+      workDir,
+      `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}${licenceTag}_${safeId}${stillSuffix}.mp4`
+    ),
     candidate.source,
     candidate.assetId,
     sourcingCache,
-    { sceneIndex, beatIndex, title: candidate.title, mediaType: candidate.mediaType }
+    { sceneIndex, beatIndex, title: candidate.title, mediaType: candidate.mediaType, searchRoute: `scenePool:${candidate.source}` }
   );
 
   const _dtT0 = Date.now();
   setWorkerHeartbeat(`downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`);
   console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
+    /**
+     * RONDE 179 — a YouTube candidate is fetched by the YouTube fetcher, not by fetching its page.
+     *
+     * ── The gap this closes ──────────────────────────────────────────────────────────────────
+     *
+     * `PoolCandidate.remoteUrl` for a YouTube result is the WATCH PAGE — that is deliberate and
+     * correct, because there is no direct media URL to hold and inventing one would put a signed,
+     * expiring link in the timeline. But everything below this point assumes `remoteUrl` is a media
+     * file: it fetches it and streams the response into a `.mp4`.
+     *
+     * For a watch page that request SUCCEEDS. It returns HTTP 200 and a few hundred kilobytes of
+     * HTML, which clears the byte floor and is then handed to ffprobe as video. So R175's wiring
+     * would have put YouTube candidates into the ranking and then lost every single one of them at
+     * download, with a technical-reject line blaming the file rather than the route.
+     *
+     * `downloadYouTubeCCClip` is the pipeline's own YouTube fetcher — the cloud/yt-dlp service, the
+     * RapidAPI fallback, the render-scoped cache and the download ceiling, all of it already built.
+     * This calls that. It is not a second client, and no YouTube knowledge is added here: the start
+     * offset comes from `pickLongVideoStartSec` and the same cached-duration peek the cascade uses,
+     * with the cascade's own fallback when the length is unknown.
+     */
+    if (candidate.source === "youtube_cc") {
+      const knownDurationSec = peekYoutubeVideoContext(candidate.assetId)?.durationSec ?? 0;
+      /** Enough source to trim `holdSec` out of, and never longer than a beat can use. */
+      const window = Math.max(holdSec, 6);
+      const start =
+        knownDurationSec > 0 ? pickLongVideoStartSec(knownDurationSec, window, candidate.assetId) : 15;
+      const ok = await downloadYouTubeCCClip(
+        candidate.assetId,
+        window,
+        start,
+        rawPath,
+        sceneIndex,
+        candidate.title,
+        sourcingCache
+      );
+      if (!ok) {
+        console.warn(
+          `[FunnelDownload] rejected source=youtube_cc assetId=${candidate.assetId} ` +
+            `reason=youtube_fetch_failed`
+        );
+        return null;
+      }
+    } else {
     console.log(`[Hang] downloadAndTrim BEFORE cache-restore s${sceneIndex}b${beatIndex}`);
     const _cr0 = Date.now();
     const fromCache = await withTimeout(tryRestoreFromMediaCache(candidate.remoteUrl, rawPath), 5_000, `cache-restore s${sceneIndex}b${beatIndex}`).catch(() => false);
@@ -3936,11 +4624,43 @@ export async function downloadAndTrimPoolCandidate(
         if (fs.existsSync(rawPath)) { try { fs.unlinkSync(rawPath); } catch { /* ignore */ } }
         throw err;
       }
-      if (fs.statSync(rawPath).size < 50_000) {
-        try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
-        return null;
-      }
       void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
+    }
+    }
+
+    /**
+     * RONDE 133 — the byte floor applies to a cache HIT too, and it says so out loud.
+     *
+     * ── Two defects, one line ────────────────────────────────────────────────────────────────
+     *
+     * This check used to sit INSIDE the `if (!fromCache)` block above, and it printed nothing.
+     *
+     * The placement was the bug. The media cache is keyed by SOURCE URL and is shared by every
+     * route, and the routes do not agree on a floor: fetchWikimediaImages admits a Commons file at
+     * 10 000 bytes and writes it straight into that cache. The very same file, reached later
+     * through the pool route, was restored from cache and skipped this 50 000-byte floor entirely
+     * — one asset, two technical standards, decided by nothing more than which route happened to
+     * see it first.
+     *
+     * The silence was the second bug. A candidate dropped here returned null, the funnel loop did
+     * `usedFunnelCandidateIds.add(id); continue;` and no line was written anywhere, so a beat that
+     * ended with no picture left no record of why its candidates went away.
+     *
+     * The threshold itself is untouched — it is applied where it was always meant to apply.
+     */
+    const rawSize = fs.existsSync(rawPath) ? fs.statSync(rawPath).size : 0;
+    const sizeVerdict = fileSizeVerdict(rawSize, POOL_MIN_RAW_BYTES);
+    if (!sizeVerdict.ok) {
+      console.warn(formatTechnicalReject({
+        beatLabel: `s${sceneIndex}b${beatIndex}`,
+        source: candidate.source,
+        assetId: candidate.assetId,
+        contentKey: candidate.id,
+        mediaType: isVideo ? "video" : "image",
+        verdict: sizeVerdict,
+      }));
+      try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
+      return null;
     }
 
     // F3-17: rawPath is a temporary intermediate file (downloaded fresh above, or restored from
@@ -3948,17 +4668,99 @@ export async function downloadAndTrimPoolCandidate(
     // with it, on both the success and failure path.
     try {
       if (isVideo) {
-        const probeCmd = `"${FFPROBE_BIN}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${rawPath}"`;
-        let sourceDur = candidate.durationSec ?? 0;
-        try {
-          console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
-          const _p0 = Date.now();
-          const { stdout } = await withSceneFetchTimeout(() => exec(probeCmd), 5_000, `probe pool s${sceneIndex}b${beatIndex}`);
-          console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms`);
-          const parsed = parseFloat(stdout.trim());
-          if (!isNaN(parsed) && parsed > 0) sourceDur = parsed;
-        } catch { /* use candidate.durationSec */ }
-        if (sourceDur < 1.5) return null;
+        /**
+         * RONDE 134 — one probe, on the real file, answering both questions.
+         *
+         * ── What this replaces ────────────────────────────────────────────────────────────────
+         *
+         *     const probeCmd = `ffprobe -show_entries format=duration ... rawPath`;
+         *     let sourceDur = candidate.durationSec ?? 0;       // the provider's CLAIM
+         *     try { sourceDur = <probe> } catch { }             // ...kept on failure
+         *     if (sourceDur < 1.5) return null;
+         *
+         * Two things were wrong with it and one thing was missing.
+         *
+         *  · The claim survived a failed probe. A file ffprobe could not read still cleared the
+         *    duration check on a number out of a search response, then spent a full libx264
+         *    encode before failing. And the same unreadable file was accepted or refused
+         *    depending on whether its provider happened to report a duration — two answers to one
+         *    question about one file.
+         *
+         *  · Nothing measured the RESOLUTION. montageStreamMetaUsable's `width < 2` was the only
+         *    thing between a video and the montage, so a 128×96 clip was upscaled fifteen times
+         *    into a 1920×1080 frame and nobody could see why the render looked soft.
+         *
+         *  · It was a SECOND ffprobe. probeVideoStreamMeta already reads width, height and
+         *    duration in one call and memoises the answer on the file's inode+ctime — so this is
+         *    now one probe where there were two, and the montage's later probe of the same file
+         *    reuses it. Fewer processes, not more.
+         *
+         * Absence stays neutral in both directions: a null probe means "the machine could not
+         * tell us", which under this pipeline's own memory pressure is routinely a timeout on a
+         * perfectly good file. It does not refuse, and the provider does not get to answer for it.
+         */
+        console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
+        const _p0 = Date.now();
+        const rawMeta = await probeVideoStreamMeta(rawPath);
+        console.log(`[Hang] downloadAndTrim AFTER ffprobe s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_p0}ms meta=${rawMeta ? `${rawMeta.width}x${rawMeta.height}` : "none"}`);
+
+        // RONDE 136: stock is held to the 480-line bar, archive to the absolute 144 floor.
+        // candidate.source is the provider's own name, so this is a fact rather than a guess.
+        const resVerdict = videoResolutionVerdict(
+          rawMeta?.width,
+          rawMeta?.height,
+          minShortSideForSource(candidate.source)
+        );
+        if (!resVerdict.ok) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            contentKey: candidate.id,
+            mediaType: "video",
+            verdict: resVerdict,
+          }));
+          return null;
+        }
+        if (resVerdict.belowQualityBar && rawMeta) {
+          // Never a refusal — the evidence a later round needs to decide whether the 480-line bar
+          // should start refusing. See technicalMediaGate for why it does not refuse today.
+          console.log(formatBelowQualityBar({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            contentKey: candidate.id,
+            width: rawMeta.width,
+            height: rawMeta.height,
+          }));
+        }
+
+        /**
+         * The MEASURED duration decides, or nothing does. ffprobe reports 0 for a stream whose
+         * duration it cannot determine (montageStreamMetaUsable says so in as many words), so a
+         * measured 0 is "unknown", not "zero seconds long".
+         */
+        const measuredDur = rawMeta && rawMeta.durationSec > 0 ? rawMeta.durationSec : null;
+        const durVerdict = sourceDurationVerdict(measuredDur, POOL_MIN_SOURCE_SEC);
+        if (!durVerdict.ok) {
+          // RONDE 133: this used to be a bare `return null`. Same threshold, same decision — it
+          // now says which candidate went and why, which is the whole of question 15.
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            contentKey: candidate.id,
+            mediaType: "video",
+            verdict: durVerdict,
+          }));
+          return null;
+        }
+        /**
+         * The trim still needs a length to cut against, and when nothing could be measured the
+         * provider's figure is the only one there is. That is a legitimate use of it — a HINT for
+         * arithmetic that ffmpeg will clamp anyway — and a different thing entirely from letting
+         * it satisfy a technical check, which is what this round removed.
+         */
+        const sourceDur = measuredDur ?? candidate.durationSec ?? 0;
         // RONDE 59: not the first seconds. This call used to pass no start offset at all, so
         // every pool candidate was cut from second 0 — from render 531's 272-second source it
         // took the opening 3.5 seconds, eight separate times. On archive material that opening
@@ -3971,15 +4773,84 @@ export async function downloadAndTrimPoolCandidate(
         const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec);
         console.log(`[Hang] downloadAndTrim AFTER trim s${sceneIndex}b${beatIndex} ok=${ok} elapsed=${Date.now()-_t0}ms`);
         console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${ok ? outPath.slice(-30) : "null"} total=${Date.now()-_dtT0}ms`);
+        if (!ok) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            mediaType: "video",
+            contentKey: candidate.id,
+            verdict: {
+              ok: false, reason: "encode_failed",
+              actual: "no output", required: "a playable clip",
+              detail: "ffmpeg produced no usable clip",
+            },
+          }));
+        }
         clearWorkerHeartbeat();
         return ok ? outPath : null;
       } else {
+        /**
+         * RONDE 133 — the still is measured before it is turned into a shot.
+         *
+         * ── The gap this closes ────────────────────────────────────────────────────────────────
+         *
+         * prepareCuratedArchiveClip has always refused an archive still narrower than
+         * VIDRUSH_MIN_STILL_WIDTH. This route — every external provider there is: wikimedia,
+         * internet_archive, loc, nara, nasa, openverse, europeana — had no pixel check at all.
+         * Its only floor was on BYTES, and bytes measure compression, not resolution: a 640×480
+         * JPEG at quality 85 sails past a 50 KB floor and is still unusable at 1920×1080.
+         *
+         * So a 320-pixel Commons thumbnail passed every technical check this route had, was
+         * judged by Vision on its merits, and was upscaled into the montage. Same asset, same
+         * pipeline, two different standards depending on which route fetched it.
+         *
+         * ── Why the file and not the metadata ─────────────────────────────────────────────────
+         *
+         * PoolCandidate carries `width`/`height` from the provider's search response, and that is
+         * exactly what must NOT be trusted here: providers report the ORIGINAL's dimensions while
+         * serving a resized file, so a metadata check would approve a thumbnail on the strength of
+         * the photograph it was made from. probeVideoStreamMeta reads the bytes that were actually
+         * downloaded — the same bytes Vision is about to look at and the montage is about to use.
+         *
+         * It is also free here: that probe is memoised on the file's inode+ctime, so the still
+         * conversion below reuses this measurement instead of paying for a second one.
+         *
+         * An unmeasurable width passes, exactly as it does on the archive route.
+         */
+        const stillMeta = await probeVideoStreamMeta(rawPath);
+        const resVerdict = stillResolutionVerdict(stillMeta?.width ?? 0);
+        if (!resVerdict.ok) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            contentKey: candidate.id,
+            mediaType: "image",
+            verdict: resVerdict,
+          }));
+          return null;
+        }
         console.log(`[Hang] downloadAndTrim BEFORE stillImageToVideo s${sceneIndex}b${beatIndex}`);
         const _sv0 = Date.now();
         await stillImageToVideo(rawPath, outPath, holdSec, `pool img s${sceneIndex}b${beatIndex}`, false, sceneIndex, beatIndex);
         console.log(`[Hang] downloadAndTrim AFTER stillImageToVideo s${sceneIndex}b${beatIndex} elapsed=${Date.now()-_sv0}ms`);
         const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000;
         console.log(`[Hang] downloadAndTrim EXIT s${sceneIndex}b${beatIndex} result=${exists ? "ok" : "null"} total=${Date.now()-_dtT0}ms`);
+        if (!exists) {
+          console.warn(formatTechnicalReject({
+            beatLabel: `s${sceneIndex}b${beatIndex}`,
+            source: candidate.source,
+            assetId: candidate.assetId,
+            mediaType: "image",
+            contentKey: candidate.id,
+            verdict: {
+              ok: false, reason: "still_conversion_failed",
+              actual: "no output", required: "a playable clip",
+              detail: "no clip written",
+            },
+          }));
+        }
         clearWorkerHeartbeat();
         return exists ? outPath : null;
       }
@@ -4003,6 +4874,9 @@ async function trimDownloadedStockClip(
   startOffsetSec = 0,
   stockTrim?: { stockKey?: string; queryEmbedding?: number[] | null; clipIndex?: number }
 ): Promise<boolean> {
+  // RONDE 135: Pexels, Pixabay and the pool route all land here. See
+  // videoSourcePassesTechnicalGate — one probe, memoised, before the encode rather than after it.
+  if (!(await videoSourcePassesTechnicalGate(rawPath, label))) return false;
   let ss = startOffsetSec;
   if (stockTrim?.stockKey && stockInClipOffsetEnabled()) {
     ss = pickStockInClipStartSec(
@@ -4694,8 +5568,10 @@ function scenesFromMarkdownScript(script: string, maxScenes: number, topicContex
       personNames: beatPersons,
       literalVisualCue: undefined,
       highlightWords: [],
+      // RONDE 93 (§6): the subject itself. "interview" and "news" were appended to every scene
+      // regardless of what it says, and the gate refuses both on a beat that mentions neither.
       brollQueries: primary
-        ? [`${primary} interview`, `${primary} news`].filter((q) => q.length >= 3 && !isBlockedStockQuery(q)).slice(0, 2)
+        ? [primary].filter((q) => q.length >= 3 && !isBlockedStockQuery(q))
         : [],
       statCallout: "",
       aiImagePrompt: `Cinematic ${primaryQuery}, documentary lighting, photorealistic`,
@@ -4869,7 +5745,10 @@ function mapRawScene(
     ),
   ];
   const subject = extractBeatSubject(hint, personNames);
-  const primaryQuery = subject || "documentary";
+  // RONDE 100B: no subject means no query. This was `subject || "documentary"`, and the literal
+  // word travelled from here into scene.pexelsQuery and scene.visualCue, which the stock
+  // fallback hands to Pexels and Pixabay verbatim.
+  const primaryQuery = subject;
   const allQueries = scriptStockSearchQueries(hint, personNames);
   const brollQueries: string[] = [];
   const sectionTitle =
@@ -5679,6 +6558,182 @@ export async function generateVoiceover(
   return { duration: estimatedDuration, usedSilentFallback: true, provider: "silent" };
 }
 
+/**
+ * RONDE 138 — a generated still becomes a clip, in one place.
+ *
+ * This was the tail of generateStabilityAIClip. Extracted verbatim — same documentary composition,
+ * same simple-Ken-Burns fallback, same encode arguments, same size check — so that a second image
+ * provider produces a clip that is indistinguishable from a Stability one rather than carrying its
+ * own copy of sixty lines of ffmpeg that would drift.
+ */
+async function renderAiStillToClip(
+  pngPath: string,
+  outputPath: string,
+  duration: number,
+  sceneIndex: number
+): Promise<string | null> {
+  // Ken Burns with blur-fill/polaroid when documentary style is enabled.
+    const fps = 25;
+    if (documentaryStyleEnabled()) {
+      const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
+      try {
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
+          90_000,
+          `AI image to video scene ${sceneIndex}`
+        );
+      } catch (docErr) {
+        console.warn(`[Pipeline] Scene ${sceneIndex}: AI documentary still failed, using simple Ken Burns:`, (docErr as Error).message);
+        const fallbackFc = buildSimpleKenBurnsVF(duration, false);
+        await withSceneFetchTimeout(
+          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
+          90_000,
+          `AI image to video scene ${sceneIndex} (fallback)`
+        );
+      }
+    } else {
+      const totalFrames = Math.ceil(duration * fps);
+      const zoomStep = 0.0003; // slow 7% zoom over full duration
+      const direction = sceneIndex % 2 === 0 ? 1 : -1;
+      const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
+      await withSceneFetchTimeout(
+        () => exec(
+          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
+          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
+          `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
+          `-t ${duration} -r ${fps} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
+        ),
+        90_000,
+        `AI image to video scene ${sceneIndex}`
+      );
+    }
+
+  try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
+
+  if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+    return outputPath;
+  }
+  return null;
+}
+
+/**
+ * RONDE 138 — the image provider you already pay for.
+ *
+ * ── Why this exists ──────────────────────────────────────────────────────────────────────────
+ *
+ * The fallback ladder's promise is written a few hundred lines below: "AI clip when stock/YouTube
+ * miss — never grey". Video 558 shipped seven colour cards anyway, because that promise needs an
+ * image API and production had none: no STABILITY_AI_API_KEY, no LEONARDO_API_KEY, Kling absent
+ * (adopt audit: kling=0), and generateImage() in _core wants a BUILT_IN_FORGE_API_URL that is not
+ * set — the storage backend is s3.
+ *
+ * OpenAI, meanwhile, was configured and in use all along, as the LLM ("provider=openai, Using
+ * OpenAI (gpt-4o)"). The same key can generate images. So this adds no new dependency and no new
+ * account: it lets the ladder keep its promise with what the deployment already has.
+ *
+ * ── What it is not ───────────────────────────────────────────────────────────────────────────
+ *
+ * Not a new engine. It is a third entry in the existing cheap image tier, next to Stability Core
+ * and Leonardo, with the same signature, the same prompt, and — via renderAiStillToClip — the same
+ * still-to-clip encode. A clip from here is indistinguishable downstream from a Stability one, and
+ * every gate that judges it is unchanged.
+ *
+ * ── Cost, deliberately visible ───────────────────────────────────────────────────────────────
+ *
+ * gpt-image-1 at "low" quality is roughly $0.01–0.02 per 1024x1024 image, which is the same order
+ * as Stability Core's ~$0.03 and cheaper than the premium video tier's ~$0.25. The quality knob is
+ * an env var rather than a constant because it is a money decision, not an engineering one.
+ */
+function openAiImageModel(): string {
+  return process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-1";
+}
+
+/** low | medium | high. Defaults to low — this is a fallback picture, not a hero shot. */
+function openAiImageQuality(): string {
+  const raw = process.env.OPENAI_IMAGE_QUALITY?.trim().toLowerCase();
+  return raw === "medium" || raw === "high" ? raw : "low";
+}
+
+/**
+ * Whether OpenAI images may be used at all.
+ *
+ * Off unless explicitly switched on, because it spends money per beat on an account that was
+ * configured for text. An operator turning this on is making a billing decision and should have
+ * done so on purpose.
+ */
+export function openAiImageFallbackEnabled(): boolean {
+  if (process.env.ENABLE_OPENAI_IMAGE_FALLBACK !== "true") return false;
+  return Boolean(openAiKeyFromEnv());
+}
+
+export async function generateOpenAiImageClip(
+  prompt: string,
+  duration: number,
+  outputPath: string,
+  sceneIndex: number
+): Promise<string | null> {
+  const key = openAiKeyFromEnv();
+  if (!key) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: no OpenAI key, skipping AI image`);
+    return null;
+  }
+  try {
+    const t = Date.now();
+    console.log(
+      `[Pipeline] Scene ${sceneIndex}: OpenAI ${openAiImageModel()} (${openAiImageQuality()}, ~$0.01–0.04/img)...`
+    );
+    const resp = await withSceneFetchTimeout(
+      () =>
+        fetchWithTimeout("https://api.openai.com/v1/images/generations", 60_000, `OpenAI image scene ${sceneIndex}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: openAiImageModel(),
+            prompt,
+            n: 1,
+            size: "1536x1024", // landscape, closest to 16:9 of the supported sizes
+            quality: openAiImageQuality(),
+          }),
+        }),
+      70_000,
+      `OpenAI image scene ${sceneIndex}`
+    );
+    if (!resp.ok) {
+      // The status is what distinguishes a billing problem from a content refusal from an outage,
+      // and it is the only thing an operator can act on.
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: OpenAI image HTTP ${resp.status} — no image generated`
+      );
+      return null;
+    }
+    const json = (await resp.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
+    const first = json.data?.[0];
+    let imgBuffer: Buffer | null = null;
+    if (first?.b64_json) {
+      imgBuffer = Buffer.from(first.b64_json, "base64");
+    } else if (first?.url) {
+      // dall-e-3 answers with a URL rather than bytes; both shapes are accepted.
+      const imgResp = await fetchWithTimeout(first.url, 30_000, `OpenAI image download scene ${sceneIndex}`);
+      if (imgResp.ok) imgBuffer = Buffer.from(await imgResp.arrayBuffer());
+    }
+    if (!imgBuffer || imgBuffer.length < 1000) {
+      console.warn(`[Pipeline] Scene ${sceneIndex}: OpenAI returned no usable image`);
+      return null;
+    }
+    const pngPath = outputPath.replace(".mp4", "_ai.png");
+    fs.writeFileSync(pngPath, imgBuffer);
+    console.log(
+      `[Pipeline] Scene ${sceneIndex}: OpenAI image in ${((Date.now() - t) / 1000).toFixed(1)}s ` +
+        `(${(imgBuffer.length / 1024).toFixed(0)}KB)`
+    );
+    // The same encode Stability's stills go through — see renderAiStillToClip.
+    return await renderAiStillToClip(pngPath, outputPath, duration, sceneIndex);
+  } catch (err) {
+    console.warn(`[Pipeline] Scene ${sceneIndex}: OpenAI image clip failed:`, (err as Error).message?.slice(0, 120));
+    return null;
+  }
+}
+
 // ─── 3a. Stability AI Image → Video Loop (PRIMARY visual) ────────────────────
 export async function generateStabilityAIClip(
   prompt: string,
@@ -5778,50 +6833,12 @@ export async function generateStabilityAIClip(
     fs.writeFileSync(pngPath, imgBuffer);
     console.log(`[Pipeline] Scene ${sceneIndex}: Stability AI image in ${((Date.now()-t)/1000).toFixed(1)}s (${(imgBuffer.length/1024).toFixed(0)}KB)`);
 
-    // Convert to video — Ken Burns with blur-fill/polaroid when documentary style enabled
-    const fps = 25;
-    if (documentaryStyleEnabled()) {
-      const filterComplex = resolveStillCompositionVF(duration, sceneIndex, 0, false);
-      try {
-        await withSceneFetchTimeout(
-          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, filterComplex)}`),
-          90_000,
-          `AI image to video scene ${sceneIndex}`
-        );
-      } catch (docErr) {
-        console.warn(`[Pipeline] Scene ${sceneIndex}: AI documentary still failed, using simple Ken Burns:`, (docErr as Error).message);
-        const fallbackFc = buildSimpleKenBurnsVF(duration, false);
-        await withSceneFetchTimeout(
-          () => exec(`${FFMPEG_BIN} ${buildStillEncodeArgs(pngPath, outputPath, duration, fallbackFc)}`),
-          90_000,
-          `AI image to video scene ${sceneIndex} (fallback)`
-        );
-      }
-    } else {
-      const totalFrames = Math.ceil(duration * fps);
-      const zoomStep = 0.0003; // slow 7% zoom over full duration
-      const direction = sceneIndex % 2 === 0 ? 1 : -1;
-      const panX = direction > 0 ? `iw/2-(iw/zoom/2)` : `iw/2-(iw/zoom/2)+2`;
-      await withSceneFetchTimeout(
-        () => exec(
-          `${FFMPEG_BIN} -y -loop 1 -i "${pngPath}" ` +
-          `-vf "scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT},` +
-          `zoompan=z='min(zoom+${zoomStep},1.07)':x='${panX}':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:fps=${fps}" ` +
-          `-t ${duration} -r ${fps} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset fast -crf 18 -pix_fmt yuv420p "${outputPath}"`
-        ),
-        90_000,
-        `AI image to video scene ${sceneIndex}`
-      );
-    }
-
-    try { fs.unlinkSync(pngPath); } catch { /* ignore */ }
-
-    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-      return outputPath;
-    }
-    return null;
+    // RONDE 138: the still-to-clip step moved to renderAiStillToClip so a second image provider
+    // reuses this exact ffmpeg chain instead of carrying a copy of it.
+    return await renderAiStillToClip(pngPath, outputPath, duration, sceneIndex);
   } catch (err) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: Stability AI clip failed:`, err);
+
     return null;
   }
 }
@@ -5913,7 +6930,8 @@ export async function fetchPexelsClips(
           }
           markPexelsSearchResult(true);
           return await searchResp.json() as PexelsSearchData;
-        }
+        },
+        "fetchPexelsClips"
       );
       if (!searchData) continue;
       // Phase 20 metrics fix: real search-result count, independent of cache-hit/download/accept.
@@ -5957,7 +6975,36 @@ export async function fetchPexelsClips(
         if (!videoFile?.link) return null;
 
         const rawPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${fileTag}_vid${video.id}.mp4`),
+          "pexels",
+          String(video.id),
+          sourcingCache,
+          {
+            sceneIndex,
+            // StockBeatCtx carries the beat's TEXT, not its index; the record's beatText is
+            // where that belongs, and beatIndex stays unset rather than guessed.
+            beatText: stockBeatCtx?.beatText,
+            sourceUrl: videoFile.link,
+            mediaType: "video",
+            query: currentQuery,
+            searchRoute: "fetchPexelsClips",
+          }
+        );
 
         // Check media cache before downloading from Pexels CDN
         const fromMediaCache = await tryRestoreFromMediaCache(videoFile.link, rawPath);
@@ -6072,6 +7119,8 @@ export async function fetchPexelsClips(
         if (trimmed) {
           excludeVideoIds?.add(video.id);
           scheduleStockClipEmbedding(outPath);
+          // RONDE 96: see above — the trimmed file is on disk, so the download succeeded.
+          recordProviderDownloadOutcome(sourcingCache, outPath, true);
           return outPath;
         }
         return null;
@@ -6099,7 +7148,9 @@ async function fetchBrollClips(
   clipDuration: number,
   workDir: string,
   sceneIndex: number,
-  excludeVideoIds?: Set<number>
+  excludeVideoIds?: Set<number>,
+  /** RONDE 96: b-roll is Pexels too, and its clips belong in the same ledger as every other. */
+  sourcingCache?: SourcingCache
 ): Promise<string[]> {
   if ((!PEXELS_API_KEY && !PIXABAY_API_KEY) || !brollQueries || brollQueries.length === 0) return [];
   const results: string[] = [];
@@ -6110,6 +7161,9 @@ async function fetchBrollClips(
     if (stockClipEmbeddingEnabled()) {
       queryEmbForStock = await resolveBeatVisionQueryEmbedding({ beatText: query });
     }
+    // RONDE 89: the provider gate, per query in the loop. A refused query is skipped, never
+    // repaired or replaced.
+    if (admitProviderQuery("pexels", query, "fetchBrollClips") === null) continue;
     try {
       const searchUrl = `https://api.pexels.com/videos/search?query=${encodeURIComponent(query)}&per_page=5&size=large&orientation=landscape`;
       const searchResp = await fetchWithTimeout(
@@ -6158,7 +7212,19 @@ async function fetchBrollClips(
           || video.video_files.filter(f => f.width <= 1920).sort((a, b) => b.width - a.width)[0];
         if (!videoFile?.link) continue;
         const rawPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_broll_vid${video.id}.mp4`),
+          "pexels",
+          String(video.id),
+          sourcingCache,
+          {
+            sceneIndex,
+            sourceUrl: videoFile.link,
+            mediaType: "video",
+            query,
+            searchRoute: "fetchBrollClips",
+          }
+        );
         try {
           // F3-05: streams straight to rawPath instead of buffering the whole clip in memory.
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -6289,7 +7355,8 @@ export async function fetchPixabayClips(
           }
           markPixabaySearchResult(true);
           return await searchResp.json() as PixabaySearchData;
-        }
+        },
+        "fetchPixabayClips"
       );
       if (!searchData) continue;
       // Phase 20 metrics fix: real search-result count, independent of cache-hit/download/accept.
@@ -6320,7 +7387,22 @@ export async function fetchPixabayClips(
         if (!videoFile?.url) continue;
 
         const rawPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}_raw.mp4`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}.mp4`);
+        // RONDE 96: Pixabay was not on the round's list of five, but the re-scan found it writing
+        // outside the ledger just as they were — same gap, same fix, same entry point.
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${suffix}_vid${video.id}.mp4`),
+          "pixabay",
+          String(video.id),
+          sourcingCache,
+          {
+            sceneIndex,
+            beatText: stockBeatCtx?.beatText,
+            sourceUrl: videoFile.url,
+            mediaType: "video",
+            query: currentQuery,
+            searchRoute: "fetchPixabayClips",
+          }
+        );
 
         try {
           // F3-05: streams straight to rawPath instead of buffering the whole clip in memory.
@@ -6602,6 +7684,82 @@ const MAX_IMAGE_DOWNLOAD_BYTES = 25 * 1024 * 1024;
  */
 const WIKIMEDIA_MAX_CANDIDATE_SCAN = 25;
 
+/**
+ * RONDE 136 — every title's imageinfo in one request.
+ *
+ * MediaWiki's query API accepts up to 50 pipe-separated titles per call and answers with a page
+ * entry per title. Asking once instead of once-per-title is what stops Commons throttling this
+ * route; see the call site for what the N+1 pattern cost in video 558.
+ *
+ * Returns a map keyed by the title as it was ASKED FOR. MediaWiki normalises titles (underscores
+ * to spaces, first letter capitalised) and reports what it changed in `query.normalized`, so that
+ * mapping is applied here — without it a normalised answer would never be found again under the
+ * name the caller holds, and the batch would silently return nothing for every title.
+ *
+ * A failed request yields an empty map, which the caller treats exactly as it treated a failed
+ * per-title call: the candidates are skipped, nothing is invented.
+ */
+export const WIKIMEDIA_IMAGEINFO_BATCH_SIZE = 50;
+
+type WikimediaImageInfo = { url: string; mime: string; size: number };
+
+export async function fetchWikimediaImageInfoBatch(
+  titles: string[],
+  sceneIndex: number
+): Promise<Map<string, WikimediaImageInfo>> {
+  const out = new Map<string, WikimediaImageInfo>();
+  const wanted = titles.filter((t) => t?.trim());
+  for (let i = 0; i < wanted.length; i += WIKIMEDIA_IMAGEINFO_BATCH_SIZE) {
+    const chunk = wanted.slice(i, i + WIKIMEDIA_IMAGEINFO_BATCH_SIZE);
+    try {
+      const infoUrl =
+        `https://commons.wikimedia.org/w/api.php?action=query` +
+        `&titles=${encodeURIComponent(chunk.join("|"))}` +
+        `&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
+      const infoResp = await providerLimiter("wikimedia").run(() =>
+        fetchWithTimeout(infoUrl, 8_000, `Wikimedia info batch scene ${sceneIndex}`, {
+          headers: { "User-Agent": "Fastvid/1.0 (video generation)" },
+        })
+      );
+      if (!infoResp.ok) {
+        logWikimediaHttpFailure("imageinfo", sceneIndex, infoResp);
+        markWikimediaSearchResult(false);
+        continue;
+      }
+      markWikimediaSearchResult(true);
+      const data = (await infoResp.json()) as {
+        query?: {
+          normalized?: Array<{ from: string; to: string }>;
+          pages?: Record<string, { title?: string; imageinfo?: WikimediaImageInfo[] }>;
+        };
+      };
+      // MediaWiki's own record of what it renamed, so the answer can be found under the name the
+      // caller asked with.
+      const askedFor = new Map<string, string>();
+      for (const n of data.query?.normalized ?? []) askedFor.set(n.to, n.from);
+      for (const page of Object.values(data.query?.pages ?? {})) {
+        const info = page?.imageinfo?.[0];
+        if (!info?.url || !page.title) continue;
+        out.set(askedFor.get(page.title) ?? page.title, info);
+        // Also under the normalised name, so a caller holding either form finds it.
+        out.set(page.title, info);
+      }
+    } catch (err) {
+      // RONDE 68/69: a cancellation FastVid caused is not a provider fault, and a failure that is
+      // counted must never be counted silently. Same shape as every other Wikimedia catch site.
+      if (!isScopeAbortError(err)) {
+        console.warn(
+          `[Pipeline] Wikimedia info batch for scene ${sceneIndex}: ${(err as Error).message?.slice(0, 80)}`
+        );
+      }
+      // Single line, matching every other Wikimedia catch site: the counter and its cancellation
+      // guard travel together, which is the shape RONDE 69/70 pin.
+      if (!isScopeAbortError(err)) markWikimediaSearchResult(false);
+    }
+  }
+  return out;
+}
+
 export async function fetchWikimediaImages(
   query: string,
   duration: number,
@@ -6620,6 +7778,8 @@ export async function fetchWikimediaImages(
      * no candidate is skipped and no scan window is widened.
      */
     excludeUrls?: Set<string>;
+    /** RONDE 96: so Commons images open a lineage record like every other provider's assets. */
+    dedup?: VisualDedupState;
   } = {}
 ): Promise<string[]> {
   const results: string[] = [];
@@ -6644,7 +7804,23 @@ export async function fetchWikimediaImages(
         if (!c.url || !c.contentType.startsWith("image/")) continue;
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`);
+        // RONDE 96: fetchWikimediaVideos has opened a record since RONDE 88; this sibling, which
+        // serves Commons IMAGES, never did. Same provider, same ledger. The file URL is Commons'
+        // own stable identity for the file — see the excludeUrls note on this function's opts.
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`),
+          "wikimedia",
+          c.url,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: c.url,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchWikimediaImages",
+          }
+        );
         const fromCache = await tryRestoreFromMediaCache(c.url, imgPath);
         if (!fromCache) {
           const dl = await downloadToFileStreaming(
@@ -6686,6 +7862,10 @@ export async function fetchWikimediaImages(
       // provider limiter and the same timeouts, and every URL adopted above is already in
       // excludeUrls so it cannot be picked twice.
       if (!excludeUrls || results.length >= count) return results;
+      // RONDE 89: the provider gate, immediately before the one live search this function makes.
+      // A refused query means no live search — and the clips already adopted from the cached pool
+      // are returned rather than discarded, which is what the RONDE 50 fall-through guarantees.
+      if (admitProviderQuery("wikimedia", query, "fetchWikimediaImages") === null) return results;
     }
 
     // Cache miss — or a cache hit that exclusions left short (RONDE 50). Search Wikimedia Commons
@@ -6725,27 +7905,45 @@ export async function fetchWikimediaImages(
     // With excludeUrls set, the scan widens to every title the search returned and stops as soon
     // as `count` results are in hand. Without it, maxScan and the loop are exactly as before.
     const maxScan = excludeUrls ? titles.length : Math.min(titles.length, count);
+    /**
+     * RONDE 136 — ONE imageinfo request for all titles, not one per title.
+     *
+     * ── What video 558 measured ──────────────────────────────────────────────────────────────
+     *
+     *     wikimedia: searches=15  results=38  downloads=0  accepted=0
+     *     32x [Pipeline] Wikimedia imageinfo for scene N: HTTP 429 Too Many Requests
+     *     34x [ProviderCooldown] provider=wikimedia reason=RATE_LIMITED standing down for 60s
+     *
+     * Thirty-eight results and not one download. The search was never the problem — every
+     * per-title metadata call was refused, and without imageinfo there is no URL, so every
+     * candidate was dropped before it could become a file.
+     *
+     * ── Why it was rate-limited ──────────────────────────────────────────────────────────────
+     *
+     * This loop asked Commons about ONE title per HTTP request. With the exclusion set open the
+     * scan runs to WIKIMEDIA_MAX_CANDIDATE_SCAN (25) titles, and this route is called per scene
+     * and per beat — hundreds of requests to api.php in a render. Commons throttles that, which
+     * is not a fault in its policy: the API is explicitly built to be asked once.
+     *
+     * ── The fix ──────────────────────────────────────────────────────────────────────────────
+     *
+     * MediaWiki's query API takes up to 50 titles in one `titles=A|B|C` call and returns a page
+     * entry for each. So the whole scan becomes a single request — 25x fewer calls, the same
+     * data, and no new architecture: same endpoint, same params, same parsing, same User-Agent.
+     *
+     * The per-title loop below is unchanged apart from reading its imageinfo out of this map
+     * instead of making its own call. Order, caps, exclusion and early-exit all still behave
+     * exactly as they did.
+     */
+    const infoByTitle = await fetchWikimediaImageInfoBatch(
+      titles.slice(0, maxScan),
+      sceneIndex
+    );
     for (let i = 0; i < maxScan; i++) {
       if (results.length >= count) break;
       try {
         const title = titles[i];
-        const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*`;
-        const infoResp = await providerLimiter("wikimedia").run(() => fetchWithTimeout(
-          infoUrl,
-          5_000,
-          `Wikimedia info scene ${sceneIndex}`,
-          { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } }
-        ));
-        if (!infoResp.ok) {
-          logWikimediaHttpFailure("imageinfo", sceneIndex, infoResp);
-          markWikimediaSearchResult(false);
-          continue;
-        }
-        markWikimediaSearchResult(true);
-        const infoData = await infoResp.json() as { query?: { pages?: Record<string, { imageinfo?: Array<{ url: string; mime: string; size: number }> }> } };
-        const pages = infoData.query?.pages || {};
-        const page = Object.values(pages)[0];
-        const imageInfo = page?.imageinfo?.[0];
+        const imageInfo = infoByTitle.get(title);
         if (!imageInfo?.url) continue;
         if (excludeUrls?.has(imageInfo.url)) continue;
         // Only use JPEG/PNG images, skip SVG/PDF/audio/video
@@ -6767,7 +7965,20 @@ export async function fetchWikimediaImages(
         // Download the image (check media cache first)
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`);
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`),
+          "wikimedia",
+          imageInfo.url,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: imageInfo.url,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchWikimediaImages",
+          }
+        );
         const fromWikiCache = await tryRestoreFromMediaCache(imageInfo.url, imgPath);
         if (!fromWikiCache) {
           const { response: imgResp, bytesWritten } = await downloadToFileStreaming(
@@ -6921,6 +8132,11 @@ async function fetchWikimediaImagesV1(
   type WikiSearchResult = { title: string; snippet?: string };
   const searchResults = await Promise.all(
     queries.map(async (query) => {
+      // RONDE 89: the provider gate, per query. A refused query yields no results for that
+      // query — it is never repaired, widened or replaced with a guess.
+      if (admitProviderQuery("wikimedia", query, "fetchWikimediaImagesV1") === null) {
+        return { query, results: [] as WikiSearchResult[] };
+      }
       try {
         const searchUrl =
           `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
@@ -6996,6 +8212,9 @@ async function fetchOpenverseImages(
     geoDocumentary?: boolean;
   } = {}
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("openverse", query, "fetchOpenverseImages") === null) return [];
   const geoOk = Boolean(opts.geoDocumentary && openverseGeoDocumentaryEnabled());
   if (!openverseStillsEnabled() && !geoOk) return [];
   const results: string[] = [];
@@ -7041,7 +8260,35 @@ async function fetchOpenverseImages(
         const assetTag =
           ((images[i]?.id?.trim() || imgUrl).replace(/[^a-zA-Z0-9]/g, "").slice(0, 24)) || String(i);
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.mp4`),
+          "openverse",
+          images[i]?.id?.trim() || imgUrl,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: imgUrl,
+            title: images[i]?.title,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchOpenverseImages",
+          }
+        );
 
         // Download image
         const imgResp = await withTimeout(
@@ -7068,6 +8315,10 @@ async function fetchOpenverseImages(
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
           opts.dedup?.usedImageUrls.add(urlKey);
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           console.log(`[Pipeline] Scene ${sceneIndex}: Openverse image added: ${images[i].title?.slice(0, 60) || imgUrl.slice(0, 60)}`);
         }
@@ -7092,6 +8343,9 @@ async function fetchUnsplashImages(
   fileTag = "",
   opts: { personPortrait?: boolean; dedup?: VisualDedupState } = {}
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("unsplash", query, "fetchUnsplashImages") === null) return [];
   if (!UNSPLASH_ACCESS_KEY?.trim()) return [];
   const results: string[] = [];
   try {
@@ -7132,7 +8386,34 @@ async function fetchUnsplashImages(
 
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}unsplash_${i}.mp4`),
+          "unsplash",
+          images[i].id?.trim() || urlKey,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            sourceUrl: imgUrl,
+            title: images[i].description ?? images[i].alt_description,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchUnsplashImages",
+          }
+        );
 
         const imgResp = await withTimeout(
           fetch(imgUrl),
@@ -7160,6 +8441,10 @@ async function fetchUnsplashImages(
 
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
           opts.dedup?.usedImageUrls.add(urlKey);
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           const label = images[i].alt_description || images[i].description || query;
           console.log(`[Pipeline] Scene ${sceneIndex}: Unsplash image added: ${label.slice(0, 60)}`);
@@ -7174,109 +8459,26 @@ async function fetchUnsplashImages(
   return results;
 }
 
-// ─── 3c2b-yt. YouTube Data API Thumbnails ────────────────────────────────────
-// Uses YouTube Data API v3 to search for relevant videos and downloads their
-// high-quality thumbnails as image clips. This gives highly relevant visuals
-// that match the scene topic without requiring video downloads.
-async function fetchYouTubeThumbnails(
-  query: string,
-  duration: number,
-  workDir: string,
-  sceneIndex: number,
-  count: number = 3,
-  fileTag = ""
-): Promise<string[]> {
-  if (!youtubeSourcingEnabled()) return [];
-  const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
-  if (!YOUTUBE_API_KEY) return [];
-  if (isYoutubeInCooldown()) return [];
-  fs.mkdirSync(workDir, { recursive: true });
-  const results: string[] = [];
-  try {
-    // Search YouTube for relevant videos (Creative Commons preferred, but also standard)
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${count * 3}&key=${YOUTUBE_API_KEY}`;
-    const searchResp = await providerLimiter("youtube").run(() => fetchWithTimeout(
-      searchUrl,
-      10000,
-      `YouTube search scene ${sceneIndex}`
-    ));
-    if (!searchResp.ok) {
-      if (searchResp.status === 429) {
-        markYoutubeRateLimited(parseRetryAfterMs(searchResp.headers?.get?.("retry-after")));
-      } else {
-        markYoutubeSearchResult(false);
-      }
-      console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube API error ${searchResp.status}`);
-      return [];
-    }
-    markYoutubeSearchResult(true);
-    const payload = await searchResp.json() as { items?: Array<{ id: { videoId: string }; snippet: { title: string; thumbnails: { maxres?: { url: string }; high?: { url: string }; medium?: { url: string } } } }> };
-    const items = payload.items || [];
-    if (items.length === 0) return [];
-
-    for (let i = 0; i < Math.min(items.length, count * 2) && results.length < count; i++) {
-      try {
-        const item = items[i];
-        // Use highest quality thumbnail available
-        const thumbUrl = item.snippet.thumbnails?.maxres?.url ||
-                         item.snippet.thumbnails?.high?.url ||
-                         item.snippet.thumbnails?.medium?.url;
-        if (!thumbUrl) continue;
-
-        const tag = fileTag ? `${fileTag}_` : "";
-        const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}yt_${i}.mp4`);
-
-        // Download thumbnail
-        const imgResp = await withTimeout(
-          fetch(thumbUrl),
-          10000,
-          `YouTube thumbnail download scene ${sceneIndex}`
-        );
-        if (!imgResp.ok) continue;
-        const imgBuf = Buffer.from(await imgResp.arrayBuffer());
-        if (imgBuf.length < 5000) continue; // skip tiny/broken thumbnails
-        fs.writeFileSync(imgPath, imgBuf);
-
-        // Convert thumbnail to video clip with slow Ken Burns zoom effect. Routed through
-        // ffmpegSemaphore — this raw spawn() previously bypassed the shared concurrency gate
-        // that videoPipeline.ts's own exec() enforces everywhere else in this file.
-        //
-        // No outer withTimeout() here (there used to be one, at 30000ms): its timer started
-        // before ffmpegSemaphore.run()'s acquire() resolved, so queue-wait time counted against
-        // the budget, and it couldn't kill the real child anyway (the run() promise exposes no
-        // .childProcess). The inner 25000ms timer below is constructed AFTER the semaphore slot
-        // is held, so it only starts once the ffmpeg process is actually running, and it can
-        // kill it directly — that's the only timeout this call needs.
-        await ffmpegSemaphore.run(() => new Promise<void>(async (resolve, reject) => {
-          const { spawn } = await import('child_process');
-          const args = [
-            '-y', '-loop', '1', '-i', imgPath,
-            '-vf', `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.0006,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.round(duration * 25)}:s=1920x1080:fps=25,setsar=1`,
-            '-t', String(duration),
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-            '-pix_fmt', 'yuv420p', '-an', outPath
-          ];
-          const child = spawn(FFMPEG_BIN, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-          const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /**/ } reject(new Error('timeout')); }, 25000);
-          child.on('close', (code: number | null) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`exit ${code}`)); });
-          child.on('error', (err: Error) => { clearTimeout(timer); reject(err); });
-        }));
-        try { fs.unlinkSync(imgPath); } catch { /**/ }
-
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 10_000) {
-          results.push(outPath);
-          console.log(`[Pipeline] Scene ${sceneIndex}: YouTube thumbnail added: "${item.snippet.title?.slice(0, 60)}"`);
-        }
-      } catch (err) {
-        console.warn(`[Pipeline] YouTube thumbnail ${i} failed for scene ${sceneIndex}:`, (err as Error).message);
-      }
-    }
-  } catch (err) {
-    console.warn(`[Pipeline] YouTube search failed for scene ${sceneIndex}:`, (err as Error).message);
-  }
-  return results;
-}
+/*
+ * ─── 3c2b-yt. YouTube Data API Thumbnails — REMOVED ──────────────────────────
+ *
+ * fetchYouTubeThumbnails lived here. It called the YouTube Data API, took the still image from
+ * each search result, and ran ffmpeg with `-loop 1 -i thumb.jpg … zoompan` to produce an .mp4 —
+ * a slow pan across a promotional picture, then handed to adoptClip like any other clip. Four
+ * ladders used it, and the research ladder returned its output under the "youtube_cc" source
+ * label, which is the label the genuine video route uses.
+ *
+ * So a thumbnail could reach finalConcatInputs, and once there nothing — not the compose gate,
+ * not the audit, not the [AssetUsageSummary] — could tell it apart from footage.
+ *
+ * FastVid uses YouTube for video it can cut a fragment out of. That route is intact and is the
+ * only one left: searchYoutubeVideoCandidates finds videos, downloadYouTubeCCClip fetches the
+ * real stream by videoId and trims it at clipStart, and fetchYouTubeCCClips opens the lineage
+ * with that videoId as the provider asset id. A still has no fragment to cut.
+ *
+ * Removed rather than flagged off: a flag leaves the same picture one environment variable away
+ * from the delivered video. ronde97YouTubeVideoOnly holds this grave shut.
+ */
 
 // ─── 3c2b. SerpAPI Google Images Search ────────────────────────────────────
 // Searches Google Images via SerpAPI for celebrity/person-specific photos.
@@ -7296,6 +8498,9 @@ async function fetchSerpAPIImages(
     stillStyleContext?: StillStyleContext;
   } = {}
 ): Promise<string[]> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("serpapi", query, "fetchSerpAPIImages") === null) return [];
   if (!SERPAPI_KEY) return [];
   if (isSerpApiInCooldown()) return [];
   // Ensure workDir exists — it may have been cleaned up between pipeline stages
@@ -7341,6 +8546,27 @@ async function fetchSerpAPIImages(
       if (!imgUrl) continue;
       const urlKey = normalizeImageSourceUrl(imgUrl);
       if (opts.dedup?.usedImageUrls.has(urlKey)) continue;
+      /**
+       * RONDE 140 — which SITE this picture is on, decided before the request goes out.
+       *
+       * This is not a licence check and there is none on this route: FastVid has never asked a
+       * rights question of a Google Images result and still does not. What it refuses is the
+       * material that was already going to fail — a watermarked agency comp (the baked-text
+       * detector's job, one download later) and a re-host with no findable origin — plus whatever
+       * the operator has excluded through OPEN_WEB_BLOCKED_DOMAINS / OPEN_WEB_ALLOWED_DOMAINS.
+       *
+       * Placed above the extension checks so that a host refusal is counted even for URLs the
+       * next few lines would have dropped anyway: the policy report's `considered` has to mean
+       * "results this policy looked at", not "results that happened to reach it".
+       */
+      const webDecision = openWebSourceDecision({ url: imgUrl });
+      noteOpenWebDecision(opts.dedup?.openWebPolicyStats, webDecision);
+      if (!webDecision.allowed) {
+        console.log(
+          formatOpenWebReject({ sceneIndex, beatIndex: opts.beatIndex, decision: webDecision })
+        );
+        continue;
+      }
       // Skip SVG, GIF, and non-image URLs
       const lowerUrl = imgUrl.toLowerCase();
       if (lowerUrl.endsWith('.svg') || lowerUrl.endsWith('.gif') || lowerUrl.endsWith('.webp')) continue;
@@ -7353,7 +8579,43 @@ async function fetchSerpAPIImages(
       try {
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.jpg`);
-        const outPath = path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`);
+        /**
+         * RONDE 96 — this provider's assets enter the ledger like every other provider's.
+         *
+         * These five fetchers wrote their file straight to workDir and handed the path on, so the
+         * clip only ever reached the ledger later, through clipAdoptAudit's "adoption of a clip
+         * the ledger has never seen" branch — which deliberately records NO provider, because
+         * guessing one from a filename is exactly what RONDE 86 removed. The result was honest and
+         * useless: every Pexels, Unsplash, SerpAPI, Openverse and YouTube-thumbnail asset counted
+         * as UNVERIFIED however normally it had arrived.
+         *
+         * tagPathWithProviderAsset is the same entry point the other eleven providers use, called
+         * at the same moment: provider name, the provider's own id and the destination path all in
+         * hand, straight from the API response. It opens the record and files DOWNLOAD_STARTED.
+         */
+        /**
+         * RONDE 96 (§4) — SerpAPI is the one provider here with no asset id to keep.
+         *
+         * Its images_results rows carry `original`, `thumbnail` and `title`, and nothing else: no
+         * id, no stable key. So the identity used is the normalised source URL, which is the
+         * asset's own canonical location rather than something invented — not a hash, not the
+         * filename, not the loop index. The URL is what SerpAPI itself identifies the image by.
+         */
+        const outPath = tagPathWithProviderAsset(
+          path.join(workDir, `scene_${sceneIndex}_${tag}serp_${i}.mp4`),
+          "serpapi",
+          urlKey,
+          opts.dedup?.sourcingCache,
+          {
+            sceneIndex,
+            beatIndex: opts.beatIndex,
+            sourceUrl: imgUrl,
+            title: images[i].title,
+            mediaType: "image",
+            query,
+            searchRoute: "fetchSerpAPIImages",
+          }
+        );
 
         const dl = await downloadToFileStreaming(
           imgUrl,
@@ -7399,6 +8661,10 @@ async function fetchSerpAPIImages(
         try { fs.unlinkSync(imgPath); } catch { /* ignore */ }
         if (fs.existsSync(outPath) && fs.statSync(outPath).size > 1_000) {
           opts.dedup?.usedImageUrls.add(urlKey);
+          // RONDE 96: the file exists, so the download is a fact rather than an intention. Same helper the o
+          // ther eleven providers use — it flips DOWNLOAD_STARTED to DOWNLOAD_SUCCEEDED on the record tagPat
+          // hWithProviderAsset opened.
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
           results.push(outPath);
           downloaded++;
           // Problem 1/2 (production render finding): SerpAPI already returns the source page's
@@ -7435,6 +8701,20 @@ async function fetchSerpAPIImages(
  * padding isn't needed or all attempts fail.
  */
 async function padShortClipWithNext(
+  clipPath: string,
+  holdSec: number,
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  semanticProfile?: BeatSemanticProfile
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => padShortClipWithNextInner(clipPath, holdSec, beat, scene, workDir, videoTitle, dedup, semanticProfile));
+}
+
+async function padShortClipWithNextInner(
   clipPath: string,
   holdSec: number,
   beat: SceneBeat,
@@ -7545,13 +8825,39 @@ async function extendLastClip(
   beatDuration: number,
   sceneIndex: number,
   beatIndex: number,
-  workDir: string
+  workDir: string,
+  /**
+   * RONDE 167 — the extension is a NEW file made from a known clip, and nothing said so.
+   *
+   * `linkDerivedPath`'s own contract is "call it at every site that writes a new file from an
+   * existing clip"; this site never did. Two things followed. An adopted extension reached the
+   * manifest through `recordClipAdopt`'s hole-filling branch, which opens a record with NO
+   * provider — so real Library of Congress footage, looped, was reported UNVERIFIED. And RONDE
+   * 165's `extended_rejected` outcome was written against a path the ledger could not resolve,
+   * so it silently wrote nothing at all: proven by test, zero events.
+   *
+   * Linking it fixes both. The extension inherits its source's proven provider — which is not a
+   * guess, the pipeline built the file itself from that clip — and the refusal now lands.
+   */
+  lineage?: VisualSourceLedger
 ): Promise<string | null> {
   if (!lastClipPath || !fs.existsSync(lastClipPath)) return null;
   if (isPipelineFallbackClip(lastClipPath)) return null;
   if (!(await isValidVideoFile(lastClipPath))) return null;
   const safeDuration = Math.min(Math.max(beatDuration, 1), 60);
   const out = path.join(workDir, `extend_s${sceneIndex}b${beatIndex}_${Date.now()}.mp4`);
+  /**
+   * RONDE 167 — link the extension to the clip it was looped from, without retiring that clip.
+   *
+   * `supersedesParent: false` because both files are live: the source under its own beat and the
+   * extension under the next. See linkDerivedPath for why the default is the other way.
+   */
+  const linkExtension = (): void => {
+    lineage?.linkDerivedPath(out, lastClipPath, "TRANSFORMED", {
+      reason: "extendLastClip",
+      supersedesParent: false,
+    });
+  };
 
   // A raw stream_loop repeats the exact same footage with zero variation. Over a long hold
   // (this path only runs when nothing else could be found/padded for the beat) that reads as
@@ -7577,6 +8883,7 @@ async function extendLastClip(
     );
     if (await isValidVideoFile(out)) {
       console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (zoom, moving) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+      linkExtension();
       return out;
     }
   } catch {
@@ -7593,6 +8900,7 @@ async function extendLastClip(
     );
     if (await isValidVideoFile(out)) {
       console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+      linkExtension();
       return out;
     }
   } catch {
@@ -7607,6 +8915,7 @@ async function extendLastClip(
       );
       if (await isValidVideoFile(out)) {
         console.log(`[Retrieval] s${sceneIndex}b${beatIndex}: extendLastClip (re-encode) ${path.basename(lastClipPath)} → ${safeDuration.toFixed(1)}s`);
+        linkExtension();
         return out;
       }
     } catch { /* give up */ }
@@ -7667,7 +8976,71 @@ export function isPlaceholderGuaranteedTier(tier: GuaranteedClipTier | undefined
   return tier !== "topical" && tier !== "wikimedia";
 }
 
+/**
+ * RONDE 100B, second audit — the guaranteed ladder reaches Wikimedia too.
+ *
+ * The first audit listed the fetchers it knew about and missed fetchWikimediaImages entirely, so
+ * this route never showed up: generateGuaranteedBeatClip asks Wikimedia for one more real image
+ * before it gives up and draws a card. Thirteen callers reach it, including composeSceneVideoInner
+ * and _runVideoPipelineInner — none of them inside a beat scope.
+ *
+ * It carries the beat's TEXT rather than the beat and scene objects, which is enough: the proof
+ * is built from the narration. When beatText is empty there is no proof and the gate refuses the
+ * query, which is the correct outcome rather than a missing one.
+ */
 export async function generateGuaranteedBeatClip(
+  sceneIndex: number,
+  slotIndex: number,
+  duration: number,
+  workDir: string,
+  beatText?: string,
+  usedAssetIds?: Set<number>,
+  usedStorageUrls?: Set<string>,
+  tierOut?: GuaranteedTierOut,
+  /**
+   * RONDE 103 phase 7 — the guaranteed ladder reaches real pictures, so it is judged too.
+   *
+   * The ladder's first two rungs (`topical`, `wikimedia`) fetch genuine imagery and put it under
+   * this beat's narration; those are claims about the world and get the same gate every other
+   * route gets. Its last two (`text_overlay`, `color_fallback`) draw a card that depicts nothing,
+   * and asking a vision model whether a grey rectangle belongs under a line of narration is
+   * money spent to learn nothing.
+   *
+   * The check sits here, on the tier the ladder actually returned, rather than at the twelve
+   * call sites — a new caller cannot forget it, and the choice of which tiers are exempt is
+   * stated once. A refused clip is NOT swapped for something else: this function's whole contract
+   * is that it always returns a path, so the refusal is recorded on the ledger and the compose
+   * barrier is what acts on it.
+   */
+  relevance?: { dedup: VisualDedupState; scene?: { text?: string }; videoTitle?: string },
+): Promise<string> {
+  const tier: GuaranteedTierOut = tierOut ?? {};
+  const clip = await withBeatProvenance({ text: beatText ?? "" }, {}, () =>
+    generateGuaranteedBeatClipInner(sceneIndex, slotIndex, duration, workDir, beatText, usedAssetIds, usedStorageUrls, tier)
+  );
+  if (relevance && clip) {
+    await checkBeatRelevance({
+      clipPath: clip,
+      contentKey: clipContentKey(clip),
+      ctx: {
+        sceneIndex,
+        beatIndex: slotIndex,
+        beatText: beatText ?? "",
+        sceneText: relevance.scene?.text,
+        videoTitle: asVideoTitleString(relevance.videoTitle) || undefined,
+      },
+      workDir,
+      state: relevance.dedup.beatImageGate,
+      ledger: relevance.dedup.beatRelevance,
+      route: `guaranteed:${tier.tier ?? "unknown"}`,
+      placeholder: isPlaceholderGuaranteedTier(tier.tier),
+      onSpend: (spent) => noteVisionSpend(relevance.dedup, sceneIndex, slotIndex, spent),
+    });
+  }
+  return clip;
+}
+
+async function generateGuaranteedBeatClipInner(
   sceneIndex: number,
   slotIndex: number,
   duration: number,
@@ -7795,11 +9168,22 @@ export async function generateGuaranteedBeatClip(
     try {
       const safeText = sanitizeForDrawtextStrict(beatText, 90);
       const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e"];
-      const color = colors[Math.abs(sceneIndex) % colors.length];
+      // RONDE 154: the same sequence counter, for the same reason — every placeholder beat in
+      // one scene used to get the identical colour and merge into a single unchanging picture.
+      const textVariant = colorFallbackSequence++;
+      const color = colors[textVariant % colors.length];
+      /**
+       * RONDE 155 — the same drifting background as the plain card, for the same reason.
+       *
+       * This card's only movement was the text fading in over its first 0.4s; every frame after
+       * that was identical. A failure here falls through to generateColorFallback below, so a box
+       * without the gradients source still gets a card.
+       */
+      const textColorB = colors[(textVariant + 1) % colors.length];
       const safeDur = guaranteedTextOverlayDurationSec(duration);
       await withSceneFetchTimeout(
         () => exec(
-          `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDur} ` +
+          `${FFMPEG_BIN} -y -f lavfi -i "gradients=s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:c0=0x${color}:c1=0x${textColorB}:speed=0.20:r=25" -t ${safeDur} ` +
           `-vf "drawtext=text='${safeText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:` +
           `shadowcolor=black:shadowx=3:shadowy=3:alpha='if(lt(t,0.4),t/0.4,1)'" ` +
           `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${outputPath}"`
@@ -7833,6 +9217,52 @@ export async function generateGuaranteedBeatClip(
   }
 }
 
+/**
+ * RONDE 169 — a scene whose picture list is rebuilt must say what became of the old one.
+ *
+ * ── What render 555 measured ─────────────────────────────────────────────────────────────────
+ *
+ *     [OutcomeInvariant] FAILED selectedWithoutOutcome=18
+ *     [AssetLifecycleAudit] unresolvedByRoute backfill=6 rescue=6 fallback=4 primary=2
+ *
+ * Eighteen assets chosen, delivered nowhere, explained by nothing — and every one of them carried
+ * `provider=UNVERIFIED`, the signature of `recordClipAdopt`'s hole-filling branch on the backfill,
+ * rescue and fallback routes.
+ *
+ * Twelve places assign `sceneVisualResults[i]`. Several rebuild a scene's list from scratch — a
+ * coverage repair, a strict-voice refill, a guaranteed fill after an empty scene. The clips of the
+ * PREVIOUS list were adopted and then simply stopped being referenced: no gate refused them,
+ * nothing replaced them one for one, and the array they lived in was overwritten. That is the
+ * common cause behind all eighteen, and it is one cause rather than eighteen.
+ *
+ * ── Why here and not in the audit ────────────────────────────────────────────────────────────
+ *
+ * The audit could derive this at the end — "adopted, not delivered, therefore dropped" — and that
+ * would make `unresolved` unfalsifiable: every hole would explain itself. The code that drops the
+ * clip is the code that knows, so it is the code that says so.
+ *
+ * `hasOutcomeFor` keeps it honest in the other direction. A clip a compose gate already refused
+ * keeps that ending; this never overwrites a specific reason with a vaguer one, and it is safe to
+ * call at every assignment site including the ones that only refine a list.
+ */
+function noteSceneClipsResourced(
+  dedup: VisualDedupState | undefined,
+  previous: { clips?: string[] } | undefined,
+  next: { clips?: string[] } | undefined,
+  context: string
+): void {
+  const lineage = dedup?.sourcingCache?.lineage;
+  if (!lineage || !previous?.clips?.length) return;
+  const kept = new Set(next?.clips ?? []);
+  for (const clip of previous.clips) {
+    if (!clip || kept.has(clip)) continue;
+    const contentKey = clipContentKey(clip);
+    // Already explained by whoever dropped it — a compose gate, a duplicate, a validation swap.
+    if (lineage.hasOutcomeFor(clip, contentKey)) continue;
+    recordAssetOutcome(lineage, clip, "scene_resourced", context, contentKey);
+  }
+}
+
 async function appendGuaranteedSceneClips(
   scene: Scene,
   workDir: string,
@@ -7852,7 +9282,8 @@ async function appendGuaranteedSceneClips(
     try {
       const tierOut: GuaranteedTierOut = {};
       const clip = await generateGuaranteedBeatClip(
-        scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90), undefined, undefined, tierOut
+        scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90), undefined, undefined, tierOut,
+        dedup ? { dedup, scene } : undefined
       );
       const key = clipContentKey(clip);
       if (!clips.some((c) => clipContentKey(c) === key)) {
@@ -7934,16 +9365,43 @@ async function appendGuaranteedSceneClips(
   }
 }
 
+/**
+ * RONDE 154 — two cards in a row must not be the same colour.
+ *
+ * The colour was `colors[Math.abs(seed) % colors.length]` with `seed = sceneIndex * 1000 +
+ * slotIndex`. Video 551's scene 2 asked for slots 101, 102 and 302; the last two both landed on
+ * palette index 6 and came out identically coloured. To `mpdecimate` that is not two cards, it is
+ * ONE unchanging picture — which is how a 19.38s still appeared in a render whose longest single
+ * card is about five seconds.
+ *
+ * ── Why a counter and not better arithmetic ──────────────────────────────────────────────────
+ *
+ * Slot numbers are tier markers, not a sequence: 101, 102, then 302. ANY linear function of the
+ * slot collides whenever two slots differ by a multiple of the palette size, and 302 − 102 = 200
+ * is. `(scene * 31 + slot) % 8` fails on exactly this case too — it was tried and measured.
+ *
+ * So the colour comes from how many cards have actually been made, which is the only quantity that
+ * is guaranteed to advance by one between consecutive cards. Cross-scene interleaving under
+ * parallel compose can shuffle WHICH colour a card gets; it cannot make two successive calls
+ * return the same one, which is the property that matters.
+ *
+ * It changes nothing about what a card IS: still a placeholder in the audit, still counted in
+ * fallbackRatio, still a beat with no footage behind it.
+ */
+let colorFallbackSequence = 0;
+
 async function generateColorFallback(
   sceneIndex: number,
   duration: number,
   workDir: string,
-  outputPath?: string
+  outputPath?: string,
+  variantIndex?: number
 ): Promise<string> {
   fs.mkdirSync(workDir, { recursive: true });
   const out = outputPath ?? path.join(workDir, `scene_${sceneIndex}_fallback.mp4`);
-  const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
-  const color = colors[Math.abs(sceneIndex) % colors.length];
+  // Drawn ONCE here and passed down, so the counter advances once per card rather than once per
+  // internal retry — and so the colour this function logs is the colour the encoder actually uses.
+  const variant = variantIndex ?? colorFallbackSequence++;
   // Guard NaN/Infinity/0 — Math.max(NaN, 3) = NaN which breaks ffmpeg -t
   const rawDuration = Number.isFinite(duration) && duration > 0 ? duration : 5;
   const safeDuration = Math.min(Math.max(rawDuration, 3), 90);
@@ -7964,13 +9422,45 @@ async function generateColorFallback(
   // attempt eventually timed out and failed ("all color-fallback attempts failed") even
   // though the commands themselves (a trivial solid-color test pattern) were never actually
   // broken.
-  return _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir);
+  return _generateColorFallbackInner(sceneIndex, safeDuration, out, workDir, variant);
 }
 
-async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string): Promise<string> {
+async function _generateColorFallbackInner(sceneIndex: number, safeDuration: number, out: string, workDir: string, variantIndex?: number): Promise<string> {
   const colors = ["3a4a5e", "4a5a6e", "3a5a6e", "4a4a5e", "3a5a5e", "4a5a5e", "3a4a6e", "4a4a6e"];
-  const color = colors[Math.abs(sceneIndex) % colors.length];
+  // RONDE 154: the card's own position in the sequence, so two in a row are never one picture.
+  const variant = Math.abs(variantIndex ?? colorFallbackSequence++);
+  const color = colors[variant % colors.length];
+  /**
+   * RONDE 155 — a placeholder is still a placeholder, but it is not a frozen frame.
+   *
+   * A flat `color=` source is, by construction, one unchanging picture for its whole duration. The
+   * stillness audit measures exactly that, and measured it: a five-second card reports
+   * longestStill 5.00s with zero visual changes.
+   *
+   * The second colour is the NEXT palette entry, so the drift stays inside the same muted family
+   * rather than becoming a light show. Measured with the pipeline's own auditVideoStillness:
+   *
+   *     color=            0 changes   longest still 5.00s
+   *     gradients speed=0.05    marginal: 0.00s / 0.75s / 0.75s over three runs
+   *     gradients speed=0.20   32-39 changes  longest still 0.00s, 8 runs of 8
+   *
+   * speed=0.20 was chosen by repeated measurement, not by taste. 0.05 looked adequate in a single
+   * run and turned out to be MARGINAL: across three runs it reported 0.00s once and 0.75s twice,
+   * because the drift is slow enough that whether two sampled frames differ is close to a
+   * coin-flip. 0.20 returned 0.00s in eight runs out of eight (32-39 changes each). A guarantee
+   * needs margin, not a setting that happens to pass.
+   *
+   * It changes NOTHING about the accounting. The clip is still adopted as `rescue_placeholder`,
+   * still counted in fallbackRatio, still penalised in the quality score. What it stops is the
+   * viewer being shown a frozen video, which is a rendering fault regardless of what caused it.
+   */
+  const colorB = colors[(variant + 1) % colors.length];
   const commands = [
+    `${FFMPEG_BIN} -y -f lavfi -i "gradients=s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:c0=0x${color}:c1=0x${colorB}:speed=0.20:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
+    // Every command below is a flat colour and therefore a still picture. They are the ladder that
+    // already existed for a box where the first command cannot run at all — an older ffmpeg without
+    // the gradients source, or one under such load that only the cheapest encode survives. A card
+    // that is a held frame beats no card at all, which is the whole point of a last-resort net.
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=#${color}:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:r=25" -t ${safeDuration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ultrafast -pix_fmt yuv420p -an "${out}"`,
     `${FFMPEG_BIN} -y -f lavfi -i "color=c=black:s=1280x720:r=25" -t ${safeDuration} -c:v mpeg4 -q:v 5 -an "${out}"`,
@@ -8004,17 +9494,59 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
         break;
       } catch (err) {
         lastErr = err;
-        if (retry < FALLBACK_RETRIES - 1) {
+        /**
+         * RONDE 129 — "transient" was the word for every failure, including the one that cannot
+         * possibly go away.
+         *
+         * From production:
+         *
+         *     fallback attempt 1 failed (transient) — retry 1/3 in 3.6s: Video generation cancelled
+         *     fallback attempt 1 failed (transient) — retry 2/3 in 7.1s: Video generation cancelled
+         *
+         * `throwIfVideoGenerationCancelled` throws that when the render has been called off, and
+         * the cancel flag stays set — so this slept four seconds and asked again for something
+         * guaranteed to fail, three times, for each command variant, on a render that had already
+         * been told to stop. The classifier answers the question the word "transient" was
+         * standing in for.
+         */
+        const wait = jitteredDelay((retry + 1) * 4_000);
+        const decision = shouldRetryAfterFailure({
+          kind: classifyProviderFailure({ err }),
+          attempt: retry,
+          maxAttempts: FALLBACK_RETRIES,
+          waitMs: wait,
+          // The command's own ceiling — the withSceneFetchTimeout above.
+          estimatedCostMs: 45_000,
+          remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),
+        });
+        if (!decision.retry) {
+          if (decision.reason !== "ATTEMPTS_EXHAUSTED") {
+            console.warn(
+              formatRetryGuard({
+                operation: `colorFallback s${sceneIndex} variant ${i + 1}`,
+                attempt: retry,
+                maxAttempts: FALLBACK_RETRIES,
+                decision,
+                remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),
+                estimatedCostMs: 45_000,
+              })
+            );
+          }
+          // A cancellation must end the whole ladder, not just this variant: every remaining
+          // command would throw the same thing.
+          if (decision.kind === "CANCELLED" || decision.kind === "BUDGET_EXCEEDED") throw err;
+        }
+        if (decision.retry) {
           const forkPressure = isForkPressureError(err);
-          const wait = jitteredDelay((retry + 1) * 4_000);
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed ` +
-            `(${forkPressure ? "fork pressure" : "transient"}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${(wait / 1000).toFixed(1)}s: ` +
+            `(${forkPressure ? "fork pressure" : decision.kind.toLowerCase()}) — retry ${retry + 1}/${FALLBACK_RETRIES - 1} in ${(wait / 1000).toFixed(1)}s: ` +
             `${(err as Error).message?.slice(0, 150)}`
           );
           await sleep(wait);
           continue;
         }
+        // No retry: report this variant's failure in full and move to the next command.
         const e = err as { message?: string; stderr?: string; code?: string };
         const ffmpegErr = ((e.stderr ?? "").slice(-600) || e.message?.slice(0, 300)) ?? String(err);
         console.warn(`[Pipeline] Scene ${sceneIndex}: fallback attempt ${i + 1} failed [code=${e.code ?? "?"}]: ${ffmpegErr}`);
@@ -8026,33 +9558,9 @@ async function _generateColorFallbackInner(sceneIndex: number, safeDuration: num
   throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${sceneIndex}: all color-fallback attempts failed (duration=${safeDuration}s, workDir=${workDir})`);
 }
 
-/** Rotate golden Musk queries; never grey or duplicate clips. */
-async function fetchMuskGoldenStockBeat(
-  beat: SceneBeat,
-  scene: Scene,
-  workDir: string,
-  sceneIndex: number,
-  dedup: VisualDedupState,
-  adoptOpts: VisualAdoptOptions
-): Promise<string | null> {
-  const clipFetchDur = 4;
-  const start = (sceneIndex * 5 + beat.index) % GOLDEN_MUSK_QUERIES.length;
-  const maxTries = dedup.perf.fastStockMode ? 3 : GOLDEN_MUSK_QUERIES.length;
-  for (let i = 0; i < maxTries; i++) {
-    const gq = GOLDEN_MUSK_QUERIES[(start + i) % GOLDEN_MUSK_QUERIES.length];
-    if (isBlockedStockQuery(gq)) continue;
-    const golden = await fetchPexelsClips(
-      gq, clipFetchDur, workDir, sceneIndex, 2, [gq], true,
-      `b${beat.index}_golden`, dedup.usedPexelsIds, beat.index + sceneIndex + i,
-      dedup.perf.pexelsDownloadRetries
-    );
-    const gClip = await adoptClip(
-      golden, dedup, sceneIndex, beat.index, beat.text, workDir, gq, adoptOpts
-    );
-    if (gClip) return gClip;
-  }
-  return null;
-}
+
+
+
 
 /** Return clipPath if ffprobe confirms a video stream; never substitute grey placeholders. */
 /**
@@ -8068,22 +9576,50 @@ export function resetComposeClipValidationMemo(): void {
   composeClipValidationMemo.clear();
 }
 
+/**
+ * RONDE 162 — the last place a clip could disappear without saying why.
+ *
+ * Every drop below is correct: an unreadable file, a stream the montage cannot use, a frame that
+ * is nearly all black. What was missing is that the caller filtered the null out and nothing was
+ * written down, so the render's own lineage audit reported the asset as VANISHED_WITHOUT_OUTCOME —
+ * chosen, adopted, absent from the film, no reason on record. Render 553:
+ *
+ *     Scene 2: dropping mostly-black clip scene_2_b1_curated_a56087.mp4
+ *     Scene 2: dropping mostly-black clip scene_2_b3_curated_a56190.mp4
+ *     ...
+ *     VANISHED_WITHOUT_OUTCOME  scene_2_b1_curated_a56204.mp4  (and five more)
+ *
+ * The reason is now filed against the asset, one per drop, naming which check refused it.
+ */
 async function requireValidClip(
   clipPath: string,
   sceneIndex: number,
   _duration: number,
-  _workDir: string
+  _workDir: string,
+  lineage?: VisualSourceLedger
 ): Promise<string | null> {
+  const dropped = (reason: string): null => {
+    // RONDE 167: by content key too — the curated route registers no path. See recordAssetOutcome.
+    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason, contentKey: clipContentKey(clipPath) });
+    return null;
+  };
   if (!(await isValidVideoFile(clipPath)) || isPipelineFallbackClip(clipPath)) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: dropping invalid clip ${path.basename(clipPath)}`);
-    return null;
+    /**
+     * A placeholder gets its own reason rather than none. RONDE 159 assumed a placeholder carries
+     * no lineage record; render 553 disproved it — `scene_1_slot2_guaranteed.mp4` and five like it
+     * hold ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME for exactly that reason.
+     */
+    return dropped(
+      isPipelineFallbackClip(clipPath) ? `placeholder_rejected:s${sceneIndex}` : `invalid_file:s${sceneIndex}`
+    );
   }
   const meta = await probeVideoStreamMeta(clipPath);
   if (!meta || !montageStreamMetaUsable(meta, montageClipStartSec(sceneIndex, 0))) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: dropping clip with unusable stream ${path.basename(clipPath)}`
     );
-    return null;
+    return dropped(`unusable_stream:s${sceneIndex}`);
   }
   // Compose gate already checked start/center luma for curated archive beats.
   if (curatedArchiveOnlyVisuals() && curatedClipPathAssetId(clipPath) != null) {
@@ -8091,7 +9627,7 @@ async function requireValidClip(
   }
   if (await isMostlyBlackClip(clipPath)) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: dropping mostly-black clip ${path.basename(clipPath)}`);
-    return null;
+    return dropped(`mostly_black:s${sceneIndex}`);
   }
   return clipPath;
 }
@@ -8166,71 +9702,10 @@ async function generateVeoVideoClip(
 }
 
 // ─── 3c4. Generate Higgsfield Text-to-Video Clip ───────────────────────────────
-async function generateHiggsfieldTextToVideoClip(
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!HIGGSFIELD_API_KEY || !HIGGSFIELD_API_SECRET) {
-    return null; // Fallback to other sources
-  }
 
-  try {
-    const result = await generateHiggsfieldTextToVideo(prompt, Math.min(duration, 8));
-    if (!result) return null;
-
-    // Download the video from the URL and save to local file
-    const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield.mp4");
-    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
-    if (!response.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video download failed (${response.status})`);
-      return null;
-    }
-
-    const buffer = await response.buffer();
-    fs.writeFileSync(higgsfieldOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video saved (${buffer.length} bytes)`);
-    return higgsfieldOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield text-to-video error:`, err);
-    return null;
-  }
-}
 
 // ─── 3c5. Generate Higgsfield Image-to-Video Clip ───────────────────────────────
-async function generateHiggsfieldImageToVideoClip(
-  imageUrl: string,
-  prompt: string,
-  duration: number,
-  outputPath: string,
-  sceneIndex: number
-): Promise<string | null> {
-  if (!HIGGSFIELD_API_KEY || !HIGGSFIELD_API_SECRET) {
-    return null; // Fallback to other sources
-  }
 
-  try {
-    const result = await generateHiggsfieldImageToVideo(imageUrl, prompt, Math.min(duration, 8));
-    if (!result) return null;
-
-    // Download the video from the URL and save to local file
-    const higgsfieldOutputPath = outputPath.replace(/\.mp4$/, "_higgsfield_img.mp4");
-    const response = await fetch(result.url, { signal: AbortSignal.timeout(120_000) });
-    if (!response.ok) {
-      console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video download failed (${response.status})`);
-      return null;
-    }
-
-    const buffer = await response.buffer();
-    fs.writeFileSync(higgsfieldOutputPath, buffer);
-    console.log(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video saved (${buffer.length} bytes)`);
-    return higgsfieldOutputPath;
-  } catch (err) {
-    console.warn(`[Pipeline] Scene ${sceneIndex}: Higgsfield image-to-video error:`, err);
-    return null;
-  }
-}
 
 // ─── 3c6. Leonardo AI Image → Video (HIGH QUALITY image gen, replaces Stability AI) ─────
 // Exported only for direct testability (F3-13) — same zero-behavior-change pattern used
@@ -8702,6 +10177,64 @@ export async function resolveTrimStartSec(
   return Math.max(0, Math.min(start, latest));
 }
 
+/**
+ * RONDE 135 — the technical gate on the routes RONDE 134 could not reach.
+ *
+ * RONDE 134 put videoResolutionVerdict on two routes: the funnel/pool download and the curated
+ * archive clip. That left every DIRECT provider route without it, and there are eleven of them —
+ * Wikimedia video, Flickr, SepiaSearch, Europeana, Vimeo CC, media.ccc, NASA, NARA, Internet
+ * Archive and YouTube all reach the montage through trimRemoteVideoToClip, and Pexels and Pixabay
+ * through trimDownloadedStockClip.
+ *
+ * Rather than thirteen new call sites, the check goes in the two helpers every one of those routes
+ * already funnels through. It sits BEFORE the ffmpeg encode, so an unusable source costs one
+ * memoised probe instead of a full libx264 pass — which is the "no unnecessary encode" half of the
+ * round as well as the resolution half.
+ *
+ * No new threshold: the same VIDEO_MIN_SHORT_SIDE_PX (144) RONDE 134 grounded in
+ * youtubeMinFormatHeight's own admissible range, and the same 480-line bar that only observes.
+ * probeVideoStreamMeta is memoised on inode+ctime, so where a route has already probed the file
+ * this is free.
+ */
+async function videoSourcePassesTechnicalGate(sourcePath: string, label: string): Promise<boolean> {
+  const meta = await probeVideoStreamMeta(sourcePath);
+  /**
+   * RONDE 136 — which floor applies depends on where the clip came from.
+   *
+   * These helpers are shared by thirteen routes and receive a `label` rather than a provider name,
+   * but the labels already name their provider: "Trim Pexels clip 0 scene 2", "YouTube CC RapidAPI
+   * scene 2", "Internet Archive scene 1". isStockSource matches on that, and anything it does not
+   * recognise keeps the permissive archive floor — the safe direction, since the failure mode of
+   * guessing "stock" would be refusing genuine archive footage.
+   */
+  const verdict = videoResolutionVerdict(meta?.width, meta?.height, minShortSideForSource(label));
+  if (!verdict.ok) {
+    console.warn(
+      formatTechnicalReject({
+        beatLabel: label,
+        source: label,
+        assetId: path.basename(sourcePath),
+        contentKey: clipContentKey(sourcePath),
+        mediaType: "video",
+        verdict,
+      })
+    );
+    return false;
+  }
+  if (verdict.belowQualityBar && meta) {
+    console.log(
+      formatBelowQualityBar({
+        beatLabel: label,
+        source: label,
+        contentKey: clipContentKey(sourcePath),
+        width: meta.width,
+        height: meta.height,
+      })
+    );
+  }
+  return true;
+}
+
 export async function trimRemoteVideoToClip(
   sourcePath: string,
   outputPath: string,
@@ -8709,6 +10242,7 @@ export async function trimRemoteVideoToClip(
   clipStart = 5,
   label = "clip"
 ): Promise<boolean> {
+  if (!(await videoSourcePassesTechnicalGate(sourcePath, label))) return false;
   try {
     await withSceneFetchTimeout(
       () => exec(
@@ -8719,7 +10253,29 @@ export async function trimRemoteVideoToClip(
       90_000,
       `Trim ${label}`
     );
-    return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
+    const written = fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10_000;
+    /**
+     * RONDE 151 §7 — the offset into the provider's original, written down at last.
+     *
+     * `clipStart` is a real number: `resolveTrimStartSec` probed the source and clamped it. Until
+     * now it was used by the ffmpeg command above and then discarded, which is invisible while the
+     * trimmed file exists and becomes a wrong shot the moment a re-render rehydrates the FULL
+     * asset from the provider and starts at second 0.
+     *
+     * Recorded here rather than at thirteen call sites because every direct provider route reaches
+     * the montage through this helper — one writer, standing next to the cut it describes.
+     */
+    if (written) {
+      try {
+        get_activeSourcingCache()?.lineage.recordSourceTrim(outputPath, {
+          inSec: clipStart,
+          outSec: clipStart + duration,
+        });
+      } catch {
+        /* provenance bookkeeping must never fail a clip that was produced correctly */
+      }
+    }
+    return written;
   } catch (err) {
     console.warn(`[Pipeline] trimRemoteVideoToClip failed (${label}):`, (err as Error).message);
     return false;
@@ -8762,7 +10318,8 @@ async function fetchWikimediaVideos(
         }
         markWikimediaSearchResult(true);
         return await searchResp.json() as { query?: { search?: Array<{ title: string }> } };
-      }
+      },
+      "fetchWikimediaVideos"
     );
     if (!searchData) return [];
     providerMetrics(sourcingCache, "wikimedia").resultCount += searchData.query?.search?.length ?? 0;
@@ -8810,7 +10367,7 @@ async function fetchWikimediaVideos(
           "wikimedia",
           title,
           sourcingCache,
-          { sceneIndex, sourceUrl: imageInfo.url, title, mediaType: "video" }
+          { sceneIndex, sourceUrl: imageInfo.url, title, mediaType: "video", searchRoute: "fetchWikimediaVideos" }
         );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly — this
@@ -8856,19 +10413,29 @@ async function fetchWikimediaVideos(
 function buildPersonArchiveVideoQueries(person: string, beatIndex: number, beatText = ""): string[] {
   const personName = coercePersonName(person);
   if (!personName) return [];
-  const first = personName.split(/\s+/)[0] ?? personName;
   const scriptQs = beatText
     ? scriptEventSearchQueries(beatText, [personName]).map((q) =>
         textMentionsPersonName(q, personName) ? q : `${personName} ${q}`.trim()
       )
     : [];
+  /**
+   * RONDE 93 (§6) — the archive's own field syntax, plus what the BEAT says. Nothing else.
+   *
+   * "Adolf Hitler television" and "Adolf celebrity news" were measured going out of here. They
+   * were unconditional: every person got `interview`, `television` and `<firstname> celebrity
+   * news` appended whether or not the script said anything of the kind — a template written for
+   * influencer documentaries, applied to a man who died in 1945. `${first} celebrity news` is
+   * worse than wrong; it searches on a bare given name.
+   *
+   * scriptEventSearchQueries above already supplies event terms, and it supplies them ONLY when
+   * the beat's own words trigger them — "interview" for a beat about an interview, "protest" for
+   * a beat about a protest. That is the same term, earned instead of assumed, so the capability
+   * survives and the guessing does not.
+   */
   const rawVariants = [
     ...scriptQs,
     `title:(${personName}) AND mediatype:movies`,
     `collection:tvnews AND ${personName}`,
-    `${personName} interview`,
-    `${personName} television`,
-    `${first} celebrity news`,
     `subject:"${personName}"`,
   ];
   const variants = uniqueCoercedQueries(rawVariants, 4);
@@ -8930,7 +10497,8 @@ async function fetchFlickrCCVideos(
           stat?: string;
           photos?: { photo?: Array<{ id: string; secret: string; server: string; title?: string }> };
         };
-      }
+      },
+      "fetchFlickrCCVideos"
     );
     if (!searchData) return [];
     if (searchData.stat !== "ok") return [];
@@ -8988,7 +10556,7 @@ async function fetchFlickrCCVideos(
           "flickr",
           photo.id,
           sourcingCache,
-          { sceneIndex, title: photo.title, mediaType: "image" }
+          { sceneIndex, title: photo.title, mediaType: "image", searchRoute: "fetchFlickrCCVideos" }
         );
         // Fase 4: real Flickr-authored title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "flickr", photo.id, {
@@ -9117,7 +10685,8 @@ async function fetchSepiaSearchVideos(
               }
               markSepiaSearchResult(true);
               return await searchResp.json() as { data?: SepiaHit[] };
-            }
+            },
+            "fetchSepiaSearchVideos"
           );
           if (!data) return [];
           providerMetrics(sourcingCache, "sepiasearch").resultCount += data.data?.length ?? 0;
@@ -9231,7 +10800,7 @@ async function fetchSepiaSearchVideos(
           "sepiasearch",
           hit.uuid,
           sourcingCache,
-          { sceneIndex, sourceUrl: downloadUrl, title: hit.title, mediaType: "video" }
+          { sceneIndex, sourceUrl: downloadUrl, title: hit.title, mediaType: "video", searchRoute: "fetchSepiaSearchVideos" }
         );
         // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
         // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9431,7 +11000,8 @@ export async function fetchGdeltTvNewsClips(
               } catch {
                 return null;
               }
-            }
+            },
+            "fetchGdeltTvNewsClips"
           );
           gdeltAnyResponse = true;
           return (data?.clips ?? []).map((clip) => ({ clip, query }));
@@ -9498,7 +11068,7 @@ export async function fetchGdeltTvNewsClips(
           "gdelt_tv",
           segmentId,
           sourcingCache,
-          { sceneIndex, mediaType: "video" }
+          { sceneIndex, mediaType: "video", searchRoute: "fetchGdeltTvNewsClips" }
         );
         providerMetrics(sourcingCache, "gdelt_tv").downloadCount++;
         const ok = await trimArchiveStreamToClip(
@@ -9601,7 +11171,8 @@ export async function fetchEuropeanaVideos(
           }
           markEuropeanaSearchResult(true);
           return await searchResp.json() as { items?: EuropeanaItem[] };
-        }
+        },
+        "fetchEuropeanaVideos"
       );
       if (!searchData) continue;
       providerMetrics(sourcingCache, "europeana").resultCount += searchData.items?.length ?? 0;
@@ -9706,7 +11277,7 @@ export async function fetchEuropeanaVideos(
             "europeana",
             recordId,
             sourcingCache,
-            { sceneIndex, sourceUrl: mediaUrl, mediaType: "video" }
+            { sceneIndex, sourceUrl: mediaUrl, mediaType: "video", searchRoute: "fetchEuropeanaVideos" }
           );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9806,7 +11377,8 @@ async function fetchVimeoCCVideos(
           }
           markVimeoSearchResult(true);
           return await searchResp.json() as { data?: VimeoHit[] };
-        }
+        },
+        "fetchVimeoCCVideos"
       );
       if (!searchData) continue;
       providerMetrics(sourcingCache, "vimeo").resultCount += searchData.data?.length ?? 0;
@@ -9852,7 +11424,7 @@ async function fetchVimeoCCVideos(
             "vimeo",
             uri,
             sourcingCache,
-            { sceneIndex, mediaType: "video" }
+            { sceneIndex, mediaType: "video", searchRoute: "fetchVimeoCCVideos" }
           );
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -9939,7 +11511,8 @@ async function fetchMediaCccVideos(
         }
         markMediaCccSearchResult(true);
         return await searchResp.json() as { events?: MediaCccEvent[] };
-      }
+      },
+      "fetchMediaCccVideos"
     );
     if (!data) return [];
     const events = data.events ?? [];
@@ -9973,7 +11546,7 @@ async function fetchMediaCccVideos(
           "media_ccc",
           videoRec.recording_url,
           sourcingCache,
-          { sceneIndex, sourceUrl: videoRec.recording_url, mediaType: "video" }
+          { sceneIndex, sourceUrl: videoRec.recording_url, mediaType: "video", searchRoute: "fetchMediaCccVideos" }
         );
         // Fase 4: real media.ccc-authored talk title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "media_ccc", videoRec.recording_url, {
@@ -10031,6 +11604,27 @@ function personMatchesTechCccTopic(personName: string, beatText = ""): boolean {
  * Wikimedia → GDELT TV News → SepiaSearch → Archive → Europeana → Vimeo CC → CCC → Flickr.
  */
 async function fetchPersonCelebrityVideoClips(
+  personName: string,
+  duration: number,
+  workDir: string,
+  sceneIndex: number,
+  count: number,
+  fileTag: string,
+  beatIndex: number,
+  beatText = "",
+  fastMode = false,
+  usedProviderKeys?: Set<string>,
+  sourcingCache?: SourcingCache
+): Promise<CelebrityClipCandidate[]> {
+  // RONDE 90 (§2): forcePerson is right here and only here — this function exists to fetch
+  // footage OF `personName`, so the person is the caller's own proven subject rather than an
+  // inference about the sentence. Everything else the queries add must still come from the beat.
+  return withSearchProvenance(buildVerifiedQueryContextForBeat(beatText, { forcePerson: personName }), () =>
+    fetchPersonCelebrityVideoClipsInner(personName, duration, workDir, sceneIndex, count, fileTag, beatIndex, beatText, fastMode, usedProviderKeys, sourcingCache)
+  );
+}
+
+async function fetchPersonCelebrityVideoClipsInner(
   personName: string,
   duration: number,
   workDir: string,
@@ -10235,7 +11829,8 @@ export async function fetchNasaVideoClips(
         }
         markNasaSearchResult(true);
         return await searchResp.json() as { collection?: { items?: NasaItem[] } };
-      }
+      },
+      "fetchNasaVideoClips"
     );
     if (!data) return [];
     const items = data.collection?.items ?? [];
@@ -10290,7 +11885,7 @@ export async function fetchNasaVideoClips(
           "nasa",
           nasaId,
           sourcingCache,
-          { sceneIndex, mediaType: "video" }
+          { sceneIndex, mediaType: "video", searchRoute: "fetchNasaVideoClips" }
         );
         // Fase 4: real NASA-authored title, independent of our search query. Uses the raw field
         // (not the `title` local, which falls back to nasaId when absent) so this never stores
@@ -10381,7 +11976,8 @@ export async function fetchNaraClips(
         }
         markNaraSearchResult(true);
         return await searchResp.json() as { body?: { hits?: { hits?: NaraHit[] } } };
-      }
+      },
+      "fetchNaraClips"
     );
     if (!data) return [];
     const hits = data.body?.hits?.hits ?? [];
@@ -10406,7 +12002,7 @@ export async function fetchNaraClips(
           "nara",
           videoUrl,
           sourcingCache,
-          { sceneIndex, sourceUrl: videoUrl, title: record?.title, mediaType: "video" }
+          { sceneIndex, sourceUrl: videoUrl, title: record?.title, mediaType: "video", searchRoute: "fetchNaraClips" }
         );
         // Fase 4: real NARA-authored record title, independent of our search query.
         putCachedProviderAsset(sourcingCache, "nara", videoUrl, {
@@ -10485,7 +12081,11 @@ export async function searchWebWideVideoClips(
     const videoId = getActiveVideoId();
     return videoId != null && isVideoGenerationCancelRequested(videoId);
   };
-  const uniqueQueries = uniqueQueryStrings(queries).slice(0, 3);
+  // RONDE 89: the provider gate. This route fans one beat's queries out across several
+  // providers, so a query the contract refuses is dropped here, before any of them is asked.
+  const uniqueQueries = uniqueQueryStrings(queries)
+    .filter((q) => admitProviderQuery("web_wide", q, "searchWebWideVideoClips") !== null)
+    .slice(0, 3);
   if (cancelled()) return results;
 
   for (const query of uniqueQueries) {
@@ -10559,19 +12159,7 @@ export async function searchWebWideVideoClips(
   return results;
 }
 
-function buildEventVideoQueries(scene: Scene, primarySubject: string, hasPerson: boolean): string[] {
-  const hint = `${scene.text} ${primarySubject}`;
-  const q = [
-    scene.visualCue,
-    scene.pexelsQuery,
-    ...(scene.pexelsQueries ?? []),
-    ...(scene.brollQueries ?? []),
-    hasPerson && primarySubject ? primarySubject : "",
-  ]
-    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-    .map((s) => simplifyStockSearchWord(s, hint));
-  return Array.from(new Set(q.filter((w) => w.length >= 3)));
-}
+
 
 function isSpaceRelatedTopic(...parts: string[]): boolean {
   const text = parts.filter(Boolean).join(" ").toLowerCase();
@@ -10674,7 +12262,8 @@ export async function fetchInternetArchiveClips(
         }
         markInternetArchiveSearchResult(true);
         return await searchResp.json() as { response?: { docs?: Array<{ identifier: string; title: string }> } };
-      }
+      },
+      "fetchInternetArchiveClips"
     );
     if (!searchData) continue;
     providerMetrics(sourcingCache, "internet_archive").resultCount += searchData.response?.docs?.length ?? 0;
@@ -10790,15 +12379,52 @@ export async function fetchInternetArchiveClips(
         const licenseUrl = (Array.isArray(rawLicenseUrl) ? rawLicenseUrl[0] : rawLicenseUrl)?.trim();
         const rawRights = metaData.metadata?.rights;
         const rights = (Array.isArray(rawRights) ? rawRights[0] : rawRights)?.trim();
-        if (!isAllowedInternetArchiveLicense(licenseUrl, rights)) {
+        /**
+         * RONDE 124 — the same gate, but it now says WHICH of two things it found.
+         *
+         * `isAllowedInternetArchiveLicense` returned one boolean, so an -nc/-nd licence (the
+         * rightsholder saying no) and an empty metadata field (nobody filled it in) came out
+         * identical. This render's log is 56 lines of the second kind, all of them YouTube
+         * mirrors:
+         *
+         *     Archive item youtube-cS2JdEghHDo has no usable license
+         *     (licenseurl=none, rights=none) — skipping
+         *
+         * VERIFIED behaves exactly as `true` did and REJECTED exactly as `false` did. The only
+         * new path is UNVERIFIED on a `youtube-*` identifier with ALLOW_UNVERIFIED_YOUTUBE=true,
+         * which lets the item continue to the download, the preview check and the vision gate —
+         * all unchanged — while every report it appears in says the rights are unproven.
+         */
+        const licenseDecision = youtubeLicenseDecision({
+          identifier: doc.identifier,
+          licenseUrl,
+          rights,
+        });
+        const ytMetrics = providerMetrics(sourcingCache, "youtube_archive");
+        if (licenseDecision.youtubeVideoId) {
+          /**
+           * RONDE 147 — count what the METADATA said, not what the decision concluded.
+           *
+           * `status` can now be OPERATOR_AUTHORIZED, which is neither verified nor rejected. Left
+           * on `status`, the else-branch would have booked every operator-authorised item as a
+           * licence REJECTION, and the provider table would report mass refusals on a render that
+           * used the footage. `metadataStatus` is exactly the value this counter has always meant.
+           */
+          if (licenseDecision.metadataStatus === "VERIFIED") ytMetrics.licenseVerified++;
+          else if (licenseDecision.metadataStatus === "UNVERIFIED") ytMetrics.licenseUnverified++;
+          else ytMetrics.licenseRejected++;
+          console.log(`[Pipeline] Scene ${sceneIndex}: ${formatYoutubeLicenseLine(licenseDecision)}`);
+        }
+        if (!licenseDecision.allowed) {
           // Cache the rejection (Phase 6) so a later cascade that resurfaces this identifier
-          // skips it above without repeating the metadata call. The gate itself is unchanged.
+          // skips it above without repeating the metadata call.
           putCachedProviderAsset(sourcingCache, "internet_archive", doc.identifier, {
             licenseAllowed: false,
           });
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} has no usable license ` +
-            `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}) — skipping`
+            `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}, ` +
+            `status=${licenseDecision.status}) — skipping`
           );
           continue;
         }
@@ -10840,7 +12466,7 @@ export async function fetchInternetArchiveClips(
           "internet_archive",
           doc.identifier,
           sourcingCache,
-          { sceneIndex, title: doc.title, mediaType: "video" }
+          { sceneIndex, title: doc.title, mediaType: "video", searchRoute: "fetchInternetArchiveClips" }
         );
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
 
@@ -11085,27 +12711,15 @@ async function fetchRapidApiYoutubeMeta(
  * gate switched off, no narration, no extractable frame, a model outage, the budget spent —
  * returns true and adopts exactly as before.
  */
-/**
- * RONDE 70: attribute one judgement's outcome to the beat that asked for it.
- *
- * BeatImageGateState counts render-wide, which answers "how much did the gate spend" but not
- * "which beat was assembled without a picture editor". The state's own counters are read either
- * side of the call and the delta is attributed — so a cached verdict, which spends nothing,
- * correctly counts as nothing, and judgeBeatImage's signature and behaviour are untouched.
- */
-function noteVisionDelta(
-  dedup: VisualDedupState,
-  sceneIndex: number,
-  beatIndex: number,
-  before: { used: number; failed: number }
-): void {
-  const g = dedup.beatImageGate;
-  const judged = g.judgementsUsed - before.used;
-  const failed = g.judgementsFailed - before.failed;
-  for (let i = 0; i < judged; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "judged");
-  for (let i = 0; i < failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
-}
 
+/**
+ * RONDE 103: this is now a thin adapter onto the pipeline's single content decider.
+ *
+ * It used to hold its own copy of the frame sampling, the judgement call, the cleanup and the
+ * logging — one of three such copies, which is how they drifted apart and how two of the three
+ * came to key their cache on the picture alone. The behaviour is unchanged from the caller's
+ * side; the decision is simply made in one place now. See ./beatVisualRelevance.
+ */
 async function beatClipPassesImageGate(
   clipPath: string,
   contentKey: string,
@@ -11116,41 +12730,23 @@ async function beatClipPassesImageGate(
   beatIndex: number,
   dedup: VisualDedupState
 ): Promise<boolean> {
-  if (!beatImageRelevanceGateEnabled() || !beatText?.trim()) return true;
-
-  const framePaths: string[] = [];
-  for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
-    const framePath = path.join(workDir, `birx_s${sceneIndex}b${beatIndex}_${f}.jpg`);
-    const got = await extractFrameAtFraction(
-      clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
-    ).catch(() => false);
-    if (got) framePaths.push(framePath);
-  }
-  const visionBefore = {
-    used: dedup.beatImageGate.judgementsUsed,
-    failed: dedup.beatImageGate.judgementsFailed,
-  };
-  const judgement = await judgeBeatImage({
-    framePaths,
-    beatText,
-    videoTitle: asVideoTitleString(opts.videoTitle) || undefined,
-    sceneText: opts.sceneText,
+  const decision = await checkBeatRelevance({
+    clipPath,
     contentKey,
+    ctx: {
+      sceneIndex,
+      beatIndex,
+      beatText,
+      sceneText: opts.sceneText,
+      videoTitle: asVideoTitleString(opts.videoTitle) || undefined,
+    },
+    workDir,
     state: dedup.beatImageGate,
+    ledger: dedup.beatRelevance,
+    route: "adopt",
+    onSpend: (spent) => noteVisionSpend(dedup, sceneIndex, beatIndex, spent),
   });
-  noteVisionDelta(dedup, sceneIndex, beatIndex, visionBefore);
-  for (const fp of framePaths) {
-    try { fs.unlinkSync(fp); } catch { /* ignore */ }
-  }
-
-  if (judgement.verdict === "does_not_fit") {
-    console.log(
-      `[BeatImageGate] adopt s${sceneIndex}b${beatIndex} does_not_fit ` +
-        `clip=${path.basename(clipPath)} depicts="${judgement.depicts}" reason="${judgement.reason}"`
-    );
-    return false;
-  }
-  return true;
+  return decision.allowed;
 }
 
 async function youtubeClipPassesImageGate(
@@ -11176,25 +12772,58 @@ async function youtubeClipPassesImageGate(
     ).catch(() => false);
     if (got) framePaths.push(framePath);
   }
-  const spentBefore = gate.judgementsUsed;
+  const spentBefore = gate.judgementAttempts;
   const judgement = await judgeBeatImage({
     framePaths,
     beatText: scriptGuided.beatText,
     videoTitle: scriptGuided.videoTitle,
     contentKey: clipContentKey(clipPath),
+    // RONDE 103: this check runs before a clip is in any beat's pool, so it has narration but no
+    // beat slot. Deriving the identity from the narration it DOES have keeps it in its own cache
+    // bucket rather than sharing one with every beat that later judges the same video.
+    beatIdentity: beatIdentityKey({
+      sceneIndex,
+      beatIndex: -1,
+      beatText: scriptGuided.beatText,
+      videoTitle: scriptGuided.videoTitle,
+    }),
     state: gate,
   });
   // Only a call that actually cost something counts against YouTube's slice — a cached verdict
   // for a video already judged on an earlier beat is free.
-  if (gate.judgementsUsed > spentBefore) gate.youtubeJudgementsUsed++;
+  if (gate.judgementAttempts > spentBefore) gate.youtubeJudgementsUsed++;
   for (const p of framePaths) {
     try { fs.unlinkSync(p); } catch { /* ignore */ }
   }
 
   console.log(
     `[BeatImageGate] youtube s${sceneIndex} ${videoId.slice(0, 12)} ${judgement.verdict} ` +
-      `depicts="${judgement.depicts}" reason="${judgement.reason}"`
+      `depicts="${judgement.depicts}" reason="${judgement.reason}" cached=${judgement.cached === true}`
   );
+  /**
+   * RONDE 104: write the verdict down where the compose barrier can find it.
+   *
+   * Until now this was the one gate whose answers went only to the log. A YouTube clip refused
+   * here was dropped from the pool — but the same asset arriving later by another route (the
+   * funnel's own YouTube path, a rescue) reached compose as a path nothing had ever judged, and
+   * the barrier had to let it through. Recording it under the clip's CONTENT identity closes
+   * that: the refusal now follows the asset, not the file.
+   */
+  if (scriptGuided.relevanceLedger) {
+    recordExternalRelevanceVerdict(
+      scriptGuided.relevanceLedger,
+      clipPath,
+      clipContentKey(clipPath),
+      {
+        sceneIndex,
+        beatIndex: -1,
+        beatText: scriptGuided.beatText,
+        videoTitle: scriptGuided.videoTitle,
+      },
+      judgement,
+      "youtube_prepool"
+    );
+  }
   return judgement.verdict !== "does_not_fit";
 }
 
@@ -11617,6 +13246,15 @@ type ScriptGuidedBeatContext = {
    * which is the same behaviour every other failure mode of the gate produces.
    */
   imageGate?: BeatImageGateState;
+  /**
+   * RONDE 104: the render's relevance ledger, so a YouTube clip refused here is REMEMBERED.
+   *
+   * This check runs before a clip is in any beat's pool, so it was the one judgement that never
+   * reached the ledger — and a YouTube clip refused here could walk back in through a different
+   * route under a name the compose barrier had never seen. Optional for exactly the same reason
+   * imageGate is: a call site without it behaves as before.
+   */
+  relevanceLedger?: BeatRelevanceLedger;
 };
 
 type YoutubeSearchRow = {
@@ -11645,6 +13283,9 @@ async function searchYoutubeViaRapidApi(
   sceneIndex: number,
   maxResults: number
 ): Promise<{ items?: YoutubeSearchRow["item"][] } | null> {
+  // RONDE 89: the provider gate. A query the contract refuses is not sent, and is
+  // never repaired or substituted — the caller simply gets nothing.
+  if (admitProviderQuery("youtube", query, "searchYoutubeViaRapidApi") === null) return null;
   try {
     const url = `https://${RAPIDAPI_YT_SEARCH_HOST}/search?query=${encodeURIComponent(query)}&type=video`;
     const resp = await providerLimiter("youtube").run(() => fetchWithTimeout(
@@ -11694,7 +13335,13 @@ async function searchYoutubeViaRapidApi(
 export async function searchYoutubeVideoCandidates(
   query: string,
   sceneIndex: number,
-  license: "creative_common" | "any",
+  /**
+   * RONDE 160 — three modes, mapped one-to-one onto the YouTube Data API's own `videoLicense`:
+   *   creative_common -> videoLicense=creativeCommon   (CC only)
+   *   youtube         -> videoLicense=youtube          (standard licence only)
+   *   any             -> no filter at all              (whatever ranks best)
+   */
+  license: YoutubeLicenseMode,
   relevanceKeywords: string[],
   minRelevanceScore: number,
   requiredPersonName: string,
@@ -11704,7 +13351,10 @@ export async function searchYoutubeVideoCandidates(
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (!youtubeApiKey) return [];
 
-  const label = license === "creative_common" ? "YouTube CC" : "YouTube fair-use";
+  const label =
+    license === "creative_common" ? "YouTube CC"
+      : license === "youtube" ? "YouTube standard"
+        : "YouTube fair-use";
   // Phase 5 query cache. Cached at the raw API-payload level, before any relevance/person
   // filtering below — that filtering is caller-specific (relevanceKeywords, requiredPersonName,
   // minRelevanceScore), so two callers sharing a query still get their own ranking from the one
@@ -11726,9 +13376,9 @@ export async function searchYoutubeVideoCandidates(
       searchUrl.searchParams.set("key", youtubeApiKey);
       searchUrl.searchParams.set("q", query);
       searchUrl.searchParams.set("type", "video");
-      if (license === "creative_common") {
-        searchUrl.searchParams.set("videoLicense", "creativeCommon");
-      }
+      /** One decision, shared with the metadata recorded on adoption. `null` means send nothing. */
+      const licenseParam = youtubeLicenseParam(license);
+      if (licenseParam) searchUrl.searchParams.set("videoLicense", licenseParam);
       searchUrl.searchParams.set("maxResults", String(maxResults));
       searchUrl.searchParams.set("part", "snippet");
       searchUrl.searchParams.set("videoDuration", "medium");
@@ -11754,7 +13404,8 @@ export async function searchYoutubeVideoCandidates(
       }
       markYoutubeSearchResult(true);
       return (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
-    }
+    },
+    "searchYoutubeVideoCandidates"
   );
   // RONDE 10: the official search 429s on quota after a few renders. When it yields nothing AND
   // this is the fair-use path (never strict-CC — RapidAPI can't confirm a CC license), fall back
@@ -11762,6 +13413,11 @@ export async function searchYoutubeVideoCandidates(
   let effectiveSearchData = searchData;
   if (
     (!effectiveSearchData || (effectiveSearchData.items?.length ?? 0) === 0) &&
+    /**
+     * Only the unfiltered pass. RapidAPI's scraped search reports no licence at all, so routing a
+     * licence-SPECIFIC mode through it would return results this code would then have to label
+     * with a licence nobody verified — which is the silent substitution §8 forbids.
+     */
     license === "any" &&
     youtubeRapidSearchFallbackEnabled()
   ) {
@@ -11864,9 +13520,20 @@ export async function fetchYouTubeCCClips(
       ? Date.now() + scriptGuidedBudgetMs(scriptGuided.fastMode ?? IS_RAILWAY)
       : ytDeadline;
 
-  const licensePasses: Array<{ license: "creative_common" | "any"; tag: string; fileTag: string }> = [
+  /**
+   * RONDE 160 — the licence passes, most permissive LAST.
+   *
+   * CC first because it is the only material whose reuse the licence itself grants. The explicit
+   * standard-licence pass sits before the unfiltered one so that, when it is switched on, a clip
+   * that IS standard-licensed is retrieved under a mode that says so rather than arriving
+   * anonymously through `any`.
+   */
+  const licensePasses: Array<{ license: YoutubeLicenseMode; tag: string; fileTag: string }> = [
     { license: "creative_common", tag: "YouTube CC", fileTag: "ytcc" },
   ];
+  if (youtubeStandardLicenseEnabled()) {
+    licensePasses.push({ license: "youtube", tag: "YouTube standard", fileTag: "ytstd" });
+  }
   if (youtubeFairUseEnabled()) {
     licensePasses.push({ license: "any", tag: "YouTube fair-use", fileTag: "ytfu" });
   }
@@ -11892,6 +13559,19 @@ export async function fetchYouTubeCCClips(
           requiredPersonName,
           Math.max(5, (count - fetched) * 4),
           sourcingCache
+        );
+        /**
+         * RONDE 160 (FASE 8/15) — one line per SOURCE ATTEMPT, in the [Retrieval] vocabulary.
+         *
+         * A production log has to be able to answer "why was YouTube used for this beat" and "why
+         * was it not", and the [Pipeline] lines below answer neither: they say what happened but
+         * not which licence mode was tried, so a beat that got nothing from YouTube looked the
+         * same as a beat where YouTube was never attempted. Counts and the mode only — never a
+         * key, never a URL.
+         */
+        console.log(
+          `[Retrieval] s${sceneIndex} source=youtube mode=${pass.license} attempted=true ` +
+            `candidates=${items.length} query=${JSON.stringify(query.slice(0, 80))}`
         );
         if (!items.length) {
           console.warn(
@@ -11999,13 +13679,19 @@ export async function fetchYouTubeCCClips(
               "youtube_cc",
               videoId,
               sourcingCache,
-              { sceneIndex, title, mediaType: "video" }
+              { sceneIndex, title, mediaType: "video", searchRoute: "fetchYouTubeCCClips" }
             );
             // Fase 4: real YouTube-authored title/description, independent of our search query —
             // adoptClip's generic providerText lookup (see above) picks this up for both
             // AssetDirector ranking and the entity gate.
             putCachedProviderAsset(sourcingCache, "youtube_cc", videoId, {
               providerText: { title, description: row.desc },
+              /**
+               * RONDE 160 (FASE 4) — WHICH mode found this clip, recorded at the moment it is
+               * found. `creative_common` and `youtube` are licence assertions by YouTube; `any`
+               * is not one, so no `reported` licence is claimed for it.
+               */
+              license: youtubeLicenseMetadata(pass.license),
             });
             // RONDE 69: the ceiling is enforced HERE, with nothing awaited between the read and
             // the write. The loop-level checks above stay as cheap early exits; this is the one
@@ -12220,9 +13906,18 @@ function cleanPersonNameCandidate(candidate: string): string[] {
 }
 
 /** Extract a person name from prompts/titles like "Rumors about Kylie Jenner". */
-export function extractPrimaryPersonFromText(text?: string): string {
+export function extractPrimaryPersonFromText(
+  text?: string,
+  /**
+   * RONDE 88 (§11): the script body, when the caller has it. A Title Case input yields a name
+   * only when that name also appears here — a title is not evidence that a person is in a beat.
+   * Omitted (the legacy callers) means Title Case input yields nothing, which is the safe answer.
+   */
+  corroboration = ""
+): string {
   if (!text?.trim()) return "";
-  const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
+  // RONDE 123: `\w` is ASCII, so this used to hand the pattern "G ring" for "Göring".
+  const cleaned = stripToNameSafeText(text);
   const aboutMatch = cleaned.match(/\babout\s+([A-Za-z][\w'-]+(?:\s+[A-Za-z][\w'-]+){0,2})/i);
   if (aboutMatch?.[1]) {
     const aboutTokens = cleanPersonNameCandidate(aboutMatch[1]);
@@ -12230,14 +13925,27 @@ export function extractPrimaryPersonFromText(text?: string): string {
   }
   const kylieMatch = cleaned.match(/\b(kylie\s+jenner)\b/i);
   if (kylieMatch?.[1]) return "Kylie Jenner";
-  const nameMatches = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b/g) ?? [];
+  const nameMatches = cleaned.match(nameRunRegex(1, 2)) ?? [];
   const skip = new Set(["deep dive", "the story", "a deep", "full story", "rumors about"]);
   for (const candidate of nameMatches) {
     if (skip.has(candidate.toLowerCase())) continue;
     // A full name only when ≥2 clean tokens survive — a single leftover token ("Hitler" from
     // "Why Hitler Lost") is a surname anchor, not a name; see extractPersonSurnameAnchor.
     const tokens = cleanPersonNameCandidate(candidate);
-    if (tokens.length >= 2) return tokens.join(" ");
+    if (tokens.length < 2) continue;
+    /**
+     * RONDE 88 (§8/§11) — the same structural check the script scan uses.
+     *
+     * This function is usually handed a TITLE, and a title capitalises every word, so its
+     * capitalisation proves nothing about which words are names. Measured before this line:
+     * "Why Hitler Married Eva Braun Just Before The End" → "Eva Braun Just", and
+     * "Inside The Final Hours Of Adolf Hitler" → "Of Adolf". checkPersonName splits on function
+     * words and, for Title Case input, requires the name to be corroborated by the caller's
+     * proven text — a title alone is not evidence that anybody is in any beat.
+     */
+    const name = tokens.join(" ");
+    if (!checkPersonName(name, text, corroboration, { isKnownVerb: isKnownPersonActionVerb }).ok) continue;
+    return name;
   }
   return "";
 }
@@ -12251,8 +13959,9 @@ export function extractPrimaryPersonFromText(text?: string): string {
  */
 export function extractPersonSurnameAnchor(text?: string): string {
   if (!text?.trim()) return "";
-  const cleaned = text.replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
-  const runs = cleaned.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g) ?? [];
+  // RONDE 123: `\w` is ASCII, so this used to hand the pattern "G ring" for "Göring".
+  const cleaned = stripToNameSafeText(text);
+  const runs = cleaned.match(nameRunRegex(0, 3)) ?? [];
   for (const run of runs) {
     const tokens = cleanPersonNameCandidate(run);
     if (tokens.length === 1 && tokens[0].length >= 3) return tokens[0];
@@ -12271,8 +13980,8 @@ export function resolvePersonFromSurnameAnchor(anchor: string, names: string[]):
   return names.find((n) => n.toLowerCase().split(/\s+/).pop() === a) ?? "";
 }
 
-function extractPrimaryPersonFromTitle(title?: string): string {
-  return extractPrimaryPersonFromText(title);
+function extractPrimaryPersonFromTitle(title?: string, corroboration = ""): string {
+  return extractPrimaryPersonFromText(title, corroboration);
 }
 
 function isPersonCelebrityTopic(topicContext?: string): boolean {
@@ -12281,21 +13990,23 @@ function isPersonCelebrityTopic(topicContext?: string): boolean {
   return Boolean(extractPrimaryPersonFromText(topicContext));
 }
 
+/**
+ * RONDE 93 (§6) — the third unconditional source of media suffixes, and the last one.
+ *
+ * `interview`, `speech`, `news conference` and `red carpet` were appended to every person here
+ * too, on top of buildPersonArchiveVideoQueries and buildPersonStockVideoQueries doing the same.
+ * Three builders guessing the same four words about anybody the script happens to name.
+ *
+ * What remains is the name itself, and the beat's OWN visual cue when it has one — `visualCue`
+ * comes from extractInlineVisualCues on the beat text, so it is the script speaking. The event
+ * terms are not lost: scriptEventSearchQueries supplies each of them the moment the beat gives a
+ * reason to.
+ */
 function buildPersonMediaQueries(person: string, visualCue?: string): string[] {
   const p = coercePersonName(person);
   if (!p) return [];
   const cue = toQueryString(visualCue).split(/\s+/).slice(0, 3).join(" ");
-  return uniqueCoercedQueries(
-    [
-      p,
-      `${p} interview`,
-      `${p} speech`,
-      `${p} news conference`,
-      `${p} red carpet`,
-      cue ? `${p} ${cue}` : `${p} documentary`,
-    ],
-    1
-  );
+  return uniqueCoercedQueries([p, cue ? `${p} ${cue}` : `${p} archival footage`], 1);
 }
 
 interface CelebrityClipCandidate {
@@ -12500,14 +14211,15 @@ function buildPersonSerpQuery(
   if (scriptQs.length) {
     return scriptQs[(sceneIndex + beatIndex) % scriptQs.length];
   }
-  const variants = [
-    `${person} face portrait close up`,
-    `${person} interview talking head`,
-    `${person} red carpet full body`,
-    `${person} met gala dress`,
-    `${person} makeup brand launch`,
-    `${person} paparazzi event`,
-  ];
+  /**
+   * RONDE 93 (§6) — the script said nothing, so neither does this.
+   *
+   * Six variants used to fire here when scriptEventSearchQueries came back empty: red carpet,
+   * met gala, makeup brand launch, paparazzi. A beat that gives no event cue is a beat that
+   * gives no reason to search for a gala, and rotating through six guesses does not turn one of
+   * them into an answer. What is left asks for the person, which is the only thing proven.
+   */
+  const variants = [`${person} face portrait close up`, `${person} portrait`, person];
   return variants[(sceneIndex * 5 + beatIndex) % variants.length];
 }
 
@@ -12549,6 +14261,22 @@ function buildBeatImageSearchQueries(
  * Used when video search is slow or empty — person, event, or topic image is fine.
  */
 async function fetchBeatScriptImageClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatScriptImageClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, adoptOpts, tag), { scenePersons });
+}
+
+async function fetchBeatScriptImageClipInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -12657,21 +14385,7 @@ async function fetchBeatScriptImageClip(
           return clip;
         }
       }
-      if (process.env.YOUTUBE_API_KEY) {
-        const thumbQ = queries[0] ?? beat.searchQuery;
-        const ytPaths = await fetchYouTubeThumbnails(
-          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_yt`
-        );
-        const clip = await adoptClip(
-          ytPaths, dedup, sceneIndex, beat.index, beat.text, workDir, thumbQ, looseOpts
-        );
-        if (clip) {
-          console.log(
-            `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: script image YouTube thumb (${thumbQ})`
-          );
-          return clip;
-        }
-      }
+      // The YouTube thumbnail tier was removed here — see the note on the fetcher's grave.
       return null;
     },
     beatScriptImageWallMs(dedup.perf),
@@ -12689,6 +14403,21 @@ async function fetchBeatScriptImageClip(
 
 /** Last-resort: accept first valid Serp/Wikimedia/YouTube-thumb still (no strict adopt gates). */
 async function fetchBeatScriptImageForced(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  scenePersons: string[],
+  videoTitle: string | undefined,
+  tag: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatScriptImageForcedInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, scenePersons, videoTitle, tag), { scenePersons });
+}
+
+async function fetchBeatScriptImageForcedInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -12788,17 +14517,7 @@ async function fetchBeatScriptImageForced(
           }
         }
       }
-      if (process.env.YOUTUBE_API_KEY) {
-        const thumbQ = queries[0] ?? beat.searchQuery;
-        const ytPaths = await fetchYouTubeThumbnails(
-          thumbQ, clipFetchDur, workDir, sceneIndex, 1, `${tag}_force_yt`
-        );
-        const clip = await takeFirstValid(ytPaths);
-        if (clip) {
-          console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: forced image YouTube thumb (${thumbQ})`);
-          return clip;
-        }
-      }
+      // The YouTube thumbnail tier was removed here — see the note on the fetcher's grave.
       return null;
     },
     beatScriptImageWallMs(dedup.perf) + 5_000,
@@ -12993,6 +14712,10 @@ async function fetchBeatAIClip(
   if (!generated && leonardoApiKey()) {
     generated = await generateLeonardoAIClip(prompt, dur, outPath, sceneIndex);
   }
+  // RONDE 138: last of the cheap tier, and the only one most deployments have a key for.
+  if (!generated && openAiImageFallbackEnabled()) {
+    generated = await generateOpenAiImageClip(prompt, dur, outPath, sceneIndex);
+  }
   // Premium tier only (Runway/Grok ~$0.25+ per clip) — ENABLE_AI_VIDEO_FALLBACK=true
   if (!generated && premiumAiVideoFallbackEnabled()) {
     if (replicateApiKey()) {
@@ -13067,6 +14790,23 @@ const STOP_WORDS = new Set([
   "too","very","s","t","can","will","just","don","should","now","de","het","een","van","op","en",
   "maar","ook","wordt","werd","heeft","had","zijn","was","er","naar","met","door","over","als","dat",
   "om","uit","aan","bij","te","in","nog","zo","al","want","dan","maar","wel","geen","toch","niet",
+  /**
+   * RONDE 100B — intensifiers and discourse adverbs, the same class this list already holds.
+   *
+   * "But here's what truly followed the aftermath" sent the single word "truly" to Pexels as a
+   * search subject. It got there through extractBeatSubject's positional fallback, which takes
+   * the first words of four letters or more that are not stop words — and "truly" was not on the
+   * list, while "very", "just", "only", "even", "still", "also" and "too" already were.
+   *
+   * The SearchGate cannot catch this one and should not try: the word really is in the beat, so
+   * it is properly proven. What it is not is a subject. Nothing named here can appear in a shot,
+   * which is exactly the property the words above it share — this extends a closed grammatical
+   * class rather than starting an open blocklist of things we happen to dislike.
+   */
+  "truly","really","actually","simply","literally","basically","essentially","certainly",
+  "definitely","probably","perhaps","maybe","however","therefore","meanwhile","instead",
+  "suddenly","eventually","ultimately","apparently","obviously","clearly","indeed","rather",
+  "echt","werkelijk","eigenlijk","gewoon","natuurlijk","misschien","daarom","ondertussen",
 ]);
 
 /**
@@ -13252,12 +14992,26 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
   // Entities first, then concrete nouns, then the beat's own year if it stated one.
   const ranked = [...proper, ...common].slice(0, 3);
   if (ranked.length === 0) {
-    // Nothing concrete survived. Fall back to the old positional behaviour rather than
-    // returning nothing — a weak query still beats no query, and scriptStockSearchQueries'
-    // sceneText/videoTitle cascade below only runs on an empty subject.
-    const words = clean.split(/\W+/).filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
-    const unique = [...new Set(words.map((w) => w.toLowerCase()))];
-    return unique.slice(0, 3).join(" ") || clean.split(/\s+/).slice(0, 2).join(" ");
+    /**
+     * RONDE 103 (phase 10) — nothing concrete survived, so this beat has no subject.
+     *
+     * What stood here was the positional heuristic RONDE 71 replaced, kept as a fallback: the
+     * first three words of four letters or more that are not stop words, and failing that the
+     * first two words of the sentence. RONDE 71 measured what that produces — "berlin under
+     * constant", "final birthday twentieth", "hitler received military" — and the fact that it
+     * only runs when the good extractor found nothing does not make it better. It makes it worse:
+     * a beat whose every concrete word was filtered out is exactly the beat whose leftovers are
+     * grammar.
+     *
+     * Returning "" is the honest answer, and it is not the end of the line. Both callers already
+     * treat an empty subject as "ask the scene, then the title, then ask nothing" — a cascade
+     * that goes to real text rather than to the first two words of this sentence. This is the
+     * same reasoning that removed "documentary" in RONDE 100B, applied one level further in.
+     *
+     * Deliberately NOT another stop word: the failure was never a missing entry in a list. It was
+     * a rule that picks by position instead of by meaning, and the fix is to stop picking.
+     */
+    return "";
   }
   // The year rides along only when there is room and it is not already in the words.
   if (year && ranked.length < 3) ranked.push(year);
@@ -13292,9 +15046,20 @@ export function scriptStockSearchQueries(
     .split(/\W+/)
     .filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
   if (titleWords.length > 0) return [titleWords.slice(0, 3).join(" ")];
-  // Truly empty context (no beat text, no scene text, no title, no person) — safe minimal
-  // fallback, unchanged from before.
-  return ["documentary"];
+  /**
+   * RONDE 100B — nothing left, so ask for nothing.
+   *
+   * This used to return ["documentary"]. No beat text, no scene text, no title and no person
+   * means there is no subject; "documentary" is not that subject, it is a word describing the
+   * genre of the video being made. Production sent it to Pexels dozens of times in one render
+   * and it is exactly the kind of plausible-looking invention this whole line of work exists to
+   * stop: a query that cannot be wrong because it is not about anything.
+   *
+   * An empty list is the honest answer. Every consumer already drops empty/short queries
+   * (filterQueryStrings, buildBeatVisualQueryList's length filter, and the gate's EMPTY_QUERY
+   * check), so this asks one fewer provider rather than asking for the wrong thing.
+   */
+  return [];
 }
 
 function isGenericNatureStockWord(word: string): boolean {
@@ -13308,7 +15073,8 @@ function stockQueryFromBeatScript(
   sceneText = "",
   videoTitle?: string
 ): string {
-  return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "documentary";
+  // RONDE 100B: "" when the script proves no subject — see scriptStockSearchQueries.
+  return scriptStockSearchQueries(beatText, persons, sceneText, videoTitle)[0] ?? "";
 }
 
 /** Licensed Pexels/Pixabay/b-roll — not authentic archival footage. */
@@ -13456,7 +15222,35 @@ const PERSON_ACTION_VERBS = new Set([
   "signs","gave","gives","took","takes","received","receives","sent","sends","summoned",
   "celebrated","celebrates","watched","watches","listened","waited","waits","walked","walks",
   "sat","stood","turned","looked","looks","smiled","laughed","wept","shouted","whispered",
+  // RONDE 88 — the verbs a HISTORICAL documentary actually uses about its subject.
+  //
+  // Measured gap: "Hitler invaded Poland in 1939" produced PERSON=[] and the query "Poland
+  // invaded", because "invaded" was nowhere on this list. The list already is the pipeline's
+  // person-evidence vocabulary; these are the same kind of word, for the genre this product is
+  // built for. Every one takes a human subject.
+  "invaded","invades","conquered","conquers","attacked","attacks","defeated","defeats",
+  "surrendered","surrenders","captured","captures","liberated","liberates","occupied","occupies",
+  "bombed","bombs","besieged","launched","launches","seized","seizes","annexed","annexes",
+  "crossed","crosses","marched","marches","advanced","advances","withdrew","withdraws",
+  "negotiated","negotiates","betrayed","betrays","purged","purges","executed","executes",
+  "founded","founds","built","builds","discovered","discovers","published","publishes",
+  "studied","studies","researched","taught","teaches","painted","paints","composed","composes",
 ]);
+
+/**
+ * RONDE 88 — is this token a verb the pipeline already recognises?
+ *
+ * Used only to judge Title Case text, where capitalisation proves nothing about any word. Reads
+ * the existing PERSON_ACTION_VERBS vocabulary rather than introducing a second list, and also
+ * accepts the regular past-tense morphology that vocabulary is built from, so a title verb nobody
+ * listed ("Frobnicated") is still refused as a name token.
+ */
+function isKnownPersonActionVerb(token: string): boolean {
+  const t = token.trim().toLowerCase();
+  if (!t) return false;
+  if (PERSON_ACTION_VERBS.has(t)) return true;
+  return t.length >= 6 && t.endsWith("ed");
+}
 
 /** Lower-cased place vocabulary the pipeline already carries, for O(1) lookup. */
 const GEO_SLUG_SET = new Set(ALL_GEO_SLUGS.map((s) => s.toLowerCase()));
@@ -13492,11 +15286,42 @@ function isNonPersonToken(token: string): boolean {
  * capitalised word with no such evidence stays what it was, a candidate the pipeline does not
  * claim to have identified.
  */
-function sentenceSupportsPerson(sentence: string, token: string): boolean {
+function sentenceSupportsPerson(sentence: string, token: string, depth = 0): boolean {
+  if (depth > 4) return false;
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (new RegExp(`\\b${escaped}'s\\b`, "i").test(sentence)) return true;
   const after = new RegExp(`\\b${escaped}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
-  return Boolean(after?.[1] && PERSON_ACTION_VERBS.has(after[1].toLowerCase()));
+  if (after?.[1] && PERSON_ACTION_VERBS.has(after[1].toLowerCase())) return true;
+  /**
+   * RONDE 88 (§2) — coordination carries the evidence across.
+   *
+   * Measured: "Churchill and Roosevelt met at Casablanca" kept only Roosevelt. The verb "met"
+   * sits behind the SECOND name, so the first one had nothing directly after it but "and" and
+   * was dropped — and the beat then searched for one of the two men it names.
+   *
+   * This is grammar, not a guess: "X and Y <person-verb>" makes X and Y the same kind of thing,
+   * and the evidence for one is the evidence for both. Only a coordinating conjunction counts,
+   * and the partner must itself be capitalised and pass the same verb test.
+   *
+   * RONDE 90 (§5) — a comma coordinates a list exactly as "and" coordinates a pair.
+   *
+   * Measured: "Churchill, Roosevelt and Stalin met at Yalta" kept Roosevelt and Stalin and lost
+   * Churchill, because the only thing behind Churchill was a comma. §5 is absolute that no name a
+   * beat states may be dropped, and "A, B and C <verb>" is one list — the last member carries the
+   * verb for all of them. The recursion walks forward along the list only, so it terminates; the
+   * depth cap is belt-and-braces against a pathological sentence.
+   */
+  const coordinated = new RegExp(
+    `\\b${escaped}\\b\\s*(?:,\\s*|,?\\s*(?:and|&)\\s+)(\\p{Lu}[\\p{Ll}'’-]+)`, "u"
+  ).exec(sentence);
+  if (coordinated?.[1]) return sentenceSupportsPerson(sentence, coordinated[1], depth + 1);
+  const coordinatedBefore = new RegExp(`(\\p{Lu}[\\p{Ll}'’-]+)\\s*,?\\s*(?:and|&)\\s+${escaped}\\b`, "u").exec(sentence);
+  if (coordinatedBefore?.[1]) {
+    const partner = coordinatedBefore[1]!;
+    const partnerAfter = new RegExp(`\\b${partner}\\b[\\s,]+([a-z]+)`, "i").exec(sentence);
+    if (partnerAfter?.[1] && PERSON_ACTION_VERBS.has(partnerAfter[1].toLowerCase())) return true;
+  }
+  return false;
 }
 
 /**
@@ -13677,35 +15502,204 @@ export function extractActionCue(beatText: string): string {
  */
 export function typedQueryPrefix(
   beatText: string,
-  opts: { scenePersons?: string[]; forcePerson?: string } = {}
+  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
 ): string[] {
-  const text = (beatText ?? "").trim();
-  if (!text) return [];
-  const place = extractVisualPlacePhrase(text);
-  const action = extractActionCue(text);
-  const family = (persons: string[]): string[] =>
-    combinedTypedQueriesForBeat(text, persons, place, action);
-
-  const own = family(extractPersonNamesFromText(text));
-  const supplied =
-    toQueryString(opts.forcePerson ?? "") ||
-    ((opts.scenePersons ?? []).map((p) => toQueryString(p)).find(Boolean) ?? "");
-  if (!supplied) return [...new Set(own)];
-
-  const contextual = family([supplied]);
-  const woven: string[] = [];
-  for (let i = 0; i < Math.max(own.length, contextual.length); i += 1) {
-    if (own[i]) woven.push(own[i]!);
-    if (contextual[i]) woven.push(contextual[i]!);
-  }
-  return [...new Set(woven)];
+  return buildPrioritisedQueries(buildVerifiedQueryContextForBeat(beatText, opts)).map((q) => q.query);
 }
+
+/**
+ * RONDE 103 (phases 9–13) — the two typed questions this beat leads with.
+ *
+ * Exported because the RONDE 77 §G mutation guard has to measure the same two. It used to compute
+ * them itself, as `typedQueryPrefix(...).slice(0, 2)`, and a second definition of "which queries
+ * are the typed ones" is exactly the kind of duplicate that drifts silently: the test kept
+ * passing while measuring a different pair from the one the pipeline sent.
+ *
+ * One question per RUNG, descending. Taking both slots off the top rung would ask two narrow
+ * variants of the same question and drop the broader one entirely — that is not a descent, and a
+ * beat whose narrow question finds nothing would be left with no fallback on this path. A beat
+ * that supports only one rung still fills both slots from it, exactly as before.
+ */
+export function typedQueryLead(beatText: string, scenePersons: string[] = []): string[] {
+  const ladder = typedQueryLadder(beatText, { scenePersons });
+  const out: string[] = [];
+  for (const rung of ladder) {
+    const pick = rung.queries.find((q) => !out.includes(q));
+    if (pick) out.push(pick);
+    if (out.length >= 2) break;
+  }
+  if (out.length < 2 && ladder[0]) {
+    for (const q of ladder[0].queries) {
+      if (out.length >= 2) break;
+      if (!out.includes(q)) out.push(q);
+    }
+  }
+  return out;
+}
+
+/**
+ * RONDE 103 (phases 9–13) — the same questions, asked narrowest first.
+ *
+ * `typedQueryPrefix` returns them in the RONDE 90 priority order, where names lead. That rule is
+ * about which terms lead the STRING and it is not weakened here: this reorders the LIST, level 4
+ * down to level 1, keeping the priority order inside each level exactly as it was.
+ *
+ * The difference it makes is which question a caller that takes only the first two actually asks.
+ * On "Hitler directed the defence of Berlin from the bunker in 1945" the priority list leads with
+ * "Hitler Berlin" — a question that returns anything ever shot in Berlin with Hitler in it —
+ * while the beat also supports "Hitler Berlin bunker 1945". Asking the second one first is how a
+ * beat gets the picture it is actually about, and it is also most of the answer to why a render
+ * spent 1667 provider queries to fill twenty slots: the broad questions return the most and fit
+ * the least, so every one of their results costs a download and a judgement to throw away.
+ */
+export function typedQueryLadder(
+  beatText: string,
+  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
+): Array<{ level: 1 | 2 | 3 | 4; queries: string[] }> {
+  return buildBeatSearchLadder(buildVerifiedQueryContextForBeat(beatText, opts)).map((rung) => ({
+    level: rung.level,
+    queries: rung.queries.map((q) => q.query),
+  }));
+}
+
+/**
+ * RONDE 88 — the beat's PROVEN typed context, with provenance on every term.
+ *
+ * Three measured defects are closed here, and each one is a rule of §1–§13:
+ *
+ *   · Every person the beat names is kept, in order. "Churchill and Roosevelt met at Casablanca"
+ *     produced only "Roosevelt Casablanca"; Churchill was silently dropped by persons[0].
+ *   · A supplied person — from the scene, or from the video's title — is admitted ONLY when the
+ *     beat's own text or the scene text proves the connection. §7 and §11: a title is not evidence
+ *     that a person appears in a sentence. "Eva Braun Just France" and "Adolf Hitler France" were
+ *     both measured on a beat naming neither of them.
+ *   · A term that cannot be proven is still RECORDED, marked unverified with the route that
+ *     produced it, so validateSearchQuery can name it in the rejection rather than the query
+ *     silently going out one word lighter.
+ */
+export function buildVerifiedQueryContextForBeat(
+  beatText: string,
+  opts: {
+    scenePersons?: string[];
+    forcePerson?: string;
+    sceneText?: string;
+    /**
+     * RONDE 160 — the USER'S OWN PROMPT (`videos.prompt`), verbatim. Never the title.
+     *
+     * Threaded so that the word naming the video's subject is usable in a query even on a beat
+     * that does not happen to repeat it — the "WWII" rejection this round reproduced. See
+     * `QueryTokenSource` in searchQueryContract.ts for why the prompt is admissible and the title
+     * is not. Omitting it leaves behaviour exactly as it was.
+     */
+    topic?: string;
+  } = {}
+): VerifiedQueryContext {
+  const text = (beatText ?? "").trim();
+  /**
+   * RONDE 90 (§3) — the beat's own words plus the scene that contains them are the evidence.
+   *
+   * The video's TITLE is deliberately not here. §7/§9: a title is a claim about the video, not
+   * about this sentence, and admitting it as evidence is exactly how "Adolf Hitler France" was
+   * measured on a beat that names neither. A term the title supplies and the script does not is
+   * unproven, and stays unproven.
+   *
+   * RONDE 160 — the user's PROMPT is a different thing and travels in its own field, not in the
+   * evidence, so a log can still tell "the beat said this" from "the person asked for this".
+   */
+  const ctx = emptyQueryContext(
+    [text, (opts.sceneText ?? "").trim()].filter(Boolean).join(" "),
+    (opts.topic ?? "").trim()
+  );
+  if (!text) return ctx;
+
+  /**
+   * RONDE 88 (§13) — persons in the order the beat states them.
+   *
+   * extractPersonNamesFromText returns full names before bare surnames, so "Hitler met Eva Braun"
+   * came back as ["Eva Braun", "Hitler"] and the first query read "Eva Braun Hitler". The order
+   * of a query's names is the order the sentence puts them in.
+   */
+  const named = extractPersonNamesFromText(text);
+  const positionOf = (name: string): number => {
+    const idx = text.toLowerCase().indexOf(name.toLowerCase());
+    return idx < 0 ? Number.MAX_SAFE_INTEGER : idx;
+  };
+  for (const name of [...named].sort((a, b) => positionOf(a) - positionOf(b))) {
+    ctx.persons.push(provenToken(name, "person", "beat_text", text));
+  }
+  /**
+   * RONDE 88 (§7/§11) — a supplied person is proven only when something states the connection.
+   *
+   * forcePerson and scenePersons are NOT the same claim, and conflating them was the bug:
+   *
+   *   forcePerson  the caller is explicitly fetching footage OF this person — a celebrity
+   *                fetch for Adolf Hitler is about Adolf Hitler by definition. That is the
+   *                caller's own proven context, not an inference about the sentence.
+   *   scenePersons a list assembled from the scene AND from the video's title. A title is not
+   *                evidence that anybody appears in any given sentence, which is how
+   *                "Eva Braun Just France" and "Adolf Hitler France" were both measured on a
+   *                beat that names neither. Admitted only when the scene text says so.
+   *
+   * A name that fails checkPersonName is refused on either route — a caller cannot launder a
+   * sentence fragment into a query by passing it as forcePerson.
+   */
+  const forced = toQueryString(opts.forcePerson ?? "");
+  if (forced && !ctx.persons.some((p) => p.term.toLowerCase() === forced.toLowerCase())) {
+    ctx.persons.push(
+      checkPersonName(forced, forced, "", { isKnownVerb: isKnownPersonActionVerb }).ok
+        ? provenToken(forced, "person", "proven_entity", forced)
+        : { term: forced, type: "person", source: "title_inference", verified: false }
+    );
+  }
+  for (const raw of opts.scenePersons ?? []) {
+    const name = toQueryString(raw);
+    if (!name) continue;
+    if (ctx.persons.some((p) => p.term.toLowerCase() === name.toLowerCase())) continue;
+    const inScene = Boolean(opts.sceneText) && checkPersonName(name, opts.sceneText!).ok;
+    ctx.persons.push(
+      inScene
+        ? provenToken(name, "person", "scene_text", opts.sceneText ?? "")
+        : { term: name, type: "person", source: "title_inference", verified: false }
+    );
+  }
+
+  const place = extractVisualPlacePhrase(text);
+  if (place) ctx.places.push(provenToken(place, "place", "beat_text", text));
+  const action = extractActionCue(text);
+  if (action) ctx.actions.push(provenToken(action, "action", "beat_text", text));
+  const typed = buildTypedRetrievalContext(text, {
+    persons: ctx.persons.filter((p) => p.verified).map((p) => p.term),
+    place,
+    action,
+  });
+  if (typed.event) ctx.events.push(provenToken(typed.event, "event", "beat_text", text));
+  if (typed.object) ctx.objects.push(provenToken(typed.object, "object", "beat_text", text));
+  if (typed.year) ctx.years.push(provenToken(typed.year, "year", "beat_text", text));
+  if (typed.time && typed.time !== typed.year) ctx.time.push(provenToken(typed.time, "time", "beat_text", text));
+  return ctx;
+}
+
+/*
+ * RONDE 91 (§1) — guardProviderQuery was removed here.
+ *
+ * RONDE 88 built it as "the last gate before a provider is asked anything". RONDE 89 then built
+ * the real gate (cachedProviderSearch / admitProviderQuery, both now searchGateDecision) and
+ * every provider was routed through that instead — but the old function was left behind, still
+ * exported, still holding a second, weaker copy of the decision: it validated, and it did not
+ * know about tickets, strict mode, the audit counters or the ambient beat context.
+ *
+ * A repo-wide scan found zero callers, static or dynamic. A second gate that nothing calls is
+ * not harmless: it is the obvious thing for a future call site to reach for, and it would have
+ * admitted queries the real gate refuses. ronde91SearchCleanup asserts it stays gone.
+ */
 
 /** Capitalized names from narration (Kylie Jenner, Elon Musk, …). */
 export function extractPersonNamesFromText(text: string): string[] {
   if (!text?.trim()) return [];
   const found = new Set<string>();
-  const fullNames = text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/g) ?? [];
+  // RONDE 123: `[a-z]` cannot read `ö`, so this run broke AT the diacritic and the two halves
+  // were matched as separate names — see personNameChars.ts for the measurement.
+  const fullNames = text.match(nameRunRegex(1)) ?? [];
   for (const name of fullNames) {
     const n = name.trim();
     if (n.length < 5 || PERSON_NAME_SKIP_PHRASES.has(n.toLowerCase())) continue;
@@ -13729,12 +15723,31 @@ export function extractPersonNamesFromText(text: string): string[] {
       const joined = seg.join(" ");
       if (seg.length < 2 || joined.length < 5) continue;
       if (PERSON_NAME_SKIP_PHRASES.has(joined.toLowerCase())) continue;
-      // RONDE 72: a run naming a thing is not a person. One head noun is decisive — "Eiffel
-      // Tower" carries "tower", "British Spitfire" carries "spitfire".
-      if (seg.some(isThingToken)) continue;
+      /**
+       * RONDE 88 (§8) — the structural check, in front of the historical blocklist.
+       *
+       * TITLE_NON_NAME_WORDS above splits on words somebody remembered to add. It did not carry
+       * "just", "of" or "purged", which is how "Eva Braun Just", "Of Adolf" and "Stalin Purged"
+       * were measured reaching providers. checkPersonName refuses on grammar instead: no function
+       * word inside a name, every token name-shaped, the whole name contiguous in this very text,
+       * and — for Title Case input, where capitalisation proves nothing — corroboration required.
+       */
+      if (!checkPersonName(joined, text, "", { isKnownVerb: isKnownPersonActionVerb }).ok) continue;
+      /**
+       * RONDE 72: a run naming a thing is not a person. One head noun is decisive — "Eiffel
+       * Tower" carries "tower", "British Spitfire" carries "spitfire".
+       *
+       * RONDE 125: a name particle is exempt, because several of them are also ordinary nouns.
+       * "bin" is the clearest case — measured, "Mohammed bin Salman" was refused here as a thing,
+       * on the container. "bar", "al" and "den" have the same problem. A particle only ever
+       * appears BETWEEN two of a name's own words (checkPersonName enforces that), so exempting
+       * it cannot let a thing through: the head noun that would name one is still checked.
+       */
+      const significant = seg.filter((t) => !isNameParticleToken(t));
+      if (significant.some(isThingToken)) continue;
       // Place names are only decisive when the WHOLE run is one. "New York" is a place;
       // "George Washington" is a person whose surname happens to also name places.
-      if (seg.every(isPlaceToken)) continue;
+      if (significant.length > 0 && significant.every(isPlaceToken)) continue;
       found.add(joined);
     }
   }
@@ -13751,7 +15764,7 @@ export function extractPersonNamesFromText(text: string): string[] {
   // acting as a person. "Berlin was under bombardment" and "Dunkirk had fallen" stay places:
   // "was" and "had" are not person verbs, and both words are in the geo vocabulary anyway.
   for (const sentence of text.split(/(?<=[.!?])\s+/)) {
-    const singles = sentence.match(/\b[A-Z][a-z]{2,}\b/g) ?? [];
+    const singles = sentence.match(singleNameTokenRegex(3)) ?? [];
     for (const token of singles) {
       if (found.has(token)) continue;
       // Already covered by a full name in this text ("Hitler" beside "Adolf Hitler").
@@ -13759,6 +15772,16 @@ export function extractPersonNamesFromText(text: string): string[] {
       if (TITLE_NON_NAME_WORDS.has(token.toLowerCase())) continue;
       if (PERSON_NAME_SKIP_PHRASES.has(token.toLowerCase())) continue;
       if (isNonPersonToken(token)) continue;
+      /**
+       * RONDE 88 (§9) — a pronoun is never a person.
+       *
+       * Measured before this line existed: "She addressed the nation after the fall of France"
+       * produced PERSON=["She"], and the beat's first provider query was "She France". The
+       * single-token branch only asked whether the sentence showed the token ACTING like a
+       * person, and "addressed" is on the person-verb list, so a capitalised pronoun at the start
+       * of a sentence passed every check. Function words are refused for the same reason.
+       */
+      if (isPronounToken(token) || isFunctionWord(token)) continue;
       if (!sentenceSupportsPerson(sentence, token)) continue;
       found.add(token);
     }
@@ -13770,29 +15793,47 @@ export function extractPersonNamesFromText(text: string): string[] {
   return Array.from(found);
 }
 
-/** Real-world events spoken on this beat → stock/YouTube search phrases. */
+/**
+ * Real-world events spoken on this beat → stock/YouTube search phrases.
+ *
+ * RONDE 100B rewrote what this emits. Every line used to be a mapping from a trigger to a
+ * DIFFERENT word: a beat saying "premiere" asked providers for "red carpet", "scandal" asked for
+ * "news conference", "billion" asked for "business news". The trigger was evidence; the output
+ * was not, and none of those words appear anywhere in the script. The SearchGate then rejected
+ * them as UNVERIFIED_TERM — the builder was manufacturing work for the gate to throw away, and
+ * on the renders where a scope was missing they went out to providers unchecked.
+ *
+ * Now the beat's own word is the query. `\b(a|b|c)\b` tells us which of the alternatives the
+ * narration actually used, and that is what gets asked for. Two entries are gone rather than
+ * rewritten, because neither had a visual word to fall back on: "scandal|controversy|backlash"
+ * pointed at a press conference nobody mentioned, and "billion|million|deal|acquisition|ipo"
+ * pointed at generic business news. A sum of money is not footage.
+ *
+ * The person prefix stays: `persons` is derived from this same beat, so it is proven.
+ */
 function scriptEventSearchQueries(beatText: string, persons: string[]): string[] {
   const t = beatText.toLowerCase();
   const primary = persons[0] ?? "";
-  const p = (suffix: string) => (primary ? `${primary} ${suffix}`.trim() : suffix);
   const out: string[] = [];
 
-  if (/\b(interview|interviews|spoke with|talked to)\b/.test(t)) out.push(p("interview"));
-  if (/\b(keynote|speech|presentation|address)\b/.test(t)) out.push(p("keynote speech"));
-  if (/\b(red carpet|premiere|gala|awards?)\b/.test(t)) out.push(p("red carpet"));
-  if (/\b(launch|unveil|unveiled|announcement|revealed|debut)\b/.test(t)) out.push(p("product launch"));
-  if (/\b(trial|court|lawsuit|verdict|sentencing)\b/.test(t)) out.push(p("court trial"));
-  if (/\b(wedding|married|engagement|divorce)\b/.test(t)) out.push(p("wedding"));
-  if (/\b(protest|demonstration|rally)\b/.test(t)) out.push(p("protest"));
-  if (/\b(concert|performance|tour)\b/.test(t)) out.push(p("concert"));
-  if (/\b(scandal|controversy|backlash)\b/.test(t)) out.push(p("news conference"));
-  if (/\b(billion|million|\$\d|deal|acquisition|ipo)\b/.test(t)) out.push(p("business news"));
-  if (/\b(rocket launch|falcon|starship|spacex)\b/.test(t)) {
-    out.push("SpaceX rocket launch");
-  }
-  if (/\b(tesla|cybertruck|gigafactory)\b/.test(t)) {
-    out.push(/\btesla\b/.test(t) ? "Tesla event" : "Tesla factory");
-  }
+  /** Push what the beat SAID, optionally anchored to the person the beat named. */
+  const spoken = (re: RegExp) => {
+    const m = t.match(re);
+    const said = m?.[1]?.trim();
+    if (!said) return;
+    out.push(primary ? `${primary} ${said}` : said);
+  };
+
+  spoken(/\b(interviews?)\b/);
+  spoken(/\b(keynote|speech|presentation|address)\b/);
+  spoken(/\b(red carpet|premiere|gala|awards?)\b/);
+  spoken(/\b(launch|unveiling|announcement|debut)\b/);
+  spoken(/\b(trial|court|lawsuit|verdict|sentencing)\b/);
+  spoken(/\b(wedding|engagement|divorce)\b/);
+  spoken(/\b(protest|demonstration|rally)\b/);
+  spoken(/\b(concert|performance|tour)\b/);
+  spoken(/\b(rocket launch|falcon|starship|spacex)\b/);
+  spoken(/\b(tesla|cybertruck|gigafactory)\b/);
 
   return [...new Set(out.filter((q) => q.length >= 3 && !isBlockedStockQuery(q)))];
 }
@@ -13866,7 +15907,14 @@ export function buildBeatVisualQueryList(
   // at — seven call sites reach the providers through this one list, and every one of them was
   // asking with the anchor word alone. "Adolf Hitler" and "berlin city skyline" both still go,
   // one place further down; the cap grows by exactly what was added so nothing is evicted.
-  const typed = typedQueryPrefix(beatText, { scenePersons }).slice(0, 2);
+  /**
+   * RONDE 103 (phases 9–13): the narrowest question the beat supports leads, then the next
+   * narrowest. Two queries as before — the change is WHICH two, not how many. A beat that proves
+   * an event now spends its two slots on "Hitler Berlin bunker 1945" and "Battle of Berlin"
+   * rather than on "Hitler Berlin" and "Hitler", which is the difference between asking about
+   * this shot and asking about the whole war.
+   */
+  const typed = typedQueryLead(beatText, scenePersons);
   // Person context (e.g. "Adolf Hitler") is resolved once per scene/video, not per beat — many
   // beats refer to the subject with a pronoun ("he", "his") instead of repeating the name, so
   // without this a beat like "He then gave the order..." never even tries a person-name query,
@@ -14098,6 +16146,13 @@ export interface VisualDedupState {
    * persisted quality report instead of only as a mid-render warn line.
    */
   grayPadScenes: number[];
+  /** RONDE 132 §10: how short each montage was, so a 0.3s rounding is not reported like a 12s freeze. */
+  montageShortfalls: Array<{
+    sceneIndex: number;
+    shortBySec: number;
+    uniqueClips: number;
+    neededClips: number;
+  }>;
   /**
    * Production fix (Hitler-render finding, Problem 10): a whole SCENE (not just one beat)
    * that had to fall all the way back to generateColorFallback as its final composed output —
@@ -14142,6 +16197,36 @@ export interface VisualDedupState {
  *   permanently narrow the next one).
  */
   usedCuratedAssetIds: Set<number>;
+  /**
+   * RONDE 131: what the persistent search memory saved this render.
+   *
+   * On VisualDedupState rather than in a new object because this is already the per-render state
+   * every sourcing path threads, and a counter that outlived a render would be a lie the moment
+   * two renders shared a worker.
+   */
+  searchMemoryMetrics: SearchMemoryRecallMetrics;
+  /** Archive assets this render offered because an earlier video proved them (RONDE 131). */
+  recalledAssetIds: Set<number>;
+  /** RONDE 132 §2: unique/reused/refused counts across every dedup identity. */
+  visualDedupStats: VisualDedupStats;
+  /**
+   * RONDE 140: what the open-web source policy refused this render, and how much it looked at.
+   *
+   * Here for the same reason searchMemoryMetrics is: this is the per-render state every sourcing
+   * path already threads, and a counter that outlived a render would be a lie the moment two
+   * renders shared a worker.
+   */
+  openWebPolicyStats: OpenWebPolicyStats;
+  /**
+   * RONDE 132 §2 — provider+id, render-wide.
+   *
+   * The provider axis existed only as a `usedProviderKeys` PARAMETER threaded into each fetcher,
+   * so it was scoped to a call chain rather than to the video: two routes asking two providers for
+   * the same beat each carried their own set. This is the render-wide one, written at every adopt
+   * point, so "have we already used this provider asset in this video" finally has an answer that
+   * outlives one call. The per-fetcher parameter is untouched.
+   */
+  usedProviderKeys: Set<string>;
   /** Storage URLs from curated archive — blocks same file twice even with different IDs. */
   usedCuratedStorageUrls: Set<string>;
   /** Cap modern historian interview B-roll (looks like one frozen talking head). */
@@ -14167,6 +16252,16 @@ export interface VisualDedupState {
   varietySeed: number;
   /** Assets used in recent same-topic videos — skipped when pool allows. */
   crossVideoExcludeIds: Set<number>;
+  /**
+   * RONDE 159 — scenes allowed to fetch at compose time despite local-only mode.
+   *
+   * Granted only to a scene that is genuinely short of footage while the render still holds real
+   * wall-clock headroom; see composeMayFetchForStarvedScene. Per scene rather than per render,
+   * because scenes compose in parallel and one starved scene must not open the door for the rest.
+   */
+  composeFetchExemptScenes: Set<number>;
+  /** RONDE 164: one funnel audit per beat, tallied at render end. */
+  archiveSourcingAudits: ArchiveSourcingAudit[];
   /** asset.id → prepared beat MP4 (avoid re-trim when next zin tries same file). */
   preparedArchiveClips: Map<string, string>;
   /** asset.id → shared raw source file (one disk copy per video). */
@@ -14199,17 +16294,76 @@ export interface VisualDedupState {
   /** Successfully adopted clips per beat (for geo export gate). */
   clipAdoptAudit: ClipAdoptEntry[];
   /**
+   * RONDE 111: one line per scene that came up short of footage, and what was done about it.
+   *
+   * Collected here rather than printed and forgotten, because "why does this scene look frozen"
+   * is asked days later about a specific video — the same reason RONDE 106 moved the render's
+   * other reports out of stdout. Rendered into the pipeline report's warnings section.
+   */
+  coverageDecisions: string[];
+  /**
+   * RONDE 112: beats the subject fallback has already been tried on.
+   *
+   * It runs the full search cascade a second time for one beat, so it gets exactly one attempt —
+   * both rescue ladders can reach it and neither should pay for the other's miss.
+   */
+  subjectFallbackBeats: Set<string>;
+  /**
    * RONDE 58: verdicts and spend for the vision gate that looks at the frame and says whether it
    * belongs under this narration. Render-scoped so two concurrent renders cannot read each
    * other's verdicts or spend each other's budget.
    */
   beatImageGate: BeatImageGateState;
   /**
+   * RONDE 103: what the single content decider decided, per clip path.
+   *
+   * Same lifetime and the same reasoning as beatImageGate above — one render, no leakage. This is
+   * what makes a decision survive the hand-off between the route that made it and the compose
+   * barrier that enforces it. See ./beatVisualRelevance.
+   */
+  beatRelevance: BeatRelevanceLedger;
+  /**
    * RONDE 61: funnel candidates the beat-image gate has REFUSED. Separate from
    * usedFunnelCandidateIds, which is a soft variety preference the picker restores when
    * everything has been used — this one is never restored.
    */
   beatImageRejectedIds: Set<string>;
+  /**
+   * RONDE 131: what the content decider SAID when it refused, read and counted.
+   *
+   * Same render lifetime as the gate state above and for the same reason. The gate's `depicts`
+   * and `reason` are prose about one refusal; this is the render's distribution over them, which
+   * is what turns "21 does_not_fit" into a statement about whether better queries or better
+   * catalogues would have fixed it. See ./visualMismatchFeedback.
+   */
+  mismatchTally: MismatchTally;
+  /**
+   * RONDE 132 — beats that have already had their one corrected-query research pass.
+   *
+   * `s{scene}b{beat}`. This is the whole of the "maximaal één extra research-pass" rule: a beat
+   * whose key is in here is never researched again, whatever it is refused for afterwards. Kept
+   * beside the other per-render sets for the same reason they are — two concurrent renders on one
+   * worker must not be able to spend each other's passes.
+   */
+  mismatchResearchedBeats: Set<string>;
+  /** RONDE 132: what the research passes cost and what they bought. */
+  researchTally: ResearchTally;
+  /**
+   * RONDE 142 — how long one source clip has been carried by extendLastClip.
+   *
+   * Video 548 filled 13 empty beats by extending the same clip and put one picture on screen for
+   * 41.38 of its 95.84 seconds. Each extension was short and legitimate on its own; nothing
+   * counted the run. See ./extendHoldBudget.
+   */
+  extendHold: ExtendHoldState;
+  /**
+   * RONDE 142 — the last mismatch kind the gate produced for each beat, keyed `s{scene}b{beat}`.
+   *
+   * Written at the shared gate so it covers every route, and read by the research pass. Before
+   * this, the research pass could only see refusals that happened inside the funnel's own loop,
+   * which is why video 548 had four QUESTION-blame refusals and zero research attempts.
+   */
+  lastMismatchByBeat: Map<string, MismatchKind>;
   /** Sticky NL/US segment lock for comparison documentaries. */
   segmentGeoLock: BeatGeoRegion | null;
   /** Pipeline wall-clock start (ms) — used for turbo sourcing on 1-min videos. */
@@ -14236,6 +16390,15 @@ export interface VisualDedupState {
    */
   movingClipCount: number;
   stillClipCount: number;
+  /**
+   * RONDE 180 — every asset this VIDEO has already adopted, so a repeat can be penalised.
+   *
+   * On the render state rather than per scene, because the complaint it answers is a viewer seeing
+   * the same shot come back, and that does not care which scene found it the second time. R170
+   * built the ledger and the penalty; nothing constructed one, so `selectCandidatesFromPool` was
+   * called with no context at all and the penalty could never apply.
+   */
+  usageLedger: UsageLedger;
   /** RONDE 62: consecutive beats where every plan-rescue round missed. */
   planRescueMissStreak: number;
   /** Clips adopted so far in the current scene — used by Asset Director for shot variety. */
@@ -14399,6 +16562,11 @@ export function createVisualDedupState(
 ): VisualDedupState {
   const state: VisualDedupState = {
     usedPaths: new Set(),
+    searchMemoryMetrics: createSearchMemoryRecallMetrics(),
+    recalledAssetIds: new Set(),
+    visualDedupStats: createVisualDedupStats(),
+    openWebPolicyStats: createOpenWebPolicyStats(),
+    usedProviderKeys: new Set(),
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
     usedContentKeys: new Set(),
@@ -14414,6 +16582,7 @@ export function createVisualDedupState(
     entityYoutubeFetchesUsed: 0,
     stockBeatsUsed: 0,
     grayPadScenes: [],
+    montageShortfalls: [],
     sceneRescueColorFallbackCount: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
@@ -14436,6 +16605,8 @@ export function createVisualDedupState(
     archiveAssetsCache: new Map(),
     varietySeed: 0,
     crossVideoExcludeIds: new Set(),
+    composeFetchExemptScenes: new Set(),
+    archiveSourcingAudits: [],
     preparedArchiveClips: new Map(),
     materializedArchiveRaw: new Map(),
     ttsSceneBeats: new Map(),
@@ -14448,8 +16619,16 @@ export function createVisualDedupState(
     clipRejectAudit: createClipRejectAudit(),
     beatOutcomeAudit: createBeatOutcomeAudit(),
     clipAdoptAudit: createClipAdoptAudit(),
+    coverageDecisions: [],
+    subjectFallbackBeats: new Set<string>(),
     beatImageGate: createBeatImageGateState(),
+    beatRelevance: createBeatRelevanceLedger(),
     beatImageRejectedIds: new Set<string>(),
+    mismatchTally: createMismatchTally(),
+    mismatchResearchedBeats: new Set<string>(),
+    researchTally: createResearchTally(),
+    extendHold: createExtendHoldState(),
+    lastMismatchByBeat: new Map<string, MismatchKind>(),
     segmentGeoLock: null,
     stepTiming: new PipelineStepTiming(),
     assetDirectorSceneClips: [],
@@ -14477,6 +16656,7 @@ export function createVisualDedupState(
     sourcingCache: createSourcingCache(topic?.videoId),
     movingClipCount: 0,
     stillClipCount: 0,
+    usageLedger: newLedger(),
     planRescueMissStreak: 0,
   };
   // RONDE 86: every recordClipAdopt call in this file hands over `dedup.clipAdoptAudit`, so
@@ -14559,107 +16739,173 @@ type RealEntityRule = {
   clipMustMatchRe: RegExp;
   stockQueries: string[];
   youtubeQueries: string[];
+  /**
+   * RONDE 177 — WHAT the named entity is.
+   *
+   * Added so the cinematic engine's `VisualIntent.brands` / `.companies` / `.objects` can be filled
+   * from a table that already knows every one of these names, instead of a second name list or a
+   * guess made at read time. Tesla is a company and the Cybertruck is a product; that is a fact
+   * about the world, not a search term, and nothing in the query path reads this field.
+   *
+   * `person` is here so the people in this table are NOT offered as brands. A beat that says
+   * "Elon Musk" would otherwise put an animated icon labelled "Elon Musk" on screen, and the
+   * person channel (extractPersonNamesFromText) already answers that question properly.
+   */
+  kind: "person" | "company" | "brand" | "object";
 };
 
+/**
+ * RONDE 100B — the entity's NAME is proven by the mention; its activities are not.
+ *
+ * These lists used to append an activity to every name: "Kylie Jenner red carpet", "Kylie Jenner
+ * makeup launch", "Elon Musk Tesla keynote", "Tesla Model 3 production line", "Titanic sinking
+ * 1912 documentary" — and stockQueries carried bare genre words like "celebrity", "fashion",
+ * "car", "brain", "technology". A beat that says "Kylie Jenner" proves that Kylie Jenner is the
+ * subject. It does not prove a red carpet, a makeup launch, or an interview; those were chosen
+ * by this table, not by the script, and a provider asked for a red carpet will happily return
+ * one whatever the narration was about.
+ *
+ * What remains is the entity's own proper name — including full product names like "Falcon 9"
+ * and "RMS Titanic", which are names rather than invented topics. When the narration DOES
+ * describe an activity, scriptEventSearchQueries supplies that word from the beat itself, and
+ * the two combine on the evidence instead of on a guess.
+ *
+ * mentionRe and clipMustMatchRe are untouched: they filter candidates, they do not build
+ * queries, and loosening or tightening a filter is a separate question from inventing a term.
+ */
 const REAL_ENTITY_RULES: RealEntityRule[] = [
   {
     id: "kylie",
+    kind: "person",
     mentionRe: /\b(kylie\s+jenner|kylie\b|jenner\b)/i,
     clipMustMatchRe: /\b(kylie|jenner|kardashian|celebrity|influencer|makeup|fashion)\b/i,
-    stockQueries: ["kylie", "celebrity", "fashion"],
-    youtubeQueries: [
-      "Kylie Jenner interview",
-      "Kylie Jenner red carpet",
-      "Kylie Jenner makeup launch",
-    ],
+    stockQueries: ["Kylie Jenner"],
+    youtubeQueries: ["Kylie Jenner"],
   },
   {
     id: "musk",
+    kind: "person",
     mentionRe: /\b(elon\s+musk|musk)\b/i,
     clipMustMatchRe: /\b(musk|elon|tesla|spacex)\b/i,
-    stockQueries: ["tesla", "spacex"],
-    youtubeQueries: [
-      "Elon Musk interview",
-      "Elon Musk Tesla keynote",
-      "Elon Musk SpaceX presentation",
-    ],
+    stockQueries: ["Elon Musk"],
+    youtubeQueries: ["Elon Musk"],
   },
   {
     id: "tesla",
+    kind: "company",
     mentionRe: /\btesla\b/i,
     clipMustMatchRe: /\btesla\b/i,
-    stockQueries: ["tesla"],
-    youtubeQueries: ["Tesla Gigafactory tour", "Tesla Model 3 production line", "Tesla Cybertruck unveiling"],
+    stockQueries: ["Tesla"],
+    youtubeQueries: ["Tesla"],
   },
   {
     id: "spacex",
+    kind: "company",
     mentionRe: /\bspacex\b/i,
     clipMustMatchRe: /\b(spacex|falcon|starship)\b/i,
-    stockQueries: ["spacex", "rocket"],
-    youtubeQueries: ["SpaceX Falcon 9 rocket launch", "SpaceX Starship launch test flight", "Falcon 9 landing booster"],
+    stockQueries: ["SpaceX"],
+    youtubeQueries: ["SpaceX"],
   },
   {
     id: "falcon9",
+    kind: "brand",
     mentionRe: /\bfalcon\s*9\b/i,
     clipMustMatchRe: /\b(falcon|spacex)\b/i,
-    stockQueries: ["rocket", "spacex"],
-    youtubeQueries: ["SpaceX Falcon 9 rocket launch", "Falcon 9 landing booster drone ship"],
+    stockQueries: ["Falcon 9"],
+    youtubeQueries: ["Falcon 9"],
   },
   {
     id: "starship",
+    kind: "brand",
     mentionRe: /\bstarship\b/i,
     clipMustMatchRe: /\b(starship|spacex)\b/i,
-    stockQueries: ["spacex", "rocket"],
-    youtubeQueries: ["SpaceX Starship launch test flight", "Starship hop test Boca Chica"],
+    stockQueries: ["Starship"],
+    youtubeQueries: ["Starship"],
   },
   {
     id: "cybertruck",
+    kind: "brand",
     mentionRe: /\bcybertruck\b/i,
     clipMustMatchRe: /\b(tesla|cybertruck)\b/i,
-    stockQueries: ["tesla", "car"],
-    youtubeQueries: ["Tesla Cybertruck unveiling", "Tesla Cybertruck driving"],
+    stockQueries: ["Cybertruck"],
+    youtubeQueries: ["Tesla Cybertruck"],
   },
   {
     id: "gigafactory",
+    kind: "brand",
     mentionRe: /\bgigafactory\b/i,
     clipMustMatchRe: /\b(tesla|gigafactory)\b/i,
-    stockQueries: ["factory", "tesla"],
-    youtubeQueries: ["Tesla Gigafactory tour", "Tesla factory Berlin Gigafactory"],
+    stockQueries: ["Gigafactory"],
+    youtubeQueries: ["Tesla Gigafactory"],
   },
   {
     id: "model3",
+    kind: "brand",
     mentionRe: /\bmodel\s*[3y]\b/i,
     clipMustMatchRe: /\b(tesla|model)\b/i,
-    stockQueries: ["tesla", "car"],
-    youtubeQueries: ["Tesla Model 3 production", "Tesla Model Y factory"],
+    stockQueries: ["Tesla Model 3", "Tesla Model Y"],
+    youtubeQueries: ["Tesla Model 3", "Tesla Model Y"],
   },
   {
     id: "starlink",
+    kind: "brand",
     mentionRe: /\bstarlink\b/i,
     clipMustMatchRe: /\b(starlink|spacex|satellite)\b/i,
-    stockQueries: ["satellite", "rocket"],
-    youtubeQueries: ["SpaceX Starlink launch", "Falcon 9 Starlink mission"],
+    stockQueries: ["Starlink"],
+    youtubeQueries: ["SpaceX Starlink"],
   },
   {
     id: "neuralink",
+    kind: "company",
     mentionRe: /\bneuralink\b/i,
     clipMustMatchRe: /\b(neuralink|brain|neuroscience)\b/i,
-    stockQueries: ["brain", "technology"],
-    youtubeQueries: ["Neuralink presentation", "brain implant research laboratory"],
+    stockQueries: ["Neuralink"],
+    youtubeQueries: ["Neuralink"],
   },
   {
     id: "titanic",
+    kind: "object",
     mentionRe: /\b(rms\s+titanic|titanic)\b/i,
     clipMustMatchRe: /\b(titanic|rms|liner|iceberg|southampton|1912|shipwreck|white\s+star)\b/i,
-    stockQueries: ["RMS Titanic", "Titanic ship 1912"],
-    youtubeQueries: [
-      "RMS Titanic archival footage",
-      "Titanic sinking 1912 documentary",
-      "Titanic maiden voyage Southampton 1912",
-      "Titanic iceberg collision original",
-    ],
+    stockQueries: ["RMS Titanic", "Titanic"],
+    youtubeQueries: ["RMS Titanic", "Titanic"],
   },
 ];
+
+/**
+ * RONDE 177 — the named entities this beat proves, grouped by what they are.
+ *
+ * ── Why this reads the rules table rather than the beat ──────────────────────────────────────
+ *
+ * `VisualIntent.brands` / `.companies` / `.objects` were permanently empty in production, so the
+ * shot planner's object rules and the motion-graphics planner's brand icon could never fire. This
+ * is what fills them, and the whole point is that it introduces no new matching: the entities come
+ * from `extractBeatRealEntities` — the same matcher the retrieval path uses — and each name is the
+ * rule's own `stockQueries[0]`, which RONDE 100B already established as the entity's proper name
+ * and nothing more.
+ *
+ * People are deliberately dropped. `extractPersonNamesFromText` is the person channel and it feeds
+ * `VisualIntent.people`; offering "Elon Musk" as a brand would put an animated icon with his name
+ * on screen.
+ */
+export function beatNamedEntitiesByKind(beatText: string): {
+  brands: string[];
+  companies: string[];
+  objects: string[];
+} {
+  const out = { brands: [] as string[], companies: [] as string[], objects: [] as string[] };
+  for (const rule of extractBeatRealEntities(beatText)) {
+    const name = rule.stockQueries[0]?.trim();
+    if (!name) continue;
+    const bucket =
+      rule.kind === "brand" ? out.brands :
+      rule.kind === "company" ? out.companies :
+      rule.kind === "object" ? out.objects :
+      null;
+    if (bucket && !bucket.includes(name)) bucket.push(name);
+  }
+  return out;
+}
 
 export function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
   const fromBeat = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(beatText));
@@ -14874,11 +17120,14 @@ function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void 
   const first = anchor.split(/\s+/)[0] ?? anchor;
   const safe = (raw: unknown): string => {
     const trimmed = toQueryString(raw);
+    // RONDE 93 (§6): an off-topic cue is replaced by the PERSON, not by an interview nobody
+    // mentioned. This function exists to stop a celebrity scene searching for flamingos; the
+    // full name is the correction, and it is the one term that is actually proven here.
     if (!trimmed || PERSON_OFFTOPIC_VISUAL_RE.test(trimmed)) {
-      return `${first} interview`;
+      return anchor;
     }
     if (/\b(wildlife|bird|zoo|animal|flamingo|ocean|dolphin)\b/i.test(trimmed)) {
-      return `${first} interview`;
+      return anchor;
     }
     const lower = trimmed.toLowerCase();
     if (!lower.includes(first.toLowerCase()) && !/\b(celebrity|interview|fashion|makeup|red carpet)\b/i.test(lower)) {
@@ -14888,11 +17137,13 @@ function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void 
   };
   if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
   scene.pexelsQuery = anchor;
-  scene.visualCue = safe(scene.visualCue) || `${anchor} interview`;
-  scene.pexelsQueries = [...new Set([anchor, `${anchor} interview`, `${first} celebrity`, ...(scene.pexelsQueries ?? []).map(safe)])]
+  // RONDE 93 (§6): the anchor is the person the scene is about — proven. "interview",
+  // "celebrity" and "fashion" were three more constants appended to every one of them.
+  scene.visualCue = safe(scene.visualCue) || anchor;
+  scene.pexelsQueries = [...new Set([anchor, first, ...(scene.pexelsQueries ?? []).map(safe)])]
     .filter((q) => q.length >= 3 && !PERSON_OFFTOPIC_VISUAL_RE.test(q))
     .slice(0, 4);
-  scene.brollQueries = [`${first} fashion`, `${first} interview`].filter((q) => !isBlockedStockQuery(q));
+  scene.brollQueries = [anchor, first].filter((q) => !isBlockedStockQuery(q));
   if (!scene.personNames?.length) scene.personNames = [anchor];
 }
 
@@ -15189,9 +17440,15 @@ function isPublishableChapterTitle(title: string | undefined): boolean {
 // Exported (visibility only, no logic changed) so the visual-dedup test suite can assert on
 // exact key equality/inequality directly, matching the F3-48-style precedent elsewhere in this
 // file for exporting a pure helper purely so a test can cover it without spinning up network mocks.
+/**
+ * RONDE 135 — one definition, in the module that owns dedup identity.
+ *
+ * This function's body used to live here while visualDedupRegistry kept a SECOND, different one
+ * for the very same Set — see providerAssetIdentityKey there for what that cost. Re-exported under
+ * its own long-standing name so every existing caller and test is unchanged.
+ */
 export function providerAssetKey(provider: string, id: string): string {
-  const hash = createHash("sha256").update(id.trim()).digest("hex").slice(0, 16);
-  return `${provider}:${hash}`;
+  return providerAssetIdentityKey(provider, id);
 }
 
 /** Embeds a providerAssetKey into a downloaded clip's filename (right before the extension) so
@@ -15230,6 +17487,17 @@ export function tagPathWithProviderAsset(
     title?: string;
     mediaType?: "video" | "image" | "graphic" | "unknown";
     query?: string;
+    /** RONDE 96: the narration this asset is meant to illustrate, when the caller knows it. */
+    beatText?: string;
+    /**
+     * RONDE 95 (§2) — the gate route that produced this candidate.
+     *
+     * Every downloader knows its own name; none of them passed it on, so a clip could be traced
+     * back to the words it was found by but not to the call site that chose them. The label is the
+     * same one the [SearchGate] report uses, so a provider whose results go wrong can be followed
+     * from the summary line to the exact fetcher and then to the individual assets it produced.
+     */
+    searchRoute?: string;
   }
 ): string {
   if (!id?.trim()) return outPath;
@@ -15243,6 +17511,7 @@ export function tagPathWithProviderAsset(
         videoId: cache.lineage.videoId,
         sceneIndex: meta?.sceneIndex ?? -1,
         beatIndex: meta?.beatIndex ?? -1,
+        beatText: meta?.beatText,
         candidateId: contentKey,
         contentKey,
         provider,
@@ -15251,6 +17520,7 @@ export function tagPathWithProviderAsset(
         localPath: tagged,
         mediaType: meta?.mediaType ?? "unknown",
         query: meta?.query,
+        searchRoute: meta?.searchRoute,
         assetTitle: meta?.title,
         route: "primary",
       });
@@ -15313,6 +17583,27 @@ export interface ProviderAssetCacheEntry {
   /** Result of the provider's license check — false is cached too, so a rejected asset
    *  surfaced again by another cascade is not re-fetched just to be rejected again. */
   licenseAllowed?: boolean;
+  /**
+   * RONDE 160 (FASE 4) — the licence the provider ITSELF reports, kept as metadata.
+   *
+   * Deliberately separate from `licenseAllowed`, which is this pipeline's yes/no verdict. The two
+   * answer different questions and only one of them survives a policy change: "YouTube says this
+   * carries its standard licence" is a fact about the asset, while "we were allowed to use it" is
+   * a fact about the settings at the moment it was fetched. Recording only the verdict is how a
+   * finished video ends up unable to say what it was made of.
+   *
+   * `retrievedUnder` is the search mode that surfaced it, which is not the same claim: a clip
+   * found by the unfiltered `any` pass has no licence assertion attached to it at all, and saying
+   * so is more honest than guessing one.
+   */
+  license?: {
+    /** The provider's own licence string, verbatim. Absent when the provider did not say. */
+    reported?: string;
+    /** The retrieval mode that returned it — "creative_common" | "youtube" | "any". */
+    retrievedUnder?: string;
+    embeddable?: boolean;
+    syndicated?: boolean;
+  };
   localPath?: string;
   storageUrl?: string;
   durationSec?: number;
@@ -15347,6 +17638,12 @@ export interface ProviderAssetCacheEntry {
  *  awaits, nothing that can fail or block the render. Surfaced once at the end of a render
  *  through the existing PipelineStepTiming console summary. */
 export interface ProviderSourcingMetrics {
+  /** RONDE 124 — licence classification counts (see ./youtubeLicenseStatus). */
+  licenseVerified: number;
+  licenseUnverified: number;
+  licenseRejected: number;
+  /** How many of this provider's assets reached the finished video. */
+  usedCount: number;
   searchCount: number;
   searchLatencyMs: number;
   resultCount: number;
@@ -15390,6 +17687,15 @@ export interface ProviderSourcingMetrics {
 export interface SourcingCache {
   /** `${provider}|${normalized query}` → parsed search payload from the first execution. */
   queries: Map<string, unknown>;
+  /**
+   * RONDE 100B — providers whose work FastVid cut short this render.
+   *
+   * A scope abort is the pipeline running out of budget, not the provider failing. The circuit
+   * breakers have distinguished the two since RONDE 68 (isScopeAbortError); the search memory
+   * did not, so a cancelled provider was remembered as one that "returned nothing usable" and
+   * excluded from the next render on the same subject.
+   */
+  budgetCancelledProviders: Set<string>;
   /** providerAssetKey(provider, id) → what this render already learned about that asset. */
   assets: Map<string, ProviderAssetCacheEntry>;
   /** provider → counters. */
@@ -15422,8 +17728,9 @@ let sourcingCacheSeq = 0;
 
 export function createSourcingCache(videoId?: number): SourcingCache {
   sourcingCacheSeq += 1;
-  return {
+  const cache: SourcingCache = {
     queries: new Map(),
+    budgetCancelledProviders: new Set(),
     assets: new Map(),
     metrics: new Map(),
     visionHitBaseline: visionGateCacheHits(),
@@ -15450,6 +17757,19 @@ export function createSourcingCache(videoId?: number): SourcingCache {
           : undefined,
     }),
   };
+  /**
+   * RONDE 167 §7 — teach the ledger how a file path maps to an asset identity, once.
+   *
+   * `clipContentKey` already turns `scene_N_bM_curated_a<id>.mp4` into `curated:asset:<id>`, which
+   * is the only handle the curated archive route has: its record is opened from the DB row and the
+   * file it writes is never registered as a path. Every outcome writer looked the clip up by path
+   * alone and wrote nothing — measured at zero events.
+   *
+   * Handing the ledger the resolver rather than patching the five writers is the point. A sixth
+   * writer added next round cannot reintroduce the bug by forgetting an argument.
+   */
+  cache.lineage.setContentKeyResolver(clipContentKey);
+  return cache;
 }
 
 function emptyProviderMetrics(): ProviderSourcingMetrics {
@@ -15457,6 +17777,9 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
     searchCount: 0, searchLatencyMs: 0, resultCount: 0, queryCacheHits: 0, queryCacheMisses: 0,
     metadataCount: 0, metadataCacheHits: 0, assetCacheMisses: 0,
     licenseCalls: 0, licenseCacheHits: 0, licenseRejectedCacheHits: 0,
+    // RONDE 124: the three licence outcomes, kept apart so a report can say how much material
+    // was refused outright versus merely unproven.
+    licenseVerified: 0, licenseUnverified: 0, licenseRejected: 0, usedCount: 0,
     downloadCount: 0, downloadCacheHits: 0,
     duplicateSkipped: 0, acceptedCount: 0,
     eligibleCount: 0, adoptedCount: 0,
@@ -15474,11 +17797,57 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
  * TypeError in the middle of a provider fetch. Metrics must never be able to fail a render.
  */
 export function providerMetrics(cache: SourcingCache | undefined, provider: string): ProviderSourcingMetrics {
-  if (!cache) return emptyProviderMetrics();
-  let m = cache.metrics.get(provider);
+  /**
+   * RONDE 142 — the ambient fallback RONDE 173 gave `cachedProviderSearch`, applied here too.
+   *
+   * ── The bug, from video 558's own log ────────────────────────────────────────────────────────
+   *
+   *     [SourcingMetrics]   pexels: searches=13 results=0 …
+   *
+   * while three Pexels clips were downloaded and trimmed in that same render. Two counters about
+   * the same thirteen searches, disagreeing, and one of them impossible.
+   *
+   * The cause is a split that RONDE 173 half-closed. Thirty-seven of the provider fetchers' call
+   * sites pass no `sourcingCache`, so:
+   *
+   *   · `cachedProviderSearch` falls back to the render's own cache (RONDE 173) and counts the
+   *     search there — searches=13 is real;
+   *   · every `providerMetrics(sourcingCache, …)` INSIDE that same fetcher still received the
+   *     undefined parameter, got a fresh throwaway object from the line below, incremented it, and
+   *     dropped it on return — results=0, downloads=0, and every other per-provider number the
+   *     fetcher tried to record.
+   *
+   * So the numbers were not merely low. They were counting two different things: the searches were
+   * booked against the render, the results against a value nobody could read.
+   *
+   * ── Why the fix belongs HERE and not at thirty-seven call sites ──────────────────────────────
+   *
+   * Threading the cache through every fetcher is the same change made thirty-seven times, and the
+   * next fetcher added would reintroduce the bug. One line, in the one function every counter goes
+   * through, fixes it for all of them and for the ones not yet written.
+   *
+   * It cannot double-count: the fallback applies only where `cache` is undefined, which is exactly
+   * where nothing was being counted at all. And it is the same ambient cache `cachedProviderSearch`
+   * already books the searches against, which is precisely what makes the two agree.
+   *
+   * The empty object is still returned when there is no render context either — a call from a test
+   * or a tool must not invent one.
+   *
+   * ── One thing this changes that is NOT a log line ────────────────────────────────────────────
+   *
+   * `claimYoutubeDownloadSlot` reads `downloadCount` through this function. A caller that passed no
+   * cache was handed a fresh zeroed object on every single call, so for those callers the
+   * render-wide YouTube download ceiling counted from zero every time and therefore bounded
+   * nothing — the exact failure RONDE 68 moved the counter off a local to fix, reappearing through
+   * the other door. With the fallback in place the ceiling finally holds for them too. That is a
+   * real behaviour change and it is the intended one, so it has its own test rather than a mention.
+   */
+  const active = cache ?? get_activeSourcingCache() ?? undefined;
+  if (!active) return emptyProviderMetrics();
+  let m = active.metrics.get(provider);
   if (!m) {
     m = emptyProviderMetrics();
-    cache.metrics.set(provider, m);
+    active.metrics.set(provider, m);
   }
   return m;
 }
@@ -15538,28 +17907,102 @@ export function providerQueryCacheKey(provider: string, query: string): string {
  * exact query will not return something different 30 seconds later in the same render, and
  * re-asking is precisely the duplicate work this exists to remove.
  */
+/**
+ * RONDE 89 — the gate, for a fetcher that does not go through cachedProviderSearch.
+ *
+ * The audit found eight provider searches reaching the network without passing the gate: b-roll,
+ * Wikimedia images (v0 and v1), YouTube thumbnails, SerpAPI, Openverse, Unsplash and the RapidAPI
+ * YouTube search. Restructuring all eight to route through cachedProviderSearch would change their
+ * caching behaviour; this applies the SAME enforcement code at their entry instead.
+ *
+ * Returns the query when it may be sent, or null when it must not be. A null answer means the
+ * caller returns empty — never a substituted or repaired query.
+ */
+export function admitProviderQuery(
+  provider: string,
+  query: string | VerifiedSearchQuery,
+  route = "legacy_fetcher"
+): string | null {
+  const decision = searchGateDecision(provider, query, route);
+  return decision.admitted ? decision.text : null;
+}
+
+/*
+ * RONDE 91 (§4) — searchQueryAuditLogEnabled and searchGateDecision moved to searchQueryContract,
+ * so that scenePool and wikimediaGeoSearch reach the SAME decision rather than a second copy.
+ * admitProviderQuery and cachedProviderSearch below still call it; nothing about the decision
+ * itself changed.
+ */
+
 export async function cachedProviderSearch<T>(
   cache: SourcingCache | undefined,
   provider: string,
-  query: string,
-  search: () => Promise<T>
+  /**
+   * RONDE 89 (§4): a bare string, or a VerifiedSearchQuery carrying its own proof.
+   *
+   * A string cannot say where it came from, which is exactly why it cannot be trusted here. It is
+   * accepted so the pipeline keeps sourcing while the remaining call sites are migrated, but it is
+   * counted as a bypass attempt on every single call and named in the end-of-render report — the
+   * difference between a known gap and an invisible one.
+   */
+  query: string | VerifiedSearchQuery,
+  search: () => Promise<T>,
+  route = "provider_search"
 ): Promise<T> {
-  if (!cache) return search();
-  const key = providerQueryCacheKey(provider, query);
-  const m = providerMetrics(cache, provider);
-  if (cache.queries.has(key)) {
+  /**
+   * RONDE 88/89/90 — THE provider gate.
+   *
+   * Every provider search in this file funnels through here, which makes it the one place a query
+   * can be refused for all of them at once. RONDE 89's audit found eight fetchers that reached the
+   * network without passing this point (b-roll, Wikimedia images v0 and v1, YouTube thumbnails,
+   * SerpAPI, Openverse, Unsplash, the RapidAPI YouTube search); they are routed through it now.
+   *
+   * RONDE 90 moved the decision itself into searchGateDecision, shared verbatim with
+   * admitProviderQuery, so the two entry points cannot enforce different contracts. Three
+   * outcomes, and only three:
+   *   · verified, by the caller's own ticket or against the ambient beat context   -> sent
+   *   · anything the validator refuses                                             -> not sent
+   *   · nothing backing it at all                                                  -> not sent
+   *     in strict mode (the default), counted as a bypass attempt either way
+   */
+  const decision = searchGateDecision(provider, query, route);
+  const text = decision.text;
+  if (!decision.admitted) return [] as unknown as T;
+  /**
+   * RONDE 173 — fall back to the render's own cache when the caller had none to give.
+   *
+   * `if (!cache) return search()` was the whole leak: 37 of the seven provider fetchers' 72 call
+   * sites pass nothing, so a hundred and fifty-six searches in render 555 went to the network with
+   * no dedup and no counting. The cache is per-render on RenderCtx, so this changes WHERE the cache
+   * comes from and nothing about what a search returns — a hit replays the identical payload the
+   * miss stored.
+   */
+  const activeCache = cache ?? get_activeSourcingCache() ?? undefined;
+  if (!activeCache) return search();
+  const key = providerQueryCacheKey(provider, text);
+  const m = providerMetrics(activeCache, provider);
+  if (activeCache.queries.has(key)) {
     m.queryCacheHits++;
-    cache.totals.queryCacheHits++;
-    return cache.queries.get(key) as T;
+    activeCache.totals.queryCacheHits++;
+    return activeCache.queries.get(key) as T;
   }
   m.queryCacheMisses++;
   const t0 = Date.now();
-  const payload = await search();
+  let payload: T;
+  try {
+    payload = await search();
+  } catch (err) {
+    // RONDE 100B: remember that this provider was cut off, so the search memory does not read a
+    // cancellation as "this source has nothing" — see SourcingCache.budgetCancelledProviders.
+    if (isScopeAbortError(err)) activeCache.budgetCancelledProviders.add(provider.trim().toLowerCase());
+    throw err;
+  }
   m.searchCount++;
   m.searchLatencyMs += Date.now() - t0;
-  cache.queries.set(key, payload);
+  activeCache.queries.set(key, payload);
   return payload;
 }
+
 
 /** Reads this render's cached knowledge about one provider asset (Phase 6). Callers that go on
  *  to reuse cached metadata/license (rather than just checking a cached rejection) additionally
@@ -15749,14 +18192,7 @@ function estimateBeatHoldSec(text: string, mergedSentenceCount: number): number 
   return VIDRUSH_BEAT_SEC;
 }
 
-function beatsBelongTogether(prevText: string, nextText: string, prevVisual: string, nextVisual: string): boolean {
-  if (prevVisual && nextVisual && prevVisual.toLowerCase() === nextVisual.toLowerCase()) return true;
-  const prevEntities = extractBeatRealEntities(prevText).map((r) => r.id).join(",");
-  const nextEntities = extractBeatRealEntities(nextText).map((r) => r.id).join(",");
-  if (prevEntities && nextEntities && prevEntities === nextEntities) return true;
-  if (!extractInlineVisualCues(nextText).length && nextText.length < 90) return true;
-  return false;
-}
+
 
 function estimateMontageDurationSec(durations: number[]): number {
   const n = durations.length;
@@ -15824,10 +18260,19 @@ function montageClipInputs(clips: string[]): string {
  * shot the narration is describing stays on screen AND stays in motion. Slowing is not a repeat,
  * so it is also the one filler compatible with strictNoVisualRepeat.
  *
- * The ratio is uncapped on purpose. Capping it would leave a remainder, and the only things that
- * could fill that remainder are the two this round exists to remove. A large ratio is logged
- * loudly instead: it means the scene is short of footage, which is the thing actually worth
- * fixing — see ensureArchiveMontageVoiceCoverage and RONDE 84's candidate depth.
+ * RONDE 111 caps the ratio at MAX_COVERAGE_SLOWDOWN.
+ *
+ * RONDE 85 left it uncapped on purpose, reasoning that a cap would leave a remainder and the only
+ * things that could fill a remainder were the two it existed to remove. The reasoning was right
+ * about the remainder and wrong about the cure: measured against real ffmpeg, a 10x stretch holds
+ * each picture 0.59s — under two new pictures per second, with no interpolation anywhere in the
+ * chain to invent the frames in between. That is a slideshow of held frames reached through a
+ * different filter, and the render's own freezedetect (2.5s threshold) never reported it.
+ *
+ * So slowing is a finishing touch, not a source of footage. Past the cap the answer has to come
+ * from real pictures, which is why the coverage backfill now spends its extra searches on exactly
+ * the scenes that would land here — see ensureArchiveMontageVoiceCoverage. A held frame is what
+ * remains when that has genuinely run out, and it says so.
  *
  * MONTAGE_TAIL_PAD=freeze restores RONDE 26's held frame and =grey the original rectangle,
  * either without a redeploy.
@@ -15839,24 +18284,107 @@ export function montageTailPadFilterChain(montageDur: number, targetDur: number,
     console.warn(`[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — grey pad`);
     return `tpad=stop_mode=add:stop_duration=${pad.toFixed(3)}:color=0x2a2a2a,`;
   }
-  if (mode === "freeze" || montageDur <= 0.05) {
-    // The ratio is meaningless without a real montage duration to stretch, so a zero-length
-    // montage keeps the old behaviour rather than dividing by it.
+  const plan = planCoverageFill(montageDur, targetDur);
+  if (mode === "freeze") {
     console.warn(
-      `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — holding last frame`
+      `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — holding last frame (MONTAGE_TAIL_PAD=freeze)`
     );
     return `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)},`;
   }
-  const ratio = targetDur / montageDur;
-  console.warn(
-    `[Pipeline] ${context}: montage ${pad.toFixed(2)}s short of voice — ` +
-      `slowing ${ratio.toFixed(2)}x to fill (no frozen frame)` +
-      (ratio > 2 ? " — SCENE IS SHORT OF FOOTAGE" : "")
-  );
+  if (plan.action === "none") return "";
+  console.warn(`${formatCoverageFillPlan(context, plan)}`);
+
   // Ahead of FPS_FORMAT_VF's fps=25, which then resamples the stretched timeline back to a
   // constant frame rate. FPS_FORMAT_VF's trailing setpts=PTS-STARTPTS only rebases the origin,
   // so it preserves the spacing this filter just changed.
-  return `setpts=${ratio.toFixed(6)}*PTS,`;
+  const slow = plan.slowdownRatio > 1 ? `setpts=${plan.slowdownRatio.toFixed(6)}*PTS,` : "";
+  if (plan.action === "slow") return slow;
+
+  /**
+   * RONDE 130 — the last technical fallback, now bounded by the rule the rest of the pipeline
+   * obeys.
+   *
+   * Everything before this has already failed: the beat search, the pool backfill, the targeted
+   * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
+   * motion, and slowing to the cap. What this used to do about that was
+   *
+   *     a clone-mode tpad whose stop_duration was plan.stillShortSec
+   *
+   * with no ceiling on the duration. Measured on a real MP4, using the production shape of scene
+   * 1 (a 3s source against a 34s target):
+   *
+   *     current chain   34.0s file, longest unchanging picture 28.13s   FAILS the 5s rule
+   *     looping instead 34.0s file, longest unchanging picture  0.00s   167 visual changes
+   *
+   * Twenty-eight seconds of one frame is the thing every round since RONDE 111 has been removing,
+   * and it was still reachable here — capped nowhere, on the one path taken precisely when a
+   * scene is worst off.
+   *
+   * So the montage plays again instead of stopping. Footage the viewer has already seen is an
+   * ordinary documentary device; a frozen frame is a fault. This is the same judgement RONDE 112
+   * made for extendLastClip one layer up, applied at the last place it can still be made.
+   *
+   * The frame budget is the real constraint: `loop` buffers `size` decoded frames, and at 1080p
+   * that is about 3MB each. 300 frames is twelve seconds of source and roughly a gigabyte, which
+   * is the most this may take while scenes compose in parallel. Above it the hold stays, capped,
+   * and the shortfall is reported as the coverage failure it is rather than absorbed silently.
+   */
+  /**
+   * RONDE 130 — one hold site, not three.
+   *
+   * Five earlier rounds (85, 86, 87, 88, 89) count the clone-mode pad sites in this file and
+   * require exactly TWO, as a guard against a freeze site being added unnoticed. That guard is
+   * worth more than the convenience of an early return, so the hold duration is decided here and
+   * emitted once at the bottom — and this note avoids spelling the filter out, because the guard
+   * counts the text rather than the code.
+   */
+  const holdCapSec = stillImageMaxSec();
+  const MAX_LOOP_SOURCE_FRAMES = 300;
+  const srcFrames = Math.max(1, Math.round(montageDur * 25));
+  const perPassSec = Math.max(0.1, montageDur * plan.slowdownRatio);
+  if (plan.stillShortSec > holdCapSec && srcFrames <= MAX_LOOP_SOURCE_FRAMES && perPassSec > 0.1) {
+    const passes = Math.max(2, Math.ceil(targetDur / perPassSec));
+    console.warn(
+      `[Pipeline] ${context}: ${plan.stillShortSec.toFixed(1)}s would exceed the ` +
+        `${holdCapSec.toFixed(1)}s still limit — playing the montage ${passes}x instead of ` +
+        `holding a frame (already-seen footage beats a freeze)`
+    );
+    // loop BEFORE the slowdown: `loop` counts input frames, and setpts changes timestamps rather
+    // than frame count, so ordering it the other way makes `size` mean something else.
+    /**
+     * No trailing `setpts=N/25/TB` here, and that is not an omission: it renumbers every frame at
+     * 25fps, which UNDOES the slowdown applied a moment earlier. Measured — the chain produced a
+     * 17-second file for a 34-second slot, exactly half, because the 2x stretch was renumbered
+     * away. FPS_FORMAT_VF's own `fps=25` resamples the stretched timeline correctly.
+     */
+    return (
+      `loop=loop=${passes - 1}:size=${srcFrames}:start=0,${slow}` +
+      `trim=duration=${targetDur.toFixed(3)},setpts=PTS-STARTPTS,`
+    );
+  }
+
+  /**
+   * The absolute last technical fallback.
+   *
+   * Everything before this has already failed: the beat search, the pool backfill, the targeted
+   * re-search on the neediest beat, the short-clip round, re-using the scene's own footage in
+   * motion, slowing to the cap, and — since RONDE 130 — playing the montage again. What is left
+   * is a hold, and it is bounded by the same limit a photograph obeys.
+   *
+   * When the shortfall is larger than that limit and the montage cannot be looped, the remainder
+   * is a genuine coverage failure and is reported as one rather than absorbed into a longer
+   * freeze. That is the whole change: the freeze can no longer grow to fill any gap.
+   */
+  // The absolute last technical fallback. Bounded now, by the same limit a photograph obeys.
+  const holdSec = Math.min(plan.stillShortSec, holdCapSec);
+  if (plan.stillShortSec > holdCapSec) {
+    console.warn(
+      `[Pipeline] ${context}: COVERAGE FAILURE — ${plan.stillShortSec.toFixed(1)}s uncovered and the ` +
+        `montage is too large to loop (${srcFrames} frames); holding the last frame for the ` +
+        `${holdCapSec.toFixed(1)}s limit only. This scene is genuinely short of footage.`
+    );
+  }
+  return `${slow}tpad=stop_mode=clone:stop_duration=${holdSec.toFixed(3)},`;
 }
 
 export function montageTailPadVF(inLabel: string, montageDur: number, outDur: number): string {
@@ -16035,18 +18563,106 @@ async function assertSceneVisualInventory(
 async function montageClipPassesComposeGate(
   clipPath: string,
   sceneIndex: number,
-  clipIndex: number
+  clipIndex: number,
+  /**
+   * RONDE 103 phase 17 — the last barrier.
+   *
+   * This function is the widest chokepoint the pipeline has: eighteen call sites, and every clip
+   * that reaches a composed scene passes one of them. That makes it the right place to ask the
+   * one question no route can answer for itself — did anything object to this clip, and was that
+   * objection overruled on purpose?
+   *
+   * The ledger is optional because four of the eighteen call sites are inside compose paths that
+   * were handed bare file paths and have no VisualDedupState to read. Those keep the old
+   * behaviour rather than being given a fabricated one; see composeBarrierAllows for what an
+   * unknown path is allowed to do.
+   */
+  relevance?: BeatRelevanceLedger
 ): Promise<boolean> {
   const GATE_TIMEOUT_MS = 25_000;
   const base = path.basename(clipPath);
 
+  if (relevance) {
+    const barrier = composeBarrierAllows(relevance, clipPath, clipContentKey(clipPath));
+    if (!barrier.allow) {
+      console.warn(
+        `[ComposeBarrier] s${sceneIndex} clip ${clipIndex}: BLOCKED ${base} — ${barrier.reason}`
+      );
+      return false;
+    }
+  }
+
   let resolved = false;
   const work = (async (): Promise<boolean> => {
-    // Scope already abandoned (its withSceneFetchTimeout fired) — every probe below would just
-    // throw immediately and get swallowed as an "unusable stream" false positive. Skip the wasted
-    // probe calls and the noisy per-candidate log line; the caller's loop already logs once that
-    // it's giving up on this beat.
-    if (sceneFetchAborted()) return false;
+    /**
+     * RONDE 138 — an abandoned scope means "cannot check", not "reject".
+     *
+     * ── What this cost in video 558 ──────────────────────────────────────────────────────────
+     *
+     * Fourteen clips were thrown away here, ten of them already-downloaded archive files:
+     *
+     *     Scene 1 beat 4: skipping clip that fails compose gate scene_1_b4_curated_a57618.mp4
+     *     Scene 1 beat 4: skipping clip that fails compose gate scene_1_b4_curated_a57654.mp4
+     *     Scene 2 beat 0: skipping clip that fails compose gate scene_2_b0_curated_a57566.mp4   ...
+     *
+     * Every one of them had already been downloaded, passed the technical gate, been judged by
+     * Vision and been adopted. Scene 1 ended with 2 unique clips for 13 needed, and the render
+     * reported "19 van 22 beats zonder goedgekeurd eigen beeld".
+     *
+     * The original reasoning was sound as far as it went: once the scope's withSceneFetchTimeout
+     * has fired, every probe below would throw immediately and be swallowed as a false "unusable
+     * stream", so running them is waste. But the conclusion did not follow. Skipping a CHECK is not
+     * the same as failing it, and a clip does not become unusable because the scene ran out of time
+     * looking for OTHER clips.
+     *
+     * ── Why this is safe ─────────────────────────────────────────────────────────────────────
+     *
+     * The gate is not skipped. It is answered from a measurement this render already took:
+     * probeVideoStreamMeta memoises on the file's inode and ctime, so a file measured earlier is
+     * knowable without spawning anything — which is the only objection the abort raises.
+     *
+     * A file with no prior measurement is still refused. That is deliberate and it is what keeps
+     * the derived files honest: pad_combined_*.mp4 and the text-overlay output are written moments
+     * before this call and have never been probed, so a half-written ffmpeg result cannot slip
+     * through on the strength of "we were in a hurry".
+     */
+    /**
+     * PHASE 1 — adoption is the stronger fact, and it is asked for first.
+     *
+     * RONDE 138 (above) answered an abandoned scope from a memoised probe, which closed the common
+     * case. What it left unstated is the principle: an expired RETRIEVAL budget may stop new work,
+     * and may never be a verdict on a clip that has already been found, measured, judged and
+     * adopted. A clip whose measurement happened not to be memoised under this exact path was still
+     * thrown away, so the outcome depended on a cache rather than on what was known about the clip.
+     *
+     * `adoptedAtPath` asks the ledger about THIS EXACT PATH — never the derivation chain — so
+     * pad_combined_*.mp4 and the text-overlay output, written moments before this call and never
+     * examined, cannot inherit their parent's clearance. They fall to the same refusal as before.
+     */
+    if (sceneFetchAborted()) {
+      const known = memoisedVideoStreamMeta(clipPath);
+      const usable = known
+        ? montageStreamMetaUsable(known, montageClipStartSec(sceneIndex, clipIndex))
+        : null;
+      const verdict = composeScopeVerdict({
+        scopeAborted: true,
+        adopted: get_activeSourcingCache()?.lineage?.adoptedAtPath(clipPath) ?? false,
+        priorMeasurementUsable: usable,
+      });
+      const detail =
+        known && verdict.decision === "pass" && verdict.basis === "prior_measurement"
+          ? `${known.width}x${known.height}, ${known.durationSec.toFixed(2)}s`
+          : undefined;
+      const line = formatComposeScopeDecision({
+        sceneIndex, clipIndex, basename: base, verdict, detail,
+      });
+      if (verdict.decision === "pass") {
+        console.log(line);
+        return true;
+      }
+      console.warn(line);
+      return false;
+    }
     if (!(await isValidVideoFile(clipPath))) return false;
     const trimStart = montageClipStartSec(sceneIndex, clipIndex);
     const meta = await probeVideoStreamMeta(clipPath);
@@ -16220,6 +18836,78 @@ export async function logComposePreFlight(
   }
 }
 
+/**
+ * RONDE 157 — give the coverage filler a montage long enough that it never has to hold a frame.
+ *
+ * montageTailPadFilterChain slows the montage to the MAX_COVERAGE_SLOWDOWN cap and, past that,
+ * either loops the picture or holds the last frame. Which one it gets is decided by a frame
+ * budget: `loop` buffers `size` DECODED frames, so a montage over 300 frames (12 seconds) is too
+ * large to loop at 1080p and falls through to the hold. Video 552's scene 1 is exactly that case —
+ * 16.9s of montage, 422 frames, too big to loop — so even with the pad wired in it would still
+ * have ended on a held frame.
+ *
+ * Replaying the FILE has no frame budget at all: `-stream_loop` re-reads the input instead of
+ * buffering it. So the montage is extended here, to the shortest length from which the existing
+ * 2x slowdown reaches the voice on its own — and the filler is then a slowdown, never a hold.
+ *
+ * Deliberately the minimum: extending to `outDur / MAX_COVERAGE_SLOWDOWN` and letting the cap do
+ * the rest means the least replayed footage that still avoids a freeze. Extending all the way to
+ * `outDur` would repeat twice as much picture, and RONDE 156 exists because repetition is its own
+ * fault. This trades the smallest amount of repeat for a guarantee against the frozen frame.
+ *
+ * Fail-safe: any failure returns the montage untouched, so the worst case is the behaviour that
+ * was there before rather than a scene with no picture.
+ */
+export async function extendMontageForCoverage(
+  montagePath: string,
+  montageDur: number,
+  outDur: number,
+  sceneIndex: number,
+  workDir: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<{ path: string; dur: number }> {
+  const unchanged = { path: montagePath, dur: montageDur };
+  if (!(montageDur > 0.4) || !(outDur > 0)) return unchanged;
+  const needed = outDur / MAX_COVERAGE_SLOWDOWN;
+  // Already long enough for the cap to cover the rest by slowing alone.
+  if (montageDur >= needed - 0.05) return unchanged;
+
+  const plays = Math.max(2, Math.ceil(needed / montageDur));
+  const extendedPath = path.join(workDir, `scene_${sceneIndex}_seq_montage_ext.mp4`);
+  try {
+    await withSceneFetchTimeout(
+      () => exec(
+        // -stream_loop counts EXTRA passes, so one fewer than the number of plays.
+        `${FFMPEG_BIN} -y -stream_loop ${plays - 1} -i "${montagePath}" -t ${needed.toFixed(3)} ` +
+          `-an -vsync cfr ${threadFlag} -c:v libx264 ${pipelineFfmpegThreadFlag()} ` +
+          `-preset ${MONTAGE_SEGMENT_ENCODE_PRESET} -crf 20 -pix_fmt yuv420p ` +
+          `-avoid_negative_ts make_zero "${extendedPath}"`
+      ),
+      composeTimeout,
+      `Montage replay for coverage scene ${sceneIndex}`
+    );
+    const extDur = await probeVideoDurationSec(extendedPath);
+    if (extDur > montageDur + 0.05) {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: montage ${montageDur.toFixed(1)}s cannot reach ` +
+          `${outDur.toFixed(1)}s of voice even at the ${MAX_COVERAGE_SLOWDOWN}x cap — playing it ` +
+          `${plays}x to ${extDur.toFixed(1)}s so the filler can slow instead of freeze`
+      );
+      return { path: extendedPath, dur: extDur };
+    }
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: montage replay produced ${extDur.toFixed(2)}s — keeping the original`
+    );
+  } catch (err) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: montage replay failed — the finished scene is checked ` +
+        `for a short picture and repaired if needed: ${(err as Error)?.message?.slice(0, 140)}`
+    );
+  }
+  return unchanged;
+}
+
 async function composePlainMontageScene(
   sceneIndex: number,
   safeClips: string[],
@@ -16242,10 +18930,61 @@ async function composePlainMontageScene(
     const gradeChain = montageFilterOpts?.fastEncode
       ? `[vmont]${FPS_FORMAT_VF}[vout]`
       : `[vmont]${fadeFilter}[vout]`;
+    /**
+     * RONDE 157 — the montage is filled up to the voice HERE, or the last frame is held.
+     *
+     * This is the route Railway takes: `if (IS_RAILWAY)` renders the montage sequentially and
+     * hands the file to this mux, and the third route falls back to it as well. Both passed the
+     * montage straight through `[0:v]FPS_FORMAT_VF[vmont]` and then asked ffmpeg for
+     * `-t outDur` seconds of it. When the montage is shorter than the narration, that does not
+     * shorten the scene — it writes a file of the full length whose picture stops at the end of
+     * the montage. The viewer sees a frozen frame for the difference.
+     *
+     * Measured on video 552, which carried RONDE 152-156 and still froze:
+     *
+     *     scene 1   montage est 16.9s < voice 42.9s   → 26.0s gap → 27.25s of unchanging picture
+     *     scene 2   montage est  8.5s < voice 21.2s   → 12.7s gap → 12.75s of unchanging picture
+     *
+     * Both violations the render's own stillness audit reported, to the tenth of a second.
+     *
+     * The machinery to prevent this already existed and was already correct — RONDE 85 slows,
+     * RONDE 111 caps the slowdown, RONDE 130 loops past the cap — but only two of the three
+     * routes through this function reached it: the inline xfade route calls montageTailPadVF,
+     * and renderSequentialArchiveMontage pads only its SINGLE-clip branch. A scene with two or
+     * more clips on the Railway route reached no filler at all. That is why every round that
+     * fixed a frozen SOURCE left this frozen picture standing: it is not a source, it is the end
+     * of the montage being held by the muxer.
+     *
+     * The duration is probed rather than estimated, because at this point the file exists and its
+     * real length is the number that decides how much filler is needed. A probe that fails leaves
+     * the chain exactly as it was and says so — an unmeasured montage must not silently skip the
+     * pad.
+     */
+    const probed = await probeVideoDurationSec(montageVideoPath);
+    const extended = await extendMontageForCoverage(
+      montageVideoPath,
+      probed,
+      outDur,
+      sceneIndex,
+      workDir,
+      composeTimeout,
+      threadFlag
+    );
+    const montageVideoIn = extended.path;
+    const montageDur = extended.dur;
+    let headChain = `[0:v]${FPS_FORMAT_VF}[vmont]`;
+    if (montageDur > 0) {
+      headChain = montageTailPadVF("0:v", montageDur, outDur);
+    } else {
+      console.warn(
+        `[Pipeline] Scene ${sceneIndex}: could not probe montage length — tail pad skipped here; ` +
+          `the finished scene is checked for a short picture and repaired if needed`
+      );
+    }
     await withSceneFetchTimeout(
       () => exec(
-        `${FFMPEG_BIN} -y -i "${montageVideoPath}" -i "${safeAudioPath}" ` +
-          `-filter_complex "[0:v]${FPS_FORMAT_VF}[vmont];${gradeChain};` +
+        `${FFMPEG_BIN} -y -i "${montageVideoIn}" -i "${safeAudioPath}" ` +
+          `-filter_complex "${headChain};${gradeChain};` +
           `[${audioIdx}:a]afade=t=in:st=0:d=0.06,afade=t=out:st=${Math.max(0, voiceDur - 0.15).toFixed(3)}:d=0.12,` +
           `atrim=0:${voiceDur.toFixed(3)},asetpts=PTS-STARTPTS[aout]" ` +
           `-map "[vout]" -map "[aout]" -vsync cfr ` +
@@ -16965,140 +19704,14 @@ function normalizeMontageDurations(
   return normalized;
 }
 
-/** @deprecated Montage no longer repeats clips — kept for reference if expansion returns. */
-function pickMontageExpansionClip(clips: string[], expanded: string[]): string | null {
-  if (clips.length === 0) return null;
-  const usedKeys = new Set(expanded.map((c) => clipContentKey(c)));
-  const prevKey = expanded.length ? clipContentKey(expanded[expanded.length - 1]!) : "";
-  const pool = clips.some((c) => !isMotionGraphicClip(c))
-    ? clips.filter((c) => !isMotionGraphicClip(c))
-    : clips;
 
-  for (const c of pool) {
-    const k = clipContentKey(c);
-    if (usedKeys.has(k)) continue;
-    if (k === prevKey) continue;
-    return c;
-  }
-  for (const c of pool) {
-    const k = clipContentKey(c);
-    if (!usedKeys.has(k)) return c;
-  }
-  return null;
-}
 
-function stretchMontageDurations(
-  durs: number[],
-  outDur: number,
-  sourceMaxDurs?: number[]
-): number[] {
-  const maxClip = effectiveMaxClipSec();
-  let next = normalizeMontageDurations([...durs], outDur, sourceMaxDurs);
-  for (let pass = 0; pass < 10; pass++) {
-    if (effectiveMontageDurationSec(next, sourceMaxDurs) >= outDur * 0.92) break;
-    let grew = false;
-    next = next.map((d, i) => {
-      const srcMax =
-        sourceMaxDurs?.[i] && sourceMaxDurs[i]! > 0.15
-          ? Math.max(effectiveMinClipSec() * 0.4, sourceMaxDurs[i]! - 0.05)
-          : maxClip;
-      const ceiling = Math.min(maxClip, srcMax);
-      if (d >= ceiling - 0.05) return d;
-      grew = true;
-      return Math.min(ceiling, d * 1.12);
-    });
-    next = normalizeMontageDurations(next, outDur, sourceMaxDurs);
-    if (!grew) break;
-  }
-  return next;
-}
 
-function dedupeMontageClipsByContentKey(
-  clips: string[],
-  beatDurations?: number[]
-): { clips: string[]; beatDurations?: number[] } {
-  const seen = new Set<string>();
-  const outClips: string[] = [];
-  const outDurs: number[] = [];
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]!;
-    const key = clipContentKey(clip);
-    if (seen.has(key)) {
-      console.warn(
-        `[Pipeline] Dropping repeat montage clip ${path.basename(clip)} (once per video)`
-      );
-      continue;
-    }
-    seen.add(key);
-    outClips.push(clip);
-    if (beatDurations?.length === clips.length) outDurs.push(beatDurations[i]!);
-  }
-  return {
-    clips: outClips,
-    beatDurations: outDurs.length === outClips.length ? outDurs : beatDurations,
-  };
-}
 
-function dedupeAdjacentMontageClips(
-  clips: string[],
-  beatDurations?: number[]
-): { clips: string[]; beatDurations?: number[] } {
-  if (clips.length <= 1) return { clips, beatDurations };
-  const outClips: string[] = [];
-  const outDurs: number[] = [];
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i]!;
-    const key = clipContentKey(clip);
-    const prevKey = outClips.length ? clipContentKey(outClips[outClips.length - 1]!) : "";
-    const dur = beatDurations?.[i] ?? 0;
-    if (outClips.length && key === prevKey) {
-      console.warn(
-        `[Pipeline] Skipping adjacent duplicate montage clip ${path.basename(clip)} (avoids frozen repeat)`
-      );
-      continue;
-    }
-    outClips.push(clip);
-    if (beatDurations?.length === clips.length) outDurs.push(dur);
-  }
-  return {
-    clips: outClips,
-    beatDurations: outDurs.length === outClips.length ? outDurs : beatDurations,
-  };
-}
 
-function prepareMontageDurationsForVoice(
-  clips: string[],
-  outDur: number,
-  beatDurations?: number[],
-  sourceMaxDurs?: number[]
-): { clips: string[]; beatDurations: number[] } {
-  if (clips.length === 0) return { clips, beatDurations: beatDurations ?? [] };
-  const srcMaxList =
-    sourceMaxDurs?.length === clips.length ? sourceMaxDurs : clips.map(() => 0);
-  const seed = beatDurations?.length === clips.length ? beatDurations : undefined;
-  const durs = balanceMontageDurationsForVoice(clips.length, outDur, seed, srcMaxList);
-  return { clips, beatDurations: durs };
-}
 
-/** @deprecated Use prepareMontageDurationsForVoice — no duplicate clips in montage. */
-function expandClipsForSceneDuration(
-  clips: string[],
-  outDur: number,
-  beatDurations?: number[],
-  sourceMaxDurs?: number[]
-): { clips: string[]; beatDurations?: number[] } {
-  const prepared = prepareMontageDurationsForVoice(clips, outDur, beatDurations, sourceMaxDurs);
-  const est = effectiveMontageDurationSec(
-    prepared.beatDurations,
-    sourceMaxDurs?.length === clips.length ? sourceMaxDurs : undefined
-  );
-  if (est < outDur - 0.35) {
-    console.warn(
-      `[Pipeline] Montage ${clips.length} unique clip(s) cover ~${est.toFixed(1)}s of ${outDur.toFixed(1)}s voice`
-    );
-  }
-  return prepared;
-}
+
+
 
 async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
   const cache = new Map<string, number>();
@@ -17116,37 +19729,79 @@ async function probeMontageSourceMaxDurs(clips: string[]): Promise<number[]> {
   return out;
 }
 
-/** Keep per-beat timing and beat index when compose drops invalid/duplicate clips. */
+/**
+ * Keep per-beat timing and beat index when compose drops invalid/duplicate clips.
+ *
+ * ── RONDE 166 (§10) — two places where an array index was standing in for an identity ────────
+ *
+ * This function exists BECAUSE compose drops clips, so the position of a kept clip is exactly the
+ * thing that cannot be trusted to name its beat — and both of its answers used to rely on it.
+ *
+ *   1. When `beatDurations` was missing or the wrong length, it returned
+ *      `keptClips.map((_, i) => i)`: beat index = position in the kept list. One dropped clip and
+ *      every clip after it is attributed to the wrong beat, silently.
+ *
+ *   2. A kept clip whose content key was not in the map got `?? 0` — attributed to the FIRST BEAT
+ *      of the scene. That is worse than a shifted index: it is a specific wrong answer that looks
+ *      deliberate.
+ *
+ * The identity that survives a drop is the CONTENT KEY, which this already computed and then only
+ * half-trusted. It is now the only thing used: position in `originalClips` supplies the beat when
+ * no explicit `clipBeatIndices` was given, because there the position IS the beat, and everything
+ * after that is looked up by key. A clip that still cannot be mapped is REPORTED rather than
+ * assigned to beat 0.
+ */
 function alignMontageMetaWithClips(
   originalClips: string[],
   keptClips: string[],
   beatDurations?: number[],
   clipBeatIndices?: number[]
-): { beatDurations: number[]; clipBeatIndices: number[] } {
-  if (!beatDurations?.length || beatDurations.length !== originalClips.length) {
-    return {
-      beatDurations: keptClips.map(() => effectiveBeatSec()),
-      clipBeatIndices: keptClips.map((_, i) => i),
-    };
-  }
+): { beatDurations: number[]; clipBeatIndices: number[]; unmapped: string[] } {
   const durByKey = new Map<string, number>();
   const idxByKey = new Map<string, number>();
+  const haveDurations = Boolean(beatDurations?.length) && beatDurations!.length === originalClips.length;
   for (let i = 0; i < originalClips.length; i++) {
     const key = clipContentKey(originalClips[i]!);
     if (!durByKey.has(key)) {
-      durByKey.set(key, beatDurations[i]!);
+      durByKey.set(key, haveDurations ? beatDurations![i]! : effectiveBeatSec());
+      /** No explicit mapping means position in the ORIGINAL list, which is the beat it was cut for. */
       idxByKey.set(key, clipBeatIndices?.[i] ?? i);
     }
+  }
+  const unmapped: string[] = [];
+  const resolvedIdx = keptClips.map((clip, position) => {
+    const known = idxByKey.get(clipContentKey(clip));
+    if (known != null) return known;
+    /**
+     * A kept clip the originals do not contain. Its position is the only thing left to go on, and
+     * saying so is the difference between a guess and a silent claim — the old code answered 0.
+     */
+    unmapped.push(path.basename(clip));
+    return position;
+  });
+  if (unmapped.length > 0) {
+    console.warn(
+      `[Pipeline] beat mapping: ${unmapped.length} composed clip(s) were not in the source list ` +
+        `and fell back to position — ${unmapped.slice(0, 4).join(", ")}`
+    );
   }
   return {
     beatDurations: keptClips.map(
       (clip) => durByKey.get(clipContentKey(clip)) ?? effectiveBeatSec()
     ),
-    clipBeatIndices: keptClips.map(
-      (clip) => idxByKey.get(clipContentKey(clip)) ?? 0
-    ),
+    clipBeatIndices: resolvedIdx,
+    unmapped,
   };
 }
+
+/**
+ * RONDE 166 (§10) — the same function, exported for its regression test.
+ *
+ * Exported rather than made public: the production callers keep using the module-private name, and
+ * this exists so the beat-identity rules above can be tested against real files with real content
+ * keys instead of being asserted about from the outside.
+ */
+export const alignMontageMetaWithClipsForTest = alignMontageMetaWithClips;
 
 /** Keep per-beat timing when compose drops invalid/duplicate clips. */
 function alignBeatDurationsWithClips(
@@ -17298,10 +19953,7 @@ function buildMontageXfadeFilter(
   return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
 
-function extractTopicStockQueries(scriptText: string): string[] {
-  const queries = scriptStockSearchQueries(scriptText);
-  return queries.length > 0 ? queries : ["documentary"];
-}
+
 
 function buildTopicAnchoredQueries(
   scene: Scene,
@@ -17541,28 +20193,7 @@ function buildGeoEventComboAnchors(
   }).slice(0, 6);
 }
 
-/**
- * Auto-detects Pexels anchor queries from a video title + beat text.
- *
- * Priority / combination logic:
- * 1. Beat text is checked for strong event/situation signals (WWII, flood, protest…).
- * 2. Combined title+beat text is checked for geographic context (country, city…).
- * 3a. BOTH detected → geo-event COMBO anchors (e.g. "Netherlands flood", "flood disaster", "Amsterdam")
- * 3b. Only event → event anchors only (topic switch away from geo context)
- * 3c. Only geo → geo anchors only (current-beat topic == video title topic)
- * 3d. Neither → [] (Pexels falls back to beat.searchQuery)
- */
-function extractVideoTopicAnchors(videoTitle: string, beatText = ""): string[] {
-  const override = detectBeatTopicOverride(beatText);
-  const geo = detectGeoContext(videoTitle, beatText);
 
-  if (override && geo) {
-    return buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
-  }
-  if (override) return override.anchors;
-  if (geo) return geo.anchors;
-  return [];
-}
 
 /**
  * Same as extractVideoTopicAnchors but also returns the matched topic key
@@ -19072,7 +21703,18 @@ async function adoptClip(
    * narration less well than the imperfect picture it replaced. A real image always beats a
    * placeholder.
    */
-  const gateReprieved = new Set<string>();
+  /**
+   * Clips this loop has already sent to the back of the queue after a refusal.
+   *
+   * RONDE 104 looked at whether this duplicated the relevance ledger and concluded it does not.
+   * The ledger records a VERDICT — "the gate refused this picture on this beat" — and is the one
+   * place that fact lives. This set records something else: "I have already re-offered this one",
+   * which is this loop's own bookkeeping. Deriving it from the ledger would take a clip that a
+   * different route refused earlier on the same beat and adopt it IMMEDIATELY instead of putting
+   * it last, which is exactly the ordering the reprieve exists to get right: a refused picture is
+   * the last resort, not the first.
+   */
+  const requeuedAfterRefusal = new Set<string>();
 
   return withVisualDedupLock(dedup, async () => {
     // F3-04: record every candidate considered for this beat (adopted or not) so a post-scene
@@ -19148,8 +21790,11 @@ async function adoptClip(
       // filename patterns) now applies unconditionally, including scriptImageFallback
       // candidates — it was previously exempted here, one of the gaps that let a completely
       // unrelated SerpAPI image reach adoption with zero topical scrutiny.
-      const failsDocumentaryBeatGate = !clipPassesDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle);
-      recordGateVerdict("documentary_beat_gate", failsDocumentaryBeatGate);
+      const docGate = judgeDocumentaryBeatGate(p, sourceQuery, beatText, opts.videoTitle);
+      const failsDocumentaryBeatGate = !docGate.passes;
+      // RONDE 174: `armed` separates "this gate had nothing to say about a 1940s subject" from
+      // "this gate is broken" — the two the silent-gate detector used to report identically.
+      recordGateVerdict("documentary_beat_gate", failsDocumentaryBeatGate, { armed: docGate.armed });
       if (failsDocumentaryBeatGate) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "documentary_beat_gate", sourceQuery);
         continue;
@@ -19192,19 +21837,35 @@ async function adoptClip(
         // Only an ask when there IS a provider title to judge — this check is a documented
         // no-op without one, and counting those would make a broken gate look busy.
         if (providerTitle) recordGateVerdict("off_topic_visual", belowRelevanceFloor);
+        /**
+         * RONDE 114 — this reads a provider TITLE, so it flags and no longer refuses.
+         *
+         * RONDE 103 took the veto off `vision_gate` and RONDE 104 off `off_topic_protest`, both
+         * for the same stated reason: a check that reads metadata instead of the frame can only
+         * take material away once a model that looks at the picture is standing behind it. This
+         * one was missed, and it sat three lines above that very model.
+         *
+         * What it actually rejects is a title sharing ZERO tokens with the beat. Real archive
+         * titles do that constantly — "Bundesarchiv Bild 183-S33882" is the literal catalogue
+         * form of the German federal archive's Hitler photographs, and a foreign-language or
+         * accession-number title is the norm rather than the exception. Every one of those was
+         * discarded before the decider ever saw the frame.
+         *
+         * The signal is unchanged and still recorded, so how often it WOULD have fired stays
+         * measurable — the same treatment its two demoted siblings got.
+         */
         if (belowRelevanceFloor) {
-          // Production finding: this reject reason had no accompanying log line anywhere, so an
-          // off_topic_visual reject in a coverage-gate summary could never be reconstructed from
+          // Production finding: this reason had no accompanying log line anywhere, so an
+          // off_topic_visual verdict in a coverage-gate summary could never be reconstructed from
           // logs (unlike vision_gate, which logs via evaluateClipVisionGate). Minimal targeted
-          // logging — same shape as the other reject-reason warnings in this loop — using data
+          // logging — same shape as the other reason warnings in this loop — using data
           // already in scope (no new lookups).
-          console.warn(
-            `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: reject "${path.basename(p)}" ` +
-              `off_topic_visual provider=${contentKey.split(":")[0] || "unknown"} query="${sourceQuery.slice(0, 60)}" ` +
-              `title="${(providerTitle ?? "").slice(0, 60)}"`
+          console.log(
+            `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: provider title shares nothing with ` +
+              `the beat for "${path.basename(p)}" — flagged, not rejected; the relevance gate decides ` +
+              `(provider=${contentKey.split(":")[0] || "unknown"} query="${sourceQuery.slice(0, 60)}" ` +
+              `title="${(providerTitle ?? "").slice(0, 60)}")`
           );
-          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "off_topic_visual", sourceQuery);
-          continue;
         }
       }
       if (opts.scriptImageFallback) {
@@ -19260,11 +21921,17 @@ async function adoptClip(
         // arrives under a different cascade's filename.
         contentKey
       );
-      if (!visionResult.pass) {
-        if (!visionResult.fromCache) {
-          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "vision_gate", sourceQuery);
-        }
-        continue;
+      /**
+       * RONDE 103 — CLIP ranks, it does not decide. Same reasoning as in
+       * beatClipPassesVisionGate: this gate's content verdicts are measurably inverted on archive
+       * material, so `!pass` is logged as a ranking signal and the relevance gate below decides.
+       * The score itself is unchanged and still lands on the lineage record.
+       */
+      if (!visionResult.pass && !visionResult.skipped) {
+        console.log(
+          `[VisionGate] s${sceneIndex}b${beatIndex} CLIP would have rejected ` +
+            `${path.basename(p)} (score=${visionResult.worstScore10 ?? "?"}) — ranking signal only`
+        );
       }
       // RONDE 62: look at the picture here too.
       //
@@ -19275,7 +21942,7 @@ async function adoptClip(
       // lot. Verdicts are cached by content identity, so a clip the funnel already judged is
       // free here, and the render-wide budget still bounds the total.
       if (
-        !gateReprieved.has(p) &&
+        !requeuedAfterRefusal.has(p) &&
         !(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))
       ) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
@@ -19283,15 +21950,28 @@ async function adoptClip(
         // an append is visited after every candidate that has not been refused. If one of those
         // is adopted this is never reached again; if none is, this clip gets its turn rather
         // than the beat getting a placeholder.
-        gateReprieved.add(p);
+        requeuedAfterRefusal.add(p);
         finalPaths.push(p);
         continue;
       }
-      if (gateReprieved.has(p)) {
-        console.log(
-          `[BeatImageGate] reprieve s${sceneIndex}b${beatIndex} ${path.basename(p)} — ` +
-            `refused, but every alternative failed too; a real picture beats a placeholder`
+      if (requeuedAfterRefusal.has(p)) {
+        // RONDE 103 phase 15: recorded as an override, not relabelled as a pass. The verdict on
+        // the ledger stays `does_not_fit` so the render can be asked how many of its shots were
+        // used over the picture editor's objection, and answer.
+        //
+        // RONDE 166: the override is no longer automatic. A refusal that puts a different topic,
+        // a title card or a blank frame on screen is declined, and this candidate goes back to
+        // being refused — the loop moves to the next path rather than adopting it. The beat keeps
+        // every route below it, so this is "look further", not "give the beat a colour card".
+        const reprieved = reprieveBeatClip(
+          dedup.beatRelevance,
+          p,
+          "refused, but every alternative failed too; a real picture beats a placeholder"
         );
+        if (!reprieved) {
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "hard_mismatch", sourceQuery);
+          continue;
+        }
       }
       // contentKey was computed and checked at the top of this iteration (see the comment
       // there). Nothing between that check and here can add to usedContentKeys — the whole
@@ -19385,6 +22065,8 @@ async function adoptClip(
           return markAdopted(p);
         }
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+        // RONDE 165: SELECTED was filed above; this exit is where that stopped being true.
+        recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`, contentKey);
         continue;
       }
       const transformMs = mustFairUse
@@ -19398,6 +22080,8 @@ async function adoptClip(
         (!transformed || !transformed.includes("_transformed") || !fs.existsSync(transformed))
       ) {
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+        // RONDE 165: a clip that MUST be transformed and could not be is refused, not lost.
+        recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey);
         continue;
       }
       if (await isValidVideoFile(transformed)) {
@@ -19410,6 +22094,15 @@ async function adoptClip(
         return markAdopted(transformed);
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
+      /**
+       * RONDE 165 — the last exit out of an iteration that selected but did not adopt.
+       *
+       * The transform produced nothing usable. Every adopting branch above `return`s, so reaching
+       * this line means `p` was marked SELECTED and the loop is about to move on from it — with or
+       * without the `continue` below, which only decides whether `p` may still serve as
+       * lastRealClip. Filed once, before either path leaves.
+       */
+      recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey);
       if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
         dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
@@ -19482,12 +22175,15 @@ async function fetchUniqueStockForBeat(
       ? 24_000
       : 32_000;
   try {
-    return await withTimeout(
-      fetchUniqueStockForBeatInner(
-        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
-      ),
-      wallMs,
-      `unique stock s${sceneIndex} b${beat.index}`
+    // RONDE 90 (§2): the beat's proof, in scope for every stock provider this path asks.
+    return await withSearchProvenance(beatSearchProvenance(beat, scene, personName), () =>
+      withTimeout(
+        fetchUniqueStockForBeatInner(
+          beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts
+        ),
+        wallMs,
+        `unique stock s${sceneIndex} b${beat.index}`
+      )
     );
   } catch {
     return null;
@@ -19584,7 +22280,8 @@ async function fetchUniqueStockForBeatInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      dedup.usedPexelsIds
+      dedup.usedPexelsIds,
+      dedup.sourcingCache
     );
     clip = await adoptClip(
       brollPaths,
@@ -19822,19 +22519,26 @@ async function recoverSceneClipsIfEmptyInner(
           searchQuery: fallbackTexts[fi]!,
           holdSec: recoverHoldSec,
         };
-        const fbClip = await fetchBeatArchivalThenPexels(
-          fb,
-          scene,
-          workDir,
-          scene.index,
-          recoverHoldSec,
-          dedup,
-          personName,
-          topicContext,
-          recoverAdopt,
-          scenePersons,
-          `recover_fb${fi}`,
-          "recover-fallback"
+        // RONDE 90 (§2): the only call to this function outside beatPrimaryFetch's scope. The
+        // fallback beat's OWN text is the proof here — `fb.text` is a real script sentence, not a
+        // synthesised one, so the recovery path is held to exactly the same standard as the
+        // primary path rather than being quietly exempt because it is a recovery.
+        const fbClip = await withSearchProvenance(
+          beatSearchProvenance(fb, scene, personName, scenePersons),
+          () => fetchBeatArchivalThenPexels(
+            fb,
+            scene,
+            workDir,
+            scene.index,
+            recoverHoldSec,
+            dedup,
+            personName,
+            topicContext,
+            recoverAdopt,
+            scenePersons,
+            `recover_fb${fi}`,
+            "recover-fallback"
+          )
         );
         if (!fbClip) continue;
         const key = clipContentKey(fbClip);
@@ -20000,13 +22704,51 @@ async function recoverSceneClipsIfEmptyInner(
   return { clips, beatDurations };
 }
 
-async function composeReadySceneClips(clips: string[], sceneIndex: number): Promise<string[]> {
+/**
+ * RONDE 159 — this is where chosen footage disappeared without saying why.
+ *
+ * Video 552's lineage audit reported twelve VANISHED_WITHOUT_OUTCOME warnings, all of them scene
+ * 2's: assets that were FOUND, were ADOPTED, and were not in the final video, with no REPLACED,
+ * REMOVED or REJECTED event to account for them. The audit rule (RONDE 95 §4) was right; what it
+ * detected is this loop. Three `continue` statements drop a clip and record nothing, so every
+ * report downstream had to describe an asset that had simply evaporated.
+ *
+ * Each drop now files the ending it actually is, with the reason that caused it. Nothing about
+ * which clips survive changes — only whether the ledger can say what became of the others.
+ */
+async function composeReadySceneClips(
+  clips: string[],
+  sceneIndex: number,
+  /** RONDE 103 phase 17: all three callers hold the render state, so the barrier applies here too. */
+  relevance?: BeatRelevanceLedger,
+  lineage?: VisualSourceLedger
+): Promise<string[]> {
   const out: string[] = [];
+  const dropped = (clipPath: string, reason: string): void => {
+    // RONDE 167: by content key too — the curated route registers no path. See recordAssetOutcome.
+    lineage?.recordEventForPath(clipPath, "REMOVED", { status: "REMOVED", reason, contentKey: clipContentKey(clipPath) });
+  };
   for (const clipPath of clips) {
-    if (!clipPath || isPipelineFallbackClip(clipPath)) continue;
-    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length))) continue;
+    if (!clipPath) continue;
+    if (isPipelineFallbackClip(clipPath)) {
+      /**
+       * RONDE 162 corrects RONDE 159's assumption here. A placeholder was treated as having no
+       * lineage record to settle, and render 553 showed it does: six `_guaranteed.mp4` clips held
+       * ADOPTED events and were reported VANISHED_WITHOUT_OUTCOME because this branch said nothing.
+       * A card that was made and then not used is an outcome like any other.
+       */
+      dropped(clipPath, `placeholder_not_used:s${sceneIndex}`);
+      continue;
+    }
+    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length, relevance))) {
+      dropped(clipPath, `compose_gate:s${sceneIndex}`);
+      continue;
+    }
     const key = clipContentKey(clipPath);
-    if (out.some((c) => clipContentKey(c) === key)) continue;
+    if (out.some((c) => clipContentKey(c) === key)) {
+      dropped(clipPath, `duplicate_content:s${sceneIndex}`);
+      continue;
+    }
     out.push(clipPath);
   }
   return out;
@@ -20018,7 +22760,7 @@ function skipComposeNetworkFetch(
   sceneIndex: number,
   beatIndex?: number
 ): boolean {
-  if (!isComposeNetworkBlocked(dedup)) return false;
+  if (!isComposeNetworkBlocked(dedup, sceneIndex)) return false;
   const beat = beatIndex != null ? ` beat ${beatIndex}` : "";
   console.warn(
     `[Pipeline] Scene ${sceneIndex}${beat}: compose local-only — blocked ${source}`
@@ -20035,7 +22777,7 @@ async function rescueFastShortComposeClips(
   dedup: VisualDedupState
 ): Promise<string[]> {
   if (!isFastShortVideoLength(dedup.videoLength)) return [];
-  if (isComposeNetworkBlocked(dedup)) {
+  if (isComposeNetworkBlocked(dedup, scene.index)) {
     console.warn(`[Pipeline] Scene ${scene.index}: compose rescue skipped (local-only mode)`);
     return [];
   }
@@ -20059,7 +22801,7 @@ async function rescueFastShortComposeClips(
   const collected: string[] = [];
   const pushClip = async (clipPath: string, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length))) return false;
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length, dedup.beatRelevance))) return false;
     const key = clipContentKey(clipPath);
     if (collected.some((c) => clipContentKey(c) === key)) return false;
     collected.push(clipPath);
@@ -20170,7 +22912,7 @@ async function finalizeLocalClipCacheForScene(
   const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
 
   const applyReady = async (clips: string[], source: SceneVisualsResult): Promise<SceneVisualsResult> => {
-    const ready = await composeReadySceneClips(clips, scene.index);
+    const ready = await composeReadySceneClips(clips, scene.index, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     const durations =
       source.beatDurations?.slice(0, ready.length) ??
       ready.map(() => beatSec);
@@ -20186,6 +22928,36 @@ async function finalizeLocalClipCacheForScene(
   console.warn(
     `[Pipeline] Scene ${scene.index}: ${result.clips.length}/${minNeeded} compose-ready clips — pre-compose cache fill`
   );
+
+  /**
+   * RONDE 159 — a scene this short of footage may go and fetch, if the clock allows it.
+   *
+   * Every fill stage below is refused by the local-only block, and video 552 shows what that costs
+   * on a scene that has nothing: 2 of 7 clips, thirteen refusals, and 21.5s of narration carried by
+   * two clips. That shortfall is the gap RONDE 157 and 158 had to paper over with slowed and
+   * replayed picture; here is where it can be prevented instead.
+   *
+   * The block stays for every scene that is merely thinner than planned. The exemption is granted
+   * only below half of what the scene needs, only while the render is genuinely ahead of its
+   * budget, and only to this scene.
+   */
+  const remainingWallClockMs = get_activeBudgetTracker()?.remainingMs?.();
+  if (
+    isComposeNetworkBlocked(dedup, scene.index) &&
+    composeMayFetchForStarvedScene({
+      videoLength: dedup.videoLength,
+      clipsOnDisk: result.clips.length,
+      clipsNeeded: minNeeded,
+      remainingWallClockMs,
+    })
+  ) {
+    dedup.composeFetchExemptScenes.add(scene.index);
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: only ${result.clips.length}/${minNeeded} clips and ` +
+        `${Math.round((remainingWallClockMs ?? 0) / 1000)}s of budget left — allowing this scene ` +
+        `to fetch during compose`
+    );
+  }
 
   // RONDE 7 (render 518): each fill stage below used to REPLACE `result` with only its own
   // clips — scene 0 entered this function with 4 compose-ready winners and left with the single
@@ -20260,6 +23032,7 @@ async function ensureFastShortScenesReadyForCompose(
     const scene = scenes[si]!;
     const vr = sceneVisualResults[si] ?? { clips: [], beatDurations: [] };
     if (composeLocalClipsOnly(videoLength)) {
+      const prevSceneVisual_0 = sceneVisualResults[si];
       sceneVisualResults[si] = await finalizeLocalClipCacheForScene(
         scene,
         vr,
@@ -20269,6 +23042,7 @@ async function ensureFastShortScenesReadyForCompose(
         videoLength,
         audioPaths?.[si]
       );
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_0, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       const cached = sceneVisualResults[si]!.clips?.length ?? 0;
       const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
       console.log(
@@ -20277,20 +23051,24 @@ async function ensureFastShortScenesReadyForCompose(
       continue;
     }
 
-    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index);
+    let ready = await composeReadySceneClips(vr.clips ?? [], scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
     if (ready.length > 0) {
+      const prevSceneVisual_1 = sceneVisualResults[si];
       sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_1, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       continue;
     }
 
     console.warn(`[Pipeline] Scene ${scene.index}: fast pre-compose — no compose-ready clips`);
     const rescued = await rescueFastShortComposeClips(scene, workDir, topicContext, visualDedup);
     if (rescued.length > 0) {
+      const prevSceneVisual_2 = sceneVisualResults[si];
       sceneVisualResults[si] = {
         ...vr,
         clips: rescued,
         beatDurations: rescued.map(() => archiveVisualBeatSecForVideo(videoLength)),
       };
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_2, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       continue;
     }
 
@@ -20303,9 +23081,11 @@ async function ensureFastShortScenesReadyForCompose(
           : 35_000,
         `Scene ${scene.index} pre-compose recovery`
       );
-      ready = await composeReadySceneClips(recovered.clips, scene.index);
+      ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
       if (ready.length > 0) {
+        const prevSceneVisual_3 = sceneVisualResults[si];
         sceneVisualResults[si] = { ...recovered, clips: ready };
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_3, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       }
     } catch (err) {
       console.warn(
@@ -20435,6 +23215,21 @@ async function fetchLastResortRealClip(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchLastResortRealClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts), { personName });
+}
+
+async function fetchLastResortRealClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle?: string,
+  adoptOpts: VisualAdoptOptions = {}
+): Promise<string | null> {
   // Bound each beat's archive attempt so one slow lookup can't eat the whole sequential
   // compose-stage budget — falls through to the stock chain below on timeout.
   let ownArchiveClip: string | null = null;
@@ -20458,7 +23253,7 @@ async function fetchLastResortRealClip(
           assetsCache: dedup.archiveAssetsCache,
         }
       ),
-      archiveBeatTryTimeoutMs(dedup.videoLength),
+      archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
       `archive s${sceneIndex} b${beat.index} (last resort)`
     );
   } catch (err) {
@@ -20567,6 +23362,24 @@ async function fetchPersonBeatClip(
   candidateOffset: number,
   tag: string
 ): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchPersonBeatClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, pexFetch, candidateOffset, tag), { personName });
+}
+
+async function fetchPersonBeatClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number,
+  tag: string
+): Promise<string | null> {
   const personLocked = dedup.personTopicLock && Boolean(dedup.primaryPerson);
   if (!coercePersonName(personName)) return null;
   if (!personLocked && !beatMentionsPerson(beat.text, personName)) return null;
@@ -20632,8 +23445,9 @@ async function fetchPersonBeatClip(
   if (canUseLicensedStockBeat(dedup)) {
     clip = await tryStockSources(
       [{
-        query: `${personName} interview`,
-        fetch: pexFetch(`${personName} interview`, `${tag}_person_vid`, candidateOffset, 2),
+        // RONDE 93 (§6): the person, not an interview the beat never mentioned.
+        query: personName,
+        fetch: pexFetch(personName, `${tag}_person_vid`, candidateOffset, 2),
       }],
       dedup,
       sceneIndex,
@@ -20738,12 +23552,62 @@ export async function fetchHistoricalBeatVideo(
   intent: ReturnType<typeof buildMediaSearchIntent>,
   adoptOpts: VisualAdoptOptions,
   tag: string,
-  opts: { skipYoutube?: boolean } = {}
+  opts: HistoricalBeatVideoOpts = {}
+): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    fetchHistoricalBeatVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, intent, adoptOpts, tag, opts)
+  );
+}
+
+/**
+ * RONDE 132 — the two knobs the corrected-query research pass needs, and nothing else.
+ *
+ * Deliberately additive: every existing caller passes neither and gets exactly the behaviour it
+ * had. The research pass is the only caller that sets them, and it sets both together.
+ */
+export type HistoricalBeatVideoOpts = {
+  skipYoutube?: boolean;
+  /**
+   * Queries to try FIRST, ahead of the ones this cascade builds for itself.
+   *
+   * They are still deduped and still cut to the same per-beat cap, so this does not widen the
+   * provider budget — it changes which questions get asked inside it. Every string here must have
+   * come from `buildPrioritisedQueries`; the SearchGate that wraps this call is what enforces
+   * that, and a term that does not trace to the beat is refused there exactly as any other would
+   * be.
+   */
+  leadQueries?: readonly string[];
+  /**
+   * Allow this beat's cascade to run a SECOND time.
+   *
+   * `historicalCascadeAttemptedBeats` normally makes the cascade a once-per-beat affair, which is
+   * right for the ordinary path. A research pass is by definition a second look, so it says so
+   * rather than quietly deleting the guard for everyone. The caller enforces the one-pass limit;
+   * this flag only removes the door.
+   */
+  researchPass?: boolean;
+};
+
+async function fetchHistoricalBeatVideoInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  intent: ReturnType<typeof buildMediaSearchIntent>,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  opts: HistoricalBeatVideoOpts = {}
 ): Promise<string | null> {
   // F3-49: skip the whole cascade outright if it already ran (and missed) for this exact beat
   // earlier this render — see historicalCascadeAttemptedBeats' doc comment on VisualDedupState.
+  //
+  // RONDE 132: a research pass is allowed through, once. The one-pass limit lives in the caller's
+  // `mismatchResearchedBeats` set, so this guard keeps its original meaning for every other route.
   const cascadeKey = `s${sceneIndex}b${beat.index}`;
-  if (dedup.historicalCascadeAttemptedBeats.has(cascadeKey)) {
+  if (!opts.researchPass && dedup.historicalCascadeAttemptedBeats.has(cascadeKey)) {
     return null;
   }
   const beatKeywords = adoptOpts.keywords ?? beat.keywords;
@@ -20757,7 +23621,17 @@ export async function fetchHistoricalBeatVideo(
   // strongest-query-first ordering while roughly halving that worst-case ceiling, without
   // dropping any tier or changing ranking/content.
   const queryCap = dedup.perf.fastStockMode ? 2 : 3;
-  const allQueries = uniqueQueryStrings([...entityYt, ...queries]).slice(0, queryCap);
+  /**
+   * RONDE 132 — the corrected question leads, inside the same cap.
+   *
+   * `uniqueQueryStrings` dedupes, and the slice is unchanged, so a research pass asks the SAME
+   * NUMBER of questions the ordinary pass would have asked — just better ones. That is what makes
+   * this affordable: it does not add provider calls, it redirects them.
+   */
+  const allQueries = uniqueQueryStrings([...(opts.leadQueries ?? []), ...entityYt, ...queries]).slice(
+    0,
+    queryCap
+  );
   const archiveHitsPerQuery = dedup.perf.fastStockMode ? 1 : 2;
   const youtubeReady = !opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady();
 
@@ -20780,7 +23654,7 @@ export async function fetchHistoricalBeatVideo(
         if (!youtubeReady) return [];
         return fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
-          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate },
+          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate, relevanceLedger: dedup.beatRelevance },
           dedup.usedContentKeys,
           dedup.sourcingCache
         );
@@ -20976,6 +23850,29 @@ async function researchBeatClipUnified(
   pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
   candidateOffset: number
 ): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, primary, scenePersons), () =>
+    researchBeatClipUnifiedInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, beatQueries, scenePersons, primary, videoTitle, adoptOpts, tag, muskTopic, pexFetch, candidateOffset)
+  );
+}
+
+async function researchBeatClipUnifiedInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  beatQueries: string[],
+  scenePersons: string[],
+  primary: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string,
+  muskTopic: boolean,
+  pexFetch: (query: string, t: string, off: number, count?: number) => () => Promise<string[]>,
+  candidateOffset: number
+): Promise<string | null> {
   if (process.env.ENABLE_MEDIA_RESEARCH === "false") return null;
 
   const perf = dedup.perf;
@@ -21116,6 +24013,7 @@ async function researchBeatClipUnified(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -21145,6 +24043,7 @@ async function researchBeatClipUnified(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -21284,7 +24183,8 @@ async function researchBeatClipUnified(
           workDir,
           sceneIndex,
           1,
-          `${tag}_research`
+          `${tag}_research`,
+          { dedup, beatIndex: beat.index }
         );
         return toCandidates(imgs, primaryQ, "wikimedia_image", false);
       },
@@ -21353,25 +24253,11 @@ async function researchBeatClipUnified(
     });
   }
 
-  if (!archivalFirst && process.env.YOUTUBE_API_KEY && allowStill && canUseGlobalStillPhoto(dedup)) {
-    const thumbQ =
-      buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle)[0] ||
-      queries[0] ||
-      primaryQ;
-    tasks.push({
-      run: async () => {
-        const paths = await fetchYouTubeThumbnails(
-          thumbQ,
-          clipFetchDur,
-          workDir,
-          sceneIndex,
-          1,
-          `${tag}_research`
-        );
-        return toCandidates(paths, thumbQ, "youtube_cc", false);
-      },
-    });
-  }
+  // RONDE 97: the YouTube thumbnail task stood here, behind this same still-photo budget. It was
+  // the worst of the four call sites, because it returned its stills under the "youtube_cc" source
+  // label — so a ken-burns pan across a search-result picture was recorded as real YouTube footage
+  // and counted as such in the audit. The whole branch is gone, its query included: a still cannot
+  // be cut into a fragment, which is what FastVid uses YouTube for.
 
   const allowStock =
     !realOnly &&
@@ -21687,7 +24573,8 @@ async function fetchBeatClipFromScript(
         clipFetchDur,
         workDir,
         sceneIndex,
-        dedup.usedPexelsIds
+        dedup.usedPexelsIds,
+        dedup.sourcingCache
       );
       clip = await adoptClip(
         brollPaths,
@@ -21790,7 +24677,8 @@ async function fetchBeatClipFromScript(
       clipFetchDur,
       workDir,
       sceneIndex,
-      dedup.usedPexelsIds
+      dedup.usedPexelsIds,
+      dedup.sourcingCache
     );
     clip = await adoptClip(
       brollPaths,
@@ -21828,6 +24716,23 @@ async function fetchBeatClipFromScript(
 }
 
 async function fetchBeatClip(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  spaceTopic: boolean,
+  personName: string,
+  videoTitle?: string
+): Promise<string | null> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene, personName), () =>
+    fetchBeatClipInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, spaceTopic, personName, videoTitle)
+  );
+}
+
+async function fetchBeatClipInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -21981,6 +24886,7 @@ async function fetchBeatClip(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
         {
@@ -22036,6 +24942,7 @@ async function fetchBeatClip(
             videoTitle,
             fastMode: perf.fastStockMode,
             imageGate: dedup.beatImageGate,
+            relevanceLedger: dedup.beatRelevance,
           }, dedup.usedContentKeys, dedup.sourcingCache),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
@@ -22059,6 +24966,7 @@ async function fetchBeatClip(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
@@ -22145,6 +25053,7 @@ async function fetchBeatClip(
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
+              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
@@ -22191,12 +25100,22 @@ function buildPersonStockVideoQueries(
   scene: Scene,
   videoTitle?: string
 ): string[] {
+  /**
+   * RONDE 93 (§6) — "Adolf Hitler red carpet" and "Adolf Hitler makeup brand" came from here.
+   *
+   * Four suffixes were appended to EVERY person, unconditionally: interview, red carpet, talk
+   * show, makeup brand. The comment above says "VidRush person-docs", and for an influencer video
+   * they are reasonable defaults; there is nothing in the function that ever asked whether the
+   * documentary was about an influencer. Applied to a historical figure they are not merely
+   * useless, they are grotesque.
+   *
+   * scriptEventSearchQueries keeps every one of these terms available — it emits "red carpet" for
+   * a beat that mentions a premiere or a gala, "interview" for a beat that mentions one. The
+   * difference is that the beat has to say so.
+   */
   const persons = [personName];
   const out = [
-    `${personName} interview`,
-    `${personName} red carpet`,
-    `${personName} talk show`,
-    `${personName} makeup brand`,
+    personName,
     ...buildPersonCelebrityVideoQueries(personName, beat.text, beat.index).slice(0, 5),
     ...scriptEventSearchQueries(beat.text, persons),
   ].filter((q) => {
@@ -22208,6 +25127,22 @@ function buildPersonStockVideoQueries(
 
 /** Pexels/Pixabay with person name in every query — no generic b-roll for celebrity topics. */
 async function fetchBeatPersonStockVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  reason: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatPersonStockVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, reason), { personName });
+}
+
+async function fetchBeatPersonStockVideoInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -22283,6 +25218,22 @@ async function fetchBeatPersonStockVideo(
 
 /** Pexels/Pixabay when online search exceeds 1 minute or finds nothing. */
 async function fetchBeatStockFallback(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  reason: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatStockFallbackInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, reason), { personName });
+}
+
+async function fetchBeatStockFallbackInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -22448,6 +25399,23 @@ function isRealVideoClip(filePath: string | null): boolean {
 
 /** Exhaust authentic sources (Archive, Wikimedia, YouTube CC) before stills/stock. */
 async function fetchBeatAuthenticVideo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  scenePersons: string[],
+  personName: string,
+  tag: string
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => fetchBeatAuthenticVideoInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, videoTitle, adoptOpts, scenePersons, personName, tag), { personName, scenePersons });
+}
+
+async function fetchBeatAuthenticVideoInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -22648,6 +25616,21 @@ async function resolveBeatClipFastTurbo(
  * Turbo path for 1–2 min videos: real video first (YouTube → stock, ≤1min), still only as last resort.
  */
 async function resolveBeatClipTurbo(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  beatAdoptOpts: VisualAdoptOptions
+): Promise<string | null> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => resolveBeatClipTurboInner(beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts), { personName });
+}
+
+async function resolveBeatClipTurboInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -23313,17 +26296,33 @@ async function beatClipPassesVisionGate(
     );
     return { pass: false, worstScore10: null, skipped: false, fromCache: false };
   }
-  // RONDE 29: same reasoning as the baked-text check above — one hook here covers every route.
-  // Runs before the CLIP evaluation so an off-topic protest clip costs no vision call.
+  /**
+   * RONDE 104 — the last judge that decides content without seeing the picture.
+   *
+   * RONDE 29 added this because a "white lives matter" roadside clip went under narration about
+   * the Battle of Berlin, and it worked: it reads the provider's title, or failing that the
+   * asset's own slug, and refuses footage of a protest on a beat that is not about protests.
+   *
+   * The problem is not that it is wrong. It is that it reads a FILENAME. It sat in front of CLIP,
+   * whose content verdicts on this material are measurably inverted, so a cheap word-match ahead
+   * of a bad judge was a net gain. It now sits in front of a model that actually looks at the
+   * frame and reads the narration — and there it can only take material away: a clip the model
+   * would have accepted is binned because a word in its filename matched.
+   *
+   * That is precisely the pattern RONDE 103 removed from CLIP, and it survived only because it
+   * was not called CLIP. So it is demoted the same way: it still runs, it is still counted in the
+   * gate-firing stats, and what it says is logged — it just does not get the last word. The
+   * baked-text check above KEEPS its veto, because burnt-in subtitles are a defect in the file
+   * rather than a claim about the subject, and no amount of looking at the frame makes a chyron
+   * belong in a documentary.
+   */
   const isOffTopicProtest = beatClipIsOffTopicProtest(clipPath, beat, videoTitle, dedup);
   recordGateVerdict("off_topic_protest", isOffTopicProtest);
   if (isOffTopicProtest) {
-    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "off_topic_protest", queryLabel);
-    console.warn(
-      `[Pipeline] Scene ${scene.index} beat ${beat.index}: rejected — protest footage for a beat ` +
-        `that is not about protests (${path.basename(clipPath)})`
+    console.log(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: filename reads as protest footage ` +
+        `(${path.basename(clipPath)}) — flagged, not rejected; the relevance gate decides`
     );
-    return { pass: false, worstScore10: null, skipped: false, fromCache: false };
   }
   // contentKey gives the vision-gate cache an asset-derived identity instead of falling back to
   // path.basename(clipPath) — this call funnels every rescue/adoption route (Openverse,
@@ -23361,34 +26360,190 @@ async function beatClipPassesVisionGate(
     // Same reasoning as the reject audit above: only a FRESH verdict is a real ask.
     recordGateVerdict("vision_gate", !result.pass);
   }
-  if (!result.pass && !result.fromCache) {
-    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", queryLabel);
+  /**
+   * RONDE 103 — CLIP ranks. It does not decide.
+   *
+   * This used to be `if (!result.pass) reject`, and that is the line that put a
+   * white-lives-matter roadside sticker under the Battle of Berlin. RONDE 58 measured CLIP's
+   * content verdicts on exactly this material and found them inverted: the sticker scored 0.2226
+   * and a signed photograph of Hitler 0.2116 on the same beat, so the threshold that deletes one
+   * deletes the right one. A judge whose ordering is backwards cannot be given a veto.
+   *
+   * The score is still computed and still used — it orders candidates before this point and it
+   * goes on the lineage record — so nothing that CLIP is genuinely good at is lost. What changes
+   * is who answers "does this belong": the model that has seen the frame and read the narration.
+   */
+  const clipScoreOnly = !result.pass && !result.skipped;
+  if (clipScoreOnly) {
+    console.log(
+      `[VisionGate] s${scene.index}b${beat.index} CLIP would have rejected ` +
+        `${path.basename(clipPath)} (score=${result.worstScore10 ?? "?"}) — ranking signal only, ` +
+        `the beat relevance gate decides`
+    );
   }
-  return result;
+  const relevance = await checkBeatRelevance({
+    clipPath,
+    contentKey: clipContentKey(clipPath),
+    ctx: beatVisualContext(beat, scene, videoTitle),
+    workDir,
+    state: dedup.beatImageGate,
+    ledger: dedup.beatRelevance,
+    route: queryLabel ? `gate:${queryLabel.slice(0, 24)}` : "gate",
+    onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
+  });
+  if (!relevance.allowed) {
+    recordGateVerdict("beat_image_gate", true);
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "beat_image_gate", queryLabel);
+    /**
+     * RONDE 142 — every refusal is classified here, because every route passes here.
+     *
+     * The comment above this function says it: "this call funnels every rescue/adoption route
+     * (Openverse, Wikimedia, Pexels, Pixabay, Internet Archive, YouTube CC, curated archive)
+     * through one evaluateClipVisionGate call". RONDE 131 put the classification on the FUNNEL
+     * instead, which is one route among several, and video 548 measured the cost:
+     *
+     *     vision gate does_not_fit   24
+     *     [MismatchFeedback] counted  5
+     *
+     * Nineteen of twenty-four refusals — 79% — never reached classifyMismatch. The consequences
+     * were not cosmetic: the provider table reported `pexels accepted 1 of 1 (100%)` on a render
+     * whose log carries ten refused Pexels clips, five of them described as modern; and
+     * `decideResearch` never saw a fault to act on, so research ran zero times.
+     *
+     * Registering here fixes all three at once. Deduped by (content, beat) so a candidate seen by
+     * two layers is counted once, and the provider comes from the lineage ledger rather than the
+     * filename — RONDE 87's rule, unchanged.
+     */
+    const refusalKey = `${clipContentKey(clipPath)}|s${scene.index}b${beat.index}`;
+    const kind = classifyMismatch(relevance);
+    recordMismatch(dedup.mismatchTally, {
+      kind,
+      source: dedup.sourcingCache.lineage.providerBucketFor(clipPath, clipContentKey(clipPath)),
+      depicts: relevance.depicts,
+      reason: relevance.reason,
+      dedupeKey: refusalKey,
+    });
+    /**
+     * The beat's last verdict, so the research pass can act on it even when the refusal happened
+     * on a route that has no candidate list of its own to reorder.
+     *
+     * RONDE 143 — recorded whichever way the tally went. This used to sit inside the dedupe's
+     * `true` branch, which tied "what did the gate say about this beat" to "was this the first
+     * time we counted it". A clip already counted for this beat still tells the research pass what
+     * is wrong with the beat; suppressing the signal because the COUNT was a duplicate is the one
+     * failure mode RONDE 142 set out to end.
+     */
+    dedup.lastMismatchByBeat.set(`s${scene.index}b${beat.index}`, kind);
+    /**
+     * RONDE 155 — the shared gate sees most refusals and logged none of them individually.
+     *
+     * The funnel prints a [MismatchFeedback] line per refusal because it has a candidate list to
+     * reorder; this route has none, so it recorded the tally and said nothing. That is precisely
+     * where video 551's seven UNCLEAR refusals went — counted, never shown. Only the unclassified
+     * ones are printed: the rest are already understood and acted on.
+     */
+    if (kind === "UNCLEAR") {
+      console.log(
+        formatMismatchFeedback({
+          sceneIndex: scene.index,
+          beatIndex: beat.index,
+          source: dedup.sourcingCache.lineage.providerBucketFor(clipPath, clipContentKey(clipPath)),
+          kind,
+          reordered: false,
+          remaining: 0,
+          depicts: relevance.depicts,
+          reason: relevance.reason,
+        })
+      );
+    }
+    return { pass: false, worstScore10: result.worstScore10, skipped: false, fromCache: relevance.cached };
+  }
+  if (!relevance.cached && relevance.verdict !== "unknown") recordGateVerdict("beat_image_gate", false);
+  // `pass` is now the relevance verdict's, not CLIP's. The score travels with it unchanged.
+  return { pass: true, worstScore10: result.worstScore10, skipped: result.skipped, fromCache: result.fromCache };
 }
 
-async function loadArchiveCandidatePool(
-  scene: Scene,
-  videoTitle: string | undefined,
-  dedup: VisualDedupState,
-  combinedSceneText?: string
-): Promise<CuratedCandidatePick[]> {
-  if (dedup.archiveCandidatePool) return dedup.archiveCandidatePool;
-  dedup.archiveCandidatePool = await buildVideoArchiveCandidatePool(
-    videoTitle,
-    combinedSceneText ?? scene.text,
-    {
-      assetsCache: dedup.archiveAssetsCache,
-      crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-      excludeIds: dedup.usedCuratedAssetIds,
-      excludeStorageUrls: dedup.usedCuratedStorageUrls,
-    }
-  );
-  console.log(
-    `[Pipeline] Archive pool: ${dedup.archiveCandidatePool.length} candidate(s) (single load for video)`
-  );
-  return dedup.archiveCandidatePool;
+/**
+ * RONDE 103 phase 4 — the beat context, built in one place from the objects that already have it.
+ *
+ * Every route that reaches the relevance gate has a `beat` and a `scene`; what they did not have
+ * was an agreed shape to hand on. Building it here rather than at each call site means the judge
+ * is asked the same question about the same beat no matter which route arrived at it — which is
+ * also what makes the cache key stable across routes.
+ */
+function beatVisualContext(
+  beat: { text?: string; index?: number },
+  scene: { text?: string; index?: number },
+  videoTitle: string | undefined
+): BeatVisualContext {
+  /**
+   * RONDE 175 §3 — what the pipeline already established, handed to the judge.
+   *
+   * The judge's question carried the title, the paragraph and the line, and left it to infer the
+   * subject and the period from prose. `buildVideoVisualContext` has established the period and
+   * the places for this documentary, and neither ever reached the question.
+   *
+   * The period is passed as the DOCUMENTARY's, never as this shot's: a WWII film can legitimately
+   * cut to a 1919 photograph, and telling the judge the narration places this shot in the 1940s
+   * would make it refuse a correct picture. The prompt labels the scope.
+   */
+  const visual = get_activeVideoVisualContext();
+  const anchors = visual
+    ? {
+        documentaryPeriod: visual.period?.trim() || undefined,
+        documentaryPlaces: visual.locations?.filter(Boolean).slice(0, 3),
+      }
+    : undefined;
+  return {
+    sceneIndex: scene.index ?? 0,
+    beatIndex: beat.index ?? 0,
+    beatText: beat.text ?? "",
+    sceneText: scene.text,
+    videoTitle: asVideoTitleString(videoTitle) || undefined,
+    anchors,
+  };
 }
+
+/**
+ * RONDE 103, second audit — the acceptance point refuses what the gate refused.
+ *
+ * Every named adopt/rescue route reaches the relevance gate, and the sweep confirms it. But a
+ * list of routes is not a proof that no route was missed, and the four `pushSceneClip` closures
+ * are where a clip actually becomes a beat's clip — the narrowest place that is true. Asking here
+ * means a route added later cannot push a clip this render has already refused, whatever it did
+ * or did not call on the way.
+ *
+ * It refuses only a `does_not_fit` nobody reprieved. A clip the gate has never seen passes: this
+ * cannot judge, and pretending otherwise would empty montages on the routes that build their own
+ * files. That gap is counted rather than assumed away — see barrierCoverage.
+ */
+function beatClipRefusedByRelevanceGate(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): boolean {
+  const barrier = composeBarrierAllows(dedup.beatRelevance, clipPath, clipContentKey(clipPath));
+  if (barrier.allow) return false;
+  console.warn(
+    `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +
+      `${path.basename(clipPath)} — ${barrier.reason}`
+  );
+  return true;
+}
+
+/** RONDE 103: attribute one gate call's spend to the beat that asked for it. */
+function noteVisionSpend(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  spent: { judged: number; failed: number; skipped: number }
+): void {
+  for (let i = 0; i < spent.judged; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "judged");
+  for (let i = 0; i < spent.failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
+}
+
+
 
 async function preparePooledArchiveClip(
   picked: CuratedCandidatePick,
@@ -23486,7 +26641,23 @@ export function ensureCuratedAssetLineage(
   sceneIndex: number,
   beatIndex: number
 ): VisualLineageRecord {
-  const ledger = dedup.sourcingCache.lineage;
+  return ensureCuratedAssetLineageOn(dedup.sourcingCache.lineage, picked, sceneIndex, beatIndex);
+}
+
+/**
+ * RONDE 170 — the same record, for a caller that holds the ledger rather than the whole render.
+ *
+ * `downloadFunnelCandidate` is handed a SourcingCache, not a VisualDedupState, so it could not
+ * reach the function above — which is a large part of why the funnel's curated branch opened no
+ * lineage at all and its clips reported UNVERIFIED. Same body, one fewer thing required of the
+ * caller; the wrapper keeps every existing call site unchanged.
+ */
+export function ensureCuratedAssetLineageOn(
+  ledger: VisualSourceLedger,
+  picked: CuratedCandidatePick,
+  sceneIndex: number,
+  beatIndex: number
+): VisualLineageRecord {
   const contentKey = curatedAssetContentKey(picked.asset.id);
   const placeholder = `archive-asset:${picked.asset.id}`;
   const existing = ledger.resolve(placeholder, contentKey);
@@ -23560,6 +26731,24 @@ async function pushMotionGraphicBeatClipIfAny(
   );
   if (!mgfxClip) return false;
   dedup.motionGraphicsUsed++;
+  /**
+   * RONDE 103 phase 7, second audit — a motion graphic is a card, not a claim about the world.
+   *
+   * tryRenderMotionGraphicBeatClip draws the beat's OWN text and figures onto a background; there
+   * is no footage in it and no subject it could be wrong about, so "does this picture belong
+   * under this narration" has no answer to give. It is registered as a placeholder rather than
+   * left unregistered, so the compose barrier can tell "deliberately exempt" from "nobody looked".
+   */
+  await checkBeatRelevance({
+    clipPath: mgfxClip,
+    contentKey: clipContentKey(mgfxClip),
+    ctx: beatVisualContext(beat, scene, videoTitle),
+    workDir,
+    state: dedup.beatImageGate,
+    ledger: dedup.beatRelevance,
+    route: "motion_graphic",
+    placeholder: true,
+  });
   return await pushClip(mgfxClip, holdSec);
 }
 
@@ -23569,8 +26758,22 @@ async function applyVideoBeatTextOverlay(
   scene: Scene,
   workDir: string,
   holdSec: number,
-  fastMode = false
+  fastMode = false,
+  /**
+   * RONDE 103 phase 17 — carry the relevance decision across the rename.
+   *
+   * This is the one shared step between "the gate judged this clip" and "the compose barrier
+   * checks this clip", and it writes a new file. Content identity carries the decision for
+   * anything with real provenance; a clip whose only identity is its size and name (the `file:`
+   * family) needs the hand-off written down explicitly, and this is where it happens for every
+   * route at once rather than at thirteen call sites.
+   */
+  relevance?: BeatRelevanceLedger
 ): Promise<string> {
+  const carry = (out: string): string => {
+    if (relevance) inheritBeatRelevance(relevance, clipPath, out);
+    return out;
+  };
   if (deferFacelessSubtitlesToCompose() && facelessSubtitlesEnabled()) {
     return clipPath;
   }
@@ -23586,7 +26789,7 @@ async function applyVideoBeatTextOverlay(
     );
     return clipPath;
   }
-  return burnFacelessTextOnVideoClip(
+  return carry(await burnFacelessTextOnVideoClip(
     clipPath,
     beat.text,
     scene.index,
@@ -23595,7 +26798,7 @@ async function applyVideoBeatTextOverlay(
     holdSec,
     FFMPEG_BIN,
     (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label)
-  );
+  ));
 }
 
 /**
@@ -23781,7 +26984,7 @@ async function adoptBestSimilarBeatClip(
       beatQueryEmb
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
-    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index))) continue;
+    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index, dedup.beatRelevance))) continue;
 
     // The same three relevance gates adoptClip applies. This route reaches pushClip directly
     // instead of going through adoptClip, so until now it got the CLIP vision gate but skipped
@@ -23790,8 +26993,9 @@ async function adoptBestSimilarBeatClip(
     // Identical existing functions, identical thresholds, identical audit reasons; nothing new
     // is judged here. Placed before the vision gate so a rejected candidate costs no CLIP
     // evaluation, matching the ordering in adoptClip and beatClipPassesVisionGate.
-    const similarFailsDocGate = !clipPassesDocumentaryBeatGate(clip, similarQuery, beat.text, videoTitle);
-    recordGateVerdict("documentary_beat_gate", similarFailsDocGate);
+    const similarDocGate = judgeDocumentaryBeatGate(clip, similarQuery, beat.text, videoTitle);
+    const similarFailsDocGate = !similarDocGate.passes;
+    recordGateVerdict("documentary_beat_gate", similarFailsDocGate, { armed: similarDocGate.armed });
     if (similarFailsDocGate) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "documentary_beat_gate", similarQuery);
       continue;
@@ -23811,9 +27015,14 @@ async function adoptBestSimilarBeatClip(
         similarProviderTitle, similarQuery, beat.text, videoTitle
       );
       if (similarProviderTitle) recordGateVerdict("off_topic_visual", similarBelowFloor);
+      // RONDE 114: flagged, not rejected — see the note at adoptClip's copy of this floor. The
+      // vision gate is called on the very next line; letting a title veto in front of it is the
+      // pattern RONDE 103/104 removed from the two gates either side of this one.
       if (similarBelowFloor) {
-        recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clip, "off_topic_visual", similarQuery);
-        continue;
+        console.log(
+          `[Pipeline] s${scene.index}b${beat.index}: provider title shares nothing with the beat ` +
+            `for ${path.basename(clip)} — flagged, not rejected; the relevance gate decides`
+        );
       }
     }
 
@@ -23901,7 +27110,7 @@ async function adoptBestSimilarBeatClip(
       beatQueryEmb
     );
     if (!clip || isPipelineFallbackClip(clip)) continue;
-    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index))) continue;
+    if (!(await montageClipPassesComposeGate(clip, scene.index, beat.index, dedup.beatRelevance))) continue;
 
     const vision =
       preScore != null && preScore >= targetClipVisionScore()
@@ -24040,7 +27249,7 @@ export async function adoptArchiveBeatClip(
       clipPath, sec, beat, scene, workDir, videoTitle, dedup, semanticProfile
     );
     if (padded) effectiveClip = padded;
-    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode);
+    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
     /**
      * RONDE 86/87 — the two renames that used to end a clip's provenance.
      *
@@ -24054,7 +27263,7 @@ export async function adoptArchiveBeatClip(
      */
     dedup.sourcingCache.lineage.linkDerivedPath(effectiveClip, clipPath, "PADDED");
     dedup.sourcingCache.lineage.linkDerivedPath(withText, effectiveClip, "OVERLAYED");
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) {
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: skipping clip that fails compose gate ${path.basename(withText)}`
       );
@@ -24550,6 +27759,21 @@ async function adoptWikimediaBeatClip(
   semanticProfile?: BeatSemanticProfile,
   opts?: { videoOnly?: boolean; stillsOnly?: boolean }
 ): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => adoptWikimediaBeatClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, opts));
+}
+
+async function adoptWikimediaBeatClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  opts?: { videoOnly?: boolean; stillsOnly?: boolean }
+): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Wikimedia", scene.index, beat.index)) return false;
   if (isWikimediaInCooldown()) return false;
@@ -24558,8 +27782,8 @@ async function adoptWikimediaBeatClip(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     return await pushClip(withText, sec);
   };
 
@@ -24612,14 +27836,14 @@ async function adoptWikimediaBeatClip(
     console.log(`[Hang] adoptWikiPath BEFORE applyVideoBeatTextOverlay s${_si}b${_bi}`);
     const _ot0 = Date.now();
     const withText = await withTimeout(
-      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode),
+      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance),
       30_000, `applyVideoBeatTextOverlay s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] applyVideoBeatTextOverlay TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return clipPath; });
     console.log(`[Hang] adoptWikiPath AFTER applyVideoBeatTextOverlay s${_si}b${_bi} elapsed=${Date.now()-_ot0}ms`);
     console.log(`[Hang] adoptWikiPath BEFORE montageClipPassesComposeGate s${_si}b${_bi}`);
     const _gt0 = Date.now();
     const gatePass = await withTimeout(
-      montageClipPassesComposeGate(withText, scene.index, beat.index),
+      montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance),
       20_000, `montageClipPassesComposeGate s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
     console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
@@ -24849,6 +28073,22 @@ async function adoptInternetArchiveBeatClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    adoptInternetArchiveBeatClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)
+  );
+}
+
+async function adoptInternetArchiveBeatClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
   hydrateSceneBeatInPlace(beat);
   if (skipComposeNetworkFetch(dedup, "Internet Archive", scene.index, beat.index)) return false;
   if (!isGeoDocumentaryContext(beat.text, videoTitle)) return false;
@@ -24869,8 +28109,8 @@ async function adoptInternetArchiveBeatClip(
       "internet_archive"
     );
     if (!vision.pass) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
@@ -24985,8 +28225,8 @@ async function adoptKlingBeatClip(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       return true;
@@ -25042,6 +28282,22 @@ async function adoptEuropeanaBeatClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  // RONDE 90 (§2): the beat's proof, in scope for every provider search beneath this call.
+  return withSearchProvenance(beatSearchProvenance(beat, scene), () =>
+    adoptEuropeanaBeatClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)
+  );
+}
+
+async function adoptEuropeanaBeatClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
   if (!europeanaSourcingEnabled() || !EUROPEANA_API_KEY?.trim() || !titleSuggestsEuropeana(videoTitle)) return false;
   if (isEuropeanaInCooldown()) return false;
 
@@ -25064,8 +28320,8 @@ async function adoptEuropeanaBeatClip(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
@@ -25178,8 +28434,8 @@ async function adoptAiBeatClip(
   ) {
     return false;
   }
-  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode);
-  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
+  if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
   if (await pushClip(withText, holdSec)) {
     recordClipAdopt(
       dedup.clipAdoptAudit,
@@ -25201,6 +28457,21 @@ async function adoptAiBeatClip(
 
 /** Pexels + Pixabay — last resort after Wikimedia and archive. No best-effort weak clips. */
 async function adoptStockBeatClipFallback(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile,
+  stockOpts?: { visionFloor?: number; adoptSource?: string }
+): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => adoptStockBeatClipFallbackInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, stockOpts));
+}
+
+async function adoptStockBeatClipFallbackInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -25246,8 +28517,8 @@ async function adoptStockBeatClipFallback(
       stockVisionFloor
     );
     if (!vision.pass) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (!(await pushClip(withText, sec))) return false;
     recordClipAdopt(
       dedup.clipAdoptAudit,
@@ -25294,6 +28565,8 @@ async function adoptStockBeatClipFallback(
       if (await tryClip(clipPath, q, source, holdSec)) {
         markLicensedStockBeatUsed(dedup);
         dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
+      resetExtendHold(dedup.extendHold);
         console.log(`[Pipeline] Scene ${scene.index} zin ${beat.index}: ${source} voor "${q}"`);
         return true;
       }
@@ -25345,8 +28618,26 @@ async function adoptStockBeatClipFallback(
   console.warn(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock fallback (${queries.slice(0, 3).join(", ")})`
   );
-  for (const q of queries.slice(0, 3)) {
-    void recordArchiveContentGap(q, beat.text);
+  /**
+   * RONDE 127 — record the PERSON this gap is about, not the query that missed.
+   *
+   * This used to write the raw stock-fallback query, so the admin's "Gevraagde beelden die
+   * missen" filled with phrases like "berlin street 1930s documentary". What that page is for is
+   * deciding what to upload, and for a documentary archive that is a question about people: it
+   * either has footage of Hermann Göring or it does not.
+   *
+   * A gap that names nobody is not recorded at all — an empty list is more useful than a list of
+   * search phrases.
+   */
+  {
+    const beatPersons = extractPersonNamesFromText(beat.text ?? "");
+    const recorded = new Set<string>();
+    for (const q of queries.slice(0, 3)) {
+      const person = personNameForGap({ keyword: q, candidates: beatPersons });
+      if (!person || recorded.has(person)) continue;
+      recorded.add(person);
+      void recordArchiveContentGap(person, beat.text);
+    }
   }
 
   for (let qi = 0; qi < queries.length; qi++) {
@@ -25429,6 +28720,20 @@ async function adoptEmergencyGeoStockClip(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => adoptEmergencyGeoStockClipInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile));
+}
+
+async function adoptEmergencyGeoStockClipInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
   if (strictVoiceVisualMatchEnabled()) return false;
   if (!archivePexelsFallbackEnabled()) return false;
   if (!canUseLicensedStockBeat(dedup)) return false;
@@ -25451,8 +28756,8 @@ async function adoptEmergencyGeoStockClip(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode);
-    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index))) return false;
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
     if (await pushClip(withText, sec)) {
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -25534,6 +28839,20 @@ async function adoptEmergencyGeoStockClip(
  * Ladder: similar archive (lower floor) → stock → relaxed archive → AI → neutral placeholder.
  */
 async function rescueBeatVisualWhenEmpty(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
+  return withBeatProvenance(beat, scene, () => rescueBeatVisualWhenEmptyInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile));
+}
+
+async function rescueBeatVisualWhenEmptyInner(
   beat: SceneBeat,
   scene: Scene,
   workDir: string,
@@ -25672,7 +28991,7 @@ async function rescueBeatVisualWhenEmpty(
     wikiQueries.push(...buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle));
     wikiQueries.push(beat.text.slice(0, 80));
     for (const q of Array.from(new Set(wikiQueries))) {
-      const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { beatIndex: beat.index });
+      const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { dedup, beatIndex: beat.index });
       if (wikiClips.length > 0) {
         const clip = wikiClips[0]!;
         if (clip && (await pushClip(clip, holdSec))) {
@@ -25729,17 +29048,82 @@ async function rescueBeatVisualWhenEmpty(
     }
   }
 
+  /**
+   * RONDE 112 — the last INHOUDELIJKE attempt, before anything technical.
+   *
+   * Everything above has asked for the beat's full claim and come back empty. What follows this
+   * used to be re-using the previous shot and then a colour card: both of them answers of the
+   * form "we have no picture". Footage of the beat's own subject is a better answer and it is a
+   * real one, so it goes first.
+   */
+  if (await trySubjectFallbackForBeat(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile)) {
+    return true;
+  }
+
   // Try extending the last real clip before falling back to color
   if (dedup.lastRealClip) {
-    try {
-      const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir);
-      if (extended && await pushClip(extended, holdSec)) {
-        recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, extended, "rescue_extend", undefined, dedup.segmentGeoLock);
-        console.log(`[Retrieval] s${scene.index}b${beat.index} extendLastClip HIT`);
-        return true;
+    /**
+     * RONDE 142 — the run of extensions is what put one picture on screen for 41 seconds.
+     *
+     * Each call here is short and, on its own, defensible: extendLastClip loops rather than
+     * freezes and lays a slow zoom over the top, which is RONDE 111's answer to a long hold. What
+     * nothing accounted for is that `dedup.lastRealClip` does not change while beats keep failing,
+     * so beat after beat extends the SAME footage. Video 548 did that thirteen times and the
+     * finished MP4 measured 41.38s of unchanging picture against a 5.00s limit.
+     *
+     * The budget below is RONDE 128's existing `stillImageMaxSec()` — no new limit, applied to
+     * the one route that sat outside it. When it is spent the beat falls through to the same
+     * fallback it would have reached anyway; nothing new is invented to fill it.
+     */
+    const extendDecision = mayExtendAgain({
+      state: dedup.extendHold,
+      sourceClipPath: dedup.lastRealClip,
+      holdSec,
+    });
+    if (!extendDecision.allowed) {
+      console.warn(formatExtendRefusal(scene.index, beat.index, extendDecision));
+    } else {
+      try {
+        const extended = await extendLastClip(dedup.lastRealClip, holdSec, scene.index, beat.index, workDir, dedup.sourcingCache?.lineage);
+        /**
+         * RONDE 165 — an extension the compose barrier then refused.
+         *
+         * `extendLastClip` writes a real file derived from lastRealClip, so it inherits that clip's
+         * lineage record; when pushClip turns it away the record was left saying nothing, which is
+         * how `extend_s*` files reached render 554's vanished list.
+         */
+        if (extended && !(await pushClip(extended, holdSec))) {
+          /**
+           * RONDE 167 §2 — pushClip refuses for two different reasons and they are not the same
+           * ending.
+           *
+           * It turns a clip away when the compose barrier refuses it on content grounds, and when
+           * its content key is already on the timeline. For an extension the SECOND is the common
+           * case by construction — the whole point is that it reuses footage already used — and
+           * filing that as a REJECTED refusal would put a content verdict on the record that no
+           * gate ever gave. Asking the barrier directly is how the two are told apart; it is the
+           * same call pushClip made, and it reads state rather than doing work.
+           */
+          const barrier = composeBarrierAllows(
+            dedup.beatRelevance, extended, clipContentKey(extended)
+          );
+          recordAssetOutcome(
+            dedup.sourcingCache?.lineage,
+            extended,
+            barrier.allow ? "extended_removed" : "extended_rejected",
+            `s${scene.index}b${beat.index}`,
+            clipContentKey(extended)
+          );
+        } else if (extended) {
+          // Charged only on an adoption: an extension that failed to build put nothing on screen.
+          recordExtension(dedup.extendHold, dedup.lastRealClip, holdSec);
+          recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, extended, "rescue_extend", undefined, dedup.segmentGeoLock);
+          console.log(`[Retrieval] s${scene.index}b${beat.index} extendLastClip HIT`);
+          return true;
+        }
+      } catch (err) {
+        console.warn("[Retrieval] extendLastClip error:", (err as Error).message?.slice(0, 80));
       }
-    } catch (err) {
-      console.warn("[Retrieval] extendLastClip error:", (err as Error).message?.slice(0, 80));
     }
   }
 
@@ -25781,7 +29165,8 @@ async function rescueBeatVisualWhenEmpty(
       undefined,
       undefined,
       undefined,
-      tierOut
+      tierOut,
+      { dedup, scene, videoTitle }
     );
     if (!placeholder) continue;
     if (await pushClip(placeholder, holdSec)) {
@@ -25806,6 +29191,147 @@ async function rescueBeatVisualWhenEmpty(
 }
 
 /** Never leave a beat empty — Wikimedia → archive → stock → AI → emergency geo → last-resort stock → Kling → color. */
+/**
+ * RONDE 112 — find footage of what the beat is ABOUT, when footage of what it SAYS does not exist.
+ *
+ * The beat "Hitler died in his bunker in 1945" has three specifics — the bunker, the year, the
+ * death — and an archive may hold none of them while holding plenty of Hitler. A shot of Hitler
+ * under that line is what an editor would cut; the alternatives left at this point in the ladder
+ * are the previous shot held longer or a colour card.
+ *
+ * Everything here reuses what already exists, and deliberately so:
+ *
+ *   · the SUBJECT comes from signals the chain already extracted (the beat's semantic profile,
+ *     the video's person lock, the pipeline's own name extractor). No new NER, no LLM.
+ *   · the SEARCH is ensureBeatVisualFilled — the same cascade, the same providers, the same
+ *     ranking — run against a beat whose text is the subject.
+ *   · the DECISION is still the vision gate, unchanged and still the only content decider. It is
+ *     asked a narrower question, and the narrower question is written into the derived beat's
+ *     text so the gate is judging exactly what is being claimed.
+ *
+ * The result is recorded as `subject_fallback`, which is a coverage kind of its own: real footage,
+ * of the right subject, NOT verified as a fit for the beat's whole sentence. It must never be
+ * counted as a verified own visual, and beatVisualStatus enforces that.
+ */
+async function trySubjectFallbackForBeat(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  videoTitle: string | undefined,
+  dedup: VisualDedupState,
+  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
+  holdSec: number,
+  semanticProfile?: BeatSemanticProfile
+): Promise<boolean> {
+  if (dedup.subjectFallbackBeats.has(`${scene.index}:${beat.index}`)) return false;
+  dedup.subjectFallbackBeats.add(`${scene.index}:${beat.index}`);
+
+  /**
+   * RONDE 132 §4 — the scene the beat sits in, as a subject of last resort.
+   *
+   * Every signal below the first three was beat-local, and the person lock only counted when the
+   * beat literally spelled the name. So an abstract sentence resolved to nothing while the scene
+   * around it named its subject plainly — seven of fourteen beats in the reported render.
+   *
+   * `scene.personNames` already exists and is documented as "names of all people mentioned in this
+   * scene's narration", which is exactly the signal that was missing. The neighbour list is the
+   * scene's names too: within one scene the nearest named person IS a scene name, and building a
+   * second per-beat extraction here would be a new content decider for no extra information.
+   */
+  const sceneNames = (scene.personNames ?? []).filter(Boolean);
+  const subject = resolveBeatSubject({
+    beatText: beat.text,
+    entities: semanticProfile?.entities,
+    primaryPerson: dedup.primaryPerson,
+    namesInBeat: extractPersonNamesFromText(beat.text),
+    sceneEntities: { persons: sceneNames },
+    neighbourPersons: sceneNames,
+  });
+  if (!subject) {
+    // A real outcome, not a skipped step: this beat names nothing specific enough to search for,
+    // and picking a word out of the sentence anyway is what this fallback exists to avoid.
+    const line = formatNoSubjectLine(scene.index, beat.index, beat.text);
+    console.warn(line);
+    dedup.coverageDecisions.push(line);
+    return false;
+  }
+
+  /**
+   * The derived beat.
+   *
+   * Same coordinates, so provenance, the geo lock and the audits all still see the beat they
+   * belong to. Different TEXT, because the claim being made has genuinely narrowed and the vision
+   * gate reads this text to decide. Writing the full sentence here and then accepting a portrait
+   * would be the gate approving something nobody asked it about.
+   */
+  const subjectBeat: SceneBeat = {
+    ...beat,
+    text: subject.subject,
+    searchQuery: subject.subject,
+    powerWord: subject.subject,
+    keywords: [subject.subject],
+    visualDescription: subject.subject,
+  };
+
+  // RONDE 132: what the gates did during THIS fallback, so the empty-result line can say whether
+  // anything ever reached them. Snapshotted rather than counted separately — the reject audit is
+  // already the record, it was simply never read at this moment.
+  const rejectsBefore = dedup.clipRejectAudit.entries.length;
+  let adopted: string | null = null;
+  const capture = async (clipPath: string, sec?: number): Promise<boolean> => {
+    const ok = await pushClip(clipPath, sec ?? holdSec);
+    if (ok) adopted = clipPath;
+    return ok;
+  };
+
+  try {
+    await ensureBeatVisualFilled(
+      subjectBeat, scene, workDir, videoTitle, dedup, capture, undefined, holdSec
+    );
+  } catch (err) {
+    console.warn(
+      `[SubjectFallback] s${scene.index}b${beat.index} search failed:`,
+      (err as Error).message?.slice(0, 100)
+    );
+  }
+
+  if (!adopted) {
+    const rejected = dedup.clipRejectAudit.entries
+      .slice(rejectsBefore)
+      .filter((e) => e.sceneIndex === scene.index && e.beatIndex === beat.index).length;
+    const line = formatSubjectFallbackEmptyLine(scene.index, beat.index, subject, { rejected });
+    console.warn(line);
+    dedup.coverageDecisions.push(line);
+    return false;
+  }
+
+  const clipPath: string = adopted;
+  recordClipAdopt(
+    dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clipPath,
+    SUBJECT_FALLBACK_ROUTE, undefined, dedup.segmentGeoLock
+  );
+  /**
+   * The source comes from the lineage ledger, which is the only thing that actually knows.
+   *
+   * Not inferClipSourceFromPath — that is a labelled guess whose own doc comment says a caller
+   * almost certainly wants the ledger instead. And not curatedStorageUrlForClip: RONDE 34 counts
+   * that helper's call sites as "every place that marks an asset used", and this is a log line.
+   */
+  const line = formatSubjectFallbackLine({
+    sceneIndex: scene.index,
+    beatIndex: beat.index,
+    beatText: beat.text,
+    subject,
+    basename: path.basename(clipPath),
+    assetId: curatedClipPathAssetId(clipPath),
+    provider:
+      dedup.sourcingCache.lineage.providerFor(clipPath, clipContentKey(clipPath)) ?? undefined,
+  });
+  console.log(line);
+  dedup.coverageDecisions.push(line);
+  return true;
+}
+
 async function ensureBeatVisualFilled(
   beat: SceneBeat,
   scene: Scene,
@@ -25870,7 +29396,22 @@ async function ensureBeatVisualFilled(
       videoTitle,
       { requireBeatMatch: false }
     );
-    if (lastResort && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
+    /**
+     * RONDE 103, second audit — the last-resort clip is a real picture, so it is judged like one.
+     *
+     * Found by the sweep, not by the list: every named adopt* route reaches the gate, and this
+     * one is not an adopt* route. fetchLastResortRealClip has five return paths and only two of
+     * them (its two adoptClip calls) were gated — an own-archive hit, a YouTube hit and a topical
+     * hit reached the timeline with nothing having looked at them. The check goes here, at the
+     * point the clip becomes this beat's clip, so it covers all five regardless of which one
+     * answered.
+     */
+    const lastResortFits =
+      !lastResort ||
+      (await beatClipPassesVisionGate(
+        lastResort, beat, scene, workDir, videoTitle, dedup, semanticProfile, "last_resort"
+      )).pass;
+    if (lastResort && lastResortFits && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
       markLicensedStockBeatUsed(dedup);
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -25917,7 +29458,8 @@ async function ensureBeatVisualFilled(
       beat.text,
       undefined,
       undefined,
-      tierOut
+      tierOut,
+      { dedup, scene, videoTitle }
     );
     if (await pushClip(beatClip, holdSec)) {
       recordClipAdopt(
@@ -25938,28 +29480,7 @@ async function ensureBeatVisualFilled(
   );
 }
 
-/** @deprecated alias */
-async function adoptPexelsBeatClipFallback(
-  beat: SceneBeat,
-  scene: Scene,
-  workDir: string,
-  videoTitle: string | undefined,
-  dedup: VisualDedupState,
-  pushClip: (clipPath: string, holdSec?: number) => boolean | Promise<boolean>,
-  holdSec: number,
-  semanticProfile?: BeatSemanticProfile
-): Promise<boolean> {
-  return adoptStockBeatClipFallback(
-    beat,
-    scene,
-    workDir,
-    videoTitle,
-    dedup,
-    pushClip,
-    holdSec,
-    semanticProfile
-  );
-}
+
 
 async function backfillArchiveMontageFromPool(
   scene: Scene,
@@ -26044,7 +29565,33 @@ async function backfillComposeMontageIfShort(
   montageBeats?: SceneBeat[]
 ): Promise<void> {
   if (!curatedArchiveOnlyVisuals()) return;
-  if (isFastShortVideoLength(dedup.videoLength)) return;
+  /**
+   * RONDE 123 — this used to be `if (isFastShortVideoLength(...)) return;`.
+   *
+   * That one line switched off the whole of RONDE 111 and RONDE 112 for short videos: the search
+   * for short stitchable clips, the subject fallback, and the re-use of the scene's own footage in
+   * motion. Everything below it is the ladder a scene climbs before it is allowed to hold a frame,
+   * and for a one-minute video none of it ran.
+   *
+   * Video 544 is what that looks like. Every scene logged `Compose montage backfill: 0ms`, and
+   * scene 1 — 38.1 seconds of narration, one 2.8-second clip — went straight from the search phase
+   * to the compose-time last resort:
+   *
+   *     [Coverage] Scene 1 single-clip montage: short 34.40s (would need 10.88x)
+   *     → slowed to the 2x cap, 30.92s STILL UNCOVERED → held frame (last resort)
+   *
+   * The 2x cap held, exactly as RONDE 111 requires. But the rungs that exist so the ladder rarely
+   * reaches that rung had been skipped entirely, and the render ended with the held frames and the
+   * two frozen segments its own QA then reported.
+   *
+   * The original reason for the skip was time: a one-minute video has a ten-minute wall clock and
+   * these rounds cost searches. That reason is answered by bounding the work rather than removing
+   * it — `fastShort` below caps the number of extra searches instead of refusing them, so a short
+   * render pays for a handful of attempts and still gets the subject fallback and the moving
+   * re-use before anything freezes. Holding a frame is not cheaper than a search; it is the
+   * outcome the searches exist to avoid.
+   */
+  const fastShort = isFastShortVideoLength(dedup.videoLength);
   const minClipsNeeded = minClipsForBalancedVoice(outDur);
   const minCoverage = strictNoVisualRepeat() ? outDur - 0.06 : outDur * 0.92;
   let coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
@@ -26065,6 +29612,10 @@ async function backfillComposeMontageIfShort(
   const xfade = montageXfadeSec();
 
   const pushClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
+    // RONDE 103, second audit: this is an acceptance point like the four pushSceneClip closures,
+    // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
+    // later must not be able to push a clip this render has already refused.
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -26100,7 +29651,10 @@ async function backfillComposeMontageIfShort(
   );
 
   if (coverage < minCoverage) {
-    for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
+    // RONDE 123: bounded rather than skipped on the fast path — a short render pays for a
+    // few attempts instead of going straight to a held frame.
+    const roundAAttempts = fastShort ? 3 : 8;
+    for (let attempt = 0; attempt < roundAAttempts && coverage < minCoverage; attempt++) {
       const beatIdx = pickVoiceBackfillBeatIndex(
         beatInputs,
         outDur,
@@ -26305,7 +29859,8 @@ async function fillBeatVisual(
       if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
       const guaranteedTierOut: GuaranteedTierOut = {};
       const guaranteed = await generateGuaranteedBeatClip(
-        scene.index, beat.index, holdSec, workDir, beat.text, undefined, undefined, guaranteedTierOut
+        scene.index, beat.index, holdSec, workDir, beat.text, undefined, undefined, guaranteedTierOut,
+        { dedup, scene, videoTitle }
       );
       if (guaranteed && (await pushClip(guaranteed, holdSec))) {
         // Audit-gap fix (same class as Round 17 + follow-up fixes): this emergency-finish
@@ -26559,7 +30114,7 @@ async function retryAuthenticBeforeLicensedStock(
               semanticProfile
             ),
         ],
-        archiveBeatTryTimeoutMs(dedup.videoLength)
+        archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.())
       );
     }
 
@@ -26653,6 +30208,7 @@ async function fetchArchiveSentenceMontage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) {
@@ -26673,6 +30229,8 @@ async function fetchArchiveSentenceMontage(
       markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
       if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
         dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
+      resetExtendHold(dedup.extendHold);
       }
       return true;
     });
@@ -26861,6 +30419,7 @@ async function refillSceneStrictVoiceMatch(
     holdSec: number,
     beatIndex: number
   ): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) return false;
@@ -27188,6 +30747,7 @@ async function ensureArchiveMontageVoiceCoverage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -27251,9 +30811,223 @@ async function ensureArchiveMontageVoiceCoverage(
   }
 
   coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
-  if (coverage < minCoverage) {
-    console.warn(
-      `[Pipeline] Scene ${scene.index}: montage short ~${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — continuing (self-heal)`
+  if (coverage >= minCoverage) return;
+
+  /**
+   * RONDE 111 — the rounds that only run when the scene would otherwise be slowed past the cap.
+   *
+   * Everything above aims at full coverage and stops when it runs out of ideas. What it never
+   * knew is that falling short is not one outcome but two: a small shortfall is absorbed by
+   * slowing the montage, which looks like slow motion; a large one used to be absorbed by slowing
+   * it arbitrarily far, which looks like a slideshow of frozen pictures.
+   *
+   * coverageFloorSec is the line between them. Below it, extra searching is worth its wall clock
+   * because the alternative is a visibly broken scene, so two more rounds run — and only there,
+   * so a scene that is 1.5 seconds short costs nothing extra.
+   *
+   * Both rounds go through the SAME beat → search-query → vision-relevance chain as every other
+   * clip. Nothing is added to a scene because it is the right length; it is added because it fits
+   * a specific beat and passed the same gate.
+   */
+  /** Log it and keep it — the pipeline report is where this question gets asked days later. */
+  const note = (line: string, warn = true) => {
+    const text = `[Coverage] Scene ${scene.index}: ${line}`;
+    if (warn) console.warn(text);
+    else console.log(text);
+    dedup.coverageDecisions.push(text);
+  };
+
+  const floor = coverageFloorSec(scene.duration);
+  /**
+   * RONDE 112 — the header line, in the shape the report needs it.
+   *
+   * needed / available / shortfall / the slow-motion factor that would be required. Every later
+   * line in this scene is a step away from this one number, so it is stated once, explicitly,
+   * rather than left to be reconstructed from a percentage.
+   */
+  const header =
+    `needed=${scene.duration.toFixed(1)}s available=${coverage.toFixed(1)}s ` +
+    `short=${(scene.duration - coverage).toFixed(1)}s ` +
+    `would_need=${(scene.duration / Math.max(0.05, coverage)).toFixed(1)}x ` +
+    `cap=${MAX_COVERAGE_SLOWDOWN}x clips=${clips.length}`;
+  if (coverage >= floor) {
+    note(`${header} — within the ${MAX_COVERAGE_SLOWDOWN}x budget, no extra search needed`);
+    return;
+  }
+
+  note(`${header} — BELOW the ${floor.toFixed(1)}s floor, searching short clips`);
+
+  /**
+   * Round A — ask for SHORT holds.
+   *
+   * The searches above ask for a full beat's worth of footage, so trimVideoClip measures every
+   * candidate against the standalone floor and a perfectly good two-second shot of the right
+   * subject is refused. Asking for two seconds makes the floor two seconds (see
+   * stitchSourceFloorSec), so those same candidates come back — several of them, stitched, which
+   * is what a montage is.
+   */
+  const shortHold = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(2.5, scene.duration / 4));
+  const beatInputsShort = beats.map((b) => ({ text: b.text, holdSec: b.holdSec }));
+  let shortClipsAdded = 0;
+  /** RONDE 112: how many extra searches this scene actually cost, for the report. */
+  let extraSearches = 0;
+  for (let attempt = 0; attempt < 8 && coverage < minCoverage; attempt++) {
+    const beatIdx = pickVoiceBackfillBeatIndex(
+      beatInputsShort, scene.duration, clipBeatIndices, beatDurations, montageXfadeSec()
+    );
+    const beat = beats[beatIdx] ?? beats[0];
+    if (!beat) break;
+    const before = clips.length;
+    extraSearches++;
+    try {
+      await ensureBeatVisualFilled(
+        beat,
+        scene,
+        workDir,
+        videoTitle,
+        dedup,
+        (clipPath: string, sec = shortHold) => pushSceneClip(clipPath, sec, beat.index),
+        semanticProfiles.get(beat.index),
+        shortHold
+      );
+    } catch {
+      continue;
+    }
+    if (clips.length > before) {
+      shortClipsAdded += clips.length - before;
+      console.log(
+        `[Coverage] Scene ${scene.index} b${beat.index}: short clip accepted ` +
+          `(${shortHold.toFixed(1)}s slot) — coverage now ${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`
+      );
+    }
+  }
+  note(
+    `extra_searches=${extraSearches} short_clips_added=${shortClipsAdded} ` +
+      `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`,
+    shortClipsAdded === 0
+  );
+
+  if (coverage >= floor) {
+    note("resolution=real_footage — no subject fallback, no held frame", false);
+    return;
+  }
+
+  /**
+   * RONDE 112 — Round A2: footage of what the shortest beats are ABOUT.
+   *
+   * Round A asked for the beats' full claims and came back empty. Before anything technical, ask
+   * for their subjects: an archive with nothing of "the bunker in 1945" may still hold plenty of
+   * Hitler, and a shot of Hitler under that line beats the previous shot held longer.
+   *
+   * Same cascade, same providers, same vision gate — see trySubjectFallbackForBeat. A beat that
+   * names no reliable subject is skipped rather than searched for a random word.
+   */
+  for (let attempt = 0; attempt < 4 && coverage < floor; attempt++) {
+    const beatIdx = pickVoiceBackfillBeatIndex(
+      beatInputsShort, scene.duration, clipBeatIndices, beatDurations, montageXfadeSec()
+    );
+    const beat = beats[beatIdx] ?? beats[0];
+    if (!beat) break;
+    const before = clips.length;
+    extraSearches++;
+    const hit = await trySubjectFallbackForBeat(
+      beat, scene, workDir, videoTitle, dedup,
+      (clipPath: string, sec = shortHold) => pushSceneClip(clipPath, sec, beat.index),
+      shortHold,
+      semanticProfiles.get(beat.index)
+    );
+    if (!hit || clips.length === before) break;
+  }
+
+  if (coverage >= floor) {
+    note(
+      `resolution=subject_fallback extra_searches=${extraSearches} ` +
+        `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s — no held frame`,
+      false
+    );
+    return;
+  }
+
+  /**
+   * Round B — re-use this scene's OWN footage, in motion.
+   *
+   * Nothing new could be found for any beat. The remaining choice is between showing a picture
+   * from this scene again and showing a frozen one, and a shot that returns is an ordinary
+   * documentary device while a frozen frame is a fault. extendLastClip loops the footage under a
+   * slow zoom, so the picture keeps moving; it is the same helper the per-beat rescue ladder
+   * already uses, and it records itself as `rescue_extend`, never as a verified fit.
+   */
+  const source = dedup.lastRealClip;
+  if (!source) {
+    note(
+      `resolution=held_frame reason=no_real_clip_to_reuse extra_searches=${extraSearches} ` +
+        `short=${(scene.duration - coverage).toFixed(1)}s`
+    );
+    return;
+  }
+  for (let attempt = 0; attempt < 3 && coverage < floor; attempt++) {
+    const need = Math.max(MIN_STITCHABLE_SOURCE_SEC, Math.min(6, floor - coverage + 0.5));
+    /**
+     * RONDE 143 — the SECOND route into extendLastClip, held to the same budget as the first.
+     *
+     * RONDE 142 guarded the per-beat rescue ladder, which is where video 548's 41.38s run came
+     * from. This loop is the same defect wearing a different call site: `source` is the same
+     * `dedup.lastRealClip`, nothing here changes it, and three attempts of up to 6s each can lay
+     * ~18s of one picture end to end — well past the 5.00s the stillness audit measures against.
+     *
+     * It also has to CHARGE the budget, not merely read it. Whatever this loop puts on screen is
+     * screen time the per-beat ladder must not be allowed to extend on top of afterwards; a guard
+     * that reads a total nobody writes to is not a budget.
+     *
+     * `break`, not `continue`: `need` does not shrink between attempts and the budget does not
+     * grow, so a refusal here refuses every remaining attempt too. The scene falls through to the
+     * held-frame report below — the same place it would have reached anyway.
+     */
+    const extendDecision = mayExtendAgain({ state: dedup.extendHold, sourceClipPath: source, holdSec: need });
+    if (!extendDecision.allowed) {
+      console.warn(formatExtendRefusal(scene.index, 900 + attempt, extendDecision));
+      break;
+    }
+    try {
+      const extended = await extendLastClip(source, need, scene.index, 900 + attempt, workDir, dedup.sourcingCache?.lineage);
+      if (!extended) break;
+      const before = clips.length;
+      // Bypasses the content-key dedup on purpose: this IS the same footage, deliberately, and
+      // the alternative at this point is a held frame.
+      clips.push(extended);
+      beatDurations.push(need);
+      clipBeatIndices.push(beats[0]?.index ?? 0);
+      // RONDE 143: charged here because the push above IS the adoption on this route — there is
+      // no pushClip gate to pass first, so this is the moment the footage reaches the montage.
+      recordExtension(dedup.extendHold, source, need);
+      coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
+      recordClipAdopt(
+        dedup.clipAdoptAudit, scene.index, beats[0]?.index ?? 0, beats[0]?.text ?? "",
+        extended, "rescue_extend", undefined, dedup.segmentGeoLock
+      );
+      note(
+        `re-used own footage in motion for ${need.toFixed(1)}s (no new candidates found) — ` +
+          `coverage ${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`
+      );
+      if (clips.length === before) break;
+    } catch (err) {
+      console.warn(`[Coverage] Scene ${scene.index}: re-use failed:`, (err as Error).message?.slice(0, 80));
+      break;
+    }
+  }
+
+  if (coverage < floor) {
+    const plan = planCoverageFill(coverage, scene.duration);
+    note(
+      `resolution=held_frame reason=exhausted extra_searches=${extraSearches} ` +
+        `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s ` +
+        `slowdown=${plan.slowdownRatio.toFixed(2)}x held=${plan.stillShortSec.toFixed(1)}s`
+    );
+  } else {
+    note(
+      `resolution=own_footage_reused extra_searches=${extraSearches} ` +
+        `available=${coverage.toFixed(1)}s / ${scene.duration.toFixed(1)}s`,
+      false
     );
   }
 }
@@ -27451,6 +31225,49 @@ async function fetchSceneVisualsInner(
                 dedup.movingClipCount,
                 dedup.movingClipCount + dedup.stillClipCount
               ),
+              // RONDE 131: the persistent cross-video memory, read under the SAME key it is
+              // written under at the adopt point below — get_activeVideoTopic()'s person, or the
+              // title when the video is not about a person. Write and read must agree or the
+              // memory is invisible to itself, which is how RONDE 28 found it last time.
+              /**
+               * RONDE 175 §2 — what this passage is about, for period/place/subject ranking.
+               *
+               * SCENE-level, because that is the scope this funnel runs at: it builds one
+               * candidate pool per scene, so the years come from the scene's narration rather than
+               * from one beat's sentence. That is also the honest scope — a scene about 1926 makes
+               * a 1945 reel a worse candidate for any of its beats.
+               *
+               * Read off text the script actually contains and context the pipeline established,
+               * never invented. A candidate saying nothing about its period is unaffected, so the
+               * catalogue-numbered archive titles this pipeline lives on score exactly as before.
+               */
+              beatTemporalContext: {
+                years: yearsIn(scene.text).map(String),
+                places: get_activeVideoVisualContext()?.locations?.slice(0, 3),
+                subjects: [activeMemoryEntity(), ...(scene.personNames ?? [])].filter(
+                  (x): x is string => Boolean(x)
+                ),
+              },
+              memoryEntity: activeMemoryEntity(),
+              memoryExcludeAssetIds: dedup.usedCuratedAssetIds,
+              memoryMetrics: dedup.searchMemoryMetrics,
+              memoryRecalledInto: dedup.recalledAssetIds,
+              // RONDE 132 §11: the scene index rotates which equally-proven memory asset comes
+              // first, so a subject with a deep memory does not put its single most-used clip in
+              // every video.
+              memoryVarietySeed: scene.index + 1,
+              onMemoryAssetExcluded: (m) => {
+                noteDuplicateAttempt(dedup.visualDedupStats, "archive_asset_id");
+                console.log(
+                  formatVisualDedupReject({
+                    // Readable from any module in this render — what runWithActiveVideoId exists for.
+                    videoId: getActiveVideoId() ?? null,
+                    beat: `s${scene.index}`,
+                    asset: `curated:asset:${m.assetId}`,
+                    matchedOn: "archive_asset_id",
+                  })
+                );
+              },
             }), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
         console.log(
           `[FunnelTimeout] scene=${scene.index} completed elapsedMs=${Date.now() - funnelAwaitT0} ` +
@@ -27487,6 +31304,8 @@ async function fetchSceneVisualsInner(
               extraQueries: inlinePoolQueries.extraQueries,
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+              /** RONDE 177 — YouTube joins the pool here, through the existing search client. */
+              youtubeSearch: scenePoolYoutubeSearch(dedup.sourcingCache),
             }), 60_000, `buildSceneCandidatePool s${scene.index}`);
         console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
@@ -27516,6 +31335,7 @@ async function fetchSceneVisualsInner(
   };
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
+    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
@@ -27540,6 +31360,8 @@ async function fetchSceneVisualsInner(
       fs.existsSync(clipPath)
     ) {
       dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
+      // RONDE 142: a real clip was adopted, so the extension run is over — the picture changed.
+      resetExtendHold(dedup.extendHold);
     }
     return true;
   };
@@ -27616,6 +31438,48 @@ async function fetchSceneVisualsInner(
               `title="${bcTitle || "unknown"}" ` +
               `beat="${(beat.text ?? "").replace(/\s+/g, " ").trim().slice(0, 60) || "unknown"}"`
             );
+            /**
+             * RONDE 125 — the same facts, said in the one sentence the audit asked for.
+             *
+             * [FunnelBeatCalib] above is a calibration line: it prints the score so the
+             * thresholds can be tuned. It does not say whether this beat REUSED what the archive
+             * already had or went out and searched again, and that is the question "does FastVid
+             * get faster with every video" actually turns on.
+             *
+             * Nothing here is computed: the score, the strategy, the candidate list and the beat
+             * text were all in hand a line ago. No query, no fetch, no embedding call.
+             */
+            const reused = gapStrategy === "archive_only";
+            const scoredCandidates = funnelResult.candidates.filter(
+              (c) => c.archivePick?.asset?.id != null
+            );
+            const knownSuccessful = scoredCandidates.filter(
+              (c) => (c.archivePick?.asset?.editorialScore ?? 50) > 50
+            ).length;
+            console.log(
+              formatArchiveRetrieval({
+                sceneIndex: scene.index,
+                beatIndex: beat.index,
+                query: (beat.text ?? "").replace(/\s+/g, " ").trim(),
+                candidates: scoredCandidates.length,
+                bestScore: bestArchiveScore ?? null,
+                stopThreshold: BEAT_ARCHIVE_STOP_THRESHOLD,
+                knownSuccessful,
+                outcome: reused ? "reuse" : "external",
+                strategy: gapStrategy,
+              })
+            );
+            if (!reused) {
+              console.log(
+                formatNoStrongMatch({
+                  sceneIndex: scene.index,
+                  beatIndex: beat.index,
+                  query: (beat.text ?? "").replace(/\s+/g, " ").trim(),
+                  bestScore: bestArchiveScore ?? null,
+                  stopThreshold: BEAT_ARCHIVE_STOP_THRESHOLD,
+                })
+              );
+            }
           }
           // 4. Order candidates: archive leads unless aggressive mode
           funnelCandidates = orderCandidatesForBeatGap(funnelResult.candidates, gapStrategy);
@@ -27670,15 +31534,45 @@ async function fetchSceneVisualsInner(
         // FIX 2: exclude assets an earlier beat already won, so the identical per-scene
         // candidate list produces a different shortlist per beat. Falls back to the full
         // list inside buildDownloadShortlist() once everything has been used.
+        /**
+         * RONDE 164 — the beat's own funnel, counted at every step.
+         *
+         * `candidatesFound` is what retrieval returned for the SCENE, before the metadata slice
+         * above narrowed it: render 553's s1b6 found 25 and offered 3, and only the raw number
+         * makes that visible. Everything else is filled in by the code that already computes it.
+         */
+        const sourcingAudit = createArchiveSourcingAudit();
+        const candidatesFoundForBeat = funnelResult.candidates.length;
+        /**
+         * RONDE 176 — this beat's own sentence orders the pool before the shortlist is cut.
+         *
+         * The funnel searched once for the SCENE; this runs once per BEAT. Between them nothing
+         * re-read the beat, so a beat's order was the scene's order minus what its neighbours had
+         * already taken — which gave the last beat of a scene systematically worse options than
+         * the first, for no reason but its position in the loop.
+         *
+         * The years come from the beat's own text here, not the scene's: at this point the
+         * sentence IS in scope, which it is not where the funnel is built.
+         */
+        const beatContext = {
+          years: yearsIn(beat.text).map(String),
+          places: get_activeVideoVisualContext()?.locations?.slice(0, 3),
+          subjects: [activeMemoryEntity(), ...(scene.personNames ?? [])].filter(
+            (x): x is string => Boolean(x)
+          ),
+        };
         const toScore = buildDownloadShortlist(
-          funnelCandidates,
+          reorderShortlistForBeat(funnelCandidates, beatContext),
           MAX_FUNNEL_CANDIDATES_TO_SCORE,
-          dedup.usedFunnelCandidateIds
+          dedup.usedFunnelCandidateIds,
+          sourcingAudit
         );
         const discoveredCount = funnelCandidates.length;
         const shortlistCount = toScore.length;
         let downloadedCount = 0;
-        const scored: ScoredFunnelCandidate[] = [];
+        // RONDE 131: `let`, because a refusal reorders what is left. The array's CONTENTS are
+        // never changed by that — see reorderAfterMismatch, which returns a permutation.
+        let scored: ScoredFunnelCandidate[] = [];
         // FASE 7.2 — embedding-space separation. funnelBeatEmb is an OpenAI
         // text-embedding-3-small vector (1536 dim, see createTextEmbedding above). It is the
         // right vector for the archive/text ranking below (findBestArchiveScoreForBeat,
@@ -27751,8 +31645,20 @@ async function fetchSceneVisualsInner(
             isFastShortVideoLength(dedup.videoLength),
             clipContentKey(clipPath)
           );
-          if (!visionResult.pass && !visionResult.fromCache) {
-            recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "vision_gate", candidate.title);
+          /**
+           * RONDE 103 — CLIP ranks here, it does not decide.
+           *
+           * The funnel is the one place CLIP's score genuinely earns its keep: `scored` is what
+           * pickBestFunnelCandidate orders, so a better score really does mean a candidate gets
+           * looked at first. Recording a reject on top of that was the content decision, and it
+           * is the one being removed — a candidate CLIP dislikes now simply sorts lower and the
+           * relevance gate below decides whether the winner belongs.
+           */
+          if (!visionResult.pass && !visionResult.skipped) {
+            console.log(
+              `[VisionGate] s${scene.index}b${beat.index} CLIP ranks ` +
+                `${path.basename(clipPath)} low (score=${visionResult.worstScore10 ?? "?"}) — not a reject`
+            );
           }
           scored.push({ candidate, clipPath, visionResult });
         }
@@ -27764,6 +31670,8 @@ async function fetchSceneVisualsInner(
         let winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
         /** RONDE 67: the refused winner, kept in case nothing better turns up. */
         let gateReprieveWinner: typeof winner = null;
+        /** RONDE 132: what the gate last blamed, null while nothing has been refused. */
+        let lastMismatchKind: MismatchKind | null = null;
 
         // RONDE 58: before adopting, look at the picture.
         //
@@ -27777,49 +31685,126 @@ async function fetchSceneVisualsInner(
         // in the ordinary case. A rejected winner is marked used, the next-best is tried, and
         // after MAX_JUDGEMENTS_PER_BEAT the pipeline takes what it has rather than starving the
         // beat. Every failure mode returns "unknown", which adopts exactly as before.
-        if (winner && beatImageRelevanceGateEnabled()) {
+        if (beatImageRelevanceGateEnabled()) {
+          /**
+           * RONDE 142 — the judging loop needs a candidate; the research pass below does not.
+           *
+           * These were one block until now, and video 548 measured what that cost: 13 of its 15
+           * beats reached this point with `offered=0` — no candidate at all — so the whole block
+           * was skipped, research included. Research is unreachable in exactly the situation it
+           * exists for. Splitting the two puts the loop behind `winner` where it belongs and
+           * leaves the research pass reachable for a beat that found nothing.
+           *
+           * The condition is given a name rather than written inline, because RONDE 53 anchors its
+           * adoption-audit test on the first bare winner-guard after the picker; a second one here
+           * would silently point that test at the wrong block. The comment avoids the literal form
+           * for the same reason — RONDE 130 learned that these guards match TEXT, not code.
+           */
+          const hasCandidateToJudge = winner !== null;
+          /**
+           * RONDE 168 — which candidates this beat actually looked at.
+           *
+           * The loop below judges the CURRENT winner and, on a refusal, moves to the next. When it
+           * ends because the look ceiling ran out rather than because something passed, the winner
+           * it leaves behind has never been judged at all — and video 555 shipped one. See the
+           * block after the loop.
+           */
+          const judgedCandidateIds = new Set<string>();
+          if (hasCandidateToJudge) {
           for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++) {
-            // RONDE 59: sample across the clip, not one instant of it. A cut can change shot
-            // part-way through, and the frame that happens to sit at 45% is not necessarily
-            // what the viewer sees.
-            const framePaths: string[] = [];
-            for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
-              const framePath = path.join(
-                workDir,
-                `bir_s${scene.index}b${beat.index}_${look}_${f}.jpg`
-              );
-              const got = await extractFrameAtFraction(
-                winner.clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
-              ).catch(() => false);
-              if (got) framePaths.push(framePath);
-            }
-            const visionBefore = {
-              used: dedup.beatImageGate.judgementsUsed,
-              failed: dedup.beatImageGate.judgementsFailed,
-            };
-            const judgement = await judgeBeatImage({
-              framePaths,
-              beatText: beat.text,
-              videoTitle,
-              sceneText: scene.text,
+            judgedCandidateIds.add(winner.candidate.id);
+            // RONDE 103: the same central decider every other route uses. The frame sampling,
+            // the cleanup and the cache key used to be this loop's own copy of that logic — and
+            // it was the copy that keyed on the picture alone, so a clip the funnel approved on
+            // beat 1 was never re-examined on beat 7.
+            const judgement = await checkBeatRelevance({
+              clipPath: winner.clipPath,
               contentKey: clipContentKey(winner.clipPath),
+              ctx: beatVisualContext(beat, scene, videoTitle),
+              workDir,
               state: dedup.beatImageGate,
+              ledger: dedup.beatRelevance,
+              route: `funnel:${winner.candidate.source}`,
+              onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
             });
-            noteVisionDelta(dedup, scene.index, beat.index, visionBefore);
-            for (const p of framePaths) {
-              try { fs.unlinkSync(p); } catch { /* ignore */ }
-            }
-
-            console.log(
-              `[BeatImageGate] s${scene.index}b${beat.index} ${judgement.verdict} ` +
-                `src=${winner.candidate.source} clip=${path.basename(winner.clipPath)} ` +
-                `depicts="${judgement.depicts}" reason="${judgement.reason}"`
-            );
             if (judgement.verdict !== "does_not_fit") break;
 
             recordClipReject(
               dedup.clipRejectAudit, scene.index, beat.index, winner.clipPath,
               "beat_image_gate", winner.candidate.title
+            );
+
+            /**
+             * RONDE 131 — read what the picture editor just said, and look somewhere else.
+             *
+             * The gate returns `depicts` and `reason`: prose from a model that has seen the frame
+             * and read the narration. Until this round both were logged and discarded, and the
+             * loop's second look went to the next candidate in an order the first refusal had not
+             * touched — so a beat that had just been told "this is present-day footage under 1945
+             * narration" would cheerfully try the next present-day stock clip.
+             *
+             * Two things happen with it now. It is COUNTED, so the render can finally say whether
+             * its refusals were a sourcing problem or a catalogue problem. And when the refusal
+             * names something a catalogue actually predicts — a period error, a title card — the
+             * remaining candidates are reordered so the ones likely to repeat it sort last.
+             *
+             * Nothing is removed and no gate is consulted. See ./visualMismatchFeedback for why a
+             * reorder is the correct weight for this evidence rather than a rejection.
+             */
+            const mismatchKind = classifyMismatch(judgement);
+            // RONDE 132: the last thing the gate said about this beat, kept so the research pass
+            // below can act on it after the loop has run out of candidates.
+            lastMismatchKind = mismatchKind;
+            /**
+             * RONDE 143 — the same dedupe key the shared gate uses.
+             *
+             * RONDE 142 gave `beatClipPassesVisionGate` a (content, beat) key so a candidate seen
+             * by two layers is counted once, but left this registration un-keyed. The funnel and
+             * the rescue ladder can be offered the SAME file for the same beat — a Wikimedia clip
+             * the funnel refused can come back through the Wikimedia rescue — and the second look
+             * reads its verdict from `checkBeatRelevance`'s cache, so it is still a refusal and
+             * was still counted a second time. That inflates exactly the numbers RONDE 142 was
+             * written to make trustworthy: the refusal total and the per-provider table.
+             *
+             * The reorder above and `lastMismatchKind` stay unconditional — they are about what
+             * the gate SAID, which is true however often it has been asked. Only the counting is
+             * deduped.
+             */
+            recordMismatch(dedup.mismatchTally, {
+              kind: mismatchKind,
+              source: winner.candidate.source,
+              depicts: judgement.depicts,
+              reason: judgement.reason,
+              dedupeKey: `${clipContentKey(winner.clipPath)}|s${scene.index}b${beat.index}`,
+            });
+            const beforeOrder = scored;
+            /**
+             * RONDE 135 §15 — the render's own evidence, on top of the static table.
+             *
+             * `repeatOffenderSources` reads the tally this render has been filling in since its
+             * first refusal. A source refused three times for present-day footage on THIS
+             * documentary is not a good bet for the fourth, whatever a table about catalogues in
+             * general says. It is a ranking signal only: the reorder is still a permutation, so a
+             * beat whose only candidates come from a penalised source still gets them.
+             */
+            scored = reorderAfterMismatch(
+              scored,
+              mismatchKind,
+              (s) => s.candidate.source,
+              repeatOffenderSources(dedup.mismatchTally)
+            );
+            console.log(
+              formatMismatchFeedback({
+                sceneIndex: scene.index,
+                beatIndex: beat.index,
+                source: winner.candidate.source,
+                kind: mismatchKind,
+                reordered: reorderChangedOrder(beforeOrder, scored),
+                remaining: scored.length - dedup.beatImageRejectedIds.size - 1,
+                // RONDE 155: printed only when the kind is UNCLEAR — see formatMismatchFeedback.
+                depicts: judgement.depicts,
+                reason: judgement.reason,
+              })
             );
             // RONDE 61: a hard exclusion, not a used-marker. Marking it "used" alone put the
             // clip straight back: with one passer on the beat, unusedPassers empties, the picker
@@ -27831,6 +31816,69 @@ async function fetchSceneVisualsInner(
             dedup.usedFunnelCandidateIds.add(winner.candidate.id);
             winner = pickBestFunnelCandidate(scored, dedup.usedFunnelCandidateIds, dedup.beatImageRejectedIds);
           }
+          /**
+           * RONDE 168 — the beat may not adopt a picture nobody looked at.
+           *
+           * ── What video 555 shipped ─────────────────────────────────────────────────────────
+           *
+           *     [BeatRelevance] s2b3 funnel:loc              does_not_fit
+           *     [BeatRelevance] s2b3 funnel:internet_archive does_not_fit
+           *     [RenderAsset]   provider=nasa scene=2 beat=3
+           *                     file=..._nasa_Hidden_Figures_Way_NASA_s_Vision_of_Equality...
+           *                     verdict=does_not_fit reprieved=false rendered=true
+           *
+           * A NASA clip about equality, on screen under narration about Churchill, Roosevelt and
+           * Stalin at the Tehran Conference. RONDE 166's guard never saw it, and the reason is two
+           * lines of control flow rather than anything about severity.
+           *
+           * The loop above runs `look < MAX_JUDGEMENTS_PER_BEAT` (=2). Each pass judges the
+           * current winner and, on a refusal, picks the next-best. It `break`s the moment one
+           * PASSES — so a winner produced by a `break` has been judged. But when the ceiling runs
+           * out instead, the winner left in hand is the candidate picked by the LAST refusal, and
+           * nothing has ever looked at it. It is not in `beatImageRejectedIds` either, so the
+           * reprieve check below does not fire, no severity is consulted, and `funnelClip = clipPath`
+           * hands it straight to the montage — the funnel is the one adopt route that does not go
+           * through pushClip, so the compose barrier never sees it either.
+           *
+           * Two refusals therefore bought an UNEXAMINED third candidate a free pass, and the more
+           * a beat's candidates were refused the likelier its picture was one nobody had judged.
+           * That is the exact inverse of the intent stated four comments above this one: "It runs
+           * on the candidate about to be ADOPTED, not on all of them."
+           *
+           * ── The fix, inside the existing budget ────────────────────────────────────────────
+           *
+           * The look budget is spent on judging, not on shopping. With two looks a beat may try
+           * two candidates properly; it may not try two and then take a third on trust. So an
+           * unjudged winner is put back and the beat continues with what it actually knows — the
+           * candidates it DID judge, under RONDE 166's severity rules, via the reprieve below.
+           *
+           * No gate call is added and no ceiling is raised. What changes is which candidate the
+           * beat ends on when the ceiling binds: a judged one, or none.
+           */
+          const judgedOnly = keepOnlyJudgedWinner(
+            winner, judgedCandidateIds, scored, dedup.beatImageRejectedIds
+          );
+          if (judgedOnly.putBack) {
+            console.warn(
+              formatVisualFitDecision({
+                beatLabel: `s${scene.index}b${beat.index}`,
+                candidate: path.basename(judgedOnly.putBack.clipPath),
+                verdict: judgedOnly.reason,
+                severity: "UNKNOWN",
+                decision: "REJECTED",
+                reason: `look_budget_spent_after_${judgedCandidateIds.size}_judgements`,
+              })
+            );
+            recordAssetOutcome(
+              dedup.sourcingCache?.lineage,
+              judgedOnly.putBack.clipPath,
+              judgedOnly.reason,
+              `s${scene.index}b${beat.index}`,
+              clipContentKey(judgedOnly.putBack.clipPath)
+            );
+          }
+          winner = judgedOnly.winner;
+
           // RONDE 61 dropped the winner here so the beat could fall through to another source.
           // RONDE 67 keeps it: render 533 showed what "falling through" costs when the other
           // sources have nothing either — eight beats ended on a grey placeholder, which matches
@@ -27844,6 +31892,218 @@ async function fetchSceneVisualsInner(
             );
             gateReprieveWinner = winner;
             winner = null;
+          }
+          } // end: candidates existed and were judged
+
+          /**
+           * RONDE 132 — the beat has been refused and has nothing left. Ask a better question.
+           *
+           * This is the point RONDE 131 could not reach. Reordering the pile is the right answer
+           * while there is a pile; here there is none, and the beat is about to fall through to a
+           * reprieved picture the gate has already said does not belong.
+           *
+           * The decision is narrow on purpose:
+           *
+           *  · Never on an unclassified refusal. RONDE 134 does act on a MATERIAL fault, but by
+           *    changing what is asked FOR (archive footage) rather than what is asked ABOUT — see
+           *    ADD_ARCHIVAL_INTENT in ./mismatchResearch.
+           *  · Only once per beat, enforced by `mismatchResearchedBeats` before anything is spent.
+           *  · Only when the render can afford it — RONDE 134 §20 passes the remaining scene
+           *    budget, and a pass that would not fit is skipped as BUDGET_EXCEEDED rather than
+           *    started and cut off.
+           *  · RONDE 134: the context is the beat's MERGED with the scene's. A documentary states
+           *    its period once and then relies on it, and RONDE 133 measured what reading only the
+           *    beat costs — a period correction fired on 2 of 10 realistic beats. The scene's own
+           *    words were already admissible evidence to the SearchGate; nothing was building
+           *    queries from them.
+           *  · Only a query the CONTRACT already minted for this beat. `decideResearch` selects
+           *    from `buildPrioritisedQueries`, so the corrected query carries the beat's own proven
+           *    tokens — "Hermann Göring Berlin 1945", with the ö intact, never a reconstruction and
+           *    never the reject reason glued onto the old string.
+           *  · Inside the same provider budget: the cascade's query cap is unchanged, so the
+           *    corrected question REPLACES a weaker one rather than being added to it.
+           *
+           * The clip that comes back has been through `adoptClip`, which runs the beat-image gate
+           * like every other route — so a research candidate is judged, never adopted on trust.
+           */
+          const researchKey = `s${scene.index}b${beat.index}`;
+          /**
+           * RONDE 142 — the refusal may have happened on another route.
+           *
+           * `lastMismatchKind` is set inside this loop only. Video 548 showed why that is too
+           * narrow: 19 of its 24 refusals came from routes that never touch this loop, and the
+           * research pass consequently never saw a fault. The shared gate now records the kind
+           * per beat, so a beat refused elsewhere still has something to correct against.
+           */
+          const beatMismatchKind = lastMismatchKind ?? dedup.lastMismatchByBeat.get(researchKey) ?? null;
+          /**
+           * RONDE 153 — the budget decides, not the preset.
+           *
+           * `!fastStockMode` was a second gate on top of one that already exists and is better
+           * informed: `decideResearch` takes `remainingBudgetMs` and refuses as BUDGET_EXCEEDED
+           * when a pass would not fit. The preset check fired regardless of how much time was
+           * actually left, and video 550 measured what that costs on the one-minute preset, where
+           * fastStockMode is on by default on Railway:
+           *
+           *     [MismatchFeedback] 18 refusal(s) — search-preventable=8
+           *     research attempts=0
+           *     BudgetSummary  estimated=22m  actual=10m 45s  used=49%  total_remaining=11m 15s
+           *
+           * Eight refusals the feedback chain had already classified as fixable by asking a better
+           * question, eleven minutes of unused budget, and not one corrected search — because the
+           * preset said "fast". The beats fell through to placeholders and colour cards instead.
+           *
+           * Research is the recovery path for a refused beat. Switching it off on the preset most
+           * likely to be short of footage is backwards; the budget check is what should decide,
+           * and it already did.
+           */
+          if (!winner && beatMismatchKind) {
+            const beatLabel = researchKey;
+            /**
+             * RONDE 134 — the beat's context, widened by the scene's, using the same extractor.
+             *
+             * `beatSearchProvenance(beat, scene)` is the ambient provenance every provider search
+             * on this beat already runs under; calling it a second time with the SCENE's text as
+             * the subject yields the scene's own typed tokens through exactly the same code path.
+             * No second extractor, and no term that the scene does not literally state.
+             */
+            const researchCtx = buildResearchContext({
+              beat: beatSearchProvenance(beat, scene),
+              scene: scene.text?.trim()
+                ? beatSearchProvenance({ text: scene.text }, scene)
+                : null,
+            });
+            const decision = decideResearch({
+              kind: beatMismatchKind,
+              ctx: researchCtx,
+              alreadyResearched: dedup.mismatchResearchedBeats.has(researchKey),
+              // Every question this beat has already been asked, so a "correction" cannot be one
+              // of them wearing a different sort order — RONDE 134 §19.
+              alreadyUsed: [
+                beat.searchQuery ?? "",
+                beat.text,
+                ...scored.map((s) => s.candidate.title ?? ""),
+              ].filter(Boolean),
+              /**
+               * RONDE 134 §20 — the render's own tracker, the same one the retry guard at the
+               * provider-failure site reads.
+               *
+               * ── RONDE 171: force-export no longer switches this off outright ────────────────
+               *
+               * `forceExportMode` used to replace the real number with 0, which meant every
+               * research pass after it turned on was refused as BUDGET_EXCEEDED regardless of how
+               * much render was actually left. Video 555 measured what that costs:
+               *
+               *     10:39:47 [Pipeline] Force-export mode (≥9 min) — finishing with archive+stock
+               *     10:41:52 [MismatchResearch] beat=s2b0 action=NONE reason=BUDGET_EXCEEDED
+               *              [MismatchResearch] attempts=0 produced=0 accepted=0 skipped=2
+               *              17 van 30 afgewezen beelden waren fout van soort
+               *              [Budget] concat ... remaining=6m 56s
+               *
+               * Force-export fired nine minutes into a twenty-two minute budget. Every beat after
+               * it was refused a forty-five second pass — seventeen of the render's thirty
+               * refusals were the kind a better question fixes — and the render finished with
+               * nearly seven minutes unspent. Three of nineteen beats ended with an approved
+               * picture of their own.
+               *
+               * This is the same shape RONDE 153 removed one round earlier, for the same reason:
+               * a blunt switch sitting on top of a budget check that is better informed. Its words
+               * apply verbatim — "Research is the recovery path for a refused beat. Switching it
+               * off on the preset most likely to be short of footage is backwards; the budget
+               * check is what should decide, and it already did."
+               *
+               * So the real remaining time is passed and `decideResearch` refuses when a pass will
+               * not fit. Force-export is honoured as a MARGIN rather than a veto: a render already
+               * past its own pacing must be able to afford the pass twice over before starting it.
+               * That keeps the intent — do not gamble late — without making the recovery path dead
+               * exactly when a render is short of footage, which is when it is needed.
+               */
+              remainingBudgetMs: get_activeBudgetTracker()?.remainingMs?.(),
+              estimatedCostMs: dedup.forceExportMode
+                ? RESEARCH_ESTIMATED_COST_MS * FORCE_EXPORT_RESEARCH_MARGIN
+                : undefined,
+            });
+            console.log(formatResearchDecision(beatLabel, decision));
+            console.log(formatResearchContext(beatLabel, researchCtx));
+            if (decision.action === "NONE") {
+              recordResearchSkip(dedup.researchTally, decision.reason);
+            } else {
+              // Marked BEFORE the search, so a throw, a timeout or a cancellation cannot leave the
+              // beat eligible for a second pass. One extra look means one, however it ends.
+              dedup.mismatchResearchedBeats.add(researchKey);
+              recordResearchAttempt(dedup.researchTally, decision.strategy);
+              console.log(
+                formatResearchQuery(beatLabel, beat.searchQuery || beat.text, decision.correctedQuery)
+              );
+              const fitsBefore = dedup.beatImageGate.judgementsFits;
+              const mismatchBefore = dedup.beatImageGate.judgementsMismatch;
+              /**
+               * RONDE 160 — how many assets this pass actually brought in.
+               *
+               * Counted from the ledger rather than from the return value: the pass may find
+               * footage that a later gate refuses, and "found nothing" and "found twelve and kept
+               * none" are different problems needing opposite fixes. Absent when no ledger is
+               * attached, and reported as absent rather than as zero.
+               */
+              const ledgerForResearch = dedup.sourcingCache?.lineage;
+              const recordsBefore = ledgerForResearch?.allRecords().length ?? null;
+              const researched = await withSceneFetchTimeout(
+                () =>
+                  fetchHistoricalBeatVideo(
+                    beat, scene, workDir, scene.index, beat.holdSec, dedup,
+                    buildMediaSearchIntent({
+                      beatText: beat.text,
+                      // The corrected queries lead inside fetchHistoricalBeatVideo; the intent's
+                      // own list stays exactly what every other route on this beat would build,
+                      // so nothing about the fallback questions changes.
+                      searchQueries: beatMediaSearchQueries(beat, videoTitle),
+                      keywords: beat.keywords,
+                      primaryPerson: historicalDoc ? "" : personName,
+                      persons: scenePersons,
+                      videoTitle,
+                      powerWord: beat.powerWord,
+                      personTopicLock: dedup.personTopicLock && !historicalDoc,
+                      spaceTopic: isSpaceRelatedTopic(
+                        scene.visualCue, scene.pexelsQuery, beat.text, scene.text, videoTitle ?? ""
+                      ),
+                      muskTopic,
+                    }),
+                    beatAdoptOpts,
+                    `s${scene.index}b${beat.index}_research`,
+                    { leadQueries: decision.correctedQueries, researchPass: true }
+                  ),
+                beatVisualWallMs(dedup.perf),
+                `scene ${scene.index} beat ${beat.index} mismatch research`
+              ).catch(() => null);
+              const gateFits = dedup.beatImageGate.judgementsFits - fitsBefore;
+              const gateRejected = dedup.beatImageGate.judgementsMismatch - mismatchBefore;
+              const recordsAfter = ledgerForResearch?.allRecords().length ?? null;
+              console.log(
+                formatResearchOutcome({
+                  beatLabel,
+                  kind: beatMismatchKind,
+                  strategy: decision.strategy,
+                  query: decision.correctedQuery,
+                  results:
+                    recordsBefore != null && recordsAfter != null
+                      ? Math.max(0, recordsAfter - recordsBefore)
+                      : -1,
+                  eligible: gateFits + gateRejected,
+                  adopted: researched ? 1 : 0,
+                  gateFits,
+                  gateRejected,
+                })
+              );
+              recordResearchOutcome(dedup.researchTally, {
+                produced: Boolean(researched) || gateFits + gateRejected > 0,
+                accepted: Boolean(researched),
+              });
+              if (researched && (await pushClip(researched, beat.holdSec))) {
+                // The research candidate is the beat's picture. Nothing below runs for this beat:
+                // it has real footage the gate approved, which is the outcome the whole round is for.
+                continue;
+              }
+            }
           }
         }
         // RONDE 9: person-locked renders verify the winner with AWS Rekognition celebrity
@@ -27865,19 +32125,47 @@ async function fetchSceneVisualsInner(
         // Nothing survived, but something was refused: take the refusal back rather than leave
         // the beat to a placeholder. A picture the gate disliked is still a picture.
         if (!winner && gateReprieveWinner) {
-          console.log(
-            `[BeatImageGate] reprieve s${scene.index}b${beat.index} ` +
-              `${path.basename(gateReprieveWinner.clipPath)} — nothing else passed`
-          );
-          winner = gateReprieveWinner;
+          // RONDE 103 phase 15: the override is written down against the clip, so the verdict
+          // stays `does_not_fit` and the compose barrier can tell "we decided to use it anyway"
+          // apart from "nothing ever objected". Before this, a reprieved clip was indexed by the
+          // pipeline as though it had passed.
+          //
+          // RONDE 166: and the override can be declined. On a hard mismatch the beat keeps `winner`
+          // null and falls through to every remaining route — the rescue ladder, the curated
+          // archive, the research pass — exactly as a beat that found nothing would. A colour card
+          // is what happens if all of those also fail, not what happens instead of trying them.
+          if (reprieveBeatClip(dedup.beatRelevance, gateReprieveWinner.clipPath, "nothing else passed")) {
+            winner = gateReprieveWinner;
+          }
         }
         let funnelClip: string | null = null;
         let winningExternalCandidate: FunnelCandidate | null = null;
         if (winner) {
           const { candidate, clipPath } = winner;
-          // Registered under the candidate's own provider identity: this beat's winner is
-          // what later beats of this render try to avoid repeating.
-          dedup.usedFunnelCandidateIds.add(candidate.id);
+          /**
+           * RONDE 132 §2 — registered under EVERY identity it has, not only the funnel's.
+           *
+           * `usedFunnelCandidateIds.add` was the whole record here, and `usedCuratedAssetIds` had
+           * exactly one writer in the file: the older archive scan. So an archive asset adopted
+           * through the funnel — the primary path — was never marked as a used ARCHIVE ASSET, and
+           * everything that asks that question was blind to it:
+           *
+           *   · the archive scan re-offered it on a later beat,
+           *   · RONDE 131's search memory, whose exclude set IS that Set, could hand it back.
+           *
+           * `usedContentKeys` still caught it at the adopt point so nothing shipped twice — but
+           * only after a download and a vision call, in one of the six shortlist slots the beat
+           * had, which is a slot a different picture could have used.
+           */
+          markAssetUsedInVideo(dedup, {
+            funnelCandidateId: candidate.id,
+            archiveAssetId: candidate.archivePick?.asset?.id ?? null,
+            storageUrl: (candidate.archivePick?.asset as { storageUrl?: string } | undefined)?.storageUrl ?? null,
+            provider: candidate.poolCandidate ? candidate.source : null,
+            providerAssetId: candidate.poolCandidate?.assetId ?? null,
+            contentKey: clipContentKey(clipPath),
+          });
+          dedup.visualDedupStats.uniqueAssets++;
           funnelClip = clipPath;
           // RONDE 53: record the adoption. This is the SECOND route that never did.
           //
@@ -27898,6 +32186,18 @@ async function fetchSceneVisualsInner(
             candidate.source, candidate.title, dedup.segmentGeoLock,
             candidate.archivePick?.asset?.id
           );
+          /**
+           * RONDE 166 §7 — one line saying why THIS picture is on screen.
+           *
+           * Printed for a plain approval too, not only for a reprieve: a log that speaks up only
+           * when something is wrong cannot tell an approved beat from an unjudged one, and video
+           * 554 had both. Null only when the ledger never saw the clip, which the render summary
+           * already counts as a barrier bypass.
+           */
+          const fitLine = formatAdoptedFitDecision(
+            dedup.beatRelevance, clipPath, clipContentKey(clipPath)
+          );
+          if (fitLine) console.log(fitLine);
           if (candidate.source !== "archive") winningExternalCandidate = candidate;
           // RONDE 62: count the moving/still split here too.
           //
@@ -27941,6 +32241,56 @@ async function fetchSceneVisualsInner(
           }
         }
 
+        /**
+         * RONDE 165 — the beat is decided; say what became of the candidates that lost it.
+         *
+         * This is the route render 554's vanished list was mostly made of, and the audit line above
+         * is what proved it. Beat s2b3:
+         *
+         *     downloaded=4 visionJudged=4 visionAccepted=4 adopted=1
+         *     [VisualDiscovery] s2b3 winner=loc(score=8.0) runnerUp=archive(score=8.0)
+         *
+         * Four candidates fetched, four judged, four PASSED, one used. The other three were dropped
+         * by `scored` going out of scope — no rejection, because nothing rejected them, and no
+         * outcome either, so the ledger showed three assets selected and then simply gone.
+         *
+         * They get the ending they actually had. `superseded_by_winner` and `not_chosen` are kept
+         * apart deliberately: "a better candidate won" is the funnel working, "the beat found no
+         * winner at all" is the funnel failing, and one reason covering both would make the next
+         * render's audit unreadable in exactly the way this one was.
+         */
+        for (const candidate of scored) {
+          if (winner && candidate.clipPath === winner.clipPath) continue;
+          const reason: AssetOutcomeReason = dedup.beatImageRejectedIds.has(candidate.candidate.id)
+            ? "vision_rejected"
+            : winner
+              ? "superseded_by_winner"
+              : "not_chosen";
+          recordAssetOutcome(
+            dedup.sourcingCache?.lineage,
+            candidate.clipPath,
+            reason,
+            `s${scene.index}b${beat.index}`,
+            // The curated archive route has no registered path — this is its only handle.
+            clipContentKey(candidate.clipPath)
+          );
+          /**
+           * RONDE 131 — a remembered asset that did not survive the gates, counted as such.
+           *
+           * Only `vision_rejected` counts. Losing to a better candidate is not the memory being
+           * wrong, and counting it as a rejection would make the metric read as a failure rate for
+           * something that is in fact the funnel doing its job.
+           */
+          const recalledId = candidate.candidate.archivePick?.asset?.id;
+          if (
+            reason === "vision_rejected" &&
+            recalledId != null &&
+            dedup.recalledAssetIds.has(recalledId)
+          ) {
+            dedup.searchMemoryMetrics.memoryRejectedAfterValidation++;
+          }
+        }
+
         // [VisualDiscovery] audit line — counts + per-source scores + winner, one line per beat.
         // FASE 2 / STAP 13: also report runner-up score, whether a stock source won, and whether
         // this beat's winner is queued for archive-ingestion (best-effort, background — see below;
@@ -27979,6 +32329,25 @@ async function fetchSceneVisualsInner(
           acc[c.source] = (acc[c.source] ?? 0) + 1;
           return acc;
         }, {});
+        /**
+         * RONDE 164 — one line saying whether this beat lost candidates or was given bad ones.
+         *
+         * [VisualDiscovery] below reports the same render from the winner's side. This reports it
+         * from the funnel's, which is the side that says which constraint bound: a beat that never
+         * reached VisionGate needs the funnel widened, one whose candidates VisionGate refused
+         * needs better candidates. Nothing here is computed — every value was in hand already.
+         */
+        recordBeatOutcome(sourcingAudit, {
+          candidatesFound: candidatesFoundForBeat,
+          downloaded: downloadedCount,
+          visionJudged: scored.length,
+          visionAccepted: scored.filter((sc) => sc.visionResult.pass).length,
+          adopted: Boolean(winner),
+        });
+        dedup.archiveSourcingAudits.push(sourcingAudit);
+        console.log(
+          formatArchiveSourcingAudit(`s${scene.index}b${beat.index}`, sourcingAudit)
+        );
         console.log(
           `[VisualDiscovery] s${scene.index}b${beat.index} discovered=${discoveredCount} ` +
           `shortlist=${shortlistCount} downloaded=${downloadedCount} scored=${scored.length} ` +
@@ -28065,12 +32434,77 @@ async function fetchSceneVisualsInner(
       } else if (scenePool && scenePool.candidates.length > 0) {
         // P1: try pool candidate first (no extra API calls), fall back to normal retrieval
         // P2: when thumbnail ranking is enabled, rerank by CLIP before downloading
+        /**
+         * RONDE 180 — the selection context this call never had.
+         *
+         * ── What was inert, and why nothing failed ─────────────────────────────────────────
+         *
+         * This is the ONLY production call to `selectCandidatesFromPool`, and it passed no `ctx`.
+         * Two whole features hung off that argument:
+         *
+         *   · R160 FASE 7's thirteen-signal ranking engine, which only runs `if (poolRankingV2
+         *     Enabled() && ctx?.intent)`. Without an intent the pool fell back to the local scorer
+         *     that counts shared word-stems and knows nothing about source priority, motion,
+         *     aspect, duration fit or what shot the Director asked for.
+         *   · R170's duplicate penalty, which needs `ctx.usageLedger`. Without a ledger there is
+         *     nothing to be a duplicate OF, so the same shot could come back in three scenes with
+         *     no penalty at any of them.
+         *
+         * Both were built, tested and unreachable. The flag still decides whether V2 ranking runs
+         * — `poolRankingV2Enabled` follows the cinematic route — so this hands over the inputs and
+         * changes nothing on a deployment that has not turned it on.
+         *
+         * The intent comes from `intentFrom`, the same builder the cinematic plan uses, with the
+         * same extractors. A second intent builder here would let the ranking and the plan describe
+         * different beats.
+         */
+        const rankingIntent = intentFrom(
+          {
+            index: beat.index,
+            text: beat.text,
+            searchQuery: beat.searchQuery,
+            powerWord: beat.powerWord,
+            keywords: beat.keywords,
+            holdSec: beat.holdSec,
+            visualDescription: beat.visualDescription,
+          },
+          scene.index,
+          beat.index,
+          /** No adoption yet — this runs to CHOOSE one. `intentFrom` handles that by design. */
+          null,
+          {
+            people: (t) => extractPersonNamesFromText(t),
+            place: (t) => extractVisualPlacePhrase(t),
+            action: (t) => extractActionCue(t),
+            namedEntities: (t) => beatNamedEntitiesByKind(t),
+            secondarySubjects: (t) => extractSecondaryEntities(t, personName || undefined),
+          }
+        );
         let poolCandidates = selectCandidatesFromPool(
           beat.text,
           beat.powerWord,
           beat.keywords,
           scenePool,
-          poolThumbnailRankingEnabled() ? 8 : 3  // fetch more candidates for P2 to rerank
+          poolThumbnailRankingEnabled() ? 8 : 3,  // fetch more candidates for P2 to rerank
+          {
+            intent: rankingIntent,
+            targetDurationSec: beat.holdSec,
+            /**
+             * RONDE 180 — the entities the beat proved, so a candidate that names one is preferred.
+             *
+             * The same expression `v2Pipeline` uses, not a new one. It is only worth anything since
+             * R177 filled `objects`, `brands` and `companies`: before that this list was always
+             * just the people, and the entityMatch signal had almost nothing to match on.
+             */
+            entityTerms: [
+              ...rankingIntent.people,
+              ...rankingIntent.objects,
+              ...rankingIntent.brands,
+              ...rankingIntent.companies,
+            ],
+            usageLedger: dedup.usageLedger,
+            at: { sceneIndex: scene.index, beatIndex: beat.index },
+          }
         );
         if (poolThumbnailRankingEnabled() && poolCandidates.some(c => c.thumbnailUrl)) {
           poolCandidates = await rankCandidatesByThumbnailClip(
@@ -28108,7 +32542,46 @@ async function fetchSceneVisualsInner(
             dedup.clipAdoptAudit, scene.index, beat.index, beat.text, poolClip,
             adopted?.source ?? "pool", adopted?.title, dedup.segmentGeoLock
           );
+          /**
+           * RONDE 180 — the ledger only means something if adoptions are written to it.
+           *
+           * Recorded at the moment the candidate BECOMES the beat's clip, not when it was ranked:
+           * a candidate that was considered and rejected is not a use, and counting it would make
+           * the next beat avoid a shot this video never showed.
+           *
+           * Provider + provider asset id, never the path — the same identity `assetKey` is built
+           * from, so two downloads of one source video collapse to one entry.
+           */
+          if (adopted) {
+            recordUse(
+              dedup.usageLedger,
+              { provider: adopted.source, providerAssetId: adopted.assetId },
+              { sceneIndex: scene.index, beatIndex: beat.index }
+            );
+          }
         } else {
+          /**
+           * RONDE 176 — the cascade is a FALLBACK, and it says so in the agreed vocabulary.
+           *
+           * The route above is already pool-first: the cascade is only reached when every pool
+           * candidate failed to DOWNLOAD, never because the ranking preferred something else. What
+           * was missing is a log line that names which of the three things happened, so a
+           * production log can distinguish "the pool found nothing" from "the pool found things and
+           * none of them could be fetched" — two very different problems that used to read the same.
+           */
+          console.log(
+            formatFallback({
+              renderId: dedup.sourcingCache?.lineage?.renderId ?? "-",
+              what: `retrieval s${scene.index}b${beat.index}`,
+              from: "pool",
+              to: "cascade",
+              why:
+                poolCandidates.length === 0
+                  ? "POOL_EMPTY: the pool produced no candidate for this beat"
+                  : `CASCADE_FALLBACK: all ${poolCandidates.length} pool candidate(s) failed to download` +
+                    (_poolFailReasons.length > 0 ? ` — ${_poolFailReasons.join(" | ")}` : ""),
+            })
+          );
           if (_poolFailReasons.length > 0) {
             console.log(`[Retry] s${scene.index}b${beat.index} all ${_poolFailReasons.length} pool candidate(s) failed — falling back to per-beat retrieval. Reasons: ${_poolFailReasons.join(" | ")}`);
           }
@@ -28226,7 +32699,7 @@ async function fetchSceneVisualsInner(
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
       } else {
-        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
+        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
         await pushClip(clip);
       }
     }
@@ -28248,7 +32721,7 @@ async function fetchSceneVisualsInner(
       } catch {
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
-        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
+        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
         await pushClip(withText);
         console.log(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI clip (power word "${beat.powerWord}")`
@@ -28323,7 +32796,7 @@ async function fetchSceneVisualsInner(
         );
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
-        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode);
+        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
         await pushClip(withText);
       } else if (!archiveOnly) {
         console.warn(
@@ -28470,7 +32943,7 @@ async function fetchSceneVisualsInner(
       continue;
     }
     if (archiveOnly) {
-      if (!(await montageClipPassesComposeGate(extra, scene.index, clips.length))) {
+      if (!(await montageClipPassesComposeGate(extra, scene.index, clips.length, dedup.beatRelevance))) {
         dedup.usedContentKeys.add(clipContentKey(extra));
         markCuratedAssetUsed(extra, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(extra, dedup));
         backfillAttempts++;
@@ -28834,50 +33307,14 @@ async function renderChapterCard(
 }
 
 // ─── 4b. Branded Intro Title Card ────────────────────────────────────────────
-async function renderIntroCardFFmpeg(videoTitle: string, duration: number, workDir: string): Promise<string> {
-  const outputPath = path.join(workDir, "intro_card.mp4");
-  // Sanitize title for FFmpeg drawtext filter
-  const safeTitle = sanitizeForDrawtext(videoTitle, 60);
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-      `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-filter_complex "[0:v]drawtext=text='${safeTitle}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=h/2-40:line_spacing=10,` +
-      `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
-      `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-    ),
-    60_000, "Intro card FFmpeg render"
-  );
-  return outputPath;
-}
 
-async function renderIntroCard(videoTitle: string, duration: number, workDir: string): Promise<string> {
-  // Always use FFmpeg-only implementation (no canvas dependency)
-  return renderIntroCardFFmpeg(videoTitle, duration, workDir);
-}
+
+
 
 //// ─── 4c. Branded Outro Card ────────────────────────────────────────────
-async function renderOutroCardFFmpeg(duration: number, workDir: string): Promise<string> {
-  const outputPath = path.join(workDir, "outro_card.mp4");
-  await withSceneFetchTimeout(
-    () => exec(
-      `${FFMPEG_BIN} -y -f lavfi -i "color=c=#0a0a1e:size=${VIDEO_WIDTH}x${VIDEO_HEIGHT}:rate=25" ` +
-      `-f lavfi -i anullsrc=r=44100:cl=stereo ` +
-      `-filter_complex "[0:v]drawtext=text='Thanks for watching!':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=h/2-80,` +
-      `fade=t=in:st=0:d=0.4,fade=t=out:st=${duration - 0.4}:d=0.4[vout]" ` +
-      `-map "[vout]" -map "1:a" ` +
-      `-t ${duration} -c:v libx264 ${pipelineFfmpegThreadFlag()} -preset veryfast -crf 18 -pix_fmt yuv420p -r 25 -c:a aac -b:a 320k -shortest "${outputPath}"`
-    ),
-    90_000, "Outro card FFmpeg render"
-  );
-  return outputPath;
-}
 
-async function renderOutroCard(duration: number, workDir: string): Promise<string> {
-  // Always use FFmpeg-only implementation (no canvas dependency)
-  return renderOutroCardFFmpeg(duration, workDir);
-}
+
+
 
 type ComposePhase = "assembly" | "effects" | "full";
 
@@ -29531,10 +33968,40 @@ export async function composeSceneVideoInner(
   );
   // RONDE 34 (point 4): staged clip list, published only on a successful return.
   let pendingUsedClips: string[] = [];
-  const returnComposed = (composedPath: string): string => {
+  /**
+   * RONDE 158 — the one place every compose route leaves through, so the one place to check that
+   * the scene's picture actually covers its sound.
+   *
+   * `targetDur` is the scene's own length. Omitted means "not known here", and the check is then
+   * skipped rather than run against a guess.
+   */
+  const returnComposed = async (composedPath: string, targetDur?: number): Promise<string> => {
     if (usedClipsOut) {
       usedClipsOut.length = 0;
       usedClipsOut.push(...pendingUsedClips);
+    }
+    if (targetDur != null && targetDur > 0 && composedPath === outputPath) {
+      const covered = await repairShortSceneVideo(
+        composedPath,
+        targetDur,
+        scene.index,
+        workDir,
+        90_000,
+        pipelineFfmpegThreadFlag()
+      );
+      if (covered !== composedPath) {
+        // The repair wrote a new file; it becomes the compose output so the rename below publishes
+        // it under the name the caller expects.
+        try {
+          fs.rmSync(outputPath, { force: true });
+          fs.renameSync(covered, outputPath);
+        } catch (err) {
+          console.warn(
+            `[Pipeline] Scene ${scene.index}: could not swap in the repaired scene: ` +
+              `${(err as Error)?.message?.slice(0, 120)}`
+          );
+        }
+      }
     }
     // Only the compose output itself is published atomically; a caller that hands back some
     // other path (there is none today) is returned unchanged rather than renamed blindly.
@@ -29587,19 +34054,65 @@ export async function composeSceneVideoInner(
   }
   const validClips: string[] = [];
   const seenKeys = new Set<string>();
+  /**
+   * RONDE 95 (§1) — the clips this scene chose and this stage is dropping.
+   *
+   * A clip can leave the scene here for two reasons — it failed the compose gate, or an identical
+   * one is already in — and until now both were a console.warn and nothing else. The ledger showed
+   * the clip ADOPTED and then simply absent from FINAL_VIDEO, with no event saying why, which is
+   * indistinguishable from an instrumentation hole.
+   *
+   * They are collected rather than recorded immediately because the right event depends on what
+   * happens next: if a substitute takes the scene over, each of these was REPLACED by it; if the
+   * scene keeps other clips, each was merely REMOVED. The difference matters — one is a swap the
+   * audit must be able to follow, the other is a scene trimming its own surplus.
+   */
+  const droppedClips: Array<{ path: string; reason: string }> = [];
+  const lineage = composeOptions?.dedup?.sourcingCache?.lineage;
   for (const clipPath of existingClips) {
-    if (!(await montageClipPassesComposeGate(clipPath, scene.index, validClips.length))) {
+    if (!(await montageClipPassesComposeGate(clipPath, scene.index, validClips.length, composeOptions?.dedup?.beatRelevance))) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping bad clip ${path.basename(clipPath)}`);
+      droppedClips.push({ path: clipPath, reason: "compose_gate_failed" });
       continue;
     }
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key)) {
       console.warn(`[Pipeline] Scene ${scene.index}: skipping duplicate clip ${path.basename(clipPath)}`);
+      droppedClips.push({ path: clipPath, reason: "duplicate_content_key" });
       continue;
     }
     seenKeys.add(key);
     validClips.push(clipPath);
   }
+
+  /**
+   * RONDE 95 (§1) — one call, whatever substituted for the dropped clips.
+   *
+   * `substitute` is null when nothing took their place, which is the REMOVED case. Recording
+   * happens exactly once per dropped clip: `recorded` guards the three branches below, any of
+   * which can run for the same scene, so a rescue followed by a guaranteed fill cannot file two
+   * REPLACED events for one asset.
+   */
+  let dropsRecorded = false;
+  const settleDroppedClips = (substitute: string | null, reason: string): void => {
+    if (dropsRecorded || !lineage || droppedClips.length === 0) return;
+    dropsRecorded = true;
+    for (const dropped of droppedClips) {
+      if (substitute) {
+        lineage.recordReplacement(dropped.path, substitute, `${reason}:${dropped.reason}`, {
+          originalContentKey: clipContentKey(dropped.path),
+          replacementContentKey: clipContentKey(substitute),
+        });
+      } else {
+        lineage.recordEventForPath(dropped.path, "REMOVED", {
+          status: "REMOVED",
+          reason: dropped.reason,
+          // RONDE 167: the curated route is reachable only by content key.
+          contentKey: clipContentKey(dropped.path),
+        });
+      }
+    }
+  };
 
   if (
     validClips.length === 0 &&
@@ -29609,7 +34122,13 @@ export async function composeSceneVideoInner(
     (await isValidVideoFile(rescueStockClip))
   ) {
     validClips.push(rescueStockClip);
+    settleDroppedClips(rescueStockClip, "rescue_stock_clip");
   }
+
+  // The scene still has clips of its own, so anything dropped above was surplus or unusable — a
+  // removal, not a swap. Guarded by the same `dropsRecorded` flag, so a scene that DID substitute
+  // has already filed its replacements and this is a no-op.
+  if (validClips.length > 0) settleDroppedClips(null, "removed");
 
   if (validClips.length === 0) {
     if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
@@ -29619,10 +34138,14 @@ export async function composeSceneVideoInner(
       for (let i = 0; i < minNeeded; i++) {
         const tierOut: GuaranteedTierOut = {};
         const clip = await generateGuaranteedBeatClip(
-          scene.index, i, holdSec, workDir, undefined, undefined, undefined, tierOut
+          scene.index, i, holdSec, workDir, undefined, undefined, undefined, tierOut,
+          composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
         );
-        if (await montageClipPassesComposeGate(clip, scene.index, i)) {
+        if (await montageClipPassesComposeGate(clip, scene.index, i, composeOptions?.dedup?.beatRelevance)) {
           validClips.push(clip);
+          // RONDE 95 (§1): a generated placeholder standing in for the scene's real clips is the
+          // most important replacement to be able to see, not the least.
+          settleDroppedClips(clip, "guaranteed_fill");
           // Round 17: this proactive guaranteed-fill path (composeSceneVideo finding zero usable
           // clips from upstream search) previously never called recordClipAdopt, so it was
           // invisible to both assertVisualCoverageExportGate's fallbackBeats/beatsFilled ratio
@@ -29662,7 +34185,7 @@ export async function composeSceneVideoInner(
             async (clipPath, holdSec) => {
               const key = clipContentKey(clipPath);
               if (seenRecover.has(key)) return false;
-              if (!(await montageClipPassesComposeGate(clipPath, scene.index, recovered.length))) {
+              if (!(await montageClipPassesComposeGate(clipPath, scene.index, recovered.length, composeOptions?.dedup?.beatRelevance))) {
                 return false;
               }
               seenRecover.add(key);
@@ -29686,7 +34209,8 @@ export async function composeSceneVideoInner(
   if (validClips.length === 0 && canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
     const tierOut: GuaranteedTierOut = {};
     const clip = await generateGuaranteedBeatClip(
-      scene.index, 999, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+      scene.index, 999, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
+      composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
     );
     validClips.push(clip);
     // Round 17: same audit gap as the guaranteed-fill loop above — see its comment.
@@ -29723,7 +34247,9 @@ export async function composeSceneVideoInner(
             const key = clipContentKey(clip);
             const cached = composeClipValidationMemo.get(key);
             if (cached !== undefined) return cached ? clip : null;
-            const ok = await requireValidClip(clip, scene.index, duration, workDir);
+            const ok = await requireValidClip(
+              clip, scene.index, duration, workDir, composeOptions?.dedup?.sourcingCache?.lineage
+            );
             if (composeClipValidationMemo.size >= COMPOSE_VALIDATION_MEMO_MAX) {
               const oldest = composeClipValidationMemo.keys().next();
               if (!oldest.done) composeClipValidationMemo.delete(oldest.value);
@@ -29737,18 +34263,80 @@ export async function composeSceneVideoInner(
     },
     scene.index
   );
+  const clipsBeforeValidation = safeClips.length;
   safeClips = verifiedClips.filter((clip, i, arr) => {
     const key = clipContentKey(clip);
     return arr.findIndex((c) => clipContentKey(c) === key) === i;
   });
+  /**
+   * RONDE 162 — validation may take footage away, and the scene has to be told to go and replace
+   * it, not just carry on with half a montage.
+   *
+   * There was a rescue for "every clip failed" and none at all for "some did", so a scene that
+   * lost part of its footage here simply composed with what was left. Render 553's scene 2:
+   *
+   *     Scene 2: dropping mostly-black clip scene_2_b1_curated_a56087.mp4
+   *     Scene 2: dropping mostly-black clip scene_2_b3_curated_a56190.mp4
+   *     Scene 2: only 2/7 unique clips for 21.9s voice
+   *     Scene 2: montage 8.0s cannot reach 21.9s of voice … playing it 2x
+   *
+   * Four clips became two, the montage came out at 8.0s against 21.9s of narration, and RONDE
+   * 157's replay put those two pictures on screen twice. That is where the render's 24.8%
+   * repetition comes from — measured at 59s/74s and 61s/77s, both inside scene 2 — and it is not
+   * a dedup failure at all: the sourcing dedup never saw a second use, because there was not one.
+   * The scene was simply short.
+   *
+   * The two drops were right; more archive candidates for that scene existed and went unused
+   * (#56042, #56176, #56168, #56212 were all found and scored for its beats). So the fix is to
+   * ask for replacements, through the rescue that was already there for the all-failed case.
+   *
+   * Deliberately not done here: adding a colour card to pad the count. A card is not footage and
+   * would trade a repeat for something worse.
+   */
+  const lostToValidation = clipsBeforeValidation - safeClips.length;
+  if (
+    safeClips.length > 0 &&
+    lostToValidation > 0 &&
+    safeClips.length < requiredMontageClipsForDuration(duration) &&
+    isFastShortVideoLength(composeOptions?.dedup?.videoLength) &&
+    composeOptions?.dedup &&
+    !isComposeNetworkBlocked(composeOptions.dedup, scene.index)
+  ) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index}: validation dropped ${lostToValidation} clip(s), ` +
+        `${safeClips.length}/${requiredMontageClipsForDuration(duration)} left — looking for replacements`
+    );
+    const replacements = await rescueFastShortComposeClips(
+      scene,
+      workDir,
+      coerceVisionString(composeOptions.videoTitle),
+      composeOptions.dedup
+    );
+    for (const clipPath of replacements) {
+      const key = clipContentKey(clipPath);
+      if (safeClips.some((c) => clipContentKey(c) === key)) continue;
+      const ok = await requireValidClip(
+        clipPath, scene.index, duration, workDir, composeOptions.dedup.sourcingCache?.lineage
+      );
+      if (ok) safeClips.push(ok);
+      if (safeClips.length >= requiredMontageClipsForDuration(duration)) break;
+    }
+    console.log(
+      `[Pipeline] Scene ${scene.index}: after replacement ${safeClips.length}/` +
+        `${requiredMontageClipsForDuration(duration)} clip(s)`
+    );
+  }
   if (safeClips.length === 0) {
     if (canAddGuaranteedFallbackClip(composeOptions?.dedup)) {
       console.warn(`[Pipeline] Scene ${scene.index}: alle clips faalden validatie — guaranteed compose fill`);
       const tierOut: GuaranteedTierOut = {};
       const clip = await generateGuaranteedBeatClip(
-        scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+        scene.index, 1001, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
+        composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
       );
-      const ok = await requireValidClip(clip, scene.index, duration, workDir);
+      const ok = await requireValidClip(
+        clip, scene.index, duration, workDir, composeOptions?.dedup?.sourcingCache?.lineage
+      );
       const adopted = ok ?? clip;
       safeClips.push(adopted);
       // Audit-gap fix, fourth site in this function (same class as Round 17 + the two
@@ -29789,7 +34377,7 @@ export async function composeSceneVideoInner(
             async (clipPath, sec = rescueBeat.holdSec) => {
               const key = clipContentKey(clipPath);
               if (seenKeys.has(key)) return false;
-              if (!(await montageClipPassesComposeGate(clipPath, scene.index, safeClips.length))) {
+              if (!(await montageClipPassesComposeGate(clipPath, scene.index, safeClips.length, composeOptions?.dedup?.beatRelevance))) {
                 return false;
               }
               seenKeys.add(key);
@@ -30157,8 +34745,30 @@ export async function composeSceneVideoInner(
     if (composeOptions?.dedup && !composeOptions.dedup.grayPadScenes.includes(scene.index)) {
       composeOptions.dedup.grayPadScenes.push(scene.index);
     }
+    /**
+     * RONDE 132 §10 — the shortfall, as a number.
+     *
+     * The render report said "the tail may be filled by holding the last frame" and stopped there:
+     * no seconds, no clip count, and a "may" that left the reader unable to tell whether anything
+     * actually froze. A shortfall of 0.3s is a rounding artefact; the same warning covering 12s is
+     * a visible defect, and they read identically.
+     *
+     * Recorded on the render state so the end-of-render warning can name the worst scene rather
+     * than only listing which ones were short.
+     */
+    const shortBySec = outDur - estBeforeCompose;
+    if (composeOptions?.dedup) {
+      composeOptions.dedup.montageShortfalls.push({
+        sceneIndex: scene.index,
+        shortBySec,
+        uniqueClips: safeClips.length,
+        neededClips: minClipsNeeded,
+      });
+    }
     console.warn(
-      `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ${outDur.toFixed(1)}s — gray pad will fill gap`
+      `[Pipeline] Scene ${scene.index}: montage est ${estBeforeCompose.toFixed(1)}s < voice ` +
+        `${outDur.toFixed(1)}s — short by ${shortBySec.toFixed(1)}s ` +
+        `(uniqueClips=${safeClips.length} needed=${minClipsNeeded})`
     );
   }
 
@@ -30194,7 +34804,7 @@ export async function composeSceneVideoInner(
         scene.index
       )
     ) {
-      return returnComposed(outputPath);
+      return await returnComposed(outputPath, outDur);
     }
     console.warn(`[Pipeline] Scene ${scene.index}: fast plain compose failed — trying full compose path`);
   }
@@ -30323,7 +34933,7 @@ export async function composeSceneVideoInner(
       if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
         throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} label compose produced no output`);
       }
-      return returnComposed(outputPath);
+      return await returnComposed(outputPath, outDur);
     }
 
     if (IS_RAILWAY && curatedArchiveOnlyVisuals()) {
@@ -30452,7 +35062,7 @@ export async function composeSceneVideoInner(
         )
       ) {
         console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose succeeded (years/SFX skipped)`);
-        return returnComposed(outputPath);
+        return await returnComposed(outputPath, outDur);
       }
     } catch (plainErr) {
       console.warn(`[Pipeline] Scene ${scene.index}: plain montage compose failed:`, plainErr);
@@ -30491,7 +35101,7 @@ export async function composeSceneVideoInner(
           `Compose without SFX scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return returnComposed(outputPath);
+          return await returnComposed(outputPath, outDur);
         }
       } catch (noSfxErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: compose without SFX failed:`, noSfxErr);
@@ -30528,7 +35138,7 @@ export async function composeSceneVideoInner(
           if (subtitlePath) { try { fs.unlinkSync(subtitlePath); } catch { /* ignore */ } }
           for (const frame of kineticFrames) { try { fs.unlinkSync(frame.path); } catch { /* ignore */ } }
           for (const overlay of docOverlays) { try { fs.unlinkSync(overlay.path); } catch { /* ignore */ } }
-          return returnComposed(outputPath);
+          return await returnComposed(outputPath, outDur);
         }
       } catch (noOverlayErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: compose without overlays failed:`, noOverlayErr);
@@ -30592,7 +35202,7 @@ export async function composeSceneVideoInner(
           `Sequential rescue scene ${scene.index}`
         );
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
-          return returnComposed(outputPath);
+          return await returnComposed(outputPath, outDur);
         }
       } catch (seqRescueErr) {
         console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
@@ -30618,7 +35228,8 @@ export async function composeSceneVideoInner(
     console.warn(`[Pipeline] Scene ${scene.index}: compose empty — guaranteed clip rescue`);
     const tierOut: GuaranteedTierOut = {};
     const clip = await generateGuaranteedBeatClip(
-      scene.index, 8888, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut
+      scene.index, 8888, Math.max(3, duration), workDir, undefined, undefined, undefined, tierOut,
+      composeOptions?.dedup ? { dedup: composeOptions.dedup, scene, videoTitle: composeOptions.videoTitle } : undefined
     );
     // Round 17 audit-gap fix, third site: same class of gap as the two guaranteed-fill blocks
     // above (composeSceneVideoInner) — this compose-empty rescue path also used a successfully
@@ -30690,7 +35301,7 @@ export async function composeSceneVideoInner(
   for (const overlay of docOverlays) {
     try { fs.unlinkSync(overlay.path); } catch { /* ignore */ }
   }
-  return returnComposed(outputPath);
+  return await returnComposed(outputPath, outDur);
   } finally {
     discardUnpublishedComposeTemp();
   }
@@ -30849,6 +35460,139 @@ export async function probeVideoDurationSec(filePath: string): Promise<number> {
   return 0;
 }
 
+/**
+ * How long the PICTURE lasts, which is not the same as how long the file lasts.
+ *
+ * RONDE 158 — the difference between the two is the defect. A scene muxed from a montage shorter
+ * than its voice has a container of the full length and a video stream that stops early; a player
+ * holds the last frame across the difference, and the final concat turns that hold into real
+ * duplicated frames. `format=duration` reports the container and therefore reads such a scene as
+ * complete, which is why every check that used it saw nothing wrong.
+ *
+ * Falls back to frame count over frame rate when the stream carries no duration of its own, and
+ * returns 0 when neither can be read — never a guess, because a guessed length here would silently
+ * disable the repair that depends on it.
+ */
+export async function probeVideoStreamDurationSec(filePath: string): Promise<number> {
+  for (const probe of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await withSceneFetchTimeout(
+        () => exec(
+          `"${probe}" -v error -select_streams v:0 -show_entries stream=duration,nb_frames,avg_frame_rate ` +
+            `-of default=noprint_wrappers=1 "${filePath}"`
+        ),
+        30_000,
+        `probeVideoStreamDurationSec ${path.basename(filePath)}`
+      );
+      // Read by key: ffprobe emits these in ITS order (avg_frame_rate first), not the requested
+      // one, so positional parsing silently returns a frame rate where a duration belongs.
+      const fields = new Map<string, string>();
+      for (const line of String(stdout).trim().split(/\r?\n/)) {
+        const eq = line.indexOf("=");
+        if (eq > 0) fields.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
+      }
+      const direct = parseFloat(fields.get("duration") ?? "");
+      if (!isNaN(direct) && direct > 0) return direct;
+      // MP4 from some encoders reports stream duration as N/A; frames ÷ rate is exact enough.
+      const frames = parseInt(fields.get("nb_frames") ?? "", 10);
+      const [num, den] = (fields.get("avg_frame_rate") ?? "").split("/").map((v) => parseFloat(v));
+      if (!isNaN(frames) && frames > 0 && num && den) {
+        const fps = num / den;
+        if (fps > 0) return frames / fps;
+      }
+    } catch { /* try next */ }
+  }
+  return 0;
+}
+
+/**
+ * RONDE 158 — the net under every compose route: a scene whose picture is shorter than its sound.
+ *
+ * RONDE 157 fixed the route production takes by measuring the montage before muxing it. Five other
+ * pad sites cannot do that — they build the montage inline in one filter graph, so there is no file
+ * to measure and they pass an ESTIMATE of its length instead. An estimate that runs long makes the
+ * pad too small and leaves a shortfall, and video 552 shows it running long:
+ *
+ *     scene 1   gap predicted from the estimate 26.0s, gap actually measured 27.25s
+ *     scene 2   gap predicted from the estimate 12.7s, gap actually measured 12.75s
+ *
+ * so scene 1's real montage was about 1.25s shorter than the estimate believed. Small, and still a
+ * frozen second of film.
+ *
+ * This runs after compose, on the finished scene, where the real length can simply be read. It is
+ * deliberately the LAST check rather than a sixth pad site: whatever the cause upstream — an
+ * estimate that ran long, a montage replay that failed, a filter that silently did nothing — the
+ * symptom is the same and is visible here. It also covers the one thing RONDE 157 could not: that
+ * round's replay falls back to the old behaviour when it fails, and this catches that fallback.
+ *
+ * Repairs by stretching the picture across the sound with the same chain everything else uses.
+ * The audio is copied untouched, so the voice keeps its timing and only the picture is adjusted.
+ */
+export async function repairShortSceneVideo(
+  scenePath: string,
+  targetDur: number,
+  sceneIndex: number,
+  workDir: string,
+  composeTimeout: number,
+  threadFlag: string
+): Promise<string> {
+  if (!(targetDur > 0) || !fs.existsSync(scenePath)) return scenePath;
+  const videoDur = await probeVideoStreamDurationSec(scenePath);
+  if (videoDur <= 0) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: could not read the picture's length — cannot tell whether ` +
+        `it covers the voice`
+    );
+    return scenePath;
+  }
+  // One frame of tolerance: a scene may legitimately end a frame short of its container.
+  const shortfall = targetDur - videoDur;
+  if (shortfall <= 0.12) return scenePath;
+
+  console.warn(
+    `[Pipeline] Scene ${sceneIndex}: picture ends at ${videoDur.toFixed(2)}s but the scene runs ` +
+      `${targetDur.toFixed(2)}s — ${shortfall.toFixed(2)}s would be a held frame; repairing`
+  );
+  const repaired = path.join(workDir, `scene_${sceneIndex}_covered_${Date.now()}.mp4`);
+  const chain = montageTailPadFilterChain(
+    videoDur,
+    targetDur,
+    `Scene ${sceneIndex} finished picture ${videoDur.toFixed(1)}s vs scene ${targetDur.toFixed(1)}s`
+  );
+  try {
+    await withSceneFetchTimeout(
+      () => exec(
+        `${FFMPEG_BIN} -y -i "${scenePath}" ` +
+          `-filter_complex "[0:v]${chain}${FPS_FORMAT_VF}[vout]" ` +
+          `-map "[vout]" -map "0:a?" -c:a copy -vsync cfr -t ${targetDur.toFixed(3)} ${threadFlag} ` +
+          `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${MONTAGE_SEGMENT_ENCODE_PRESET} ` +
+          `-crf 20 -pix_fmt yuv420p "${repaired}"`
+      ),
+      composeTimeout,
+      `Scene ${sceneIndex} coverage repair`
+    );
+    const fixedDur = await probeVideoStreamDurationSec(repaired);
+    if (fixedDur > videoDur + 0.05 && fs.statSync(repaired).size > 1000) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex}: picture now runs ${fixedDur.toFixed(2)}s of ` +
+          `${targetDur.toFixed(2)}s`
+      );
+      return repaired;
+    }
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: repair produced ${fixedDur.toFixed(2)}s — keeping the original`
+    );
+  } catch (err) {
+    // The scene itself is fine as footage; only its tail is short. Losing it would be worse.
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: coverage repair failed, the tail will hold a frame: ` +
+        `${(err as Error)?.message?.slice(0, 140)}`
+    );
+  }
+  try { fs.unlinkSync(repaired); } catch { /* ignore */ }
+  return scenePath;
+}
+
 /** Trim leading/trailing silence so scenes concatenate without dead air. */
 async function trimVoiceoverSilence(audioPath: string): Promise<number> {
   if (!fs.existsSync(audioPath)) return 0;
@@ -30887,6 +35631,37 @@ async function ensureFinalVideoDuration(
 ): Promise<string> {
   let working = inputPath;
   const trimmed = path.join(workDir, `fastvid_${videoId}_trimtail.mp4`);
+
+  /**
+   * RONDE 122 — the closing hold is not trailing black to be tidied away.
+   *
+   * This trimmer exists for a real problem: a scene that ends on black leaves a dead patch at the
+   * end of the film, and it cuts back to where the picture stops. It decides that by asking
+   * `blackdetect` where the last dark run begins, which was safe as long as everything at the end
+   * of the file was accidental.
+   *
+   * RONDE 121 put something deliberate there. The closing hold is the film's own last image, and
+   * documentaries end on dark images all the time — a bunker interior, a night shot, a fade in the
+   * source footage. `blackdetect` cannot tell "the picture the editor chose to end on" from
+   * "leftover black", so on any dark ending it would report the tail as a black run reaching the
+   * end of the file, and this would cut off exactly the three seconds that were just added.
+   *
+   * The tail's own file is the evidence that one was appended — the concat writes it under this
+   * same videoId, and its duration is the real length rather than what the env asked for, so a
+   * CLOSING_TAIL_SEC of 5 is protected as five. When it is absent (the tail failed to build, or is
+   * switched off) this whole block is skipped and the trimmer behaves exactly as it always did.
+   */
+  let closingTailSec = 0;
+  try {
+    const tailPath = path.join(workDir, `fastvid_${videoId}_tail.mp4`);
+    if (fs.existsSync(tailPath)) {
+      const probedTail = await probeVideoDurationSec(tailPath);
+      if (probedTail > 0) closingTailSec = probedTail;
+    }
+  } catch {
+    // No tail information is the same as no tail: the trimmer keeps its original behaviour.
+  }
+
   try {
     const detectCmd =
       `"${FFMPEG_BIN}" -y -i "${working}" -vf "blackdetect=d=0.04:pix_th=0.12" -an -f null -`;
@@ -30904,8 +35679,27 @@ async function ensureFinalVideoDuration(
       const lastBlackStart = starts[starts.length - 1];
       const lastBlackEnd = ends[ends.length - 1];
       const probedBeforeTrim = workingDurationSec;
+      /**
+       * RONDE 122: where the closing hold begins, and the line this trimmer may not cross.
+       *
+       * A trailing black run only counts as leftover if it starts BEFORE the tail. Anything from
+       * here on is the deliberate closing image, however dark it happens to be.
+       */
+      const blackReachesTail = trailingBlackTrimReachesClosingTail({
+        lastBlackEndSec: lastBlackEnd,
+        videoDurationSec: probedBeforeTrim,
+        closingTailSec,
+      });
+      if (blackReachesTail) {
+        console.log(
+          `[ClosingTail] trailing-black trim skipped — the last ${closingTailSec.toFixed(1)}s are ` +
+            `the closing hold, not leftover black (blackdetect saw ${lastBlackStart.toFixed(2)}s–` +
+            `${lastBlackEnd.toFixed(2)}s of a ${probedBeforeTrim.toFixed(1)}s film)`
+        );
+      }
       // Only trim trailing black in the last ~25% — avoid chopping mid-video on dark grading.
       if (
+        !blackReachesTail &&
         probedBeforeTrim > 0 &&
         lastBlackStart >= probedBeforeTrim * 0.72 &&
         lastBlackEnd >= trimTo - 0.25 &&
@@ -30973,10 +35767,77 @@ export async function concatenateScenesWithMusic(
   }
 
   const allClips = [...validScenePaths];
+
+  /**
+   * RONDE 121 — three seconds of picture after the last word.
+   *
+   * Appended here, as one more segment in the concat list, rather than by lengthening the last
+   * scene. That keeps it out of every stage that reasons about scenes: the beat coverage, the
+   * vision gate, the overlay scheduler and the per-scene voice trim all still see exactly the
+   * scenes they saw before, and the tail is a thing that happens after them.
+   *
+   * It is deliberately the LAST thing added and the first thing dropped: `buildClosingTail`
+   * returns null on any problem and the concat proceeds without it. A closing hold must never be
+   * able to cost a finished render.
+   */
+  const tailSec = closingTailSeconds();
+  let closingTailSec = 0;
+  if (tailSec > 0 && allClips.length > 0) {
+    const lastScene = allClips[allClips.length - 1]!;
+    const lastSceneDur = await probeVideoDurationSec(lastScene);
+    /**
+     * RONDE 132 — the picture's own length, not the file's.
+     *
+     * probeVideoDurationSec reads `format=duration`, which is the maximum over every stream. On a
+     * composed scene that is the voiceover, and it outlives the last video frame by however long
+     * its tail and fade run. Production video 546 measured 21.400 against a final picture at
+     * 21.160, and the frame grab at 21.297 returned nothing at all.
+     *
+     * probeVideoStreamMeta already reads `stream=duration` on v:0, so the right number was one
+     * call away the whole time.
+     */
+    const lastSceneVideoDur = (await probeVideoStreamMeta(lastScene))?.durationSec ?? null;
+    if (lastSceneDur > 0.2) {
+      const built = await buildClosingTail({
+        lastScenePath: lastScene,
+        outputPath: path.join(workDir, `fastvid_${videoId}_tail.mp4`),
+        framePath: path.join(workDir, `fastvid_${videoId}_tailframe.jpg`),
+        ffmpegBin: FFMPEG_BIN,
+        run: (cmd, ms, label) => withSceneFetchTimeout(() => exec(cmd), ms, label),
+        lastSceneDurationSec: lastSceneDur,
+        lastSceneVideoDurationSec: lastSceneVideoDur,
+        tailSec,
+        widthPx: VIDEO_WIDTH,
+        heightPx: VIDEO_HEIGHT,
+        encodeArgs: `-c:v libx264 ${pipelineFfmpegThreadFlag()} -preset ${fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast"} -crf ${fastShort ? 22 : 18}`,
+        fileExists: (p) => {
+          try { return fs.existsSync(p) && fs.statSync(p).size > 1000; } catch { return false; }
+        },
+      });
+      if (built) {
+        allClips.push(built.path);
+        closingTailSec = built.plan.tailSec;
+        console.log(
+          formatClosingTailSeek(
+            closingTailFrameSeek({
+              containerDurationSec: lastSceneDur,
+              videoStreamDurationSec: lastSceneVideoDur,
+            }),
+            lastSceneDur
+          )
+        );
+        console.log(formatClosingTailPlan(built.plan, VIDEO_WIDTH, VIDEO_HEIGHT));
+      } else {
+        console.warn("[ClosingTail] could not be built — the video ends on the last word, as before");
+      }
+    }
+  }
+
   const listContent = allClips.map(p => `file '${p}'`).join("\n");
   fs.writeFileSync(listFile, listContent, "utf-8");
 
-  const totalWithCards = totalDuration;
+  // The music track has to cover the tail too, or the last three seconds fall silent.
+  const totalWithCards = totalDuration + closingTailSec;
 
   const concatPreset = fastShort ? MONTAGE_SEGMENT_ENCODE_PRESET : "veryfast";
   const concatCrf = fastShort ? 22 : 18;
@@ -31145,6 +36006,7 @@ export async function runVideoPipeline(
     videoVisualContext: null,
     voiceoverSilentFallbackNotes: [],
     elevenLabsQuotaExhausted: false,
+    sourcingCache: null,
   };
   // runWithActiveVideoId makes videoId/userId readable from ANY module in this render's call
   // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
@@ -31327,6 +36189,16 @@ async function _runVideoPipelineInner(
             // single clip has been adopted, so there is no mix to be behind on yet. The inline
             // funnel call — the one that runs per scene, with clips already on the timeline —
             // is where the measured deficit is passed.
+            //
+            // RONDE 131: the memory IS read here, and this is the call site where it pays best —
+            // during TTS, before a single provider request has been made. No exclude set yet for
+            // the same reason as the deficit: nothing has been adopted.
+            //
+            // No metrics object either: this prefetch runs BEFORE createVisualDedupState, so the
+            // per-render counters do not exist yet. The per-beat [SearchMemory] line still prints
+            // for every scene here — what the summary counts is the inline funnel, which is the
+            // path that actually spends a beat's budget.
+            memoryEntity: activeMemoryEntity(),
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
@@ -31352,6 +36224,8 @@ async function _runVideoPipelineInner(
             extraQueries: anchoredPoolQueries.extraQueries,
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+            /** RONDE 177 — the same source list for the prefetch as for the inline build. */
+            youtubeSearch: scenePoolYoutubeSearch(),
           }).catch(err => {
             console.warn(`[Pool P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
@@ -31551,7 +36425,34 @@ async function _runVideoPipelineInner(
       `AI fallback=${perf.enableAiFallback ? `on (max ${perf.maxAiClipsPerVideo} clips)` : "off"}, ` +
       `minimize stock=${perf.minimizeStockFootage ? `yes (≤${perf.maxStockBeatsPerVideo} Pexels/Pixabay)` : "no"}`
     );
-    if (!perf.enableAiFallback && !cheapAiImageProvidersReady()) {
+    /**
+     * RONDE 137 — "AI fallback: on" must mean a picture can actually be generated.
+     *
+     * ── What video 558 could not explain ─────────────────────────────────────────────────────
+     *
+     * That render shipped seven colour cards and three fallback beats, and nothing in the log said
+     * why. The reason is here: these two facts are independent, and they were joined with `&&`.
+     *
+     *     if (!perf.enableAiFallback && !cheapAiImageProvidersReady())   → "empty beats stay empty"
+     *     else if (perf.enableAiFallback)                                → "AI fallback: cheap tier"
+     *
+     * With the feature ENABLED and no API key, the first branch is false and the second one fires:
+     * the render announces "AI fallback: cheap image tier (Stability Core → Leonardo)" while there
+     * is no Stability key and no Leonardo key to run it with. The one state that most needs saying
+     * out loud is the one state that printed the reassuring line.
+     *
+     * The fallback ladder's own comment says "AI clip when stock/YouTube miss — never grey". That
+     * promise is only keepable with a provider; when there is none, the render must say so, because
+     * the remedy is a key rather than a code change and nobody can act on a line that claims all is
+     * well.
+     */
+    const aiTierReady = cheapAiImageProvidersReady();
+    if (perf.enableAiFallback && !aiTierReady) {
+      console.warn(
+        "[Pipeline] AI fallback is ENABLED but no image provider is configured — empty beats will " +
+        "fall back to a colour card. Set STABILITY_AI_API_KEY or LEONARDO_API_KEY (~$0.03/img)."
+      );
+    } else if (!perf.enableAiFallback && !aiTierReady) {
       console.warn(
         "[Pipeline] No cheap AI keys — empty beats stay empty (set STABILITY_AI_API_KEY, ~$0.03/img)"
       );
@@ -31565,6 +36466,14 @@ async function _runVideoPipelineInner(
     visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
+    /**
+     * RONDE 173 — publish this render's sourcing cache on its own context.
+     *
+     * Set once, here, next to the dedup state it belongs to. Every provider fetcher that was never
+     * handed a cache through its arguments now finds this one; see the RenderCtx field for the 156
+     * uncached searches render 555 measured.
+     */
+    set_activeSourcingCache(visualDedup.sourcingCache);
 
     // Await the blueprint (started in parallel above) and attach to dedup state
     const videoBlueprint = await blueprintPromise;
@@ -31840,6 +36749,47 @@ async function _runVideoPipelineInner(
     let voiceMontageSyncResults: Array<{ sceneIndex: number; audit: VoiceMontageSyncAuditResult }> = [];
 
     if (scenePipelineEnabled()) {
+      /**
+       * RONDE 172 — the degradation ladder's clock starts HERE on this path too.
+       *
+       * ── The gap ────────────────────────────────────────────────────────────────────────────
+       *
+       * `visualDedup.pipelineStartedMs` is initialised to `pipelineWallStartMs` (the render's own
+       * start) far above, and RONDE 5 / FIX 7 resets it to the visual stage — but that reset lives
+       * in the SEQUENTIAL branch below and this branch never had one. So on the P5A path the whole
+       * ladder measured RENDER time: script generation, TTS, the blueprint, the archive-pool warm
+       * and the CLIP prewarm all counted against budgets meant for sourcing.
+       *
+       * FIX 7 already wrote down exactly what that costs, for the reason it was made:
+       *
+       *     "It used to measure from videoRow.generationStartedAt, which meant (a) script + TTS +
+       *      archive-pool warm + CLIP prewarm all counted against the sourcing budgets, and (b) a
+       *      stall-recovery RETRY inherited the first attempt's clock wholesale — render 517
+       *      attempt 2 started with 12s beat budgets 34 seconds in."
+       *
+       * That fix was applied to one of the two branches. This is the other one.
+       *
+       * ── What it changes ────────────────────────────────────────────────────────────────────
+       *
+       * All three rungs read this field — turbo at 25% of the wall clock, rush at 35%, force-export
+       * at 45%. On a 1-minute video that is 5 / 7 / 9 minutes. Every minute spent before the scene
+       * loop was a minute taken off all three.
+       *
+       * Render 555 fired force-export at 9m28s measured from its work directory's own timestamp,
+       * and its research pass was refused for the rest of the render. Whether that render took this
+       * branch cannot be read from its log — both branch-announcing lines fall in the truncated
+       * first seven minutes — so this is not offered as that render's diagnosis. It is a hole in
+       * the clock that is visible in the code either way, and it can only make the ladder fire
+       * early, never late.
+       *
+       * The 45% fraction itself is NOT touched. One render is not evidence about a threshold that
+       * governs every render, and firing later risks the hard wall-clock cap it exists to avoid.
+       */
+      visualDedup.pipelineStartedMs = Date.now();
+      console.log(
+        `[Pipeline] video=${videoId} sourcing-ladder clock started at visual stage (P5A) ` +
+        `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
+      );
       // ── P5A: Scene Processing Pipeline ──────────────────────────────────────
       // Producer/Consumer: each scene runs fetch → per-scene recovery → compose
       // as a unit. Scene N+1 composes while Scene N+2 is still fetching.
@@ -31952,7 +36902,12 @@ async function _runVideoPipelineInner(
                       },
                       audioPaths[i], prefetchPools, prefetchFunnels
                     ),
-                    perf.sceneVisualTimeoutMs,
+                    sceneSearchBudgetMs({
+                      flatMs: perf.sceneVisualTimeoutMs,
+                      // Beats are derived later (buildSceneBeats), so duration is the honest
+                      // signal available at the moment this budget has to be set.
+                      sceneDurationSec: scene.duration,
+                    }),
                     `Scene ${scene.index} visuals`
                   ),
                   scene.index
@@ -31990,7 +36945,9 @@ async function _runVideoPipelineInner(
                   svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
                 }
               }
+              const prevSceneVisual_4 = sceneVisualResults[i];
               sceneVisualResults[i] = svr;
+              noteSceneClipsResourced(visualDedup, prevSceneVisual_4, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
               completedPipelineVisuals++;
               gantt(`Scene ${scene.index} retrieve END  (${svr.clips.length} clips)`, t2p);
               profiler.recordSceneRetrieve(i, scene.index, scene.duration, retrieveStartMs, Date.now(), 0, svr.clips.length);
@@ -32146,7 +37103,8 @@ async function _runVideoPipelineInner(
                         try {
                           const rescueClip = await generateGuaranteedBeatClip(
                             scene.index, si, hold, workDir, slotBeatText,
-                            rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut
+                            rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut,
+                            { dedup: visualDedup, scene, videoTitle }
                           );
                           rescueClips.push(rescueClip);
                           rescueBeatIndices.push(slotBeatIndex);
@@ -32175,7 +37133,8 @@ async function _runVideoPipelineInner(
                           try {
                             const retryClip = await generateGuaranteedBeatClip(
                               scene.index, si, hold, workDir, slotBeatText,
-                              rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut
+                              rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut,
+                              { dedup: visualDedup, scene, videoTitle }
                             );
                             rescueClips.push(retryClip);
                             rescueBeatIndices.push(slotBeatIndex);
@@ -32266,7 +37225,8 @@ async function _runVideoPipelineInner(
                         try {
                           parityClip = await generateGuaranteedBeatClip(
                             scene.index, 9999, Math.max(3, scene.duration), workDir, scene.text,
-                            undefined, undefined, parityTierOut
+                            undefined, undefined, parityTierOut,
+                            { dedup: visualDedup, scene, videoTitle }
                           );
                         } catch (guaranteedErr) {
                           console.warn(
@@ -32421,7 +37381,7 @@ async function _runVideoPipelineInner(
       pipelineStepTiming.summarizeAll();
       // Phase 20: sourcing counters alongside the existing timing summary. Synchronous,
       // try/catch-wrapped, no awaits — it can never delay or fail the render.
-      logSourcingMetrics(visualDedup.sourcingCache);
+      logSourcingMetrics(visualDedup.sourcingCache, videoId);
     } else {
     // ── Sequential: Stage 3 (visuals) then Stage 4 (compose), chunked ~60s at a time ──
     // Long videos are processed in small batches through the exact SAME per-scene Stage
@@ -32548,7 +37508,10 @@ async function _runVideoPipelineInner(
                   prefetchPools,
                   prefetchFunnels
                 ),
-                perf.sceneVisualTimeoutMs,
+                sceneSearchBudgetMs({
+                  flatMs: perf.sceneVisualTimeoutMs,
+                  sceneDurationSec: scene.duration,
+                }),
                 `Scene ${scene.index} visuals`
               ),
             scene.index
@@ -32625,9 +37588,11 @@ async function _runVideoPipelineInner(
       );
       if (usable.length > 0) continue;
       console.warn(`[Pipeline] Scene ${scenes[si].index}: empty after fetch — recovery sweep`);
+      const prevSceneVisual_5 = sceneVisualResults[si];
       sceneVisualResults[si] = await recoverSceneClipsIfEmpty(
         scenes[si], workDir, topicContext, visualDedup
       );
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_5, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       if (
         sceneVisualResults[si].clips.length === 0 &&
         perf.enableAiFallback &&
@@ -32655,10 +37620,12 @@ async function _runVideoPipelineInner(
           topicContext
         );
         if (aiClip && !isPipelineFallbackClip(aiClip)) {
+          const prevSceneVisual_6 = sceneVisualResults[si];
           sceneVisualResults[si] = {
             clips: [aiClip],
             beatDurations: [Math.max(VIDRUSH_BEAT_SEC, scene.duration / 2)],
           };
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_6, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
           console.warn(`[Pipeline] Scene ${scene.index}: last-resort AI clip`);
         }
       }
@@ -32707,12 +37674,15 @@ async function _runVideoPipelineInner(
             await appendGuaranteedSceneClips(scene, workDir, clips, beatDurations, minNeeded, visualDedup);
           }
           if (clips.length > 0) {
+            const prevSceneVisual_7 = sceneVisualResults[si];
             sceneVisualResults[si] = { clips, beatDurations };
+            noteSceneClipsResourced(visualDedup, prevSceneVisual_7, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
           }
         } else if (strictVoiceVisualMatchEnabled()) {
           console.warn(
             `[Pipeline] Scene ${scenes[si].index}: strict refill — elke zin moet voice/script-matchen`
           );
+          const prevSceneVisual_8 = sceneVisualResults[si];
           sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
             scenes[si],
             workDir,
@@ -32720,6 +37690,7 @@ async function _runVideoPipelineInner(
             visualDedup,
             audioPaths[si]
           );
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_8, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
         } else {
           console.warn(`[Pipeline] Scene ${scenes[si].index}: still empty — guaranteed scene fill`);
           const scene = scenes[si];
@@ -32733,7 +37704,9 @@ async function _runVideoPipelineInner(
             minClipsForBalancedVoice(scene.duration + 0.15),
             visualDedup
           );
+          const prevSceneVisual_9 = sceneVisualResults[si];
           sceneVisualResults[si] = { clips, beatDurations };
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_9, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
         }
       }
     }
@@ -32764,6 +37737,7 @@ async function _runVideoPipelineInner(
         console.warn(
           `[Pipeline] Scene ${scenes[si].index}: ${usable.length}/${minNeeded} clips — strict beat refill`
         );
+        const prevSceneVisual_10 = sceneVisualResults[si];
         sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
           scenes[si],
           workDir,
@@ -32771,6 +37745,7 @@ async function _runVideoPipelineInner(
           visualDedup,
           audioPaths[si]
         );
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_10, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
       }
     }
 
@@ -32821,12 +37796,14 @@ async function _runVideoPipelineInner(
               vr.clipBeatIndices,
               vr.beats
             );
+            const prevSceneVisual_11 = sceneVisualResults[i];
             sceneVisualResults[i] = {
               ...vr,
               clips: reordered.clips,
               beatDurations: reordered.beatDurations,
               clipBeatIndices: reordered.clipBeatIndices,
             };
+            noteSceneClipsResourced(visualDedup, prevSceneVisual_11, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
           })
         );
         console.log(`[Editorial] Reorder pass done in ${Date.now() - reorderT0}ms`);
@@ -32842,7 +37819,9 @@ async function _runVideoPipelineInner(
         if (!vr || vr.clips.length < 2) continue;
         const sso = optimizeShotSequence(scenes[i].index, vr.clips, vr.beatDurations, vr.clipBeatIndices, vr.beats);
         if (sso.changes > 0) {
+          const prevSceneVisual_12 = sceneVisualResults[i];
           sceneVisualResults[i] = { ...vr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_12, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
         }
       }
     }
@@ -32855,7 +37834,9 @@ async function _runVideoPipelineInner(
         const beatTexts = (vr.beats ?? []).map((b) => b.text);
         if (beatTexts.length === 0) continue;
         const rr = applyVisualRhythm(scenes[i].index, beatTexts, vr.beatDurations);
+        const prevSceneVisual_13 = sceneVisualResults[i];
         sceneVisualResults[i] = { ...vr, beatDurations: rr.beatDurations };
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_13, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
       }
     }
 
@@ -33015,7 +37996,8 @@ async function _runVideoPipelineInner(
                         rescueBeatTextForSlot(si, rescueBeats, uncoveredBeats) ?? scene.text,
                         rescueUsedAssetIds,
                         rescueUsedStorageUrls,
-                        slotTierOut
+                        slotTierOut,
+                        { dedup: visualDedup, scene, videoTitle }
                       );
                       rescueClips.push(rescueClip);
                       // RONDE 50 (point 8): the beat mapping is published only once the clip it
@@ -33104,7 +38086,8 @@ async function _runVideoPipelineInner(
                 try {
                   lastClip = await generateGuaranteedBeatClip(
                     scene.index, 9999, Math.max(3, scene.duration), workDir,
-                    undefined, undefined, undefined, lastTierOut
+                    undefined, undefined, undefined, lastTierOut,
+                    { dedup: visualDedup, scene, videoTitle }
                   );
                 } catch (guaranteedErr) {
                   visualDedup.sceneRescueColorFallbackCount++;
@@ -33396,7 +38379,7 @@ async function _runVideoPipelineInner(
     console.log(`[Pipeline] Stage 4 (compose): ${scenes.length} scenes in ${((Date.now()-t3)/1000).toFixed(1)}s`);
     profiler.recordStageEnd("compose", Date.now());
     pipelineStepTiming.summarizeAll();
-    logSourcingMetrics(visualDedup.sourcingCache);
+    logSourcingMetrics(visualDedup.sourcingCache, videoId);
     } // end else (sequential Stage 3 + Stage 4)
 
     // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────
@@ -33494,6 +38477,16 @@ async function _runVideoPipelineInner(
     }
 
     const allClipPaths = composedUsedClips.flat().filter(Boolean);
+    /**
+     * RONDE 106 — collect the render's own reports so they can be stored with the video.
+     *
+     * Created here because everything worth keeping is emitted from this point on. The emitters
+     * are unchanged; each one now hands its line to the collector on the way to the console.
+     */
+    const pipelineReport = createPipelineReportCollector(
+      videoId,
+      visualDedup.sourcingCache.lineage.renderId
+    );
     const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
       pipelineSec: Math.round((Date.now() - t0) / 1000),
       stockBeatsUsed: visualDedup.stockBeatsUsed,
@@ -33505,6 +38498,9 @@ async function _runVideoPipelineInner(
       // RONDE 86/87: the report reads the ledger and nothing else. A clip whose origin cannot be
       // proven comes back null here and is counted as UNVERIFIED — never re-derived from its name.
       resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
+      // RONDE 105: the relevance ledger, so the report can tell a beat whose picture was approved
+      // from one whose picture nobody looked at. Without it every beat reads as never_asked.
+      relevanceLedger: visualDedup.beatRelevance,
     });
     // RONDE 8 (render 518): a scene whose montage came up short scored 100/100 because the filler
     // is not a fallback clip. Same registration pattern as the silent-voiceover notes below.
@@ -33518,9 +38514,7 @@ async function _runVideoPipelineInner(
     // which is the thing worth reporting either way.
     if (visualDedup.grayPadScenes.length > 0) {
       const padScenes = [...visualDedup.grayPadScenes].sort((a, b) => a - b);
-      qualityReport.warnings.push(
-        `short montage: scene(s) ${padScenes.join(", ")} had less footage than voice — the tail may be filled by holding the last frame`
-      );
+      qualityReport.warnings.push(formatMontageShortfallWarning(visualDedup.montageShortfalls, padScenes));
       console.warn(
         `[Quality] Video ${videoId}: ${padScenes.length} scene(s) with a short montage (${padScenes.join(", ")}) — visual coverage incomplete`
       );
@@ -33529,6 +38523,19 @@ async function _runVideoPipelineInner(
     // so "there should be more video than photos" was a claim nobody could check against a
     // finished render — including me, when I sized the moving-footage bonus in RONDE 27.
     {
+      /**
+       * RONDE 164 — which constraint actually bound this render, across every beat.
+       *
+       * One beat proves nothing about a download budget. This is the number the next round needs
+       * before touching MAX_FUNNEL_CANDIDATES_TO_SCORE: a render whose beats mostly read
+       * LOST_BEFORE_VISION with cutByBudget high has a budget problem; one whose beats read
+       * REJECTED_BY_VISION has a candidate-quality problem, and raising the budget would only buy
+       * more downloads to refuse.
+       */
+      {
+        const sourcingTotal = summarizeArchiveSourcing(visualDedup.archiveSourcingAudits);
+        if (sourcingTotal) console.log(sourcingTotal);
+      }
       const moving = visualDedup.movingClipCount;
       const still = visualDedup.stillClipCount;
       const total = moving + still;
@@ -33556,17 +38563,152 @@ async function _runVideoPipelineInner(
       // as the other sends the next round of work in the wrong direction.
       {
         const g = visualDedup.beatImageGate;
-        if (g.judgementsUsed > 0 || g.judgementsFailed > 0) {
-          const line =
-            `beat image gate — judged=${g.judgementsUsed} unavailable=${g.judgementsFailed}` +
-            ` (youtube ${g.youtubeJudgementsUsed})`;
-          console.log(`[Quality] Video ${videoId}: ${line}`);
-          if (g.judgementsFailed >= Math.max(3, g.judgementsUsed * 0.25)) {
+        const t = judgementTally(g);
+        /**
+         * RONDE 105 — the counters are printed as a partition, not as numbers to combine.
+         *
+         * What stood here computed `failed / (used + failed)` and called it "could not fetch N of
+         * M". `used` counted ATTEMPTS and `failed` counted the failures among them, so the
+         * denominator double-counted every failure: a render where the model answered nothing
+         * (attempts 44, failed 44) reported "44 of 88", which reads as half. It was all of them,
+         * and the video shipped with a picture editor that had approved not one frame.
+         */
+        if (t.attempts > 0 || t.skipped > 0) {
+          console.log(
+            `[Quality] Video ${videoId}: beat image gate — attempts=${t.attempts} ` +
+              `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
+              `failed=${t.failed} never_asked=${t.skipped} (youtube ${g.youtubeJudgementsUsed})`
+          );
+          // RONDE 115: and WHY, in one line — the fact that was previously spread over one log
+          // line per clip and therefore invisible.
+          {
+            const why = formatNoVerdictReasons(g);
+            if (why) console.warn(why);
+          }
+          // RONDE 119: and WHO answered. A chain that fell through to its last provider used to
+          // look exactly like one where the configured provider answered everything.
+          {
+            const who = formatVerdictProviders(g);
+            if (who) console.log(who);
+          }
+          if (t.inconsistent) {
             qualityReport.warnings.push(
-              `beeldgate kon ${g.judgementsFailed} van ${g.judgementsUsed + g.judgementsFailed} ` +
-                `oordelen niet ophalen — die clips zijn ONGEZIEN aangenomen`
+              `beeldgate-tellers kloppen niet: ${t.attempts} pogingen ≠ ${t.fits}+${t.mismatch}+${t.failed}`
             );
           }
+          if (t.attempts > 0 && t.answered === 0) {
+            qualityReport.warnings.push(
+              `beeldgate gaf GEEN ENKEL oordeel: ${t.attempts} pogingen, ${t.failed} mislukt — ` +
+                `elke clip in deze video is ONGEZIEN aangenomen`
+            );
+          } else if (t.failed >= Math.max(3, t.attempts * 0.25)) {
+            qualityReport.warnings.push(
+              `beeldgate kon ${t.failed} van ${t.attempts} pogingen niet beantwoorden — ` +
+                `die clips zijn ONGEZIEN aangenomen`
+            );
+          }
+          /**
+           * RONDE 103 — a decline is not a pass. `never_asked` counts the asks this gate never
+           * attempted: budget spent, per-beat ceiling reached, no readable frame. Kept separate
+           * from `unavailable` because the two have different causes and different fixes.
+           */
+          if (t.skipped >= Math.max(3, t.attempts * 0.25)) {
+            qualityReport.warnings.push(
+              `beeldgate is ${t.skipped} keer niet eens bevraagd (budget op, of geen ` +
+                `leesbaar beeld) — die clips zijn ONGEZIEN aangenomen`
+            );
+          }
+          /**
+           * RONDE 131 — and WHAT was wrong with the pictures it refused.
+           *
+           * `does_not_fit=21` says twenty-one pictures did not belong. It does not say whether a
+           * narrower query would have found better ones or whether the archives simply do not
+           * hold them, and those are the two projects the next round has to choose between. The
+           * split below is the first time this render can answer that.
+           */
+          {
+            const summary = formatMismatchSummary(visualDedup.mismatchTally);
+            if (summary) console.log(summary);
+            /**
+             * RONDE 132 — and what the render DID about it.
+             *
+             * The mismatch split says how many refusals a better question could have prevented.
+             * This says how many the render actually went back and asked, and how many of those
+             * came home with a picture the gate then accepted. The two lines together are the
+             * before/after this round is measured on.
+             */
+            const research = formatResearchSummary(visualDedup.researchTally);
+            if (research) console.log(research);
+            const split = mismatchFaultSplit(visualDedup.mismatchTally);
+            if (split.question >= Math.max(3, visualDedup.mismatchTally.total * 0.5)) {
+              qualityReport.warnings.push(
+                `${split.question} van ${visualDedup.mismatchTally.total} afgewezen beelden waren ` +
+                  `fout van soort (verkeerde periode, plaats of onderwerp) — die had een ` +
+                  `preciezere zoekvraag kunnen voorkomen`
+              );
+            }
+            /**
+             * RONDE 135 — the three lines above, joined to the one fact they were all missing.
+             *
+             * "21 refusals" is a fact about the render. "Pexels supplied nine candidates and eight
+             * were refused as present-day footage" is a fact about a SOURCE, and only the second
+             * says where to look next. The tally has been keyed by `${kind}|${source}` since
+             * RONDE 131 and nothing had ever printed it.
+             */
+            const adoptedByProvider = new Map<string, number>();
+            for (const entry of visualDedup.clipAdoptAudit) {
+              const key = (entry.source ?? "").trim().toLowerCase() || "unknown";
+              adoptedByProvider.set(key, (adoptedByProvider.get(key) ?? 0) + 1);
+            }
+            console.log(
+              formatVisualSourcingAudit({
+                beats: qualityReport.beatVisuals?.beats ?? 0,
+                visionAttempts: t.attempts,
+                fits: t.fits,
+                doesNotFit: t.mismatch,
+                research: {
+                  attempts: visualDedup.researchTally.attempts,
+                  produced: visualDedup.researchTally.produced,
+                  accepted: visualDedup.researchTally.accepted,
+                  rejected: visualDedup.researchTally.rejected,
+                },
+                tally: visualDedup.mismatchTally,
+                adoptedByProvider,
+              })
+            );
+            /**
+             * A provider that supplied plenty and passed nothing is reported, never removed.
+             * RONDE 135 §8: one render is not evidence about a catalogue, it is a prompt to look.
+             */
+            const unproductive = findUnproductiveProviders(
+              summarizeProviderOutcomes({ tally: visualDedup.mismatchTally, adoptedByProvider })
+            );
+            for (const p of unproductive) {
+              qualityReport.warnings.push(
+                `bron ${p.provider} leverde ${p.judged} beoordeelde kandidaten en geen enkele ` +
+                  `bruikbare${p.topKind ? ` (meestal ${p.topKind})` : ""}`
+              );
+            }
+          }
+        }
+        console.log(
+          `[Quality] Video ${videoId}: ${formatRelevanceSummary(g, visualDedup.beatRelevance)}`
+        );
+        /**
+         * RONDE 103 phase 15 — a shot used over the picture editor's objection is reported as
+         * exactly that. The reprieve is a deliberate product choice (a real picture beats a grey
+         * card), but a render that had to make it eight times is telling you its sourcing failed,
+         * and that has to be visible rather than folded into the pass count.
+         */
+        let reprieved = 0;
+        for (const { decision } of visualDedup.beatRelevance.byClipPath.values()) {
+          if (decision.reprieved) reprieved++;
+        }
+        if (reprieved > 0) {
+          qualityReport.warnings.push(
+            `${reprieved} clip(s) zijn gebruikt terwijl de beeldgate ze had afgekeurd — er was ` +
+              `geen alternatief (verdict=does_not_fit, reprieved=true)`
+          );
         }
       }
       // RONDE 70: one funnel line per beat, for EVERY beat.
@@ -33598,14 +38740,50 @@ async function _runVideoPipelineInner(
       }
       const gateStats = getActiveGateFiringStats();
       if (gateStats) {
-        console.log(`[Quality] Video ${videoId}: gate firing — ${formatGateFiringSummary(gateStats)}`);
+        console.log(
+          pipelineReport.add("gates", `[GateFiring] ${formatGateFiringSummary(gateStats)}`)
+        );
+        /**
+         * RONDE 105/106: the gates RONDE 103 and 104 demoted on purpose are reported as
+         * information rather than as an alarm, so the admin can see how often they WOULD have
+         * fired without being told to go and fix something that is working as designed.
+         */
+        for (const row of summarizeDemotedGates(gateStats)) {
+          pipelineReport.add(
+            "gates",
+            `[GateDemoted] ${row.gate} asked=${row.asked} fired=${row.fired} — ` +
+              `bewust geen veto meer (RONDE 103/104)`
+          );
+        }
         const silent = findSilentGates(gateStats);
         if (silent.length > 0) {
-          const detail = silent.map((g) => `${g.gate} (${g.asked}×)`).join(", ");
+          /**
+           * RONDE 174 — the warning now carries the measurement instead of an instruction.
+           *
+           * "verify the check can still fire" told a reader to go and read code, every render,
+           * with nothing new to read. `closest 0.021 short of firing` says whether the threshold
+           * or the material is the reason, in the same unit the threshold is written in.
+           */
+          const detail = silent.map(describeSilentGate).join(", ");
           qualityReport.warnings.push(
-            `silent gate(s): ${detail} — asked repeatedly, rejected nothing; verify the check can still fire`
+            `silent gate(s): ${detail} — asked repeatedly, rejected nothing`
           );
-          console.warn(`[Quality] Video ${videoId}: silent gate(s) — ${detail}`);
+          console.warn(pipelineReport.add("gates", `[GateSilent] ${detail}`));
+        }
+        /**
+         * Gates that looked and had no rule that could apply to this subject. Reported as
+         * information: `documentary_beat_gate`'s blocklists are about pharmacies, Columbus Ohio
+         * and a Dutch/US region lock, so a WWII documentary never touches them. That is not a
+         * defect, and reporting it as one every render is how a real alarm gets ignored.
+         */
+        for (const row of findOutOfScopeGates(gateStats)) {
+          console.log(
+            pipelineReport.add(
+              "gates",
+              `[GateOutOfScope] ${row.gate} asked=${row.asked} notArmed=${row.notArmed} — ` +
+                `geen regel van toepassing op dit onderwerp`
+            )
+          );
         }
       }
     }
@@ -33616,14 +38794,20 @@ async function _runVideoPipelineInner(
     const missTopic = get_activeVideoTopic();
     if (missTopic) {
       const adoptedByProvider = new Map<string, number>();
+      // RONDE 100B: what each provider actually returned, so a source that answered is not
+      // written off as a dead end because a later stage ran out of budget.
+      const resultsByProvider = new Map<string, number>();
       for (const [provider, m] of visualDedup.sourcingCache.metrics) {
         adoptedByProvider.set(provider.trim().toLowerCase(), m.acceptedCount);
+        resultsByProvider.set(provider.trim().toLowerCase(), m.resultCount);
       }
       recordSearchMisses({
         subject: missTopic.primaryPerson || missTopic.videoTitle,
         subjectType: missTopic.primaryPerson ? "person" : "topic",
         searchedKeys: visualDedup.sourcingCache.queries.keys(),
         adoptedByProvider,
+        resultsByProvider,
+        budgetCancelledProviders: visualDedup.sourcingCache.budgetCancelledProviders,
       });
     }
 
@@ -33649,9 +38833,75 @@ async function _runVideoPipelineInner(
         );
       }
     }
+    /**
+     * RONDE 106 — the pipeline's account of itself is stored with the video.
+     *
+     * The warnings and the timings were already here; what was missing is everything the render
+     * printed about HOW it got there. Written in the same merge so a video can never end up with
+     * a quality report and no explanation of it.
+     */
+    pipelineReport.addAll("warnings", qualityReport.warnings);
+    /**
+     * RONDE 111 — why a scene came up short of footage, and what was done about it.
+     *
+     * The single most useful thing to know about a video that looks frozen, and until now it
+     * existed only as console output on whichever worker happened to render it.
+     */
+    pipelineReport.add("summary", describeOnScreenTextPolicy());
+    /**
+     * RONDE 146 — which ffmpeg this render used, and whether it can draw a character.
+     *
+     * The fact that silently decided whether ten text engines worked, and that nothing ever
+     * reported. A render on a host without a system ffmpeg has no `drawtext`, and until now the
+     * only way to find that out was to read a failure message that never reached anybody.
+     */
+    pipelineReport.add("summary", describeFFmpegCapabilities(FFMPEG_BIN));
+    pipelineReport.addAll("warnings", visualDedup.coverageDecisions);
+    /**
+     * RONDE 112 — the clips that were refused for LENGTH, named separately.
+     *
+     * They are already in rejectSummary with every other reason, where they are one row among
+     * twenty. They are also the direct cause of the shortfalls the lines above describe, so the
+     * coverage story is incomplete without them next to it.
+     */
+    {
+      const rejects = qualityReport.rejectSummary ?? {};
+      const tooShort =
+        (rejects.source_video_too_short ?? 0) +
+        (rejects.trimmed_clip_too_short ?? 0) +
+        (rejects.ken_burns_clip_too_short ?? 0) +
+        (rejects.styled_still_too_short ?? 0);
+      if (tooShort > 0) {
+        pipelineReport.add(
+          "warnings",
+          `[Coverage] clips refused for length across this render: ${tooShort} ` +
+            `(source=${rejects.source_video_too_short ?? 0} ` +
+            `trimmed=${rejects.trimmed_clip_too_short ?? 0} ` +
+            `still=${(rejects.ken_burns_clip_too_short ?? 0) + (rejects.styled_still_too_short ?? 0)})`
+        );
+      }
+    }
+    pipelineReport.addAll(
+      "timing",
+      Object.entries(pipelineStepTiming.toReport() as Record<string, unknown>).map(
+        ([step, ms]) => `[Step] ${step}=${typeof ms === "number" ? `${Math.round(ms)}ms` : String(ms)}`
+      )
+    );
     await mergeVideoMetadata(videoId, {
       qualityReport,
       pipelineStepTiming: pipelineStepTiming.toReport(),
+      pipelineReport: pipelineReport.build(),
+      pipelineGlance: {
+        qualityStatus: qualityReport.qualityStatus,
+        score: qualityReport.score,
+        beats: qualityReport.beatVisuals?.beats,
+        verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual,
+        finalClips: qualityReport.totalClips,
+        unverifiedClips: qualityReport.bySource?.[UNVERIFIED_PROVIDER] ?? 0,
+        gateAttempts: judgementTally(visualDedup.beatImageGate).attempts,
+        gateAnswered: judgementTally(visualDedup.beatImageGate).answered,
+        warnings: qualityReport.warnings.length,
+      } satisfies PipelineGlance,
     }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
@@ -33730,7 +38980,9 @@ async function _runVideoPipelineInner(
     }
 
         // ── Stage 4c: Vidrush chapter cards (yellow title cards between sections) ──
+    // RONDE 113: a chapter card is a full frame of text. Same rule as every other text engine.
     const useChapterCards =
+      burnedInTextAllowed() &&
       process.env.ENABLE_CHAPTER_CARDS === "true" && !isShortVideoLength(videoLength);
     const orderedClips: string[] = [];
     let chapterCardCount = 0;
@@ -33939,15 +39191,259 @@ async function _runVideoPipelineInner(
         }
       }
       const summary = ledger.summary();
-      for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) console.log(line);
-      for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) console.log(line);
+      /**
+       * RONDE 106 — the render's account of itself is kept, not only printed.
+       *
+       * Every emitter below already composed a report meant to be read; all of it went to stdout
+       * and nowhere else, so "why does this video look like this" could only be answered by
+       * someone with that render's Railway log still open. `pipelineReport.add` remembers each
+       * line as it is printed — same lines, same order, nothing re-instrumented — and the block
+       * is stored with the video at the end.
+       */
+      for (const line of formatSourceSummary(summary, ledger.finalVideoWasVerified)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
+      // rendered — plus a refusal to print a funnel that widens.
+      for (const line of formatAssetUsageSummary(summary, ledger.finalVideoWasVerified)) {
+        pipelineReport.add("sourcing", line);
+        if (line.startsWith("[AssetUsageInconsistency]")) console.warn(line);
+        else console.log(line);
+      }
+      /**
+       * RONDE 95 (§5) — the manifest, and its counterpart.
+       *
+       * [RenderAsset] lists what the delivered file actually contains, one line per asset, built
+       * from the FINAL_VIDEO events markFinalVideo set out of finalConcatInputs.
+       * [AssetNotRendered] lists what the pipeline chose and the file does NOT contain, saying for
+       * each whether a recorded replacement explains it or nothing does. The second list is the
+       * one worth reading: an asset that was selected, downloaded, and then dropped with no event
+       * is a hole in the pipeline, not in the report.
+       */
+      const allRecords = ledger.allRecords();
+      /**
+       * RONDE 105 — every rendered asset now carries what the content decider said about it.
+       *
+       * The ledger records where a clip came from; the relevance ledger records whether it
+       * belongs. Both were already written down and neither line printed the other, so a manifest
+       * could list fifteen well-attributed clips that nobody had looked at. The lookup goes by
+       * beat, which is exact: RONDE 103 stores the beat context alongside every decision.
+       */
+      const verdictForRecord = (r: { sceneIndex: number; beatIndex: number }) => {
+        for (const { ctx, decision } of visualDedup.beatRelevance.byClipPath.values()) {
+          if (ctx.sceneIndex !== r.sceneIndex || ctx.beatIndex !== r.beatIndex) continue;
+          return { verdict: decision.verdict, cached: decision.cached, reprieved: decision.reprieved };
+        }
+        return null;
+      };
+      for (const line of formatRenderManifest(
+        allRecords, ledger.finalVideoWasVerified, verdictForRecord
+      )) {
+        console.log(pipelineReport.add("clips", line));
+      }
+      /**
+       * RONDE 105 (§16) — the block that answers the whole question in one place: how many beats,
+       * how many verified, what the gate managed, what is actually in the file and where each
+       * clip came from. Built from records that already exist; it counts nothing twice and it
+       * says so when the per-provider counts do not add up to the clip count.
+       */
+      {
+        const tally = judgementTally(visualDedup.beatImageGate);
+        {
+          const why = formatNoVerdictReasons(visualDedup.beatImageGate);
+          if (why) pipelineReport.add("summary", why);
+        }
+        {
+          const who = formatVerdictProviders(visualDedup.beatImageGate);
+          if (who) pipelineReport.add("summary", who);
+        }
+        for (const line of formatFinalVisualReport({
+          finalVideoVerified: ledger.finalVideoWasVerified,
+          records: allRecords,
+          beats: qualityReport.beatVisuals?.beats ?? 0,
+          verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual ?? 0,
+          verification: qualityReport.beatVisuals?.byVerification ?? {},
+          coverage: qualityReport.beatVisuals?.byCoverage ?? {},
+          attempts: tally.attempts,
+          answered: tally.answered,
+          unavailable: tally.failed,
+          neverAsked: tally.skipped,
+          qualityStatus: qualityReport.qualityStatus,
+          score: qualityReport.score,
+        })) {
+          pipelineReport.add("summary", line);
+          if (line.includes("SOURCE_COUNT_MISMATCH")) console.warn(line);
+          else console.log(line);
+        }
+        // One line per beat that is not finished, so "13 beats without their own picture" can be
+        // read as thirteen named beats rather than a number to be trusted.
+        for (const line of formatBeatVisualProblems(qualityReport.beatVisualProblems ?? [])) {
+          console.warn(pipelineReport.add("beats", line));
+        }
+        /**
+         * RONDE 166 §8/§9 — why each beat's picture is on screen, and why two beats were never
+         * judged. The severity comes from the relevance ledger's own words, through the same
+         * classifier the reprieve guard consults, so the report and the decision cannot disagree.
+         */
+        for (const line of formatVisualFitAudit(
+          // Every beat, not only the failing ones — verifiedFit and adoptedFit are counted here.
+          qualityReport.beatVisualStatuses ?? [],
+          (sceneIndex, beatIndex, basename) =>
+            beatClipSeverity(visualDedup.beatRelevance, sceneIndex, beatIndex, basename)
+        )) {
+          if (line.includes("INVARIANT_BROKEN")) console.error(pipelineReport.add("beats", line));
+          else console.log(pipelineReport.add("beats", line));
+        }
+      }
+      for (const line of formatSelectedButNotRendered(
+        allRecords, ledger.allEvents(), ledger.finalVideoWasVerified
+      )) {
+        console.warn(pipelineReport.add("dropped", line));
+      }
+      // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
+      // and how many calls arrived without a context and were counted as bypass attempts.
+      for (const line of formatSearchGateReport()) console.log(pipelineReport.add("search", line));
+      /**
+       * RONDE 140 — the two rights-check lists, for the two sources that carry no proof.
+       *
+       * `formatYoutubeUsageReport` has existed since RONDE 124 and was never called once. It was
+       * written to be the starting point of a manual rights check, and a report nobody prints is
+       * not a starting point for anything — which matters a great deal more now that the operator
+       * may switch the blanket YouTube authorisation on (its flag lives in youtubeLicenseStatus.ts,
+       * where RONDE 147 put it, and is deliberately not named here) and needs to be able to see
+       * what that decision actually admitted.
+       *
+       * Both lists are built from the ledger rather than from a new collector: `finalVideoAt` is
+       * already the record of what reached the delivered file, and a second count of the same
+       * thing is exactly how two numbers start disagreeing.
+       *
+       * What the YouTube entries deliberately do NOT claim: a licence. The ledger records where a
+       * clip came from, not which licence pass found it, and YouTube's own
+       * `videoLicense=creativeCommon` filter is YouTube's assertion rather than a verification
+       * FastVid performed. So every live-YouTube clip is reported UNVERIFIED with a null licence,
+       * which is precisely what is known about it. (The archive `youtube-*` route is the one with
+       * real metadata, and it has said so on its own line since RONDE 124.)
+       */
+      {
+        const rendered = allRecords.filter((r) => r.finalVideoAt != null);
+        const verdictOf = (r: { sceneIndex: number; beatIndex: number }) =>
+          verdictForRecord(r)?.verdict ?? "never_asked";
+        const youtubeEntries: YoutubeUsageEntry[] = rendered
+          .filter((r) => r.provider === "youtube_cc" && r.providerAssetId)
+          .map((r) => ({
+            sceneIndex: r.sceneIndex,
+            beatIndex: r.beatIndex,
+            youtubeVideoId: r.providerAssetId!,
+            title: r.assetTitle,
+            licenseStatus: "UNVERIFIED" as const,
+            licenseUrl: null,
+            rights: null,
+            previewStatus: "not_recorded",
+            visionVerdict: verdictOf(r),
+          }));
+        for (const line of formatYoutubeUsageReport(youtubeEntries).split("\n")) {
+          console.log(pipelineReport.add("sourcing", line));
+        }
+        const openWebEntries: OpenWebUsageEntry[] = rendered
+          .filter((r) => r.provider === "serpapi")
+          .map((r) => ({
+            sceneIndex: r.sceneIndex,
+            beatIndex: r.beatIndex,
+            host: openWebHost(r.sourceUrl),
+            sourceUrl: r.sourceUrl ?? null,
+            title: r.assetTitle,
+            visionVerdict: verdictOf(r),
+          }));
+        for (const line of formatOpenWebUsageReport(openWebEntries).split("\n")) {
+          console.log(pipelineReport.add("sourcing", line));
+        }
+        console.log(
+          pipelineReport.add(
+            "sourcing",
+            formatOpenWebPolicyReport(visualDedup.openWebPolicyStats)
+          )
+        );
+      }
       const reconciliation = ledger.reconcile();
-      for (const line of formatAuditReport(reconciliation)) console.log(line);
+      for (const line of formatAuditReport(reconciliation)) console.log(pipelineReport.add("sourcing", line));
+      /**
+       * RONDE 131 — what the persistent cross-video memory saved this render.
+       *
+       * The one number that answers "is FastVid getting faster per video": beats that found their
+       * subject already proven, against beats that had to start from the providers.
+       */
+      console.log(
+        pipelineReport.add("sourcing", formatSearchMemorySummary(visualDedup.searchMemoryMetrics))
+      );
+      /**
+       * RONDE 132 §2 — how many distinct pictures this video actually used.
+       *
+       * `uniqueAssets` against `duplicateAttempts` is the number that answers "is the same footage
+       * coming back", and `matchedOn` says which identity caught it — an archive-asset match and a
+       * content-key match are two different stories about where the repeat came from.
+       */
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          formatVisualDedupSummary(getActiveVideoId() ?? null, visualDedup.visualDedupStats)
+        )
+      );
+      /**
+       * RONDE 165 — the denominator under the vanished warnings printed just above.
+       *
+       * formatAuditReport names each unaccounted asset; this counts all of them against the assets
+       * that were delivered or explained, so `unresolved=` is a number the next render can be
+       * measured against rather than a list to be eyeballed.
+       */
+      for (const line of formatAssetLifecycleAudit(ledger)) {
+        if (line.includes("unresolved=0")) console.log(pipelineReport.add("sourcing", line));
+        else console.warn(pipelineReport.add("sourcing", line));
+      }
+      /**
+       * RONDE 167 §8 — the hard invariant, stated as a pass or a failure rather than a count.
+       *
+       * The audit above says how many assets are unaccounted for; nothing said whether that is
+       * acceptable. It never is. Every asset this render CHOSE owes it an ending, and a render
+       * that cannot produce one for a clip cannot answer where its pictures came from.
+       *
+       * Logged, never thrown: the whole audit block sits inside a try precisely because reporting
+       * must not be able to destroy a finished video. The line is an error so it cannot be read as
+       * routine, and each offender is named so the route can be found.
+       */
+      const outcomeInvariant = assertNoSelectedClipWithoutOutcome(ledger);
+      if (outcomeInvariant.ok) {
+        console.log(
+          pipelineReport.add("sourcing", "[OutcomeInvariant] OK selectedWithoutOutcome=0")
+        );
+      } else {
+        console.error(
+          pipelineReport.add(
+            "sourcing",
+            `[OutcomeInvariant] FAILED selectedWithoutOutcome=${outcomeInvariant.offenders.length}` +
+              " — every chosen asset must have an outcome"
+          )
+        );
+        for (const o of outcomeInvariant.offenders.slice(0, 12)) {
+          console.error(
+            pipelineReport.add(
+              "sourcing",
+              `[OutcomeInvariant] asset=${o.lineageId} provider=${o.provider} ` +
+                `scene=${o.sceneIndex} beat=${o.beatIndex} route=${o.route} file=${o.filename}`
+            )
+          );
+        }
+      }
       console.log(formatGlobalBudget());
       console.log(
-        `[SourceLineage] video=${videoId} render=${ledger.renderId} ` +
-          `records=${ledger.size} events=${ledger.allEvents().length} ` +
-          `verified=${summary.verifiedRecords} unverified=${summary.unverifiedRecords}`
+        pipelineReport.add(
+          "sourcing",
+          `[SourceLineage] video=${videoId} render=${ledger.renderId} ` +
+            `records=${ledger.size} events=${ledger.allEvents().length} ` +
+            `verified=${summary.verifiedRecords} unverified=${summary.unverifiedRecords}`
+        )
       );
     } catch (err) {
       // The audit reports on the render; it must never be able to fail one.
@@ -33991,6 +39487,101 @@ async function _runVideoPipelineInner(
     // disk (multipart upload for S3/R2) instead of reading the whole file into a single Buffer
     // first, which previously peaked at roughly 2x the file size in RAM for this one step.
     const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
+
+    /**
+     * RONDE 133 — measure the finished file, on every render.
+     *
+     * RONDE 130 built `videoStillnessAudit` to answer the one question the whole no-frozen-frame
+     * chain exists for: how long is the viewer looking at exactly the same thing. It proved the
+     * tail-pad fix on a real MP4 and it was never called from the pipeline — so `auditVideoStillness`
+     * appeared in the codebase and in its own tests, and in not one production render.
+     *
+     * That is the RONDE 26 shape this project keeps rediscovering, and all three of the lenses
+     * RONDE 29 named miss it in the same way: the module is exercised (by tests), it logs (in
+     * tests), and no flag switches it off. What it never did was run on a real export.
+     *
+     * Wired here because this is the first point where the finished MP4 exists. It decides
+     * nothing: it measures, it warns, and it is wrapped so a slow or broken audit can never cost a
+     * render that is otherwise complete.
+     */
+    try {
+      const stillness = await withTimeout(
+        auditVideoStillness({ videoPath: finalVideoPath, maxSampleFps: 8, timeoutMs: 180_000 }),
+        200_000,
+        "stillness audit"
+      );
+      const verdict = checkStillnessLimit(stillness, stillImageMaxSec());
+      console.log(formatStillnessReport(`video ${videoId} final.mp4`, stillness, verdict));
+      qualityReport.stillness = {
+        durationSec: stillness.durationSec,
+        longestStillSec: stillness.longestStillSec,
+        longestStillStartSec: stillness.longestStillStartSec,
+        visualChanges: stillness.visualChanges,
+        stillSegments: stillness.stillRuns.length,
+        // RONDE 136: the two facts about the END of the film, which nothing measured before.
+        imagesOverLimit: verdict.stillsOverLimit,
+        endFrameLuma: stillness.endFrameLuma,
+        endsOnBlack: stillness.endsOnBlack,
+        limitSec: verdict.limitSec,
+        ok: verdict.ok,
+      };
+      if (stillness.endsOnBlack) {
+        qualityReport.warnings.push(
+          `de video eindigt op een zwart beeld (luma ${stillness.endFrameLuma?.toFixed(0)}) — ` +
+            `de kijker blijft achter met een leeg scherm`
+        );
+      }
+      for (const v of verdict.violations.slice(0, 3)) {
+        qualityReport.warnings.push(
+          `beeld staat ${v.durationSec.toFixed(1)}s stil vanaf ${v.startSec.toFixed(1)}s — ` +
+            `langer dan de ${verdict.limitSec.toFixed(0)}s die een foto mag duren`
+        );
+      }
+
+      /**
+       * RONDE 156 — and does the same picture come back?
+       *
+       * The sourcing dedup is thorough but runs entirely BEFORE adoption, and two routes step
+       * around it on purpose when a scene is starved: round B of ensureArchiveMontageVoiceCoverage
+       * re-uses dedup.lastRealClip, and montageTailPadFilterChain loops the whole scene montage.
+       * Neither is visible to usedContentKeys or usedFingerprints, so nothing could answer
+       * "does the finished film repeat itself". This measures the exported MP4 and answers it.
+       *
+       * Measurement only, like the stillness audit beside it — it decides nothing and cannot cost
+       * a render that is otherwise complete.
+       */
+      const repeats = await withTimeout(
+        auditVideoRepeats({ videoPath: finalVideoPath, timeoutMs: 180_000 }),
+        200_000,
+        "repeat audit"
+      );
+      const repeatVerdict = checkRepeatLimit(repeats);
+      console.log(formatRepeatReport(`video ${videoId} final.mp4`, repeats, repeatVerdict));
+      qualityReport.repeats = {
+        distinctPictures: repeats.distinctPictures,
+        repeatedPictures: repeats.repeats.length,
+        repeatedSec: repeats.repeatedSec,
+        repeatedShare: repeats.repeatedShare,
+        limitShare: repeatVerdict.limitShare,
+        ok: repeatVerdict.ok,
+      };
+      for (const v of repeatVerdict.violations.slice(0, 3)) {
+        qualityReport.warnings.push(`hetzelfde beeld keert terug — ${v}`);
+      }
+    } catch (err) {
+      /**
+       * A measurement that could not be taken is reported as absent, never as a pass.
+       *
+       * RONDE 156: this block now holds two audits, and the earlier one throwing means the later
+       * one never ran. Both fields stay unset on qualityReport, so "no number" reads as "not
+       * measured" rather than "clean" — but the message must not claim to know which one failed.
+       */
+      console.warn(
+        `[VisualIntegrity] stillness/repeat audit could not run: ` +
+          `${(err as Error)?.message?.slice(0, 120)}`
+      );
+    }
+
     let url: string;
 
     if (asyncQaEnabled() && postRenderSpotCheckEnabledForVideo(videoLength)) {
@@ -34024,19 +39615,27 @@ async function _runVideoPipelineInner(
       if (!spot.ok) {
         console.warn(`[Pipeline] Post-render spot-check (async): ${spot.warnings.join("; ")}`);
       }
-      qualityReport.score = computeMeritQualityScore({
-        totalClips: qualityReport.totalClips,
-        archiveCount: qualityReport.archiveCount,
-        stockCount: qualityReport.stockCount,
-        fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
-        offTopicCount: qualityReport.offTopicSuspects.length,
-        geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
-        adoptAudit: visualDedup.clipAdoptAudit,
-        archiveOnly: curatedArchiveOnlyVisuals(),
-        fastShort: isFastShortVideoLength(videoLength),
-        byMixKind: qualityReport.byMixKind,
-        postRenderOk: spot.ok,
-      });
+      {
+        // RONDE 105: the re-score after the post-render check reads the SAME beat truth
+        // the report was built from, so the number and its status cannot drift apart.
+        const rescored = computeMeritQualityScore({
+          beatVisuals: qualityReport.beatVisuals,
+          totalClips: qualityReport.totalClips,
+          archiveCount: qualityReport.archiveCount,
+          stockCount: qualityReport.stockCount,
+          fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
+          offTopicCount: qualityReport.offTopicSuspects.length,
+          geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
+          adoptAudit: visualDedup.clipAdoptAudit,
+          archiveOnly: curatedArchiveOnlyVisuals(),
+          fastShort: isFastShortVideoLength(videoLength),
+          byMixKind: qualityReport.byMixKind,
+          postRenderOk: spot.ok,
+        });
+        qualityReport.score = rescored.score;
+        qualityReport.qualityStatus = rescored.status;
+        qualityReport.qualityReason = rescored.reason;
+      }
     } else {
       if (postRenderSpotCheckEnabledForVideo(videoLength)) {
         await touchVideoProgress(videoId);
@@ -34054,19 +39653,27 @@ async function _runVideoPipelineInner(
         if (!spot.ok) {
           console.warn(`[Pipeline] Post-render spot-check: ${spot.warnings.join("; ")}`);
         }
-        qualityReport.score = computeMeritQualityScore({
-          totalClips: qualityReport.totalClips,
-          archiveCount: qualityReport.archiveCount,
-          stockCount: qualityReport.stockCount,
-          fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
-          offTopicCount: qualityReport.offTopicSuspects.length,
-          geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
-          adoptAudit: visualDedup.clipAdoptAudit,
-          archiveOnly: curatedArchiveOnlyVisuals(),
-          fastShort: isFastShortVideoLength(videoLength),
-          byMixKind: qualityReport.byMixKind,
-          postRenderOk: spot.ok,
-        });
+        {
+          // RONDE 105: the re-score after the post-render check reads the SAME beat truth
+          // the report was built from, so the number and its status cannot drift apart.
+          const rescored = computeMeritQualityScore({
+            beatVisuals: qualityReport.beatVisuals,
+            totalClips: qualityReport.totalClips,
+            archiveCount: qualityReport.archiveCount,
+            stockCount: qualityReport.stockCount,
+            fallbackBeats: qualityReport.adoptAuditSummary?.fallbackBeats ?? 0,
+            offTopicCount: qualityReport.offTopicSuspects.length,
+            geoViolationCount: qualityReport.criticalGeoViolations?.length ?? 0,
+            adoptAudit: visualDedup.clipAdoptAudit,
+            archiveOnly: curatedArchiveOnlyVisuals(),
+            fastShort: isFastShortVideoLength(videoLength),
+            byMixKind: qualityReport.byMixKind,
+            postRenderOk: spot.ok,
+          });
+          qualityReport.score = rescored.score;
+          qualityReport.qualityStatus = rescored.status;
+          qualityReport.qualityReason = rescored.reason;
+        }
       }
       // RONDE 25: the upload spawns no child process, so it is invisible to the watchdog's idle
       // detector (whose only other signal is trackChild). Final videos run to hundreds of MB, and
@@ -34096,12 +39703,280 @@ async function _runVideoPipelineInner(
 
     let editorScenes: EditorScene[] = [];
     try {
-      editorScenes = await buildEditorScenesFromPipeline(scenes, composedUsedClips, (clipPath) =>
-        visualDedup.sourcingCache.lineage.providerFor(clipPath)
+      /**
+       * RONDE 146 — the manifest carries the ADOPTION RECORD, not just the provider's name.
+       *
+       * Both resolvers read the same ledger entry. `providerFor` has answered "which provider"
+       * since RONDE 87; the second one answers "which file at that provider", which is the half
+       * that was being discarded — and the half a re-render needs. Nothing here reads a filename:
+       * `resolve()` finds the record the downloader opened with the provider's own data in hand.
+       */
+      editorScenes = await buildEditorScenesFromPipeline(
+        scenes,
+        composedUsedClips,
+        (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
+        (clipPath) => {
+          const record = visualDedup.sourcingCache.lineage.resolve(clipPath);
+          if (!record) return null;
+          return {
+            provider: record.provider,
+            providerAssetId: record.providerAssetId,
+            sourceUrl: record.sourceUrl,
+            originalUrl: record.originalUrl,
+            assetTitle: record.assetTitle,
+            archiveAssetId: record.archiveAssetId,
+          };
+        },
+        /**
+         * Trim, only where the render measured it.
+         *
+         * `memoisedVideoStreamMeta` returns a probe this render already took, or undefined. An
+         * undefined answer produces NO trim fields rather than 0/duration — §9's "NIET gokken".
+         * The in/out points inside the source are not recorded anywhere today, so they are absent
+         * rather than fabricated; the on-screen duration is, and it is written.
+         */
+        (clipPath) => {
+          const meta = memoisedVideoStreamMeta(clipPath);
+          if (!meta || !(meta.durationSec > 0)) return null;
+          return { durationSec: Number(meta.durationSec.toFixed(3)) };
+        }
       );
       await updateVideoScenes(videoId, editorScenes);
+      for (const line of formatManifestIdentityReport(editorScenes)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      const coverage = manifestRehydrationSummary(editorScenes);
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          `[AssetIdentity] TOTAL clips=${coverage.total} rehydratable=${coverage.rehydratable} ` +
+            `unrecoverable=${coverage.total - coverage.rehydratable} schema=v${coverage.schemaVersion}`
+        )
+      );
     } catch (err) {
       console.warn(`[Pipeline] Editor manifest persist failed for ${videoId}:`, (err as Error).message);
+    }
+
+    /**
+     * RONDE 146 §5/§6 — the narration outlives the work directory.
+     *
+     * This runs BEFORE the `finally` that deletes workDir, and only on a render that reached
+     * completion. Until now the only thing a render ever made permanent was final.mp4, so
+     * `full_voiceover.mp3` and `tts_word_alignment.json` were destroyed along with the directory —
+     * and `videos.voiceoverUrl` has existed as a column without a writer for that entire time.
+     *
+     * A failure here does not fail the render: the video is finished and uploaded, and refusing to
+     * deliver it because its audio could not be archived would be the wrong trade. But it is never
+     * silent — VOICEOVER_PERSISTENCE_FAILED says so in a line built to be grepped.
+     */
+    /**
+     * RONDE 151 — hoisted out of the try below so the cinematic plan can read them.
+     *
+     * The narration URL and the measured word boundaries are two of the five inputs that plan
+     * needs, and re-deriving them there would mean a second read of the same alignment file.
+     */
+    let persisted: Awaited<ReturnType<typeof persistVoiceover>> | null = null;
+    let storedAlignment: ReturnType<typeof loadStoredTtsAlignment> = null;
+    try {
+      persisted = await persistVoiceover({
+        videoId,
+        workDir,
+        upload: (key, filePath, contentType) => storagePutFromFile(key, filePath, contentType),
+      });
+      storedAlignment = loadStoredTtsAlignment(workDir);
+      if (persisted.ok) {
+        await updateVideoStatus(videoId, "completed", { voiceoverUrl: persisted.url });
+        console.log(
+          pipelineReport.add(
+            "summary",
+            formatVoicePersistSuccess(videoId, persisted, storedAlignment?.words.length ?? 0)
+          )
+        );
+      } else {
+        console.error(pipelineReport.add("summary", formatVoicePersistFailure(videoId, persisted)));
+      }
+      await mergeVideoMetadata(videoId, {
+        manifestSchemaVersion: MANIFEST_SCHEMA_VERSION,
+        narration: buildNarrationPersistence({
+          voiceoverUrl: persisted.ok ? persisted.url : null,
+          durationSec: storedAlignment?.totalDurationSec ?? null,
+          // Only what the render actually knows. The TTS ladder picks its own tier at call time
+          // and does not report which one answered, so this stays null rather than guessing
+          // "elevenlabs" for a clip that may have come from the Google or Fish fallback.
+          provider: null,
+          voiceId: voiceId ?? null,
+          words: storedAlignment?.words ?? [],
+        }),
+      });
+    } catch (err) {
+      console.error(
+        `VOICEOVER_PERSISTENCE_FAILED video=${videoId} reason=unexpected_error ` +
+          `detail="${(err as Error)?.message?.slice(0, 300) ?? "unknown"}"`
+      );
+    }
+
+    /**
+     * RONDE 151 §2/§19 — the cinematic route, called from the production pipeline at last.
+     *
+     * ── Why HERE and not earlier ────────────────────────────────────────────────────────────
+     *
+     * This is the first point in the render where all five inputs exist at once: the scenes, each
+     * scene's TTS-aligned beats, the clips that were actually adopted, the lineage records that
+     * prove where those clips came from, and the persisted narration with its measured word
+     * boundaries. Planning any earlier would mean planning around clips that had not been chosen.
+     *
+     * ── Why it does not replace the render (yet) ────────────────────────────────────────────
+     *
+     * The video has already been produced and uploaded by the time this runs. What this adds is
+     * the PLAN: one ProjectTimeline, validated and stored, which the editor opens and the render
+     * job re-renders from. That makes the new-video and existing-video paths use the same editing
+     * model, which is §23's test.
+     *
+     * §19's cutover — the timeline producing the delivered MP4 instead of composeSceneVideo — is
+     * behind `CINEMATIC_RENDER_PATH`, and the line below says which route ran on every render, so
+     * the migration is countable rather than assumed.
+     *
+     * A failure in any of this never costs a finished video. The render is complete; refusing to
+     * deliver it because a caption planner hit an edge case would be the wrong trade every time.
+     */
+    try {
+      const {
+        planAndStoreCinematicTimeline,
+        cinematicPlanningEnabled,
+        cinematicRenderPathEnabled,
+        formatRenderRoute,
+        enqueueCinematicRender,
+      } = await import("./cinematicProduction");
+      if (cinematicPlanningEnabled()) {
+        const lineage = visualDedup.sourcingCache.lineage;
+        const outcome = await planAndStoreCinematicTimeline({
+          videoId,
+          scenes: scenes.map((scene, i) => {
+            const beats = sceneVisualResults[i]?.beats ?? [];
+            const clipPaths = composedUsedClips[i] ?? [];
+            return {
+              scene,
+              beats,
+              clips: beats.map((_, beatIndex) => {
+                const clipPath = clipPaths[beatIndex];
+                if (!clipPath) return null;
+                const record = lineage.resolve(clipPath);
+                const meta = memoisedVideoStreamMeta(clipPath);
+                return {
+                  facts: {
+                    localPath: clipPath,
+                    ...(meta?.width ? { widthPx: meta.width } : {}),
+                    ...(meta?.height ? { heightPx: meta.height } : {}),
+                    ...(meta && meta.durationSec > 0
+                      ? { durationSec: Number(meta.durationSec.toFixed(3)) }
+                      : {}),
+                  },
+                  adoption: record
+                    ? {
+                        provider: record.provider,
+                        providerAssetId: record.providerAssetId,
+                        archiveAssetId: record.archiveAssetId,
+                        sourceUrl: record.sourceUrl,
+                        originalUrl: record.originalUrl,
+                        assetTitle: record.assetTitle,
+                        query: record.query,
+                        candidateId: record.candidateId,
+                        /** §7 — the cut this render made into the provider's original, if any. */
+                        sourceInSec: record.sourceInSec,
+                        sourceOutSec: record.sourceOutSec,
+                      }
+                    : null,
+                };
+              }),
+            };
+          }),
+          /** The pipeline's OWN extractors, injected — never a second copy (§28). */
+          extractors: {
+            people: (text) => extractPersonNamesFromText(text),
+            place: (text) => extractVisualPlacePhrase(text),
+            action: (text) => extractActionCue(text),
+            /**
+             * RONDE 177 — the named entities and secondary subjects the RETRIEVAL path resolved
+             * for this beat. Injected from here so the plan describes the same beat the search
+             * described; a parallel extractor would let the caption name something else.
+             */
+            namedEntities: (text) => beatNamedEntitiesByKind(text),
+            secondarySubjects: (text) => extractSecondaryEntities(text, undefined),
+          },
+          voice:
+            persisted?.ok && storedAlignment?.totalDurationSec
+              ? { url: persisted.url, durationSec: storedAlignment.totalDurationSec }
+              : null,
+          words: storedAlignment?.words ?? [],
+          persist: (p) => saveVideoTimeline(p),
+          storedVersion: (await getStoredTimeline(videoId))?.timelineVersion ?? 0,
+        });
+        for (const line of outcome.log) console.log(pipelineReport.add("summary", line));
+        if (!outcome.ok) {
+          console.warn(
+            pipelineReport.add(
+              "summary",
+              `[CinematicPipeline] video=${videoId} plan NOT stored code=${outcome.code} reason=${outcome.reason}`
+            )
+          );
+        }
+        /**
+         * R159 §24 — when the flag is on and the plan is good, the timeline RENDERS the video.
+         *
+         * A render job is queued from the stored timeline and the same worker that renders a
+         * hand-edited video takes it from there: rehydrate, validate, ffmpeg, Remotion overlay,
+         * composite, ffprobe, upload. §26's "one timeline, one renderer" is kept by not building a
+         * second path — this only puts a row in the queue.
+         *
+         * The compose output produced earlier in this render is still uploaded and still the
+         * video's current output. The cinematic render supersedes it when it finishes, through the
+         * existing `renderAttempt` fencing, so a failure of the new route costs nothing.
+         */
+        let cutover: Awaited<ReturnType<typeof enqueueCinematicRender>> | null = null;
+        if (outcome.ok && cinematicRenderPathEnabled()) {
+          try {
+            const { claimRenderAttempt, createRenderJob } = await import("./db");
+            cutover = await enqueueCinematicRender({
+              videoId,
+              timelineVersion: outcome.timelineVersion,
+              claimAttempt: (id) => claimRenderAttempt(id),
+              createJob: (p) => createRenderJob(p),
+            });
+            for (const line of cutover.log) console.log(pipelineReport.add("summary", line));
+            if (!cutover.ok) {
+              console.warn(
+                pipelineReport.add(
+                  "summary",
+                  `[RenderJob] video=${videoId} cinematic render NOT queued: ${cutover.reason}`
+                )
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `[RenderJob] video=${videoId} cinematic render could not be queued: ` +
+                `${(err as Error).message.slice(0, 200)}`
+            );
+          }
+        }
+
+        console.log(
+          pipelineReport.add(
+            "summary",
+            formatRenderRoute({
+              videoId,
+              /** The route is `cinematic_timeline` only when a job was really queued. */
+              route: cutover?.ok ? "cinematic_timeline" : "legacy_compose",
+              planOk: outcome.ok,
+              reason: outcome.ok ? cutover?.ok === false ? cutover.reason : undefined : outcome.reason,
+            })
+          )
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[CinematicPipeline] video=${videoId} planning failed, the delivered video is unaffected: ` +
+          `${(err as Error).message.slice(0, 300)}`
+      );
     }
 
     // Budget summary + history persistence (non-fatal — never block URL persistence)
@@ -34145,7 +40020,31 @@ async function _runVideoPipelineInner(
     const totalMs = Date.now() - t0;
     console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
     profiler.printReport(totalMs, pipelineStepTiming.toReport());
-    if (archiveCrossVideoVarietyEnabled(videoLength) && curatedArchiveOnlyVisuals()) {
+    /**
+     * RONDE 157 — the variety memory is written whenever variety is on.
+     *
+     * The read side excludes assets used by recent same-topic videos, and it is gated on
+     * archiveCrossVideoVarietyEnabled alone. The WRITE side carried a second condition,
+     * curatedArchiveOnlyVisuals(), and that flag is off in production (CURATED_ARCHIVE_ONLY is
+     * set to "false" so the external cascade stays reachable). So nothing was ever recorded, the
+     * exclude set was empty on every render, and the ranking — which is deterministic — handed
+     * back the same top-scoring assets every time.
+     *
+     * Measured across the two most recent production renders on the same topic:
+     *
+     *     video 551   21 archive assets
+     *     video 552   47 archive assets
+     *     shared      12 — 57% of video 551's footage came back in video 552
+     *
+     * and neither log contains a single [ArchiveVariety] line, which is what a write that never
+     * happens looks like.
+     *
+     * The two flags are about different things. CURATED_ARCHIVE_ONLY says which SOURCES a render
+     * may draw from; the variety memory says which assets the LAST renders already used. Assets
+     * are recorded from usedCuratedAssetIds either way — video 552's own filenames are
+     * `curated_a56104` and so on — so the condition suppressed a fact the render had regardless.
+     */
+    if (archiveCrossVideoVarietyEnabled(videoLength)) {
       recordArchiveVideoUsage(videoId, visualDedup.usedCuratedAssetIds, topicContext);
     }
 

@@ -45,6 +45,11 @@ import {
   type DirectorVideoContext,
 } from "./visualDirector";
 import { maxDirectorBeatsForSceneDuration } from "./vidrushQuality";
+import {
+  emptyQueryContext,
+  formatSearchQueryAudit,
+  validateSearchQuery,
+} from "./searchQueryContract";
 
 export type { VisualDirectorScene };
 export { hasDirectorPlan, directorSceneToIntent, generateVisualDirectorPlan };
@@ -429,6 +434,55 @@ export function hydrateBeatScriptVisuals<
   };
 }
 
+/**
+ * RONDE 91 (§3) — the visual-director plan may SELECT from its sentence. It may not add to it.
+ *
+ * A director plan is written by a language model. RONDE 90 already stopped its inventions at the
+ * provider gate, which is where the invariant has to hold — but it stopped them silently and
+ * only after the pipeline had spent a round building queries that could never be sent, and the
+ * refusal read as a generic UNVERIFIED_TERM indistinguishable from a template appending "aerial".
+ *
+ * So the plan's output is now checked against the plan's own sentence, with the SAME validator
+ * the gate uses — not a second copy of the rules, the same function. A term the sentence does not
+ * state is dropped here and logged as LLM_UNPROVEN_CONTENT, naming who guessed.
+ *
+ * Two consequences worth stating plainly rather than discovering later:
+ *
+ *   · A model that TRANSLATES a subject ("ondernemers" -> "entrepreneur") is refused, because
+ *     nothing here can tell a translation apart from an invention. That capability did not
+ *     survive RONDE 90 either — the gate refuses the English term against a Dutch beat — so this
+ *     does not remove it, it makes its absence visible and logged instead of silent.
+ *   · A plan whose every term is unprovable returns nothing, and the beat falls through to the
+ *     deterministic routes. "No reliable query" is a correct answer.
+ */
+function keepProvableDirectorQueries(queries: string[], sentence: string): string[] {
+  const evidence = (sentence ?? "").trim();
+  // No sentence means nothing to check against, and "unchecked" is not "proven".
+  if (!evidence) return [];
+  const ctx = emptyQueryContext(evidence);
+  const kept: string[] = [];
+  for (const query of queries) {
+    const verdict = validateSearchQuery(query, ctx);
+    if (verdict.ok) {
+      kept.push(query);
+      continue;
+    }
+    console.warn(
+      formatSearchQueryAudit({
+        query,
+        provider: "-",
+        route: "directorSearchQueries",
+        status: "BLOCKED",
+        verified: false,
+        terms: [],
+        blockedTerms: verdict.blockedTerms,
+        reason: "LLM_UNPROVEN_CONTENT",
+      })
+    );
+  }
+  return kept;
+}
+
 /** Stock/archive queries from visual director plan — never from spoken narration. */
 export function directorSearchQueries(intent: ScriptVisualIntentEntry): string[] {
   const out: string[] = [];
@@ -443,7 +497,8 @@ export function directorSearchQueries(intent: ScriptVisualIntentEntry): string[]
     const compact = sanitizeVisualKeyword(desc.split(/\s+/).slice(0, 5).join(" "));
     if (compact && compact !== primary) out.push(compact);
   }
-  return [...new Set(out.filter((q) => q.length >= 3))].slice(0, 4);
+  const built = [...new Set(out.filter((q) => q.length >= 3))].slice(0, 4);
+  return keepProvableDirectorQueries(built, intent.sentence);
 }
 
 export function buildRelevanceKeywordsFromIntent(

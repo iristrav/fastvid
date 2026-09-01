@@ -85,6 +85,20 @@ async function runMigrations() {
   if (!migrationsFolder) {
     throw new Error("[Worker] drizzle folder not found — cannot apply migrations");
   }
+  /**
+   * LAYER 1 — are the migration artifacts internally consistent?
+   *
+   * Runs BEFORE the migrator and before any schema comparison, because a count derived from a
+   * broken artifact set is worse than no count: a `.sql` the journal does not name produced
+   * "47/47 recorded — nothing to apply" and a crash-loop two steps later. Throws on failure, so an
+   * inconsistent set never reaches the database and the app never half-starts.
+   *
+   * LAYER 2 is the schema validation further down, which asks the different question of whether
+   * the live database matches what the code declares. Both are needed; neither replaces the other.
+   */
+  const { assertMigrationIntegrity } = await import("./migrationIntegrity");
+  assertMigrationIntegrity(migrationsFolder);
+
   console.log("[Worker] Running migrations from:", migrationsFolder);
   const { runMigrationsWithGuard } = await import("./migrationGuard");
   // Guard handles all error logging internally; re-throw triggers process.exit(1) via uncaughtException.
@@ -224,6 +238,17 @@ async function main() {
     clipHint: clipStatus.hint,
   }).catch((e) => console.warn("[Worker] Heartbeat (post-CLIP) failed:", (e as Error).message));
   startVideoQueueWorker();
+  /**
+   * RONDE 148 — render jobs poll alongside the generation queue, in the same process.
+   *
+   * A separate poll loop rather than a stage inside the generation queue, because the two have
+   * nothing in common but ffmpeg: a render job has no script, no TTS, no sourcing and no per-user
+   * depth limit, and folding it into `processQueueTick` would put an edit behind every video
+   * waiting to be generated. Its own concurrency cap (MAX_CONCURRENT_RENDER_JOBS, 1 by default)
+   * keeps it from competing with a generation run for the box.
+   */
+  const { startRenderJobWorker } = await import("./renderJobWorker");
+  startRenderJobWorker();
   const { scheduleClipEmbeddingBackfill } = await import("./archiveClipIndexBackfill");
   scheduleClipEmbeddingBackfill();
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");

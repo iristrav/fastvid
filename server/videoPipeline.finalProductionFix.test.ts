@@ -198,9 +198,19 @@ describe("Final production fix — YouTube CC 429/quota handling distinguishes r
     expect(src).toContain("YOUTUBE_RATE_LIMIT_ESCALATED_COOLDOWN_MS");
   });
 
-  it("both search call sites route a 429 status to markYoutubeRateLimited instead of the generic breaker", () => {
-    const calls = [...fullSource.matchAll(/if \(searchResp\.status === 429\) \{\s*markYoutubeRateLimited\(/g)];
-    expect(calls.length).toBe(2);
+  it("every YouTube search call site routes a 429 to markYoutubeRateLimited, not the generic breaker", () => {
+    // Two call sites when this was written; one since RONDE 97 removed fetchYouTubeThumbnails,
+    // which turned search-result stills into ken-burns clips. The guarantee is unchanged — every
+    // remaining YouTube search distinguishes a rate limit from a real failure — so it is asserted
+    // over whatever call sites exist rather than over a number that moves when a route is deleted.
+    const rateLimited = [...fullSource.matchAll(/if \(searchResp\.status === 429\) \{\s*markYoutubeRateLimited\(/g)];
+    expect(rateLimited.length).toBe(1);
+    // The second remaining hit on that endpoint is probeYouTubeCcPipeline, the /api/health
+    // diagnostic. It REPORTS searchStatus rather than tripping the breaker, which is what a probe
+    // should do — a health check must not park the provider it is checking.
+    const probe = fullSource.slice(fullSource.indexOf("export async function probeYouTubeCcPipeline("));
+    expect(probe.slice(0, 3000)).toContain("searchStatus = searchResp.status;");
+    expect(probe.slice(0, 3000)).not.toContain("markYoutubeRateLimited(");
   });
 
   it("does not gate any other provider — isYoutubeInCooldown is only referenced by YouTube-specific functions", () => {

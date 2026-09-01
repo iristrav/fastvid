@@ -5,7 +5,7 @@ import fs from "fs";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
 import { strictVoiceVisualMatchEnabled, isFastShortVideoLength } from "./sourcingPolicy";
-import { loadStoredFrameEmbeddings } from "./archiveClipEmbedding";
+import { loadStoredFrameEmbeddings, prefetchArchiveClipEmbeddings } from "./archiveClipEmbedding";
 import { loadStoredStockFrameEmbeddingsFromPath } from "./stockClipEmbedding";
 import {
   LOCAL_FRAME_FRACTIONS,
@@ -386,6 +386,9 @@ async function scoreClipAcrossFrames(
   const tag = `s${sceneIndex}b${beatIndex} clip=${path.basename(clipPath)}`;
 
   const assetId = curatedClipPathAssetId(clipPath);
+  // loadStoredFrameEmbeddings is synchronous and reads the durable store's in-process cache;
+  // warm it first or a restarted worker sees no embeddings for an asset indexed long ago.
+  if (assetId != null) await prefetchArchiveClipEmbeddings([assetId]);
   const storedEmbeddings =
     assetId != null
       ? loadStoredFrameEmbeddings(assetId)
@@ -659,40 +662,6 @@ export function targetClipVisionScore(): number {
   return 8;
 }
 
-/** Returns true when clip passes local vision gate (or gate skipped). */
-export async function clipPassesVisionGate(
-  clipPath: string,
-  beatText: string,
-  videoTitle: string | undefined,
-  workDir: string,
-  sceneIndex: number,
-  beatIndex: number,
-  fastMode: boolean,
-  minScore = minClipQualityScore(),
-  visualDescription?: string,
-  _segmentLock?: unknown,
-  queryEmb?: number[] | null,
-  contentKey?: string
-): Promise<boolean> {
-  return (
-    await evaluateClipVisionGate(
-      clipPath,
-      beatText,
-      videoTitle,
-      workDir,
-      sceneIndex,
-      beatIndex,
-      fastMode,
-      minScore,
-      visualDescription,
-      _segmentLock,
-      queryEmb,
-      undefined,
-      contentKey
-    )
-  ).pass;
-}
-
 /** Score clip against narration for post-adoption QA (returns null when local vision unavailable). */
 export async function scoreAdoptedClipQuality(
   clipPath: string,
@@ -717,6 +686,9 @@ export async function scoreAdoptedClipQuality(
   if (framePaths.length === 0) return null;
 
   const assetId = curatedClipPathAssetId(clipPath);
+  // loadStoredFrameEmbeddings is synchronous and reads the durable store's in-process cache;
+  // warm it first or a restarted worker sees no embeddings for an asset indexed long ago.
+  if (assetId != null) await prefetchArchiveClipEmbeddings([assetId]);
   const storedEmbeddings =
     assetId != null
       ? loadStoredFrameEmbeddings(assetId)

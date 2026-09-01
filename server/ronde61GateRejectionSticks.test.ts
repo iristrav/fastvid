@@ -110,7 +110,16 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 5200);
+    // RONDE 142 widened this again: the judging loop and the research pass were split so the
+    // research pass is reachable for a beat with no candidate, which lengthened the block.
+    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
+    // block, which pushed the reprieve check past the old edge. The window says "in the
+    // funnel's adopt block"; no assertion below it changed.
+    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
+    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
+    const end = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     const picks = [...block.matchAll(/pickBestFunnelCandidate\(\s*\n?\s*scored, dedup\.usedFunnelCandidateIds, dedup\.beatImageRejectedIds/g)];
     expect(picks.length).toBe(2);
     // The bare two-argument call that could hand a refused clip back is gone from this block.
@@ -120,7 +129,16 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   it("a refusal is added to the hard set, not only to the soft one", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 5200);
+    // RONDE 142 widened this again: the judging loop and the research pass were split so the
+    // research pass is reachable for a beat with no candidate, which lengthened the block.
+    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
+    // block, which pushed the reprieve check past the old edge. The window says "in the
+    // funnel's adopt block"; no assertion below it changed.
+    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
+    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
+    const blockEnd = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = src.slice(idx, blockEnd);
     expect(block).toContain("dedup.beatImageRejectedIds.add(winner.candidate.id);");
   });
 
@@ -134,7 +152,16 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   it("running out of looks releases the winner, but keeps it as a last resort", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 5200);
+    // RONDE 142 widened this again: the judging loop and the research pass were split so the
+    // research pass is reachable for a beat with no candidate, which lengthened the block.
+    // RONDE 131 widened this from 5200: the refusal branch gained the mismatch-feedback
+    // block, which pushed the reprieve check past the old edge. The window says "in the
+    // funnel's adopt block"; no assertion below it changed.
+    // RONDE 168: bounded by the adopt block's own end marker. Widened at 131, 142 and 168 — a
+    // fixed +N cannot survive the block growing, and it says nothing the marker does not.
+    const blockEnd = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(blockEnd).toBeGreaterThan(idx);
+    const block = src.slice(idx, blockEnd);
     expect(block).toContain("if (winner && dedup.beatImageRejectedIds.has(winner.candidate.id))");
     expect(block).toContain("no acceptable candidate");
     // Still nulled here, so every other route is tried first — that half is unchanged.
@@ -160,7 +187,7 @@ describe("RONDE 61 — YouTube no longer eats the render's judgements", () => {
 
   it("the state tracks YouTube's spend separately from the render's", () => {
     const state = createBeatImageGateState();
-    expect(state.judgementsUsed).toBe(0);
+    expect(state.judgementAttempts).toBe(0);
     expect(state.youtubeJudgementsUsed).toBe(0);
   });
 
@@ -177,8 +204,8 @@ describe("RONDE 61 — YouTube no longer eats the render's judgements", () => {
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const idx = src.indexOf("async function youtubeClipPassesImageGate(");
     const block = src.slice(idx, idx + 2600);
-    expect(block).toContain("const spentBefore = gate.judgementsUsed;");
-    expect(block).toContain("if (gate.judgementsUsed > spentBefore) gate.youtubeJudgementsUsed++;");
+    expect(block).toContain("const spentBefore = gate.judgementAttempts;");
+    expect(block).toContain("if (gate.judgementAttempts > spentBefore) gate.youtubeJudgementsUsed++;");
   });
 });
 

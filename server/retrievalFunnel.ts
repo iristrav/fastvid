@@ -37,6 +37,20 @@ import {
 } from "./archiveEmbeddingIndex";
 import { cosineSimilarityVectors } from "./semanticVisualMatching";
 import {
+  matchCandidateToBeat,
+  type BeatTemporalContext,
+} from "./candidatePeriodMatch";
+import {
+  formatSearchMemoryLine,
+  mergeRecalledIntoArchivePicks,
+  recallProvenAssetsForEntity,
+  type SearchMemoryRecallMetrics,
+} from "./searchMemoryRecall";
+import {
+  recordShortlistStage,
+  type ArchiveSourcingAudit,
+} from "./archiveSourcingAudit";
+import {
   buildSceneCandidatePool,
   type PoolCandidate,
   type BuildPoolRequest,
@@ -56,7 +70,9 @@ export type FunnelCandidateSource =
   | "openverse"
   | "nasa"
   | "nara"
-  | "loc";
+  | "loc"
+  /** RONDE 169 — YouTube is a pool source now, so the funnel counts it like any other. */
+  | "youtube_cc";
 
 export type FunnelStrategy =
   | "archive_dominant"   // coverage > ARCHIVE_DOMINANT_THRESHOLD
@@ -547,7 +563,14 @@ export function mergeCandidates(
    * own provider attached to it. Optional — omitted, every candidate is treated as unjudgeable
    * and the ranking is exactly what it was.
    */
-  topicMatcher?: TopicMatcher
+  topicMatcher?: TopicMatcher,
+  /**
+   * RONDE 175 §2: the years, places and subjects this beat is established to be about.
+   *
+   * Optional for the same reason as topicMatcher — omitted, every candidate scores exactly as it
+   * did before, because absence of period information is neutral by design.
+   */
+  beatTemporalContext?: BeatTemporalContext
 ): FunnelCandidate[] {
   const seen = new Set<string>();
   const merged: FunnelCandidate[] = [];
@@ -566,8 +589,23 @@ export function mergeCandidates(
     const kwBase = Math.min(1, pick.score / KEYWORD_SCORE_MAX);
     const embBoost = embSim !== null ? embSim * 0.4 : 0;
     const archiveMediaType = (pick.asset.mediaType === "video" ? "video" : "image") as "video" | "image";
+    /**
+     * RONDE 175 §2 — what the candidate says about its own period, place and subject.
+     *
+     * Applied to the archive too, and not only to stock: an archive holding a 1945 reel is no
+     * better a fit for a 1926 beat than a stock clip would be. Absence is neutral, so the
+     * catalogue-numbered titles this archive is full of ("Bundesarchiv Bild 183-S33882") score
+     * exactly as they did before.
+     */
+    const archiveMatch = matchCandidateToBeat(
+      [pick.asset.title, (pick.asset as { description?: string }).description, pick.archiveName]
+        .filter(Boolean)
+        .join(" "),
+      beatTemporalContext
+    );
     const rankingScore =
-      (kwBase + embBoost + movingFootageBonus(archiveMediaType, movingDeficit)) * archiveWeight;
+      (kwBase + embBoost + movingFootageBonus(archiveMediaType, movingDeficit) + archiveMatch.bonus) *
+      archiveWeight;
 
     // Load stored embedding for fast per-beat cosine scoring (no extra API call)
     const storedEmb = loadStoredAssetEmbedding(pick.asset.id);
@@ -614,6 +652,9 @@ export function mergeCandidates(
       (0.7 +
         (EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0) +
         movingFootageBonus(c.mediaType, movingDeficit) +
+        // RONDE 175 §2: agreement on year, place or subject lifts; a year that genuinely conflicts
+        // costs. Saying nothing costs nothing.
+        matchCandidateToBeat(`${c.title ?? ""} ${c.assetId ?? ""}`, beatTemporalContext).bonus +
         topicalRankingBonus(topical?.verdict ?? "neutral"));
     merged.push({
       id,
@@ -684,6 +725,39 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
    * exactly the RONDE 27 behaviour — so callers that don't track the mix are unaffected.
    */
   movingShareDeficit?: number;
+  /**
+   * RONDE 131: the subject this video is about, for the persistent cross-video search memory.
+   *
+   * When set, assets this entity has proven in EARLIER videos are recalled and offered alongside
+   * the archive's own keyword matches for this beat. They are candidates and nothing more — the
+   * coverage scoring, ranking, shortlist, download, preview validation, licence check, VisionGate
+   * and duplicate rules below are the same ones every other candidate meets.
+   *
+   * Absent (the default) the funnel behaves exactly as it did before this round.
+   */
+  memoryEntity?: string;
+  /** Assets already used this render; recall must not re-serve them. */
+  memoryExcludeAssetIds?: Set<number>;
+  /**
+   * RONDE 175 §2 — the years, places and subjects this beat is established to be about.
+   *
+   * Used to rank, never to filter: a candidate that says nothing about its period is scored
+   * exactly as it was before. Absent (the default) the ranking is unchanged.
+   */
+  beatTemporalContext?: BeatTemporalContext;
+  /** RONDE 132 §11: rotates which of the equally-proven memory assets is offered first. */
+  memoryVarietySeed?: number;
+  /** RONDE 132 §2: called for each memory asset the video's used-asset set refused. */
+  onMemoryAssetExcluded?: (memory: { assetId: number; query: string; source: string }) => void;
+  /** Injected in tests so the recall path can be driven without a database. */
+  recallProvenAssets?: typeof recallProvenAssetsForEntity;
+  /** Counters for the recall, when the caller is keeping them. */
+  memoryMetrics?: SearchMemoryRecallMetrics;
+  /**
+   * Filled with the asset ids this funnel recalled from memory, so the caller can tell a
+   * remembered candidate apart later — specifically, to count the ones a gate then refused.
+   */
+  memoryRecalledInto?: Set<number>;
 };
 
 /**
@@ -744,10 +818,67 @@ export async function buildRetrievalFunnel(
   // honestly reflects the FRESH archive material: when only recently-used assets match, the
   // coverage drops, the strategy shifts toward internet_dominant, and the pipeline actively
   // pulls new external footage instead of reusing. Degrades gracefully — never starves a beat.
-  const archivePicks = req.crossVideoExcludeIds && req.crossVideoExcludeIds.size > 0
+  const scannedPicks = req.crossVideoExcludeIds && req.crossVideoExcludeIds.size > 0
     ? applyCrossVideoVarietyDegrade(archiveSearchResult.candidates, req.crossVideoExcludeIds)
     : archiveSearchResult.candidates;
   const beatDoc = archiveSearchResult.beatDocument;
+
+  /**
+   * RONDE 131 — what earlier videos already proved about this subject.
+   *
+   * Placed here, BEFORE coverage scoring, deliberately. Coverage decides how hard the funnel leans
+   * on the internet, and a beat whose subject FastVid has good footage for should read as covered
+   * — that is the whole saving. Placed after, the recall would arrive too late to spare anything.
+   *
+   * Excluded from recall: assets this render already used, and (via the query itself) any asset
+   * deleted or deactivated since it was remembered.
+   */
+  const recall = req.memoryEntity
+    ? await (req.recallProvenAssets ?? recallProvenAssetsForEntity)(req.memoryEntity, {
+        excludeAssetIds: req.memoryExcludeAssetIds,
+        varietySeed: req.memoryVarietySeed ?? 0,
+        // RONDE 132 §2: a memory asset this video already used is a duplicate ATTEMPT, and it is
+        // reported as one. Filtering it away silently would make a working exclude set look
+        // exactly like an empty memory.
+        onExcluded: req.onMemoryAssetExcluded,
+      })
+    : [];
+  const { picks: archivePicks, added: recalledAdded } = mergeRecalledIntoArchivePicks(
+    scannedPicks,
+    recall
+  );
+  if (req.memoryRecalledInto) {
+    const scanned = new Set(scannedPicks.map((p) => p.asset.id));
+    // Only assets the recall ADDED. One the archive scan found anyway is not a memory hit; it is
+    // a beat whose own keywords matched, and crediting the memory for it would inflate the metric.
+    for (const r of recall) {
+      if (!scanned.has(r.pick.asset.id)) req.memoryRecalledInto.add(r.pick.asset.id);
+    }
+  }
+  if (req.memoryEntity) {
+    const hit = recalledAdded > 0;
+    if (req.memoryMetrics) {
+      if (hit) {
+        req.memoryMetrics.memoryHits++;
+        req.memoryMetrics.assetsReused += recalledAdded;
+        req.memoryMetrics.providerSearchesAvoided++;
+      } else {
+        req.memoryMetrics.memoryMisses++;
+        req.memoryMetrics.newSearches++;
+      }
+    }
+    console.log(
+      formatSearchMemoryLine({
+        query: primaryQuery,
+        hit,
+        provider: recall[0]?.memory.source,
+        assets: recalledAdded,
+        // A recalled asset is already in FastVid's archive: adopting it costs no provider search
+        // and no download from anyone else.
+        networkAvoided: hit,
+      })
+    );
+  }
 
   // ── 2. Coverage scoring ────────────────────────────────────────────────────
   // Score top-5 archive candidates against the beat embedding to get coverage.
@@ -782,7 +913,8 @@ export async function buildRetrievalFunnel(
     archiveWeight, internetWeight, maxTotal,
     req.movingShareDeficit ?? 0,
     // RONDE 54: built from what the pipeline already knows about this video.
-    buildTopicMatcher(req.videoTitle, extractTopicAnchorTags(req.videoTitle, req.sceneText), req.sceneText)
+    buildTopicMatcher(req.videoTitle, extractTopicAnchorTags(req.videoTitle, req.sceneText), req.sceneText),
+    req.beatTemporalContext
   );
 
   const latencyMs = Date.now() - t0;
@@ -866,6 +998,41 @@ const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;
 const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
 
 /**
+ * RONDE 163 — the curated archive is not one source among interchangeable peers.
+ *
+ * The diversity cap above is right for what it was written against: several stock libraries that
+ * answer the same query with much the same footage, where letting one fill the shortlist crowds
+ * out a better result from another. It treats `archive` as one of those, and the archive is the
+ * catalogue this pipeline is built on.
+ *
+ * What that costs, from render 553's own log:
+ *
+ *     [ArchiveRetrieval] s1b6 query="See how internal conflicts further destabilized the Nazi reg"
+ *                        candidates=25 bestScore=0.444 knownSuccessful=11
+ *     [VisualCoverageFinal] scene=1 beat=6 offered=3 visionJudged=0 eligible=0 adopted=0
+ *
+ * Twenty-five archive candidates were found and scored for that beat. Every one of them carries
+ * source `archive`, so the cap allowed TWO of the twenty-five to be downloaded and judged. The
+ * same shape on s1b5: 25 candidates, offered=2. Two chances out of twenty-five is why beats with
+ * plenty of matching material still end as placeholders.
+ *
+ * 3 rather than 2, against a download budget of MAX_FUNNEL_CANDIDATES_TO_SCORE = 6. Half the
+ * shortlist is the ceiling, and it is deliberate: 4 was tried first and broke the guard that
+ * matters here — with five archive candidates outranking three other sources, a cap of 4 left one
+ * slot and a source that had a candidate got none. Three keeps every other source reachable while
+ * giving the primary catalogue 50% more chances per beat than it had.
+ *
+ * This is a bounded step, not the whole answer. Two of twenty-five becomes three of twenty-five.
+ * The larger lever is the download budget itself, and that trades directly against download and
+ * VisionGate cost per beat — a trade that needs a production measurement before it is made.
+ *
+ * Nothing else moves. Relevance (rankingScore) still decides who fills the slots, the download
+ * budget still bounds how many are fetched, and VisionGate still decides the winner — this only
+ * changes how many archive candidates are allowed to be considered.
+ */
+const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;
+
+/**
  * FASE 4 — Candidate Expansion: replaces the old flat "take the top N by rank" download
  * selection with a source-diversity-aware shortlist, so a strong candidate from a
  * less-dominant source (e.g. ranked 4th overall but the best NARA result) still gets a
@@ -889,10 +1056,81 @@ const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
  * decision (pickBestFunnelCandidate) — this only decides which candidates are worth the
  * download+VisionGate cost.
  */
+/**
+ * RONDE 176 — the beat's own sentence decides its order, not the scene's.
+ *
+ * ── The asymmetry this removes ───────────────────────────────────────────────────────────────
+ *
+ * The funnel searches once per SCENE and the shortlist is drawn once per BEAT. Between them,
+ * nothing re-read the beat. `buildDownloadShortlist` takes the scene-level ranking and removes
+ * what earlier beats already used (FIX 2), so a beat's order was: the scene's ordering, minus the
+ * pictures its neighbours took first.
+ *
+ * That gives the last beat of a scene systematically worse options than the first — not because
+ * its sentence is harder, but because it is later in the loop. And the scene-level ranking cannot
+ * know that beat 4 is the one about Munich in 1926 while beat 0 was about the Luftwaffe.
+ *
+ * ── Why here and not by running the funnel per beat ──────────────────────────────────────────
+ *
+ * Running retrieval per beat would multiply provider searches and archive scans roughly fourfold,
+ * on a render (555) whose retrieval was already 13m28s over a 1m36s budget. This costs nothing:
+ * the pool is already in memory, the beat's text is already in scope, and the matcher is the one
+ * RONDE 175 §2 already built. Same candidates, ordered for the sentence they are about to sit
+ * under.
+ *
+ * ── Still a nudge ────────────────────────────────────────────────────────────────────────────
+ *
+ * It reorders; it never drops. Every candidate the scene found is still a candidate, and absence
+ * of period information is still neutral — a catalogue-numbered archive title keeps its place.
+ */
+export function reorderShortlistForBeat(
+  candidates: FunnelCandidate[],
+  beatContext: BeatTemporalContext | undefined
+): FunnelCandidate[] {
+  if (!beatContext || candidates.length < 2) return candidates;
+  const hasSignal =
+    (beatContext.years?.length ?? 0) > 0 ||
+    (beatContext.places?.length ?? 0) > 0 ||
+    (beatContext.subjects?.length ?? 0) > 0;
+  if (!hasSignal) return candidates;
+
+  // Scored once, then sorted — `matchCandidateToBeat` is pure and this keeps it O(n log n) rather
+  // than re-running the matcher inside every comparison.
+  const scored = candidates.map((c, i) => ({
+    c,
+    i,
+    bonus: matchCandidateToBeat(candidateTextOf(c), beatContext).bonus,
+  }));
+  scored.sort(
+    (a, b) =>
+      // The beat's own agreement first, then the scene ranking that got them here, then the
+      // original position — so the order is fully determined and two runs cannot differ.
+      b.bonus - a.bonus || b.c.rankingScore - a.c.rankingScore || a.i - b.i
+  );
+  return scored.map((x) => x.c);
+}
+
+/** Everything a candidate says about itself, whichever kind it is. */
+function candidateTextOf(c: FunnelCandidate): string {
+  const archive = c.archivePick;
+  if (archive) {
+    return [
+      archive.asset.title,
+      (archive.asset as { description?: string }).description,
+      archive.archiveName,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  return `${c.title ?? ""} ${c.poolCandidate?.assetId ?? ""}`;
+}
+
 export function buildDownloadShortlist(
   candidates: FunnelCandidate[],
   budget: number,
-  usedCandidateIds?: ReadonlySet<string>
+  usedCandidateIds?: ReadonlySet<string>,
+  /** RONDE 164: filled in with this stage's counts when the caller is tracking a beat. */
+  audit?: ArchiveSourcingAudit
 ): FunnelCandidate[] {
   if (budget <= 0 || candidates.length === 0) return [];
   // FIX 2 — per-beat shortlist exclusion. The funnel result is built once per SCENE but
@@ -912,18 +1150,109 @@ export function buildDownloadShortlist(
   const pool = unused.length > 0 ? unused : candidates;
   const sorted = [...pool].sort((a, b) => b.rankingScore - a.rankingScore);
 
-  const capFor = (source: FunnelCandidateSource): number =>
-    STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
+  const capFor = (source: FunnelCandidateSource): number => {
+    if (source === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;
+    return STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
+  };
 
-  const shortlist: FunnelCandidate[] = [];
+  /**
+   * RONDE 170 — the caps decide who goes FIRST, not how many slots are left empty.
+   *
+   * ── What render 555 measured ───────────────────────────────────────────────────────────────
+   *
+   *     beat=s2b0 afterMetadata=15 afterSourceCap=3 downloadBudget=6 downloaded=0
+   *               cutBySourceCap=8 cutByBudget=0   verdict=LOST_BEFORE_VISION
+   *     beat=s2b1 afterSourceCap=3 downloadBudget=6 cutBySourceCap=5 cutByBudget=0
+   *     beat=s2b3 afterSourceCap=5 downloadBudget=6 cutBySourceCap=7 cutByBudget=0
+   *     TOTAL     cutBySourceCap=106 cutByBudget=6
+   *               beatsWithCapBinding=13 medianCapGap=0.00 capGapMax=0.01
+   *
+   * On three of the four beats the render printed in full, the shortlist came out SMALLER than the
+   * download budget while the per-source cap was turning candidates away. s2b0 is the clearest:
+   * ninety-three candidates found, fifteen visible, three shortlisted, eight refused by the cap —
+   * and three of the six paid-for download slots left empty. The beat then downloaded nothing at
+   * all and was scored LOST_BEFORE_VISION.
+   *
+   * Across the render the cap cut 106 candidates while the budget cut 6, and the thirteen beats
+   * where the cap actually bound show a median score gap of 0.00 between what it kept and what it
+   * refused. RONDE 164 and 165 both declined to act on one beat with a gap of 0.00; thirteen is
+   * the evidence they were waiting for.
+   *
+   * ── Why this is not a cap raise ────────────────────────────────────────────────────────────
+   *
+   * RONDE 157 raised MAX_SHORTLIST_PER_ARCHIVE_SOURCE to 4 and measured the cost: the archive ate
+   * slots the other providers needed, and the guard failed. Raising it again would repeat that.
+   *
+   * The caps are a DIVERSITY rule and they still decide the whole shortlist whenever there are
+   * enough candidates to fill the budget — every source gets its share before anyone gets a
+   * second. What they were also doing, silently, was shrinking the shortlist below the budget when
+   * no other source had anything to put in those slots. An empty slot serves no diversity: nothing
+   * is being kept out of it, it is simply unused.
+   *
+   * So the caps run first and unchanged, and only the slack they leave behind is filled, from the
+   * candidates they refused, in ranking order. The budget stays 6 and the caps stay 3/2/1.
+   */
+  const capped: FunnelCandidate[] = [];
+  const capOverflow: FunnelCandidate[] = [];
   const perSourceCount = new Map<FunnelCandidateSource, number>();
   for (const c of sorted) {
-    if (shortlist.length >= budget) break;
     const used = perSourceCount.get(c.source) ?? 0;
-    if (used >= capFor(c.source)) continue;
-    shortlist.push(c);
+    if (used >= capFor(c.source)) {
+      capOverflow.push(c);
+      continue;
+    }
+    capped.push(c);
     perSourceCount.set(c.source, used + 1);
   }
+
+  const shortlist = capped.slice(0, budget);
+  /**
+   * Candidates the caps refused that are taking a slot nobody else wanted.
+   *
+   * STOCK IS EXCLUDED, and that exclusion is the whole reason this is a backfill and not a raised
+   * cap. An earlier round settled it — "niet te veel downloaden" — with a homogeneous Pexels pool:
+   * six generic stock clips of the same query are interchangeable, so fetching six to fill a
+   * six-slot budget buys nothing but wall time. That argument is about STOCK, whose catalogue is
+   * commissioned and repetitive by construction, and it stays honoured exactly as written.
+   *
+   * It is not an argument about the archive. Render 555's s2b0 found ninety-three distinct archive
+   * candidates, shortlisted three, downloaded none and scored LOST_BEFORE_VISION with three of six
+   * paid-for slots unused. Those are different holdings of different material, not six versions of
+   * one clip, and leaving the slots empty cost the beat its picture.
+   */
+  let backfilledFromCap = 0;
+  for (const c of capOverflow) {
+    if (shortlist.length >= budget) break;
+    if (STOCK_SOURCES.has(c.source)) continue;
+    shortlist.push(c);
+    backfilledFromCap++;
+  }
+
+  /**
+   * RONDE 163/164 — where candidates were lost, counted after the fact rather than during it.
+   *
+   * `cutBySourceCap` is what the caps refused AND the backfill did not reclaim, so it keeps
+   * meaning "lost to the diversity rule". `cutByBudget` is what a full shortlist had no room for.
+   * Both still add up to what did not make it, and `backfilledFromCap` says how much of the cap's
+   * refusal the budget's slack bought back.
+   */
+  const cutByCap = capOverflow.length - backfilledFromCap;
+  const cutByBudget = Math.max(0, capped.length - shortlist.length);
+  const inShortlist = new Set(shortlist);
+  const archiveTaken = shortlist.filter((c) => c.source === "archive").map((c) => c.rankingScore);
+  const archiveCut = sorted
+    .filter((c) => c.source === "archive" && !inShortlist.has(c))
+    .map((c) => c.rankingScore);
+  recordShortlistStage(audit, {
+    afterMetadata: candidates.length,
+    afterBeatDedup: pool.length,
+    afterSourceCap: shortlist.length,
+    downloadBudget: budget,
+    cutBySourceCap: cutByCap,
+    cutByBudget,
+    backfilledFromCap,
+    archive: { taken: archiveTaken, cut: archiveCut },
+  });
 
   return shortlist;
 }
@@ -943,6 +1272,54 @@ function scoreSpreadEnv(fallback: number): number {
   return Number.isFinite(n) && n >= 0 && n <= 10 ? n : fallback;
 }
 const NON_DISCRIMINATING_SCORE_SPREAD = scoreSpreadEnv(1);
+
+/**
+ * RONDE 168 — the beat may not end on a candidate nobody judged.
+ *
+ * ── The bug this exists to make impossible ───────────────────────────────────────────────────
+ *
+ * videoPipeline's judging loop runs `look < MAX_JUDGEMENTS_PER_BEAT` and, on each refusal, picks
+ * the next-best candidate. It breaks the moment one passes, so a winner produced by a break has
+ * been judged. When the CEILING ends the loop instead, the winner left in hand is whatever the
+ * last refusal picked and nothing has ever looked at it — and it is not in the refused set either,
+ * so the reprieve check does not fire and no severity is consulted. Video 555 shipped a NASA clip
+ * about equality under narration on the Tehran Conference exactly this way.
+ *
+ * ── Why it lives here and not inline ─────────────────────────────────────────────────────────
+ *
+ * Written inline, the only thing a test could check was that the source text was present — and a
+ * source-text assertion cannot tell whether the winner it ends on was judged, which is the entire
+ * question. As a function the real rule is the thing under test, and a mutation to it fails.
+ *
+ * The look budget is spent on judging, not on shopping: with two looks a beat may try two
+ * candidates properly, not two and then a third on trust. No gate call is added and no ceiling is
+ * raised — what changes is which candidate the beat ends on when the ceiling binds.
+ */
+export type JudgedWinnerDecision<T> = {
+  /** The candidate the beat may keep: judged, or none. */
+  winner: T | null;
+  /** The unjudged candidate that was put back, so the caller can log and account for it. */
+  putBack: T | null;
+  /** The outcome reason for `putBack`. Kept with the rule so the two cannot drift. */
+  reason: "never_judged";
+};
+
+export function keepOnlyJudgedWinner<T extends { candidate: { id: string } }>(
+  winner: T | null,
+  judgedCandidateIds: ReadonlySet<string>,
+  scored: readonly T[],
+  /** RONDE 61's hard exclusion set: the candidates a judge looked at and refused. */
+  refusedCandidateIds: ReadonlySet<string>
+): JudgedWinnerDecision<T> {
+  if (!winner || judgedCandidateIds.has(winner.candidate.id)) {
+    return { winner, putBack: null, reason: "never_judged" };
+  }
+  // Back to the best candidate this beat actually looked at. Refused, so RONDE 67's reprieve and
+  // RONDE 166's severity rules decide whether it may be used — which is the point: a known fault
+  // judged on its merits beats an unknown one adopted on trust.
+  const judged = scored.find((c) => refusedCandidateIds.has(c.candidate.id)) ?? null;
+  return { winner: judged, putBack: winner, reason: "never_judged" };
+}
 
 export function pickBestFunnelCandidate(
   scored: ScoredFunnelCandidate[],

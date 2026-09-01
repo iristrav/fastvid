@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toastErrorMessage } from "@/const";
 import { toast } from "sonner";
+import { MIN_TRIMMED_CLIP_SEC, validateTrimRange } from "@shared/archiveTrim";
+import { withArchiveMediaVersion } from "@shared/archiveMediaVersion";
 import {
   Loader2, Trash2, Pencil, Search, Film, Image as ImageIcon, X, Play, ExternalLink, CheckSquare, Square, Sparkles, Copy, AlertTriangle, ChevronLeft, ChevronRight, ScanSearch, Ban, Scissors,
 } from "lucide-react";
@@ -166,8 +168,16 @@ function describeAutoTitleOutcome(result: {
   return parts.join(". ");
 }
 
-function archiveClipMediaUrl(assetId: number): string {
-  return `/api/admin/archive/media/${assetId}`;
+/**
+ * RONDE 177 — the address carries which version of the file it is.
+ *
+ * `/api/admin/archive/media/<id>` alone is identical before and after a trim, and the endpoint asks
+ * the browser to cache it for an hour. So a trimmed clip was refetched as a ROW and replayed as a
+ * FILE from cache: the operator saw the untrimmed footage and reported that the trim was not saved.
+ * `?v=` changes exactly when storagePut writes new bytes, so the browser goes and asks again.
+ */
+function archiveClipMediaUrl(asset: Pick<ArchiveAsset, "id" | "storageUrl" | "durationSec">): string {
+  return withArchiveMediaVersion(`/api/admin/archive/media/${asset.id}`, asset);
 }
 
 function mediaIssueLabel(issue?: ArchiveAsset["mediaIssue"]): string | null {
@@ -192,7 +202,7 @@ function LazyArchiveMedia({
 
   // Images can be served directly from their storage URL (storage proxy or local-storage
   // static), avoiding the extra server hop through the media streaming endpoint.
-  const mediaSrc = asset.mediaType === "image" ? asset.storageUrl : archiveClipMediaUrl(asset.id);
+  const mediaSrc = asset.mediaType === "image" ? asset.storageUrl : archiveClipMediaUrl(asset);
 
   useEffect(() => {
     setLoadError(false);
@@ -277,6 +287,107 @@ function LazyArchiveMedia({
   );
 }
 
+/**
+ * RONDE 110 — one end of a trim range, with every way to move it in one row.
+ *
+ * The head and the tail get the identical set of controls, because they are the identical job.
+ * Sizes are in seconds throughout: an archive clip is a few seconds long, so a tenth of a second
+ * is the useful unit and a whole second is the coarse one.
+ */
+function TrimMarkRow({
+  label,
+  markSet,
+  value,
+  duration,
+  accent,
+  onSetFromPlayhead,
+  onNudge,
+  onType,
+  onSeek,
+  onClear,
+}: {
+  label: string;
+  /** False while this end is still implicit (the clip's own head or tail). */
+  markSet: boolean;
+  value: number;
+  duration: number;
+  accent: "emerald" | "red";
+  onSetFromPlayhead: () => void;
+  onNudge: (deltaSec: number) => void;
+  onType: (sec: number) => void;
+  onSeek: () => void;
+  onClear?: () => void;
+}) {
+  // Local text state so a half-typed "1." is not thrown away on every keystroke.
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? value.toFixed(2);
+  const dot = accent === "emerald" ? "bg-emerald-300" : "bg-red-400";
+
+  function commit(raw: string) {
+    setDraft(null);
+    const n = parseFloat(raw.replace(",", "."));
+    if (!isFinite(n)) {
+      toast.error(`${label}: "${raw}" is geen aantal seconden`);
+      return;
+    }
+    onType(n);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="flex items-center gap-1.5 w-20 shrink-0">
+        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+        <span className="text-xs text-slate-400">{label}</span>
+      </span>
+      <input
+        value={shown}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit((e.target as HTMLInputElement).value);
+          if (e.key === "Escape") setDraft(null);
+        }}
+        className="w-20 bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white tabular-nums"
+        title={`${label} in seconden${duration > 0 ? ` (0 – ${duration.toFixed(2)})` : ""}`}
+      />
+      <span className="text-[11px] text-slate-600">s</span>
+      {[-1, -0.1, 0.1, 1].map((d) => (
+        <button
+          key={d}
+          onClick={() => onNudge(d)}
+          className="px-1.5 py-1 text-[11px] rounded bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white tabular-nums"
+          title={`${label} ${d > 0 ? "later" : "eerder"} met ${Math.abs(d)}s`}
+        >
+          {d > 0 ? `+${d}` : d}
+        </button>
+      ))}
+      <button
+        onClick={onSetFromPlayhead}
+        className="px-2 py-1 text-[11px] rounded bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1"
+        title={`${label} op de huidige afspeelpositie zetten`}
+      >
+        <Scissors className="w-3 h-3" /> Hier
+      </button>
+      <button
+        onClick={onSeek}
+        className="px-2 py-1 text-[11px] rounded bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white"
+        title={`Naar het ${label.toLowerCase()}punt springen`}
+      >
+        Ga heen
+      </button>
+      {markSet && onClear && (
+        <button
+          onClick={onClear}
+          className="px-1.5 py-1 text-[11px] rounded text-slate-500 hover:text-slate-300"
+          title={`${label}punt wissen`}
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AssetPreviewModal({
   asset,
   sceneAudit,
@@ -291,8 +402,29 @@ function AssetPreviewModal({
   const containerRef = useRef<HTMLDivElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState<number>(asset.durationSec ?? 0);
-  const [trimAt, setTrimAt] = useState<number | null>(null);
+  /**
+   * RONDE 110 — where to stop when previewing the kept range, or null when playing normally.
+   *
+   * A ref rather than state: the timeupdate listener is attached once, so it would close over a
+   * stale state value forever. It reads the ref's current value on every tick instead.
+   */
+  const previewStopRef = useRef<number | null>(null);
+  /**
+   * RONDE 98 — a start AND an end.
+   *
+   * There was one marker, `trimAt`, and it only ever meant "cut everything after this". A clip
+   * whose usable footage began three seconds in could not be fixed at all.
+   */
+  const [trimStart, setTrimStart] = useState<number | null>(null);
+  const [trimEnd, setTrimEnd] = useState<number | null>(null);
   const [trimming, setTrimming] = useState(false);
+  /**
+   * RONDE 108: whether the preview is actually playable, which is what makes the trim controls
+   * meaningful. Set from the video element's own readiness rather than guessed from the row —
+   * `mediaAvailable` can say yes about a file the browser then refuses to decode.
+   */
+  const [canPlay, setCanPlay] = useState(asset.mediaAvailable !== false);
+  useEffect(() => setCanPlay(asset.mediaAvailable !== false), [asset.id, asset.mediaAvailable]);
   const trimMutation = trpc.mediaArchive.trimToSingleScene.useMutation();
   // Use live video duration; fall back to DB value while video hasn't loaded yet.
   const duration = videoDuration > 0 ? videoDuration : (asset.durationSec ?? 0);
@@ -307,49 +439,191 @@ function AssetPreviewModal({
     // attached listeners must be tracked here and removed by THIS effect's own cleanup —
     // otherwise they silently accumulate on the video element across asset switches.
     let attachedVideo: HTMLVideoElement | null = null;
-    let onTime: (() => void) | null = null;
-    let onDur: (() => void) | null = null;
+    /** Every listener this effect attaches, so the cleanup cannot forget one. */
+    const attached: Array<[string, EventListener]> = [];
     const interval = setInterval(() => {
       const v = getVideo();
-      if (v) {
-        onTime = () => setCurrentTime(v.currentTime);
-        onDur = () => { if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration); };
-        v.addEventListener("timeupdate", onTime);
-        v.addEventListener("durationchange", onDur);
-        if (v.duration && isFinite(v.duration)) setVideoDuration(v.duration);
-        attachedVideo = v;
-        clearInterval(interval);
-      }
+      if (!v) return;
+      const noteDuration = () => {
+        if (v.duration && isFinite(v.duration)) {
+          setVideoDuration(v.duration);
+          // A clip that reports a real duration is a clip the browser can seek in, which is
+          // exactly the condition the trim controls need.
+          setCanPlay(true);
+        }
+      };
+      attached.push(
+        ["timeupdate", () => {
+          setCurrentTime(v.currentTime);
+          // RONDE 110: stop where the kept range ends, so "Bekijk selectie" shows the result
+          // rather than playing on into footage that is about to be thrown away.
+          const stopAt = previewStopRef.current;
+          if (stopAt != null && v.currentTime >= stopAt) {
+            v.pause();
+            previewStopRef.current = null;
+          }
+        }],
+        ["durationchange", noteDuration],
+        ["loadedmetadata", noteDuration],
+        // RONDE 108: a file the browser refuses to decode retracts the trim controls rather than
+        // leaving scissors over a placeholder.
+        ["error", () => setCanPlay(false)]
+      );
+      for (const [type, fn] of attached) v.addEventListener(type, fn);
+      noteDuration();
+      attachedVideo = v;
+      clearInterval(interval);
     }, 100);
     return () => {
       clearInterval(interval);
-      if (attachedVideo && onTime && onDur) {
-        attachedVideo.removeEventListener("timeupdate", onTime);
-        attachedVideo.removeEventListener("durationchange", onDur);
-      }
+      if (!attachedVideo) return;
+      for (const [type, fn] of attached) attachedVideo.removeEventListener(type, fn);
     };
   }, [asset.id]);
 
-  function markTrimPoint() {
+  /**
+   * RONDE 108 — the player's position, or the reason it cannot be read.
+   *
+   * This used to return `null` and both mark buttons did `if (t == null) return;` — so when the
+   * preview had not loaded, or the media was missing, clicking "Begin hier" did literally nothing
+   * and said nothing. That is the whole of "de knop is er, maar hij werkt niet": a control that
+   * refuses in silence is indistinguishable from a control that is broken.
+   */
+  function playheadSec(): { ok: true; sec: number } | { ok: false; reason: string } {
     const v = getVideo();
-    if (v) {
-      const t = v.currentTime;
-      const dur = (v.duration && isFinite(v.duration)) ? v.duration : duration;
-      if (t > 0.1 && (dur <= 0 || t < dur - 0.1)) setTrimAt(t);
+    if (!v) return { ok: false, reason: "De video is nog niet geladen — wacht tot de preview speelt" };
+    if (v.readyState < 1) {
+      return { ok: false, reason: "De video is nog aan het laden — probeer het zo opnieuw" };
     }
+    const t = v.currentTime;
+    const dur = v.duration && isFinite(v.duration) ? v.duration : duration;
+    if (!(dur > 0)) return { ok: false, reason: "De lengte van deze clip is onbekend" };
+    if (t < 0 || t > dur) return { ok: false, reason: "De afspeelpositie ligt buiten de clip" };
+    return { ok: true, sec: t };
   }
 
+  /**
+   * RONDE 110 — one guarded setter, used by every control that moves a marker.
+   *
+   * There used to be exactly one way to place a mark: park the playhead and click. That is fine
+   * for a rough cut and useless for the two seconds of slate at the head of a clip, where the
+   * operator wants "start at 2.4" and gets whatever frame the player happened to stop on. The
+   * nudge buttons and the typed field move the same marks, so the min-gap rule has to live
+   * somewhere all of them pass through rather than in the click handler.
+   */
+  function applyMark(which: "start" | "end", raw: number): boolean {
+    const t = Math.max(0, duration > 0 ? Math.min(raw, duration) : raw);
+    if (which === "start") {
+      if (trimEnd != null && t >= trimEnd - MIN_TRIMMED_CLIP_SEC) {
+        toast.error(`Startpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s vóór het eindpunt liggen`);
+        return false;
+      }
+      setTrimStart(t);
+      return true;
+    }
+    if (t <= (trimStart ?? 0) + MIN_TRIMMED_CLIP_SEC) {
+      toast.error(`Eindpunt moet minstens ${MIN_TRIMMED_CLIP_SEC}s ná het startpunt liggen`);
+      return false;
+    }
+    setTrimEnd(t);
+    return true;
+  }
+
+  /** Marking pauses: the mark belongs at the frame the operator was looking at, not four ahead. */
+  function markAt(which: "start" | "end") {
+    const read = playheadSec();
+    if (!read.ok) {
+      toast.error("Kan het punt niet bepalen", { description: read.reason });
+      return;
+    }
+    getVideo()?.pause();
+    previewStopRef.current = null;
+    // The min-gap rule between the two marks lives in applyMark, which every control goes
+    // through — see MIN_TRIMMED_CLIP_SEC there.
+    applyMark(which, read.sec);
+  }
+
+  const markStart = () => markAt("start");
+  const markEnd = () => markAt("end");
+
+  const hasTrimRange = trimStart != null || trimEnd != null;
+  /**
+   * RONDE 110 — the range as it stands, with the ends the operator has not touched filled in.
+   *
+   * Both ends are always a real number here, so the head and the tail are edited the same way. An
+   * untouched start is 0 and an untouched end is the clip's length: that is what "keep everything"
+   * means, and it is what the trim would do.
+   */
+  const rangeStart = trimStart ?? 0;
+  const rangeEnd = trimEnd ?? duration;
+
+  /** Seek without disturbing a preview that is not running. */
+  function seekTo(sec: number) {
+    const v = getVideo();
+    if (!v) {
+      toast.error("Kan niet springen", { description: "De video is nog niet geladen" });
+      return;
+    }
+    previewStopRef.current = null;
+    v.currentTime = Math.max(0, duration > 0 ? Math.min(sec, duration) : sec);
+  }
+
+  /** Play exactly what will be kept, so the cut is seen before it overwrites the original. */
+  function previewKeptRange() {
+    const v = getVideo();
+    if (!v) {
+      toast.error("Kan de selectie niet afspelen", { description: "De video is nog niet geladen" });
+      return;
+    }
+    v.currentTime = rangeStart;
+    previewStopRef.current = rangeEnd > rangeStart ? rangeEnd : null;
+    void v.play().catch(() => {
+      previewStopRef.current = null;
+      toast.error("Afspelen geblokkeerd door de browser");
+    });
+  }
+  /**
+   * RONDE 108 — the same rule the server uses, asked before anything is sent.
+   *
+   * The panel used to offer "Bijknippen toepassen" for any marked range, including ones the
+   * server was always going to refuse (a range that is the whole clip, a range shorter than half
+   * a second). The operator clicked, waited, and got a message about a range they could not see
+   * was wrong. Now the button says so up front, and the server still checks independently — a UI
+   * check is a courtesy, never a guarantee.
+   */
+  const trimVerdict = validateTrimRange(
+    { startSec: trimStart ?? 0, ...(trimEnd != null ? { endSec: trimEnd } : {}) },
+    duration
+  );
+
   async function applyTrim() {
-    if (trimAt == null) return;
-    if (!confirm(`Clip bijknippen tot ${trimAt.toFixed(2)}s? Dit overschrijft het origineel.`)) return;
+    if (!hasTrimRange) return;
+    if (!trimVerdict.ok) {
+      toast.error("Dit bereik kan niet", { description: trimVerdict.reason });
+      return;
+    }
+    const from = trimVerdict.startSec;
+    const to = trimVerdict.endSec;
+    if (!confirm(`Clip bijknippen naar ${from.toFixed(2)}s – ${to.toFixed(2)}s? Dit overschrijft het origineel.`)) {
+      return;
+    }
     setTrimming(true);
     try {
-      const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: trimAt });
+      /**
+       * Both bounds, always. Sending only a start let the server fall back to its scene-detect
+       * path, which then reported "No reliable scene cut detected" at an operator who had marked
+       * a point by hand. The range that was validated is the range that is sent.
+       */
+      const result = await trimMutation.mutateAsync({
+        assetId: asset.id,
+        startSec: from,
+        endSec: to,
+      });
       if (!result.trimmed) {
         toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
         return;
       }
-      toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
+      toast.success(`Bijgeknipt naar ${result.newDurationSec?.toFixed(2)}s`);
       onTrimmed?.(result.newDurationSec!);
       onClose();
     } catch (e) {
@@ -392,7 +666,7 @@ function AssetPreviewModal({
           <div className="flex items-center gap-2 shrink-0">
             {asset.mediaAvailable !== false && (
               <a
-                href={archiveClipMediaUrl(asset.id)}
+                href={archiveClipMediaUrl(asset)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg bg-white/10 text-slate-300 hover:text-white hover:bg-white/15"
@@ -411,57 +685,169 @@ function AssetPreviewModal({
           <LazyArchiveMedia asset={asset} mode="preview" className="w-full h-full overflow-hidden" />
         </div>
 
-        {asset.mediaType === "video" && (
+        {/**
+          * RONDE 108 — do not offer scissors over a clip that cannot be played.
+          *
+          * The panel's only condition was `mediaType === "video"`, so an asset whose file is
+          * missing or whose format the browser refuses still got a full set of trim controls
+          * laid over an error placeholder. Every one of them was dead, and nothing said why.
+          */}
+        {asset.mediaType === "video" && !canPlay && (
+          <div className="px-4 py-3 border-t border-white/10">
+            <p className="text-xs text-amber-300">
+              Bijknippen kan niet: {mediaIssueLabel(asset.mediaIssue ?? undefined) ?? "de preview kan niet worden afgespeeld"}.
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Upload de clip opnieuw als MP4, dan kan hij hier worden bijgeknipt.
+            </p>
+          </div>
+        )}
+        {asset.mediaType === "video" && canPlay && (
           <div className="px-4 py-3 border-t border-white/10 space-y-2">
-            {/* trim marker bar — only show if duration is known */}
+            {/* RONDE 98: the bar shows the KEPT range, shaded between the two markers, so what the
+                operator is about to save is visible before they save it. */}
             {duration > 0 && <div className="relative h-2 bg-white/10 rounded-full cursor-pointer"
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                const t = frac * duration;
-                if (t > 0.1 && t < duration - 0.1) setTrimAt(t);
+                seekTo(frac * duration);
               }}
+              title="Klik om naar dit punt te springen"
             >
-              {/* playhead */}
+              {/**
+                * RONDE 110 — what gets DROPPED is shaded, and the playhead is a line.
+                *
+                * The playhead used to be a filled bar from 0 to the current position, drawn over
+                * the kept range — so as soon as you played past your own start marker, the marker
+                * and the kept region disappeared under it and there was nothing to aim at. The
+                * discarded head and tail are now the dark parts and the playhead is one thin
+                * line, so both marks stay visible wherever the player is.
+                */}
               <div
-                className="absolute top-0 h-full bg-white/30 rounded-full"
-                style={{ width: `${(currentTime / duration) * 100}%` }}
+                className="absolute top-0 h-full bg-emerald-500/40 rounded-full"
+                style={{
+                  left: `${(rangeStart / duration) * 100}%`,
+                  width: `${((rangeEnd - rangeStart) / duration) * 100}%`,
+                }}
               />
-              {/* trim marker */}
-              {trimAt != null && (
+              {rangeStart > 0 && (
+                <div
+                  className="absolute top-0 left-0 h-full bg-black/50 rounded-l-full"
+                  style={{ width: `${(rangeStart / duration) * 100}%` }}
+                  title={`${rangeStart.toFixed(2)}s wordt weggeknipt aan het begin`}
+                />
+              )}
+              {rangeEnd < duration && (
+                <div
+                  className="absolute top-0 right-0 h-full bg-black/50 rounded-r-full"
+                  style={{ width: `${((duration - rangeEnd) / duration) * 100}%` }}
+                  title={`${(duration - rangeEnd).toFixed(2)}s wordt weggeknipt aan het einde`}
+                />
+              )}
+              {/* playhead — a line, so it never hides a marker */}
+              <div
+                className="absolute top-1/2 -translate-y-1/2 w-0.5 h-3 bg-white/80"
+                style={{ left: `${(currentTime / duration) * 100}%` }}
+              />
+              {trimStart != null && (
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 w-1 h-4 bg-emerald-300 rounded-full"
+                  style={{ left: `${(trimStart / duration) * 100}%` }}
+                />
+              )}
+              {trimEnd != null && (
                 <div
                   className="absolute top-1/2 -translate-y-1/2 w-1 h-4 bg-red-400 rounded-full"
-                  style={{ left: `${(trimAt / duration) * 100}%` }}
+                  style={{ left: `${(trimEnd / duration) * 100}%` }}
                 />
               )}
             </div>}
 
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-500 tabular-nums w-16">
+              <span className="text-xs text-slate-500 tabular-nums">
                 {currentTime.toFixed(2)}s / {duration > 0 ? `${duration.toFixed(1)}s` : "?"}
               </span>
               <button
-                onClick={markTrimPoint}
-                className="px-3 py-1.5 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
-                title="Zet bijknippunt op huidige positie"
+                onClick={previewKeptRange}
+                className="px-2.5 py-1 text-xs rounded-lg bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white flex items-center gap-1.5"
+                title="Speel precies af wat er bewaard blijft"
               >
-                <Scissors className="w-3 h-3" /> Markeer hier ({currentTime.toFixed(2)}s)
+                <Play className="w-3 h-3" /> Bekijk selectie
               </button>
-              {trimAt != null && (
+            </div>
+
+            {/**
+              * RONDE 110 — the head and the tail are edited the same way, side by side.
+              *
+              * Both ends were already trimmable, but the only way to place either mark was to park
+              * the playhead and click. That is fine for a rough cut and no use at all for the two
+              * seconds of slate at the head of a clip, where what is wanted is "start at 2.4" and
+              * what is offered is "wherever the player stopped". Each end now has its own row: a
+              * typed value, nudges, a jump to the mark, and a clear.
+              */}
+            <div className="space-y-1.5">
+              <TrimMarkRow
+                label="Begin"
+                markSet={trimStart != null}
+                value={rangeStart}
+                duration={duration}
+                accent="emerald"
+                onSetFromPlayhead={markStart}
+                onNudge={(delta) => applyMark("start", rangeStart + delta)}
+                onType={(sec) => applyMark("start", sec)}
+                onSeek={() => seekTo(rangeStart)}
+                onClear={trimStart != null ? () => setTrimStart(null) : undefined}
+              />
+              <TrimMarkRow
+                label="Einde"
+                markSet={trimEnd != null}
+                value={rangeEnd}
+                duration={duration}
+                accent="red"
+                onSetFromPlayhead={markEnd}
+                onNudge={(delta) => applyMark("end", rangeEnd + delta)}
+                onType={(sec) => applyMark("end", sec)}
+                onSeek={() => seekTo(rangeEnd)}
+                onClear={trimEnd != null ? () => setTrimEnd(null) : undefined}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {hasTrimRange && (
                 <>
-                  <span className="text-xs text-red-300">✂ tot {trimAt.toFixed(2)}s</span>
+                  <span
+                    className={`text-xs tabular-nums ${trimVerdict.ok ? "text-emerald-300" : "text-amber-300"}`}
+                  >
+                    bewaar {rangeStart.toFixed(2)}s – {rangeEnd.toFixed(2)}s
+                    {duration > 0 && ` (${(rangeEnd - rangeStart).toFixed(2)}s)`}
+                  </span>
                   <button
                     onClick={applyTrim}
-                    disabled={trimming}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 disabled:opacity-50"
+                    disabled={trimming || !trimVerdict.ok}
+                    title={trimVerdict.ok ? "Bijknippen en het origineel overschrijven" : trimVerdict.reason}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {trimming ? <Loader2 className="w-3 h-3 animate-spin" /> : <Scissors className="w-3 h-3" />}
                     Bijknippen toepassen
                   </button>
-                  <button onClick={() => setTrimAt(null)} className="text-xs text-slate-500 hover:text-slate-300">
+                  {/* The reason is shown, not only hidden in a tooltip — a greyed-out button with
+                      no explanation is the same dead end as a silent one. */}
+                  {!trimVerdict.ok && (
+                    <span className="text-xs text-amber-300/90">{trimVerdict.reason}</span>
+                  )}
+                  <button
+                    onClick={() => { setTrimStart(null); setTrimEnd(null); }}
+                    className="text-xs text-slate-500 hover:text-slate-300"
+                  >
                     Annuleren
                   </button>
                 </>
+              )}
+              {!hasTrimRange && (
+                <span className="text-[11px] text-slate-500">
+                  Zet een begin- en/of eindpunt om deze clip bij te knippen. Alles tussen de twee
+                  punten blijft bewaard.
+                </span>
               )}
             </div>
           </div>
@@ -526,7 +912,16 @@ function AssetCard({
           asset={asset}
           sceneAudit={sceneAudit}
           onClose={() => setPreviewOpen(false)}
-          onTrimmed={() => onRefresh()}
+          /**
+           * RONDE 108 — hand the trim up, with the length it actually became.
+           *
+           * This used to call `onRefresh()` and drop the duration on the floor, so the parent's
+           * `onTrimmed` never ran — and that handler is what clears the stale scene audit. The
+           * clip was really trimmed, and the card went on showing "multi_scene" with the scissors
+           * button still on it. From the operator's side that is indistinguishable from nothing
+           * having happened, which is how this was reported.
+           */
+          onTrimmed={(newDurationSec) => onTrimmed(asset.id, newDurationSec)}
         />
       )}
       <div
@@ -698,13 +1093,21 @@ function AssetCard({
                       const cut = sceneAudit.cutTimesSec![0];
                       if (!confirm(`Clip bijknippen naar eerste scène (0–${cut.toFixed(1)}s)?`)) return;
                       try {
-                        const result = await trimMutation.mutateAsync({ assetId: asset.id, cutTimeSec: cut });
+                        const result = await trimMutation.mutateAsync({
+                          assetId: asset.id,
+                          // Both bounds: an explicit range the server cannot re-interpret as a
+                          // request to go and detect a scene cut itself.
+                          startSec: 0,
+                          endSec: cut,
+                        });
                         if (!result.trimmed) {
                           toast.error("Bijknippen mislukt", { description: result.reason ?? "Onbekende fout" });
                           return;
                         }
-                        onRefresh();
-                        toast.success(`Bijgeknipt naar ${result.newDurationSec}s`);
+                        // Same hand-up as the modal: the parent clears the scene audit, so the
+                        // card stops advertising a cut that no longer exists.
+                        onTrimmed(asset.id, result.newDurationSec ?? cut);
+                        toast.success(`Bijgeknipt naar ${(result.newDurationSec ?? cut).toFixed(2)}s`);
                       } catch (e) {
                         toast.error("Bijknippen mislukt", { description: toastErrorMessage(e) });
                       }

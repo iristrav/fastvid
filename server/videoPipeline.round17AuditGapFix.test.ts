@@ -74,7 +74,8 @@ describe("Round 17 — composeSceneVideoInner's guaranteed-fill blocks now recor
     // recordClipAdopt must appear within this branch, before the branch's closing structure —
     // scoped to comfortably cover the loop body (including its explanatory comment) without
     // reaching into the unrelated "else" branch that follows.
-    const scoped = src.slice(loopIdx, loopIdx + 1800);
+    // RONDE 103 added a relevance argument to this call, so the window grew with it.
+    const scoped = src.slice(loopIdx, loopIdx + 2200);
     expect(scoped).toContain("generateGuaranteedBeatClip");
     expect(scoped).toContain("recordClipAdopt");
     // RONDE 50: the source is no longer the blanket "fallback" literal — it names the rung of
@@ -91,16 +92,17 @@ describe("Round 17 — composeSceneVideoInner's guaranteed-fill blocks now recor
     // shape rather than one flat line. Slot 999 is still pinned.
     const standaloneIdx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*999,/);
     expect(standaloneIdx).toBeGreaterThan(-1);
-    const scoped = src.slice(standaloneIdx, standaloneIdx + 600);
+    // RONDE 103 added a relevance argument to this call, so the window grew with it.
+    const scoped = src.slice(standaloneIdx, standaloneIdx + 900);
     expect(scoped).toContain("recordClipAdopt");
     expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
   });
 
   it("the fix is additive — validClips.push still happens for both guaranteed-fill sites (selection/output unchanged)", () => {
     const loopIdx = src.indexOf("geen bruikbare clips — guaranteed compose fill");
-    expect(src.slice(loopIdx, loopIdx + 900)).toContain("validClips.push(clip)");
+    expect(src.slice(loopIdx, loopIdx + 1200)).toContain("validClips.push(clip)");
     const standaloneIdx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*999,/);
-    expect(src.slice(standaloneIdx, standaloneIdx + 600)).toContain("validClips.push(clip)");
+    expect(src.slice(standaloneIdx, standaloneIdx + 900)).toContain("validClips.push(clip)");
   });
 
   it("calls recordClipAdopt for the compose-empty guaranteed clip rescue (third audit-gap site, slot 8888)", () => {
@@ -109,7 +111,8 @@ describe("Round 17 — composeSceneVideoInner's guaranteed-fill blocks now recor
     // above (synthetic slot 8888, not a loop index or 999).
     const rescueIdx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*8888,/);
     expect(rescueIdx).toBeGreaterThan(-1);
-    const scoped = src.slice(rescueIdx, rescueIdx + 900);
+    // RONDE 103 added a relevance argument to this call, so the window grew with it.
+    const scoped = src.slice(rescueIdx, rescueIdx + 1200);
     expect(scoped).toContain("recordClipAdopt");
     expect(scoped).toContain("guaranteedAdoptSource(tierOut.tier)");
   });

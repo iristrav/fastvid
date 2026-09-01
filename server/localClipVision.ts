@@ -294,6 +294,19 @@ export type ModernMismatchVerdict = {
    *  Never consulted in the decision — it exists so a production log makes the behaviour
    *  change measurable per candidate. */
   legacyWouldReject: boolean;
+  /**
+   * RONDE 174 — how far the best probe was from counting as evidence, in similarity units.
+   *
+   * A probe is evidence only when it clears BOTH the absolute floor and the margin over the
+   * beat's own query, so the shortfall is whichever of the two it missed by more. 0 or less means
+   * the probe qualified (the frame/probe quorum may still have refused the veto).
+   *
+   * This exists because `asked`/`fired` could not tell "the threshold is a hair too high" from
+   * "the material is not modern at all". Render 530 read 0/54, RONDE 51 retuned on ten
+   * hand-collected numbers, and the next render read 0/74 with nothing to compare it against. The
+   * gate now reports its own distance from firing every time it is asked.
+   */
+  shortfallToFire: number;
 };
 
 /** One sampled frame's similarities: against the beat query, and against each modern probe. */
@@ -317,6 +330,9 @@ export function decideModernContentMismatch(
     framesFlagged: 0,
     probesEvaluated: 0,
     legacyWouldReject: false,
+    // No frames or no probes means the gate never had evidence to be short of, not that it came
+    // close. Infinity keeps it out of the "closest" statistic entirely.
+    shortfallToFire: Number.POSITIVE_INFINITY,
   };
   if (frames.length === 0) return { ...empty, reason: "no-frames" };
   const probesEvaluated = frames[0]!.negSims.length;
@@ -327,6 +343,7 @@ export function decideModernContentMismatch(
   let topProbe: string | null = null;
   let topBeatSim = 0;
   let legacyWouldReject = false;
+  let bestShortfall = Number.POSITIVE_INFINITY;
 
   // RONDE 26: both requirements adapt to how many frames the caller could actually supply.
   //
@@ -355,6 +372,12 @@ export function decideModernContentMismatch(
       if (negSim >= MODERN_EVIDENCE_MIN_SIM && negSim >= beatSim + MODERN_EVIDENCE_MARGIN) {
         probesFlagged++;
       }
+      // RONDE 174: the binding constraint is whichever of the two this probe missed by more.
+      const shortfall = Math.max(
+        MODERN_EVIDENCE_MIN_SIM - negSim,
+        beatSim + MODERN_EVIDENCE_MARGIN - negSim
+      );
+      if (shortfall < bestShortfall) bestShortfall = shortfall;
     }
     if (probesFlagged >= probesRequired) framesFlagged++;
   }
@@ -372,6 +395,7 @@ export function decideModernContentMismatch(
     framesFlagged,
     probesEvaluated,
     legacyWouldReject,
+    shortfallToFire: bestShortfall,
   };
 }
 
@@ -392,6 +416,9 @@ async function evaluateModernContentMismatch(
     framesFlagged: 0,
     probesEvaluated: 0,
     legacyWouldReject: false,
+    // No frames or no probes means the gate never had evidence to be short of, not that it came
+    // close. Infinity keeps it out of the "closest" statistic entirely.
+    shortfallToFire: Number.POSITIVE_INFINITY,
   };
   if (!topicNeedsHistoricalFootage(beatText, videoTitle)) return notArmed;
   const negEmbs = await getModernMismatchEmbeddings();
@@ -409,7 +436,7 @@ async function evaluateModernContentMismatch(
   // renders, logged every time, had its flag on, and could not return true. Recorded here,
   // after the not-armed/no-probes early returns, so "asked" means the gate genuinely judged a
   // candidate rather than declining to look at one.
-  recordGateVerdict("modern_mismatch", verdict.mismatch);
+  recordGateVerdict("modern_mismatch", verdict.mismatch, { shortfall: verdict.shortfallToFire });
 
   // Logged once per gate evaluation, never per frame, and only for the candidates where this
   // gate actually mattered: a reject now, or a reject under the old conditions. Everything

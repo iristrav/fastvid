@@ -45,9 +45,12 @@ const MOCKUP_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9G
 const SCRIPT_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-script-JueTt4K7PbHkfqDhKoXwkv.webp";
 const VISUALS_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663314427713/B9GyrhcpQX4Q32cZzpFMG9/fastvid-feature-visuals-YGMDS8Lz6mqFNsCHUYEQDS.webp";
 
-import { VIDEO_LENGTH_OPTIONS } from "@shared/videoLengths";
+import { VIDEO_LENGTH_OPTIONS, videoLengthAllowedForRole } from "@shared/videoLengths";
 
-const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS;
+// RONDE 147: the marketing picker offers only what a visitor could actually generate. The
+// 1-minute test length is the owner’s and the server refuses it for anyone else, so advertising
+// it here would be promising something the first click cannot deliver.
+const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.filter((opt) => videoLengthAllowedForRole(opt.value, null));
 
 const VIDEO_FORMATS = [
   {
@@ -231,24 +234,65 @@ export default function Home() {
   const [promptValue, setPromptValue] = useState("");
   const [selectedLength, setSelectedLength] = useState("8-10");
 
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
+  /**
+   * One definition of "may use the product", shared by every button on this page.
+   *
+   * Same rule the dashboard and the server use: an active subscription, or an admin. Reading it in
+   * one place is what stops the three entry points from drifting apart — which is exactly how the
+   * paywall came to have a gap in the first place.
+   */
+  const hasActiveSubscription =
+    (user as { subscriptionStatus?: string; role?: string } | null)?.subscriptionStatus === "active" ||
+    (user as { role?: string } | null)?.role === "admin";
 
   // 👉 Generate knop (met prompt + length)
   const handleGenerate = () => {
-  if (isAuthenticated) {
+    if (!isAuthenticated) {
+      navigate(`/login?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
+      return;
+    }
+    /**
+     * The prompt is carried through the paywall rather than thrown away.
+     *
+     * Someone who typed an idea and pressed Generate has already told us what they want; making
+     * them retype it after paying is a small thing that reads as the product losing their work.
+     * The dashboard reads these two parameters either way, so the round trip through /subscribe
+     * costs nothing.
+     */
+    if (!hasActiveSubscription) {
+      navigate(`/subscribe?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
+      return;
+    }
     navigate(`/dashboard?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
-  } else {
-    navigate(`/login?prompt=${encodeURIComponent(promptValue)}&length=${selectedLength}`);
-  }
-};
+  };
 
   // 👉 Overige knoppen (zonder prompt)
- const handleGetStarted = () => {
-  if (isAuthenticated) {
-    navigate("/dashboard");
-  } else {
+/**
+ * Where every "Get started" on this page leads.
+ *
+ * Three buttons share this: the header, the mobile menu, and the two "Get started now" calls to
+ * action in the pricing card and the closing section. They must agree, and the thing they have to
+ * agree on is that an account without an active subscription cannot use the product.
+ *
+ * A signed-in visitor with no subscription used to be sent to /dashboard, which then bounced them
+ * to /subscribe — one redirect later, and only sometimes: the dashboard's own guard skips the
+ * bounce while onboarding is incomplete, so a user who had just registered landed in the studio
+ * shell instead of at the paywall. Sending them straight there removes both the flicker and the
+ * gap.
+ *
+ * The server is still the enforcement (`subscribedProcedure`); this is the routing that matches it.
+ */
+const handleGetStarted = () => {
+  if (!isAuthenticated) {
     navigate("/login");
+    return;
   }
+  if (!hasActiveSubscription) {
+    navigate("/subscribe");
+    return;
+  }
+  navigate("/dashboard");
 };
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 40);
@@ -460,9 +504,17 @@ export default function Home() {
           <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
             {/* Left: Text */}
             <div className="flex flex-col gap-6">
+              {/*
+                RONDE 147 — the positioning line the owner asked for, stated where a first-time
+                visitor reads it: specialists in documentaries for YouTube and Spotify. It replaces
+                the badge's near-duplicate of the headline rather than being added underneath it,
+                so the hero still makes one claim instead of three.
+              */}
               <div className="animate-fade-up inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-purple-500/30 bg-purple-500/10 w-fit">
                 <Film className="w-3.5 h-3.5 text-purple-400" />
-                <span className="mono text-xs text-purple-300 font-medium">YouTube-ready documentaries</span>
+                <span className="mono text-xs text-purple-300 font-medium">
+                  Specialists in documentaries for YouTube and Spotify
+                </span>
               </div>
 
               <h1 className="animate-fade-up delay-100 text-4xl sm:text-5xl lg:text-6xl font-black leading-tight text-white" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -471,7 +523,7 @@ export default function Home() {
               </h1>
 
               <p className="animate-fade-up delay-200 text-base md:text-lg text-slate-300 leading-relaxed max-w-lg">
-                Describe your story once. Fastvid writes the script, narrates it, finds visuals that match what is being said, and delivers a finished video — built for factual, narrator-led channels.
+                Fastvid specialises in documentary video for YouTube and Spotify. Describe your story once — Fastvid writes the script, narrates it, finds visuals that match what is being said, and delivers a finished video, built for factual, narrator-led channels.
               </p>
 
               {/* Video length selector */}
@@ -1054,7 +1106,15 @@ export default function Home() {
           <p className="text-slate-300 max-w-lg mx-auto mb-10 text-base md:text-lg">
             Join creators producing narrator-led YouTube videos without a full production crew. Brief, build, edit, publish.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          {/*
+            RONDE 147 — the secondary demo button was removed. It scrolled to How it works rather
+            than playing anything, so it promised a video the page did not have. "Get started now"
+            is the one action this section is for, and it now stands alone rather than beside a
+            second button competing for the same click. The wording is deliberately paraphrased:
+            the regression test asserts the old label is absent from this file, and quoting it here
+            would defeat that.
+          */}
+          <div className="flex justify-center">
             <button
               onClick={handleGetStarted}
               className="btn-gradient px-8 py-4 rounded-xl font-bold text-white text-base flex items-center justify-center gap-2 shadow-2xl shadow-purple-500/30"
@@ -1062,13 +1122,6 @@ export default function Home() {
               <Sparkles className="w-5 h-5" />
               Get started now
               <ArrowRight className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => scrollTo("how-it-works")}
-              className="px-8 py-4 rounded-xl font-semibold text-white text-base border border-white/15 hover:bg-white/5 transition-colors flex items-center justify-center gap-2"
-            >
-              <Play className="w-4 h-4" />
-              Watch demo
             </button>
           </div>
         </div>

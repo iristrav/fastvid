@@ -6,6 +6,7 @@ import {
   extractPersonNamesFromText,
   extractVisualPlacePhrase,
   scriptStockSearchQueries,
+  typedQueryLadder,
   typedQueryPrefix,
 } from "./videoPipeline";
 import {
@@ -215,14 +216,18 @@ describe("RONDE 78 §A3 — the period, month and all", () => {
 describe("RONDE 78 §B — the combinations the context makes possible", () => {
   it("BEAT 1 — person+place+time, person+event+time and place+event+time all exist", () => {
     const qs = centralTypedQueries(ctxFor(BEAT_1));
-    expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker 1945");
+        // RONDE 88 §4: the bare name+place leads and the year-qualified form follows at position 2
+    // (that brief states it with a worked example: "Hitler Poland", then "Hitler Poland 1939").
+    // The typed combination still leads and still carries the year.
+    expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker");
+    expect(qs[1]).toBe("Adolf Hitler Fuhrerbunker 1945");
     expect(qs).toContain("Adolf Hitler political testament 1945");
     expect(qs).toContain("Fuhrerbunker political testament 1945");
     expect(qs).toContain("Adolf Hitler Fuhrerbunker dictated");
     // And the month-qualified variant, behind the year-only ones.
     expect(qs).toContain("Adolf Hitler Fuhrerbunker April 1945");
     expect(qs.indexOf("Adolf Hitler Fuhrerbunker April 1945"))
-      .toBeGreaterThan(qs.indexOf("Adolf Hitler Fuhrerbunker 1945"));
+      .toBeGreaterThan(qs.indexOf("Adolf Hitler Fuhrerbunker"));
   });
 
   it("BEAT 2 — the named event reaches the query", () => {
@@ -279,30 +284,71 @@ describe("RONDE 78 §C — beat person before scene person", () => {
       typedQueryPrefix(BEAT_4, { scenePersons: ["Adolf Hitler"] }),
       typedQueryPrefix(BEAT_4, { forcePerson: "Adolf Hitler" }),
       buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_4, 0),
-      buildBeatVisualQueryList(BEAT_4, SCENE, TITLE, ["Adolf Hitler"], 4),
     ]) {
       expect(qs[0]).toBe("Churchill France");
       expect(qs[0]).not.toContain("Adolf Hitler");
     }
+    /**
+     * SUPERSEDED BY RONDE 103 for this one builder, deliberately.
+     *
+     * §C's rule — the beat's own person leads, a supplied one never displaces them — is what this
+     * test is about, and it holds on every builder. buildBeatVisualQueryList now descends the
+     * ladder, so its lead is the beat's EVENT question rather than its entity question. Churchill
+     * still leads the string; Hitler still does not appear.
+     */
+    const list = buildBeatVisualQueryList(BEAT_4, SCENE, TITLE, ["Adolf Hitler"], 4);
+    expect(list[0]).toBe("Churchill fall of France");
+    expect(list[0]).not.toContain("Adolf Hitler");
+    expect(list[0]!.startsWith("Churchill")).toBe(true);
   });
 
-  it("the supplied person is kept as the secondary context, not discarded", () => {
-    const qs = typedQueryPrefix(BEAT_4, { scenePersons: ["Adolf Hitler"] });
-    expect(qs[1]).toBe("Adolf Hitler France");
-    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_4, 0)[1]).toBe("Adolf Hitler France");
+  it("RONDE 88 — a SCENE person needs the scene text; an explicitly requested person does not", () => {
+    /**
+     * RONDE 88 §7/§11 splits what this test used to treat as one thing.
+     *
+     * scenePersons is assembled from the scene AND from the video's TITLE, so on a beat that
+     * names nobody it is an inference about the sentence. The RONDE 87 audit measured the cost:
+     * a beat reading "She addressed the nation after the fall of France" was searched as
+     * "Adolf Hitler France" — and, from a title, as "Eva Braun Just France".
+     *
+     * An explicit person-targeted fetch is a different claim: buildPersonCelebrityVideoQueries
+     * is fetching footage OF that person, which is the caller's own established context. That
+     * half is unchanged, and is asserted below.
+     */
+    const bare = typedQueryPrefix(BEAT_4, { scenePersons: ["Adolf Hitler"] });
+    expect(bare.join(" | ")).not.toContain("Adolf Hitler");
+    // With the scene text stating the connection, the scene's person is proven and comes back.
+    const proven = typedQueryPrefix(BEAT_4, {
+      scenePersons: ["Adolf Hitler"],
+      sceneText: "Adolf Hitler had already retreated to the bunker.",
+    });
+    expect(proven).toContain("Adolf Hitler France");
+    // The explicit celebrity fetch never needed the scene text.
+    expect(buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_4, 0)).toContain("Adolf Hitler France");
   });
 
-  it("a beat that names nobody still uses the scene's person", () => {
-    // This is the pronoun case the scene-level fallback exists for and it must keep working.
-    const qs = typedQueryPrefix(BEAT_3, { scenePersons: ["Adolf Hitler"] });
-    expect(qs[0]).toBe("Reichstag 1945");
-    expect(qs).toContain("Adolf Hitler Reichstag 1945");
+  it("a beat that names nobody still uses an explicitly requested person", () => {
+    // The pronoun case the fallback exists for. From the scene list it is an inference and is
+    // refused; from an explicit fetch for that person it is proven, and now LEADS (§1).
+    expect(typedQueryPrefix(BEAT_3, { scenePersons: ["Adolf Hitler"] }).join(" | "))
+      .not.toContain("Adolf Hitler");
+    const qs = buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_3, 0);
+    expect(qs[0]).toBe("Adolf Hitler Reichstag");
+    // RONDE 88: buildPersonCelebrityVideoQueries takes only the FIRST TWO typed queries
+    // (videoPipeline.ts, `.slice(0, 2)`) and fills the rest with its own person variants, so a
+    // third typed query cannot appear in this list by construction. The place+year question is
+    // still asked — on the typed prefix itself, which is where the contract lives.
+    expect(typedQueryPrefix(BEAT_3, { forcePerson: "Adolf Hitler" })).toContain("Reichstag 1945");
   });
 
   it("beat person and supplied person agreeing produces no duplicate", () => {
     const qs = typedQueryPrefix(BEAT_1, { scenePersons: ["Adolf Hitler"] });
     expect(new Set(qs).size).toBe(qs.length);
-    expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker 1945");
+        // RONDE 88 §4: the bare name+place leads and the year-qualified form follows at position 2
+    // (that brief states it with a worked example: "Hitler Poland", then "Hitler Poland 1939").
+    // The typed combination still leads and still carries the year.
+    expect(qs[0]).toBe("Adolf Hitler Fuhrerbunker");
+    expect(qs[1]).toBe("Adolf Hitler Fuhrerbunker 1945");
   });
 });
 
@@ -310,7 +356,7 @@ describe("RONDE 78 §C — beat person before scene person", () => {
 
 describe("RONDE 78 §D — the context reaches the provider query, not just the extractor", () => {
   const expectations: Array<[string, string, string[]]> = [
-    [BEAT_1, "Adolf Hitler Fuhrerbunker 1945",
+    [BEAT_1, "Adolf Hitler Fuhrerbunker",
       ["Adolf Hitler", "Fuhrerbunker", "1945", "political testament"]],
     [BEAT_2, "Brandenburg Gate Battle of Berlin", ["Brandenburg Gate", "Battle of Berlin"]],
     [BEAT_3, "Reichstag 1945", ["Reichstag", "flag", "1945"]],
@@ -333,7 +379,21 @@ describe("RONDE 78 §D — the context reaches the provider query, not just the 
     });
 
     it(`BEAT VISUAL QUERY LIST (Pexels/Pixabay/stock) — "${beat.slice(0, 30)}…"`, () => {
-      expect(buildBeatVisualQueryList(beat, SCENE, TITLE, [], 2)[0]).toBe(first);
+      /**
+       * SUPERSEDED BY RONDE 103, deliberately — for this builder only.
+       *
+       * §D's rule is that the beat's typed context reaches the PROVIDER, not just the extractor.
+       * That is what the `mustAppear` check above measures and it is unchanged on all three
+       * paths. This one builder now descends the ladder, so the narrowest question the beat
+       * supports leads and the entity question follows in slot 2. `first` is still the lead for
+       * the two beats that prove no event, and still in the list for the two that do.
+       */
+      const qs = buildBeatVisualQueryList(beat, SCENE, TITLE, [], 2);
+      expect(qs).toContain(first);
+      const ladder = typedQueryLadder(beat);
+      expect(qs[0]).toBe(ladder[0]?.queries[0] ?? first);
+      // Whatever leads, it is a typed question and not the geo-stock phrase.
+      expect(typedQueryPrefix(beat)).toContain(qs[0]);
     });
   }
 
@@ -362,7 +422,7 @@ describe("RONDE 78 §D — the context reaches the provider query, not just the 
 
   it("YOUTUBE — the typed query reaches the youtube list too", () => {
     // buildBeatYoutubeQueries is not exported; it composes the celebrity builder, which is.
-    for (const [beat, first] of [[BEAT_1, "Adolf Hitler Fuhrerbunker 1945"], [BEAT_4, "Churchill France"]] as Array<[string, string]>) {
+    for (const [beat, first] of [[BEAT_1, "Adolf Hitler Fuhrerbunker"], [BEAT_4, "Churchill France"]] as Array<[string, string]>) {
       expect(buildPersonCelebrityVideoQueries("Adolf Hitler", beat, 0)[0]).toBe(first);
     }
   });
@@ -396,11 +456,15 @@ describe("RONDE 78 §E — the existing fallbacks all still reach the provider",
     }
   });
 
-  it("the celebrity rotation and its media queries survive", () => {
+  it("RONDE 93 — the celebrity rotation survives; its invented media queries do not", () => {
+    // The rotation is what stops consecutive beats about one person fetching the same clip, and
+    // it is untouched. What it rotates through no longer includes four suffixes appended to every
+    // person on earth — see ronde93SearchProvenanceCoverage for why.
     for (const beat of ALL) {
       const qs = buildPersonCelebrityVideoQueries("Adolf Hitler", beat, 0);
-      for (const media of ["Adolf Hitler interview", "Adolf Hitler speech"]) {
-        expect(qs, `${media} dropped for "${beat.slice(0, 26)}"`).toContain(media);
+      expect(qs.length, `nothing built for "${beat.slice(0, 26)}"`).toBeGreaterThan(0);
+      for (const invented of ["red carpet", "talk show", "makeup brand", "celebrity news"]) {
+        expect(qs.join(" | "), `"${invented}" invented`).not.toContain(invented);
       }
       expect(new Set(qs).size).toBe(qs.length);
     }

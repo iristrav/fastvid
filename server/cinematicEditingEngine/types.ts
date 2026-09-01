@@ -98,7 +98,25 @@ export type ShotType =
   | "cutaway"
   | "b_roll"
   | "archive_footage"
-  | "overlay_shot";
+  | "overlay_shot"
+  /* ── RONDE 157 §7 — the framings the vocabulary was missing ──────────────────────────────
+   *
+   * §7 asks for a shot vocabulary where each entry MEANS something rather than being another
+   * string. `SHOT_SEMANTICS` in server/shotVocabulary.ts is where that meaning lives, and it is an
+   * exhaustive Record over this union — so adding a member here without saying what it is for is a
+   * type error rather than a gap somebody finds later.
+   *
+   * The five below fill real holes. `medium_wide` and `extreme_wide` are the steps between the
+   * existing wide and medium, which a shot ladder needs to move gradually rather than jumping.
+   * `overhead` and `aerial` are different things and are routinely confused: overhead looks DOWN
+   * at a surface (a table, a document, a process), aerial looks ACROSS a landscape from height.
+   * `pov` is the subject's own view, which no existing member expresses.
+   */
+  | "medium_wide"
+  | "extreme_wide"
+  | "overhead"
+  | "aerial"
+  | "pov";
 
 export type ShotInstruction = {
   shotType: ShotType;
@@ -283,7 +301,14 @@ export type ClipInstruction = {
   trimStartSec: number;
   /** Seconds into the source asset where the used portion ends. */
   trimEndSec: number;
-  /** This clip's position on the beat's own timeline, seconds (0-based, not the whole video). */
+  /**
+   * This clip's position on the SCENE's timeline, seconds — not the beat's, and not the video's.
+   *
+   * RONDE 150 corrected this comment, which used to claim "0-based". It is only 0-based when the
+   * beat itself starts at 0: `planClipTiming` hands `beatVoiceStartSec` (documented on
+   * `CinematicEditingInput` as "within the scene") to `planSubBeatCuts`, which starts counting
+   * there. Anything turning these into whole-video times therefore adds ONE offset, the scene's.
+   */
   startSec: number;
   endSec: number;
   timingSource: "tts_word_alignment" | "proportional_estimate";

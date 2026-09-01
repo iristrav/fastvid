@@ -11,6 +11,7 @@ import { createHash } from "crypto";
 import { desc, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { archiveContentGaps, type ArchiveContentGap } from "../drizzle/schema";
+import { gapRowLooksLikePerson } from "./archiveGapNames";
 
 function keywordHash(keyword: string): string {
   return createHash("sha256").update(keyword).digest("hex");
@@ -43,14 +44,25 @@ export async function recordArchiveContentGap(keyword: string, sampleBeatText?: 
   }
 }
 
+/**
+ * RONDE 127 — the admin list shows PEOPLE, not search phrases.
+ *
+ * The recording side only writes person names from now on, but the table already holds rows like
+ * "berlin street 1930s documentary" from before this round. Filtering the list rather than
+ * clearing the table keeps their hit counts intact in case they are ever wanted again, while the
+ * page shows what it is for: the names an archive has no footage of.
+ *
+ * Over-fetches so the filter can still fill the requested limit.
+ */
 export async function listArchiveContentGaps(limit = 50): Promise<ArchiveContentGap[]> {
   const db = await getDb();
   if (!db) return [];
-  return db
+  const rows = await db
     .select()
     .from(archiveContentGaps)
     .orderBy(desc(archiveContentGaps.hitCount))
-    .limit(limit);
+    .limit(Math.min(1000, limit * 10));
+  return rows.filter((r) => gapRowLooksLikePerson(r.keyword)).slice(0, limit);
 }
 
 export async function clearArchiveContentGaps(): Promise<number> {

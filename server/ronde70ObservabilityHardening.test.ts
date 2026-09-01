@@ -393,9 +393,19 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     expect(callsOf("noteBeatEligible")).toBe(1);
     expect(callsOf("noteBeatAdopted")).toBe(1);
     expect(callsOf("noteBeatPlaceholder")).toBe(1);
-    // Vision is attributed at both beat-attributable judgement sites, through one helper
-    // (its own declaration plus two calls), which counts judged and unavailable separately.
-    expect(callsOf("noteVisionDelta")).toBe(3);
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately.
+     *
+     * RONDE 70's rule is that vision spend is attributed to the beat that asked for it, at every
+     * beat-attributable judgement site. There were two such sites and one helper reading the
+     * state's counters either side of the call. There are now five routes into one gate, so the
+     * helper takes the spend the gate reports instead of bracketing the call — the same
+     * attribution, from the one place that can see every route.
+     */
+    expect(callsOf("noteVisionDelta")).toBe(0);
+    // Its declaration plus one call from each route that can spend a judgement.
+    expect(callsOf("noteVisionSpend")).toBeGreaterThanOrEqual(4);
+    // Still counts judged and unavailable separately, and still only there.
     expect(callsOf("noteBeatVision")).toBe(2);
   });
 
@@ -474,7 +484,7 @@ describe("RONDE 70 §6/§7 — Ronde 69 is still intact", () => {
     const src = PIPELINE();
     expect(
       [...src.matchAll(/if \(!isScopeAbortError\(err\)\) markWikimediaSearchResult\(false\);/g)]
-    ).toHaveLength(3);
+    ).toHaveLength(4); // RONDE 136 added the batched imageinfo helper — see ronde69's note.
     expect(src).toContain("const WIKIMEDIA_FAILURE_STREAK_TRIP = VISUAL_PROVIDER_FAILURE_STREAK_TRIP;");
     expect(src).toContain("const WIKIMEDIA_COOLDOWN_MS = 3 * 60_000;");
   });
@@ -542,18 +552,30 @@ describe("RONDE 70 §10 — observability only", () => {
 
   it("the vision attribution reads the state's own counters and changes no verdict", () => {
     const src = PIPELINE();
-    const start = src.indexOf("function noteVisionDelta(");
+    const start = src.indexOf("function noteVisionSpend(");
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, src.indexOf("\n}", start));
-    expect(body).toContain("g.judgementsUsed - before.used");
-    expect(body).toContain("g.judgementsFailed - before.failed");
+    // The delta itself is now measured inside the gate and handed over, so the attribution reads
+    // what it was given rather than bracketing a call it does not own.
+    expect(body).toContain("spent.judged");
+    expect(body).toContain("spent.failed");
     for (const forbidden of ["await", "verdict", "return false", "return true"]) {
       expect(body).not.toContain(forbidden);
     }
+    // And the gate measures that delta off the state's own counters, exactly as before.
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    expect(mod).toContain("judged: state.judgementAttempts - before.attempts");
+    expect(mod).toContain("failed: state.judgementsFailed - before.failed");
     // judgeBeatImage's own signature is untouched.
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
-    expect(gate).toContain("export const MAX_JUDGEMENTS_PER_BEAT = 2;");
-    expect(gate).toContain('return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 60, 0, 500);');
+    /**
+     * SUPERSEDED BY RONDE 175 — the budgets moved, deliberately, and are not what this test is
+     * about. It guards that the attribution reads the state's own counters and changes no verdict;
+     * pinning the two numbers here made it an unrelated tripwire on every budget change. Their own
+     * assertions live in ronde175BeatFitJudgement.
+     */
+    expect(gate).toContain("export const MAX_JUDGEMENTS_PER_BEAT = envInt(");
+    expect(gate).toContain('envInt("MAX_BEAT_IMAGE_JUDGEMENTS",');
   });
 
   it("no threshold, source priority or fallback policy was touched", () => {

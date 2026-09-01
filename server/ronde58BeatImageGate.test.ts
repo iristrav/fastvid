@@ -10,6 +10,7 @@ import {
   maxBeatImageJudgementsPerRender,
   MAX_JUDGEMENTS_PER_BEAT,
 } from "./beatImageRelevanceGate";
+import { MAX_FUNNEL_CANDIDATES_TO_SCORE } from "./retrievalFunnel";
 
 /**
  * RONDE 58 — the gate that actually looks at the frame.
@@ -22,7 +23,14 @@ import {
  * every way this can break adopts the clip anyway. A model outage must never empty a montage.
  */
 
-vi.mock("./_core/llm", () => ({ invokeLLM: vi.fn() }));
+// RONDE 115: the gate now asks llm.ts whether a throw was a PRE-FLIGHT refusal (no key,
+// every provider cooled down, budget spent) rather than a provider failure. The real
+// predicate is used, not a stub — these tests are about provider failures and must keep
+// landing in `failed`, which is exactly what the real predicate says about them.
+vi.mock("./_core/llm", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  invokeLLM: vi.fn(),
+}));
 
 const llm = async () => (await import("./_core/llm")).invokeLLM as unknown as ReturnType<typeof vi.fn>;
 
@@ -149,7 +157,7 @@ describe("RONDE 58 — bounded cost", () => {
       await judge({ contentKey: "same-clip", state });
     }
     expect(mock).toHaveBeenCalledTimes(1);
-    expect(state.judgementsUsed).toBe(1);
+    expect(state.judgementAttempts).toBe(1);
   });
 
   it("a render-wide ceiling stops it spending without bound", async () => {
@@ -186,8 +194,38 @@ describe("RONDE 58 — the wiring", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 4600);
-    expect(block).toContain("judgeBeatImage({");
+    /**
+     * Widened from 4600 in RONDE 131, which inserted the mismatch-feedback block into the refusal
+     * branch and pushed the last assertion below past the old edge. Widened again in RONDE 142,
+     * which split the judging loop from the research pass so the latter is reachable for a beat
+     * with no candidate at all. The window is a way of saying "in the funnel's adopt block" and
+     * nothing else — every assertion is unchanged, and each one still fails if the line it names
+     * is deleted.
+     */
+    /**
+     * RONDE 168 — bounded by the funnel adopt block's own end, not a character count.
+     *
+     * Widened at 131, 142 and 168, each time because a real change pushed the last assertion past
+     * a number nobody could pick correctly in advance. The window only ever meant "in the funnel's
+     * adopt block"; that is now what it says. Every assertion below is unchanged and each still
+     * fails if the line it names is deleted.
+     */
+    const end = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately.
+     *
+     * This asserted `judgeBeatImage({` — the funnel calling the vision model directly. RONDE 103
+     * made that a bypass by definition: the funnel held its own copy of the frame sampling, the
+     * cleanup and the cache key, and it was the copy that keyed verdicts on the picture alone, so
+     * a clip approved on beat 1 was never re-examined on beat 7. The call now goes through the
+     * pipeline's single content decider, which is a STRONGER version of what this test guards —
+     * the funnel still judges the candidate about to be adopted, and now it cannot judge it
+     * differently from every other route.
+     */
+    expect(block).toContain("checkBeatRelevance({");
+    expect(block).toContain('route: `funnel:${winner.candidate.source}`,');
     // Bounded per beat, and a rejected winner steps down to the next-best rather than to nothing.
     expect(block).toContain("look < MAX_JUDGEMENTS_PER_BEAT");
     expect(block).toContain("dedup.usedFunnelCandidateIds.add(winner.candidate.id);");
@@ -208,12 +246,24 @@ describe("RONDE 58 — the wiring", () => {
   });
 
   it("the frames it judges are cleaned up", () => {
-    const src = SRC();
-    // RONDE 62 added two more copies of this gate (the adoption path and YouTube); anchor on
-    // the funnel's, which is the one this file is about.
-    const idx = src.indexOf("judgeBeatImage({", src.indexOf("let winner = pickBestFunnelCandidate("));
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately — and made harder to break.
+     *
+     * The cleanup used to be inlined at three call sites, and this test checked one of them. It
+     * now lives once, in the central gate, so the assertion moved with it. That is strictly
+     * stronger: a fourth route cannot be added with the cleanup forgotten, because there is no
+     * longer a place to forget it.
+     */
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    const idx = mod.indexOf("function discardFrames(");
     expect(idx).toBeGreaterThan(-1);
-    expect(src.slice(idx, idx + 900)).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
+    expect(mod.slice(idx, idx + 400)).toMatch(/for \(const p of framePaths\)[\s\S]{0,120}fs\.unlinkSync\(p\)/);
+    // And the gate discards them on every exit, not only the happy one.
+    expect(mod).toContain("discardFrames(framePaths);");
+    // The funnel no longer owns a copy it could forget to clean up.
+    const src = SRC();
+    const funnel = src.slice(src.indexOf("let winner = pickBestFunnelCandidate("), src.indexOf("let winner = pickBestFunnelCandidate(") + 4600);
+    expect(funnel).not.toContain("fs.unlinkSync");
   });
 
   it("a rejection is recorded in the audit, so the reason survives the render", () => {
@@ -223,7 +273,13 @@ describe("RONDE 58 — the wiring", () => {
   });
 
   it("MAX_JUDGEMENTS_PER_BEAT is small — this is a verification step, not a search", () => {
-    expect(MAX_JUDGEMENTS_PER_BEAT).toBeLessThanOrEqual(3);
+    /**
+     * The claim is that this is a VERIFICATION step, not a search: it checks a handful of the
+     * candidates a beat already downloaded rather than sweeping them all. RONDE 175 raised it from
+     * 2 to 4 on the evidence that the gate refused three quarters of what it saw and only ever saw
+     * two — so the ceiling that matters is the candidate pool, not the number 3.
+     */
     expect(MAX_JUDGEMENTS_PER_BEAT).toBeGreaterThanOrEqual(1);
+    expect(MAX_JUDGEMENTS_PER_BEAT).toBeLessThan(MAX_FUNNEL_CANDIDATES_TO_SCORE);
   });
 });

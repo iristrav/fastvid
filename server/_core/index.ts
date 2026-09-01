@@ -33,6 +33,7 @@ import {
 import { ENV, openAiKeyFromEnv } from "./env";
 import { getVisionQaStatus, mergeWorkerClipVisionStatus } from "../visualQualityGate";
 import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagnostics";
+import { logStripeStartupDiagnostics } from "../stripeStartupDiagnostics";
 import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
 import { getSessionSecret } from "./sessionSecret";
 
@@ -93,6 +94,20 @@ async function runMigrations(): Promise<MigrationOutcome> {
   if (!migrationsFolder) {
     throw new Error("[Migration] drizzle folder not found — cannot apply migrations");
   }
+  /**
+   * LAYER 1 — are the migration artifacts internally consistent?
+   *
+   * Runs BEFORE the migrator and before any schema comparison, because a count derived from a
+   * broken artifact set is worse than no count: a `.sql` the journal does not name produced
+   * "47/47 recorded — nothing to apply" and a crash-loop two steps later. Throws on failure, so an
+   * inconsistent set never reaches the database and the app never half-starts.
+   *
+   * LAYER 2 is the schema validation further down, which asks the different question of whether
+   * the live database matches what the code declares. Both are needed; neither replaces the other.
+   */
+  const { assertMigrationIntegrity } = await import("../migrationIntegrity");
+  assertMigrationIntegrity(migrationsFolder);
+
   console.log("[Migration] Running migrations from:", migrationsFolder);
   const { runMigrationsWithGuard } = await import("../migrationGuard");
   // Guard handles all error logging internally (MySQL code, SQL, recovery hint).
@@ -246,6 +261,7 @@ async function startServer() {
   console.log("[Fastvid] PEXELS_API_KEY:", process.env.PEXELS_API_KEY ? "✓ set" : "✗ NOT SET — stock footage disabled");
   console.log("[Fastvid] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✓ set" : "✗ NOT SET — Manus Forge storage unused");
   logLlmStartupDiagnostics("web");
+  logStripeStartupDiagnostics();
   await recordWorkerHeartbeat("web").catch((e) =>
     console.warn("[Fastvid] Web heartbeat failed:", (e as Error).message)
   );
@@ -1176,6 +1192,9 @@ recoverStuckPipelines()
     }
     const { startVideoQueueWorker } = await import("../queue");
     startVideoQueueWorker();
+    // RONDE 148 — the same process that runs generation jobs also runs editor re-renders.
+    const { startRenderJobWorker } = await import("../renderJobWorker");
+    startRenderJobWorker();
     // Only relevant when this process actually runs jobs — see worker.ts for why this exists
     // (a render killed from outside the process never reaches its own cleanup).
     const { sweepStaleWorkDirs } = await import("../videoPipeline");

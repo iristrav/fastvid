@@ -370,9 +370,12 @@ describe("downstream contracts and earlier rounds are untouched", () => {
   it("RONDE 1/2/3 are intact", () => {
     expect(funnelSrc).toContain("const unusedPassers = usedCandidateIds?.size");
     expect(funnelSrc).toContain('case "archive_only":\n    case "one_external":\n    case "all_external":');
-    const adds = pipelineSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
-      .match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
-    expect(adds).toHaveLength(2);
+    // RONDE 132 counts both forms: the winner's registration moved into markAssetUsedInVideo,
+    // which writes this same Set plus the identities the funnel never recorded. Same invariant.
+    const code = pipelineSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const adds = code.match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
+    const viaRegistry = code.match(/funnelCandidateId: candidate\.id,/g) ?? [];
+    expect(adds.length + viaRegistry.length).toBe(2);
     expect(poolSrc).toContain("const DETAIL_FETCH_CONCURRENCY = 5;");
   });
 

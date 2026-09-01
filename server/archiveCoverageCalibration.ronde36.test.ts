@@ -15,11 +15,30 @@ import { describe, expect, it } from "vitest";
 
 const FUNNEL = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
 
+/**
+ * RONDE 104: walk the parameter list by BALANCE, not to its first `)`.
+ *
+ * `indexOf(")", start)` stops inside the first parameter that has parentheses of its own — a doc
+ * comment, a default, an inline function type. The `{` matched after that can then be an inline
+ * object RETURN TYPE rather than the body, and the test reads a few lines of a type declaration
+ * while appearing to read the implementation: a test that passes for the wrong reason.
+ */
+function signatureBodyBrace(src: string, start: number): number {
+  let i = src.indexOf("(", start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")" && --depth === 0) break;
+  }
+  const line = src.slice(i, src.indexOf("\n", i));
+  return i + line.lastIndexOf("{");
+}
+
 /** The body of computeArchiveCoverage, brace-matched from its declaration. */
 function coverageFn(): string {
   const start = FUNNEL.indexOf("async function computeArchiveCoverage(");
   expect(start).toBeGreaterThan(-1);
-  const bodyStart = FUNNEL.indexOf("{", FUNNEL.indexOf(")", start));
+  const bodyStart = signatureBodyBrace(FUNNEL, start);
   let depth = 0;
   let i = bodyStart;
   for (; i < FUNNEL.length; i++) {

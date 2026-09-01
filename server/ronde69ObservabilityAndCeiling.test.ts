@@ -241,8 +241,18 @@ describe("RONDE 69 FIX 1 — a Wikimedia HTTP failure says which HTTP failure it
 
   it("the three guarded catch sites still classify cancellation exactly as RONDE 68 left them", () => {
     const src = PIPELINE();
+    /**
+     * RONDE 136 raised this from three to FOUR.
+     *
+     * The count is a guard against a cancellation-classifying site appearing unnoticed, so the
+     * right response to a new one is to re-read it and record why — which is this comment. The
+     * fourth site is fetchWikimediaImageInfoBatch, the batched imageinfo helper that replaced the
+     * per-title request loop (video 558: 32 HTTP 429s, 34 provider stand-downs, 38 results, zero
+     * downloads). It classifies exactly as RONDE 68 left the other three: a scope cancellation is
+     * not a provider failure.
+     */
     const guards = [...src.matchAll(/if \(!isScopeAbortError\(err\)\) markWikimediaSearchResult\(false\);/g)];
-    expect(guards).toHaveLength(3);
+    expect(guards).toHaveLength(4);
   });
 });
 

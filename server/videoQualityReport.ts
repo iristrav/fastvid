@@ -18,11 +18,17 @@ import type { ClipAdoptEntry, AdoptAuditSummary } from "./clipAdoptAudit";
 import { summarizeAdoptAudit } from "./clipAdoptAudit";
 import { isArchiveGeoBlockedForBeat, resolveRequiredGeoTagsForBeat } from "./curatedMediaSourcing";
 import type { BeatGeoRegion } from "./vidrushQuality";
-import { targetClipVisionScore } from "./visualQualityGate";
 import type { VoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { buildVoiceVisualMatchSummary } from "./voiceVisualMatch";
 import { UNVERIFIED_PROVIDER as UNVERIFIED_SOURCE } from "./visualSourceLineage";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
+import {
+  buildBeatVisualStatuses,
+  tallyBeatVisualStatuses,
+  type BeatVisualStatus,
+  type BeatVisualTally,
+} from "./beatVisualStatus";
+import type { BeatRelevanceLedger } from "./beatVisualRelevance";
 
 export type { VoiceVisualMatchSummary };
 
@@ -67,6 +73,54 @@ export type VideoQualityReport = {
     worstMeanLuma: number | null;
     warnings: string[];
   };
+  /**
+   * RONDE 133 — what the finished MP4 actually looks like, measured frame by frame.
+   *
+   * Every other number in this report is derived from what the pipeline BELIEVED it did. This one
+   * is read back off the exported file by ./videoStillnessAudit, so a filter that silently did
+   * nothing, a concat that repeated a segment, or a still that outstayed its cap shows up here
+   * even when every plan upstream says otherwise. Absent when the audit could not run — which is
+   * reported as absent, never as a pass.
+   */
+  stillness?: {
+    durationSec: number;
+    /** Longest stretch of unchanging picture. The number the no-frozen-frame chain exists for. */
+    longestStillSec: number;
+    longestStillStartSec: number;
+    visualChanges: number;
+    stillSegments: number;
+    /** RONDE 136 — how many stills outstayed the cap. §12's `imagesOver5Sec`. */
+    imagesOverLimit: number;
+    /**
+     * RONDE 136 — the mean luma of the film's actual last frame, or null when it could not be
+     * read. Null is reported as NOT_MEASURED and never as a pass: an unread frame is not a bright
+     * one, and the two checks that ran before this one both stopped short of the ending.
+     */
+    endFrameLuma: number | null;
+    endsOnBlack: boolean;
+    limitSec: number;
+    ok: boolean;
+  };
+  /**
+   * RONDE 156 — does the finished film show the same picture twice?
+   *
+   * Read off the exported MP4 by ./videoRepeatAudit, for the same reason the stillness block is:
+   * the sourcing dedup is thorough but runs entirely BEFORE adoption, and the coverage-fill routes
+   * step around it on purpose when a scene is starved. Only the file itself can say whether the
+   * viewer ends up seeing a picture come back. Absent when the audit could not run — reported as
+   * absent, never as a pass.
+   */
+  repeats?: {
+    /** How many visually distinct pictures the film contains. */
+    distinctPictures: number;
+    /** How many of them appear more than once, with a real gap in between. */
+    repeatedPictures: number;
+    /** Seconds the viewer spent looking at something already seen. */
+    repeatedSec: number;
+    repeatedShare: number;
+    limitShare: number;
+    ok: boolean;
+  };
   adoptAuditSummary?: AdoptAuditSummary;
   voiceMontageSync?: {
     ok: boolean;
@@ -80,6 +134,46 @@ export type VideoQualityReport = {
    *  video with this set must never be indistinguishable from a normal successful render. */
   hasSilentVoiceover?: boolean;
   score: number;
+  /**
+   * RONDE 124 — the two numbers that were being collapsed into one.
+   *
+   * `score` is the EXPORT score: what the render is allowed to ship with, after the
+   * export-availability policy has had its say. That policy exists for a real reason (a finished
+   * video with real archive footage should not be blocked), but it is a statement about
+   * availability, not about whether the pictures match the narration.
+   *
+   * Until this round it overwrote `score` in place, and the pre-policy number survived only in a
+   * console line. Video 544 shipped as `score=85` when what the quality inputs actually measured
+   * was 10 — held frames, unverified provenance, a scene covered by one clip. Anything reading
+   * the stored report saw 85 and nothing else.
+   *
+   * Both are kept now. `rawVisualQualityScore` is what the quality inputs measured, and no policy
+   * may ever raise it; `availabilityAdjustedScore` is what the policy raised it to, present only
+   * when the policy actually fired. When they differ, that difference is the finding.
+   */
+  rawVisualQualityScore?: number;
+  availabilityAdjustedScore?: number;
+  /**
+   * RONDE 105 — what the score is allowed to claim.
+   *
+   * A number on its own cannot say "nobody checked this". `status` can, and every reader that
+   * shows the score should show this beside it: INSUFFICIENT_VERIFICATION means the content
+   * decider approved nothing and the number is a floor, not a measurement.
+   */
+  qualityStatus: QualityStatus;
+  qualityReason: string;
+  /** Per-beat coverage and verification, from the single definition in ./beatVisualStatus. */
+  beatVisuals?: BeatVisualTally;
+  /** The beats that are not finished, one entry each, so the report can name them. */
+  beatVisualProblems?: BeatVisualStatus[];
+  /**
+   * RONDE 166 — every beat, not only the unfinished ones.
+   *
+   * `beatVisualProblems` is this list filtered to the failures, which is right for a warning block
+   * and wrong for an audit: [VisualFitAudit] has to report `verifiedFit` and `adoptedFit` too, and
+   * counting those from a list the successes were removed from would print zero for both.
+   */
+  beatVisualStatuses?: BeatVisualStatus[];
 };
 
 /**
@@ -132,7 +226,62 @@ function emptyMixCounts(): Record<VisualMixKind, number> {
   };
 }
 
-/** Merit-based score from vision QA + sourcing mix (not subtract-from-100 heuristics). */
+/**
+ * RONDE 105 — how confident the report is allowed to sound.
+ *
+ * A numeric score implies a measurement. When the content decider answered nothing, there is no
+ * measurement, and printing a number anyway is the defect this round exists to remove: a
+ * production render shipped `100/100 (Excellent)` on a montage where the vision model had
+ * approved not one frame and thirteen beats had no picture of their own.
+ */
+export type QualityStatus =
+  /** Enough beats were checked, and enough passed, for the number to mean something. */
+  | "VERIFIED"
+  /** Some beats were checked; too many were not for the number to stand on its own. */
+  | "PARTIALLY_VERIFIED"
+  /** The content decider approved nothing. No numeric claim about relevance is defensible. */
+  | "INSUFFICIENT_VERIFICATION";
+
+/** What the score is computed from, and what it is allowed to say. */
+export type QualityVerdict = {
+  score: number;
+  status: QualityStatus;
+  /** Plain-language reason, for the report and the log. */
+  reason: string;
+};
+
+/**
+ * The ceiling each status may reach.
+ *
+ * 85 is where `qualityScoreLabel` in shared/videoQuality.ts starts saying "Excellent", so
+ * INSUFFICIENT_VERIFICATION is capped well below it and PARTIALLY_VERIFIED just below it. These
+ * are not arbitrary: they are the two bands that must be unreachable when nobody looked.
+ */
+const STATUS_CEILING: Record<QualityStatus, number> = {
+  VERIFIED: 100,
+  PARTIALLY_VERIFIED: 79,
+  INSUFFICIENT_VERIFICATION: 45,
+};
+
+/**
+ * Merit-based score from what the content decider actually verified, plus the sourcing mix.
+ *
+ * ── What changed in RONDE 105, and why ───────────────────────────────────────────────────────
+ *
+ * The base used to be `45 + avg * 5.5 + min * 0.5`, where avg and min were `visionScore10` — the
+ * CLIP score. RONDE 103 removed CLIP as the content decider because its verdicts on this material
+ * are measurably inverted (RONDE 58: a white-lives-matter sticker at 0.2226 against a signed
+ * photograph of Hitler at 0.2116, same beat). The report went on grading the render with exactly
+ * that number, and only four of the pipeline's adopt sites record it at all — so the average was
+ * over a handful of clips and reached 100 whenever those few scored well.
+ *
+ * The base is now the share of beats that have a picture of their own AND were approved by the
+ * one content decider this pipeline has. That is the claim the score was always pretending to
+ * make. CLIP scores are still recorded and still shown in diagnostics; they no longer move it.
+ *
+ * The mix bonuses and the penalties below are RONDE 87's, unchanged in shape and weight — this
+ * round replaces what the base measures, not how the rest of the report is built.
+ */
 export function computeMeritQualityScore(params: {
   totalClips: number;
   archiveCount: number;
@@ -145,28 +294,52 @@ export function computeMeritQualityScore(params: {
   fastShort: boolean;
   byMixKind: Record<VisualMixKind, number>;
   postRenderOk?: boolean;
-}): number {
-  const visionScores = (params.adoptAudit ?? [])
-    .map((e) => e.visionScore10)
-    .filter((s): s is number => typeof s === "number" && s > 0);
+  /**
+   * RONDE 105: the beat-by-beat truth from ./beatVisualStatus, which is the ONE definition of
+   * "this beat has its own picture and the decider approved it". Optional so callers outside a
+   * render (tests, tools) still work — without it the render is INSUFFICIENT_VERIFICATION, which
+   * is the honest answer when nothing is known rather than a free pass.
+   */
+  beatVisuals?: BeatVisualTally;
+}): QualityVerdict {
+  const t = params.beatVisuals;
+  const beats = t?.beats ?? 0;
+  const verified = t?.verifiedOwnVisual ?? 0;
+  const checked =
+    (t?.byVerification.verified_fit ?? 0) +
+    (t?.byVerification.verified_mismatch ?? 0) +
+    (t?.byVerification.reprieved_after_refusal ?? 0);
 
-  let score: number;
-  if (visionScores.length > 0) {
-    const avg = visionScores.reduce((a, b) => a + b, 0) / visionScores.length;
-    const min = Math.min(...visionScores);
-    score = Math.round(45 + avg * 5.5 + min * 0.5);
-  } else if (params.archiveOnly && params.archiveCount >= params.totalClips * 0.8) {
-    score = 84;
+  /** Share of filled beats that are genuinely finished: real footage, approved. */
+  const verifiedRatio = beats > 0 ? verified / beats : 0;
+  /** Share of filled beats the decider managed to look at at all. */
+  const checkedRatio = beats > 0 ? checked / beats : 0;
+
+  let status: QualityStatus;
+  let reason: string;
+  if (beats === 0) {
+    status = "INSUFFICIENT_VERIFICATION";
+    reason = "geen beats geregistreerd — er valt niets te verifiëren";
+  } else if (verified === 0) {
+    status = "INSUFFICIENT_VERIFICATION";
+    reason = `0 van ${beats} beats heeft eigen beeld dat de beeldgate heeft goedgekeurd`;
+  } else if (checkedRatio < 0.5 || verifiedRatio < 0.5) {
+    status = "PARTIALLY_VERIFIED";
+    reason =
+      `${verified} van ${beats} beats geverifieerd (${checked} beoordeeld) — ` +
+      `te weinig om de montage als geheel te beoordelen`;
   } else {
-    score = 72;
+    status = "VERIFIED";
+    reason = `${verified} van ${beats} beats hebben goedgekeurd eigen beeld`;
   }
+
+  // 40..95 from the verified share. A render where every beat is finished starts at 95 and earns
+  // the last points from its sourcing mix, exactly as it did before.
+  let score = Math.round(40 + 55 * verifiedRatio);
 
   const archiveRatio = params.totalClips > 0 ? params.archiveCount / params.totalClips : 0;
   if (params.archiveOnly && archiveRatio >= 0.85) score += 4;
   if ((params.byMixKind.real_video ?? 0) >= params.totalClips * 0.55) score += 4;
-  if (visionScores.length > 0 && visionScores.every((s) => s >= targetClipVisionScore() - 1)) {
-    score += 3;
-  }
 
   score -= params.fallbackBeats * 14;
   score -= Math.min(12, params.stockCount * 3);
@@ -174,29 +347,38 @@ export function computeMeritQualityScore(params: {
   score -= Math.min(params.fastShort ? 10 : 20, params.geoViolationCount * (params.fastShort ? 6 : 12));
   if (params.postRenderOk === false) score -= 8;
 
-  const beatsFilled = new Set(
-    (params.adoptAudit ?? []).map((e) => `${e.sceneIndex}:${e.beatIndex}`)
-  ).size;
-  const visionCoverage =
-    beatsFilled > 0 ? visionScores.length / beatsFilled : params.totalClips > 0 ? 1 : 0;
-  if (
-    params.archiveOnly &&
-    params.fallbackBeats === 0 &&
-    params.stockCount === 0 &&
-    visionCoverage >= 0.5 &&
-    (visionScores.length === 0 || visionScores.every((s) => s >= targetClipVisionScore() - 1))
-  ) {
-    score = Math.max(score, 82);
-  }
-  if (
-    visionScores.length >= 3 &&
-    visionScores.every((s) => s >= targetClipVisionScore()) &&
-    params.fallbackBeats === 0
-  ) {
-    score = Math.max(score, 88);
+  /**
+   * RONDE 105 — beats that got a stand-in instead of footage cost points, all of them.
+   *
+   * The old score only decremented for `fallbackBeats`, which matches the adopt routes "fallback"
+   * and "rescue_placeholder". A held frame, a graphic, a generated clip and a reused shot were
+   * all free — which is how a montage with thirteen of them scored 100. Weighted below the
+   * colour-card penalty because a held frame is a worse shot, not an absent one.
+   */
+  if (t) {
+    const standIns =
+      t.byCoverage.held_frame + t.byCoverage.graphic + t.byCoverage.generated + t.byCoverage.none;
+    score -= Math.min(30, standIns * 5);
+    /**
+     * RONDE 112 — subject-fallback footage costs less than a stand-in, and more than nothing.
+     *
+     * Two facts have to both survive in the number. The beat did NOT get a picture verified
+     * against its own claim, so it cannot be free. And the picture is real footage of the right
+     * subject, which is a different and much better outcome than a held frame, a graphic or a
+     * colour card — so it cannot cost the same 5.
+     *
+     * 3 is the largest weight strictly below the stand-in weight, and the cap is scaled the same
+     * way (12 against 30). Neither number is tuned for a target score; they encode that ordering
+     * and nothing else.
+     */
+    score -= Math.min(12, t.byCoverage.subject_only * 3);
+    // A shot used over the decider's objection is a known risk, and says so in the number too.
+    score -= Math.min(15, t.byVerification.reprieved_after_refusal * 5);
+    score -= Math.min(10, t.byVerification.verified_mismatch * 5);
   }
 
-  return Math.max(0, Math.min(100, Math.round(score)));
+  score = Math.max(0, Math.min(STATUS_CEILING[status], Math.round(score)));
+  return { score, status, reason };
 }
 
 export function buildVideoQualityReport(
@@ -222,6 +404,11 @@ export function buildVideoQualityReport(
      * still computed, but only into `diagnosticBySource` — see below.
      */
     resolveSource?: (clipPath: string) => string | null | undefined;
+    /**
+     * RONDE 105: the render's relevance ledger. Without it every beat reads as `never_asked`,
+     * which is the honest answer for a caller that has no render — not a free pass.
+     */
+    relevanceLedger?: BeatRelevanceLedger;
   }
 ): VideoQualityReport {
   /** Official, lineage-only attribution. */
@@ -368,7 +555,25 @@ export function buildVideoQualityReport(
     : undefined;
   const topRejects = opts?.rejectAudit?.slice(0, 12);
 
-  const score = computeMeritQualityScore({
+  /**
+   * RONDE 105 — one definition of a finished beat, computed once and used by the score, the
+   * warnings and the log. Three subsystems used to derive this separately and disagreed.
+   */
+  const beatStatuses = buildBeatVisualStatuses(opts?.adoptAudit, opts?.relevanceLedger);
+  const beatVisuals = tallyBeatVisualStatuses(beatStatuses);
+  const beatVisualProblems = beatStatuses.filter((b) => !b.verifiedOwnVisual);
+  if (beatVisuals.beats > 0 && beatVisualProblems.length > 0) {
+    const byReason = new Map<string, number>();
+    for (const b of beatVisualProblems) byReason.set(b.reason, (byReason.get(b.reason) ?? 0) + 1);
+    const detail = [...byReason.entries()].map(([r, n]) => `${r}=${n}`).sort().join(", ");
+    warnings.push(
+      `${beatVisualProblems.length} van ${beatVisuals.beats} beat(s) zonder goedgekeurd eigen ` +
+        `beeld (${detail})`
+    );
+  }
+
+  const verdict = computeMeritQualityScore({
+    beatVisuals,
     totalClips: unique.length,
     archiveCount,
     stockCount,
@@ -410,7 +615,12 @@ export function buildVideoQualityReport(
     stockBeatsUsed: opts?.stockBeatsUsed,
     adoptAuditSummary,
     voiceVisualMatch,
-    score,
+    score: verdict.score,
+    qualityStatus: verdict.status,
+    qualityReason: verdict.reason,
+    beatVisuals,
+    beatVisualProblems: beatVisualProblems.length > 0 ? beatVisualProblems : undefined,
+    beatVisualStatuses: beatStatuses.length > 0 ? beatStatuses : undefined,
   };
 }
 
@@ -505,5 +715,47 @@ export function assertVisualCoverageExportGate(
       `${fallbackBeats}/${beatsFilled} filled beat(s) used the color/text fallback, ` +
       `${report.totalClips} accepted candidate(s), ${totalRejected} rejected. ` +
       `Top reject reasons: ${topReasons}. Worst beats: ${worstBeats}.`
+  );
+}
+
+/**
+ * RONDE 132 §10 — the short-montage warning, with the numbers that make it actionable.
+ *
+ * It used to read:
+ *
+ *     short montage: scene(s) 1, 2 had less footage than voice
+ *                    — the tail may be filled by holding the last frame
+ *
+ * No seconds, no clip counts, and a "may" that left the reader unable to tell whether anything
+ * froze at all. A 0.3s shortfall is a rounding artefact and a 12s one is a visible defect; both
+ * produced that same sentence.
+ *
+ * The worst scene is named because that is the one worth looking at, and the total says whether
+ * the render has one bad scene or a systemic shortage.
+ */
+export function formatMontageShortfallWarning(
+  shortfalls: ReadonlyArray<{
+    sceneIndex: number;
+    shortBySec: number;
+    uniqueClips: number;
+    neededClips: number;
+  }>,
+  padScenes: readonly number[]
+): string {
+  if (shortfalls.length === 0) {
+    // The estimate flagged the scene but no shortfall was recorded — keep the old, weaker sentence
+    // rather than inventing a number for it.
+    return (
+      `short montage: scene(s) ${padScenes.join(", ")} had less footage than voice — ` +
+      `the tail may be filled by holding the last frame`
+    );
+  }
+  const worst = [...shortfalls].sort((a, b) => b.shortBySec - a.shortBySec)[0]!;
+  const total = shortfalls.reduce((sum, s) => sum + s.shortBySec, 0);
+  return (
+    `short montage: ${shortfalls.length} scene(s) had less footage than voice — ` +
+    `${total.toFixed(1)}s short in total, worst scene ${worst.sceneIndex} at ` +
+    `${worst.shortBySec.toFixed(1)}s (${worst.uniqueClips} unique clip(s), ` +
+    `${worst.neededClips} needed) — that time is filled by holding the last frame`
   );
 }

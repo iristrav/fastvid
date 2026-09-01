@@ -357,9 +357,9 @@ Each scene MUST include:
 
 Rules:
 - MAX 1 visual idea per scene
-- BE SPECIFIC, not generic: when the sentence or the documentary subject names a real PERSON, PLACE, ORGANIZATION, EVENT or YEAR, put it IN the search_query. Prefer "German soldiers Berlin 1945" over "soldiers marching"; "Elon Musk Tesla factory" over "man in factory"; "Amsterdam canal houses" over "old buildings".
-- Resolve pronouns and vague references ("he", "she", "they", "the leader", "the city", "that year") to the concrete named entity from the documentary subject — never emit a query built on a bare pronoun.
-- Only invent an entity that is actually stated or clearly implied by the sentence/subject — never guess a name the script does not support. If no specific entity fits, describe a concrete generic scene instead.
+- BE SPECIFIC, not generic: when THIS SENTENCE names a real PERSON, PLACE, ORGANIZATION, EVENT or YEAR, put it IN the search_query. Prefer "German soldiers Berlin 1945" over "soldiers marching"; "Elon Musk Tesla factory" over "man in factory"; "Amsterdam canal houses" over "old buildings".
+- Never emit a query built on a bare pronoun ("he", "she", "they"). If the sentence gives you only a pronoun, describe the visible scene instead — do NOT substitute a name from the documentary subject.
+- EVERY content word in search_query must appear in THIS SENTENCE. Not implied by it, not inferred from the documentary subject, not carried over from a neighbouring scene, not supplied by the title: stated in this sentence. A term that is only "clearly implied" is a guess, and a guess is discarded before it reaches a provider. If the sentence names no specific entity, describe a concrete generic scene using the sentence's own words.
 - search_query must describe visible footage, not abstract concepts (no: success, growth, strategy)
 - Do NOT search on voice-over words — search on what the viewer should see
 - Split multi-concept sentences into separate scenes with different visual_description + search_query

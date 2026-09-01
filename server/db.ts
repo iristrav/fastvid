@@ -2,13 +2,19 @@ import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from 
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
-import { PIPELINE_PROCESSING_STATUSES, USER_IN_FLIGHT_VIDEO_STATUSES, readQueueConfig } from "@shared/videoQueue";
+import {
+  PIPELINE_PROCESSING_STATUSES,
+  USER_ACTIVE_VIDEO_STATUSES,
+  USER_IN_FLIGHT_VIDEO_STATUSES,
+  readQueueConfig,
+} from "@shared/videoQueue";
 import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import type { AssetSourceIdentity } from "./projectTimeline";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -284,6 +290,7 @@ export async function getVideosByUserId(userId: number) {
 
 const PROCESSING_STATUS_LIST = [...PIPELINE_PROCESSING_STATUSES];
 const USER_IN_FLIGHT_STATUS_LIST = [...USER_IN_FLIGHT_VIDEO_STATUSES];
+const USER_ACTIVE_STATUS_LIST = [...USER_ACTIVE_VIDEO_STATUSES];
 
 export async function countUserInFlightVideos(userId: number, exceptVideoId?: number): Promise<number> {
   const db = await getDb();
@@ -337,6 +344,26 @@ export async function countProcessingVideosByUsers(
   return new Map(rows.map((r) => [r.userId, Number(r.count)]));
 }
 
+/**
+ * RONDE 109 — userId → "has a render underway" count, for the queue picker.
+ *
+ * Same shape as countProcessingVideosByUsers, one status wider: it also counts
+ * `awaiting_approval`. See USER_ACTIVE_VIDEO_STATUSES for why — a full run sits in that status
+ * for a second or two mid-render, and a picker tick landing in that window would otherwise read
+ * the user as idle and start their next queued video alongside the one already running.
+ */
+export async function countActiveVideosByUsers(userIds: number[]): Promise<Map<number, number>> {
+  if (!userIds.length) return new Map();
+  const db = await getDb();
+  if (!db) return new Map();
+  const rows = await db
+    .select({ userId: videos.userId, count: sql<number>`count(*)` })
+    .from(videos)
+    .where(and(inArray(videos.userId, userIds), inArray(videos.status, USER_ACTIVE_STATUS_LIST)))
+    .groupBy(videos.userId);
+  return new Map(rows.map((r) => [r.userId, Number(r.count)]));
+}
+
 export async function countUserQueuedVideos(userId: number): Promise<number> {
   const db = await getDb();
   if (!db) return 0;
@@ -380,6 +407,33 @@ export async function getVideoQueuePosition(videoId: number): Promise<number | n
     .from(videos)
     .where(
       and(
+        eq(videos.status, "queued"),
+        sql`(${videos.createdAt} < ${video.createdAt} OR (${videos.createdAt} = ${video.createdAt} AND ${videos.id} < ${videoId}))`
+      )
+    );
+  return Number(row?.count ?? 0) + 1;
+}
+
+/**
+ * RONDE 109 — 1-based position among THIS USER's own queued videos.
+ *
+ * getVideoQueuePosition above is the platform-wide FIFO position, which is the honest number for
+ * "when will a worker get to this" but a confusing one to show a person: "position 7" when they
+ * queued three videos reads as a fault. Their own line is the thing they can reason about, so the
+ * dashboard shows this one and the global position stays available for the admin.
+ */
+export async function getUserQueuePosition(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const video = await getVideoById(videoId);
+  if (!video || video.status !== "queued") return null;
+
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(videos)
+    .where(
+      and(
+        eq(videos.userId, video.userId),
         eq(videos.status, "queued"),
         sql`(${videos.createdAt} < ${video.createdAt} OR (${videos.createdAt} = ${video.createdAt} AND ${videos.id} < ${videoId}))`
       )
@@ -462,16 +516,63 @@ export async function updateVideoStatus(id: number, status: InsertVideo["status"
 }) {
   const db = await getDb();
   if (!db) return;
-  await db.update(videos).set({ status, ...extra }).where(eq(videos.id, id));
+  if (extra?.progressPercent == null) {
+    await db.update(videos).set({ status, ...extra }).where(eq(videos.id, id));
+    return;
+  }
+  /**
+   * RONDE 107 — a progress percent may go up, or start over. It may never slip.
+   *
+   * The number is written from a dozen places with fixed values (5, 28, 29, 30, 100), and the
+   * pipeline does not visit them in a single ascending order: a render at 45% that reaches a
+   * stage hard-coded to 29 wrote 29, and the badge on the user's video stepped backwards. A
+   * progress bar that goes down is not a smaller claim, it is a broken one — the viewer stops
+   * believing any of it.
+   *
+   * A RESET is a different thing from a slip, and the write says which it is without any call
+   * site having to be changed:
+   *
+   *   · a new run     — `generationStartedAt` is set in the same write, so this IS the start of
+   *                     a generation and its percent is authoritative
+   *   · not running   — queued, pending or failed: the video is not mid-render, and whatever the
+   *                     lifecycle change says the percent is, is the percent
+   *   · anything else — a tick. It may raise the stored value and may never lower it.
+   */
+  const isNewRun = extra.generationStartedAt != null;
+  const isNotRunning = status === "queued" || status === "pending" || status === "failed";
+  const { progressPercent, ...restExtra } = extra;
+  await db
+    .update(videos)
+    .set({
+      status,
+      ...restExtra,
+      progressPercent:
+        isNewRun || isNotRunning
+          ? progressPercent
+          : // GREATEST in SQL rather than read-then-write: two workers and an out-of-order poll
+            // must not be able to interleave into a decrease.
+            sql`GREATEST(COALESCE(${videos.progressPercent}, 0), ${progressPercent})`,
+    })
+    .where(eq(videos.id, id));
 }
 
-/** Lightweight helper to update only the progress fields without changing status */
+/**
+ * Lightweight helper to update only the progress fields without changing status.
+ *
+ * RONDE 107: this is the tick path — it can only ever mean "we got further", so the stored
+ * percent is raised and never lowered. A restart goes through updateVideoStatus, which knows
+ * from the write itself whether it is starting a new run.
+ */
 export async function updateVideoProgress(id: number, progressStep: string, progressPercent: number) {
   const db = await getDb();
   if (!db) return;
   await db
     .update(videos)
-    .set({ progressStep, progressPercent, updatedAt: new Date() })
+    .set({
+      progressStep,
+      progressPercent: sql`GREATEST(COALESCE(${videos.progressPercent}, 0), ${progressPercent})`,
+      updatedAt: new Date(),
+    })
     .where(eq(videos.id, id));
 }
 
@@ -1049,6 +1150,39 @@ export interface EditorClip {
    * before this field existed.
    */
   available?: boolean;
+  /**
+   * RONDE 139 — a person put this clip here, the pipeline did not choose it.
+   *
+   * Read by the quality report so an edited video is not scored as if sourcing had found every
+   * picture itself. A human override and a sourcing success are different facts; counting them
+   * together would make the coverage numbers stop meaning anything.
+   */
+  editedByUser?: boolean;
+  /**
+   * RONDE 146 — where this picture came from, and whether it can be fetched again.
+   *
+   * Taken from the ADOPTION RECORD in the lineage ledger, never reconstructed from the filename:
+   * the downloader put the provider's own id and media URL there at the moment it had them in
+   * hand. Before this round only the provider's NAME survived a render, which is why no existing
+   * video could be re-rendered.
+   *
+   * `AssetSourceIdentity` is reused rather than redefined — projectTimeline.ts already owns that
+   * type and a second one would immediately start to drift. Optional, because every manifest
+   * written before this round has none, and those must still load (§15).
+   */
+  sourceIdentity?: AssetSourceIdentity;
+  /**
+   * The portion of the SOURCE media this clip used, in seconds.
+   *
+   * Written only where the render actually knows it — a trimmed archive clip, a YouTube segment
+   * cut at a planned start. Absent means the render did not record a trim for this clip, and it
+   * is deliberately NOT filled with 0/duration, because "we used the whole file" and "we did not
+   * write it down" are different facts and a re-render needs to tell them apart (§9).
+   */
+  sourceIn?: number;
+  sourceOut?: number;
+  /** This clip's own on-screen duration in seconds, when the render measured it. */
+  durationSec?: number;
 }
 
 export interface EditorScene {
@@ -1059,7 +1193,26 @@ export interface EditorScene {
   clips: EditorClip[];
   thumbnailUrl?: string; // first clip thumbnail
   chapterTitle?: string; // if this scene is preceded by a chapter card
+  /**
+   * RONDE 146 — which shape this scene's clips are written in.
+   *
+   * `videoScenes` is a bare JSON array with nowhere to put a header, so the version rides on each
+   * scene. Absent means version 1: a manifest from before this round, whose clips carry no
+   * identity and no trim. A reader can therefore tell "this render predates identity" from
+   * "this render had identity and this clip had none", which are different problems.
+   */
+  manifestSchemaVersion?: number;
 }
+
+/**
+ * The manifest shape this build writes.
+ *
+ *   1  (absent)  pre-RONDE-146: url/type/source only. No identity, no trim.
+ *   2            adds EditorClip.sourceIdentity, sourceIn, sourceOut, durationSec.
+ *
+ * Bumped only when a reader would need to behave differently — not on every field added.
+ */
+export const MANIFEST_SCHEMA_VERSION = 2;
 
 export async function updateVideoScenes(id: number, scenes: EditorScene[]) {
   const db = await getDb();
@@ -1081,6 +1234,238 @@ export async function getVideoScenes(id: number): Promise<EditorScene[] | null> 
   const result = await db.select({ videoScenes: videos.videoScenes }).from(videos).where(eq(videos.id, id)).limit(1);
   if (!result.length || !result[0].videoScenes) return null;
   return result[0].videoScenes as EditorScene[];
+}
+
+/* ═══════════════════════ RONDE 148 — the editor's timeline and its renders ═══════════════════════ */
+
+/** The stored timeline exactly as written, plus the version the row claims for it. */
+export async function getStoredTimeline(
+  id: number
+): Promise<{ raw: unknown; timelineVersion: number } | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ videoTimeline: videos.videoTimeline, timelineVersion: videos.timelineVersion })
+    .from(videos)
+    .where(eq(videos.id, id))
+    .limit(1);
+  if (!rows.length) return null;
+  return { raw: rows[0].videoTimeline, timelineVersion: rows[0].timelineVersion ?? 0 };
+}
+
+/**
+ * Store a timeline at a version, and only if the row still holds the version it came from.
+ *
+ * The `WHERE timelineVersion = expected` is what makes the optimistic check real rather than
+ * advisory: two saves racing on the same version both pass the read-side check in
+ * `nextTimelineToStore`, and this write lets exactly one of them through. The loser gets
+ * `saved: false` and its caller reports the conflict — nobody's edits are silently lost.
+ */
+export async function saveVideoTimeline(params: {
+  id: number;
+  timeline: unknown;
+  expectedVersion: number;
+  nextVersion: number;
+}): Promise<{ saved: boolean }> {
+  const db = await getDb();
+  if (!db) return { saved: false };
+  const result = await db
+    .update(videos)
+    .set({ videoTimeline: params.timeline, timelineVersion: params.nextVersion })
+    .where(and(eq(videos.id, params.id), eq(videos.timelineVersion, params.expectedVersion)));
+  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
+  // A driver that does not report rowsAffected must not be read as "it worked" — re-read instead.
+  if (typeof affected === "number") return { saved: affected > 0 };
+  const after = await getStoredTimeline(params.id);
+  return { saved: after?.timelineVersion === params.nextVersion };
+}
+
+/**
+ * Claim the next render attempt for a video.
+ *
+ * Bumps `renderAttempt` and returns the new value, which becomes the job's fencing token. Done
+ * before the job row is inserted so that a job always carries a number the video has already seen
+ * — the ordering `mayPublishRender` relies on.
+ */
+export async function claimRenderAttempt(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  await db
+    .update(videos)
+    .set({ renderAttempt: sql`${videos.renderAttempt} + 1` })
+    .where(eq(videos.id, videoId));
+  const rows = await db
+    .select({ renderAttempt: videos.renderAttempt })
+    .from(videos)
+    .where(eq(videos.id, videoId))
+    .limit(1);
+  return rows.length ? rows[0].renderAttempt : null;
+}
+
+export async function getVideoRenderAttempt(videoId: number): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ renderAttempt: videos.renderAttempt })
+    .from(videos)
+    .where(eq(videos.id, videoId))
+    .limit(1);
+  return rows.length ? rows[0].renderAttempt : null;
+}
+
+export async function createRenderJob(params: {
+  videoId: number;
+  requestedByUserId?: number | null;
+  timelineVersion: number;
+  attempt: number;
+}): Promise<RenderJob | null> {
+  const db = await getDb();
+  if (!db) return null;
+  await db.insert(renderJobs).values({
+    videoId: params.videoId,
+    requestedByUserId: params.requestedByUserId ?? null,
+    timelineVersion: params.timelineVersion,
+    attempt: params.attempt,
+    status: "queued",
+    progressStep: "queued",
+    progress: 0,
+  });
+  const rows = await db
+    .select()
+    .from(renderJobs)
+    .where(eq(renderJobs.videoId, params.videoId))
+    .orderBy(desc(renderJobs.id))
+    .limit(1);
+  return rows.length ? rows[0] : null;
+}
+
+export async function getRenderJobById(id: number): Promise<RenderJob | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(renderJobs).where(eq(renderJobs.id, id)).limit(1);
+  return rows.length ? rows[0] : null;
+}
+
+/** Jobs for one video, newest first. The editor shows the most recent; the rest are history. */
+export async function listRenderJobsForVideo(videoId: number, limit = 10): Promise<RenderJob[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(renderJobs)
+    .where(eq(renderJobs.videoId, videoId))
+    .orderBy(desc(renderJobs.id))
+    .limit(limit);
+}
+
+export async function listActiveRenderJobsForVideo(videoId: number): Promise<RenderJob[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(renderJobs)
+    .where(and(eq(renderJobs.videoId, videoId), inArray(renderJobs.status, ["queued", "running"])));
+}
+
+/**
+ * Take one queued job, and only if it is still queued.
+ *
+ * The `WHERE status = 'queued'` is the claim: two workers polling at the same instant both see the
+ * row, both try to move it, and MySQL lets one win. The loser gets rowsAffected 0 and moves on —
+ * the same claim-by-update pattern `claimQueuedVideo` already uses for the generation queue, so
+ * there is one concurrency idiom in this codebase rather than two.
+ */
+export async function claimQueuedRenderJob(jobId: number): Promise<RenderJob | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db
+    .update(renderJobs)
+    .set({ status: "running", progressStep: "rehydrating", startedAt: new Date() })
+    .where(and(eq(renderJobs.id, jobId), eq(renderJobs.status, "queued")));
+  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
+  if (typeof affected === "number" && affected === 0) return null;
+  const job = await getRenderJobById(jobId);
+  return job && job.status === "running" ? job : null;
+}
+
+export async function listQueuedRenderJobs(limit = 20): Promise<RenderJob[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(renderJobs)
+    .where(eq(renderJobs.status, "queued"))
+    .orderBy(asc(renderJobs.createdAt), asc(renderJobs.id))
+    .limit(limit);
+}
+
+export async function updateRenderJobProgress(
+  id: number,
+  progressStep: string,
+  progress: number
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(renderJobs).set({ progressStep, progress }).where(eq(renderJobs.id, id));
+}
+
+export async function finishRenderJob(params: {
+  id: number;
+  status: "completed" | "failed" | "cancelled";
+  outputUrl?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  progressStep?: string;
+  progress?: number;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(renderJobs)
+    .set({
+      status: params.status,
+      outputUrl: params.outputUrl ?? null,
+      errorCode: params.errorCode ?? null,
+      // Truncated: an ffmpeg failure can carry a very long tail and this column is a `text`.
+      errorMessage: params.errorMessage ? params.errorMessage.slice(0, 4000) : null,
+      progressStep: params.progressStep ?? params.status,
+      progress: params.progress ?? (params.status === "completed" ? 100 : 0),
+      completedAt: new Date(),
+    })
+    .where(eq(renderJobs.id, params.id));
+}
+
+/**
+ * Publish a render's output as the video's current edit — fenced.
+ *
+ * The `WHERE renderAttempt = attempt` is the second half of `mayPublishRender`: the pure function
+ * decides, and this makes the decision atomic against a job that is publishing at the same moment.
+ * A superseded job's UPDATE matches no rows and changes nothing, which is exactly the required
+ * outcome — the newer render's output stays.
+ */
+export async function publishEditedVideo(params: {
+  videoId: number;
+  attempt: number;
+  editedVideoUrl: string;
+  timelineVersion: number;
+}): Promise<{ published: boolean }> {
+  const db = await getDb();
+  if (!db) return { published: false };
+  const result = await db
+    .update(videos)
+    .set({
+      editedVideoUrl: params.editedVideoUrl,
+      editedVideoTimelineVersion: params.timelineVersion,
+    })
+    .where(and(eq(videos.id, params.videoId), eq(videos.renderAttempt, params.attempt)));
+  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
+  if (typeof affected === "number") return { published: affected > 0 };
+  const rows = await db
+    .select({ url: videos.editedVideoUrl })
+    .from(videos)
+    .where(eq(videos.id, params.videoId))
+    .limit(1);
+  return { published: rows[0]?.url === params.editedVideoUrl };
 }
 
 export type VideoEditorSettings = {
@@ -1199,7 +1584,15 @@ export async function updateMediaArchive(id: number, data: Partial<InsertMediaAr
 export async function deleteMediaArchive(id: number) {
   const db = await getDb();
   if (!db) return;
-  await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.archiveId, id));
+  /**
+   * RONDE 127 — the third delete route, with the same foreign keys in front of it.
+   *
+   * Deleting a whole archive deleted its assets with a bare DELETE, so it failed for exactly the
+   * same reason as the per-asset button: an embedding row or a search-memory row still pointed at
+   * one of them. Routed through the one implementation that clears the children first.
+   */
+  const assets = await getMediaArchiveAssets(id);
+  if (assets.length > 0) await deleteMediaArchiveAssets(assets.map((a) => a.id));
   await db.delete(mediaArchives).where(eq(mediaArchives.id, id));
 }
 
@@ -1306,6 +1699,27 @@ export async function getMediaArchiveAssetById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/**
+ * RONDE 131 — the assets the search memory remembers, in one round trip.
+ *
+ * `getMediaArchiveAssetById` one-at-a-time would be a query per remembered asset on the beat hot
+ * path. Excludes `annotationJson` for the same reason `getMediaArchiveAssets` does — it can be
+ * 50KB a row and nothing on this path reads it — and honours `isActive`, so an asset deleted or
+ * disabled since it was remembered simply does not come back (RONDE 127's archive-deletion rule,
+ * enforced by the query rather than by a later filter).
+ */
+export async function getMediaArchiveAssetsByIds(ids: number[]) {
+  const db = await getDb();
+  if (!db || ids.length === 0) return [];
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  if (unique.length === 0) return [];
+  const { annotationJson: _skip, ...cols } = getTableColumns(mediaArchiveAssets);
+  return db
+    .select(cols)
+    .from(mediaArchiveAssets)
+    .where(and(inArray(mediaArchiveAssets.id, unique), eq(mediaArchiveAssets.isActive, 1)));
+}
+
 export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
   const db = await getDb();
   if (!db) return undefined;
@@ -1361,10 +1775,25 @@ export async function findMediaArchiveAssetBySourceUrlHash(sourceUrlHash: string
   return rows[0] ?? null;
 }
 
+/**
+ * RONDE 127 — the single-asset delete never got RONDE 12's fix.
+ *
+ * From the admin:
+ *
+ *     Failed query: delete from `media_archive_assets` where `id` = ?  params: 57330
+ *
+ * Two tables carry a foreign key to media_archive_assets — media_archive_asset_embeddings.assetId
+ * and visual_search_memory.assetId — so MySQL refuses the DELETE while any child row still points
+ * at the asset. RONDE 12 found exactly this and fixed it, but only in the BULK path; there were
+ * three delete routes and this one kept its bare DELETE. An asset that had ever been embedded
+ * (which is every ingested asset — archiveIngestion indexes on write) or that any search memory
+ * pointed at was therefore undeletable from the admin's per-row button.
+ *
+ * It delegates now rather than repeating the cleanup, so the two paths cannot drift apart again —
+ * the drift is what caused this.
+ */
 export async function deleteMediaArchiveAsset(id: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(mediaArchiveAssets).where(eq(mediaArchiveAssets.id, id));
+  await deleteMediaArchiveAssets([id]);
 }
 
 // ─── Visual Matching Engine V2: VideoContext + VisualIntent caches ────────────
@@ -1645,4 +2074,66 @@ export function filterMediaArchiveAssets<
     }
     return true;
   });
+}
+
+// ─── Discount Codes (RONDE 147) ───────────────────────────────────────────────
+import { discountCodes, type InsertDiscountCode } from "../drizzle/schema";
+
+/**
+ * The mirror of Stripe's promotion codes — see drizzle/schema.ts for why a mirror exists at all.
+ * Stripe remains the source of truth for whether a code is redeemable and how often it has been
+ * used; these rows exist so the admin overview is one query rather than one API call per code.
+ */
+export async function createDiscountCodeRow(data: InsertDiscountCode) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.insert(discountCodes).values(data);
+  return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+export async function listDiscountCodes() {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(discountCodes).orderBy(desc(discountCodes.createdAt));
+}
+
+export async function getDiscountCodeById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db.select().from(discountCodes).where(eq(discountCodes.id, id)).limit(1);
+  return row;
+}
+
+export async function getDiscountCodeByCode(code: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db
+    .select()
+    .from(discountCodes)
+    .where(eq(discountCodes.code, code.trim().toUpperCase()))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Narrow updates only.
+ *
+ * Deliberately not a generic patch: the brief rules out exposing arbitrary columns through the
+ * admin surface, and the fields a human may change after a code exists are exactly these three.
+ * `code`, the discount itself and the Stripe ids are immutable here because they are immutable in
+ * Stripe — changing a discount means issuing a new code.
+ */
+export async function updateDiscountCodeRow(
+  id: number,
+  data: Partial<Pick<InsertDiscountCode, "isActive" | "note" | "timesRedeemed">>
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(discountCodes).set(data).where(eq(discountCodes.id, id));
+}
+
+export async function deleteDiscountCodeRow(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(discountCodes).where(eq(discountCodes.id, id));
 }

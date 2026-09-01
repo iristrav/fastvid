@@ -7,6 +7,26 @@ import {
   type PoolCandidate,
 } from "./scenePool";
 
+/**
+ * RONDE 91 — this file calls the scene candidate pool's provider searches directly, outside any
+ * beat.
+ *
+ * In production those searches run inside a beat's provenance scope (withSearchProvenance), which
+ * is what lets the gate verify a query against what the script actually says. A direct call has no
+ * such scope, so strict mode refuses it — correctly: a query nobody can trace is exactly what the
+ * gate exists to stop.
+ *
+ * That refusal is not this file's subject. It tests what happens AFTER a query is admitted — the
+ * response parsing, the per-source dedup, the concurrency ceiling, the allSettled isolation. The
+ * gate's own behaviour, including the refusal above, is covered by ronde89ProviderGate,
+ * ronde90SearchProvenance and ronde91SearchCleanup.
+ *
+ * Set at module scope, not in beforeAll: suites here snapshot process.env while the file is being
+ * evaluated and restore it before every test.
+ */
+process.env.SEARCH_GATE_STRICT = "false";
+
+
 // RONDE 3 / FIX A + FIX C — funnel retrieval latency.
 //
 // Wikimedia, Internet Archive, Europeana, NASA and Library of Congress each need a second
@@ -356,11 +376,29 @@ describe("FIX A — scope", () => {
   }
 
   it("all five detail-fetching providers use the batched loop", () => {
+    /**
+     * The property under test is "a batch of search hits does not cost one sequential request
+     * each". `await Promise.all(` was the way every provider achieved that.
+     *
+     * RONDE 136 gave Wikimedia something stronger: MediaWiki's query API takes up to 50
+     * pipe-separated titles, so a whole batch is now ONE request rather than five concurrent ones.
+     * That is the same property, better satisfied — video 558 logged 32 HTTP 429s and 34
+     * provider stand-downs from the old shape, ending with 38 search results and zero downloads.
+     *
+     * So the assertion allows either mechanism, and still demands the batching loop and the cap
+     * from every provider. It has NOT been loosened for the other four: they must still show a
+     * concurrent fan-out.
+     */
     for (const name of batched) {
       const body = codeOnly(bodyOf(name));
       expect(body, name).toContain("i += DETAIL_FETCH_CONCURRENCY");
-      expect(body, name).toContain("await Promise.all(");
       expect(body, name).toContain("if (candidates.length >= max) break;");
+      if (name === "searchWikimediaCandidates") {
+        // One request for the whole batch — the pipe-separated multi-title form.
+        expect(body, name).toContain("batch.join(\"|\")");
+      } else {
+        expect(body, name).toContain("await Promise.all(");
+      }
     }
   });
 
@@ -380,7 +418,12 @@ describe("FIX A — scope", () => {
   it("no request timeout, header or URL was changed", () => {
     expect(src).toContain(`withTimeoutFetch(itemJsonUrl, UA, 8_000, \`Library of Congress pool item`);
     expect(src).toContain(`withTimeoutFetch(metaUrl, UA, 8_000, \`Internet Archive pool metadata`);
-    expect(src).toContain(`withTimeoutFetch(infoUrl, UA, 5_000, \`Wikimedia pool info`);
+    // RONDE 136: Wikimedia now sends ONE request for the whole batch, so its label and timeout
+    // changed with it (8s for up to five titles' worth of metadata instead of 5s for one). Same
+    // endpoint, same UA, same params — asserted here rather than dropped.
+    expect(src).toContain(`withTimeoutFetch(infoUrl, UA, 8_000, \`Wikimedia pool info batch`);
+    expect(src).toContain("https://commons.wikimedia.org/w/api.php?action=query");
+    expect(src).toContain("&prop=imageinfo");
     expect(src).toContain(`withTimeoutFetch(recordUrl, authHeader, 8_000, \`Europeana pool record`);
     expect(src).toContain(`withTimeoutFetch(assetUrl, UA, 8_000, \`NASA pool asset`);
     expect(src).toContain('const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };');
@@ -410,11 +453,31 @@ describe("FIX C — per-provider latency logging", () => {
     expect(src).toContain("` | ms: ${Object.entries(msPerProvider).sort((a, b) => b[1] - a[1])");
   });
 
+  /**
+   * RONDE 175 — counted against the tasks themselves, not against a literal.
+   *
+   * This pinned `9`, "one per provider task", and adding a tenth provider (YouTube) failed it for
+   * the one reason that is not a defect: there was a tenth provider. A guard that has to be
+   * renumbered every time the thing it guards grows teaches people to renumber it, and the next
+   * person renumbers it without checking whether the new task actually carries the field.
+   *
+   * So it now counts BOTH sides and asserts they match. That is the invariant the name always
+   * described — every provider task carries its own elapsed time — and it holds for ten providers
+   * or for twenty, while still failing the moment a task is added without the field.
+   */
   it("every provider task carries its own elapsed time from one shared start", () => {
-    const decls = codeOnly(src).match(/const liveT0 = Date\.now\(\);/g) ?? [];
-    expect(decls).toHaveLength(1);
-    const uses = codeOnly(src).match(/ms: Date\.now\(\) - liveT0,/g) ?? [];
-    expect(uses).toHaveLength(9); // one per provider task
+    const code = codeOnly(src);
+    const decls = code.match(/const liveT0 = Date\.now\(\);/g) ?? [];
+    expect(decls, "the shared start must be declared exactly once").toHaveLength(1);
+
+    const tasks = code.match(/tasks\.push\(/g) ?? [];
+    const uses = code.match(/ms: Date\.now\(\) - liveT0,/g) ?? [];
+    expect(tasks.length, "no provider tasks found — the scan is looking at the wrong thing")
+      .toBeGreaterThanOrEqual(9);
+    expect(
+      uses.length,
+      `${tasks.length} provider task(s) but ${uses.length} carry an elapsed time`
+    ).toBe(tasks.length);
   });
 
   it("logging added no await, no retry and no extra request", () => {
@@ -446,8 +509,12 @@ describe("RONDE 1 + RONDE 2 are untouched by RONDE 3", () => {
   });
 
   it("FIX 3 failed-download registration is intact", () => {
-    const occurrences = codeOnly(pipelineSrc).match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
-    expect(occurrences).toHaveLength(2);
+    // RONDE 132 counts both forms: the winner's registration moved into markAssetUsedInVideo,
+    // which writes this same Set plus the identities the funnel never recorded. Same invariant.
+    const code = codeOnly(pipelineSrc);
+    const occurrences = code.match(/dedup\.usedFunnelCandidateIds\.add\(candidate\.id\);/g) ?? [];
+    const viaRegistry = code.match(/funnelCandidateId: candidate\.id,/g) ?? [];
+    expect(occurrences.length + viaRegistry.length).toBe(2);
   });
 
   it("FIX 4 gap strategy still eliminates no candidates", () => {

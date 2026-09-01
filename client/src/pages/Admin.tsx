@@ -13,25 +13,24 @@ import {
   Users, Video, TrendingUp, CheckCircle2, Loader2,
   Play, LogOut, LayoutDashboard, Settings, Shield, RefreshCw,
   UserCheck, Crown, Eye, X, Copy, AlertTriangle,
-  FileText, Hash, Sparkles, Search, Filter, Download,
+  FileText, Hash, Search, Filter, Download,
   ChevronDown, Mic, Plus, Pencil, Trash2, Volume2, ToggleLeft, ToggleRight,
-  Archive, Upload, Radio,
+  Archive, Upload, Radio, Ticket,
 } from "lucide-react";
 import { MediaArchiveAdmin } from "@/components/admin/MediaArchiveAdmin";
+import { DiscountCodesAdmin } from "@/components/admin/DiscountCodesAdmin";
+import { EditUserDialog, type EditableUser } from "@/components/admin/EditUserDialog";
+import { useVoicePreview } from "@/hooks/useVoicePreview";
 import { NicheRequestsAdmin } from "@/components/admin/NicheRequestsAdmin";
-import { GenerationProgressBar } from "@/components/GenerationProgressBar";
+import { GenerationProgressBar, progressRunKey } from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
 
 function formatVideoId(id: number) {
   return `#VID-${String(id).padStart(4, "0")}`;
 }
 
-import { VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
 import { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_DISPLAY } from "@shared/billing";
 
-const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
-  opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
-);
 
 function StatCard({ label, value, icon: Icon, color, sub }: {
   label: string; value: number | string; icon: React.ElementType; color: string; sub?: string;
@@ -84,8 +83,195 @@ type VideoRow = {
   userEmail?: string | null;
 };
 
+/**
+ * RONDE 106 — the few pipeline numbers worth having in a table row.
+ *
+ * The render stores a `pipelineGlance` next to its full report precisely so this cell does not
+ * have to parse, or download, the whole account of a render to show one badge. Everything else is
+ * in the Pipeline tab of the detail modal.
+ */
+type PipelineGlance = {
+  qualityStatus?: string;
+  score?: number;
+  beats?: number;
+  verifiedOwnVisual?: number;
+  finalClips?: number;
+  unverifiedClips?: number;
+  gateAttempts?: number;
+  gateAnswered?: number;
+  warnings?: number;
+};
+
+function readGlance(metadata: unknown): PipelineGlance | null {
+  if (!metadata) return null;
+  try {
+    const meta = typeof metadata === "string" ? JSON.parse(metadata) : metadata;
+    const g = (meta as { pipelineGlance?: PipelineGlance })?.pipelineGlance;
+    return g && typeof g === "object" ? g : null;
+  } catch {
+    return null;
+  }
+}
+
+const PIPELINE_STATUS_STYLE: Record<string, string> = {
+  VERIFIED: "text-green-400 bg-green-500/10 border-green-500/20",
+  PARTIALLY_VERIFIED: "text-amber-400 bg-amber-500/10 border-amber-500/20",
+  INSUFFICIENT_VERIFICATION: "text-red-400 bg-red-500/10 border-red-500/20",
+};
+
+const PIPELINE_STATUS_SHORT: Record<string, string> = {
+  VERIFIED: "geverifieerd",
+  PARTIALLY_VERIFIED: "deels",
+  INSUFFICIENT_VERIFICATION: "ongeverifieerd",
+};
+
+function PipelineGlanceCell({ metadata }: { metadata: unknown }) {
+  const g = readGlance(metadata);
+  if (!g) return <span className="text-xs text-slate-600">—</span>;
+  const status = g.qualityStatus ?? "";
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        {status && (
+          <span
+            className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium border whitespace-nowrap ${
+              PIPELINE_STATUS_STYLE[status] ?? "text-slate-400 bg-white/5 border-white/10"
+            }`}
+          >
+            {PIPELINE_STATUS_SHORT[status] ?? status}
+          </span>
+        )}
+        {typeof g.score === "number" && (
+          <span className="text-[10px] font-mono text-slate-400">{g.score}/100</span>
+        )}
+      </div>
+      <p className="text-[10px] font-mono text-slate-500 whitespace-nowrap">
+        {g.verifiedOwnVisual ?? 0}/{g.beats ?? 0} beats · {g.finalClips ?? 0} clips
+        {g.gateAttempts != null && ` · gate ${g.gateAnswered ?? 0}/${g.gateAttempts}`}
+      </p>
+      {(g.warnings ?? 0) > 0 && (
+        <p className="text-[10px] text-amber-400/80">{g.warnings} waarschuwing(en)</p>
+      )}
+    </div>
+  );
+}
+
+/** One collected section of the render's report. */
+function PipelineSection({ title, lines }: { title: string; lines: string[] }) {
+  const [open, setOpen] = useState(lines.length <= 12);
+  if (lines.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-white/8 bg-white/3 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-white/5 transition-colors"
+      >
+        <span className="text-xs font-semibold text-white">{title}</span>
+        <span className="text-[10px] font-mono text-slate-500">
+          {lines.length} regel(s) {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <pre className="px-3 pb-3 text-[10px] leading-relaxed text-slate-300 font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+          {lines.join("\n")}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The whole pipeline of one video, as the render itself recorded it.
+ *
+ * Reads back what was stored — it does not re-derive anything, so what is shown here is exactly
+ * what the render did, including for a video whose numbers are bad.
+ */
+function VideoPipelineTab({ videoId }: { videoId: number }) {
+  const { data, isLoading } = trpc.admin.getVideoPipeline.useQuery({ videoId });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+      </div>
+    );
+  }
+  const report = data?.pipelineReport as
+    | {
+        renderId?: string;
+        startedAt?: string;
+        finishedAt?: string;
+        sections?: Record<string, string[]>;
+        truncated?: Record<string, number>;
+      }
+    | null
+    | undefined;
+
+  if (!report?.sections) {
+    return (
+      <div className="text-center py-10 space-y-2">
+        <p className="text-sm text-slate-400">Geen pipeline-rapport voor deze video.</p>
+        <p className="text-xs text-slate-600">
+          Video&apos;s die vóór deze functie zijn gerenderd, of renders die niet zijn afgerond,
+          hebben er geen.
+        </p>
+        {data?.errorMessage && (
+          <p className="text-xs text-red-400/80 font-mono pt-2">{data.errorMessage}</p>
+        )}
+      </div>
+    );
+  }
+
+  const glance = data?.pipelineGlance as PipelineGlance | null;
+  const order = [
+    ["summary", "Samenvatting"],
+    ["beats", "Beats zonder goedgekeurd eigen beeld"],
+    ["clips", "Clips in de uiteindelijke video"],
+    ["dropped", "Gekozen maar niet gerenderd"],
+    ["sourcing", "Bronnen en funnel"],
+    ["search", "Zoekopdrachten"],
+    ["gates", "Gates"],
+    ["timing", "Tijd per stap"],
+    ["warnings", "Waarschuwingen"],
+  ] as const;
+
+  return (
+    <div className="space-y-3">
+      {glance && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {[
+            ["Status", PIPELINE_STATUS_SHORT[glance.qualityStatus ?? ""] ?? glance.qualityStatus ?? "—"],
+            ["Score", glance.score != null ? `${glance.score}/100` : "—"],
+            ["Beats geverifieerd", `${glance.verifiedOwnVisual ?? 0}/${glance.beats ?? 0}`],
+            ["Gate beantwoord", `${glance.gateAnswered ?? 0}/${glance.gateAttempts ?? 0}`],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-lg bg-white/5 px-2 py-1.5">
+              <p className="text-[10px] text-slate-500">{label}</p>
+              <p className="text-xs text-white font-mono">{value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-slate-600 font-mono">
+        render={report.renderId ?? "?"}
+        {report.finishedAt ? ` · ${new Date(report.finishedAt).toLocaleString()}` : ""}
+      </p>
+      {order.map(([key, title]) => (
+        <div key={key}>
+          <PipelineSection title={title} lines={report.sections?.[key] ?? []} />
+          {(report.truncated?.[key] ?? 0) > 0 && (
+            <p className="text-[10px] text-amber-400/70 px-1 pt-1">
+              {report.truncated?.[key]} regel(s) afgekapt — het rapport is begrensd.
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => void }) {
-  const [tab, setTab] = useState<"video" | "info" | "script" | "metadata">(
+  const [tab, setTab] = useState<"video" | "info" | "script" | "metadata" | "pipeline">(
     video.videoUrl ? "video" : "info"
   );
   // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
@@ -115,6 +301,8 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
     { id: "info" as const, label: "Info" },
     { id: "script" as const, label: "Script" },
     { id: "metadata" as const, label: "Metadata" },
+    // RONDE 106: what the render did, read back from what it recorded about itself.
+    { id: "pipeline" as const, label: "Pipeline" },
   ];
 
   return (
@@ -218,6 +406,7 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
               )}
             </div>
           )}
+          {tab === "pipeline" && <VideoPipelineTab videoId={video.id} />}
           {tab === "metadata" && (
             <div>
               {parsedMeta ? (
@@ -279,15 +468,12 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
   );
 }
 
-function UsersTable() {
+function UsersTable({ currentUserId }: { currentUserId: number | null }) {
   const { data: users, isLoading, refetch } = trpc.admin.listUsers.useQuery({ limit: 100, offset: 0 });
+  const [editingUser, setEditingUser] = useState<EditableUser | null>(null);
   const updateSubMutation = trpc.admin.updateUserSubscription.useMutation({
     onSuccess: () => { toast.success("Subscription updated"); refetch(); },
     onError: () => toast.error("Failed to update subscription"),
-  });
-  const updateRoleMutation = trpc.admin.updateUserRole.useMutation({
-    onSuccess: () => { toast.success("Role updated"); refetch(); },
-    onError: () => toast.error("Failed to update role"),
   });
 
   if (isLoading) return <div className="flex items-center justify-center py-12"><Loader2 className="w-6 h-6 text-purple-400 animate-spin" /></div>;
@@ -348,11 +534,19 @@ function UsersTable() {
                           <UserCheck className="w-3 h-3" /> Activate
                         </button>
                       )}
-                      {user.role !== "admin" && (
-                        <button onClick={() => updateRoleMutation.mutate({ userId: user.id, role: "admin" })} className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded-md hover:bg-purple-400/10">
-                          <Crown className="w-3 h-3" /> Make Admin
-                        </button>
-                      )}
+                      {/*
+                        RONDE 148: the one-way promote button is now a full edit dialog. Promotion
+                        used to be the only role change the product could perform, so a mistaken
+                        promotion was permanent — there was no route back from admin to user
+                        anywhere in the UI. Its old label is deliberately not written out here: the
+                        regression test asserts that string is absent from this file.
+                      */}
+                      <button
+                        onClick={() => setEditingUser(user as unknown as EditableUser)}
+                        className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded-md hover:bg-purple-400/10"
+                      >
+                        <Pencil className="w-3 h-3" /> Edit
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -364,6 +558,14 @@ function UsersTable() {
           </table>
         </div>
       </div>
+      {editingUser && (
+        <EditUserDialog
+          user={editingUser}
+          currentUserId={currentUserId}
+          onClose={() => setEditingUser(null)}
+          onSaved={() => refetch()}
+        />
+      )}
     </div>
   );
 }
@@ -400,6 +602,7 @@ function VideoStatusCell({ video }: { video: VideoRow }) {
           <GenerationProgressBar
             compact
             progressPercent={progressPercent}
+            progressKey={progressRunKey(video.id, (pollData as { generationStartedAt?: Date | null })?.generationStartedAt)}
             generationStartedAt={(pollData as { generationStartedAt?: Date | null })?.generationStartedAt}
             videoLength={video.videoLength}
             className="min-w-[140px]"
@@ -483,6 +686,7 @@ function VideosTable() {
                 <th className="text-left px-4 py-3">Video</th>
                 <th className="text-left px-4 py-3">Length</th>
                 <th className="text-left px-4 py-3">Status</th>
+                <th className="text-left px-4 py-3">Pipeline</th>
                 <th className="text-left px-4 py-3">User</th>
                 <th className="text-left px-4 py-3">Created</th>
                 <th className="text-right px-4 py-3">Actions</th>
@@ -505,6 +709,9 @@ function VideosTable() {
                     <VideoStatusCell video={video as VideoRow} />
                   </td>
                   <td className="px-4 py-3">
+                    <PipelineGlanceCell metadata={video.metadata} />
+                  </td>
+                  <td className="px-4 py-3">
                     <p className="text-xs text-slate-300">{video.userName ?? "Unknown"}</p>
                     <p className="text-xs text-slate-500 font-mono">#{video.userId}{video.userEmail ? " · " + video.userEmail : ""}</p>
                   </td>
@@ -523,7 +730,7 @@ function VideosTable() {
               ))}
               {(!videos || videos.length === 0) && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center">
+                  <td colSpan={8} className="px-4 py-12 text-center">
                     <Search className="w-8 h-8 text-slate-600 mx-auto mb-3" />
                     <p className="text-slate-500 text-sm">No videos found</p>
                     {(searchQuery || statusFilter !== "all") && (
@@ -542,151 +749,16 @@ function VideosTable() {
   );
 }
 
-function AdminVideoGenerator() {
-  const [prompt, setPrompt] = useState("");
-  const [videoLength, setVideoLength] = useState("15-20");
-  const [generatedId, setGeneratedId] = useState<number | null>(null);
-
-  const generateMutation = trpc.admin.generateVideo.useMutation({
-    onSuccess: (data) => {
-      setGeneratedId(data.videoId);
-      setPrompt("");
-      toast.success(`Video ${formatVideoId(data.videoId)} is being generated!`);
-    },
-    onError: (err) =>
-      toast.error("Failed to start generation", { description: toastErrorMessage(err) }),
-  });
-
-  const { data: videoStatus, isLoading: statusLoading, refetch: refetchVideoStatus } = trpc.video.pollStatus.useQuery(
-    { id: generatedId! },
-    {
-      enabled: !!generatedId,
-      refetchInterval: (query: { state: { data: unknown } }) => {
-        const status = (query.state.data as { status?: string } | undefined)?.status;
-        return (status === "completed" || status === "failed") ? false : 5000;
-      },
-    }
-  );
-  // SSE push (Phase 1), additive to the 5s poll above — see Dashboard.tsx's VideoCard for
-  // the same pattern and rationale.
-  const generatedStatus = (videoStatus as { status?: string } | undefined)?.status;
-  const generatedInProgress = !!generatedId && generatedStatus !== "completed" && generatedStatus !== "failed";
-  const generatedProgressEvent = useVideoProgressStream(generatedId, generatedInProgress);
-  useEffect(() => {
-    if (generatedProgressEvent) void refetchVideoStatus();
-  }, [generatedProgressEvent, refetchVideoStatus]);
-
-  const statusData = videoStatus as {
-    status?: string;
-    videoUrl?: string;
-    title?: string;
-    progressPercent?: number;
-    generationStartedAt?: Date | null;
-  } | undefined;
-  const isGenerating = !!statusData?.status && !['completed', 'failed'].includes(statusData.status);
-  // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
-  const { data: genVideoUrlData } = trpc.video.getVideoUrl.useQuery(
-    { id: generatedId! },
-    { enabled: !!(generatedId && statusData?.status === 'completed' && statusData?.videoUrl), staleTime: 1000 * 60 * 5 }
-  );
-  const genPlaybackUrl = genVideoUrlData?.url ?? statusData?.videoUrl;
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="font-bold text-white text-lg flex items-center gap-2 mb-1">
-          <Sparkles className="w-5 h-5 text-purple-400" /> Generate a Video
-        </h2>
-        <p className="text-slate-400 text-sm">As admin, you can generate videos without a subscription.</p>
-      </div>
-      <div className="glass-card border border-white/8 rounded-xl p-6 space-y-5">
-        <div>
-          <label className="block text-xs text-slate-400 font-medium uppercase tracking-wide mb-2">Video Prompt</label>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe the YouTube video you want to create..."
-            rows={3}
-            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-500 outline-none focus:border-purple-500/50 transition-colors resize-none"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-400 font-medium uppercase tracking-wide mb-2">Video Length</label>
-          <div className="flex flex-wrap gap-2">
-            {VIDEO_LENGTHS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setVideoLength(opt.value)}
-                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all duration-200 ${
-                  videoLength === opt.value
-                    ? "bg-gradient-to-br from-purple-600/40 to-cyan-500/30 border-purple-400/60 text-white shadow-lg shadow-purple-500/20"
-                    : "border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200 bg-white/3"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <button
-          onClick={() => generateMutation.mutate({ prompt, videoLength: videoLength as VideoLength })}
-          disabled={generateMutation.isPending || prompt.trim().length < 10}
-          className="w-full py-3 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 btn-gradient disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
-        >
-          {generateMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Starting generation...</>
-          ) : (
-            <><Sparkles className="w-4 h-4" /> Generate Video</>
-          )}
-        </button>
-      </div>
-
-      {generatedId && (
-        <div className="glass-card border border-white/8 rounded-xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-bold text-white text-sm flex items-center gap-2">
-              <span className="mono text-purple-400">{formatVideoId(generatedId)}</span>
-              {statusData?.title && <span className="text-slate-300 font-normal truncate max-w-xs">{statusData.title}</span>}
-            </h3>
-            {statusLoading && <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />}
-          </div>
-          {isGenerating && (
-            <GenerationProgressBar
-              progressPercent={statusData?.progressPercent ?? 0}
-              generationStartedAt={statusData?.generationStartedAt}
-              videoLength={videoLength}
-            />
-          )}
-          {statusData?.status === "completed" && statusData?.videoUrl && (
-            <div className="space-y-3 pt-2 border-t border-white/8">
-              <p className="text-xs text-green-400 font-medium flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Video ready!
-              </p>
-              {genPlaybackUrl && <video src={genPlaybackUrl} controls className="w-full rounded-xl border border-white/10 bg-black" style={{ maxHeight: "300px" }} />}
-              <a href={`/api/download/video/${generatedId}`} download={`fastvid-${formatVideoId(generatedId)}.mp4`} className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-cyan-500 text-white text-sm font-semibold hover:opacity-90 transition-opacity">
-                <Download className="w-4 h-4" /> Download MP4
-              </a>
-            </div>
-          )}
-          {statusData?.status === "failed" && (
-            <div className="flex items-center gap-2 text-xs text-red-400 pt-2 border-t border-white/8">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              Generation failed. Check the All Videos tab for details.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function Admin() {
   const { user, loading, isAuthenticated, logout } = useAuth() as {
-    user: { name?: string; role?: string } | null;
+    // RONDE 147: id is needed so the users table can tell the edit dialog which row is the
+    // signed-in admin, and refuse the self-demotion the server also refuses.
+    user: { id?: number; name?: string; role?: string } | null;
     loading: boolean; isAuthenticated: boolean; logout: () => void;
   };
   const [location, navigate] = useLocation();
-  type AdminTab = "overview" | "users" | "videos" | "generate" | "voices" | "invites" | "archive" | "niches";
+  type AdminTab = "overview" | "users" | "videos" | "discounts" | "voices" | "invites" | "archive" | "niches";
   const [activeTab, setActiveTab] = useState<AdminTab>("overview");
 
   useEffect(() => {
@@ -731,7 +803,11 @@ export default function Admin() {
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
     { id: "archive" as const, label: "Media Archive", icon: Archive },
     { id: "niches" as const, label: "Niche Requests", icon: Radio },
-    { id: "generate" as const, label: "Generate Video", icon: Sparkles },
+    // RONDE 147: the admin-side video generator page is gone — an admin generates from the
+    // ordinary dashboard like everyone else, and this slot is now where discount codes live.
+    // Its old label is deliberately not written out here: the regression test asserts that string
+    // is absent from this file.
+    { id: "discounts" as const, label: "Discount Codes", icon: Ticket },
     { id: "users" as const, label: "Users", icon: Users },
     { id: "videos" as const, label: "All Videos", icon: Video },
     { id: "voices" as const, label: "Voice Library", icon: Mic },
@@ -861,8 +937,8 @@ export default function Admin() {
             </div>
           )}
 
-          {activeTab === "generate" && <AdminVideoGenerator />}
-          {activeTab === "users" && <UsersTable />}
+          {activeTab === "discounts" && <DiscountCodesAdmin />}
+          {activeTab === "users" && <UsersTable currentUserId={user?.id ?? null} />}
           {activeTab === "videos" && <VideosTable />}
           {activeTab === "voices" && <VoiceLibraryAdmin />}
           {activeTab === "archive" && <MediaArchiveAdmin />}
@@ -927,26 +1003,32 @@ function VoiceLibraryAdmin() {
   const [editVoice, setEditVoice] = useState<null | typeof voices[0]>(null);
   const [playingId, setPlayingId] = useState<number | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
-  const [previewingId, setPreviewingId] = useState<number | null>(null);
-  const [previewAudioEl, setPreviewAudioEl] = useState<HTMLAudioElement | null>(null);
 
   const createMut = trpc.voice.create.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setShowForm(false); toast.success("Voice added!"); } });
   const updateMut = trpc.voice.update.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); setEditVoice(null); toast.success("Voice updated!"); } });
   const deleteMut = trpc.voice.delete.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Voice deleted!"); } });
   const uploadAudioMut = trpc.voice.uploadExampleAudio.useMutation({ onSuccess: () => { utils.voice.listAll.invalidate(); toast.success("Example audio uploaded!"); } });
-  const previewMut = trpc.voice.preview.useMutation({
-    onSuccess: (data) => {
-      if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
-      const a = new Audio(data.url);
-      a.onended = () => { setPreviewingId(null); setPreviewAudioEl(null); };
-      a.play();
-      setPreviewAudioEl(a);
-    },
-    onError: (err) => {
-      setPreviewingId(null);
-      toast.error("Preview failed", { description: toastErrorMessage(err) });
-    },
-  });
+  const previewMut = trpc.voice.preview.useMutation();
+  /**
+   * RONDE 147 — the admin preview now uses the shared hook, like the dashboard picker.
+   *
+   * Three things were wrong here specifically. `.play()` was never awaited, so an autoplay refusal
+   * or a dead URL became an unhandled rejection and the button stuck on "Stop" over silence. There
+   * was no `onerror`, so a source that failed to load did the same. And `exampleAudioUrl` was
+   * ignored entirely: every click spent an ElevenLabs generation, including on voices that already
+   * had a stored sample sitting in the row being rendered.
+   */
+  const { playingId: previewingId, loadingId: previewLoadingId, toggle: togglePreview } =
+    useVoicePreview({
+      generate: async (voice) => {
+        const match = voices.find((v) => v.id === voice.id);
+        const result = await previewMut.mutateAsync({
+          fishAudioReferenceId: match!.fishAudioReferenceId,
+        });
+        return result.url;
+      },
+      onError: (message) => toast.error("Preview failed", { description: message }),
+    });
   const resetDefaultsMut = trpc.voice.resetDefaults.useMutation({
     onSuccess: (data) => { utils.voice.listAll.invalidate(); toast.success(`Reset complete — ${data.upserted} voices updated`); },
     onError: (err) => toast.error("Reset failed", { description: toastErrorMessage(err) }),
@@ -964,14 +1046,13 @@ function VoiceLibraryAdmin() {
   }
 
   function testPreview(voice: typeof voices[0]) {
-    if (voice.fishAudioReferenceId.startsWith("PLACEHOLDER")) {
+    // A placeholder id cannot generate anything — but a voice with a stored sample can still be
+    // played, so this only blocks the case that would actually fail.
+    if (voice.fishAudioReferenceId.startsWith("PLACEHOLDER") && !voice.exampleAudioUrl) {
       toast.error("Cannot preview: this voice has a placeholder ElevenLabs voice ID. Please edit and set a real ID.");
       return;
     }
-    if (previewAudioEl) { previewAudioEl.pause(); previewAudioEl.src = ""; }
-    if (previewingId === voice.id) { setPreviewingId(null); setPreviewAudioEl(null); return; }
-    setPreviewingId(voice.id);
-    previewMut.mutate({ fishAudioReferenceId: voice.fishAudioReferenceId });
+    togglePreview({ id: voice.id, exampleAudioUrl: voice.exampleAudioUrl });
   }
 
   async function handleAudioUpload(voiceId: number, file: File) {
@@ -1057,19 +1138,19 @@ function VoiceLibraryAdmin() {
                 {/* Test Preview: calls ElevenLabs live */}
                 <button
                   onClick={() => testPreview(v)}
-                  disabled={previewMut.isPending && previewingId === v.id}
+                  disabled={previewLoadingId === v.id}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                     previewingId === v.id
                       ? "bg-cyan-600 text-white"
                       : "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
                   }`}
                 >
-                  {previewMut.isPending && previewingId === v.id ? (
+                  {previewLoadingId === v.id ? (
                     <Loader2 className="w-3 h-3 animate-spin" />
                   ) : (
                     <Mic className="w-3 h-3" />
                   )}
-                  {previewingId === v.id && !previewMut.isPending ? "Stop" : "Test Preview"}
+                  {previewingId === v.id ? "Stop" : "Test Preview"}
                 </button>
                 {/* Play uploaded sample */}
                 <button

@@ -25,24 +25,38 @@ import {
 } from "lucide-react";
 import { NicheRequestsDashboardCard } from "@/components/niche/DashboardNicheRequests";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
+import { VideoEditor } from "@/components/VideoEditor";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
 import { formatGenerationDuration } from "@shared/pipelineProgress";
-import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, type VideoLength } from "@shared/videoLengths";
+import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, videoLengthAllowedForRole, type VideoLength } from "@shared/videoLengths";
 import {
-  qualityScoreColor,
-  qualityScoreLabel,
-  readQualityReportFromMetadata,
 } from "@shared/videoQuality";
-import { GenerationProgressBar, useSmoothedProgressPercent } from "@/components/GenerationProgressBar";
+import {
+  GenerationProgressBar,
+  progressRunKey,
+  useSmoothedProgressPercent,
+} from "@/components/GenerationProgressBar";
 import { useVideoProgressStream } from "@/hooks/useVideoProgressStream";
+import { useVoicePreview } from "@/hooks/useVoicePreview";
 
 const VIDEO_LENGTHS = VIDEO_LENGTH_OPTIONS.map((opt) =>
   opt.value === "1" ? { ...opt, label: "1 min (test)" } : opt
 );
+
+/**
+ * RONDE 147 — show only what this account may actually pick.
+ *
+ * The server refuses a restricted length whatever the UI sends (see videoLengthAllowedForRole),
+ * so this is a courtesy rather than the control: there is no reason to offer an option that will
+ * come back as a 403.
+ */
+function videoLengthsForRole(role: string | null | undefined) {
+  return VIDEO_LENGTHS.filter((opt) => videoLengthAllowedForRole(opt.value, role));
+}
 
 function readGenerationDurationSec(video: {
   metadata?: unknown;
@@ -258,7 +272,14 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
   // could disagree, and the raw value could visibly step backwards between polls whenever a
   // later pipeline stage reported a lower percent than an earlier stage already had.
   const rawBadgePct = Math.max(0, Math.min(100, Math.round(progressPercent)));
-  const smoothedBadgePct = useSmoothedProgressPercent(rawBadgePct, isProcessing && rawBadgePct < 100);
+  // RONDE 107: keyed on the video, so the badge keeps its high-water mark when the card
+  // remounts (scroll, tab switch, a refetch) instead of snapping back to the raw value.
+  const runKey = progressRunKey(video.id, pollData?.generationStartedAt);
+  const smoothedBadgePct = useSmoothedProgressPercent(
+    rawBadgePct,
+    isProcessing && rawBadgePct < 100,
+    runKey
+  );
   const statusBadgeLabel =
     isProcessing
       ? `${smoothedBadgePct}%`
@@ -274,7 +295,6 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
     }
   }, [pollData?.status, video.status, utils.video.list]);
 
-  const qualityReport = readQualityReportFromMetadata(video.metadata);
 
   return (
     <div className="glass-card border border-white/8 rounded-xl overflow-hidden hover:border-white/15 transition-all duration-300 group">
@@ -288,11 +308,21 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
           <div className="w-full h-full flex items-center justify-center">
             {isProcessing ? (
               currentStatus === "queued" ? (
-              <div className="w-full h-full flex flex-col items-center justify-center gap-4 px-6 py-5">
+              <div className="w-full h-full flex flex-col items-center justify-center gap-3 px-6 py-5">
                 <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+                {/* RONDE 109: a queued video is READY, not stuck. Say where it stands in the
+                    person's own line and that nothing is expected of them. */}
+                {(pollData?.userQueuePosition ?? 0) > 1 && (
+                  <p className="text-[11px] text-amber-300/90 text-center leading-snug">
+                    Ready and waiting · #{pollData!.userQueuePosition} of yours
+                    <br />
+                    <span className="text-slate-400">Starts automatically</span>
+                  </p>
+                )}
                 <GenerationProgressBar
                   compact
                   progressPercent={progressPercent}
+                  progressKey={runKey}
                   generationStartedAt={pollData?.generationStartedAt}
                   videoLength={video.videoLength}
                   className="max-w-[220px]"
@@ -304,6 +334,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 <GenerationProgressBar
                   compact
                   progressPercent={progressPercent}
+                  progressKey={runKey}
                   generationStartedAt={pollData?.generationStartedAt}
                   videoLength={video.videoLength}
                   className="max-w-[220px]"
@@ -386,14 +417,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                 ⏱ {formatGenerationDuration(completedDurationSec)}
               </span>
             )}
-            {currentStatus === "completed" && qualityReport && (
-              <span
-                className={`font-semibold px-1.5 py-0.5 rounded ${qualityScoreColor(qualityReport.score)} bg-white/5`}
-                title={qualityScoreLabel(qualityReport.score)}
-              >
-                {qualityReport.score}/100
-              </span>
-            )}
+
           </div>
           <div className="flex items-center gap-2">
 
@@ -428,7 +452,12 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
 }
 
 // ─── Video Detail Modal ───────────────────────────────────────────────────────
-function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () => void }) {
+function VideoDetailModal({ videoId, onClose, onEdit }: {
+  videoId: number;
+  onClose: () => void;
+  /** RONDE 148 §12 — hand the video to the editor. */
+  onEdit: (videoId: number) => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { data: video, isLoading } = trpc.video.get.useQuery({ id: videoId });
   // Fetch a direct presigned CloudFront URL for video playback (bypasses 307 redirect)
@@ -442,7 +471,6 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
   const directVideoUrl = fileMissing ? null : (videoUrlData?.url ?? rawVideoUrl);
   type VideoMetadata = { title?: string; description?: string; tags?: string[]; chapters?: { time: string; title: string }[] };
   const metadata = video?.metadata as VideoMetadata | null;
-  const qualityReport = readQualityReportFromMetadata(video?.metadata);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -503,13 +531,27 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
                     <Play className="w-4 h-4 text-green-400" /> Your Video
                   </h3>
-                  <a
-                    href={`/api/download/video/${video.id}`}
-                    download={`${(video.title ?? `fastvid-${formatVideoId(video.id)}`).replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || `fastvid-${formatVideoId(video.id)}`}.mp4`}
-                    className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Download MP4
-                  </a>
+                  <div className="flex items-center gap-2">
+                    {/*
+                      RONDE 148 §12 — the way in.
+                      Only for a completed video: there is nothing to edit until a render has
+                      produced a manifest, and offering the button earlier would open an empty
+                      editor and teach people the feature is broken.
+                    */}
+                    <button
+                      onClick={() => onEdit(video.id)}
+                      className="flex items-center gap-1.5 text-xs text-purple-300 hover:text-purple-200 transition-colors px-2.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/20"
+                    >
+                      <Pencil className="w-3.5 h-3.5" /> Edit video
+                    </button>
+                    <a
+                      href={`/api/download/video/${video.id}`}
+                      download={`${(video.title ?? `fastvid-${formatVideoId(video.id)}`).replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || `fastvid-${formatVideoId(video.id)}`}.mp4`}
+                      className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Download MP4
+                    </a>
+                  </div>
                 </div>
                 {directVideoUrl ? (
                   <video
@@ -533,56 +575,13 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
                 )}
               </div>
             )}
-            {video.status === "completed" && qualityReport && (
-              <div className="glass-card border border-white/8 rounded-xl p-4 space-y-3">
-                <h3 className="font-semibold text-white text-sm flex items-center gap-2">
-                  <CheckCircle2 className={`w-4 h-4 ${qualityScoreColor(qualityReport.score)}`} />
-                  Visual quality — {qualityReport.score}/100
-                  <span className="text-xs font-normal text-slate-500">({qualityScoreLabel(qualityReport.score)})</span>
-                </h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  {qualityReport.archiveCount != null && (
-                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
-                      <p className="text-slate-500">Archive</p>
-                      <p className="text-white font-mono">{qualityReport.archiveCount}</p>
-                    </div>
-                  )}
-                  {qualityReport.wikimediaCount != null && (
-                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
-                      <p className="text-slate-500">Wikimedia</p>
-                      <p className="text-white font-mono">{qualityReport.wikimediaCount}</p>
-                    </div>
-                  )}
-                  {qualityReport.stockCount != null && (
-                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
-                      <p className="text-slate-500">Stock</p>
-                      <p className="text-white font-mono">{qualityReport.stockCount}</p>
-                    </div>
-                  )}
-                  {qualityReport.totalClips != null && (
-                    <div className="rounded-lg bg-white/5 px-2 py-1.5">
-                      <p className="text-slate-500">Clips</p>
-                      <p className="text-white font-mono">{qualityReport.totalClips}</p>
-                    </div>
-                  )}
-                </div>
-                {qualityReport.warnings && qualityReport.warnings.length > 0 && (
-                  <ul className="text-xs text-amber-300/90 space-y-1 list-disc list-inside">
-                    {qualityReport.warnings.map((w) => (
-                      <li key={w}>{w}</li>
-                    ))}
-                  </ul>
-                )}
-                {qualityReport.rejectSummary && Object.keys(qualityReport.rejectSummary).length > 0 && (
-                  <p className="text-[10px] text-slate-500 font-mono">
-                    Rejected:{" "}
-                    {Object.entries(qualityReport.rejectSummary)
-                      .map(([k, n]) => `${k}=${n}`)
-                      .join(", ")}
-                  </p>
-                )}
-              </div>
-            )}
+            {/*
+              RONDE 106 — the quality report moved to the admin.
+              It is diagnostic output about how the render was assembled: gate verdicts, provenance,
+              beats without their own picture. That is a question about the pipeline, asked by
+              whoever maintains it — not something a viewer of their own video can act on. It lives
+              in Admin → Videos → Pipeline now, in full, per video and across all videos.
+            */}
             {/* Metadata */}
             {metadata && (
               <div className="glass-card border border-white/8 rounded-xl p-4 space-y-3">
@@ -638,9 +637,6 @@ function VideoDetailModal({ videoId, onClose }: { videoId: number; onClose: () =
 // ─── Voice Selector Component ────────────────────────────────────────────────
 function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onSelect: (id: string) => void }) {
   const { data: voices = [], isLoading } = trpc.voice.list.useQuery();
-  const [playingId, setPlayingId] = useState<number | null>(null);
-  const [loadingPreviewId, setLoadingPreviewId] = useState<number | null>(null);
-  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
   const previewMutation = trpc.voice.preview.useMutation();
 
   useEffect(() => {
@@ -649,38 +645,28 @@ function VoiceSelector({ selectedVoice, onSelect }: { selectedVoice: string; onS
     }
   }, [voices]);
 
-  function stopAudio() {
-    if (audioEl) { audioEl.pause(); audioEl.src = ""; }
-    setAudioEl(null);
-    setPlayingId(null);
-  }
+  /**
+   * RONDE 147 — playback moved into useVoicePreview.
+   *
+   * The old local copy called `.play()` without awaiting it, so an autoplay refusal or a dead
+   * sample URL became an unhandled rejection and the button sat on "Stop" over silence. The hook
+   * awaits it, reports failures, cancels a preview the user has moved on from, and still prefers
+   * a stored sample over spending a generation.
+   */
+  const { playingId, loadingId: loadingPreviewId, toggle } = useVoicePreview({
+    generate: async (voice) => {
+      const match = voices.find((v) => v.id === voice.id);
+      const result = await previewMutation.mutateAsync({
+        fishAudioReferenceId: match!.fishAudioReferenceId,
+      });
+      return result.url;
+    },
+    onError: (message) => toast.error("Preview failed", { description: message }),
+  });
 
-  function playAudioUrl(url: string, voiceId: number) {
-    stopAudio();
-    const a = new Audio(url);
-    a.onended = () => { setPlayingId(null); setAudioEl(null); };
-    a.play();
-    setAudioEl(a);
-    setPlayingId(voiceId);
-  }
-
-  async function handlePreview(voice: typeof voices[0], e: React.MouseEvent) {
+  function handlePreview(voice: typeof voices[0], e: React.MouseEvent) {
     e.stopPropagation();
-    if (playingId === voice.id) { stopAudio(); return; }
-    if (voice.exampleAudioUrl) {
-      playAudioUrl(voice.exampleAudioUrl, voice.id);
-      return;
-    }
-    setLoadingPreviewId(voice.id);
-    try {
-      const result = await previewMutation.mutateAsync({ fishAudioReferenceId: voice.fishAudioReferenceId });
-      setLoadingPreviewId(null);
-      playAudioUrl(result.url, voice.id);
-    } catch (err: unknown) {
-      setLoadingPreviewId(null);
-      const msg = toastErrorMessage(err, "Could not generate voice preview");
-      toast.error("Preview failed", { description: msg });
-    }
+    toggle({ id: voice.id, exampleAudioUrl: voice.exampleAudioUrl });
   }
   return (
     <div>
@@ -813,6 +799,8 @@ export default function Dashboard() {
   const [customVoiceoverUrl, setCustomVoiceoverUrl] = useState<string | null>(null);
   const [enableSubtitles, setEnableSubtitles] = useState(false);
   const [viewingVideoId, setViewingVideoId] = useState<number | null>(null);
+  /** RONDE 148 — which video the editor is open on. Separate from viewing: only one is up at a time. */
+  const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
 
   const utils = trpc.useUtils();
 
@@ -859,11 +847,17 @@ export default function Dashboard() {
   });
   const generateMutation = trpc.video.generate.useMutation({
     onSuccess: (data) => {
+      // RONDE 109: a video asked for while another is running is no longer refused — it is parked
+      // next to the running one and starts by itself the moment that one finishes. The wording
+      // says that, so the queued card is not mistaken for something that failed to start.
+      const waiting = data.userQueuePosition ?? 1;
       toast.success(data.message ?? "Video generation started!", {
         description:
-          data.queuePosition && data.queuePosition > 1
-            ? "We will start processing as soon as your turn comes up."
-            : "Your video will be ready in a few minutes. No action needed.",
+          waiting > 1
+            ? `It is ready and waiting — it starts automatically when the video before it finishes. You can line up ${data.queueLimit ?? 5} at a time.`
+            : data.queuePosition && data.queuePosition > 1
+              ? "We will start processing as soon as your turn comes up."
+              : "Your video will be ready in a few minutes. No action needed.",
       });
       setPrompt("");
       setTimeout(() => refetch(), 2000);
@@ -881,11 +875,22 @@ export default function Dashboard() {
   });
   
   // ─── Subscription gate ────────────────────────────────────────────────────
+  /**
+   * THE GAP: `&& !needsOnboarding` let an unsubscribed account past the paywall.
+   *
+   * A freshly registered user has both — no subscription AND an incomplete niche request — so the
+   * condition was false and no redirect happened. They landed in the dashboard shell instead of at
+   * the paywall, which is precisely the state the invite code is not supposed to grant.
+   *
+   * The subscription is now the first question, unconditionally. The niche request is still
+   * required and still asked for; it simply comes after paying rather than instead of it, and the
+   * server's `subscribedProcedure` refuses the work either way.
+   */
   useEffect(() => {
-    if (!loading && isAuthenticated && user && !hasActiveSubscription && !needsOnboarding) {
+    if (!loading && isAuthenticated && user && !hasActiveSubscription) {
       navigate("/subscribe");
     }
-  }, [loading, isAuthenticated, user, hasActiveSubscription, needsOnboarding, navigate]);
+  }, [loading, isAuthenticated, user, hasActiveSubscription, navigate]);
 
   useEffect(() => {
     if (window.location.hash === "#niche-requests") {
@@ -894,6 +899,19 @@ export default function Dashboard() {
   }, [navigate]);
 
   const handleGenerate = () => {
+    /**
+     * Asked before anything is sent. The server refuses this without an active subscription
+     * (`subscribedProcedure`), and it did so before this check existed — but as an error toast
+     * after the click, which reads as a fault rather than as a step that has not been taken yet.
+     */
+    if (!hasActiveSubscription) {
+      toast.error("Abonnement vereist", {
+        description: "Sluit Fastvid Pro af om video's te genereren.",
+        action: { label: "Abonneren", onClick: () => navigate("/subscribe") },
+      });
+      navigate("/subscribe");
+      return;
+    }
     if (!prompt.trim() || prompt.length < 10) {
       toast.error("Please enter a prompt of at least 10 characters");
       return;
@@ -985,7 +1003,7 @@ export default function Dashboard() {
             <div>
               <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-2">Video length</p>
               <div className="flex flex-wrap gap-2">
-                {VIDEO_LENGTHS.map(opt => (
+                {videoLengthsForRole(user?.role).map(opt => (
                   <button
                     key={opt.value}
                     onClick={() => setSelectedLength(opt.value)}
@@ -1151,7 +1169,21 @@ export default function Dashboard() {
 
       {/* ── Video Detail Modal ── */}
       {viewingVideoId !== null && (
-        <VideoDetailModal videoId={viewingVideoId} onClose={() => setViewingVideoId(null)} />
+        <VideoDetailModal
+          videoId={viewingVideoId}
+          onClose={() => setViewingVideoId(null)}
+          onEdit={(id) => {
+            // RONDE 148 §12 — the detail modal closes as the editor opens, so a click on the
+            // editor's backdrop does not land on a modal still sitting behind it.
+            setViewingVideoId(null);
+            setEditingVideoId(id);
+          }}
+        />
+      )}
+
+      {/* ── RONDE 148 — the editor ── */}
+      {editingVideoId !== null && (
+        <VideoEditor videoId={editingVideoId} onClose={() => setEditingVideoId(null)} />
       )}
 
     </DashboardShell>

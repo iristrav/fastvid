@@ -9,8 +9,28 @@ import { describe, expect, it } from "vitest";
 // real provider -> only THEN AI/text-overlay/color), and it is universal/content-type-agnostic
 // by construction (no isHistorical/primaryPerson branch decides whether it runs).
 
+/**
+ * Read one function's source out of videoPipeline.ts.
+ *
+ * RONDE 100B's second audit put a provenance wrapper in front of generateGuaranteedBeatClip —
+ * it reaches Wikimedia, and thirteen callers got there without a beat scope. The ladder these
+ * tests are about now lives in generateGuaranteedBeatClipInner. Follow the wrapper, and check on
+ * the way through that it really is only a wrapper, so the indirection can never hide a second
+ * implementation from these tests.
+ */
 function extractFunctionSource(fnName: string): string {
   const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+  if (src.includes(`async function ${fnName}Inner(`)) {
+    const wrapper = sliceFunction(src, fnName);
+    if (!wrapper.includes("withBeatProvenance") || !wrapper.includes(`${fnName}Inner(`)) {
+      throw new Error(`${fnName} is not a plain provenance wrapper — inspect it directly`);
+    }
+    return sliceFunction(src, `${fnName}Inner`);
+  }
+  return sliceFunction(src, fnName);
+}
+
+function sliceFunction(src: string, fnName: string): string {
   const candidates = [
     `export async function ${fnName}(`,
     `async function ${fnName}(`,

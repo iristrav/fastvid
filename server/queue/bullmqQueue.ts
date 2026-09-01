@@ -14,7 +14,13 @@
 import { Queue, Worker, type Job } from "bullmq";
 import IORedis from "ioredis";
 import { readQueueConfig } from "@shared/videoQueue";
-import { claimQueuedVideo, getVideoById, getVideoQueuePosition, updateVideoStatus } from "../db";
+import {
+  claimQueuedVideo,
+  getUserQueuePosition,
+  getVideoById,
+  getVideoQueuePosition,
+  updateVideoStatus,
+} from "../db";
 import { activeJobsCount, decrementActiveJobs, incrementActiveJobs } from "./activeJobsCounter";
 
 const QUEUE_NAME = "video-generation";
@@ -32,10 +38,17 @@ function getQueue(): Queue<{ videoId: number }> {
   return queue;
 }
 
+/**
+ * RONDE 109 note: unlike the DB-polling backend, this one has no per-user picker check — BullMQ
+ * pops jobs in FIFO order and does not know about users. It is not a new gap opened by making the
+ * queue five deep: within one process the per-user render semaphore in _generateVideoWithAI still
+ * serialises a user's renders, and this backend's concurrency is maxJobsPerWorker (1 by default).
+ * Anyone raising that, or running several BullMQ replicas, needs a per-user claim gate here first.
+ */
 export async function enqueueVideoJob(
   videoId: number,
   progressStep: string
-): Promise<{ queuePosition: number }> {
+): Promise<{ queuePosition: number; userQueuePosition: number }> {
   await updateVideoStatus(videoId, "queued", {
     progressStep,
     progressPercent: 0,
@@ -49,7 +62,8 @@ export async function enqueueVideoJob(
     { jobId: String(videoId), removeOnComplete: true, removeOnFail: { count: 200 } }
   );
   const queuePosition = (await getVideoQueuePosition(videoId)) ?? 1;
-  return { queuePosition };
+  const userQueuePosition = (await getUserQueuePosition(videoId)) ?? 1;
+  return { queuePosition, userQueuePosition };
 }
 
 async function runVideoJob(videoId: number): Promise<void> {

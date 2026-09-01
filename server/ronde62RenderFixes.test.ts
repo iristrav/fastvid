@@ -27,14 +27,31 @@ afterEach(() => {
 const PIPELINE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 describe("RONDE 62 #1 — the picture gate covers every route, not just the funnel", () => {
+  /**
+   * SUPERSEDED BY RONDE 103, deliberately — the rule got wider, not weaker.
+   *
+   * RONDE 62's finding was that the gate hung off the funnel, so two of three scenes reached the
+   * timeline with nothing having looked at them, and its fix was a second copy of the gate on the
+   * adoption path. RONDE 103 found the same shape one level up: three copies, drifting, one of
+   * which keyed its cache on the picture alone. The copies are gone and beatClipPassesImageGate
+   * is now a thin adapter onto the single decider — so these assertions follow it there, and the
+   * "every route" claim is checked against the module every route actually shares.
+   */
+  const MODULE = (): string => fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+
   it("the adoption path judges the clip before accepting it", () => {
     const src = PIPELINE();
     const idx = src.indexOf("async function beatClipPassesImageGate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2400);
-    expect(block).toContain("JUDGEMENT_FRAME_FRACTIONS");
-    expect(block).toContain("judgeBeatImage({");
-    expect(block).toContain('judgement.verdict === "does_not_fit"');
+    const block = src.slice(idx, idx + 1400);
+    expect(block).toContain("checkBeatRelevance({");
+    expect(block).toContain('route: "adopt",');
+    expect(block).toContain("return decision.allowed;");
+    // And the decider it delegates to is the one that samples frames and refuses on does_not_fit.
+    const mod = MODULE();
+    expect(mod).toContain("JUDGEMENT_FRAME_FRACTIONS");
+    expect(mod).toContain("judgeBeatImage({");
+    expect(mod).toContain('allowed: judgement.verdict !== "does_not_fit"');
   });
 
   it("it is wired at the single acceptance point every non-funnel route passes through", () => {
@@ -42,31 +59,58 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     // Three call sites share that line; the adoption path is the one preceded by the gate.
     const accept = src.indexOf("dedup.usedPaths.add(p);", src.indexOf("async function adoptClip("));
     expect(accept).toBeGreaterThan(-1);
-    // The gate runs BEFORE the clip is marked used, so a refusal costs it its place.
-    const before = src.slice(Math.max(0, accept - 1400), accept);
+    /**
+     * The gate runs BEFORE the clip is marked used, so a refusal costs it its place.
+     *
+     * Bounded by the gate call itself rather than by a character count: RONDE 67 widened this
+     * block once and RONDE 166 widened it again, and each time a fixed -N window stopped reaching
+     * back to the gate — a green test turning red on a change that did not touch the rule.
+     */
+    const gateAt = src.lastIndexOf("beatClipPassesImageGate(", accept);
+    expect(gateAt).toBeGreaterThan(-1);
+    const before = src.slice(gateAt, accept);
     expect(before).toContain("beatClipPassesImageGate(");
     expect(before).toContain('"beat_image_gate"');
     // RONDE 67 put the reprieve between the refusal and the continue, so the window is wider —
     // but a refusal still ends the iteration rather than falling through to acceptance.
-    expect(before).toMatch(/beatClipPassesImageGate\([\s\S]{0,700}?continue;/);
+    expect(before).toMatch(/beatClipPassesImageGate\([\s\S]{0,900}?continue;/);
   });
 
   it("it fails open, like every other copy of this gate", () => {
-    const src = PIPELINE();
-    const idx = src.indexOf("async function beatClipPassesImageGate(");
-    const block = src.slice(idx, idx + 2400);
-    expect(block).toContain("if (!beatImageRelevanceGateEnabled() || !beatText?.trim()) return true;");
-    // Only a definite refusal returns false; everything else adopts.
-    expect(block.match(/return false;/g) ?? []).toHaveLength(1);
+    const mod = MODULE();
+    // Every decline — gate off, no narration, no frame, budget spent, ceiling reached, a model
+    // outage — returns allowed:true. Only a definite refusal does not.
+    expect(mod).toContain('if (!beatImageRelevanceGateEnabled()) return pass("unknown", "gate disabled");');
+    expect(mod).toContain('if (!ctx.beatText?.trim()) return pass("unknown", "no narration to judge against");');
+    expect(mod).toContain("allowed: true");
+    /**
+     * `allowed` can be false in exactly one way — a definite refusal — and both places that build
+     * a decision spell it the same way. RONDE 104 added the second: recordExternalRelevanceVerdict
+     * writes down the YouTube pre-pool verdict, which is earned outside checkBeatRelevance and
+     * must be read by the same rule.
+     */
+    expect(mod.match(/allowed: judgement\.verdict !== "does_not_fit"/g) ?? []).toHaveLength(2);
+    expect(mod).not.toContain("allowed: false,");
   });
 
   it("the frames it judges are cleaned up", () => {
+    const mod = MODULE();
+    expect(mod).toMatch(/for \(const p of framePaths\)[\s\S]{0,120}fs\.unlinkSync\(p\)/);
+    expect(mod).toContain("discardFrames(framePaths);");
+  });
+
+  it("RONDE 103 — the adapter holds no copy of the gate any more", () => {
     const src = PIPELINE();
     const idx = src.indexOf("async function beatClipPassesImageGate(");
-    const block = src.slice(idx, idx + 2400);
-    expect(block).toMatch(/for \(const fp of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(fp\)/);
+    const block = src.slice(idx, idx + 1400);
+    // The whole point: nothing here to drift. No frame loop, no cleanup, no cache key, no verdict
+    // handling of its own — a fourth route cannot inherit a fourth interpretation.
+    expect(block).not.toContain("JUDGEMENT_FRAME_FRACTIONS");
+    expect(block).not.toContain("judgeBeatImage({");
+    expect(block).not.toContain("fs.unlinkSync");
   });
 });
+
 
 describe("RONDE 62 #2 — the YouTube duration comes from the call that works", () => {
   it("reads lengthSeconds however the provider spells it", () => {
@@ -235,7 +279,11 @@ describe("RONDE 62 #7 — the render can measure its own visual mix", () => {
     const src = PIPELINE();
     const idx = src.indexOf("funnelClip = clipPath;");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 2600);
+    // Bounded by the end of the adoption block, not a character count — RONDE 165 and 166 both
+    // added lines inside it, and a fixed +N window stops reaching the counters each time.
+    const end = src.indexOf("[VisualDiscovery] audit line", idx);
+    expect(end).toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     expect(block).toContain("dedup.stillClipCount++");
     expect(block).toContain("dedup.movingClipCount++");
   });

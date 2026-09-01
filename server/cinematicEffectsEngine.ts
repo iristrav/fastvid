@@ -2,6 +2,7 @@
  * Cinematic Effects Engine — content-aware zoom/pan hints, overlays, particles, SFX, animated text.
  * Years appear bottom-left in a documentary date-card style.
  */
+import { burnedInTextAllowed } from "./onScreenTextPolicy";
 import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext, isCaptionTextCorrupt } from "./ffmpegSanitize";
@@ -1463,6 +1464,14 @@ export async function buildIntervalScreenLabelOverlays(
   ffmpegBin: string,
   execWithTimeout: (cmd: string, ms: number, label: string) => Promise<unknown>
 ): Promise<TimedOverlay[]> {
+  /**
+   * RONDE 113 — every label below draws characters.
+   *
+   * Both of these were reachable only through screenLabelsEnabled() at the call site, and that
+   * gate is now closed too. The check is repeated HERE because a call-site gate is one `if` a
+   * future caller can forget, and this builder's whole output is text.
+   */
+  if (!burnedInTextAllowed()) return [];
   const overlays: TimedOverlay[] = [];
   for (let i = 0; i < labels.length; i++) {
     const entry = labels[i]!;
@@ -1503,6 +1512,14 @@ export async function buildBeatAlignedYearOverlays(
   sceneDuration: number,
   xfadeSec = 0
 ): Promise<TimedOverlay[]> {
+  /**
+   * RONDE 113 — every label below draws characters.
+   *
+   * Both of these were reachable only through screenLabelsEnabled() at the call site, and that
+   * gate is now closed too. The check is repeated HERE because a call-site gate is one `if` a
+   * future caller can forget, and this builder's whole output is text.
+   */
+  if (!burnedInTextAllowed()) return [];
   const overlays: TimedOverlay[] = [];
   const n = Math.min(beats.length, montageDurations.length);
   if (n === 0) return overlays;
@@ -1683,6 +1700,21 @@ export async function buildCinematicOverlays(
 ): Promise<TimedOverlay[]> {
   const overlays: TimedOverlay[] = [];
   const exec = execWithTimeout;
+
+  /**
+   * RONDE 113 — every overlay below this line draws characters.
+   *
+   * Year badges, the animated stat counter and the section headline are all text, and the year
+   * badge was drawn even in the restricted `yearsOnly` mode that exists precisely to suppress
+   * "extra" on-screen text. So `yearsOnly` was never "no text", it was "less text" — which is why
+   * text kept reaching delivered videos while every switch looked correctly set.
+   *
+   * The camera flash further down is not text and is not affected; it lives in the same builder,
+   * so this returns early rather than short-circuiting the whole effects pass.
+   */
+  if (!burnedInTextAllowed()) {
+    return overlays;
+  }
 
   if (opts.yearsOnly) {
     for (let i = 0; i < plan.years.length; i++) {

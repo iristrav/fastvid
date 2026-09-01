@@ -5,6 +5,8 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { resolveAppOrigin } from "./_core/appUrl";
 import { systemRouter } from "./_core/systemRouter";
+import { timelineRouter } from "./timelineRouter";
+import { requireVideoAccess } from "./videoAccess";
 import {
   adminProcedure,
   protectedProcedure,
@@ -22,9 +24,9 @@ import {
   normalizeStoredError,
   pipelineError,
 } from "@shared/appErrors";
-import type { TrpcContext } from "./_core/context";
 import type { Video } from "../drizzle/schema";
 import { invokeLLM } from "./_core/llm";
+import { describeStripeKeyProblem, stripeKeyProblem, stripeSecretKeyFromEnv } from "./_core/env";
 import { assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { notifyOwner } from "./_core/notification";
 import { sendNicheApprovedEmail } from "./_core/emailService";
@@ -40,14 +42,16 @@ import {
   deleteVideo, updateVideoTitle, deleteAllFailedVideosForUser, expireStuckVideos, recoverVideoCompletionState, recoverAllStuckVideos, failPipelineIfStalled, ORPHANED_PIPELINE_STATUSES,
   createUser, updateUserLastSignedIn,
   getInviteCodeByCode, createInviteCode, getAllInviteCodes, markInviteCodeUsed, deleteInviteCode, deactivateInviteCode,
+  createDiscountCodeRow, listDiscountCodes, getDiscountCodeById, getDiscountCodeByCode, updateDiscountCodeRow, deleteDiscountCodeRow,
   getAllMediaArchives, getMediaArchiveById, createMediaArchiveUnique, updateMediaArchive, deleteMediaArchive,
   getMediaArchiveAssets, getMediaArchiveAssetById, createMediaArchiveAsset, updateMediaArchiveAsset, deleteMediaArchiveAsset, deleteMediaArchiveAssets, deleteAllMediaArchiveAssets,
   countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
   isGenerationRunSuperseded, bumpGenerationAttempt,
-} from "./db";
+  getVideoScenes,
+  updateVideoScenes,} from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
-import { videoLengthSchema, normalizeVideoLength, isShortVideoLength } from "@shared/videoLengths";
+import { videoLengthSchema, normalizeVideoLength, isShortVideoLength, videoLengthAllowedForRole } from "@shared/videoLengths";
 import { PIPELINE_DISPLAY_STAGES, formatGenerationDuration, progressStepWithElapsed, resolvePipelineDisplayStage, type PipelineDisplayStageKey } from "@shared/pipelineProgress";
 import { ONE_YEAR_MS } from "@shared/const";
 import { clearVideoGenerationCancel } from "./videoGenerationCancel";
@@ -86,7 +90,14 @@ import { recognizeCelebritiesForAsset, recognizeCelebritiesBulk } from "./archiv
 import { isRekognitionEnabled } from "./rekognitionCelebrity";
 import { bulkRetagArchiveGeo } from "./archiveBulkGeoRetag";
 import { auditArchiveAssetScenes, auditArchiveAssetScene } from "./archiveSceneAudit";
-import { trimArchiveAssetToFirstScene } from "./archiveTrimToScene";
+import { trimArchiveAsset } from "./archiveTrimToScene";
+// RONDE 139 — the editor's read/write side.
+import { archiveMediaStreamUrl } from "./archiveMediaStream";
+import {
+  formatClipEdit,
+  replaceClipInScenes,
+  type ClipReplacement,
+} from "./videoEditorEdits";
 import { archiveAssetMediaStatus } from "./archiveAssetLoad";
 import { dedupeArchiveVisualDuplicates } from "./archiveClipDedup";
 import { assessArchiveCoverageForPrompt } from "./archiveCoverage";
@@ -106,8 +117,10 @@ import { runModularVideoPipeline } from "./pipeline/orchestrator";
 import {
   assertUserCanEnqueueVideo,
   enqueueVideoJob,
+  getUserQueuePosition,
   getVideoQueuePosition,
   throwEnqueueError,
+  userQueueDepthLimit,
 } from "./queue";
 import { forgotPassword, validateResetToken as validateResetTokenProcedure, resetPassword } from "./authPasswordReset";
 import {
@@ -194,12 +207,19 @@ async function generateSectionNarration(
 let _stripe: Stripe | null = null;
 function getStripe(): Stripe {
   if (!_stripe) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) {
+    const key = stripeSecretKeyFromEnv();
+    /**
+     * A non-empty check is not a configured check. A Stripe price ID passed the old test, reached
+     * Stripe as an API key, and came back as "Invalid API Key provided: price_…" — an error that
+     * reads like a Stripe problem and is in fact one wrong environment variable. Refuse it here
+     * instead, and say which variable and what belongs in it.
+     */
+    const problem = stripeKeyProblem(key);
+    if (problem) {
       throw appTrpcError(
         "INTERNAL_SERVER_ERROR",
         APP_ERROR.STRIPE_NOT_CONFIGURED,
-        "Stripe is not configured. Please add STRIPE_SECRET_KEY to your environment variables"
+        describeStripeKeyProblem(problem, key)
       );
     }
     _stripe = new Stripe(key);
@@ -211,16 +231,13 @@ function readEnableSubtitles(video: { enableSubtitles?: number | null }): boolea
   return video.enableSubtitles !== 0;
 }
 
-function requireVideoAccess(
-  video: Video | null | undefined,
-  ctx: TrpcContext & { user: NonNullable<TrpcContext["user"]> }
-): Video {
-  if (!video) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
-  if (video.userId !== ctx.user.id && ctx.user.role !== "admin") {
-    throw appTrpcError("FORBIDDEN", APP_ERROR.FORBIDDEN_RESOURCE, "You do not have access to this resource");
-  }
-  return video;
-}
+/**
+ * RONDE 148 — moved to `videoAccess.ts` so the editor's router can use the SAME check.
+ *
+ * It could not import this one: routers.ts mounts that router, so the import would be a cycle. The
+ * alternative was a second copy of the ownership rule, and two ownership checks drift until one of
+ * them is looser than the other. Behaviour is unchanged, including both error codes.
+ */
 
 
 async function generateVideoWithAI(videoId: number, prompt: string, videoLength: string, voiceId?: string, customVoiceoverUrl?: string) {
@@ -891,6 +908,11 @@ async function _runVideoGeneration(
 
 export const appRouter = router({
   system: systemRouter,
+  /**
+   * RONDE 148 — the editor. Its own module because these procedures share one contract worth
+   * reading in one piece: get never writes, save never overwrites, render never renders.
+   */
+  timeline: timelineRouter,
   auth: router({
     me: publicProcedure.query((opts) => (opts.ctx.user ? sanitizeUser(opts.ctx.user) : null)),
 
@@ -1000,6 +1022,96 @@ export const appRouter = router({
       const raw = requireVideoAccess(await getVideoById(input.id), ctx);
       return recoverVideoCompletionState(raw);
     }),
+    /**
+     * RONDE 139 — the editor's read side.
+     *
+     * The manifest has been written at the end of every render for a long time and nothing could
+     * ever read it back. `requireVideoAccess` is the same ownership check `get` uses, so an editor
+     * cannot reach a video its caller does not own.
+     */
+    getScenes: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.id), ctx);
+      const scenes = await getVideoScenes(input.id);
+      return { scenes: scenes ?? [], hasManifest: Boolean(scenes?.length) };
+    }),
+
+    /**
+     * RONDE 139 — replace one clip in the manifest.
+     *
+     * The decision itself lives in videoEditorEdits so it can be tested without a database and
+     * without transport; this procedure adds ownership, persistence and the log line. A refused
+     * edit returns its reason rather than throwing, because every one of them is something the
+     * person clicking can see and correct.
+     */
+    replaceClip: protectedProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          sceneIndex: z.number().int().min(0),
+          clipIndex: z.number().int().min(0),
+          replacement: z.discriminatedUnion("kind", [
+            z.object({
+              kind: z.literal("archive"),
+              archiveAssetId: z.number().int().positive(),
+              mediaType: z.enum(["video", "image"]),
+            }),
+            z.object({
+              kind: z.literal("url"),
+              url: z.string().min(1).max(2048),
+              mediaType: z.enum(["video", "image"]),
+              title: z.string().max(200).optional(),
+            }),
+          ]),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        requireVideoAccess(await getVideoById(input.id), ctx);
+        const scenes = await getVideoScenes(input.id);
+
+        let replacement: ClipReplacement;
+        if (input.replacement.kind === "archive") {
+          /**
+           * The URL, the provider and the media type come from the ROW, never from the request.
+           *
+           * A client that could name its own provider would be able to launder a source into the
+           * manifest — the one thing videoEditorEdits exists to prevent. Looking the asset up here
+           * also means a replacement can only point at material this system actually holds.
+           */
+          const asset = await getMediaArchiveAssetById(input.replacement.archiveAssetId);
+          if (!asset) {
+            return { ok: false as const, reason: "not_found", detail: "archive asset not found" };
+          }
+          const archive = await getMediaArchiveById(asset.archiveId);
+          replacement = {
+            kind: "archive",
+            archiveAssetId: asset.id,
+            url: archiveMediaStreamUrl(asset.id, asset),
+            mediaType: asset.mediaType === "image" ? "image" : "video",
+            title: asset.title ?? undefined,
+            provider: archive?.slug?.trim() || "archive",
+            storageUrl: asset.storageUrl,
+          };
+        } else {
+          replacement = {
+            kind: "url",
+            url: input.replacement.url,
+            mediaType: input.replacement.mediaType,
+            title: input.replacement.title,
+          };
+        }
+
+        const result = replaceClipInScenes(scenes, input.sceneIndex, input.clipIndex, replacement);
+        if (!result.ok) {
+          return { ok: false as const, reason: result.reason, detail: result.detail };
+        }
+        await updateVideoScenes(input.id, result.scenes);
+        console.log(
+          `[EditorEdit] video=${input.id} ` +
+            formatClipEdit(input.sceneIndex, input.clipIndex, result.previous, result.replaced)
+        );
+        return { ok: true as const, scenes: result.scenes };
+      }),
+
     /** Return a direct presigned CloudFront URL for video playback (bypasses 307 redirect) */
     getVideoUrl: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
       const video = requireVideoAccess(await getVideoById(input.id), ctx);
@@ -1043,6 +1155,22 @@ export const appRouter = router({
         }
       }
 
+      /**
+       * RONDE 147 — the one-minute option is enforced here, not in the UI.
+       *
+       * `videoLengthSchema` accepts "1" because the value is legitimate for the owner, so a
+       * hand-rolled request carrying it arrives fully valid and passes every check above. This is
+       * the first point at which the role is known, which makes it the only place the rule can
+       * actually be applied.
+       */
+      if (!videoLengthAllowedForRole(input.videoLength, ctx.user.role)) {
+        throw appTrpcError(
+          "FORBIDDEN",
+          APP_ERROR.NOT_ADMIN,
+          "The 1 minute test length is not available on your account"
+        );
+      }
+
       const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
       if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
 
@@ -1067,13 +1195,23 @@ export const appRouter = router({
       });
       if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
 
-      const { queuePosition } = await enqueueVideoJob(videoId, coverageNote);
+      const { queuePosition, userQueuePosition } = await enqueueVideoJob(videoId, coverageNote);
+      /**
+       * RONDE 109: the number the person is told is their OWN position, not the platform's.
+       * userQueuePosition 1 means nothing of theirs is ahead of it — either it starts now, or it
+       * is only waiting on other people's renders, which is not something they can act on.
+       */
       return {
         videoId,
         queuePosition,
-        message: queuePosition > 1
-          ? `Video queued — position ${queuePosition}`
-          : "Video generation started",
+        userQueuePosition,
+        queueLimit: userQueueDepthLimit(),
+        message:
+          userQueuePosition > 1
+            ? `Video queued — ${userQueuePosition} of yours waiting`
+            : queuePosition > 1
+              ? `Video queued — position ${queuePosition}`
+              : "Video generation started",
       };
     }),
     approveScript: protectedProcedure.input(z.object({
@@ -1130,6 +1268,21 @@ export const appRouter = router({
         throw appTrpcError("BAD_REQUEST", APP_ERROR.VIDEO_RETRY_INVALID, "Only failed or stuck videos can be retried");
       }
       assertVideoRetryBudgetNotExhausted(video);
+      /**
+       * RONDE 147 — re-checked on retry, because a role can change after a video is created.
+       *
+       * Retry does not let the caller choose a length; it reuses the stored one. That is safe
+       * while the account still holds the role it was created under, and this is the case where
+       * it does not: an admin creates a one-minute video, the account is later demoted, and retry
+       * would otherwise re-queue a length the account can no longer request.
+       */
+      if (!videoLengthAllowedForRole(video.videoLength, ctx.user.role)) {
+        throw appTrpcError(
+          "FORBIDDEN",
+          APP_ERROR.NOT_ADMIN,
+          "The 1 minute test length is not available on your account"
+        );
+      }
       const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id, video.id);
       if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
 
@@ -1154,6 +1307,10 @@ export const appRouter = router({
       let video = await recoverVideoCompletionState(raw);
       video = await failPipelineIfStalled(video);
       const queuePosition = video.status === "queued" ? await getVideoQueuePosition(video.id) : null;
+      // RONDE 109: with a five-deep queue the card needs to say which of the person's OWN videos
+      // this is, otherwise a platform-wide "position 7" reads as something being wrong.
+      const userQueuePosition =
+        video.status === "queued" ? await getUserQueuePosition(video.id) : null;
       return {
         status: video.status,
         title: video.title,
@@ -1167,6 +1324,7 @@ export const appRouter = router({
         generationStartedAt: video.generationStartedAt,
         videoType: video.videoType,
         queuePosition,
+        userQueuePosition,
       };
     }),
   }),
@@ -1178,29 +1336,34 @@ export const appRouter = router({
     }),
     listUsers: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => sanitizeUsers(await getAllUsers(input.limit, input.offset))),
     listVideos: adminProcedure.input(z.object({ limit: z.number().default(100), offset: z.number().default(0) })).query(async ({ input }) => getAllVideos(input.limit, input.offset)),
-    updateUserRole: adminProcedure.input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) })).mutation(async ({ input }) => { await updateUserRole(input.userId, input.role); return { success: true }; }),
+    /**
+     * RONDE 147 — role changes, with the one guard the admin surface actually needs.
+     *
+     * `adminProcedure` already answers the brief's two access questions: an ordinary user cannot
+     * reach this at all, so they can neither change someone else's role nor promote themselves.
+     * That was true before this round and is unchanged.
+     *
+     * What was missing is the case an admin can walk into on their own: demoting THEMSELVES. There
+     * is no other route back — promotion requires an admin — so the last person out would lock the
+     * door behind them and the only fix would be a hand-written SQL statement against production.
+     * Refusing the self-demotion is the whole guard; an admin may still demote any other admin.
+     */
+    updateUserRole: adminProcedure
+      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.userId === ctx.user.id && input.role !== "admin") {
+          throw appTrpcError(
+            "BAD_REQUEST",
+            APP_ERROR.SERVICE_ERROR,
+            "You cannot remove your own admin role — ask another admin to do it"
+          );
+        }
+        await updateUserRole(input.userId, input.role);
+        return { success: true };
+      }),
     updateUserSubscription: adminProcedure.input(z.object({ userId: z.number(), subscriptionStatus: z.enum(["active", "inactive", "cancelled"]) })).mutation(async ({ input }) => {
       await updateUserSubscription(input.userId, { subscriptionStatus: input.subscriptionStatus, subscriptionStartDate: input.subscriptionStatus === "active" ? new Date() : undefined });
       return { success: true };
-    }),
-    generateVideo: adminProcedure.input(z.object({
-      prompt: z.string().min(10).max(500),
-      videoLength: videoLengthSchema,
-      videoType: z.enum(["documentary", "listicle", "tutorial", "explainer"]).default("documentary"),
-    })).mutation(async ({ ctx, input }) => {
-      const enqueueCheck = await assertUserCanEnqueueVideo(ctx.user.id);
-      if (!enqueueCheck.ok) throwEnqueueError(enqueueCheck);
-
-      const videoId = await createVideo({
-        userId: ctx.user.id,
-        prompt: input.prompt,
-        videoLength: input.videoLength,
-        videoType: input.videoType,
-        status: "queued",
-      });
-      if (!videoId) throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.FAILED_CREATE_VIDEO, "Failed to create video");
-      await enqueueVideoJob(videoId, "🔍 Waiting in queue...");
-      return { videoId };
     }),
     searchVideos: adminProcedure.input(z.object({
       query: z.string().optional(),
@@ -1208,7 +1371,50 @@ export const appRouter = router({
       userId: z.number().optional(),
       limit: z.number().default(50),
       offset: z.number().default(0),
-    })).query(async ({ input }) => searchVideos(input)),
+    })).query(async ({ input }) => {
+      /**
+       * RONDE 106 — the list stays light; the report lives one click away.
+       *
+       * The stored pipeline report is up to nine sections of a few hundred lines, and this query
+       * returns a hundred rows. Sending every report to render a table would make the admin slow
+       * for the one number a person is scanning for. The small `pipelineGlance` rides along —
+       * that is what it exists for — and `getVideoPipeline` fetches the full account for the one
+       * video that turns out to be worth opening.
+       */
+      const rows = await searchVideos(input);
+      return rows.map((row) => {
+        const meta = row.metadata as Record<string, unknown> | null;
+        if (!meta || typeof meta !== "object" || !("pipelineReport" in meta)) return row;
+        const { pipelineReport: _omitted, ...rest } = meta;
+        return { ...row, metadata: rest };
+      });
+    }),
+    /**
+     * RONDE 106 — everything the render recorded about one video.
+     *
+     * Stored by the pipeline at the end of the render (see renderPipelineReport.ts) rather than
+     * reconstructed here: this reads back what actually happened, and returns null for a video
+     * that was rendered before this existed or never finished.
+     */
+    getVideoPipeline: adminProcedure
+      .input(z.object({ videoId: z.number() }))
+      .query(async ({ input }) => {
+        const video = await getVideoById(input.videoId);
+        if (!video) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
+        const meta = (video.metadata ?? null) as Record<string, unknown> | null;
+        return {
+          videoId: input.videoId,
+          status: video.status,
+          title: video.title ?? null,
+          prompt: video.prompt ?? null,
+          createdAt: video.createdAt ?? null,
+          errorMessage: video.errorMessage ?? null,
+          pipelineReport: (meta?.pipelineReport as unknown) ?? null,
+          pipelineGlance: (meta?.pipelineGlance as unknown) ?? null,
+          qualityReport: (meta?.qualityReport as unknown) ?? null,
+          pipelineStepTiming: (meta?.pipelineStepTiming as unknown) ?? null,
+        };
+      }),
     getUser: adminProcedure.input(z.object({ userId: z.number() })).query(async ({ input }) => {
       const user = await getUserById(input.userId);
       if (!user) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
@@ -1246,6 +1452,193 @@ export const appRouter = router({
       }),
   }),
 
+  /**
+   * RONDE 147 — discount codes, created in Stripe so they work at checkout.
+   *
+   * `billing.createCheckout` already passes `allow_promotion_codes: true`, which puts Stripe's own
+   * promotion-code box on the payment page. A code that exists only in FastVid's database would
+   * therefore look valid in this panel and be rejected by the very next screen the customer sees —
+   * the failure mode the brief calls out by name.
+   *
+   * So a code is created as a Stripe Coupon (the discount) plus a Stripe Promotion Code (the string
+   * the customer types), and the local row mirrors it for the overview. Stripe stays authoritative
+   * for redeemability and redemption counts; `list` refreshes those from Stripe on read.
+   *
+   * Every procedure here is an adminProcedure. That is the whole access rule for this router.
+   */
+  discount: router({
+    list: adminProcedure.query(async () => {
+      const rows = await listDiscountCodes();
+      // Redemption counts are a nice-to-have here, so a misconfigured key degrades to the stored
+      // value rather than failing the page — but it must not be sent to Stripe either.
+      if (!rows.length || stripeKeyProblem(stripeSecretKeyFromEnv())) return rows;
+      /**
+       * Redemption counts come from Stripe, not from a counter FastVid increments — FastVid never
+       * sees a redemption, Stripe does. A failure here degrades to the stored value rather than
+       * failing the page: a stale count is worth more than an admin screen that will not load.
+       */
+      const refreshed = await Promise.all(
+        rows.map(async (row) => {
+          try {
+            const promo = await getStripe().promotionCodes.retrieve(row.stripePromotionCodeId);
+            const timesRedeemed = promo.times_redeemed ?? row.timesRedeemed;
+            const isActive = promo.active ? 1 : 0;
+            if (timesRedeemed !== row.timesRedeemed || isActive !== row.isActive) {
+              await updateDiscountCodeRow(row.id, { timesRedeemed, isActive });
+            }
+            return { ...row, timesRedeemed, isActive };
+          } catch {
+            return row;
+          }
+        })
+      );
+      return refreshed;
+    }),
+
+    create: adminProcedure
+      .input(
+        z
+          .object({
+            code: z
+              .string()
+              .trim()
+              .min(3)
+              .max(64)
+              .regex(/^[A-Za-z0-9_-]+$/, "Use letters, numbers, hyphens and underscores only"),
+            percentOff: z.number().int().min(1).max(100).optional(),
+            amountOffCents: z.number().int().min(1).optional(),
+            startsAt: z.date().optional(),
+            expiresAt: z.date().optional(),
+            maxRedemptions: z.number().int().min(1).optional(),
+            note: z.string().trim().max(256).optional(),
+          })
+          // Exactly one kind of discount. Stripe rejects a coupon carrying both, and a coupon
+          // carrying neither is not a discount at all — better refused here with a readable
+          // message than as an opaque Stripe error.
+          .refine(
+            (v) => (v.percentOff == null) !== (v.amountOffCents == null),
+            "Give either a percentage or a fixed amount, not both"
+          )
+          .refine(
+            (v) => !v.startsAt || !v.expiresAt || v.startsAt < v.expiresAt,
+            "The start date must be before the expiry date"
+          )
+      )
+      .mutation(async ({ ctx, input }) => {
+        /**
+         * The gate that let a price ID through. It asked only whether the variable was set, so a
+         * `price_…` value passed, reached Stripe as an API key and returned "Invalid API Key
+         * provided: price_…" — a message about Stripe rather than about the variable at fault.
+         */
+        const keyProblem = stripeKeyProblem(stripeSecretKeyFromEnv());
+        if (keyProblem) {
+          throw appTrpcError(
+            "INTERNAL_SERVER_ERROR",
+            APP_ERROR.STRIPE_NOT_CONFIGURED,
+            `A discount code cannot be created. ${describeStripeKeyProblem(keyProblem, stripeSecretKeyFromEnv())}`
+          );
+        }
+        const code = input.code.toUpperCase();
+        if (await getDiscountCodeByCode(code)) {
+          throw appTrpcError("BAD_REQUEST", APP_ERROR.SERVICE_ERROR, `Code ${code} already exists`);
+        }
+
+        const coupon = await getStripe().coupons.create({
+          name: code,
+          duration: "forever",
+          ...(input.percentOff != null
+            ? { percent_off: input.percentOff }
+            : { amount_off: input.amountOffCents!, currency: FASTVID_PRO_PLAN.currency }),
+        });
+
+        /**
+         * The promotion code carries everything customer-facing: the string, the expiry and the
+         * usage cap. Those limits live on Stripe's object rather than being enforced by FastVid,
+         * because FastVid is not in the redemption path and could not enforce them if it wanted to.
+         */
+        const promo = await getStripe().promotionCodes.create({
+          // Stripe v22 wraps the coupon in a typed `promotion` rather than taking it directly.
+          promotion: { type: "coupon", coupon: coupon.id },
+          code,
+          ...(input.expiresAt ? { expires_at: Math.floor(input.expiresAt.getTime() / 1000) } : {}),
+          ...(input.maxRedemptions ? { max_redemptions: input.maxRedemptions } : {}),
+        });
+
+        const id = await createDiscountCodeRow({
+          code,
+          stripeCouponId: coupon.id,
+          stripePromotionCodeId: promo.id,
+          percentOff: input.percentOff ?? null,
+          amountOffCents: input.amountOffCents ?? null,
+          currency: input.amountOffCents != null ? FASTVID_PRO_PLAN.currency : null,
+          isActive: 1,
+          startsAt: input.startsAt ?? null,
+          expiresAt: input.expiresAt ?? null,
+          maxRedemptions: input.maxRedemptions ?? null,
+          timesRedeemed: 0,
+          note: input.note ?? null,
+          createdByUserId: ctx.user.id,
+        });
+        return { id, code };
+      }),
+
+    /**
+     * Switching a code off is done in Stripe first.
+     *
+     * If the Stripe call fails the local row is left alone, so the panel goes on showing the code
+     * as active — which is the truth, because it still is. Writing the local row first would have
+     * produced the opposite and worse error: a code shown as disabled that customers can still use.
+     */
+    setActive: adminProcedure
+      .input(z.object({ id: z.number(), isActive: z.boolean() }))
+      .mutation(async ({ input }) => {
+        const row = await getDiscountCodeById(input.id);
+        if (!row) throw appTrpcError("NOT_FOUND", APP_ERROR.SERVICE_ERROR, "Discount code not found");
+        await getStripe().promotionCodes.update(row.stripePromotionCodeId, {
+          active: input.isActive,
+        });
+        await updateDiscountCodeRow(input.id, { isActive: input.isActive ? 1 : 0 });
+        return { success: true };
+      }),
+
+    update: adminProcedure
+      .input(z.object({ id: z.number(), note: z.string().trim().max(256).nullable() }))
+      .mutation(async ({ input }) => {
+        const row = await getDiscountCodeById(input.id);
+        if (!row) throw appTrpcError("NOT_FOUND", APP_ERROR.SERVICE_ERROR, "Discount code not found");
+        await updateDiscountCodeRow(input.id, { note: input.note });
+        return { success: true };
+      }),
+
+    /**
+     * Delete only what is safe to delete.
+     *
+     * A redeemed code is part of a customer's billing history: Stripe keeps the promotion code so
+     * the discount on their subscription stays explainable, and removing FastVid's row would drop
+     * the record of who issued it and why. So a redeemed code can only be switched off, and the
+     * error says which action to take instead.
+     */
+    remove: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const row = await getDiscountCodeById(input.id);
+        if (!row) throw appTrpcError("NOT_FOUND", APP_ERROR.SERVICE_ERROR, "Discount code not found");
+        if (row.timesRedeemed > 0) {
+          throw appTrpcError(
+            "BAD_REQUEST",
+            APP_ERROR.SERVICE_ERROR,
+            `${row.code} has been redeemed ${row.timesRedeemed} time(s) and is part of billing history — deactivate it instead`
+          );
+        }
+        // Stripe promotion codes cannot be deleted, only deactivated; the coupon behind an
+        // unredeemed code can go, which is what actually stops it working.
+        await getStripe().promotionCodes.update(row.stripePromotionCodeId, { active: false }).catch(() => {});
+        await getStripe().coupons.del(row.stripeCouponId).catch(() => {});
+        await deleteDiscountCodeRow(input.id);
+        return { success: true };
+      }),
+  }),
+
   subscription: router({
     activate: adminProcedure.input(z.object({ userId: z.number() })).mutation(async ({ input }) => {
       await updateUserSubscription(input.userId, { subscriptionStatus: "active", subscriptionStartDate: new Date() });
@@ -1259,8 +1652,13 @@ export const appRouter = router({
 
   billing: router({
     createCheckout: protectedProcedure.input(z.object({ origin: z.string().optional() })).mutation(async ({ ctx, input }) => {
-      if (!process.env.STRIPE_SECRET_KEY) {
-        throw appTrpcError("INTERNAL_SERVER_ERROR", APP_ERROR.STRIPE_NOT_CONFIGURED, "Stripe not configured");
+      const checkoutKeyProblem = stripeKeyProblem(stripeSecretKeyFromEnv());
+      if (checkoutKeyProblem) {
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.STRIPE_NOT_CONFIGURED,
+          describeStripeKeyProblem(checkoutKeyProblem, stripeSecretKeyFromEnv())
+        );
       }
       const origin = resolveAppOrigin(ctx.req, input.origin);
       // Create or retrieve Stripe customer
@@ -1274,17 +1672,43 @@ export const appRouter = router({
         customerId = customer.id;
         await updateUserSubscription(ctx.user.id, { stripeCustomerId: customerId });
       }
-      // Create a recurring price on the fly (or use a pre-created one)
-      const price = await getStripe().prices.create({
-        currency: FASTVID_PRO_PLAN.currency,
-        unit_amount: FASTVID_PRO_PLAN.priceUsd,
-        recurring: { interval: FASTVID_PRO_PLAN.interval },
-        product_data: { name: FASTVID_PRO_PLAN.name },
-      });
+      /**
+       * The price to bill, from Stripe when one is configured.
+       *
+       * STRIPE_PRO_PRICE_ID names a Price created once in the Stripe dashboard. Without it the
+       * old behaviour stands: a fresh Price (and Product) is created on every single checkout,
+       * which works but leaves one throwaway pair in the dashboard per customer, and puts the
+       * amount in code rather than in Stripe.
+       *
+       * The fallback is kept deliberately. A missing or mistyped variable must not stop people
+       * from subscribing — it costs a tidy dashboard, not a sale.
+       */
+      const configuredPriceId = process.env.STRIPE_PRO_PRICE_ID?.trim();
+      if (configuredPriceId && !configuredPriceId.startsWith("price_")) {
+        // Same lesson as STRIPE_SECRET_KEY: say which variable is wrong rather than forwarding
+        // the value and relaying Stripe's confusion about it.
+        throw appTrpcError(
+          "INTERNAL_SERVER_ERROR",
+          APP_ERROR.STRIPE_NOT_CONFIGURED,
+          "STRIPE_PRO_PRICE_ID must be a Stripe price ID (price_…). Copy it from " +
+            "Stripe → Products → your plan → the Pricing section."
+        );
+      }
+      const priceId =
+        configuredPriceId ||
+        (
+          await getStripe().prices.create({
+            currency: FASTVID_PRO_PLAN.currency,
+            unit_amount: FASTVID_PRO_PLAN.priceUsd,
+            recurring: { interval: FASTVID_PRO_PLAN.interval },
+            product_data: { name: FASTVID_PRO_PLAN.name },
+          })
+        ).id;
+
       const session = await getStripe().checkout.sessions.create({
         customer: customerId,
         mode: "subscription",
-        line_items: [{ price: price.id, quantity: 1 }],
+        line_items: [{ price: priceId, quantity: 1 }],
         success_url: `${origin}/dashboard?payment=success`,
         cancel_url: `${origin}/subscribe?payment=cancelled`,
         client_reference_id: ctx.user.id.toString(),
@@ -1874,6 +2298,28 @@ export const appRouter = router({
         return repairArchiveAssetDurations({ archiveId: input.archiveId, ids: input.ids });
       }),
 
+    /**
+     * RONDE 118 — check existing assets and deactivate the ones without a readable preview.
+     *
+     * Same shape as repairDurations above: bounded, resumable, and it never deletes. isActive=0
+     * is what keeps an asset out of candidate selection; previewIssue records why.
+     */
+    verifyPreviews: adminProcedure
+      .input(
+        z.object({
+          archiveId: z.number().int(),
+          ids: z.array(z.number().int()).optional(),
+          limit: z.number().int().min(1).max(1000).optional(),
+          onlyUnchecked: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const archive = await getMediaArchiveById(input.archiveId);
+        if (!archive) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Archive not found");
+        const { sweepArchivePreviews } = await import("./archivePreviewSweep");
+        return sweepArchivePreviews(input);
+      }),
+
     /** Search keywords that fell back to Pexels/Pixabay — surfaces missing archive topics. */
     listContentGaps: adminProcedure
       .input(z.object({ limit: z.number().int().min(1).max(200).optional() }))
@@ -1959,9 +2405,21 @@ export const appRouter = router({
         return { deleted: toDelete.length };
       }),
 
+    /**
+     * RONDE 98 — trim an archive clip to a chosen range.
+     *
+     * `startSec`/`endSec` are the real inputs. `cutAtSec`/`cutTimeSec` are the original single-cut
+     * API and still work, meaning "keep 0 → cut"; they are what the admin UI used to send when the
+     * only thing it could do was shorten from the end.
+     *
+     * With no range at all it still falls back to the first detected scene cut, which is what the
+     * procedure's name refers to.
+     */
     trimToSingleScene: adminProcedure
       .input(z.object({
         assetId: z.number().int(),
+        startSec: z.number().min(0).optional(),
+        endSec: z.number().min(0).optional(),
         cutAtSec: z.number().optional(),
         cutTimeSec: z.number().optional(),
       }))
@@ -1969,19 +2427,48 @@ export const appRouter = router({
         const asset = await getMediaArchiveAssetById(input.assetId);
         if (!asset) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Asset not found");
         if (asset.mediaType !== "video") throw appTrpcError("BAD_REQUEST", APP_ERROR.NOT_FOUND, "Asset is not a video");
-        let cutSec = input.cutAtSec ?? input.cutTimeSec;
-        if (!cutSec) {
+
+        const legacyCut = input.cutAtSec ?? input.cutTimeSec;
+        let startSec = input.startSec ?? 0;
+        let endSec = input.endSec ?? legacyCut;
+
+        /**
+         * RONDE 108 — auto-detect only when nobody said where to cut.
+         *
+         * The condition used to be `endSec == null && startSec <= 0`, and `startSec` defaults to
+         * 0 — so an operator who marked ONLY a start point at the very beginning of the clip had
+         * their explicit instruction thrown away and replaced with a scene audit, which then
+         * usually came back "No reliable scene cut detected". A message about scene detection, for
+         * someone who never asked for scene detection: the button was there, they used it, and it
+         * told them something that had nothing to do with what they did.
+         *
+         * The honest test is whether the REQUEST carried a range at all. `input.startSec` present
+         * means the operator placed that marker deliberately, including at 0.
+         */
+        const operatorGaveRange = input.startSec != null || input.endSec != null;
+        if (!operatorGaveRange && endSec == null) {
           const audit = await auditArchiveAssetScene(asset).catch(() => null);
           const firstCut = audit?.cutTimesSec?.[0];
           if (!firstCut || firstCut <= 0.5) return { trimmed: false, reason: "No reliable scene cut detected" };
-          cutSec = firstCut;
+          endSec = firstCut;
+          startSec = 0;
         }
-        if (cutSec <= 0.5) return { trimmed: false, reason: "Cut too close to start" };
-        const { newDurationSec } = await trimArchiveAssetToFirstScene(
-          asset as import("../drizzle/schema").MediaArchiveAsset,
-          cutSec
-        );
-        return { trimmed: true, newDurationSec };
+
+        try {
+          const result = await trimArchiveAsset(
+            asset as import("../drizzle/schema").MediaArchiveAsset,
+            { startSec, endSec }
+          );
+          return {
+            trimmed: true,
+            newDurationSec: result.newDurationSec,
+            startSec: result.startSec,
+            endSec: result.endSec,
+          };
+        } catch (err) {
+          // Range mistakes are the operator's to correct, not a 500 to swallow.
+          return { trimmed: false, reason: (err as Error).message?.slice(0, 200) ?? "Trim failed" };
+        }
       }),
 
     deleteAsset: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => {

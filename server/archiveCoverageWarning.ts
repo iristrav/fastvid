@@ -16,6 +16,7 @@
 
 import { getVideoById, updateVideoProgress } from "./db";
 import { recordArchiveContentGap } from "./archiveContentGaps";
+import { gapRowLooksLikePerson } from "./archiveGapNames";
 
 export const INSUFFICIENT_FOOTAGE_USER_MESSAGE =
   "Not enough footage available\n\n" +
@@ -78,11 +79,18 @@ export async function applyCoverageWarningIfNeeded(
       const video = await getVideoById(videoId);
       await updateVideoProgress(videoId, INSUFFICIENT_FOOTAGE_USER_MESSAGE, video?.progressPercent ?? 0);
     }
-    if (decision.shouldWarnAdmin) {
+    if (decision.shouldWarnAdmin && gapRowLooksLikePerson(input.entity)) {
       // Reuses the existing admin gap-tracking surface (archive_content_gaps + its admin tRPC
       // routes) rather than building a parallel admin notification table. The sample text
       // carries the structured detail an admin needs (entity/counts/web-search outcome) — the
       // existing listContentGaps route already surfaces keyword+sampleBeatText+hitCount.
+      /**
+       * RONDE 127 — only when the entity is a person.
+       *
+       * This route already records a named entity rather than a query, but that entity can be a
+       * topic ("the Blitz") as easily as a person. The admin list is now about people, so a
+       * topic-shaped entity is left out rather than shown as a name.
+       */
       await recordArchiveContentGap(
         `low-coverage:${input.entity}`,
         `LOW ARCHIVE COVERAGE — entity: ${input.entity} | archive: ${input.archiveCount} | ` +

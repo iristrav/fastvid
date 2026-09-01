@@ -38,6 +38,17 @@ async function fetchWithRetry(
   throw lastErr;
 }
 
+/**
+ * RONDE 166 (§2) — exported so the asset rehydrator can reuse it.
+ *
+ * The rehydrator resolves a `freesound:<id>` identity from the AMBIENT track and needs the same
+ * preview URL this module already looks up. Exporting it is what stops a second Freesound client
+ * (with a second copy of the key handling and the retry rules) from being written next to it.
+ */
+export async function freesoundPreviewUrl(freesoundId: number): Promise<string | null> {
+  return fetchFreesoundPreviewUrl(freesoundId);
+}
+
 async function fetchFreesoundPreviewUrl(freesoundId: number): Promise<string | null> {
   if (!FREESOUND_API_KEY) return null;
   try {

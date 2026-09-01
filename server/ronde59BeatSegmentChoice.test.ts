@@ -126,7 +126,21 @@ describe("RONDE 59 — the trim actually receives the offset", () => {
     const src = SRC();
     const idx = src.indexOf("export async function downloadAndTrimPoolCandidate(");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 8000);
+    /**
+     * Bounded by the function's OWN end, not by a byte count.
+     *
+     * This was `slice(idx, idx + 10_000)`, widened once already by RONDE 165 and broken again by
+     * RONDE 133, which added the technical-gate checks and their reasoning to this function. Each
+     * time the assertion was about code that had not changed at all — the window had simply
+     * stopped reaching it, and the fix was to guess a bigger number.
+     *
+     * The next declaration after downloadAndTrimPoolCandidate is trimDownloadedStockClip, so its
+     * doc comment is where this function ends. That marker moves only when the file is genuinely
+     * restructured, which is exactly when this test SHOULD be re-read.
+     */
+    const end = src.indexOf("/** Stable stock trim", idx);
+    expect(end, "trimDownloadedStockClip's doc comment no longer follows this function").toBeGreaterThan(idx);
+    const block = src.slice(idx, end);
     expect(block).toContain("pickBeatSegmentStartSec(sourceDur, takeSec, beatIndex)");
     expect(block).toContain(
       "trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec)"
@@ -160,15 +174,27 @@ describe("RONDE 59 — the judge looks across the clip, not at one instant", () 
   });
 
   it("the pipeline extracts one frame per fraction and cleans all of them up", () => {
-    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    const block = src.slice(idx, idx + 3200);
+    /**
+     * SUPERSEDED BY RONDE 103, deliberately.
+     *
+     * RONDE 59's rule — sample across the clip, never one instant of it, and clean every frame up
+     * — is unchanged and now applies to every route at once, because the sampling lives in the
+     * central gate instead of being copied into the funnel, the adoption path and YouTube. The
+     * assertion follows the code; the rule it guards is the same one, enforced in one place.
+     */
+    const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
+    const idx = mod.indexOf("async function sampleFrames(");
+    expect(idx).toBeGreaterThan(-1);
+    const block = mod.slice(idx, idx + 900);
     expect(block).toContain("f < JUDGEMENT_FRAME_FRACTIONS.length");
     expect(block).toContain("JUDGEMENT_FRAME_FRACTIONS[f]!");
-    expect(block).toContain("framePaths,");
-    expect(block).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
-    // The single fixed frame it used to judge on is gone.
-    expect(block).not.toContain("extractFrameAtFraction(winner.clipPath, framePath, 0.45");
+    expect(mod).toMatch(/for \(const p of framePaths\)[\s\S]{0,120}fs\.unlinkSync\(p\)/);
+    // The single fixed frame it used to judge on is gone, and so is the funnel's private copy.
+    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const funnelIdx = src.indexOf("let winner = pickBestFunnelCandidate(");
+    const funnel = src.slice(funnelIdx, funnelIdx + 3200);
+    expect(funnel).not.toContain("extractFrameAtFraction(winner.clipPath, framePath, 0.45");
+    expect(funnel).not.toContain("JUDGEMENT_FRAME_FRACTIONS[f]!");
   });
 });
 

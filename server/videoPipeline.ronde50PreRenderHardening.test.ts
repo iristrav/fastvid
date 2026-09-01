@@ -3,7 +3,27 @@ import * as fs from "fs";
 import * as os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
-import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+/**
+ * RONDE 90 — this file calls provider fetchers directly, outside any beat.
+ *
+ * In production every provider search runs inside a beat's provenance scope
+ * (withSearchProvenance), and that scope is what lets the gate verify a query against what the
+ * script actually says. A direct call has no such scope, so strict mode refuses it — correctly,
+ * and by design: a query nobody can trace is exactly what RONDE 90 exists to stop.
+ *
+ * That refusal is not what this file is about. Its subject is what happens AFTER a query is
+ * admitted — the render-scoped query cache, the per-item licence gates, the dedup skips, the call
+ * ceilings. The gate's own behaviour, including the refusal above, is covered by
+ * ronde89ProviderGate and ronde90SearchProvenance; restating it in every assertion here would
+ * test the gate twice and these mechanics not at all.
+ */
+// Set at module scope, not in beforeAll: several suites here snapshot `process.env` into an
+// ORIGINAL_ENV constant while the file is being evaluated and restore it before every test, so a
+// value written later is wiped again before the first assertion runs.
+process.env.SEARCH_GATE_STRICT = "false";
+
 
 // RONDE 50 — pre-render hardening.
 //
@@ -38,13 +58,61 @@ function blockAt(src: string, from: number): string {
   throw new Error("unbalanced block");
 }
 
+/**
+ * RONDE 100B's second audit put a provenance wrapper in front of generateGuaranteedBeatClip, so
+ * the ladder this file inspects moved into `...Inner`. Follow the wrapper — and verify it cannot
+ * hide a second implementation from these tests.
+ *
+ * RONDE 103 gave that wrapper a second job: the ladder's two REAL rungs (`topical`, `wikimedia`)
+ * fetch genuine imagery and now face the same relevance gate every other route faces, and the
+ * tier the ladder returned is the only place that distinction is known. So "plain wrapper" is no
+ * longer the right test — a wrapper may delegate and may judge, but it may not build a ladder of
+ * its own. What this checks is exactly that: it delegates, and it assigns no tier itself.
+ */
 function functionBody(src: string, name: string): string {
+  if (src.includes(`async function ${name}Inner(`)) {
+    const wrapper = sliceBody(src, name);
+    if (!wrapper.includes("withBeatProvenance") || !wrapper.includes(`${name}Inner(`)) {
+      throw new Error(`${name} does not delegate to ${name}Inner under provenance — inspect it directly`);
+    }
+    if (/tierOut\.tier = "/.test(wrapper) || /\btier\.tier = "/.test(wrapper)) {
+      throw new Error(`${name}'s wrapper assigns a tier — that is a second ladder, not a wrapper`);
+    }
+    return sliceBody(src, `${name}Inner`);
+  }
+  return sliceBody(src, name);
+}
+
+function sliceBody(src: string, name: string): string {
   const marker = [`export async function ${name}(`, `async function ${name}(`].find((m) =>
     src.includes(m)
   );
   if (!marker) throw new Error(`${name} not found`);
   const start = src.indexOf(marker);
-  return blockAt(src, src.indexOf(")", start));
+  /**
+   * RONDE 103: walk the parameter list by BALANCE, not to its first `)`.
+   *
+   * `src.indexOf(")", start)` finds the first close paren after the name, which stops inside the
+   * first parameter that has parentheses of its own — a doc comment, a default, an inline
+   * function type. blockAt then matches the next `{`, which is that parameter's object type
+   * rather than the function's body, and the test reads a few lines of a type declaration while
+   * appearing to read the implementation. That is a test that passes for the wrong reason.
+   */
+  const paramsAt = start + marker.length - 1;
+  let depth = 0;
+  let closeParen = -1;
+  for (let i = paramsAt; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")") {
+      depth--;
+      if (depth === 0) {
+        closeParen = i;
+        break;
+      }
+    }
+  }
+  if (closeParen < 0) throw new Error(`${name} has an unbalanced parameter list`);
+  return blockAt(src, closeParen);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -427,7 +495,10 @@ describe("RONDE 50 #3 — no compose output can be published without its clip li
     );
     expect(outputReturns.length).toBeGreaterThanOrEqual(7);
     for (const r of outputReturns) {
-      expect(r).toMatch(/^returnComposed\(/);
+      // RONDE 158 made the funnel async (it now measures the finished scene before publishing it),
+      // so the call is awaited. The rule is unchanged: nothing hands back a compose output except
+      // through the funnel.
+      expect(r).toMatch(/^(await\s+)?returnComposed\(/);
     }
     // A bare `return outputPath;` would bypass the publication entirely.
     expect(returns).not.toContain("outputPath");
@@ -443,9 +514,9 @@ describe("RONDE 50 #3 — no compose output can be published without its clip li
     expect(funnelBlock).toContain("usedClipsOut.push(...pendingUsedClips);");
     // ...and it is staged, not published, where the old code published it.
     expect(body).toContain("pendingUsedClips = uniqueClipsInOrder(safeClips);");
-    expect(body.indexOf("pendingUsedClips = uniqueClipsInOrder")).toBeLessThan(
-      body.indexOf("return returnComposed(")
-    );
+    const firstReturn = body.indexOf("return await returnComposed(");
+    expect(firstReturn).toBeGreaterThan(-1);
+    expect(body.indexOf("pendingUsedClips = uniqueClipsInOrder")).toBeLessThan(firstReturn);
   });
 });
 

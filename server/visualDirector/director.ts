@@ -237,6 +237,9 @@ export function directVideo(scenes: SceneMeta[], videoTitle = ""): VideoDirectiv
   return { scenes: scenes.map(s => directScene(s, videoTitle)) };
 }
 
+import { burnedInTextAllowed } from "../onScreenTextPolicy";
 export function visualDirectorEnabled(): boolean {
+  // RONDE 113: one rule, asked first — see onScreenTextPolicy.
+  if (!burnedInTextAllowed()) return false;
   return process.env.VISUAL_DIRECTOR !== "false";
 }

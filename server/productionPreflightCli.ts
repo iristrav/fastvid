@@ -1,0 +1,66 @@
+/**
+ * RONDE 191 — the preflight, wired to this machine.
+ *
+ *     npx tsx server/productionPreflightCli.ts
+ *
+ * Separate from `productionPreflight.ts` so the checks themselves stay pure and testable: this file
+ * owns the probes that touch the host — a PATH lookup, a browser lookup, a real connection attempt —
+ * and nothing else. A test can then exercise every branch of the report without a database.
+ *
+ * Exits 0 when a real render can be attempted and 1 when it cannot, so CI or a deploy script can
+ * gate on it rather than reading the text.
+ */
+import { execFileSync } from "child_process";
+
+import { formatPreflight, productionPreflight, type HostProbes } from "./productionPreflight";
+import { graphicsOverlayAvailable } from "./graphicsOverlayDeps";
+
+const probes: HostProbes = {
+  hasBinary: (name) => {
+    try {
+      execFileSync("which", [name], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  hasBrowser: () => graphicsOverlayAvailable(),
+  /**
+   * A real query, not a URL parse. `SELECT 1` is the smallest thing that proves the credentials
+   * work, the host is up and the database accepts connections — the three separate ways a
+   * configured DATABASE_URL can still fail to be a database.
+   */
+  canReachDatabase: async () => {
+    try {
+      const { getDb } = await import("./db");
+      const db = await getDb();
+      /** `getDb` returns null when there is nothing to connect to — that IS the answer. */
+      if (!db) return false;
+      await db.execute("SELECT 1" as never);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  canReachRedis: async () => {
+    try {
+      const mod = (await import("ioredis")) as unknown as { default: new (url: string) => {
+        ping: () => Promise<string>; quit: () => Promise<unknown>;
+      } };
+      const client = new mod.default(process.env.REDIS_URL!);
+      await client.ping();
+      await client.quit();
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+
+async function main(): Promise<void> {
+  const report = await productionPreflight(probes);
+  console.log(formatPreflight(report));
+  process.exit(report.verdict === "PRODUCTION_RENDER_POSSIBLE" ? 0 : 1);
+}
+
+void main();

@@ -153,6 +153,42 @@ export function mergeArchiveTags(userTags: string[], aiTags: string[]): string[]
   return normalizeMediaTags([...userTags, ...aiTags]);
 }
 
+/**
+ * How many AI-generated tags one clip may GAIN from a single tagging pass.
+ *
+ * The vision pass proposes up to four (see selectHighQualityArchiveTags) and every one of them
+ * used to be merged in. Two is the owner's call: the archive is searched on these tags, and a clip
+ * carrying four machine guesses is easier to surface for the wrong beat than a clip carrying two.
+ */
+export const MAX_AI_TAGS_ADDED_PER_CLIP = 2;
+
+/**
+ * Merge AI tags into a clip's existing ones, adding at most `max` that are genuinely NEW.
+ *
+ * "New" is what the limit counts, not "proposed". An AI tag the clip already carries costs nothing
+ * to re-state and is not an addition, so it must not use up one of the two slots — otherwise a
+ * second pass over the same clip would add nothing at all and the limit would read as a bug.
+ *
+ * Existing tags are never dropped. This caps what a pass may ADD; it is not a ceiling on the clip.
+ */
+export function mergeArchiveTagsLimited(
+  userTags: string[],
+  aiTags: string[],
+  max: number = MAX_AI_TAGS_ADDED_PER_CLIP
+): string[] {
+  const existing = normalizeMediaTags(userTags);
+  if (max <= 0) return existing;
+  const have = new Set(existing);
+  const added: string[] = [];
+  for (const tag of normalizeMediaTags(aiTags)) {
+    if (have.has(tag)) continue;
+    added.push(tag);
+    have.add(tag);
+    if (added.length >= max) break;
+  }
+  return normalizeMediaTags([...existing, ...added]);
+}
+
 const VAGUE_ARCHIVE_TAG_RE =
   /\b(man|woman|person|people|leader|city|street|urban|historical|modern|busy|outdoor|indoor|scene|footage|video|clip|documentary|generic|abstract|success|growth|strategy|business|company|building|day|night|uniform|clothing|outfit|attire)\b/i;
 
@@ -357,9 +393,16 @@ export function applySharedAiToClipFields(opts: {
   replaceTags?: boolean;
 }): { title: string; tags: string[]; sourceNote: string | null } {
   let title = opts.baseTitle;
+  /**
+   * At most MAX_AI_TAGS_ADDED_PER_CLIP new AI tags per pass — see mergeArchiveTagsLimited.
+   *
+   * Applied here rather than at the call site because both routes that let the vision pass touch a
+   * clip's tags — the bulk "AI titles + 4 tags" button and the per-upload tagging — come through
+   * this one function. A limit on one of them would be a limit a later route can forget.
+   */
   let tags = opts.replaceTags
-    ? normalizeMediaTags(opts.ai.tags).slice(0, ARCHIVE_MAX_TAGS)
-    : mergeArchiveTags(opts.userTags, opts.ai.tags);
+    ? normalizeMediaTags(opts.ai.tags).slice(0, Math.min(ARCHIVE_MAX_TAGS, MAX_AI_TAGS_ADDED_PER_CLIP))
+    : mergeArchiveTagsLimited(opts.userTags, opts.ai.tags);
   let sourceNote = opts.sourceNote;
 
   if (opts.clipIndex != null) {

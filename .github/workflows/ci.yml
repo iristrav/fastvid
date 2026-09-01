@@ -25,6 +25,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # RONDE 151: before anything else, because this is the failure that reached production.
+      # A .sql file with no journal entry is invisible to drizzle: the deploy reports
+      # "nothing to apply", starts, and crash-loops at schema validation. It is fully detectable
+      # from two files on disk, so it is caught here rather than in production.
+      - name: Migration artifact integrity
+        run: pnpm run migrations:check
+
       - name: Lint
         run: pnpm run lint
 

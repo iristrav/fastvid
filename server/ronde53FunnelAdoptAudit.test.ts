@@ -65,16 +65,31 @@ describe("RONDE 53 — the funnel winner is recorded", () => {
   });
 });
 
+/**
+ * The FunnelCandidateSource union, READ from retrievalFunnel.ts rather than restated here.
+ *
+ * RONDE 177: this list used to be a copy, and the copy went stale the moment R169 added
+ * `youtube_cc` to the funnel — the categorisation test below kept passing on ten sources while the
+ * eleventh fell through into no bucket at all in production. Reading the union is what makes the
+ * next new source fail this test on the day it is added rather than in a render report.
+ */
+function declaredFunnelSources(): string[] {
+  const funnel = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
+  const union = funnel.slice(
+    funnel.indexOf("export type FunnelCandidateSource ="),
+    funnel.indexOf("export type FunnelStrategy")
+  );
+  const sources = [...union.matchAll(/\|\s*"([a-z_]+)"/g)].map((m) => m[1]!);
+  expect(sources.length, "the funnel union could not be read").toBeGreaterThanOrEqual(10);
+  return sources;
+}
+
 describe("RONDE 53 — every funnel source lands in a real category", () => {
-  it("all ten FunnelCandidateSource values are classified by the audit", async () => {
+  it("every FunnelCandidateSource value is classified by the audit", async () => {
     const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
       "./clipAdoptAudit"
     );
-    // The full FunnelCandidateSource union as retrievalFunnel declares it.
-    const sources = [
-      "archive", "pexels", "pixabay", "wikimedia", "internet_archive",
-      "europeana", "openverse", "nasa", "nara", "loc",
-    ];
+    const sources = declaredFunnelSources();
     const audit = createClipAdoptAudit();
     sources.forEach((s, i) => recordClipAdopt(audit, 0, i, `b${i}`, `/w/c${i}.mp4`, s));
     const summary = summarizeAdoptAudit(audit);
@@ -84,24 +99,55 @@ describe("RONDE 53 — every funnel source lands in a real category", () => {
     // what produced "beats=13 wiki=0 arch=7 stock=0" in render 530.
     const categorised =
       summary.archiveBeats + summary.wikiBeats + summary.stockBeats + summary.klingBeats +
-      summary.fallbackBeats;
-    expect(categorised).toBe(sources.length);
+      summary.fallbackBeats + summary.youtubeBeats;
+    expect(
+      categorised,
+      `${sources.length - categorised} funnel source(s) fell into no bucket: ` +
+        `${JSON.stringify(summary.bySource)}`
+    ).toBe(sources.length);
     // And none of them is a placeholder: these are all real media.
     expect(summary.fallbackBeats).toBe(0);
   });
 
   it("the source union in retrievalFunnel has not grown past what the audit knows", () => {
-    const funnel = readFileSync(path.join(__dirname, "retrievalFunnel.ts"), "utf8");
-    const union = funnel.slice(
-      funnel.indexOf("export type FunnelCandidateSource ="),
-      funnel.indexOf("export type FunnelStrategy")
-    );
-    const declared = [...union.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]!);
     const audit = readFileSync(path.join(__dirname, "clipAdoptAudit.ts"), "utf8");
     // A new provider added to the funnel without adding it here would silently go uncounted.
-    for (const source of declared) {
-      expect(audit.includes(`"${source}"`)).toBe(true);
+    for (const source of declaredFunnelSources()) {
+      expect(audit.includes(`"${source}"`), `${source} is not named in clipAdoptAudit`).toBe(true);
     }
+  });
+
+  /**
+   * RONDE 177 — YouTube is counted, and counted as itself.
+   *
+   * The bug this pins: `youtube_cc` joined the funnel in R169 and matched no branch, so a beat
+   * filled from YouTube was counted as filled and as nothing. Two assertions, because either one
+   * alone can be satisfied wrongly — a beat could be counted by being folded into `archiveBeats`,
+   * which would report archival footage the render never found.
+   */
+  it("a YouTube-filled beat is counted, and not as archive or stock", async () => {
+    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
+      "./clipAdoptAudit"
+    );
+    const audit = createClipAdoptAudit();
+    recordClipAdopt(audit, 0, 0, "b0", "/w/c0.mp4", "youtube_cc");
+    const summary = summarizeAdoptAudit(audit);
+    expect(summary.beatsFilled).toBe(1);
+    expect(summary.youtubeBeats).toBe(1);
+    expect(summary.archiveBeats).toBe(0);
+    expect(summary.stockBeats).toBe(0);
+    expect(summary.fallbackBeats).toBe(0);
+  });
+
+  it("does not tell the reader every beat came from stock when they came from YouTube", async () => {
+    const { createClipAdoptAudit, recordClipAdopt, summarizeAdoptAudit } = await import(
+      "./clipAdoptAudit"
+    );
+    const audit = createClipAdoptAudit();
+    recordClipAdopt(audit, 0, 0, "b0", "/w/c0.mp4", "youtube_cc");
+    const hints = summarizeAdoptAudit(audit).hints.join(" ");
+    expect(hints).not.toContain("stock/Kling");
+    expect(hints).toContain("YouTube");
   });
 });
 

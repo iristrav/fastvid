@@ -84,6 +84,28 @@ export const videos = mysqlTable(
   generationAttempt: int("generationAttempt").default(0).notNull(), // fencing token — bumped each time a fresh run claims this video, so a stale/zombie run (e.g. after a stall-requeue) can detect it's been superseded and stop writing
   videoScenes: json("videoScenes"),                          // scene manifest for editor: [{sceneIndex, narration, durationMs, clips:[{url,type,source}], thumbnailUrl}]
   editedVideoUrl: varchar("editedVideoUrl", { length: 1024 }), // URL of re-rendered edited video (if user edited)
+  /**
+   * RONDE 148 — the editor's timeline, in its OWN column rather than folded into videoScenes.
+   *
+   * §4 asked whether videoScenes could hold it. It cannot without breaking things: that column is
+   * an EditorScene[] and a dozen readers index into it as an array. Turning it into an object to
+   * make room would change the shape under every one of them at once, for a saving of one column.
+   * The manifest stays exactly what it is — which is also what keeps the OLD pipeline working
+   * untouched (§25) — and the timeline gets a place of its own.
+   */
+  videoTimeline: json("videoTimeline"),                      // ProjectTimeline as saved by the editor
+  /** ProjectTimeline.version of the row above. 0 = never saved from the editor. */
+  timelineVersion: int("timelineVersion").default(0).notNull(),
+  /**
+   * Fencing token for RENDER jobs, the same idiom `generationAttempt` uses for pipeline runs.
+   *
+   * Bumped when a render job is created. A job carries the value it was given and may only publish
+   * its output while the video still shows that value — so a slow render that finishes after a
+   * newer one was started finds itself superseded and writes nothing (§2).
+   */
+  renderAttempt: int("renderAttempt").default(0).notNull(),
+  /** Which timelineVersion `editedVideoUrl` was rendered from, so the editor can say so. */
+  editedVideoTimelineVersion: int("editedVideoTimelineVersion"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -179,11 +201,37 @@ export const mediaArchiveAssets = mysqlTable(
   topics: json("topics").$type<string[]>(),
   width: int("width"),
   height: int("height"),
-  durationSec: int("durationSec"),
+  /**
+   * RONDE 177 — FLOAT, not INT.
+   *
+   * The trim writes the probed duration of the file it just produced, which is fractional
+   * (8.53s). An INT column rounds that on the way in, so the number in the row disagreed with the
+   * number the trim returned to the operator — and a trim that shortened a clip by less than half
+   * a second wrote back the SAME integer, leaving a row that looked untouched.
+   *
+   * media_asset_cache.durationSec was already FLOAT for exactly this reason.
+   */
+  durationSec: float("durationSec"),
   sortOrder: int("sortOrder").default(0).notNull(),
   isActive: int("isActive").default(1).notNull(),
   /** Cached overlay-filter verdict: null = not yet checked, 0 = clean, 1 = baked edit text detected. */
   hasBakedEditText: int("hasBakedEditText"),
+  /**
+   * RONDE 118 — when the asset's preview was last proven readable. Null = never checked.
+   *
+   * Same convention as hasBakedEditText above: a nullable column where null means "no verdict
+   * yet", so every row that predates the check keeps its current behaviour until a sweep looks
+   * at it, rather than being retroactively declared broken.
+   */
+  previewCheckedAt: timestamp("previewCheckedAt"),
+  /**
+   * Why the preview is unusable, e.g. "no_preview_frame". Null = no known problem.
+   *
+   * isActive is what actually keeps an asset out of candidate selection — this says WHY, so an
+   * operator opening the archive can tell a deactivated-because-broken asset from one that was
+   * switched off deliberately.
+   */
+  previewIssue: varchar("previewIssue", { length: 64 }),
   /** Full editorial annotation produced by the clip annotator at ingest time.
    *  Null = not yet annotated. Never re-computed unless annotationVersion changes. */
   annotationJson: json("annotationJson").$type<import("./annotationTypes").ClipAnnotation>(),
@@ -678,3 +726,118 @@ export const editorialReviews = mysqlTable(
 );
 
 export type EditorialReviewRow = typeof editorialReviews.$inferSelect;
+
+// ─── Discount Codes ───────────────────────────────────────────────────────────
+/**
+ * RONDE 147 — discount codes that are REAL codes, not a local table that checkout ignores.
+ *
+ * The billing flow already creates its Stripe Checkout session with `allow_promotion_codes: true`,
+ * so Stripe's own promotion-code box is on the payment page and already honours anything Stripe
+ * knows about. Building a second, FastVid-side discount concept would have meant a code that looks
+ * valid in the admin panel and does nothing when a customer types it — exactly the outcome the
+ * brief rules out.
+ *
+ * So the admin page creates the code IN STRIPE (a Coupon carrying the discount, plus a Promotion
+ * Code carrying the customer-facing string) and this table mirrors it. The mirror is what makes an
+ * overview page possible without an API round-trip per row, and it is what holds FastVid's own
+ * bookkeeping — who created a code, and when. Stripe stays the source of truth for redemptions.
+ *
+ * `stripePromotionCodeId` is unique: one row per Stripe promotion code, so a failed create cannot
+ * leave two rows pointing at the same object.
+ */
+export const discountCodes = mysqlTable(
+  "discount_codes",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** The string a customer types at checkout. Stored uppercase; unique. */
+    code: varchar("code", { length: 64 }).notNull().unique(),
+    /** The Stripe Coupon holding the actual discount. */
+    stripeCouponId: varchar("stripeCouponId", { length: 128 }).notNull(),
+    /** The Stripe Promotion Code holding the customer-facing string. */
+    stripePromotionCodeId: varchar("stripePromotionCodeId", { length: 128 }).notNull().unique(),
+    /** Percentage off, 1–100. Null when this is a fixed-amount code. */
+    percentOff: int("percentOff"),
+    /** Fixed amount off in the smallest currency unit. Null when this is a percentage code. */
+    amountOffCents: int("amountOffCents"),
+    /** ISO currency for amountOffCents; null for percentage codes. */
+    currency: varchar("currency", { length: 8 }),
+    /** 1 = redeemable, 0 = switched off. Mirrors the Stripe promotion code's `active`. */
+    isActive: int("isActive").default(1).notNull(),
+    /** Optional first moment the code may be used. Null = immediately. */
+    startsAt: timestamp("startsAt"),
+    /** Optional expiry. Null = no expiry. */
+    expiresAt: timestamp("expiresAt"),
+    /** Optional cap on total redemptions. Null = unlimited. */
+    maxRedemptions: int("maxRedemptions"),
+    /** Last known redemption count from Stripe. Refreshed when the admin list is read. */
+    timesRedeemed: int("timesRedeemed").default(0).notNull(),
+    /** Optional internal label — what this code is for. Never shown to customers. */
+    note: varchar("note", { length: 256 }),
+    createdByUserId: int("createdByUserId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    activeIdx: index("discount_codes_isActive_idx").on(t.isActive),
+    createdIdx: index("discount_codes_created_idx").on(t.createdAt),
+  })
+);
+
+export type DiscountCode = typeof discountCodes.$inferSelect;
+export type InsertDiscountCode = typeof discountCodes.$inferInsert;
+
+// ─── Render Jobs (RONDE 148) ──────────────────────────────────────────────────
+/**
+ * One re-render of an edited timeline, with its own lifecycle.
+ *
+ * DELIBERATELY NOT `videos.status`. That column tracks the GENERATION pipeline — the run that
+ * writes the script, the voiceover and the original master — and a video sitting at `completed`
+ * is exactly right while a re-render of its timeline is in progress. Folding renders into it
+ * would mean an edit puts a finished video back into a "generating" state, breaking the queue
+ * accounting, the stall sweeper and every list that filters on it. The generation pipeline is
+ * left untouched (§25); renders live here.
+ *
+ * `attempt` is the fencing token, copied from `videos.renderAttempt` at creation. A job may only
+ * publish while the two still match, which is what stops a slow render from overwriting a newer
+ * one that finished first (§2).
+ */
+export const renderJobs = mysqlTable(
+  "render_jobs",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    videoId: int("videoId").notNull().references(() => videos.id),
+    /** Who asked for this render. Kept for the audit trail, never for authorisation. */
+    requestedByUserId: int("requestedByUserId"),
+    status: mysqlEnum("status", ["queued", "running", "completed", "failed", "cancelled"])
+      .default("queued")
+      .notNull(),
+    /**
+     * Phases COMPLETED out of the known phase list — a real fraction, not an ffmpeg guess.
+     * §10 forbids inventing a percentage, and ffmpeg gives no trustworthy one for this pipeline.
+     */
+    progress: int("progress").default(0).notNull(),
+    /** The current phase by name: queued, rehydrating, preparing, rendering, uploading, completed. */
+    progressStep: varchar("progressStep", { length: 64 }).default("queued").notNull(),
+    /** The ProjectTimeline.version this job renders. A job knows which document it is making. */
+    timelineVersion: int("timelineVersion").notNull(),
+    /** Fencing token, from videos.renderAttempt at creation. */
+    attempt: int("attempt").notNull(),
+    outputUrl: varchar("outputUrl", { length: 1024 }),
+    /** Machine-readable, from RENDER_ERROR. Never a sentence a caller has to pattern-match. */
+    errorCode: varchar("errorCode", { length: 64 }),
+    errorMessage: text("errorMessage"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    /** The worker's claim query: oldest queued job first. */
+    statusCreatedIdx: index("render_jobs_status_created_idx").on(t.status, t.createdAt),
+    /** "is a render already running for this video" — the §7 pre-flight check. */
+    videoStatusIdx: index("render_jobs_video_status_idx").on(t.videoId, t.status),
+  })
+);
+
+export type RenderJob = typeof renderJobs.$inferSelect;
+export type InsertRenderJob = typeof renderJobs.$inferInsert;
