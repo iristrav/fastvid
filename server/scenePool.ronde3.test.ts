@@ -453,11 +453,31 @@ describe("FIX C — per-provider latency logging", () => {
     expect(src).toContain("` | ms: ${Object.entries(msPerProvider).sort((a, b) => b[1] - a[1])");
   });
 
+  /**
+   * RONDE 175 — counted against the tasks themselves, not against a literal.
+   *
+   * This pinned `9`, "one per provider task", and adding a tenth provider (YouTube) failed it for
+   * the one reason that is not a defect: there was a tenth provider. A guard that has to be
+   * renumbered every time the thing it guards grows teaches people to renumber it, and the next
+   * person renumbers it without checking whether the new task actually carries the field.
+   *
+   * So it now counts BOTH sides and asserts they match. That is the invariant the name always
+   * described — every provider task carries its own elapsed time — and it holds for ten providers
+   * or for twenty, while still failing the moment a task is added without the field.
+   */
   it("every provider task carries its own elapsed time from one shared start", () => {
-    const decls = codeOnly(src).match(/const liveT0 = Date\.now\(\);/g) ?? [];
-    expect(decls).toHaveLength(1);
-    const uses = codeOnly(src).match(/ms: Date\.now\(\) - liveT0,/g) ?? [];
-    expect(uses).toHaveLength(9); // one per provider task
+    const code = codeOnly(src);
+    const decls = code.match(/const liveT0 = Date\.now\(\);/g) ?? [];
+    expect(decls, "the shared start must be declared exactly once").toHaveLength(1);
+
+    const tasks = code.match(/tasks\.push\(/g) ?? [];
+    const uses = code.match(/ms: Date\.now\(\) - liveT0,/g) ?? [];
+    expect(tasks.length, "no provider tasks found — the scan is looking at the wrong thing")
+      .toBeGreaterThanOrEqual(9);
+    expect(
+      uses.length,
+      `${tasks.length} provider task(s) but ${uses.length} carry an elapsed time`
+    ).toBe(tasks.length);
   });
 
   it("logging added no await, no retry and no extra request", () => {

@@ -31,6 +31,25 @@ import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicen
  */
 import { rankedPool } from "./poolRanking";
 import { penaliseDuplicates, type UsageLedger } from "./duplicateGuard";
+import { youtubePoolCandidates, type YoutubeRowLike } from "./youtubePoolSource";
+
+/**
+ * RONDE 175 — the shape of the EXISTING YouTube search, as this module needs it.
+ *
+ * Named here rather than imported from videoPipeline so a 39k-line module does not become a
+ * dependency of the pool. The production caller passes `searchYoutubeVideoCandidates` itself; a
+ * test asserts the two signatures stay compatible.
+ */
+export type YoutubePoolSearch = (
+  query: string,
+  sceneIndex: number,
+  license: YoutubeLicenseMode,
+  relevanceKeywords: string[],
+  minRelevanceScore: number,
+  requiredPersonName: string,
+  maxResults: number
+) => Promise<YoutubeRowLike[]>;
+import type { YoutubeLicenseMode } from "./videoPipeline";
 import type { VisualIntent as RankingIntent } from "./visualMatchingV2/types";
 import {
   emptyQueryContext,
@@ -198,6 +217,18 @@ export type BuildPoolRequest = {
   skipNara?: boolean;
   /** If true, skip Library of Congress. */
   skipLoc?: boolean;
+  /**
+   * RONDE 175 — the EXISTING YouTube search, injected.
+   *
+   * Injected rather than imported so this module never acquires a YouTube client of its own: the
+   * caller passes `searchYoutubeVideoCandidates` from videoPipeline, which owns the API key, the
+   * quota cooldown, the RapidAPI fallback, the licence modes and the per-render download budget.
+   * Absent means YouTube is simply not one of this pool's sources, which is what happens today on
+   * every route that does not supply it.
+   */
+  youtubeSearch?: YoutubePoolSearch;
+  /** Which licence question to ask YouTube. Defaults to the CC-only pass. */
+  youtubeLicenseMode?: YoutubeLicenseMode;
   maxPerSource?: number;
   maxTotal?: number;
 };
@@ -208,13 +239,36 @@ function dedupCandidates(candidates: PoolCandidate[]): PoolCandidate[] {
   const seen = new Set<string>();
   const urlSeen = new Set<string>();
   const out: PoolCandidate[] = [];
+  /**
+   * RONDE 175 — the provider's own identity beats a URL heuristic.
+   *
+   * The URL rule below strips the query string, which is right for a CDN that puts cache-busting
+   * or signing parameters there and wrong for a provider that puts the ASSET ID there. YouTube is
+   * the second kind: `watch?v=a1` and `watch?v=a2` both strip to `youtube.com/watch`, so the whole
+   * of a YouTube search collapsed to a single candidate — silently, and only visible as "2 raw → 1
+   * deduped" in a log nobody reads.
+   *
+   * So a candidate is exempt from the URL rule when the provider has already told us it is a
+   * different asset. Two assetIds from one source ARE two assets; that is what an assetId means.
+   * This only ever makes dedup less aggressive, and only in the case where the provider itself
+   * disagrees with the heuristic.
+   */
+  const seenAssetKeys = new Set<string>();
   for (const c of candidates) {
     // Dedup on stable id first
     if (seen.has(c.id)) continue;
+
+    /** The provider's own identity for this asset, when it gave one. */
+    const assetKey = c.assetId ? `${c.source}:${c.assetId}`.toLowerCase() : null;
+    if (assetKey && seenAssetKeys.has(assetKey)) continue;
+
     // Dedup on canonical URL (normalised: strip query params for image URLs)
     const canonUrl = c.remoteUrl.split("?")[0].toLowerCase();
-    if (urlSeen.has(canonUrl)) continue;
+    /** The URL rule applies only where the provider gave us nothing better to go on. */
+    if (!assetKey && urlSeen.has(canonUrl)) continue;
+
     seen.add(c.id);
+    if (assetKey) seenAssetKeys.add(assetKey);
     urlSeen.add(canonUrl);
     out.push(c);
   }
@@ -1468,6 +1522,51 @@ async function buildSceneCandidatePoolInner(
         ms: Date.now() - liveT0,
       }))
   );
+
+  /**
+   * RONDE 175 — YouTube joins the pool, so it can be RANKED rather than only reached.
+   *
+   * R169 built the adapter and R174 found the gap this closes: the adapter existed and nothing
+   * called it, so YouTube could still only be reached through the first-hit-wins cascade where
+   * position in a fixed list is the whole of a source's chance.
+   *
+   * `youtubeSearch` is the pipeline's own `searchYoutubeVideoCandidates`. Nothing here searches,
+   * downloads, checks a licence or holds a key — this is one more entry in the same task list as
+   * every other provider, and its candidates go through the same dedup, the same ranking, the same
+   * duplicate penalty and the same download and rehydration as everything else.
+   */
+  if (req.youtubeSearch) {
+    const mode = req.youtubeLicenseMode ?? "creative_common";
+    /**
+     * Built with `.then` rather than an async IIFE, like every other task above.
+     *
+     * Not a style preference: RONDE 3's guard asserts this whole block contains no `await`, because
+     * an await HERE would run the providers one after another instead of building promises for
+     * `Promise.allSettled` to run together. An IIFE's await is in fact still parallel, but the
+     * guard is a text scan and cannot see that — and a guard that has to be reasoned around is one
+     * people edit. Matching the established shape keeps it exact.
+     */
+    tasks.push(
+      youtubePoolCandidates({
+        query: queries[0] ?? primaryQuery,
+        sceneIndex,
+        mode,
+        maxResults: maxPerSource,
+        search: req.youtubeSearch,
+      }).then(({ candidates, log }) => {
+        console.log(log);
+        return {
+          candidates: candidates as unknown as PoolCandidate[],
+          /** One search call, whatever it returned — the same accounting every provider gets. */
+          apiCalls: 1,
+          source: "youtube_cc",
+          ms: Date.now() - liveT0,
+        };
+      })
+    );
+  } else {
+    skipped.youtube_cc = "no_search_function_supplied";
+  }
   // FASE 2 — Priority A historical/open sources: no API key required for Internet Archive
   // (like Wikimedia); Europeana needs a key, same shape as Pexels/Pixabay above.
   if (!noteSkip("internet_archive", skipInternetArchive, true)) {
