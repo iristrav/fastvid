@@ -334,7 +334,7 @@ import {
   provenToken,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
-import { formatFallback } from "./renderCorrelation";
+import { formatFallback, formatSelection } from "./renderCorrelation";
 import type { YoutubePoolSearch } from "./scenePool";
 
 /**
@@ -32557,6 +32557,42 @@ async function fetchSceneVisualsInner(
               dedup.usageLedger,
               { provider: adopted.source, providerAssetId: adopted.assetId },
               { sceneIndex: scene.index, beatIndex: beat.index }
+            );
+            /**
+             * RONDE 202 — the [Selection] line: WHICH asset won this beat, and why.
+             *
+             * ── What was missing ───────────────────────────────────────────────────────────
+             *
+             * `formatSelection` was written in R172 for exactly this and had no caller anywhere
+             * but its own test. So a render could say a clip was adopted and never say what it
+             * beat or by how much — and "why is this picture on screen" was answerable only by
+             * re-running the ranking by hand.
+             *
+             * The runner-up is the second candidate the SELECTOR returned, which is the one this
+             * beat would have used had the winner failed to download. That margin is the honest
+             * answer to "why not something better": a 0.002 margin and a 0.30 margin are the
+             * difference between a coin toss and a decision.
+             *
+             * Every value here is scrubbed by `formatSelection` itself — a provider name and an
+             * asset id are how you find the asset again, and neither is a secret.
+             */
+            const runnerUp = poolCandidates.find((c) => c !== adopted);
+            console.log(
+              formatSelection({
+                renderId: dedup.sourcingCache?.lineage?.renderId ?? "-",
+                sceneIndex: scene.index,
+                beatIndex: beat.index,
+                ...(beat.searchQuery ? { query: beat.searchQuery } : {}),
+                provider: adopted.source,
+                providerAssetId: adopted.assetId,
+                ...(adopted.rankingScore != null ? { score: adopted.rankingScore } : {}),
+                ...(runnerUp
+                  ? {
+                      runnerUpProvider: runnerUp.source,
+                      ...(runnerUp.rankingScore != null ? { runnerUpScore: runnerUp.rankingScore } : {}),
+                    }
+                  : {}),
+              })
             );
           }
         } else {
