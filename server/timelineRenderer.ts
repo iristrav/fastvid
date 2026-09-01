@@ -42,6 +42,7 @@ import {
   videoTrack,
   type ProjectTimeline,
   type TextStyle,
+  type AssetSourceIdentity,
   type TimelineLook,
   type TimelineVideoClip,
 } from "./projectTimeline";
@@ -527,7 +528,18 @@ export async function renderTimeline(params: {
   /** Clip → a local file, or null when it cannot be recovered. */
   resolveMedia: (clip: TimelineVideoClip) => Promise<string | null>;
   /** Audio clip id → a local file. Voice/music/sfx. */
-  resolveAudio?: (id: string, url: string) => Promise<string | null>;
+  /**
+   * Audio clip → a local file.
+   *
+   * `url` is the clip's own URL when it has one and "" when it does not; `source` is its full
+   * identity. RONDE 166: an AMBIENT clip is addressed by `freesound:401178` with no URL at all, so
+   * a resolver that only reads `url` will be handed an empty string and should use `source`.
+   */
+  resolveAudio?: (
+    id: string,
+    url: string,
+    source: AssetSourceIdentity
+  ) => Promise<string | null>;
   /** libass font family name. Must exist in `fontsDir`; there is no fontconfig in the shipped build. */
   fontName?: string;
   fontsDir?: string;
@@ -806,11 +818,25 @@ export async function renderTimeline(params: {
   const resolvedAudio: Array<{ file: string; input: MixInput }> = [];
   for (const { c, kind } of audioClips) {
     const url = c.source.canonicalUrl || c.source.mediaUrl;
-    if (!url || !params.resolveAudio) {
+    /**
+     * RONDE 166 (§2) — an audio clip may be named by IDENTITY instead of by URL.
+     *
+     * This used to require a URL and skip anything without one, which meant an audio asset
+     * addressed the way every VIDEO asset is addressed — `provider` + `providerAssetId`, resolved
+     * by the rehydrator — could never be fetched at all. The AMBIENT track names Freesound
+     * recordings that way, so wiring the catalogue up produced clips the renderer then reported as
+     * "no source": correct plan, unfetchable audio.
+     *
+     * A clip is now resolvable when it has EITHER a URL or a provider identity, and the resolver
+     * is handed both so it can use whichever it has. A clip with neither is still skipped and
+     * still named — that part was right.
+     */
+    const hasIdentity = Boolean(c.source.provider && c.source.providerAssetId);
+    if ((!url && !hasIdentity) || !params.resolveAudio) {
       skipped.push(`audio ${c.id}: no source`);
       continue;
     }
-    const file = await params.resolveAudio(c.id, url);
+    const file = await params.resolveAudio(c.id, url ?? "", c.source);
     if (!file) {
       skipped.push(`audio ${c.id}: could not be recovered`);
       continue;

@@ -43,6 +43,7 @@ import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
+import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 
@@ -114,6 +115,13 @@ export type CinematicPipelineResult = {
    * reason. §2: "NIETS mag stil verdwijnen."
    */
   unsupported: string[];
+  /**
+   * RONDE 166 (§1/§2) — the ambience that was laid down, and the music verdict.
+   *
+   * `music` is always present and always states whether a track was available, so a caller can
+   * report `musicSourceUnavailable` rather than leaving a silent gap where music was expected.
+   */
+  audio: CinematicAudioPlan;
   /** How the route was configured for this run, for the render log. */
   used: { cinematicEngine: boolean; aiDirector: boolean };
 };
@@ -220,11 +228,35 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     look: params.look ?? { grade: "documentary" },
   });
 
+  /**
+   * RONDE 166 (§1/§2) — the AMBIENT track, filled from the catalogue that was already there.
+   *
+   * `translateEdl` builds AMBIENT and MUSIC as literal empty arrays, because an EDL is a picture
+   * plan and says nothing about room tone. So the ambience is planned here, from the SCENES, by
+   * the classifier that has been reading them for the legacy route all along — and laid onto the
+   * track the renderer already mixes and ducks.
+   *
+   * Music stays empty on purpose: this build has no music catalogue, and `audioPlan.music` carries
+   * the reason so the caller can report it rather than leaving a silent gap.
+   */
+  const sceneWindows = params.scenes.map((scene) => ({
+    startSec: scene.sceneOffsetSec,
+    endSec: scene.sceneOffsetSec + Math.max(0, scene.director.durationSec),
+  }));
+  const audioPlan = planCinematicAudio({
+    scenes: params.scenes.map((s) => s.director.scene),
+    sceneWindows,
+  });
+  const ambientTrack = timeline.tracks.find((t) => t.kind === "AMBIENT");
+  if (ambientTrack?.kind === "AMBIENT") ambientTrack.clips.push(...ambientClips(audioPlan));
+  for (const line of audioPlan.unavailable) unsupported.push(line);
+
   return {
     timeline,
     edl,
     director,
     unsupported,
+    audio: audioPlan,
     used: { cinematicEngine: true, aiDirector: useDirector },
   };
 }

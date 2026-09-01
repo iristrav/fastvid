@@ -159,6 +159,39 @@ async function providerResolver(identity: AssetSourceIdentity): Promise<Provider
     }
   }
 
+  /**
+   * RONDE 166 (§2) — Freesound, the provider the AMBIENT track now names.
+   *
+   * `freesound:401178` is a real CC-licensed recording, and the module that knows how to fetch one
+   * already exists: `cinematicAudio/fetcher.ts` resolves the preview URL through the Freesound API
+   * and caches the file. The rehydrator asks IT rather than talking to Freesound itself, for the
+   * same reason it asks the YouTube layer rather than yt-dlp — the fetcher owns the key, the cache
+   * directory and the retry behaviour, and a second copy of that would drift.
+   *
+   * The import is inside the branch so a build without the module fails closed with a refusal
+   * rather than throwing at boot.
+   */
+  if (provider === "freesound") {
+    try {
+      const { freesoundPreviewUrl } = await import("./cinematicAudio/fetcher");
+      const url = await freesoundPreviewUrl(Number(id));
+      if (!url) {
+        return {
+          ok: false,
+          code: "REHYDRATION_DOWNLOAD_FAILED",
+          message: `Freesound #${id} has no retrievable preview (no FREESOUND_API_KEY, or the sound is gone)`,
+        };
+      }
+      return { ok: true, url };
+    } catch (err) {
+      return {
+        ok: false,
+        code: "REHYDRATION_UNSUPPORTED_PROVIDER",
+        message: `the Freesound fetcher is unavailable: ${(err as Error).message}`,
+      };
+    }
+  }
+
   return {
     ok: false,
     code: "REHYDRATION_UNSUPPORTED_PROVIDER",
