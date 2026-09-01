@@ -30,6 +30,7 @@ import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicen
  * its own, which is why the decision now lives there and every module can reach it.
  */
 import { rankedPool } from "./poolRanking";
+import { penaliseDuplicates, type UsageLedger } from "./duplicateGuard";
 import type { VisualIntent as RankingIntent } from "./visualMatchingV2/types";
 import {
   emptyQueryContext,
@@ -87,7 +88,20 @@ export type PoolCandidateSource =
   | "openverse"
   | "nasa"
   | "nara"
-  | "loc";
+  | "loc"
+  /**
+   * RONDE 169 — YouTube, so it can be RANKED rather than only reached.
+   *
+   * Until now YouTube existed solely in `HISTORICAL_SOURCE_TIER_ORDER`, a first-hit-wins cascade
+   * where being second in a fixed list is the whole of a source's chance. RULE 6 asks that an
+   * excellent YouTube clip be able to beat a poor archive one, which is not expressible in a
+   * cascade — a candidate has to be in the pool the ranking runs over.
+   *
+   * Candidates are produced by `youtubePoolSource.ts`, which injects the EXISTING
+   * `searchYoutubeVideoCandidates` (quota cooldown, RapidAPI fallback, licence modes and per-render
+   * budgets all intact) rather than searching for itself.
+   */
+  | "youtube_cc";
 
 /** Metadata-only representation of one retrieval candidate.
  *  No binary data, no local paths, no presigned URLs that may expire (except
@@ -1589,7 +1603,21 @@ async function buildSceneCandidatePoolInner(
  * from an audit round. Set POOL_RANKING_V2=true to activate.
  */
 export function poolRankingV2Enabled(): boolean {
-  return (process.env.POOL_RANKING_V2 ?? "").trim().toLowerCase() === "true";
+  const explicit = (process.env.POOL_RANKING_V2 ?? "").trim().toLowerCase();
+  if (explicit === "true") return true;
+  if (explicit === "false") return false;
+  /**
+   * RONDE 170 — ON for the cinematic route, OFF for the legacy one, unless told otherwise.
+   *
+   * The brief asks for the ranking to become part of the NORMAL cinematic retrieval path, and it
+   * is bound to that route rather than switched on globally for a reason: the legacy compose path
+   * has years of tuning built around the keyword scorer's behaviour, and changing what every
+   * existing render picks is not something an integration round should do as a side effect.
+   *
+   * `POOL_RANKING_V2` still overrides in both directions, so either route can be forced either way
+   * for a comparison render.
+   */
+  return (process.env.CINEMATIC_EDITING_ENGINE ?? "").trim().toLowerCase() === "true";
 }
 
 /**
@@ -1605,6 +1633,15 @@ export type PoolSelectionContext = {
   usedPaths?: ReadonlySet<string>;
   usedCategories?: ReadonlyMap<string, number>;
   entityTerms?: readonly string[];
+  /**
+   * RONDE 170 — every asset this VIDEO has already adopted, keyed by provider + id.
+   *
+   * Video-wide rather than per-scene or per-query: the complaint this answers is a viewer seeing
+   * the same shot come back, and that does not care which query found it the second time.
+   */
+  usageLedger?: UsageLedger;
+  /** Where this selection is happening, so a repeat can be reported as same-beat/scene/video. */
+  at?: { sceneIndex: number; beatIndex: number };
 };
 
 export function selectCandidatesFromPool(
@@ -1627,7 +1664,7 @@ export function selectCandidatesFromPool(
    * routes the same candidates through that engine rather than growing a second one here.
    */
   if (poolRankingV2Enabled() && ctx?.intent) {
-    return rankedPool({
+    const ranked = rankedPool({
       intent: ctx.intent,
       candidates: pool.candidates,
       ...(ctx.targetDurationSec != null ? { targetDurationSec: ctx.targetDurationSec } : {}),
@@ -1636,7 +1673,28 @@ export function selectCandidatesFromPool(
       ...(ctx.usedPaths ? { usedPaths: ctx.usedPaths } : {}),
       ...(ctx.usedCategories ? { usedCategories: ctx.usedCategories } : {}),
       ...(ctx.entityTerms ? { entityTerms: ctx.entityTerms } : {}),
-    }).slice(0, count);
+    });
+
+    /**
+     * RONDE 170 — repetition is settled AFTER relevance, never inside it.
+     *
+     * The ranking engine owns relevance and `penaliseDuplicates` owns repetition. Keeping them
+     * apart is the only way RULE 6 and RULE 7 can both hold: a second scorer would have its own
+     * opinion about relevance and start disagreeing with the first one. The penalty is small
+     * enough to settle a near-tie and too small to overturn a real difference in relevance.
+     *
+     * Without a ledger there is nothing to be a duplicate OF, and the engine's order stands.
+     */
+    if (!ctx.usageLedger) return ranked.slice(0, count);
+    return penaliseDuplicates({
+      ranked,
+      identityOf: (c) => ({ provider: c.source, providerAssetId: c.assetId }),
+      scoreOf: (c) => c.rankingScore ?? 0,
+      ledger: ctx.usageLedger,
+      at: ctx.at ?? { sceneIndex: pool.sceneIndex, beatIndex: 0 },
+    })
+      .map((r) => r.candidate)
+      .slice(0, count);
   }
 
   const beatTokens = Array.from(new Set(

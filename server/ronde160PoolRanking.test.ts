@@ -376,22 +376,49 @@ describe("FASE 7 — the live pool selector can reach the engine", () => {
     expect(out[0]!.id).toBe("yt-strong");
   });
 
-  it("is OFF by default — an audit round does not change what every render picks", async () => {
-    delete process.env.POOL_RANKING_V2;
-    const { poolRankingV2Enabled } = await import("./scenePool");
-    expect(poolRankingV2Enabled()).toBe(false);
-    process.env.POOL_RANKING_V2 = "true";
-    expect(poolRankingV2Enabled()).toBe(true);
-    /** Opt-in: anything that is not "true" leaves the historical scorer in place. */
-    for (const v of ["yes", "1", "", "false"]) {
-      process.env.POOL_RANKING_V2 = v;
-      expect(poolRankingV2Enabled(), v).toBe(false);
+  /**
+   * RONDE 170 — the routing rule, in full.
+   *
+   * The engine is ON for the cinematic route and OFF for the legacy one. It is bound to the route
+   * rather than switched on globally because the legacy compose path has years of tuning built
+   * around the keyword scorer's behaviour, and changing what every existing render picks is not
+   * something an integration round should do as a side effect.
+   */
+  it("follows the cinematic route by default, and the flag overrides in both directions", async () => {
+    const ORIGINAL_ENGINE = process.env.CINEMATIC_EDITING_ENGINE;
+    try {
+      const { poolRankingV2Enabled } = await import("./scenePool");
+
+      // Legacy route, no flag: the historical keyword scorer stays.
+      delete process.env.POOL_RANKING_V2;
+      delete process.env.CINEMATIC_EDITING_ENGINE;
+      expect(poolRankingV2Enabled()).toBe(false);
+
+      // Cinematic route, no flag: the engine runs.
+      process.env.CINEMATIC_EDITING_ENGINE = "true";
+      expect(poolRankingV2Enabled()).toBe(true);
+
+      // The flag wins over the route, both ways.
+      process.env.POOL_RANKING_V2 = "false";
+      expect(poolRankingV2Enabled(), "the flag could not switch it off on the cinematic route").toBe(false);
+      delete process.env.CINEMATIC_EDITING_ENGINE;
+      process.env.POOL_RANKING_V2 = "true";
+      expect(poolRankingV2Enabled(), "the flag could not switch it on for the legacy route").toBe(true);
+
+      /** Anything that is neither "true" nor "false" is not an instruction — the route decides. */
+      for (const v of ["yes", "1", ""]) {
+        process.env.POOL_RANKING_V2 = v;
+        expect(poolRankingV2Enabled(), v).toBe(false);
+      }
+    } finally {
+      if (ORIGINAL_ENGINE === undefined) delete process.env.CINEMATIC_EDITING_ENGINE;
+      else process.env.CINEMATIC_EDITING_ENGINE = ORIGINAL_ENGINE;
     }
   });
 
   /** With the switch off the old scorer still runs, unchanged — nothing was replaced by stealth. */
   it("with the switch off the historical keyword scorer still decides", async () => {
-    delete process.env.POOL_RANKING_V2;
+    process.env.POOL_RANKING_V2 = "false";
     const { selectCandidatesFromPool } = await import("./scenePool");
     const out = selectCandidatesFromPool(
       "Apple Park ring campus",

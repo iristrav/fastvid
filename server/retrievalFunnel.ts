@@ -70,7 +70,9 @@ export type FunnelCandidateSource =
   | "openverse"
   | "nasa"
   | "nara"
-  | "loc";
+  | "loc"
+  /** RONDE 169 — YouTube is a pool source now, so the funnel counts it like any other. */
+  | "youtube_cc";
 
 export type FunnelStrategy =
   | "archive_dominant"   // coverage > ARCHIVE_DOMINANT_THRESHOLD
