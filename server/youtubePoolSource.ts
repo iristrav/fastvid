@@ -152,17 +152,46 @@ export function youtubeRowToPoolCandidate(
 }
 
 /**
+ * How many of a beat's queries YouTube is asked, at most.
+ *
+ * Every query is one Data API search and therefore real quota. Six is enough for the pool to hold
+ * results from several angles on a beat — the event, the person, the place, the period — while
+ * staying far below the per-render download budget that governs what can actually be used.
+ *
+ * The cap is on QUERIES ISSUED, not on queries considered: the caller ranks them, and this takes
+ * the best ones.
+ */
+export const MAX_YOUTUBE_QUERIES_PER_BEAT = 6;
+
+/**
  * Search YouTube and return pool candidates.
  *
  * The search function is INJECTED — this is the existing `searchYoutubeVideoCandidates`, with its
  * quota cooldown, its RapidAPI fallback and its licence handling. Nothing here re-implements any
  * of it, and nothing here holds a key.
+ *
+ * ── MASTER YOUTUBE BUILD — why this takes a LIST of queries ─────────────────────────────────
+ *
+ * It used to take one string, and `buildSceneCandidatePool` handed it `queries[0]`. Every other
+ * provider in that file receives the whole `queries` array; YouTube alone got the first element,
+ * so a beat with four good search angles asked YouTube about one of them and then ranked whatever
+ * that single phrasing happened to return.
+ *
+ * That is the difference between "YouTube is a source" and "YouTube is a source we actually
+ * search". A pool of five results from one phrasing cannot be ranked into a good choice; the
+ * ranking engine can only pick the best of what retrieval brought it.
+ *
+ * Queries are issued in the order given — the caller has already ranked them — and stop early once
+ * the pool is full, so a beat whose first query answers well does not spend quota on the rest.
  */
 export async function youtubePoolCandidates(params: {
-  query: string;
+  /** The beat's queries, best first. A single string is accepted for callers that have one. */
+  queries: readonly string[] | string;
   sceneIndex: number;
   mode: YoutubeLicenseMode;
   maxResults?: number;
+  /** Cap on searches issued; see MAX_YOUTUBE_QUERIES_PER_BEAT. */
+  maxQueries?: number;
   search: (
     query: string,
     sceneIndex: number,
@@ -176,42 +205,80 @@ export async function youtubePoolCandidates(params: {
   minRelevanceScore?: number;
   requiredPersonName?: string;
   retrievedAt?: string;
-}): Promise<{ candidates: YoutubePoolCandidate[]; log: string }> {
+}): Promise<{ candidates: YoutubePoolCandidate[]; log: string; apiCalls: number }> {
   const max = params.maxResults ?? 8;
-  let rows: YoutubeRowLike[] = [];
-  let failure: string | null = null;
-  try {
-    rows = await params.search(
-      params.query,
-      params.sceneIndex,
-      params.mode,
-      params.relevanceKeywords ?? [],
-      params.minRelevanceScore ?? 0,
-      params.requiredPersonName ?? "",
-      max
-    );
-  } catch (err) {
-    /**
-     * §8 — a source that FAILED and a source that found nothing are different facts, and a log
-     * that cannot tell them apart cannot answer "why was YouTube not used for this beat".
-     */
-    failure = (err as Error).message?.slice(0, 120) ?? "unknown error";
-  }
+  const requested = typeof params.queries === "string" ? [params.queries] : [...params.queries];
+  /** Empty and duplicate phrasings are dropped before they cost a search. */
+  const queries = [...new Set(requested.map((q) => q.trim()).filter(Boolean))].slice(
+    0,
+    Math.max(1, params.maxQueries ?? MAX_YOUTUBE_QUERIES_PER_BEAT)
+  );
 
   const candidates: YoutubePoolCandidate[] = [];
+  /** Provider identity, so the same video found by two queries is one candidate. */
+  const seenVideoIds = new Set<string>();
+  const failures: string[] = [];
   let withoutId = 0;
-  for (const row of rows) {
-    const c = youtubeRowToPoolCandidate(row, params.mode, params.retrievedAt);
-    if (c) candidates.push(c);
-    else withoutId++;
+  let duplicates = 0;
+  let apiCalls = 0;
+
+  for (const query of queries) {
+    if (candidates.length >= max) break;
+    /**
+     * One line per query, so a production log answers "what did this beat actually ask YouTube".
+     * The query is beat-derived text and carries no credential; the key lives in the injected
+     * search function and never reaches this module.
+     */
+    console.log(
+      `[SearchQuery] beat=s${params.sceneIndex} type=youtube query=${JSON.stringify(query)} ` +
+        `reason=pool_query_${queries.indexOf(query) + 1}_of_${queries.length}`
+    );
+    let rows: YoutubeRowLike[] = [];
+    try {
+      apiCalls += 1;
+      rows = await params.search(
+        query,
+        params.sceneIndex,
+        params.mode,
+        params.relevanceKeywords ?? [],
+        params.minRelevanceScore ?? 0,
+        params.requiredPersonName ?? "",
+        max
+      );
+    } catch (err) {
+      /**
+       * §8 — a source that FAILED and a source that found nothing are different facts, and a log
+       * that cannot tell them apart cannot answer "why was YouTube not used for this beat".
+       *
+       * One query failing no longer takes the beat's whole YouTube search down with it: quota
+       * errors and transient 5xx are exactly what the other angles exist to survive.
+       */
+      failures.push((err as Error).message?.slice(0, 120) ?? "unknown error");
+      continue;
+    }
+
+    for (const row of rows) {
+      const c = youtubeRowToPoolCandidate(row, params.mode, params.retrievedAt);
+      if (!c) {
+        withoutId++;
+        continue;
+      }
+      if (seenVideoIds.has(c.assetId)) {
+        duplicates++;
+        continue;
+      }
+      seenVideoIds.add(c.assetId);
+      candidates.push(c);
+      if (candidates.length >= max) break;
+    }
   }
 
   const log =
     `[Retrieval] s${params.sceneIndex} source=youtube mode=${params.mode} ` +
-    (failure
-      ? `attempted=true failed=true reason=${JSON.stringify(failure)}`
-      : `attempted=true candidates=${candidates.length}` +
-        (withoutId > 0 ? ` dropped_no_id=${withoutId}` : ""));
+    `queries=${queries.length} searches=${apiCalls} candidates=${candidates.length}` +
+    (duplicates > 0 ? ` deduped=${duplicates}` : "") +
+    (withoutId > 0 ? ` dropped_no_id=${withoutId}` : "") +
+    (failures.length > 0 ? ` failed=${failures.length} reason=${JSON.stringify(failures[0])}` : "");
 
-  return { candidates, log };
+  return { candidates, log, apiCalls };
 }

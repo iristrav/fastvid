@@ -146,7 +146,7 @@ describe("R169 — a YouTube result becomes an ordinary pool candidate", () => {
 
   it("searches through the INJECTED function and reports what it found", async () => {
     const { candidates, log } = await youtubePoolCandidates({
-      query: "apple park", sceneIndex: 2, mode: "creative_common",
+      queries: ["apple park"], sceneIndex: 2, mode: "creative_common",
       search: async () => [ytRow({ videoId: "a1" }), ytRow({ videoId: "a2" })],
     });
     expect(candidates.map((c) => c.assetId)).toEqual(["a1", "a2"]);
@@ -161,23 +161,29 @@ describe("R169 — a YouTube result becomes an ordinary pool candidate", () => {
    */
   it("distinguishes a failed search from an empty one", async () => {
     const failed = await youtubePoolCandidates({
-      query: "q", sceneIndex: 0, mode: "any",
+      queries: ["q"], sceneIndex: 0, mode: "any",
       search: async () => { throw new Error("quota exceeded"); },
     });
     expect(failed.candidates).toEqual([]);
-    expect(failed.log).toContain("failed=true");
+    /**
+     * MASTER YOUTUBE BUILD — the log now COUNTS failures instead of flagging one, because a beat
+     * issues several queries and "two of six failed" is a different fact from "it failed". The
+     * distinction this test exists for is unchanged and asserted more precisely than before: a
+     * failure is reported with its count and reason, an empty search reports neither.
+     */
+    expect(failed.log).toContain("failed=1");
     expect(failed.log).toContain("quota");
 
     const empty = await youtubePoolCandidates({
-      query: "q", sceneIndex: 0, mode: "any", search: async () => [],
+      queries: ["q"], sceneIndex: 0, mode: "any", search: async () => [],
     });
     expect(empty.log).toContain("candidates=0");
-    expect(empty.log).not.toContain("failed=true");
+    expect(empty.log).not.toContain("failed=");
   });
 
   it("the retrieval log carries no key and no media URL", async () => {
     const { log } = await youtubePoolCandidates({
-      query: "apple park", sceneIndex: 0, mode: "any",
+      queries: ["apple park"], sceneIndex: 0, mode: "any",
       search: async () => [ytRow({ videoId: "a1" })],
     });
     expect(log).not.toMatch(/https?:/);

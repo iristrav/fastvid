@@ -1548,17 +1548,28 @@ async function buildSceneCandidatePoolInner(
      */
     tasks.push(
       youtubePoolCandidates({
-        query: queries[0] ?? primaryQuery,
+        /**
+         * MASTER YOUTUBE BUILD — the whole query list, like every other provider in this file.
+         *
+         * This was `queries[0]`. Pexels, Wikimedia and Internet Archive all receive `queries`;
+         * YouTube alone received its first element, so a beat with four good search angles asked
+         * YouTube about one of them. The ranking engine can only choose from what retrieval
+         * returned, so a one-phrasing pool made the ranking decorative for this source.
+         *
+         * The adapter bounds how many it issues (MAX_YOUTUBE_QUERIES_PER_BEAT) and stops early
+         * once the pool is full, so this widens the search without spending unbounded quota.
+         */
+        queries: queries.length > 0 ? queries : [primaryQuery],
         sceneIndex,
         mode,
         maxResults: maxPerSource,
         search: req.youtubeSearch,
-      }).then(({ candidates, log }) => {
+      }).then(({ candidates, log, apiCalls }) => {
         console.log(log);
         return {
           candidates: candidates as unknown as PoolCandidate[],
-          /** One search call, whatever it returned — the same accounting every provider gets. */
-          apiCalls: 1,
+          /** The searches actually issued — one per query, not a hardcoded 1. */
+          apiCalls,
           source: "youtube_cc",
           ms: Date.now() - liveT0,
         };
