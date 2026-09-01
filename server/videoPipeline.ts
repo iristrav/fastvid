@@ -13076,6 +13076,38 @@ export async function downloadYouTubeCCClip(
     }
   }
 
+  /**
+   * MASTER YOUTUBE BUILD — a YouTube clip that cannot be fetched says WHY, and says it once.
+   *
+   * ── The production silence this replaces ────────────────────────────────────────────────────
+   *
+   * The first real Railway render found twelve YouTube videos, passed all twelve through the
+   * licence check with ALLOW_UNVERIFIED_YOUTUBE, and finished with `[YouTubeUsage] used=0`. There
+   * was no download line anywhere in six and a half minutes of log, because this function returned
+   * a bare `false` — no reason, no distinction, nothing to grep for.
+   *
+   * That made two completely different situations look identical:
+   *
+   *   · NO ROUTE CONFIGURED — neither YOUTUBE_CC_DL_SERVICE nor RAPIDAPI_KEY is set, so no
+   *     download was ever possible. A configuration gap: search works, ingest does not exist.
+   *     This is the state the preflight calls `youtube_download: OPTIONAL/MISSING`, and it is
+   *     almost certainly what produced used=0.
+   *   · ROUTE CONFIGURED AND FAILED — a service was there and it did not deliver. A real failure
+   *     worth investigating.
+   *
+   * An operator cannot act on the first and must act on the second, so the log now names which one
+   * it was. Presence only: the service URL and the key are never printed, only whether they exist.
+   */
+  const hasCloudRoute = Boolean(cloudDlService);
+  const hasRapidRoute = Boolean(RAPIDAPI_KEY);
+  console.warn(
+    `[YouTubeDownload] video=${videoId} scene=${sceneIndex} status=` +
+      (hasCloudRoute || hasRapidRoute ? "DOWNLOAD_FAILED" : "DOWNLOAD_UNAVAILABLE") +
+      ` cloudService=${hasCloudRoute ? "SET" : "MISSING"} rapidApi=${hasRapidRoute ? "SET" : "MISSING"}` +
+      (hasCloudRoute || hasRapidRoute
+        ? " reason=every_configured_route_failed"
+        : " reason=no_download_route_configured — set YOUTUBE_CC_DL_SERVICE or RAPIDAPI_KEY")
+  );
   return false;
 }
 

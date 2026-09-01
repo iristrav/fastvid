@@ -181,7 +181,20 @@ export function sanitizeVisualKeyword(keyword: unknown): string {
   const raw = typeof keyword === "string" ? keyword : keyword == null ? "" : String(keyword);
   let k = raw
     .toLowerCase()
-    .replace(/["'`]/g, "")
+    /**
+     * PRODUCTION FIX — apostrophes are DELETED, not turned into spaces.
+     *
+     * The next line maps every non-`\w` character to a space, and `\w` excludes apostrophes. So
+     * any apostrophe that survives this strip splits the word around it: `didn't` became `didn t`
+     * and the fragment `didn` went to the providers as a keyword. The first real production render
+     * shows it happening — `query="didn know hitler" term="didn"`.
+     *
+     * This used to list only the STRAIGHT apostrophe. Narration written by an LLM uses the
+     * typographic one (U+2019) almost every time, so in production the strip never fired.
+     * U+2018 and the acute accent are included for the same reason: they are what a text pipeline
+     * actually meets, and each of them splits a contraction exactly the same way.
+     */
+    .replace(/["'`\u2018\u2019\u02BC\u00B4]/g, "")
     .replace(/[^\w\s-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -214,6 +227,8 @@ export function sanitizePrioritySubject(subject: unknown): string {
   if (k) return k.split(/\s+/).slice(0, 2).join(" ");
   const words = (typeof subject === "string" ? subject : subject == null ? "scene" : String(subject))
     .toLowerCase()
+    /** Same reason as `sanitizeVisualKeyword`: an apostrophe here would split the word. */
+    .replace(/["'`\u2018\u2019\u02BC\u00B4]/g, "")
     .replace(/[^\w\s-]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !ABSTRACT_KEYWORD_RE.test(w))
@@ -526,6 +541,8 @@ function tokenizeForRelevance(text: unknown): string[] {
   const raw = typeof text === "string" ? text : text == null ? "" : String(text);
   return raw
     .toLowerCase()
+    /** Same reason again — a split contraction would score relevance against a fragment. */
+    .replace(/["'`\u2018\u2019\u02BC\u00B4]/g, "")
     .replace(/[^\w\s-]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3);
