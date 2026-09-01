@@ -292,6 +292,14 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     voice: params.voice ?? null,
     /** R160 — without this the cinematic route produced an UNGRADED video. See translateEdl. */
     look: params.look ?? { grade: "documentary" },
+    /**
+     * RONDE 186 — the measured alignment, finally handed on.
+     *
+     * This function has accepted `words` since RONDE 151 and never passed them anywhere, so no
+     * stored timeline ever carried word timing and the caption engine's word-level modes could not
+     * run on the route that renders a real video.
+     */
+    words: params.words ?? [],
   });
 
   /**

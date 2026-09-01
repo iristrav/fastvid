@@ -408,7 +408,20 @@ export function timelineToRemotionProps(params: {
           reason: g.reason ?? null,
         };
       }),
-    words: params.words ?? [],
+    /**
+     * RONDE 186 — the video's word timing, from the TIMELINE when the caller supplies none.
+     *
+     * The render worker takes a stored timeline and nothing else; it has no TTS alignment to hand
+     * over, and it was passing none — so `words` was always empty on the one path that renders a
+     * real video, and karaoke could never happen there whatever a caption's mode said.
+     *
+     * Deriving it from the captions' own `words` makes the document self-sufficient, which is what
+     * "de timeline is de single source of truth" has to mean for a feature that needs measurements.
+     * An explicit `params.words` still wins, so the planning path is unchanged.
+     */
+    words: params.words ?? captionTrack(timeline)
+      .filter((c) => !c.disabled)
+      .flatMap((c) => c.words ?? []),
     unresolvedCollisions,
     meta: {
       videoId: timeline.videoId,

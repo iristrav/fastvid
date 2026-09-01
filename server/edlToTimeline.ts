@@ -357,6 +357,24 @@ export function translateEdl(params: {
    * produced before — which keeps every existing test and the golden render unchanged.
    */
   look?: TimelineLook;
+  /**
+   * RONDE 186 — the MEASURED word boundaries, so a caption can carry its own.
+   *
+   * ── The gap this closes ──────────────────────────────────────────────────────────────────
+   *
+   * `karaoke`, `word_by_word` and `highlight_word` need word timing to mean anything, and the
+   * render worker takes a STORED timeline and nothing else. Nothing put word timing into that
+   * document, so the entire caption engine built in RONDE 152 could only ever run from a caller
+   * still holding the TTS alignment in memory — which no production path is.
+   *
+   * `runCinematicPipeline` has accepted `words` since RONDE 151 and dropped them on the floor here.
+   * They now reach the captions they belong to.
+   *
+   * Absent means "not measured", and a caption then carries no `words`. It is never filled with an
+   * estimate: a guessed boundary makes a word highlight land on the wrong syllable, which is worse
+   * than a caption that stays a sentence and says so.
+   */
+  words?: readonly { word: string; startSec: number; endSec: number }[];
 }): EdlTranslation {
   const timeline = emptyTimeline(params.videoId, params.format ?? DEFAULT_FORMAT);
   if (params.look) timeline.look = params.look;
@@ -432,12 +450,23 @@ export function translateEdl(params: {
     });
 
     for (const caption of decision.captions) {
+      const start = Number((sceneOffsetSec + caption.startSec).toFixed(3));
+      const end = Number((sceneOffsetSec + caption.endSec).toFixed(3));
+      /**
+       * RONDE 186 — this caption's own slice of the measured alignment, in absolute seconds.
+       *
+       * A word counts as inside when its span OVERLAPS the caption's, not when it is wholly
+       * contained: a word that begins a tenth of a second before the caption appears is still that
+       * caption's word, and dropping it would leave the first word of a karaoke line unhighlighted.
+       */
+      const spoken = (params.words ?? []).filter((w) => w.endSec > start && w.startSec < end);
       const el = {
         id: timelineElementId("cap", decision.beatId, caption.captionType, caption.startSec),
         text: caption.subtitle ? `${caption.text}\n${caption.subtitle}` : caption.text,
-        start: Number((sceneOffsetSec + caption.startSec).toFixed(3)),
-        end: Number((sceneOffsetSec + caption.endSec).toFixed(3)),
+        start,
+        end,
         style: styleFor(caption),
+        ...(spoken.length > 0 ? { words: spoken.map((w) => ({ ...w })) } : {}),
       };
       if (caption.position === "bottom-left" || caption.position === "bottom-right") {
         unsupported.push(

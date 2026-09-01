@@ -404,6 +404,25 @@ export type TimelineCaption = {
    * Indices rather than strings so a word that occurs twice can be emphasised once.
    */
   emphasisWordIndices?: number[];
+  /**
+   * RONDE 186 — the MEASURED word boundaries for this caption's own text, in absolute seconds.
+   *
+   * ── Why they live on the caption and not somewhere else ─────────────────────────────────
+   *
+   * `karaoke`, `word_by_word` and `highlight_word` are meaningless without word timing, and the
+   * timeline is what the renderer reads. A render job takes a STORED timeline and nothing else, so
+   * a document that could not carry these was a document that could never produce karaoke: the
+   * whole caption engine was reachable only from a caller that happened to still be holding the TTS
+   * alignment in memory. That was true of no production path.
+   *
+   * On the caption rather than on a video-wide track because a caption already owns its text and
+   * its time range, and these are the same text's boundaries. It travels with the element through
+   * versioning, editing and rehydration without a second lookup that could go stale against it.
+   *
+   * Absent means "not measured". A caption whose mode needs word timing and has none is reported
+   * as unsupported, never quietly downgraded to a sentence.
+   */
+  words?: Array<{ word: string; startSec: number; endSec: number }>;
   editedByUser?: boolean;
   disabled?: boolean;
 };
