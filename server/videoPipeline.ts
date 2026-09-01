@@ -4527,7 +4527,28 @@ export async function downloadAndTrimPoolCandidate(
   );
 
   const _dtT0 = Date.now();
-  setWorkerHeartbeat(`downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`);
+  /**
+   * THE HEARTBEAT'S OWN LABEL — named once, removed once, and never anybody else's.
+   *
+   * ── The false alarm this ends ────────────────────────────────────────────────────────────
+   *
+   * A production log showed `downloadAndTrim s0b1 src=loc (1506s)` — three downloads apparently
+   * hung for twenty-five minutes — while `[Hang] composeSceneVideo EXIT s0` proved scene 0 had
+   * long since finished and `[VisualCoverageFinal]` had already been printed. Nothing was hung.
+   *
+   * Two defects made the line lie. This function set one label on entry and had EIGHT `return null`
+   * paths that never removed it, so a refused candidate left its label behind for the life of the
+   * worker. And the three clears it did have were `clearWorkerHeartbeat()` with no argument, whose
+   * documented behaviour is to clear EVERY active label — so one download finishing erased the
+   * evidence of every other download still running.
+   *
+   * The two together make the heartbeat unreadable in both directions: phantom hangs that never
+   * happened, and real hangs that vanish the moment a neighbour finishes. A diagnostic that lies is
+   * worse than none, because it sends the reader somewhere else entirely — which is exactly what it
+   * did here.
+   */
+  const heartbeatLabel = `downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`;
+  setWorkerHeartbeat(heartbeatLabel);
   console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
     /**
@@ -4821,7 +4842,6 @@ export async function downloadAndTrimPoolCandidate(
             },
           }));
         }
-        clearWorkerHeartbeat();
         return ok ? outPath : null;
       } else {
         /**
@@ -4885,7 +4905,6 @@ export async function downloadAndTrimPoolCandidate(
             },
           }));
         }
-        clearWorkerHeartbeat();
         return exists ? outPath : null;
       }
     } finally {
@@ -4893,8 +4912,13 @@ export async function downloadAndTrimPoolCandidate(
     }
   } catch (err) {
     console.warn(`[Pool] downloadAndTrimPoolCandidate failed s${sceneIndex}b${beatIndex}:`, (err as Error).message?.slice(0, 100));
-    clearWorkerHeartbeat();
     return null;
+  } finally {
+    /**
+     * Every exit, including the eight `return null` refusals above that used to leave the label
+     * behind. A `finally` is the only construct that cannot be forgotten by a future branch.
+     */
+    clearWorkerHeartbeat(heartbeatLabel);
   }
 }
 
@@ -28059,7 +28083,13 @@ async function adoptWikimediaBeatClipInner(
     if (!clipPath) return false;
     const _awpT0 = Date.now();
     const _si = scene.index, _bi = beat.index, _cl = path.basename(clipPath);
-    setWorkerHeartbeat(`adoptWikiPath s${_si}b${_bi} ${label}`);
+    /**
+     * Its own label, removed in a `finally` below — the same fix as the pool downloader.
+     * `clearWorkerHeartbeat()` with no argument clears EVERY active label, so the four
+     * unlabelled calls this function used to make erased every concurrent download's state.
+     */
+    const heartbeatLabel = `adoptWikiPath s${_si}b${_bi} ${label}`;
+    setWorkerHeartbeat(heartbeatLabel);
     console.log(`[Hang] adoptWikiPath ENTER s${_si}b${_bi} ${label} clip=${_cl}`);
     console.log(`[Hang] adoptWikiPath BEFORE beatClipPassesVisionGate s${_si}b${_bi}`);
     const _vt0 = Date.now();
@@ -28068,14 +28098,14 @@ async function adoptWikimediaBeatClipInner(
       90_000, `beatClipPassesVisionGate s${_si}b${_bi} ${label}`
     ).catch((err: Error) => { console.error(`[Hang] beatClipPassesVisionGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return { pass: false, worstScore10: null, skipped: false }; });
     console.log(`[Hang] adoptWikiPath AFTER beatClipPassesVisionGate s${_si}b${_bi} pass=${vision.pass} elapsed=${Date.now()-_vt0}ms`);
-    if (!vision.pass) { clearWorkerHeartbeat(); return false; }
+    if (!vision.pass) { clearWorkerHeartbeat(heartbeatLabel); return false; }
     if (isStillPhotoClip(clipPath)) {
       // Only a still can be capped — asking the counter about a video clip would say nothing.
       recordGateVerdict("still_cap", !canUseDocumentaryStill(dedup));
     }
     if (isStillPhotoClip(clipPath) && !canUseDocumentaryStill(dedup)) {
       recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "still_cap", label);
-      clearWorkerHeartbeat();
+      clearWorkerHeartbeat(heartbeatLabel);
       return false;
     }
     console.log(`[Hang] adoptWikiPath BEFORE applyVideoBeatTextOverlay s${_si}b${_bi}`);
@@ -28092,10 +28122,10 @@ async function adoptWikimediaBeatClipInner(
       20_000, `montageClipPassesComposeGate s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
     console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
-    if (!gatePass) { clearWorkerHeartbeat(); return false; }
-    if (!(await pushClip(withText, holdSec))) { clearWorkerHeartbeat(); return false; }
+    if (!gatePass) { clearWorkerHeartbeat(heartbeatLabel); return false; }
+    if (!(await pushClip(withText, holdSec))) { clearWorkerHeartbeat(heartbeatLabel); return false; }
     console.log(`[Hang] adoptWikiPath EXIT s${_si}b${_bi} adopted=true total=${Date.now()-_awpT0}ms`);
-    clearWorkerHeartbeat();
+    clearWorkerHeartbeat(heartbeatLabel);
     recordClipAdopt(
       dedup.clipAdoptAudit,
       scene.index,
@@ -34232,7 +34262,7 @@ export async function composeSceneVideoInner(
       clips
     );
     console.log(`[Hang] composeSceneVideo EXIT s${scene.index} effects-pass total=${Date.now()-_csvT0}ms`);
-    clearWorkerHeartbeat();
+    /** composeSceneVideo's own `finally` clears this scene's label — see the note there. */
     return r;
   }
 
@@ -34302,7 +34332,6 @@ export async function composeSceneVideoInner(
       published = finalOutputPath;
     }
     console.log(`[Hang] composeSceneVideo EXIT s${scene.index} out=${published.slice(-30)} total=${Date.now()-_csvT0}ms`);
-    clearWorkerHeartbeat();
     finishSceneTiming();
     return published;
   };
@@ -35499,7 +35528,6 @@ export async function composeSceneVideoInner(
         console.warn(`[Pipeline] Scene ${scene.index}: sequential rescue failed:`, seqRescueErr);
       }
       const detail = formatFfmpegExecError(rescueErr);
-      clearWorkerHeartbeat();
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
         `Scene ${scene.index}: compose failed — ${detail}`
@@ -35552,7 +35580,6 @@ export async function composeSceneVideoInner(
     }
   }
   if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) {
-    clearWorkerHeartbeat();
     throw pipelineError(PIPELINE_ERROR.FFMPEG, `Scene ${scene.index} produced no output video`);
   }
 
