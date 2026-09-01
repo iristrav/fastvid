@@ -44,6 +44,7 @@ import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput }
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
+import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 
@@ -105,6 +106,20 @@ export type CinematicPipelineParams = {
 
 /* ═══════════════════════ what it produces ═══════════════════════ */
 
+/**
+ * RONDE 166 (§3) — one beat's attention moment, with the evidence that produced it.
+ *
+ * The evidence travels with the verdict on purpose. "This beat is a statistic" is a claim; "this
+ * beat states a figure (\"3 billion\")" is that claim with its receipt, and a Director decision
+ * nobody can check is a Director decision nobody should trust.
+ */
+export type PlannedAttention = {
+  beatId: string;
+  moment: AttentionMoment;
+  evidence: string;
+  effects: (typeof ATTENTION_EFFECTS)[AttentionMoment];
+};
+
 export type CinematicPipelineResult = {
   timeline: ProjectTimeline;
   edl: EDL;
@@ -122,6 +137,13 @@ export type CinematicPipelineResult = {
    * report `musicSourceUnavailable` rather than leaving a silent gap where music was expected.
    */
   audio: CinematicAudioPlan;
+  /**
+   * RONDE 166 (§3) — one entry per beat, in beat order; null where the beat carries no evidence.
+   *
+   * Exposed rather than applied silently: it is available for shot, graphic and pacing decisions,
+   * and a caller can log exactly which beats the Director thought were moments and why.
+   */
+  attention: Array<PlannedAttention | null>;
   /** How the route was configured for this run, for the render log. */
   used: { cinematicEngine: boolean; aiDirector: boolean };
 };
@@ -175,6 +197,13 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   const identities: AssetSourceIdentity[] = [];
   const trims: Array<{ inSec: number; outSec?: number } | undefined> = [];
   const offsets: number[] = [];
+  /** RONDE 166 (§3) — index-aligned with `inputs`; null for a beat with no evidence. */
+  const attention: Array<PlannedAttention | null> = [];
+  /** The whole video's planned length, needed to place a beat in it. From the scenes, not guessed. */
+  const totalPlannedSec = params.scenes.reduce(
+    (max, s) => Math.max(max, s.sceneOffsetSec + Math.max(0, s.director.durationSec)),
+    0
+  );
 
   params.scenes.forEach((scene, sceneIndex) => {
     const decision = director?.decisions[sceneIndex];
@@ -192,6 +221,29 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       });
       identities.push(beat.identity);
       trims.push(beat.sourceTrim);
+      /**
+       * RONDE 166 (§3) — the beat's attention moment, classified from the beat's OWN TEXT.
+       *
+       * `classifyAttentionMoment` was written in RONDE 157 and called by nothing but its own test.
+       * This is where it runs on the live route. It is asked once per beat, here, so every consumer
+       * downstream reads the same answer rather than each re-deriving one.
+       *
+       * Position is passed in but is never sufficient on its own: a `hook` requires an early beat
+       * that ALSO carries a number, a name or a question. Most beats classify as null, which is the
+       * correct answer — a Director that marked every beat as a moment would be marking none.
+       */
+      const moment = classifyAttentionMoment({
+        text: beat.input.intent.spokenText,
+        beatIndexInVideo: inputs.length - 1,
+        videoDurationSec: totalPlannedSec,
+        beatStartSec: scene.sceneOffsetSec + beat.input.beatVoiceStartSec,
+        hasLocation: Boolean(beat.input.intent.visualLocation.trim()),
+      });
+      attention.push(
+        moment
+          ? { beatId: beat.input.intent.beatId, ...moment, effects: ATTENTION_EFFECTS[moment.moment] }
+          : null
+      );
       /** One offset per scene, repeated per beat, because the adapter works decision by decision. */
       offsets.push(scene.sceneOffsetSec);
     });
@@ -257,6 +309,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     director,
     unsupported,
     audio: audioPlan,
+    attention,
     used: { cinematicEngine: true, aiDirector: useDirector },
   };
 }
