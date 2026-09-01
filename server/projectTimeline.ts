@@ -760,6 +760,19 @@ export function timelineDigest(t: ProjectTimeline): string {
     durationSec: t.durationSec,
     format: t.format,
     tracks: t.tracks,
+    /**
+     * RONDE 166 — the LOOK belongs here, and its absence was a real defect.
+     *
+     * This function's own contract is "two timelines with the same digest must render to the same
+     * picture", and RONDE 160 §8 measured that they do not: the same tracks graded `warm` and
+     * graded `cold` differ in every pixel, and both hashed identically. Anything using the digest
+     * to decide "same edit, no need to re-render" would have treated a colour change as no change
+     * at all.
+     *
+     * Found by RONDE 166's undo work — an edit that only changed the look was recorded as "nothing
+     * changed" and could not be undone, because the history recognises an edit by its digest.
+     */
+    look: t.look ?? null,
   };
   return createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 16);
 }
