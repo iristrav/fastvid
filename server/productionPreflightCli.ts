@@ -10,6 +10,24 @@
  * Exits 0 when a real render can be attempted and 1 when it cannot, so CI or a deploy script can
  * gate on it rather than reading the text.
  */
+/**
+ * RONDE 211 — the same configuration the app reads, loaded the same way.
+ *
+ * `server/_core/index.ts` and `server/worker.ts` both open with this import. Without it here, the
+ * preflight read only the exported process environment, so a deployment keeping its configuration
+ * in a `.env` file — which this repository documents, since it ships a `.env.example` — was told
+ * PRODUCTION_RENDER_BLOCKED for an app that boots and renders perfectly well.
+ *
+ * A preflight that cries wolf is worse than none: an operator learns to distrust it, and then
+ * ignores the one report that was right. dotenv never overwrites a variable that is already set,
+ * so a platform-provided environment is completely unaffected by this.
+ *
+ * FIRST, deliberately: `dotenv/config` fills `process.env` as an import side effect, and ES module
+ * imports evaluate in order — a module above it that read configuration at module scope would read
+ * the environment before the file had been loaded.
+ */
+import "dotenv/config";
+
 import { execFileSync } from "child_process";
 
 import { formatPreflight, preflightJson, productionPreflight, type HostProbes } from "./productionPreflight";
