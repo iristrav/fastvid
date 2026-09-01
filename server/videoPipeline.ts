@@ -335,6 +335,31 @@ import {
   type VerifiedQueryContext,
 } from "./searchQueryContract";
 import { formatFallback } from "./renderCorrelation";
+import type { YoutubePoolSearch } from "./scenePool";
+
+/**
+ * RONDE 177 — the YouTube search the SCENE POOL should use, or nothing.
+ *
+ * R175 gave `buildSceneCandidatePool` a YouTube task and R176's audit then found the last missing
+ * link: no production call site passed the search function in, so the pool could call YouTube and
+ * never did. This is that argument, in one place so both call sites cannot drift.
+ *
+ * Returns undefined — rather than a function that returns [] — when YouTube is not configured or
+ * not enabled. The two are different facts to the pool: an absent function is recorded as
+ * `no_search_function_supplied`, while a function returning nothing is a search that happened and
+ * found nothing. Collapsing them would lose exactly the distinction §8 keeps asking for.
+ *
+ * The function itself is the pipeline's own `searchYoutubeVideoCandidates`, so the quota cooldown,
+ * the RapidAPI fallback, the licence modes and the per-render budget are the ones already in use.
+ */
+function scenePoolYoutubeSearch(sourcingCache?: SourcingCache): YoutubePoolSearch | undefined {
+  if (!youtubeSourcingEnabled() || !process.env.YOUTUBE_API_KEY) return undefined;
+  return (query, sceneIndex, license, relevanceKeywords, minRelevanceScore, requiredPersonName, maxResults) =>
+    searchYoutubeVideoCandidates(
+      query, sceneIndex, license, relevanceKeywords, minRelevanceScore,
+      requiredPersonName, maxResults, sourcingCache
+    );
+}
 export { getSearchProvenance, withSearchProvenance } from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
@@ -31125,6 +31150,8 @@ async function fetchSceneVisualsInner(
               extraQueries: inlinePoolQueries.extraQueries,
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+              /** RONDE 177 — YouTube joins the pool here, through the existing search client. */
+              youtubeSearch: scenePoolYoutubeSearch(dedup.sourcingCache),
             }), 60_000, `buildSceneCandidatePool s${scene.index}`);
         console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
@@ -35961,6 +35988,8 @@ async function _runVideoPipelineInner(
             extraQueries: anchoredPoolQueries.extraQueries,
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+            /** RONDE 177 — the same source list for the prefetch as for the inline build. */
+            youtubeSearch: scenePoolYoutubeSearch(),
           }).catch(err => {
             console.warn(`[Pool P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
