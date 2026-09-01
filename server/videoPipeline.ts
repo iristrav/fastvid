@@ -16645,6 +16645,19 @@ type RealEntityRule = {
   clipMustMatchRe: RegExp;
   stockQueries: string[];
   youtubeQueries: string[];
+  /**
+   * RONDE 177 — WHAT the named entity is.
+   *
+   * Added so the cinematic engine's `VisualIntent.brands` / `.companies` / `.objects` can be filled
+   * from a table that already knows every one of these names, instead of a second name list or a
+   * guess made at read time. Tesla is a company and the Cybertruck is a product; that is a fact
+   * about the world, not a search term, and nothing in the query path reads this field.
+   *
+   * `person` is here so the people in this table are NOT offered as brands. A beat that says
+   * "Elon Musk" would otherwise put an animated icon labelled "Elon Musk" on screen, and the
+   * person channel (extractPersonNamesFromText) already answers that question properly.
+   */
+  kind: "person" | "company" | "brand" | "object";
 };
 
 /**
@@ -16669,6 +16682,7 @@ type RealEntityRule = {
 const REAL_ENTITY_RULES: RealEntityRule[] = [
   {
     id: "kylie",
+    kind: "person",
     mentionRe: /\b(kylie\s+jenner|kylie\b|jenner\b)/i,
     clipMustMatchRe: /\b(kylie|jenner|kardashian|celebrity|influencer|makeup|fashion)\b/i,
     stockQueries: ["Kylie Jenner"],
@@ -16676,6 +16690,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "musk",
+    kind: "person",
     mentionRe: /\b(elon\s+musk|musk)\b/i,
     clipMustMatchRe: /\b(musk|elon|tesla|spacex)\b/i,
     stockQueries: ["Elon Musk"],
@@ -16683,6 +16698,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "tesla",
+    kind: "company",
     mentionRe: /\btesla\b/i,
     clipMustMatchRe: /\btesla\b/i,
     stockQueries: ["Tesla"],
@@ -16690,6 +16706,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "spacex",
+    kind: "company",
     mentionRe: /\bspacex\b/i,
     clipMustMatchRe: /\b(spacex|falcon|starship)\b/i,
     stockQueries: ["SpaceX"],
@@ -16697,6 +16714,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "falcon9",
+    kind: "brand",
     mentionRe: /\bfalcon\s*9\b/i,
     clipMustMatchRe: /\b(falcon|spacex)\b/i,
     stockQueries: ["Falcon 9"],
@@ -16704,6 +16722,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "starship",
+    kind: "brand",
     mentionRe: /\bstarship\b/i,
     clipMustMatchRe: /\b(starship|spacex)\b/i,
     stockQueries: ["Starship"],
@@ -16711,6 +16730,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "cybertruck",
+    kind: "brand",
     mentionRe: /\bcybertruck\b/i,
     clipMustMatchRe: /\b(tesla|cybertruck)\b/i,
     stockQueries: ["Cybertruck"],
@@ -16718,6 +16738,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "gigafactory",
+    kind: "brand",
     mentionRe: /\bgigafactory\b/i,
     clipMustMatchRe: /\b(tesla|gigafactory)\b/i,
     stockQueries: ["Gigafactory"],
@@ -16725,6 +16746,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "model3",
+    kind: "brand",
     mentionRe: /\bmodel\s*[3y]\b/i,
     clipMustMatchRe: /\b(tesla|model)\b/i,
     stockQueries: ["Tesla Model 3", "Tesla Model Y"],
@@ -16732,6 +16754,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "starlink",
+    kind: "brand",
     mentionRe: /\bstarlink\b/i,
     clipMustMatchRe: /\b(starlink|spacex|satellite)\b/i,
     stockQueries: ["Starlink"],
@@ -16739,6 +16762,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "neuralink",
+    kind: "company",
     mentionRe: /\bneuralink\b/i,
     clipMustMatchRe: /\b(neuralink|brain|neuroscience)\b/i,
     stockQueries: ["Neuralink"],
@@ -16746,12 +16770,48 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   },
   {
     id: "titanic",
+    kind: "object",
     mentionRe: /\b(rms\s+titanic|titanic)\b/i,
     clipMustMatchRe: /\b(titanic|rms|liner|iceberg|southampton|1912|shipwreck|white\s+star)\b/i,
     stockQueries: ["RMS Titanic", "Titanic"],
     youtubeQueries: ["RMS Titanic", "Titanic"],
   },
 ];
+
+/**
+ * RONDE 177 — the named entities this beat proves, grouped by what they are.
+ *
+ * ── Why this reads the rules table rather than the beat ──────────────────────────────────────
+ *
+ * `VisualIntent.brands` / `.companies` / `.objects` were permanently empty in production, so the
+ * shot planner's object rules and the motion-graphics planner's brand icon could never fire. This
+ * is what fills them, and the whole point is that it introduces no new matching: the entities come
+ * from `extractBeatRealEntities` — the same matcher the retrieval path uses — and each name is the
+ * rule's own `stockQueries[0]`, which RONDE 100B already established as the entity's proper name
+ * and nothing more.
+ *
+ * People are deliberately dropped. `extractPersonNamesFromText` is the person channel and it feeds
+ * `VisualIntent.people`; offering "Elon Musk" as a brand would put an animated icon with his name
+ * on screen.
+ */
+export function beatNamedEntitiesByKind(beatText: string): {
+  brands: string[];
+  companies: string[];
+  objects: string[];
+} {
+  const out = { brands: [] as string[], companies: [] as string[], objects: [] as string[] };
+  for (const rule of extractBeatRealEntities(beatText)) {
+    const name = rule.stockQueries[0]?.trim();
+    if (!name) continue;
+    const bucket =
+      rule.kind === "brand" ? out.brands :
+      rule.kind === "company" ? out.companies :
+      rule.kind === "object" ? out.objects :
+      null;
+    if (bucket && !bucket.includes(name)) bucket.push(name);
+  }
+  return out;
+}
 
 export function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
   const fromBeat = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(beatText));
@@ -39659,6 +39719,13 @@ async function _runVideoPipelineInner(
             people: (text) => extractPersonNamesFromText(text),
             place: (text) => extractVisualPlacePhrase(text),
             action: (text) => extractActionCue(text),
+            /**
+             * RONDE 177 — the named entities and secondary subjects the RETRIEVAL path resolved
+             * for this beat. Injected from here so the plan describes the same beat the search
+             * described; a parallel extractor would let the caption name something else.
+             */
+            namedEntities: (text) => beatNamedEntitiesByKind(text),
+            secondarySubjects: (text) => extractSecondaryEntities(text, undefined),
           },
           voice:
             persisted?.ok && storedAlignment?.totalDurationSec

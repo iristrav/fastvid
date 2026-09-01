@@ -44,6 +44,12 @@
  */
 import type { CandidateAsset, CandidateSource, VisualIntent } from "./visualMatchingV2/types";
 import { docGradeSourceKindForProvider } from "./documentaryStyle";
+import {
+  extractEventPhraseForQuery,
+  extractObjectCue,
+  extractPeriodPhrase,
+  isHistoricalDocumentary,
+} from "./mediaResearchEngine";
 import type { Scene } from "./pipeline/types";
 import type { AssetSourceIdentity } from "./projectTimeline";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
@@ -130,6 +136,18 @@ export type EntityExtractors = {
   people?: (text: string) => string[];
   place?: (text: string) => string;
   action?: (text: string) => string;
+  /**
+   * RONDE 177 — the named brands, companies and objects the beat proves.
+   *
+   * Injected for the same reason as the three above: the answer comes from videoPipeline's
+   * `beatNamedEntitiesByKind`, which reads the retrieval path's own entity table, and importing
+   * videoPipeline from here would be a cycle. The period, event and object-cue extractors are
+   * imported directly instead, because they live in mediaResearchEngine, a leaf both sides
+   * already depend on — an import of the same function is not a second copy.
+   */
+  namedEntities?: (text: string) => { brands: string[]; companies: string[]; objects: string[] };
+  /** The beat's non-primary subjects, as the retrieval path computes them. */
+  secondarySubjects?: (text: string) => string[];
 };
 
 export type SceneFacts = {
@@ -198,13 +216,54 @@ export function identityFrom(adoption: AdoptionFacts | null): AssetSourceIdentit
 }
 
 /**
+ * The historical context this beat STATES, or "" when it states none.
+ *
+ * ── Why this is assembled and not summarised ─────────────────────────────────────────────────
+ *
+ * `historicalContext` is free text in visualMatchingV2's LLM schema, and no LLM runs on this path.
+ * What production can prove is narrower and enough for every consumer: the period the beat names
+ * and the event it names. Both come from the retrieval path's own extractors, so the caption that
+ * appears on screen names the same event the footage was searched for.
+ *
+ * The gate is `isHistoricalDocumentary`, production's existing predicate — and its regex counts any
+ * 19xx/20xx year, so a beat about 2019 passes it. That is deliberately left alone here: this field
+ * only ever reaches shot TYPE and caption decisions, and every one of them degrades to a plainer
+ * choice. It is not a grade, a licence, or a retrieval filter, and it must never become one on the
+ * strength of a year.
+ */
+function historicalContextFrom(beatText: string, period: string, event: string): string {
+  if (!isHistoricalDocumentary(beatText)) return "";
+  /** Only what the beat actually said. Neither present means there is no context to give. */
+  return [event, period].filter(Boolean).join(", ");
+}
+
+/**
  * A production beat, in the engine's vocabulary.
  *
- * The empty strings below are the honest part of this function. `visualTime`,
- * `historicalContext` and `emotion` come from an LLM intent pass in visualMatchingV2 that the
- * production pipeline does not run; every planner that reads them already handles "" (their own
- * test fixtures pass ""), and each one degrades to a plainer, correct decision rather than a wrong
- * confident one.
+ * ── RONDE 177: the fields that used to be empty, and the two that still are ──────────────────
+ *
+ * `visualTime`, `historicalContext`, `objects`, `events`, `brands`, `companies` and
+ * `secondaryVisualSubjects` were hard-coded empty because visualMatchingV2 fills them from an LLM
+ * pass this pipeline does not run. That made real planner rules unreachable in production: the
+ * shot planner's object rules, the caption planner's timeline label and date card, the motion
+ * graphics planner's timeline, highlight box and brand icon. Every one of them is now fed from an
+ * extractor the RETRIEVAL path already uses, so what the plan says about a beat matches what was
+ * searched for it.
+ *
+ * Two fields stay empty on purpose, and neither is an oversight:
+ *
+ *   · `countries` — this codebase has no country vocabulary. `worldGeoSlugs` mixes countries and
+ *     cities in one list, and putting a city in this field would make the shot planner print
+ *     "Beat references a country/region (amsterdam)" in the plan's own reason text. A false
+ *     sentence in the record is worse than a rule that does not fire, and the planner already
+ *     falls through to the director's shot order.
+ *
+ *   · `emotion` — `emotionalPacing` reads this field and, when it is empty, runs its own keyword
+ *     scan over the SAME beat text. Filling it here would be a second copy of that scan (§28),
+ *     and the planner's fallback is not a degraded path — it is the production behaviour.
+ *
+ * `negativeKeywords` stays empty because nothing in this pipeline computes a negative term, and an
+ * invented one would filter footage on a word the script never said.
  */
 export function intentFrom(
   beat: ProductionBeat,
@@ -214,26 +273,41 @@ export function intentFrom(
   extractors: EntityExtractors
 ): VisualIntent {
   const people = extractors.people?.(beat.text) ?? [];
+  const action = extractors.action?.(beat.text) ?? "";
+  const named = extractors.namedEntities?.(beat.text) ?? { brands: [], companies: [], objects: [] };
+  /** The fullest period the beat states ("April 1945"), or "" when it states no year. */
+  const period = extractPeriodPhrase(beat.text);
+  /**
+   * The NAMED event where the beat has one ("Battle of Berlin"), falling back to the bare event
+   * verb. `extractEventPhraseForQuery` is the retrieval path's own answer, given the same action.
+   */
+  const event = extractEventPhraseForQuery(beat.text, action);
+  /**
+   * The concrete object the beat centres on. The rules table's objects come first — "RMS Titanic"
+   * is more specific than "ship" — and the cue is the general answer for beats naming no entity.
+   */
+  const objectCue = extractObjectCue(beat.text);
+  const objects = named.objects.length > 0 ? named.objects : objectCue ? [objectCue] : [];
   return {
     beatId: beatIdFor(sceneIndex, beatIndex),
     spokenText: beat.text,
     /** The pipeline's own chosen search anchor — the closest thing it has to a visual subject. */
     visualSubject: beat.powerWord ?? beat.searchQuery ?? "",
-    visualAction: extractors.action?.(beat.text) ?? "",
+    visualAction: action,
     visualLocation: extractors.place?.(beat.text) ?? "",
-    visualTime: "",
-    historicalContext: "",
+    visualTime: period,
+    historicalContext: historicalContextFrom(beat.text, period, event),
     emotion: "",
     visualDescription: beat.visualDescription ?? "",
     primaryKeyword: beat.searchQuery ?? beat.powerWord ?? "",
     secondaryKeyword: beat.keywords?.[0] ?? "",
     negativeKeywords: [],
-    secondaryVisualSubjects: [],
-    objects: [],
-    brands: [],
-    companies: [],
+    secondaryVisualSubjects: extractors.secondarySubjects?.(beat.text) ?? [],
+    objects,
+    brands: named.brands,
+    companies: named.companies,
     countries: [],
-    events: [],
+    events: event ? [event] : [],
     people,
     /**
      * The QUERY THAT ACTUALLY RAN, from the lineage record, rather than a hash recomputed here.

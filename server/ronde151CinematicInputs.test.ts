@@ -130,14 +130,37 @@ describe("RONDE 151 §4 — 4 beats × 4 seconds land on 0, 4, 8, 12", () => {
 /* ═══════════════════════ §2 — the translation invents nothing ═══════════════════════ */
 
 describe("RONDE 151 §2 — an unknown field is empty, never plausible", () => {
-  it("leaves the LLM-derived intent fields empty, because production never runs that pass", () => {
+  /**
+   * ── RONDE 177 changed what this test asserts, and why ────────────────────────────────────
+   *
+   * It used to pin `visualTime`, `historicalContext`, `objects` and `events` as permanently "".
+   * That was correct for R151 — nothing filled them — but it also pinned the bug: real planner
+   * rules (the shot planner's object rules, the caption planner's date card and timeline label)
+   * could never fire in production, because their inputs were hard-coded empty.
+   *
+   * R177 fills them from the RETRIEVAL path's own extractors. The rule this test still enforces is
+   * unchanged and is the one that matters: a field is empty when the beat proves nothing, never
+   * filled with something plausible. This beat names no year, no event and no object, so all four
+   * are still "" — for a reason about the beat rather than about the pipeline.
+   */
+  it("leaves an intent field empty when the beat proves nothing for it", () => {
     const intent = intentFrom(beat(0, 0), 0, 0, adoption(), {});
-    // visualMatchingV2 derives these from an LLM call the production pipeline does not make.
     expect(intent.visualTime).toBe("");
     expect(intent.historicalContext).toBe("");
-    expect(intent.emotion).toBe("");
     expect(intent.objects).toEqual([]);
     expect(intent.events).toEqual([]);
+  });
+
+  /**
+   * `emotion` and `countries` are the two that stay empty by design, and each for its own reason —
+   * see intentFrom's comment. Pinned so that "fill them too" is a deliberate change rather than a
+   * tidy-up.
+   */
+  it("still leaves emotion and countries empty, deliberately", () => {
+    const intent = intentFrom(beat(0, 0), 0, 0, adoption(), {});
+    expect(intent.emotion).toBe("");
+    expect(intent.countries).toEqual([]);
+    expect(intent.negativeKeywords).toEqual([]);
   });
 
   it("carries what production DOES know", () => {
