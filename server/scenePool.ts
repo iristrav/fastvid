@@ -29,6 +29,8 @@ import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicen
  * module, so the gate could not be imported back out of it. searchQueryContract has no imports of
  * its own, which is why the decision now lives there and every module can reach it.
  */
+import { rankedPool } from "./poolRanking";
+import type { VisualIntent as RankingIntent } from "./visualMatchingV2/types";
 import {
   emptyQueryContext,
   getSearchProvenance,
@@ -1577,14 +1579,65 @@ async function buildSceneCandidatePoolInner(
  * candidates first (or all candidates if pool is small).
  * No API calls — pure in-memory selection.
  */
+/**
+ * RONDE 160 (FASE 7) — use the real ranking engine instead of the keyword counter below.
+ *
+ * Off by default. The engine is connected, tested and reachable by configuration; switching it on
+ * changes which asset every beat of every render picks, and this environment has no provider
+ * credentials, so that change cannot be MEASURED here. Turning it on is therefore a deliberate
+ * production decision with a before/after comparison behind it — not something a deploy inherits
+ * from an audit round. Set POOL_RANKING_V2=true to activate.
+ */
+export function poolRankingV2Enabled(): boolean {
+  return (process.env.POOL_RANKING_V2 ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * What the Director and the render already know about this beat, passed through to the ranking
+ * engine. Every field is optional: absent means the engine simply does not use that signal, which
+ * is exactly what it does today.
+ */
+export type PoolSelectionContext = {
+  intent?: RankingIntent;
+  targetDurationSec?: number;
+  targetOrientation?: "landscape" | "portrait" | "square";
+  targetMotionLevel?: number;
+  usedPaths?: ReadonlySet<string>;
+  usedCategories?: ReadonlyMap<string, number>;
+  entityTerms?: readonly string[];
+};
+
 export function selectCandidatesFromPool(
   beatText: string,
   powerWord: string,
   keywords: string[],
   pool: SceneCandidatePool,
-  count = 5
+  count = 5,
+  /** RONDE 160 — supplied by the caller that has it; absent keeps the historical behaviour. */
+  ctx?: PoolSelectionContext
 ): PoolCandidate[] {
   if (pool.candidates.length === 0) return [];
+
+  /**
+   * RONDE 160 (FASE 7) — thirteen signals instead of one.
+   *
+   * The scorer below counts shared word-stems. It has no notion of source priority, diversity,
+   * duplicate penalty, motion, aspect, duration fit or freshness, and no idea what shot the
+   * Director asked for — all of which `rankCandidates` has implemented and tested all along. This
+   * routes the same candidates through that engine rather than growing a second one here.
+   */
+  if (poolRankingV2Enabled() && ctx?.intent) {
+    return rankedPool({
+      intent: ctx.intent,
+      candidates: pool.candidates,
+      ...(ctx.targetDurationSec != null ? { targetDurationSec: ctx.targetDurationSec } : {}),
+      ...(ctx.targetOrientation ? { targetOrientation: ctx.targetOrientation } : {}),
+      ...(ctx.targetMotionLevel != null ? { targetMotionLevel: ctx.targetMotionLevel } : {}),
+      ...(ctx.usedPaths ? { usedPaths: ctx.usedPaths } : {}),
+      ...(ctx.usedCategories ? { usedCategories: ctx.usedCategories } : {}),
+      ...(ctx.entityTerms ? { entityTerms: ctx.entityTerms } : {}),
+    }).slice(0, count);
+  }
 
   const beatTokens = Array.from(new Set(
     [powerWord, ...keywords, ...beatText.toLowerCase().split(/\s+/)]
