@@ -667,10 +667,19 @@ describe("REAL FFMPEG — every new chain produces a real file", () => {
     expect(check.widthPx).toBe(320);
   }, 300_000);
 
-  it("A CROSSFADE RENDERS, and the result is SHORTER than the sum of its clips", async () => {
+  it("A CROSSFADE RENDERS, and the total length is preserved", async () => {
     /**
-     * The measurable proof that the transition really happened: an overlap removes its own duration
-     * from the total. A crossfade that silently fell back to a cut would come out at 8 seconds.
+     * ── RONDE 184 changed this test's proof, because the old one was the defect ────────────────
+     *
+     * It used to assert the output was SHORTER than the sum of its clips — 7s for two 4s clips —
+     * and called that "the measurable proof that the transition really happened". It was a true
+     * measurement of a fault: nothing rendered the handle a crossfade needs, so the fade ate a
+     * second of programme. R182 measured the same thing at scale, a 12.00s plan coming out at
+     * 10.70s with the picture ending before the narration.
+     *
+     * `transitionsRendered` is the honest answer to "did the xfade path run", and it does not
+     * depend on the video being wrong. The duration then asserts the contract: an overlap consumes
+     * MATERIAL, not screen time.
      */
     const t = timelineWith([
       clip({ id: "vc_0", timelineStart: 0, timelineEnd: 4 }),
@@ -681,9 +690,9 @@ describe("REAL FFMPEG — every new chain produces a real file", () => {
       }),
     ]);
     const { result, check } = await render(t, "xfade");
-    expect(result.transitionsRendered).toBe(1);
-    expect(check.durationSec).toBeGreaterThan(6.5);
-    expect(check.durationSec).toBeLessThan(7.5);
+    expect(result.transitionsRendered, "the crossfade fell back to a cut").toBe(1);
+    expect(check.durationSec).toBeGreaterThan(7.9);
+    expect(check.durationSec).toBeLessThan(8.1);
   }, 300_000);
 
   it("cover, crop and effects all encode", async () => {

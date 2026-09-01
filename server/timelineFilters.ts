@@ -641,6 +641,33 @@ export const DEFAULT_TRANSITION_SEC = 0.5;
  * two inputs, so every join shortens the running total by its own duration. `elapsed` tracks that,
  * which is why the offsets are cumulative rather than the clips' own start times.
  */
+/**
+ * How long a transition between two neighbours can ACTUALLY be, or null when it is not an xfade.
+ *
+ * ── RONDE 184: why this is its own exported function ─────────────────────────────────────────
+ *
+ * The renderer has to know this number BEFORE it renders a segment, because a crossfade consumes
+ * material from both neighbours and that material has to exist — see the handle it now renders. The
+ * graph builder needs the same number afterwards to place the fade.
+ *
+ * Two copies of this clamp is exactly the way the two would drift apart: the renderer would supply
+ * a handle of one length and the graph would fade for another, and the video would come out a
+ * fraction of a second wrong per join with nothing to point at. One function, both callers.
+ *
+ * The bound is the SMALLER neighbour's half-length, because xfade cannot overlap more than a clip
+ * has — beyond that the offset goes negative and ffmpeg fails outright.
+ */
+export function effectiveTransitionSec(
+  kind: string,
+  requestedSec: number | undefined,
+  prevDurationSec: number,
+  nextDurationSec: number
+): number | null {
+  if (!XFADE_TRANSITIONS[kind]) return null;
+  const maxSec = Math.min(prevDurationSec, nextDurationSec) * 0.5;
+  return Math.max(0.05, Math.min(requestedSec ?? DEFAULT_TRANSITION_SEC, maxSec));
+}
+
 export function buildTransitionGraph(params: {
   durations: readonly number[];
   /** The transition INTO each segment. Index 0 is ignored: nothing precedes the first clip. */
@@ -653,9 +680,8 @@ export function buildTransitionGraph(params: {
     const t = transitions[i + 1];
     const name = t ? XFADE_TRANSITIONS[t.kind] : undefined;
     if (!name) return null;
-    // Never longer than either neighbour, or xfade produces a negative offset and fails.
-    const maxSec = Math.min(durations[i]!, durations[i + 1]!) * 0.5;
-    return { name, sec: Math.max(0.05, Math.min(t?.durationSec ?? DEFAULT_TRANSITION_SEC, maxSec)) };
+    const sec = effectiveTransitionSec(t!.kind, t?.durationSec, durations[i]!, durations[i + 1]!);
+    return sec == null ? null : { name, sec };
   });
   if (joins.every((j) => j === null)) return null;
 

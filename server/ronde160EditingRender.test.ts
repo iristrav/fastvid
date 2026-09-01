@@ -524,7 +524,20 @@ describe("R160 §8 — real edits, measured in real pixels", () => {
     const hard = meanColour(await frame(cut, 2.0));
     expect(Math.min(hard.r, hard.b), "a hard cut blended the two clips").toBeLessThan(25);
 
-    /** The overlap is real time, not an illusion: the output is a second shorter than the clips. */
+    /**
+     * ── RONDE 184 changed what this pair of lines asserts, and why ────────────────────────────
+     *
+     * They used to read: the cut is 4s and the dissolve is 3s, "the overlap is real time". That was
+     * a true measurement of a DEFECT. Nothing rendered the handle a crossfade needs, so the fade
+     * consumed a second of the programme — and R182 measured the same fault at scale: a 12.00s plan
+     * rendering as a 10.70s file, with the picture ending before the narration.
+     *
+     * A transition is an overlap of MATERIAL, not a deletion of screen time. The incoming clip now
+     * carries a pre-roll handle for the fade to consume, so both timelines are 4 seconds long — and
+     * that equality is the stronger claim, because a dissolve that silently fell back to a cut
+     * would now be caught by the blended-frame assertions above rather than by a duration that
+     * happened to differ.
+     */
     const durationOf = async (v: string) => {
       const { stdout } = await execFileAsync("ffprobe", [
         "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", v,
@@ -532,7 +545,10 @@ describe("R160 §8 — real edits, measured in real pixels", () => {
       return Number(stdout.trim());
     };
     expect(await durationOf(cut)).toBeCloseTo(4, 1);
-    expect(await durationOf(dissolve), "the dissolve did not overlap the clips").toBeCloseTo(3, 1);
+    expect(
+      await durationOf(dissolve),
+      "the dissolve ate screen time instead of overlapping material"
+    ).toBeCloseTo(4, 1);
   }, 600_000);
 
   /** Both clips must still be intact away from the transition — a dissolve is not a global fade. */

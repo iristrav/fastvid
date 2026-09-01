@@ -50,6 +50,7 @@ import { docGradeSourceKindForProvider } from "./documentaryStyle";
 import {
   buildAudioGraph,
   buildTransitionGraph,
+  effectiveTransitionSec,
   buildVideoFilter,
   cameraChain,
   lookUnsupportedReason,
@@ -349,14 +350,49 @@ export async function probeHasStream(file: string, kind: "v" | "a"): Promise<boo
  * shorter than the slot is looped rather than left short — the timeline says how long this shot is,
  * and a gap would be the renderer overruling it.
  */
+/**
+ * RONDE 184 — a segment is its slot PLUS the handle its transition will consume.
+ *
+ * ── The defect this closes, measured ─────────────────────────────────────────────────────────
+ *
+ * R182's showcase rendered a 12.00s plan as a 10.70s file. Every segment was rendered at exactly
+ * its slot length and then xfade overlapped each join, so each transition took its own duration out
+ * of the running total: two 0.65s dissolves, 1.30s gone. A timeline whose VOICE track is 12s long
+ * produced a picture that stopped 1.3s early — and every clip after the first transition was
+ * cumulatively out of step with the narration it was cut to.
+ *
+ * The timeline was never wrong. A cross-dissolve needs HANDLES: extra material either side of the
+ * cut for the two pictures to blend over. Nothing was rendering them, so the fade ate the programme
+ * instead.
+ *
+ * ── Why the handle goes on the INCOMING clip, and why that keeps the look ────────────────────
+ *
+ * The existing look is: the dissolve occupies the last `d` seconds BEFORE the cut, and the incoming
+ * clip is fully visible from the cut onward. `offset = elapsed - d` is what produces that, and it
+ * is unchanged.
+ *
+ * Giving the incoming clip a `d`-second pre-roll keeps exactly that geometry and restores the
+ * arithmetic: with segments L₀, L₁+d, L₂+d the chain runs L₀ − d + (L₁+d) = L₀+L₁, and the total
+ * comes back to the sum of the slots. The dissolve is in the same place, for the same duration, on
+ * the same frames. Only the material that was missing is now there.
+ *
+ * The pre-roll is read from BEFORE the clip's in-point, which is what a handle is: the frame at the
+ * cut is still the frame the planner chose. When the source has less than `d` before the in-point
+ * there is nothing to pre-roll from — the segment is still the right LENGTH, so the duration holds,
+ * but the in-point lands at the start of the dissolve instead of at the cut. That is a real
+ * difference and it is reported rather than absorbed.
+ */
 async function renderSegment(
   clip: TimelineVideoClip,
   localMedia: string,
   outPath: string,
   fmt: { widthPx: number; heightPx: number; fps: number },
-  look?: TimelineLook
-): Promise<void> {
-  const dur = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
+  look?: TimelineLook,
+  /** Extra seconds of material at the FRONT, for the transition into this clip to consume. */
+  handleSec = 0
+): Promise<{ handleFromSource: boolean }> {
+  const slot = Math.max(0.04, clip.timelineEnd - clip.timelineStart);
+  const dur = slot + Math.max(0, handleSec);
   /**
    * RONDE 148/149 — fit, camera, grade, effects, scale and opacity, built in `timelineFilters`.
    *
@@ -369,6 +405,7 @@ async function renderSegment(
    * is graded correctly without being migrated: the provider is already in the identity, and the
    * provider is what the grade is calibrated against.
    */
+  let handleFromSource = true;
   const graded: TimelineVideoClip =
     clip.sourceKind || !look || look.grade === "none"
       ? clip
@@ -393,7 +430,16 @@ async function renderSegment(
      * only defensible default — but it is the RENDERER's decision, taken here, and not a value the
      * validator or the rehydrator invented upstream and passed along as if it were known.
      */
-    const startAt = clip.sourceIn != null ? Math.max(0, clip.sourceIn) : 0;
+    const inPoint = clip.sourceIn != null ? Math.max(0, clip.sourceIn) : 0;
+    /**
+     * RONDE 184 — the handle is read from BEFORE the in-point when the source has it.
+     *
+     * That is what makes the frame at the cut the frame the planner chose. `handleFromSource` says
+     * whether there was enough material to do it; when there was not, the length is still correct
+     * and the caller reports the difference.
+     */
+    const startAt = Math.max(0, inPoint - Math.max(0, handleSec));
+    handleFromSource = handleSec <= 0 || inPoint >= handleSec;
     args.push("-stream_loop", "-1", "-ss", startAt.toFixed(3),
       "-t", dur.toFixed(3), "-i", localMedia);
   }
@@ -406,6 +452,7 @@ async function renderSegment(
     outPath
   );
   await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+  return { handleFromSource };
 }
 
 export type AssElement = {
@@ -587,25 +634,47 @@ export async function renderTimeline(params: {
   // ── 1. every clip becomes a normalised segment of exactly its own length ────────────────────
   const segments: string[] = [];
   /** Kept alongside the paths so phase 2 knows each segment's clip and its real length. */
-  const rendered: Array<{ clip: TimelineVideoClip; durationSec: number }> = [];
+  const rendered: Array<{ clip: TimelineVideoClip; durationSec: number; handleSec: number }> = [];
   let transitionsRendered = 0;
+  /** A clip's own length on the timeline. The handle is added on top of it, never taken out of it. */
+  const slotOf = (c: TimelineVideoClip) => Math.max(0.04, c.timelineEnd - c.timelineStart);
   for (const [i, clip] of clips.entries()) {
     const media = await params.resolveMedia(clip);
     if (!media) {
       skipped.push(`clip ${clip.id}: source could not be recovered (${clip.source.provider})`);
       continue;
     }
+    /**
+     * RONDE 184 — the handle this clip's incoming transition will consume.
+     *
+     * Clamped by `effectiveTransitionSec`, the SAME function the graph builder uses, so the length
+     * rendered and the length faded cannot drift apart. The clamp is measured against the SLOTS
+     * rather than the extended segments on purpose: handles only make segments longer, so a bound
+     * taken from the slots is never too generous, and it does not depend on itself.
+     */
+    const previous = clips[i - 1];
+    const handleSec =
+      i > 0 && previous
+        ? effectiveTransitionSec(clip.transitionIn, clip.transitionInSec, slotOf(previous), slotOf(clip)) ?? 0
+        : 0;
     const seg = path.join(workDir, `seg_${String(i).padStart(3, "0")}.mp4`);
     try {
-      await renderSegment(clip, media, seg, fmt, timeline.look);
+      const { handleFromSource } = await renderSegment(clip, media, seg, fmt, timeline.look, handleSec);
       commands++;
+      if (handleSec > 0 && !handleFromSource) {
+        skipped.push(
+          `transition_handle clip ${clip.id}: the source has less than ${handleSec.toFixed(2)}s ` +
+            `before its in-point, so the dissolve starts on the in-point instead of ending on it ` +
+            `— the clip's length is unaffected`
+        );
+      }
     } catch (err) {
       skipped.push(`clip ${clip.id}: encode failed — ${(err as Error).message.slice(0, 160)}`);
       continue;
     }
     if (fs.existsSync(seg) && fs.statSync(seg).size > 1024) {
       segments.push(seg);
-      rendered.push({ clip, durationSec: Math.max(0.04, clip.timelineEnd - clip.timelineStart) });
+      rendered.push({ clip, durationSec: slotOf(clip) + handleSec, handleSec });
     } else skipped.push(`clip ${clip.id}: segment was empty`);
 
     /**
@@ -664,7 +733,14 @@ export async function renderTimeline(params: {
     durations: rendered.map((r) => r.durationSec),
     transitions: rendered.map((r) => ({
       kind: r.clip.transitionIn,
-      durationSec: r.clip.transitionInSec,
+      /**
+       * RONDE 184 — the ALREADY-CLAMPED length, not the planner's request.
+       *
+       * The handle was rendered at this length; asking the graph to re-derive it from the request
+       * would let a second clamp produce a different answer against the now-longer segments, and
+       * the fade would run for a different time than the material provided for it.
+       */
+      durationSec: r.handleSec > 0 ? r.handleSec : r.clip.transitionInSec,
     })),
   });
 
@@ -682,18 +758,15 @@ export async function renderTimeline(params: {
       (r, i) => i > 0 && r.clip.transitionIn !== "hard_cut"
     ).length;
     /**
-     * RONDE 182 — the picture is SHORTER than the plan whenever a transition overlaps, and nothing
-     * said so.
+     * RONDE 182 found this and RONDE 184 fixed it; the check stays as the guard.
      *
-     * A crossfade consumes time from both of its neighbours: two 0.65s dissolves make a 12.00s plan
-     * render as 10.70s of video. `buildTransitionGraph` already returns that number as `totalSec`
-     * and this function threw it away, so a timeline whose VOICE track is 12s long rendered a
-     * picture that ends 1.3s before the narration does — and reported success.
+     * R182 measured a 12.00s plan rendering as a 10.70s file: every segment was its slot length and
+     * each xfade then ate its own duration out of the total. R184 renders the handle the fade needs,
+     * so `graph.totalSec` now equals the sum of the slots and this line does not fire.
      *
-     * Reported rather than corrected. Whether the last clip should be extended to cover the overlap,
-     * or the plan should place clips accounting for it, is an editorial decision about what a
-     * viewer should see, and it cannot be settled without looking at a rendered frame. What can be
-     * settled is that the discrepancy stops being invisible. §2: niets mag stil verdwijnen.
+     * It is kept — and kept LOUD — because it is the only thing standing between a future change to
+     * the handle arithmetic and a video that silently ends before its narration does. A guard that
+     * only speaks when something is wrong is worth more than the fix it verifies.
      */
     const shortfall = timeline.durationSec - graph.totalSec;
     if (shortfall > 1 / Math.max(1, fmt.fps)) {

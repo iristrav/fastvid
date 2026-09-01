@@ -285,21 +285,39 @@ describe("R182 — the video the renderer actually produced", () => {
    * overlap — is an editorial decision that needs somebody to look at a frame, and this round does
    * not make it silently.
    */
-  it("is exactly as long as the plan minus the transition overlaps, and says so", async () => {
+  it("is exactly as long as the plan said — the R182 defect, now fixed by R184", async () => {
+    /**
+     * ── What this assertion used to allow, and why it no longer does ───────────────────────────
+     *
+     * R182 measured this render at 10.70s against a 12.00s plan and could not honestly demand the
+     * full length: a crossfade overlaps its neighbours, nothing rendered the handle it needed, and
+     * whether to fix that by extending a clip or by moving one was an editorial question.
+     *
+     * R184 answered it without moving anything a viewer sees: the incoming clip now carries a
+     * pre-roll handle for the fade to consume, so the dissolve is in the same place, for the same
+     * duration, and the arithmetic comes back to the sum of the slots.
+     *
+     * So the assertion is now the plain one. The tolerance is one frame at this timeline's own fps,
+     * which is the smallest unit the container can express.
+     */
     const meta = await probe(output);
-    const report = renderSkipped.find((s) => s.startsWith("transition_overlap:"));
-    if (!report) {
-      /** No transition was rendered, so the picture must be the full planned length. */
-      expect(meta.durationSec).toBeGreaterThan(timeline.durationSec - 0.2);
-      expect(meta.durationSec).toBeLessThan(timeline.durationSec + 0.2);
-      return;
-    }
-    const shortfall = Number(/by ([\d.]+)s in total/.exec(report)?.[1] ?? NaN);
-    expect(Number.isFinite(shortfall), report).toBe(true);
-    expect(meta.durationSec).toBeGreaterThan(timeline.durationSec - shortfall - 0.2);
-    expect(meta.durationSec).toBeLessThan(timeline.durationSec - shortfall + 0.2);
-    /** And the shortfall is real, not a rounding artefact — this is the defect being pinned. */
-    expect(shortfall).toBeGreaterThan(0.04);
+    const frame = 1 / timeline.format.fps;
+    expect(meta.durationSec).toBeGreaterThan(timeline.durationSec - 2 * frame);
+    expect(meta.durationSec).toBeLessThan(timeline.durationSec + 2 * frame);
+  });
+
+  /** And the renderer's own guard agrees: there is no shortfall left to report. */
+  it("reports no transition shortfall, because there is none", () => {
+    const shortfall = renderSkipped.filter((s) => s.startsWith("transition_overlap:"));
+    expect(shortfall, shortfall.join("\n")).toEqual([]);
+  });
+
+  /** The render really did use transitions — otherwise the two assertions above prove nothing. */
+  it("actually rendered transitions, so the duration test is not vacuous", () => {
+    const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clips = track && track.kind === "VIDEO" ? track.clips : [];
+    const withTransition = clips.filter((c) => c.transitionIn !== "hard_cut");
+    expect(withTransition.length, "no transition in this plan").toBeGreaterThanOrEqual(2);
   });
 
   /**
