@@ -41,11 +41,27 @@ const GRAPHIC_TYPES = unionMembers("MotionGraphicType") as MotionGraphicType[];
 /* ═══════════════════════ graphics: drawn, or reported as not drawn ═══════════════════════ */
 
 describe("R207 — every motion-graphic type the planner can emit is accounted for", () => {
-  it("the vocabulary is the nine the engine declares", () => {
+  it("the vocabulary is the thirteen the engine declares", () => {
     expect(GRAPHIC_TYPES).toEqual([
       "progress_bar", "statistic_counter", "map", "timeline",
       "chart", "comparison", "animated_icon", "highlight_box", "arrow",
+      /**
+       * GRAPHICS MASTER FIX — the four the renderer could always draw and the planner could not
+       * ask for. Spelled with the RENDERER's own names, so they need no translation entry and
+       * `graphicIsRenderable` finds them directly in RENDERABLE_GRAPHICS.
+       */
+      "lower_third", "date_card", "location_card", "quote",
     ]);
+  });
+
+  /**
+   * The point of adding them: they draw. A planner type that reaches no component is the defect
+   * R178 found and R207 pinned, so a new type has to clear the same bar on the day it arrives.
+   */
+  it("the four new types all reach a real component", () => {
+    for (const t of ["lower_third", "date_card", "location_card", "quote"] as const) {
+      expect(RENDERABLE_GRAPHICS.has(rendererGraphicType(t)), `${t} has no component`).toBe(true);
+    }
   });
 
   /**
@@ -74,6 +90,7 @@ describe("R207 — every motion-graphic type the planner can emit is accounted f
    * chart's payload to whatever component shares its name.
    */
   it("the five with no component are honestly undrawable, not accidentally drawable", () => {
+    /** Unchanged: these five still have no component and must not appear to have one. */
     for (const t of ["chart", "comparison", "animated_icon", "highlight_box", "arrow"] as const) {
       expect(RENDERER_GRAPHIC_TYPE[t], `${t} gained a translation — update this test`).toBeUndefined();
       const rendered = rendererGraphicType(t);
@@ -88,6 +105,11 @@ describe("R207 — every motion-graphic type the planner can emit is accounted f
     const translated = GRAPHIC_TYPES.filter((t) => RENDERER_GRAPHIC_TYPE[t]);
     const untranslated = GRAPHIC_TYPES.filter((t) => !RENDERER_GRAPHIC_TYPE[t]);
     expect([...translated, ...untranslated].sort()).toEqual([...GRAPHIC_TYPES].sort());
+    /**
+     * Still four TRANSLATED — the new types deliberately need no entry, because they already carry
+     * the renderer's own name. "Untranslated" therefore no longer means "undrawable"; the test
+     * below separates the two.
+     */
     expect(translated).toHaveLength(4);
   });
 });

@@ -322,9 +322,23 @@ describe("RONDE 150 §2 — a real EditDecision survives the whole chain", () =>
     const track = result.timeline.tracks.find((t) => t.kind === "GRAPHICS");
     const graphics = track && track.kind === "GRAPHICS" ? track.graphics : [];
     expect(graphics.length).toBeGreaterThanOrEqual(planned);
+    /**
+     * GRAPHICS MASTER FIX — this loop had never run.
+     *
+     * `graphics` was empty on this fixture until the planner gained the person/date/place/quote
+     * triggers, so the body was dead and nobody noticed it asserted on `timelineStart`/
+     * `timelineEnd` — fields a TimelineGraphic does not have. It carries `start` and `end`
+     * (see TimelineGraphic in projectTimeline.ts), like every other overlay element.
+     *
+     * Corrected to the real field names, which is the first time this assertion actually checks
+     * anything. The payload and label are checked too, since a graphic on the track with no words
+     * is exactly what the R178 report calls undrawable.
+     */
+    expect(graphics.length, "the graphics track is empty — this loop would prove nothing").toBeGreaterThan(0);
     for (const g of graphics) {
       expect(g.graphicType.length).toBeGreaterThan(0);
-      expect(g.timelineEnd).toBeGreaterThan(g.timelineStart);
+      expect(g.end).toBeGreaterThan(g.start);
+      expect(g.reason.length, `${g.graphicType} has no reason`).toBeGreaterThan(0);
     }
   });
 

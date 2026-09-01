@@ -212,7 +212,27 @@ export type MotionGraphicType =
   | "comparison"
   | "animated_icon"
   | "highlight_box"
-  | "arrow";
+  | "arrow"
+  /**
+   * GRAPHICS MASTER FIX — the four the renderer could always draw and the planner could not ask for.
+   *
+   * ── The gap this closes ─────────────────────────────────────────────────────────────────────
+   *
+   * `RENDERABLE_GRAPHICS` in graphicsVocabulary.ts lists 32 names Remotion has components for,
+   * including `lower_third`, `date_card`, `location_card` and `quote`. The planner's vocabulary was
+   * the nine above, and only four of those reached a component at all (R207). So the single most
+   * ordinary documentary graphic — a person's name under their face — was drawable by the renderer
+   * and unrequestable by the planner. Same for a date card, a place card and a pull quote.
+   *
+   * These are deliberately spelled with the RENDERER's own names rather than new planner names
+   * needing a translation entry: `rendererGraphicType` passes an unmapped name through unchanged,
+   * and `graphicIsRenderable` then finds it in RENDERABLE_GRAPHICS. One vocabulary, no mapping to
+   * keep in step, and nothing invented in the renderer.
+   */
+  | "lower_third"
+  | "date_card"
+  | "location_card"
+  | "quote";
 
 export type MotionGraphicInstruction = {
   graphicType: MotionGraphicType;

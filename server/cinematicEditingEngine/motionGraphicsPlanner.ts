@@ -177,5 +177,92 @@ export function planMotionGraphics(
     );
   }
 
+  /* ═════════ GRAPHICS MASTER FIX — the four the renderer could always draw ═════════ */
+
+  /**
+   * A person the beat NAMES gets their name under them. The most ordinary graphic a documentary
+   * has, and until now the planner had no way to ask for it.
+   *
+   * `intent.people` is extracted from the beat, so the name is the beat's own word — never the
+   * title's, never the model's guess about who is on screen. A company or brand the same beat
+   * names becomes the subtitle line, which is exactly the "ELON MUSK / CEO — Tesla" shape; when
+   * the beat names no organisation the card is just the name, rather than inventing a role.
+   */
+  const person = intent.people[0]?.trim();
+  if (person) {
+    out.push(
+      graphic(
+        "lower_third",
+        { name: person, label: person, ...(brandOrCompany ? { subtitle: brandOrCompany } : {}) },
+        beatVoiceStartSec,
+        /** Long enough to read a name and a role without outstaying the sentence. */
+        Math.max(2.5, Math.min(beatVoiceDurationSec, 4)),
+        `Beat names a person ("${person}")${brandOrCompany ? ` and an organisation ("${brandOrCompany}")` : ""} — identified with a lower third.`
+      )
+    );
+  }
+
+  /**
+   * A YEAR the beat states, when it is not already carried by the timeline graphic above.
+   *
+   * The timeline needs an EVENT plus historical context; a beat that simply says "in 2019" has
+   * neither and previously got nothing. The guard is what keeps this from doubling up: if the
+   * timeline fired, the date is already on screen.
+   */
+  const plannedTimeline = out.some((g) => g.graphicType === "timeline");
+  const spokenYear = `${intent.visualTime} ${intent.spokenText}`.match(/\b(1[0-9]{3}|20[0-9]{2})\b/);
+  if (!plannedTimeline && spokenYear) {
+    out.push(
+      graphic(
+        "date_card",
+        { text: spokenYear[0] },
+        beatVoiceStartSec,
+        Math.max(2, Math.min(beatVoiceDurationSec, 3)),
+        `Beat states a year ("${spokenYear[0]}") with no dated event to place on a timeline — shown as a date card.`
+      )
+    );
+  }
+
+  /**
+   * A place the beat names that the world map does not know.
+   *
+   * `findWorldLocation` only matches the curated coordinate list, so every other real place — a
+   * building, a street, a region — produced no graphic at all. A location card needs no
+   * coordinates. Guarded against the map for the same reason as the date card.
+   */
+  const namedPlace = intent.visualLocation?.trim();
+  if (!location && namedPlace) {
+    out.push(
+      graphic(
+        "location_card",
+        { locationName: namedPlace, label: namedPlace },
+        beatVoiceStartSec,
+        Math.max(2, Math.min(beatVoiceDurationSec, 3)),
+        `Beat names a place ("${namedPlace}") that is not on the world-map list — shown as a location card.`
+      )
+    );
+  }
+
+  /**
+   * A quotation the narration actually contains.
+   *
+   * Only a real quoted span counts: the text between the quotation marks in the beat's own words.
+   * Nothing is paraphrased into a quote card, and a span too short to be a sentence is skipped
+   * rather than shown as an empty-looking card.
+   */
+  const quoted = intent.spokenText.match(/[""«]([^""»]{12,180})[""»]/);
+  if (quoted?.[1]) {
+    out.push(
+      graphic(
+        "quote",
+        { text: quoted[1].trim(), ...(person ? { label: person } : {}) },
+        beatVoiceStartSec,
+        /** A quote is read, not glanced at — longer than a label, still inside the beat. */
+        Math.max(3, Math.min(beatVoiceDurationSec, 5)),
+        `Narration quotes ${person ? `${person} ` : ""}directly — shown as a quote card.`
+      )
+    );
+  }
+
   return out;
 }
