@@ -25,6 +25,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
+  canRedo,
+  canUndo,
+  newHistory,
+  recordEdit,
+  redo,
+  undo,
+  type History,
+  type HistoryPolicy,
+} from "@shared/timelineHistory";
+import {
   AlertCircle,
   Film,
   Loader2,
@@ -33,8 +43,10 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Redo2,
   Repeat,
   Save,
+  Undo2,
   Type as TypeIcon,
   X as XIcon,
 } from "lucide-react";
@@ -298,9 +310,23 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
 
   /** The document as last received from the server. The thing `dirty` compares against. */
   const [serverTimeline, setServerTimeline] = useState<Timeline | null>(null);
-  const [draft, setDraft] = useState<Timeline | null>(null);
+  /**
+   * RONDE 181 §13 — the draft, WITH its undo stack.
+   *
+   * The draft is `history.present` rather than a state of its own: two pieces of state both
+   * claiming to be "the current edit" is how an undo stack drifts out of step with what is on
+   * screen. There is one document, and the past and future sit beside it.
+   *
+   * The mechanics are `@shared/timelineHistory`, the same module the server binds to — not a second
+   * stack written into this component. Two stacks with slightly different rules about when a step
+   * is recorded would disagree about what "one undo" is, and that disagreement only ever shows up
+   * as a person pressing undo and getting back the wrong document.
+   */
+  const [history, setHistory] = useState<History<Timeline> | null>(null);
+  const draft = history?.present ?? null;
   const [version, setVersion] = useState(0);
   const [selectedId, setSelectedId] = useState<{ kind: TrackKind; id: string } | null>(null);
+
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   /**
@@ -316,7 +342,8 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
   useEffect(() => {
     if (!data) return;
     setServerTimeline(data.timeline as Timeline);
-    setDraft(data.timeline as Timeline);
+    /** A fresh document from the server starts a new stack — nobody undoes past a load. */
+    setHistory(newHistory(data.timeline as Timeline));
     setVersion(data.timelineVersion);
     const running = data.renderJobs?.find((j) => j.status === "queued" || j.status === "running");
     if (running) setActiveJobId(running.id);
@@ -332,6 +359,67 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
     () => Boolean(draft && serverTimeline && JSON.stringify(draft) !== JSON.stringify(serverTimeline)),
     [draft, serverTimeline]
   );
+
+  /**
+   * RONDE 181 — the two decisions the shared mechanics leave to the document's owner.
+   *
+   * `sameContent` is the SAME structural comparison `dirty` above uses, with the fields that change
+   * without changing the picture removed: an edit that only bumps a version or a timestamp is not
+   * an edit to undo. The server binds this to `timelineDigest`, which excludes exactly those.
+   *
+   * `restore` puts the old content back under a NEW version number. Restoring the old number too
+   * would put two different documents into circulation as one version, and `timeline.save`'s
+   * concurrency check compares versions — so it would see no conflict and let one silently
+   * overwrite the other.
+   */
+  const historyPolicy = useMemo<HistoryPolicy<Timeline>>(
+    () => ({
+      sameContent: (a, b) => {
+        const content = ({ version: _v, createdAt: _c, ...rest }: Timeline) => rest;
+        return JSON.stringify(content(a)) === JSON.stringify(content(b));
+      },
+      restore: (previous, current) => ({
+        ...previous,
+        version: current.version + 1,
+        createdAt: new Date().toISOString(),
+      }),
+    }),
+    []
+  );
+
+  /**
+   * Every EDIT goes through here, so the undo stack cannot miss one.
+   *
+   * Reloading from the server is not an edit and deliberately does not use this — see the
+   * `newHistory` calls, which start a fresh stack rather than making the server's own document
+   * something a person can undo past.
+   */
+  const applyEdit = (next: (t: Timeline) => Timeline) => {
+    setHistory((h) => (h ? recordEdit(h, next(h.present), historyPolicy) : h));
+  };
+
+  const undoEdit = () => setHistory((h) => (h ? undo(h, historyPolicy) : h));
+  const redoEdit = () => setHistory((h) => (h ? redo(h, historyPolicy) : h));
+
+  /**
+   * §13 — the keyboard, because nobody reaches for a toolbar to undo.
+   *
+   * Ignored while a text field has focus: ⌘Z in a caption box means "undo my typing", and stealing
+   * it would make the field unusable.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
+      const el = document.activeElement;
+      const tag = el?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || (el as HTMLElement | null)?.isContentEditable) return;
+      e.preventDefault();
+      if (e.shiftKey) redoEdit();
+      else undoEdit();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [historyPolicy]);
 
   /** §20 — a browser-level guard, because a click on the tab's × never reaches React. */
   useEffect(() => {
@@ -385,7 +473,11 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
         expectedTimelineVersion: version,
       });
       setServerTimeline(result.timeline as Timeline);
-      setDraft(result.timeline as Timeline);
+      /**
+       * A save is a new baseline, not an edit. Keeping the stack across it would let a person undo
+       * to a document the server no longer has, then save it back over their own saved work.
+       */
+      setHistory(newHistory(result.timeline as Timeline));
       setVersion(result.timelineVersion);
       toast.success(`Saved — version ${result.timelineVersion}`);
       return result.timelineVersion;
@@ -459,9 +551,10 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
               <select
                 value={draft?.look?.grade ?? "none"}
                 onChange={(e) =>
-                  setDraft((t) =>
-                    t ? { ...t, look: { ...t.look, grade: e.target.value as "none" | "documentary" } } : t
-                  )
+                  applyEdit((t) => ({
+                    ...t,
+                    look: { ...t.look, grade: e.target.value as "none" | "documentary" },
+                  }))
                 }
                 className="rounded-lg bg-black/40 border border-white/10 px-2 py-1.5 text-xs text-white focus:border-amber-400/50 focus:outline-none"
                 title="Colour treatment for the whole video"
@@ -470,6 +563,29 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                 <option value="documentary" className="bg-slate-900">Documentary</option>
               </select>
             </label>
+            {/*
+              RONDE 181 §13 — Undo and Redo, next to Save because that is where a person looks for
+              them. Disabled rather than hidden: a greyed-out Undo says "there is nothing to undo",
+              where a missing one says "this editor cannot undo".
+            */}
+            <button
+              onClick={undoEdit}
+              disabled={!history || !canUndo(history)}
+              title="Undo (⌘Z)"
+              aria-label="Undo"
+              className="flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-lg bg-white/5 border border-white/15 text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={redoEdit}
+              disabled={!history || !canRedo(history)}
+              title="Redo (⇧⌘Z)"
+              aria-label="Redo"
+              className="flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-lg bg-white/5 border border-white/15 text-white hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
             <button
               onClick={() => void save()}
               disabled={!dirty || saveMutation.isPending}
@@ -671,7 +787,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                   <ClipInspector
                     clip={selection.clip}
                     onChange={(patch) =>
-                      setDraft((t) => (t ? withEditedClip(t, selection.clip.id, patch) : t))
+                      applyEdit((t) => withEditedClip(t, selection.clip.id, patch))
                     }
                     videoId={videoId}
                     timelineVersion={version}
@@ -692,7 +808,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                     kind={selection.kind}
                     clip={selection.clip}
                     onChange={(gain) =>
-                      setDraft((t) => (t ? withEditedAudio(t, selection.clip.id, gain) : t))
+                      applyEdit((t) => withEditedAudio(t, selection.clip.id, gain))
                     }
                   />
                 ) : selection.kind === "GRAPHICS" ? (
@@ -701,7 +817,7 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                   <TextInspector
                     kind={selection.kind}
                     element={selection.element}
-                    onChange={(patch) => setDraft((t) => (t ? withEditedText(t, selection.element.id, patch) : t))}
+                    onChange={(patch) => applyEdit((t) => withEditedText(t, selection.element.id, patch))}
                   />
                 )}
               </div>

@@ -194,7 +194,19 @@ describe("the duration rule after RONDE 134", () => {
      * branch's, on opposite sides of `if (isVideo)`. What matters is that the VIDEO branch makes
      * one probe rather than the old two, so that is what is bounded here.
      */
-    const videoBranch = fn.slice(fn.indexOf("if (isVideo) {"), fn.indexOf("} else {"));
+    /**
+     * RONDE 179 added an earlier `} else {` to this function — the branch that sends a YouTube
+     * candidate to the YouTube fetcher instead of fetching its watch page. Searching for the FIRST
+     * one found that instead, and produced an end offset BEFORE the start, so the slice came back
+     * empty and every assertion below was passing over nothing.
+     *
+     * The length guard is what caught it, which is exactly what it is for. The search now starts
+     * from the video branch itself, so it finds that branch's own `else` whatever else the
+     * function grows above it.
+     */
+    const videoAt = fn.indexOf("if (isVideo) {");
+    expect(videoAt, "the video branch is gone").toBeGreaterThan(-1);
+    const videoBranch = fn.slice(videoAt, fn.indexOf("} else {", videoAt));
     expect(videoBranch.length).toBeGreaterThan(200);
     expect((videoBranch.match(/await probeVideoStreamMeta\(rawPath\)/g) ?? []).length).toBe(1);
     expect(videoBranch).not.toContain("FFPROBE_BIN");
