@@ -44,6 +44,7 @@ import {
   type TimelineAudioClip,
   type ClipCamera,
   type TimelineCaption,
+  type TimelineLook,
   type TimelineGraphic,
   type TimelineText,
   type TimelineVideoClip,
@@ -273,8 +274,27 @@ export function translateEdl(params: {
   format?: typeof DEFAULT_FORMAT;
   /** The narration, when it has been persisted. RONDE 146 stores this per video. */
   voice?: { url: string; durationSec: number } | null;
+  /**
+   * R160 BUG 1 — the video's colour treatment.
+   *
+   * ── The bug this closes ──────────────────────────────────────────────────────────────────
+   *
+   * This function never set `timeline.look`, so every video the cinematic route planned came out
+   * with NO grade at all: `gradeChain` returns null for an absent look, and the whole of
+   * documentaryStyle's source-aware calibration — the thing that makes a Library of Congress scan,
+   * a Pexels drone shot and a generated establishing shot belong in one film — was unreachable
+   * from the new path. The eight looks added in RONDE 153 were unreachable with it.
+   *
+   * Nothing failed and no test caught it, because a timeline with no look is a perfectly valid
+   * timeline. It renders; it just renders ungraded.
+   *
+   * Absent still means "no grade", so a caller that says nothing gets exactly what this function
+   * produced before — which keeps every existing test and the golden render unchanged.
+   */
+  look?: TimelineLook;
 }): EdlTranslation {
   const timeline = emptyTimeline(params.videoId, params.format ?? DEFAULT_FORMAT);
+  if (params.look) timeline.look = params.look;
   const unsupported: string[] = [];
 
   const clips: TimelineVideoClip[] = [];

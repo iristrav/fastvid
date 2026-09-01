@@ -40,7 +40,29 @@ function pushRecent(list: string[], value: string): void {
  * automatically between beats unless a caller supplies its own per-input `continuity`
  * (useful for tests, or for resuming a scene's continuity from an earlier point).
  */
-export function generateEDL(inputs: CinematicEditingInput[]): EDL {
+export type EdlOptions = {
+  /**
+   * R160 BUG 2 — emit a narration subtitle per beat.
+   *
+   * ── The bug this closes ──────────────────────────────────────────────────────────────────
+   *
+   * `planCaptions` has always been able to produce a `subtitle` caption carrying the beat's spoken
+   * text, behind an `includeSubtitle` option that defaults to false. Nothing ever passed it. So
+   * every EDL this generator produced contained cards — location, name, date, statistic — and NO
+   * narration captions at all, and `trackForCaption` routes only `subtitle` to the CAPTIONS track.
+   *
+   * The consequence was invisible and total: the CAPTIONS track of a cinematically-planned video
+   * was always empty, which meant the entire caption engine built in RONDE 152 — word timing,
+   * karaoke, word-by-word, phrase mode, the geometric collision layout — had no input on the live
+   * route. It was all reachable only from a test.
+   *
+   * Default false, so every existing caller and every existing test keeps its exact behaviour.
+   * `runCinematicPipeline` turns it on, because a documentary with narration wants subtitles.
+   */
+  includeSubtitles?: boolean;
+};
+
+export function generateEDL(inputs: CinematicEditingInput[], options: EdlOptions = {}): EDL {
   const decisions: EditDecision[] = [];
   let prevTransitionCtx: TransitionContext | null = null;
   let prevCameraMovement: CameraMovementType | null = null;
@@ -70,6 +92,7 @@ export function generateEDL(inputs: CinematicEditingInput[]): EDL {
       scene: input.scene,
       isFirstBeatOfScene: i === 0,
       continuity,
+      includeSubtitle: options.includeSubtitles === true,
     });
     const motionGraphics = planMotionGraphics(input.intent, input.scene, input.beatVoiceStartSec, input.beatVoiceDurationSec);
     const effects = planVisualEffects(shot, input.bestCandidate, pacing);

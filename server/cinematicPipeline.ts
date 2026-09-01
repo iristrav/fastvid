@@ -90,6 +90,16 @@ export type CinematicPipelineParams = {
   /** The measured TTS alignment, carried so captions land on real word boundaries. */
   words?: TtsWordTiming[];
   format?: ProjectTimeline["format"];
+  /**
+   * R160 — the video's colour treatment.
+   *
+   * Defaults to the documentary grade, because that is FastVid's look and because an ungraded
+   * cinematic video loses the whole point of documentaryStyle's source-aware calibration: making
+   * archive, stock and generated footage belong in one film. Pass `{ grade: "none" }` for no grade.
+   */
+  look?: ProjectTimeline["look"];
+  /** Emit a narration subtitle per beat. On by default — see the note at the generateEDL call. */
+  includeSubtitles?: boolean;
 };
 
 /* ═══════════════════════ what it produces ═══════════════════════ */
@@ -179,8 +189,15 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     });
   });
 
-  /** The engine's own chain: pacing → shot → camera → transition → timing → captions → … */
-  const edl = generateEDL(inputs);
+  /**
+   * The engine's own chain: pacing → shot → camera → transition → timing → captions → …
+   *
+   * R160 — `includeSubtitles` is ON here, and that is the fix for a bug the audit found: nothing
+   * ever passed it, so a cinematically-planned video had an EMPTY captions track and the whole
+   * caption engine was unreachable from the live route. A documentary with narration wants
+   * subtitles; the flag stays off by default for every other caller.
+   */
+  const edl = generateEDL(inputs, { includeSubtitles: params.includeSubtitles !== false });
 
   /**
    * The EDL becomes the timeline through the adapter that already exists, which makes no editorial
@@ -199,6 +216,8 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     inputs: translationInputs,
     format: params.format,
     voice: params.voice ?? null,
+    /** R160 — without this the cinematic route produced an UNGRADED video. See translateEdl. */
+    look: params.look ?? { grade: "documentary" },
   });
 
   return {
