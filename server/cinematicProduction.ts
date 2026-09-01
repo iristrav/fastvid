@@ -45,6 +45,15 @@ import {
 } from "./directorQualityRules";
 import type { ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
+/**
+ * §14's route line reads the REAL predicates, so it can never claim a flag state the pipeline does
+ * not act on. Every one of these is a pure env read with no side effects, and scenePool imports
+ * videoPipeline for types only, so none of this introduces a runtime cycle.
+ */
+import { poolRankingV2Enabled } from "./scenePool";
+import { sceneCandidatePoolEnabled, youtubeSourcingEnabled } from "./sourcingPolicy";
+import { aiDirectorEnabled } from "./aiDirector/featureFlags";
+import { searchGateStrict } from "./searchQueryContract";
 
 /* ═══════════════════════ §19/§20 — the two switches ═══════════════════════ */
 
@@ -333,6 +342,45 @@ export function formatRenderRoute(params: {
     ? "CINEMATIC_RENDER_PATH is not enabled"
     : `the cinematic plan was not usable: ${params.reason ?? "unknown"}`;
   return `[RenderJob] video=${params.videoId} route=legacy_compose RENDER_FALLBACK_USED reason=${why}`;
+}
+
+/**
+ * FINAL VALIDATION §14 — the route and the flags that chose it, at the TOP of every render.
+ *
+ * ── Why a second route line ─────────────────────────────────────────────────────────────────
+ *
+ * `formatRenderRoute` above reports the outcome, and it is emitted only inside the
+ * `cinematicPlanningEnabled()` branch. So a deployment with the engine switched off — which is what
+ * the first real production render was — produces NO route line at all, and the only way to learn
+ * which route ran is to notice the absence of `[Graphics]`, `[Captions]` and `[EDL]` lines and
+ * infer it. Reading a log by what is missing from it is exactly the guesswork §14 removes.
+ *
+ * This line is unconditional, it is printed before any work happens, and it names the flag behind
+ * every field. A render that takes the legacy route now SAYS so, on line one, with the reason.
+ *
+ * Each value is read from the real predicate rather than from `process.env` here, so the line
+ * cannot drift away from the behaviour it claims to describe.
+ */
+export function formatProductionRoute(videoId: number): string {
+  const planning = cinematicPlanningEnabled();
+  const renderPath = cinematicRenderPathEnabled();
+  /**
+   * The route this render will take if planning succeeds. Both flags are needed: planning alone
+   * stores a timeline the editor can open, but the delivered MP4 still comes from compose.
+   */
+  const route = planning && renderPath ? "cinematic_timeline" : "legacy_compose";
+  const why =
+    route === "cinematic_timeline"
+      ? ""
+      : ` reason=${!planning ? "CINEMATIC_EDITING_ENGINE is not enabled" : "CINEMATIC_RENDER_PATH is not enabled"}`;
+  const on = (b: boolean) => (b ? "on" : "off");
+  return (
+    `[ProductionRoute] video=${videoId} route=${route}${why}` +
+    ` CINEMATIC_EDITING_ENGINE=${on(planning)} CINEMATIC_RENDER_PATH=${on(renderPath)}` +
+    ` POOL_RANKING_V2=${on(poolRankingV2Enabled())} scenePool=${on(sceneCandidatePoolEnabled())}` +
+    ` youtube=${on(youtubeSourcingEnabled())} aiDirector=${on(aiDirectorEnabled())}` +
+    ` searchGateStrict=${on(searchGateStrict())}`
+  );
 }
 
 /* ═══════════════════════ R159 §24 — the cutover ═══════════════════════ */

@@ -547,7 +547,13 @@ describe("RONDE 90 §16 — M1–M15, each pinned to one thing that must not be 
     expect(flat).not.toMatch(/emptyQueryContext\(\s*\[[^\]]*videoTitle/);
 
     // And the second argument is the user's own prompt — never a title, never a summary.
-    expect(flat).toContain('(opts.topic ?? "").trim()');
+    //
+    // FINAL VALIDATION: the caller's explicit `opts.topic` still comes first, and it may now fall
+    // back to `getRenderTopic()` — the render-scoped ambient topic R160 specified and never wired,
+    // which is itself fed `videos.prompt` and nothing else (renderTopicThreading.test.ts pins that
+    // call site). Those two are the ONLY sources this argument may name: anything else here is a
+    // new evidence route that has not been through the provenance rules.
+    expect(flat).toMatch(/\(opts\.topic \?\? (getRenderTopic\(\) \?\? )?""\)\.trim\(\)/);
     expect(flat, "a title must not be fed into the topic channel").not.toMatch(
       /emptyQueryContext\([^)]*\b(videoTitle|title)\b/
     );

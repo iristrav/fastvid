@@ -39,6 +39,15 @@ export type BeatFinalStatus =
   /** The render ended without this beat reaching any terminal point. */
   | "unknown";
 
+/**
+ * FINAL VALIDATION §20 — the rung of the guaranteed ladder that actually filled the beat.
+ *
+ * Structurally the same four values as `GuaranteedClipTier` in videoPipeline.ts, declared here
+ * rather than imported because videoPipeline imports THIS module and the cycle would be real.
+ * The first two are real media; the last two are cards this pipeline drew itself.
+ */
+export type BeatFillTier = "topical" | "wikimedia" | "text_overlay" | "color_fallback";
+
 export type BeatFunnelRecord = {
   sceneIndex: number;
   beatIndex: number;
@@ -54,6 +63,8 @@ export type BeatFunnelRecord = {
   selected: string;
   /** Set when the beat actually ended on a generated placeholder. */
   placeholder: boolean;
+  /** §20 — which rung of the guaranteed ladder produced the picture, when one did. */
+  fillTier?: BeatFillTier;
 };
 
 export type BeatOutcomeAudit = {
@@ -137,6 +148,24 @@ export function noteBeatPlaceholder(
   beatRecord(audit, sceneIndex, beatIndex).placeholder = true;
 }
 
+/**
+ * §20 — which rung of the guaranteed ladder ended up filling this beat.
+ *
+ * Recorded separately from `placeholder` because the two answer different questions. `placeholder`
+ * says "every real strategy was exhausted"; the tier says WHAT the viewer then sees, and those are
+ * not the same outcome: the ladder's first two rungs return real footage. A render that reported
+ * `placeholder=7` was telling the truth about the search and nothing at all about the picture.
+ */
+export function noteBeatFillTier(
+  audit: BeatOutcomeAudit | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  tier: BeatFillTier | undefined
+): void {
+  if (!audit || !tier) return;
+  beatRecord(audit, sceneIndex, beatIndex).fillTier = tier;
+}
+
 export function noteBeatVision(
   audit: BeatOutcomeAudit | undefined,
   sceneIndex: number,
@@ -165,6 +194,73 @@ export function resolveBeatStatus(rec: BeatFunnelRecord, rejected: number): Beat
   return "unknown";
 }
 
+/**
+ * FINAL VALIDATION §20 — what the VIEWER got, as distinct from what the SEARCH did.
+ *
+ * ── The 2-out-of-29 problem ─────────────────────────────────────────────────────────────────
+ *
+ * The first real production render reported `beats=29 adopted=2 placeholder=7 rejected=5
+ * noCandidates=15`. Read as coverage that says two beats out of twenty-nine have a picture, which
+ * would be a broken video. It is not what happened: `adopted` counts one specific event —
+ * `noteBeatAdopted`, called from ONE place in the adopt path — while the rescue ladder, the
+ * subject fallback and the extend-last-clip route all put real footage on screen without ever
+ * passing through it. The statuses above describe the RETRIEVAL FUNNEL accurately and were never
+ * a coverage measure; reading them as one is what made a finished video look empty.
+ *
+ * So this is a second, separate question asked of the same record: for this beat, what is on the
+ * screen?
+ *
+ *   REAL_ASSET        real footage — adopted, or a real rung of the guaranteed ladder
+ *   INTENTIONAL_TEXT  a card carrying the beat's own narration: chosen, readable, not a failure
+ *   FALLBACK          a drawn colour card — something is there, but nothing chose it
+ *   NO_VALID_ASSET    the beat reached no picture at all
+ *
+ * ── The category that is deliberately absent ────────────────────────────────────────────────
+ *
+ * There is no INTENTIONAL_GRAPHIC. A graphic in this pipeline is an alpha overlay composited ON
+ * TOP of a beat that already has a picture — never the beat's whole picture — and
+ * `buildCinematicSceneInputs` drops a beat with no adopted clip from the plan outright
+ * ("a beat with no adopted clip is simply absent from the plan"). Adding the name here would
+ * create a category nothing can ever be counted into, which is precisely the R160 failure this
+ * round exists to undo. When a graphic-only beat becomes a real editorial outcome, it earns the
+ * category then.
+ */
+export type BeatCoverageCategory =
+  | "REAL_ASSET"
+  | "INTENTIONAL_TEXT"
+  | "FALLBACK"
+  | "NO_VALID_ASSET";
+
+/**
+ * Exactly one category per beat, in a fixed order, from the most specific evidence down.
+ *
+ * The fill tier is checked before `adopted` because it is the narrower fact: it names the rung
+ * that produced the file the viewer sees, while `adopted` only says the adopt path ran.
+ */
+export function resolveBeatCoverage(rec: BeatFunnelRecord): BeatCoverageCategory {
+  if (rec.fillTier === "topical" || rec.fillTier === "wikimedia") return "REAL_ASSET";
+  if (rec.fillTier === "text_overlay") return "INTENTIONAL_TEXT";
+  if (rec.fillTier === "color_fallback") return "FALLBACK";
+  if (rec.adopted > 0) return "REAL_ASSET";
+  /** The placeholder block ran but no tier was recorded — a card of unknown kind is still a card. */
+  if (rec.placeholder) return "FALLBACK";
+  return "NO_VALID_ASSET";
+}
+
+/** Render-wide roll-up of the coverage categories. */
+export function summarizeBeatCoverage(
+  rows: Array<{ record: BeatFunnelRecord }>
+): Record<BeatCoverageCategory, number> {
+  const out: Record<BeatCoverageCategory, number> = {
+    REAL_ASSET: 0,
+    INTENTIONAL_TEXT: 0,
+    FALLBACK: 0,
+    NO_VALID_ASSET: 0,
+  };
+  for (const r of rows) out[resolveBeatCoverage(r.record)]++;
+  return out;
+}
+
 /** The per-beat line. One per beat, adopted or not. */
 export function formatBeatFunnelLine(
   rec: BeatFunnelRecord,
@@ -174,6 +270,8 @@ export function formatBeatFunnelLine(
 ): string {
   return (
     `[VisualCoverageFinal] scene=${rec.sceneIndex} beat=${rec.beatIndex} status=${status} ` +
+    /** §20 — the funnel's verdict and the viewer's, side by side, never conflated. */
+    `coverage=${resolveBeatCoverage(rec)} fillTier=${rec.fillTier ?? "none"} ` +
     `origin=${rec.origin || "none"} offered=${rec.offered} rejected=${rejected} ` +
     `eligible=${rec.eligible} adopted=${rec.adopted} ` +
     `visionJudged=${rec.visionJudged} visionUnavailable=${rec.visionUnavailable} ` +
@@ -275,6 +373,19 @@ export function renderBeatFunnelReport(
     `[VisualCoverageFinal] TOTAL beats=${rows.length} adopted=${t.adopted} ` +
       `placeholder=${t.placeholder} eligibleNotAdopted=${t.eligible_not_adopted} ` +
       `rejected=${t.rejected} noCandidates=${t.no_candidates} unknown=${t.unknown}`
+  );
+  /**
+   * §20 — the coverage roll-up, on its own line, in the viewer's terms.
+   *
+   * Deliberately a SECOND line rather than more fields on the first: the two totals answer
+   * different questions and will not agree, and a reader who sees them merged will read the funnel
+   * numbers as coverage, which is the whole mistake being corrected here.
+   */
+  const c = summarizeBeatCoverage(rows.map((r) => ({ record: r.record })));
+  lines.push(
+    `[VisualCoverageFinal] COVERAGE beats=${rows.length} REAL_ASSET=${c.REAL_ASSET} ` +
+      `INTENTIONAL_TEXT=${c.INTENTIONAL_TEXT} FALLBACK=${c.FALLBACK} ` +
+      `NO_VALID_ASSET=${c.NO_VALID_ASSET}`
   );
   // Whether the named examples elsewhere in the log are the whole story or a sample. The
   // per-beat counts above are never capped, so only the DETAIL can be short.

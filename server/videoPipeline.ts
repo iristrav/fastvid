@@ -290,6 +290,7 @@ import {
   noteBeatCandidatesOffered,
   noteBeatEligible,
   noteBeatAdopted,
+  noteBeatFillTier,
   noteBeatPlaceholder,
   noteBeatVision,
   renderBeatFunnelReport,
@@ -326,8 +327,10 @@ import {
   formatSearchGateReport,
   type VerifiedSearchQuery,
   emptyQueryContext,
+  getRenderTopic,
   getSearchProvenance,
   searchGateDecision,
+  withRenderTopic,
   withSearchProvenance,
   isFunctionWord,
   isPronounToken,
@@ -360,7 +363,7 @@ function scenePoolYoutubeSearch(sourcingCache?: SourcingCache): YoutubePoolSearc
       requiredPersonName, maxResults, sourcingCache
     );
 }
-export { getSearchProvenance, withSearchProvenance } from "./searchQueryContract";
+export { getRenderTopic, getSearchProvenance, withRenderTopic, withSearchProvenance } from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
@@ -15668,10 +15671,19 @@ export function buildVerifiedQueryContextForBeat(
    *
    * RONDE 160 — the user's PROMPT is a different thing and travels in its own field, not in the
    * evidence, so a log can still tell "the beat said this" from "the person asked for this".
+   *
+   * FINAL VALIDATION — and when no caller supplied one, the render's ambient topic is used.
+   *
+   * R160 added the `topic` parameter and never wired it: the first real production render blocked
+   * 101 of 157 queries, "WWII" named eighteen times, on a video the person had asked for by that
+   * word. The four helpers that reach this function take a bare beat string and are called from
+   * dozens of sites with no render object in scope, so the prompt is set once at the top of the
+   * render (`withRenderTopic`) and read here. An explicit `opts.topic` still wins, and outside a
+   * render scope `getRenderTopic()` is undefined and behaviour is exactly as it was.
    */
   const ctx = emptyQueryContext(
     [text, (opts.sceneText ?? "").trim()].filter(Boolean).join(" "),
-    (opts.topic ?? "").trim()
+    (opts.topic ?? getRenderTopic() ?? "").trim()
   );
   if (!text) return ctx;
 
@@ -29233,6 +29245,12 @@ async function rescueBeatVisualWhenEmptyInner(
     );
     if (!placeholder) continue;
     if (await pushClip(placeholder, holdSec)) {
+      /**
+       * §20 — the rung that answered is what the viewer sees. `noteBeatPlaceholder` above says the
+       * search was exhausted; this says whether the result is real footage, a card with the beat's
+       * own words on it, or a drawn colour card. The three are not the same coverage outcome.
+       */
+      noteBeatFillTier(dedup.beatOutcomeAudit, scene.index, beat.index, tierOut.tier);
       recordClipAdopt(
         dedup.clipAdoptAudit,
         scene.index,
@@ -29525,6 +29543,8 @@ async function ensureBeatVisualFilled(
       { dedup, scene, videoTitle }
     );
     if (await pushClip(beatClip, holdSec)) {
+      /** §20 — same reason as the rescue site: record WHAT filled the beat, not only that it was. */
+      noteBeatFillTier(dedup.beatOutcomeAudit, scene.index, beat.index, tierOut.tier);
       recordClipAdopt(
         dedup.clipAdoptAudit,
         scene.index,
@@ -29926,6 +29946,8 @@ async function fillBeatVisual(
         { dedup, scene, videoTitle }
       );
       if (guaranteed && (await pushClip(guaranteed, holdSec))) {
+        /** §20 — the third per-beat guaranteed fill, recorded like the other two. */
+        noteBeatFillTier(dedup.beatOutcomeAudit, scene.index, beat.index, guaranteedTierOut.tier);
         // Audit-gap fix (same class as Round 17 + follow-up fixes): this emergency-finish
         // guaranteed clip was pushed via pushClip but never recorded, making it invisible to
         // assertVisualCoverageExportGate/canAddGuaranteedFallbackClip. Additive only.
@@ -36111,16 +36133,31 @@ export async function runVideoPipeline(
   // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
   // cancellation check below and videoGenerationCancel.ts for why). One extra lookup here (not
   // per LLM call) to resolve the owning userId for per-user LLM spend attribution.
-  const ownerUserId = (await getVideoById(videoId))?.userId ?? null;
+  const ownerRow = await getVideoById(videoId);
+  const ownerUserId = ownerRow?.userId ?? null;
   // RONDE 29: per-gate ask/fire counters for this render. Its own storage rather than a
   // RenderCtx field because gates live in modules that must not import this one (see
   // gateFiringStats.ts). Same per-render isolation, for the same concurrency reason.
   const gateStats = createGateFiringStats();
-  return runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
-    runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
-      videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
-    ))
-  ), ownerUserId);
+  /**
+   * FINAL VALIDATION — the render's TOPIC, set once, here.
+   *
+   * `videos.prompt` (or the prompt this call was handed) is what the person typed, and it is the
+   * only string admitted: `ownerRow.title` is deliberately NOT part of this expression, because a
+   * title is a claim the model made about the video and admitting it as evidence re-opens the hole
+   * RONDE 90 closed. See `withRenderTopic` in searchQueryContract.ts.
+   *
+   * This is the wiring R160 specified and never installed — the reason the first production render
+   * blocked "WWII" eighteen times on a video the person had asked for by that word. Outside this
+   * scope nothing changes: no topic is set and every gate behaves exactly as before.
+   */
+  return withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
+    runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
+      runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
+        videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
+      ))
+    ), ownerUserId)
+  );
 }
 
 async function _runVideoPipelineInner(
@@ -36216,6 +36253,25 @@ async function _runVideoPipelineInner(
     (curatedArchiveOnlyVisuals() ? " [curated archive visuals]" : "") +
     (elevenLabsOnlyVoice() ? " [ElevenLabs voice]" : "")
   );
+
+  /**
+   * FINAL VALIDATION §14 — which route this render takes, said out loud, before any work.
+   *
+   * The first real production log had no route line at all: the `[RenderJob] route=…` report lives
+   * inside the `cinematicPlanningEnabled()` branch, so a deployment with the engine off is silent
+   * about it, and the only way to tell which route ran was to notice that `[Graphics]`, `[Captions]`
+   * and `[EDL]` never appeared. This says it directly, with the flag behind each field, so a log
+   * can be read forwards instead of by inference.
+   *
+   * Non-fatal by construction: it is a log line and a dynamic import, and a render must never fail
+   * because it could not describe itself.
+   */
+  try {
+    const { formatProductionRoute } = await import("./cinematicProduction");
+    console.log(formatProductionRoute(videoId));
+  } catch (err) {
+    console.warn(`[ProductionRoute] video=${videoId} unavailable: ${(err as Error).message.slice(0, 200)}`);
+  }
 
     // ── Stage 1: Parse script into scenes ────────────────────────────────────
     onProgress?.({ stage: STAGE_LABELS.parsing, percent: 3 });

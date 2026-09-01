@@ -1402,6 +1402,58 @@ export function withSearchProvenance<T>(ctx: VerifiedQueryContext | undefined, f
 }
 
 /**
+ * The RENDER'S topic — `videos.prompt`, what the person typed — for the whole render.
+ *
+ * ── The production failure this closes ──────────────────────────────────────────────────────
+ *
+ * R160 built the `topic` evidence channel for one specific reported bug: a documentary whose whole
+ * subject was WWII had "WWII archival footage" rejected with UNVERIFIED_TERM, because the beat's
+ * own sentence did not contain the string "WWII". It added the field, the provenance rule and the
+ * documentation — and then NO production call site ever supplied it. Zero. The channel existed and
+ * carried nothing.
+ *
+ * The first real Railway render is the receipt: 101 of 157 queries BLOCKED, and "WWII" named in
+ * `blockedTerms` eighteen times on a video about the July 20 plot, with the proven terms reading
+ * `["Claus von Stauffenberg","Adolf Hitler","Berlin"]`. The people and the place were proven; the
+ * era the person asked for was not.
+ *
+ * ── Why ambient rather than a parameter ─────────────────────────────────────────────────────
+ *
+ * `buildVerifiedQueryContextForBeat` is reached from helpers that take a bare string — typedQuery
+ * Ladder, typedQueryLead, beatSearchProvenance, the celebrity fetcher — and those are called from
+ * dozens of places that have no render object to thread. Adding a parameter to each is a wide
+ * change with many chances to pass the wrong thing, and passing the wrong thing here is not a
+ * cosmetic error: feeding it `videos.title` re-opens the exact hole RONDE 90 closed.
+ *
+ * So the topic is set ONCE, at the top of a render, by the one caller that legitimately holds the
+ * prompt — the same reasoning `searchProvenanceStorage` above is built on, and the same mechanism.
+ *
+ * ── The rule this must never break ──────────────────────────────────────────────────────────
+ *
+ * `videos.prompt` ONLY. Not the title, not a summary, not any model output. The prompt is what the
+ * person typed and is therefore the authorisation itself; a title is a claim the model made about
+ * the video, and admitting it lets "Adolf Hitler France" be measured on a beat naming neither.
+ * The parameter is deliberately named `videoPrompt` so a call site passing a title reads wrong.
+ */
+const renderTopicStorage = new AsyncLocalStorage<string>();
+
+/** The current render's topic, or undefined outside any render scope. */
+export function getRenderTopic(): string | undefined {
+  const t = renderTopicStorage.getStore();
+  return t && t.trim() ? t : undefined;
+}
+
+/**
+ * Run `fn` with the user's prompt as the ambient topic for every query context built inside it.
+ *
+ * Pass `videos.prompt` and nothing else — see the note above on why a title must never reach this.
+ */
+export function withRenderTopic<T>(videoPrompt: string | null | undefined, fn: () => T): T {
+  const topic = (videoPrompt ?? "").trim();
+  return topic ? renderTopicStorage.run(topic, fn) : fn();
+}
+
+/**
  * RONDE 90 (§13) — should every ADMITTED query be logged, not only the refused ones?
  *
  * Off by default: a render asks providers thousands of questions and a line per question buries
