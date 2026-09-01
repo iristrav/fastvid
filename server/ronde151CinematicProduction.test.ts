@@ -360,11 +360,14 @@ describe("RONDE 151 §25 — observability without secrets", () => {
     for (const line of outcome.log) {
       /**
        * RONDE 157B added [Director] — the editorial quality findings, reported during planning.
-       * RONDE 178 added [Graphics] — planned/rendered/skipped, with each skip's own reason. Its
-       * continuation lines carry the same prefix, so the rule this test enforces is unchanged: a
-       * reader can tell which subsystem produced any line without counting brackets.
+       * RONDE 178 added [Graphics] — planned/rendered/skipped, with each skip's own reason.
+       * RONDE 189 added [Audio] — the ambience laid down and the music verdict, including
+       * `musicSourceUnavailable`, which had appeared in no render log at all until it had a caller.
+       *
+       * Their continuation lines carry the same prefix, so the rule this test enforces is unchanged:
+       * a reader can tell which subsystem produced any line without counting brackets.
        */
-      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics)\]/);
+      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics|Audio)\]/);
     }
   });
 });
