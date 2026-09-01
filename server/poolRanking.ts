@@ -75,7 +75,17 @@ export type RankablePoolCandidate = {
  * candidate carries no data for, so a null costs nothing while a fabricated 0 would score as
  * "measured, and bad".
  */
-export function poolCandidateToAsset(c: RankablePoolCandidate): CandidateAsset {
+export function poolCandidateToAsset(
+  c: RankablePoolCandidate,
+  /**
+   * RONDE 180 — the caller's own keyword score, when it has one.
+   *
+   * Optional and injected rather than computed here: the scorer belongs to `scenePool`, which owns
+   * the pool, and duplicating it in this adapter would give the two paths separate opinions about
+   * relevance. Absent stays null, which is what every caller did before this round.
+   */
+  keywordScore?: number | null
+): CandidateAsset {
   return {
     candidateId: c.id,
     source: engineSourceFor(c.source),
@@ -105,7 +115,7 @@ export function poolCandidateToAsset(c: RankablePoolCandidate): CandidateAsset {
      * the whole candidate list, so handing it a pre-computed number from the old counter would mix
      * two scales — and the engine already reads title, tags and description itself.
      */
-    keywordScore: null,
+    keywordScore: Number.isFinite(keywordScore as number) ? (keywordScore as number) : null,
     retrievalReasons: [],
     retrievalSources: [],
     clipSimilarity: c.clipSimilarity,
@@ -146,6 +156,14 @@ export type PoolRankingRequest = {
   usedCategories?: ReadonlyMap<string, number>;
   /** Entities the beat proved, so a candidate that names one is preferred over one that does not. */
   entityTerms?: readonly string[];
+  /**
+   * RONDE 180 — how well each candidate's own text matches the beat, from the CALLER's scorer.
+   *
+   * The engine normalises whatever scale this returns across the batch, so any consistent scoring
+   * works; what it cannot do is invent the number. Omit it and `keywordScore` stays null, which is
+   * the behaviour every caller had before.
+   */
+  keywordScoreOf?: (candidate: RankablePoolCandidate) => number | null | undefined;
 };
 
 /**
@@ -158,7 +176,7 @@ export function rankPoolCandidates(req: PoolRankingRequest): RankedCandidate[] {
   if (req.candidates.length === 0) return [];
   return rankCandidates(
     req.intent,
-    req.candidates.map(poolCandidateToAsset),
+    req.candidates.map((c) => poolCandidateToAsset(c, req.keywordScoreOf?.(c))),
     DEFAULT_RANKING_CONFIG,
     {
       ...(req.targetMotionLevel != null ? { targetMotionLevel: req.targetMotionLevel } : {}),

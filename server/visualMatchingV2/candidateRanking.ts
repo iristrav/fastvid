@@ -225,11 +225,26 @@ export function rankCandidates(
   const unsorted = candidates.map((candidate) => {
     const signalsUsed: RankingBreakdown["signalsUsed"] = [];
 
-    const clipNorm = candidate.clipSimilarity !== null ? clamp01(candidate.clipSimilarity) : 0;
-    if (candidate.clipSimilarity !== null) signalsUsed.push("clipSimilarity");
+    /**
+     * RONDE 180 — a MEASURED similarity, or none. `!== null` was not the same question.
+     *
+     * A candidate whose `clipSimilarity` key is absent rather than null passed that check, and
+     * `clamp01(undefined)` is NaN — which then propagates through every contribution below into a
+     * NaN `rankingScore`. NaN does not throw and does not sort: `sort((a, b) => b.score - a.score)`
+     * leaves the input order untouched, so the ranking APPEARS to have run and the candidates come
+     * back in the order the pool happened to build them.
+     *
+     * `Number.isFinite` asks the question the rest of this function already asks everywhere else:
+     * is there a measurement here. An absent one costs nothing, because its weight is redistributed
+     * — which is exactly what should happen, and what `!== null` prevented.
+     */
+    const clipMeasured = Number.isFinite(candidate.clipSimilarity as number);
+    const clipNorm = clipMeasured ? clamp01(candidate.clipSimilarity as number) : 0;
+    if (clipMeasured) signalsUsed.push("clipSimilarity");
 
-    const embeddingNorm = candidate.embeddingSimilarity !== null ? clamp01(candidate.embeddingSimilarity) : 0;
-    if (candidate.embeddingSimilarity !== null) signalsUsed.push("embeddingSimilarity");
+    const embeddingMeasured = Number.isFinite(candidate.embeddingSimilarity as number);
+    const embeddingNorm = embeddingMeasured ? clamp01(candidate.embeddingSimilarity as number) : 0;
+    if (embeddingMeasured) signalsUsed.push("embeddingSimilarity");
 
     const keywordNorm = normalizeKeyword(candidate.keywordScore);
     if (candidate.keywordScore !== null) signalsUsed.push("keywordScore");

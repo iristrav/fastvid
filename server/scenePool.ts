@@ -1743,6 +1743,58 @@ export type PoolSelectionContext = {
   at?: { sceneIndex: number; beatIndex: number };
 };
 
+/**
+ * The beat's own words, tokenised — extracted from `selectCandidatesFromPool` unchanged.
+ */
+function beatTokensFor(beatText: string, powerWord: string, keywords: string[]): string[] {
+  return Array.from(new Set(
+    [powerWord, ...keywords, ...beatText.toLowerCase().split(/\s+/)]
+      .map(t => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
+      .filter(t => t.length > 2)
+  ));
+}
+
+/**
+ * How well a candidate's own text matches the beat's words.
+ *
+ * ── RONDE 180: why this is now a named function ──────────────────────────────────────────────
+ *
+ * This is the pool's original scorer, lifted out of `selectCandidatesFromPool` with its arithmetic
+ * untouched — same token rules, same +3 for a power word in the title, same +2 in the tags.
+ *
+ * It had to be reachable from the V2 path because of what the audit found there. `poolRanking`
+ * hands the engine `keywordScore: null`, on the stated belief that "the engine already reads title,
+ * tags and description itself". It does not: `buildKeywordNormalizer` only normalises scores it is
+ * GIVEN, so the 0.17 keyword weight contributed exactly zero on every ranked candidate, and the
+ * ordering came down to source priority and resolution. A ranking with no textual relevance in it
+ * is worse than the word-stem sort it replaced, and it is the opposite of RULE 7.
+ *
+ * So the same scorer feeds both paths. The engine min-max normalises the batch, which is what makes
+ * an arbitrary scale like this one safe to hand over — and a second scorer here would be a second
+ * opinion about relevance, which is exactly what §28 forbids.
+ */
+function keywordRelevanceScore(
+  c: Pick<PoolCandidate, "title" | "tags" | "description">,
+  beatTokens: string[],
+  powerWord: string
+): number {
+  const candidateTokens = [
+    ...c.title.toLowerCase().split(/\s+/),
+    ...c.tags.flatMap(t => t.toLowerCase().split(/\s+/)),
+    ...(c.description ?? "").toLowerCase().split(/\s+/),
+  ].map(t => t.replace(/[^a-z0-9]/g, "")).filter(t => t.length > 2);
+
+  let score = 0;
+  for (const token of beatTokens) {
+    if (candidateTokens.includes(token)) score += 1;
+  }
+  // Power word match is worth extra
+  const pwLower = powerWord.toLowerCase();
+  if (c.title.toLowerCase().includes(pwLower)) score += 3;
+  if (c.tags.some(t => t.toLowerCase().includes(pwLower))) score += 2;
+  return score;
+}
+
 export function selectCandidatesFromPool(
   beatText: string,
   powerWord: string,
@@ -1763,9 +1815,26 @@ export function selectCandidatesFromPool(
    * routes the same candidates through that engine rather than growing a second one here.
    */
   if (poolRankingV2Enabled() && ctx?.intent) {
+    /**
+     * RONDE 180 — the engine is given a keyword score, because it does not compute one.
+     *
+     * `poolCandidateToAsset` passes `keywordScore: null` and says the engine reads the title itself.
+     * It does not — `buildKeywordNormalizer` normalises scores it is given — so the 0.17 keyword
+     * weight contributed zero and the ordering was decided by source priority and resolution. This
+     * hands over the pool's OWN scorer's answer, the same one the non-V2 path below sorts by, so
+     * both paths agree about relevance and the engine adds twelve signals on top rather than
+     * replacing the one that was working.
+     */
+    const beatTokens = beatTokensFor(beatText, powerWord, keywords);
     const ranked = rankedPool({
       intent: ctx.intent,
       candidates: pool.candidates,
+      /**
+       * Handed over as a function rather than stamped onto the candidates. This module does not
+       * write score fields onto pool candidates — a rule R3 pins, and a good one: a score written
+       * here would outlive this call and be read later as if some other stage had measured it.
+       */
+      keywordScoreOf: (c) => keywordRelevanceScore(c as PoolCandidate, beatTokens, powerWord),
       ...(ctx.targetDurationSec != null ? { targetDurationSec: ctx.targetDurationSec } : {}),
       ...(ctx.targetOrientation ? { targetOrientation: ctx.targetOrientation } : {}),
       ...(ctx.targetMotionLevel != null ? { targetMotionLevel: ctx.targetMotionLevel } : {}),
@@ -1796,30 +1865,10 @@ export function selectCandidatesFromPool(
       .slice(0, count);
   }
 
-  const beatTokens = Array.from(new Set(
-    [powerWord, ...keywords, ...beatText.toLowerCase().split(/\s+/)]
-      .map(t => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
-      .filter(t => t.length > 2)
-  ));
-
-  const scored = pool.candidates.map(c => {
-    const candidateTokens = [
-      ...c.title.toLowerCase().split(/\s+/),
-      ...c.tags.flatMap(t => t.toLowerCase().split(/\s+/)),
-      ...(c.description ?? "").toLowerCase().split(/\s+/),
-    ].map(t => t.replace(/[^a-z0-9]/g, "")).filter(t => t.length > 2);
-
-    let score = 0;
-    for (const token of beatTokens) {
-      if (candidateTokens.includes(token)) score += 1;
-    }
-    // Power word match is worth extra
-    const pwLower = powerWord.toLowerCase();
-    if (c.title.toLowerCase().includes(pwLower)) score += 3;
-    if (c.tags.some(t => t.toLowerCase().includes(pwLower))) score += 2;
-
-    return { candidate: c, score };
-  });
+  const scored = pool.candidates.map(c => ({
+    candidate: c,
+    score: keywordRelevanceScore(c, beatTokensFor(beatText, powerWord, keywords), powerWord),
+  }));
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, count).map(s => s.candidate);

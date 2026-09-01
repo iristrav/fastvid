@@ -497,6 +497,15 @@ import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIO
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
+/**
+ * RONDE 180 — the duplicate ledger and the intent builder, both already owned elsewhere.
+ *
+ * `newLedger`/`recordUse` come from duplicateGuard, the module that also owns the penalty; and the
+ * ranking intent is built by `intentFrom`, the same function the cinematic plan uses, so the intent
+ * the ranking sees and the intent the plan records cannot describe different beats.
+ */
+import { newLedger, recordUse, type UsageLedger } from "./duplicateGuard";
+import { intentFrom } from "./cinematicPipelineInputs";
 import {
   buildRetrievalFunnel,
   findBestArchiveScoreForBeat,
@@ -16381,6 +16390,15 @@ export interface VisualDedupState {
    */
   movingClipCount: number;
   stillClipCount: number;
+  /**
+   * RONDE 180 — every asset this VIDEO has already adopted, so a repeat can be penalised.
+   *
+   * On the render state rather than per scene, because the complaint it answers is a viewer seeing
+   * the same shot come back, and that does not care which scene found it the second time. R170
+   * built the ledger and the penalty; nothing constructed one, so `selectCandidatesFromPool` was
+   * called with no context at all and the penalty could never apply.
+   */
+  usageLedger: UsageLedger;
   /** RONDE 62: consecutive beats where every plan-rescue round missed. */
   planRescueMissStreak: number;
   /** Clips adopted so far in the current scene — used by Asset Director for shot variety. */
@@ -16638,6 +16656,7 @@ export function createVisualDedupState(
     sourcingCache: createSourcingCache(topic?.videoId),
     movingClipCount: 0,
     stillClipCount: 0,
+    usageLedger: newLedger(),
     planRescueMissStreak: 0,
   };
   // RONDE 86: every recordClipAdopt call in this file hands over `dedup.clipAdoptAudit`, so
@@ -32415,12 +32434,77 @@ async function fetchSceneVisualsInner(
       } else if (scenePool && scenePool.candidates.length > 0) {
         // P1: try pool candidate first (no extra API calls), fall back to normal retrieval
         // P2: when thumbnail ranking is enabled, rerank by CLIP before downloading
+        /**
+         * RONDE 180 — the selection context this call never had.
+         *
+         * ── What was inert, and why nothing failed ─────────────────────────────────────────
+         *
+         * This is the ONLY production call to `selectCandidatesFromPool`, and it passed no `ctx`.
+         * Two whole features hung off that argument:
+         *
+         *   · R160 FASE 7's thirteen-signal ranking engine, which only runs `if (poolRankingV2
+         *     Enabled() && ctx?.intent)`. Without an intent the pool fell back to the local scorer
+         *     that counts shared word-stems and knows nothing about source priority, motion,
+         *     aspect, duration fit or what shot the Director asked for.
+         *   · R170's duplicate penalty, which needs `ctx.usageLedger`. Without a ledger there is
+         *     nothing to be a duplicate OF, so the same shot could come back in three scenes with
+         *     no penalty at any of them.
+         *
+         * Both were built, tested and unreachable. The flag still decides whether V2 ranking runs
+         * — `poolRankingV2Enabled` follows the cinematic route — so this hands over the inputs and
+         * changes nothing on a deployment that has not turned it on.
+         *
+         * The intent comes from `intentFrom`, the same builder the cinematic plan uses, with the
+         * same extractors. A second intent builder here would let the ranking and the plan describe
+         * different beats.
+         */
+        const rankingIntent = intentFrom(
+          {
+            index: beat.index,
+            text: beat.text,
+            searchQuery: beat.searchQuery,
+            powerWord: beat.powerWord,
+            keywords: beat.keywords,
+            holdSec: beat.holdSec,
+            visualDescription: beat.visualDescription,
+          },
+          scene.index,
+          beat.index,
+          /** No adoption yet — this runs to CHOOSE one. `intentFrom` handles that by design. */
+          null,
+          {
+            people: (t) => extractPersonNamesFromText(t),
+            place: (t) => extractVisualPlacePhrase(t),
+            action: (t) => extractActionCue(t),
+            namedEntities: (t) => beatNamedEntitiesByKind(t),
+            secondarySubjects: (t) => extractSecondaryEntities(t, personName || undefined),
+          }
+        );
         let poolCandidates = selectCandidatesFromPool(
           beat.text,
           beat.powerWord,
           beat.keywords,
           scenePool,
-          poolThumbnailRankingEnabled() ? 8 : 3  // fetch more candidates for P2 to rerank
+          poolThumbnailRankingEnabled() ? 8 : 3,  // fetch more candidates for P2 to rerank
+          {
+            intent: rankingIntent,
+            targetDurationSec: beat.holdSec,
+            /**
+             * RONDE 180 — the entities the beat proved, so a candidate that names one is preferred.
+             *
+             * The same expression `v2Pipeline` uses, not a new one. It is only worth anything since
+             * R177 filled `objects`, `brands` and `companies`: before that this list was always
+             * just the people, and the entityMatch signal had almost nothing to match on.
+             */
+            entityTerms: [
+              ...rankingIntent.people,
+              ...rankingIntent.objects,
+              ...rankingIntent.brands,
+              ...rankingIntent.companies,
+            ],
+            usageLedger: dedup.usageLedger,
+            at: { sceneIndex: scene.index, beatIndex: beat.index },
+          }
         );
         if (poolThumbnailRankingEnabled() && poolCandidates.some(c => c.thumbnailUrl)) {
           poolCandidates = await rankCandidatesByThumbnailClip(
@@ -32458,6 +32542,23 @@ async function fetchSceneVisualsInner(
             dedup.clipAdoptAudit, scene.index, beat.index, beat.text, poolClip,
             adopted?.source ?? "pool", adopted?.title, dedup.segmentGeoLock
           );
+          /**
+           * RONDE 180 — the ledger only means something if adoptions are written to it.
+           *
+           * Recorded at the moment the candidate BECOMES the beat's clip, not when it was ranked:
+           * a candidate that was considered and rejected is not a use, and counting it would make
+           * the next beat avoid a shot this video never showed.
+           *
+           * Provider + provider asset id, never the path — the same identity `assetKey` is built
+           * from, so two downloads of one source video collapse to one entry.
+           */
+          if (adopted) {
+            recordUse(
+              dedup.usageLedger,
+              { provider: adopted.source, providerAssetId: adopted.assetId },
+              { sceneIndex: scene.index, beatIndex: beat.index }
+            );
+          }
         } else {
           /**
            * RONDE 176 — the cascade is a FALLBACK, and it says so in the agreed vocabulary.
