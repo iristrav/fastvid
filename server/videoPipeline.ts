@@ -117,7 +117,7 @@ import {
   planCinematicScene,
   type CinematicScenePlan,
 } from "./cinematicEffectsEngine";
-import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
+import { PIPELINE_ERROR, matchesAppError, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
@@ -12861,6 +12861,115 @@ async function youtubeClipPassesImageGate(
   return judgement.verdict !== "does_not_fit";
 }
 
+/**
+ * FINAL VALIDATION §4 — every way a YouTube fetch can end, named.
+ *
+ * ── Why a vocabulary and not a boolean ──────────────────────────────────────────────────────
+ *
+ * `downloadYouTubeCCClip` returns a bare boolean, and until the MASTER YOUTUBE BUILD round it
+ * returned `false` in silence. That round added one line distinguishing "no route configured" from
+ * "a route failed", which was the difference the first production log needed. It is still not
+ * enough to act on: a service that 502s, a service that returns an HTML error page, a transfer the
+ * scene budget killed, a video no route offers an mp4 for, and a file that arrives but will not
+ * trim are five different problems with five different fixes, and all five printed
+ * `status=DOWNLOAD_FAILED`.
+ *
+ * Worse, two paths still returned `false` with NO line at all — the scene-budget guard and the
+ * cloud route's own size floor. A refusal nobody can grep for is the defect this whole programme
+ * keeps rediscovering.
+ */
+export type YoutubeDownloadStatus =
+  | "DOWNLOAD_SUCCESS"
+  /** No download route is configured at all — a gap in configuration, not a failure. */
+  | "DOWNLOAD_UNAVAILABLE"
+  /** The transfer ran out of time: its own timeout, or the scene budget that contains it. */
+  | "DOWNLOAD_TIMEOUT"
+  /** The route answered, and delivered no bytes or too few to be a video. */
+  | "DOWNLOAD_EMPTY"
+  /** Bytes arrived and are not usable media — the trim/probe refused them. */
+  | "DOWNLOAD_INVALID_CONTENT"
+  /** The route cannot serve THIS video: no mp4 format, no metadata, or past the size ceiling. */
+  | "DOWNLOAD_UNSUPPORTED"
+  /** Everything else: an HTTP error status, an unclassified throw. */
+  | "DOWNLOAD_FAILED";
+
+/** One route's attempt at one video, kept so the final line can report all of them. */
+export type YoutubeDownloadAttempt = {
+  route: "cloud" | "rapidapi";
+  status: YoutubeDownloadStatus;
+  detail: string;
+};
+
+/**
+ * A thrown error, classified.
+ *
+ * A scope abort and a fetch timeout are both "we ran out of time" and are reported as such — the
+ * operator's action is the same (give the stage more room, or fetch a smaller source), and calling
+ * them DOWNLOAD_FAILED sends them looking for a broken service instead.
+ */
+export function classifyYoutubeDownloadError(err: unknown): YoutubeDownloadStatus {
+  if (isScopeAbortError(err)) return "DOWNLOAD_TIMEOUT";
+  const msg = (err as Error)?.message ?? "";
+  if (matchesAppError(msg, PIPELINE_ERROR.TIMEOUT) || /timeout|aborted|abort/i.test(msg)) {
+    return "DOWNLOAD_TIMEOUT";
+  }
+  return "DOWNLOAD_FAILED";
+}
+
+/**
+ * Which of several failed attempts the headline should name.
+ *
+ * Ordered by how much the attempt actually learned about the video. A route that delivered bytes
+ * that would not trim tells an operator more than one that refused to answer, so INVALID_CONTENT
+ * outranks a bare FAILED. Every attempt is still listed in the line; this only picks the word to
+ * grep for.
+ */
+const YOUTUBE_DOWNLOAD_STATUS_PRIORITY: readonly YoutubeDownloadStatus[] = [
+  "DOWNLOAD_INVALID_CONTENT",
+  "DOWNLOAD_UNSUPPORTED",
+  "DOWNLOAD_TIMEOUT",
+  "DOWNLOAD_EMPTY",
+  "DOWNLOAD_FAILED",
+];
+
+export function summariseYoutubeDownloadAttempts(
+  attempts: readonly YoutubeDownloadAttempt[],
+  routesConfigured: boolean
+): YoutubeDownloadStatus {
+  if (attempts.some((a) => a.status === "DOWNLOAD_SUCCESS")) return "DOWNLOAD_SUCCESS";
+  if (!routesConfigured && attempts.length === 0) return "DOWNLOAD_UNAVAILABLE";
+  for (const status of YOUTUBE_DOWNLOAD_STATUS_PRIORITY) {
+    if (attempts.some((a) => a.status === status)) return status;
+  }
+  /** A route was configured and produced no attempt record — still a failure, never a silence. */
+  return routesConfigured ? "DOWNLOAD_FAILED" : "DOWNLOAD_UNAVAILABLE";
+}
+
+/**
+ * The one line. Emitted on EVERY exit from `downloadYouTubeCCClip`, success included.
+ *
+ * Presence only for configuration: the service URL and the API key are never printed, only whether
+ * they are set — the same rule the preflight follows.
+ */
+export function formatYoutubeDownloadLine(params: {
+  videoId: string;
+  sceneIndex: number;
+  status: YoutubeDownloadStatus;
+  attempts: readonly YoutubeDownloadAttempt[];
+  hasCloudRoute: boolean;
+  hasRapidRoute: boolean;
+  reason: string;
+}): string {
+  const trail =
+    params.attempts.map((a) => `${a.route}:${a.status}`).join(",") || "none";
+  return (
+    `[YouTubeDownload] video=${params.videoId} scene=${params.sceneIndex} ` +
+    `status=${params.status} attempts=${trail} ` +
+    `cloudService=${params.hasCloudRoute ? "SET" : "MISSING"} ` +
+    `rapidApi=${params.hasRapidRoute ? "SET" : "MISSING"} reason=${params.reason}`
+  );
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -12877,6 +12986,24 @@ export async function downloadYouTubeCCClip(
   startIsExact = false
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
+  const hasCloudRoute = Boolean(cloudDlService);
+  const hasRapidRoute = Boolean(RAPIDAPI_KEY);
+  /**
+   * §4 — every outcome of every route, so the exit line can name the specific one rather than
+   * collapsing five different problems into DOWNLOAD_FAILED.
+   */
+  const attempts: YoutubeDownloadAttempt[] = [];
+  const note = (route: YoutubeDownloadAttempt["route"], status: YoutubeDownloadStatus, detail: string) => {
+    attempts.push({ route, status, detail });
+  };
+  /** The single exit point for the line. Called on success and on every failure alike. */
+  const reportDownload = (status: YoutubeDownloadStatus, reason: string): void => {
+    const line = formatYoutubeDownloadLine({
+      videoId, sceneIndex, status, attempts, hasCloudRoute, hasRapidRoute, reason,
+    });
+    if (status === "DOWNLOAD_SUCCESS") console.log(line);
+    else console.warn(line);
+  };
 
   // F3-41: cloud/yt-dlp service tried FIRST — this is the intended primary route (see the F3-40
   // diagnosis: it runs yt-dlp with an ANDROID_VR client workaround on its own infrastructure,
@@ -12908,10 +13035,12 @@ export async function downloadYouTubeCCClip(
       );
       if (!dlResp.ok) {
         const errText = await dlResp.text().catch(() => "");
+        note("cloud", "DOWNLOAD_FAILED", `http_${dlResp.status}`);
         console.warn(
           `[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)} — falling back to RapidAPI`
         );
       } else if (bytesWritten === null) {
+        note("cloud", "DOWNLOAD_EMPTY", "no_response_body");
         console.warn(
           `[Pipeline] Scene ${sceneIndex}: Cloud DL service returned no body for ${videoId} — falling back to RapidAPI`
         );
@@ -12919,18 +13048,32 @@ export async function downloadYouTubeCCClip(
         let cloudFileSize = -1;
         try { cloudFileSize = fs.statSync(cloudTmpPath).size; } catch { /* leave as -1 */ }
         if (cloudFileSize > 80 * 1024 * 1024) {
+          note("cloud", "DOWNLOAD_UNSUPPORTED", `over_size_ceiling_${Math.round(cloudFileSize / 1024 / 1024)}mb`);
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(cloudFileSize / 1024 / 1024).toFixed(1)}MB), skipping cloud service — falling back to RapidAPI`
           );
         } else if (cloudFileSize > 10_000) {
           fs.renameSync(cloudTmpPath, outPath);
+          note("cloud", "DOWNLOAD_SUCCESS", `${cloudFileSize}_bytes`);
           console.log(
             `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
           );
+          reportDownload("DOWNLOAD_SUCCESS", "cloud_service");
           return true;
+        } else {
+          /**
+           * §4 — the size floor used to drop the file and say nothing at all, so a service that
+           * answers 200 with a stub was indistinguishable from one that was never called.
+           */
+          note("cloud", "DOWNLOAD_EMPTY", `below_size_floor_${cloudFileSize}_bytes`);
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: Cloud DL returned ${cloudFileSize} bytes for ${videoId} ` +
+              `(floor is 10000) — falling back to RapidAPI`
+          );
         }
       }
     } catch (err) {
+      note("cloud", classifyYoutubeDownloadError(err), (err as Error).message?.slice(0, 60) ?? "threw");
       console.warn(
         `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
         (err as Error).message, "— falling back to RapidAPI"
@@ -12982,6 +13125,9 @@ export async function downloadYouTubeCCClip(
         };
 
         const format = pickFormat(data.formats) ?? pickFormat(data.adaptiveFormats);
+        if (!format?.url) {
+          note("rapidapi", "DOWNLOAD_UNSUPPORTED", "no_mp4_format_offered");
+        }
         if (format?.url) {
           // F3-05: streams straight to tmpPath instead of buffering the whole clip in memory.
           // P0 fix 1: maxBytes matches the existing 80MB post-hoc ceiling below exactly.
@@ -12999,6 +13145,13 @@ export async function downloadYouTubeCCClip(
               `[Pipeline] Scene ${sceneIndex}: skipping YouTube download of ${videoId} — ` +
                 `${Math.round(remainingMs / 1000)}s left in the scene budget, not enough to finish`
             );
+            /**
+             * §4 — this was a bare `return false`. Standing aside for the scene budget is a
+             * legitimate decision and the most misread one in the log: it looks exactly like a
+             * broken service unless it says so.
+             */
+            note("rapidapi", "DOWNLOAD_TIMEOUT", `scene_budget_${Math.round(remainingMs / 1000)}s_left`);
+            reportDownload("DOWNLOAD_TIMEOUT", "scene_budget_too_short_to_start");
             return false;
           }
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -13017,9 +13170,19 @@ export async function downloadYouTubeCCClip(
             },
             80 * 1024 * 1024
           );
+          if (!dlResp.ok) {
+            note("rapidapi", "DOWNLOAD_FAILED", `http_${dlResp.status}`);
+          } else if (bytesWritten === null) {
+            note("rapidapi", "DOWNLOAD_EMPTY", "no_response_body");
+          }
           if (dlResp.ok && bytesWritten !== null) {
             let rapidFileSize = -1;
             try { rapidFileSize = fs.statSync(tmpPath).size; } catch { /* leave as -1 */ }
+            if (rapidFileSize > 80 * 1024 * 1024) {
+              note("rapidapi", "DOWNLOAD_UNSUPPORTED", `over_size_ceiling_${Math.round(rapidFileSize / 1024 / 1024)}mb`);
+            } else if (rapidFileSize < 50_000) {
+              note("rapidapi", "DOWNLOAD_EMPTY", `below_size_floor_${rapidFileSize}_bytes`);
+            }
             if (rapidFileSize >= 50_000 && rapidFileSize <= 80 * 1024 * 1024) {
               // RONDE 64: the whole source is on disk here, so stop guessing its length.
               //
@@ -13045,17 +13208,26 @@ export async function downloadYouTubeCCClip(
                   `YouTube CC RapidAPI scene ${sceneIndex}`
                 )
               ) {
+                note("rapidapi", "DOWNLOAD_SUCCESS", `${rapidFileSize}_bytes`);
                 console.log(
                   `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via RapidAPI: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
                 );
+                reportDownload("DOWNLOAD_SUCCESS", "rapidapi");
                 return true;
               }
+              /**
+               * §4 — bytes arrived and ffmpeg would not cut a clip out of them. That is a
+               * different problem from a download that never happened, and the only one of these
+               * statuses that points at the FILE rather than at the route.
+               */
+              note("rapidapi", "DOWNLOAD_INVALID_CONTENT", "trim_produced_no_clip");
             }
           }
         }
       } else {
         // RONDE 56: the helper already logged and classified the failure (and cached the null so
         // this video is not asked again this render).
+        note("rapidapi", "DOWNLOAD_UNSUPPORTED", "no_usable_metadata");
         console.warn(
           `[Pipeline] Scene ${sceneIndex}: RapidAPI returned no usable metadata for ${videoId}`
         );
@@ -13066,6 +13238,7 @@ export async function downloadYouTubeCCClip(
       // stay uncounted: those said nothing about RapidAPI's health, and the misleading message
       // they carried is exactly what made this look like a provider outage in the first place.
       if (!isScopeAbortError(err)) markYoutubeSearchResult(false);
+      note("rapidapi", classifyYoutubeDownloadError(err), (err as Error).message?.slice(0, 60) ?? "threw");
       console.warn(
         `[Pipeline] Scene ${sceneIndex}: RapidAPI download failed for ${videoId}:`,
         (err as Error).message
@@ -13101,15 +13274,12 @@ export async function downloadYouTubeCCClip(
    * An operator cannot act on the first and must act on the second, so the log now names which one
    * it was. Presence only: the service URL and the key are never printed, only whether they exist.
    */
-  const hasCloudRoute = Boolean(cloudDlService);
-  const hasRapidRoute = Boolean(RAPIDAPI_KEY);
-  console.warn(
-    `[YouTubeDownload] video=${videoId} scene=${sceneIndex} status=` +
-      (hasCloudRoute || hasRapidRoute ? "DOWNLOAD_FAILED" : "DOWNLOAD_UNAVAILABLE") +
-      ` cloudService=${hasCloudRoute ? "SET" : "MISSING"} rapidApi=${hasRapidRoute ? "SET" : "MISSING"}` +
-      (hasCloudRoute || hasRapidRoute
-        ? " reason=every_configured_route_failed"
-        : " reason=no_download_route_configured — set YOUTUBE_CC_DL_SERVICE or RAPIDAPI_KEY")
+  const status = summariseYoutubeDownloadAttempts(attempts, hasCloudRoute || hasRapidRoute);
+  reportDownload(
+    status,
+    status === "DOWNLOAD_UNAVAILABLE"
+      ? "no_download_route_configured — set YOUTUBE_CC_DL_SERVICE or RAPIDAPI_KEY"
+      : attempts.map((a) => `${a.route}=${a.detail}`).join(" ") || "every_configured_route_failed"
   );
   return false;
 }

@@ -101,10 +101,19 @@ describe("RONDE 68 — a transfer that cannot finish is not started", () => {
     const src = PIPELINE();
     const idx = src.indexOf("const remainingMs = remainingScopeMs();");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 700);
+    /**
+     * FINAL VALIDATION §4 widened the window from 700: the guard now also records the reason it
+     * stood aside (`reportDownload("DOWNLOAD_TIMEOUT", …)`) before returning, because a scene-budget
+     * refusal used to be a bare `return false` that looked exactly like a broken service. Every
+     * assertion below is unchanged, plus one for the line that closes that silence.
+     */
+    const block = src.slice(idx, idx + 1400);
     expect(block).toContain("remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS");
     expect(block).toContain("not enough to finish");
     expect(block).toContain("return false;");
+    expect(block, "standing aside for the budget is still a silent return").toContain(
+      'reportDownload("DOWNLOAD_TIMEOUT"'
+    );
   });
 
   it("it sits before downloadToFileStreaming, not after it", () => {

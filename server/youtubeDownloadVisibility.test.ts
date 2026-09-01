@@ -29,12 +29,22 @@ import * as fs from "fs";
 
 const SRC = fs.readFileSync("server/videoPipeline.ts", "utf8");
 
-/** The body of the downloader, so every claim below is about that function and nothing else. */
+/**
+ * The downloader, so every claim below is about that code and nothing else.
+ *
+ * FINAL VALIDATION §4 widened the window: the log line is now built by
+ * `formatYoutubeDownloadLine`, declared just above the function so the statuses can be classified
+ * and unit-tested without a network. Both live between these two markers, and every assertion
+ * below is unchanged — a claim about "the downloader" is still a claim about exactly this code.
+ */
 const BODY = (() => {
-  const start = SRC.indexOf("export async function downloadYouTubeCCClip(");
-  expect(start, "downloadYouTubeCCClip has moved").toBeGreaterThan(-1);
-  const end = SRC.indexOf("export async function probeYouTubeCcPipeline(", start);
-  expect(end, "the end marker has moved").toBeGreaterThan(start);
+  const start = SRC.indexOf("export type YoutubeDownloadStatus =");
+  expect(start, "the download status vocabulary has moved").toBeGreaterThan(-1);
+  const fn = SRC.indexOf("export async function downloadYouTubeCCClip(", start);
+  expect(fn, "downloadYouTubeCCClip has moved or no longer follows its status vocabulary")
+    .toBeGreaterThan(start);
+  const end = SRC.indexOf("export async function probeYouTubeCcPipeline(", fn);
+  expect(end, "the end marker has moved").toBeGreaterThan(fn);
   return SRC.slice(start, end);
 })();
 
@@ -65,19 +75,60 @@ describe("YOUTUBE — a clip that cannot be fetched says why", () => {
     expect(BODY).toContain("RAPIDAPI_KEY");
   });
 
+  /**
+   * §4 narrowed this to the formatter's own body rather than "everything after the first
+   * [YouTubeDownload]". The old window ran to the end of the function and happened to exclude the
+   * download URL only because that URL is built above the log line — a coincidence of ordering,
+   * not a property. Checking the line's actual builder is the stricter test, and the second half
+   * below now covers every OTHER log statement in the downloader too, which the old one never did.
+   */
+  const FORMATTER = (() => {
+    const start = BODY.indexOf("export function formatYoutubeDownloadLine(");
+    expect(start, "the download line formatter is gone").toBeGreaterThan(-1);
+    const end = BODY.indexOf("export async function downloadYouTubeCCClip(", start);
+    expect(end, "the formatter no longer sits directly above the downloader").toBeGreaterThan(start);
+    return BODY.slice(start, end);
+  })();
+
   it("reports the two routes as presence, never as a value", () => {
-    const line = BODY.slice(BODY.indexOf("[YouTubeDownload]"));
-    expect(line).toContain('"SET" : "MISSING"');
+    expect(FORMATTER).toContain('"SET" : "MISSING"');
     /** The service URL and the key must not be interpolated into the log. */
-    expect(line).not.toMatch(/\$\{\s*cloudDlService\s*\}/);
-    expect(line).not.toMatch(/\$\{\s*RAPIDAPI_KEY\s*\}/);
+    expect(FORMATTER).not.toMatch(/\$\{\s*(params\.)?cloudDlService\s*\}/);
+    expect(FORMATTER).not.toMatch(/\$\{\s*(params\.)?RAPIDAPI_KEY\s*\}/);
   });
 
-  /** The video and the scene are in the line, so a beat can be traced back to its failed fetch. */
+  /**
+   * No secret may reach ANY log statement in the downloader — not just the one status line.
+   *
+   * Checked from the secret outwards rather than from the console call inwards: each place a
+   * secret is interpolated, look back to the start of its statement and require that statement not
+   * to be a log. Interpolating the service URL into the DOWNLOAD URL is correct and must stay
+   * allowed; interpolating it into a message is the leak.
+   */
+  it("never logs a service URL, key or token from anywhere in the downloader", () => {
+    for (const secret of ["cloudDlService", "cloudDlToken", "RAPIDAPI_KEY", "YOUTUBE_CC_DL_TOKEN"]) {
+      for (const use of BODY.matchAll(new RegExp(`\\$\\{\\s*${secret}\\b`, "g"))) {
+        const statementStart = Math.max(
+          BODY.lastIndexOf(";", use.index!),
+          BODY.lastIndexOf("{", use.index!)
+        );
+        const statement = BODY.slice(statementStart + 1, use.index!);
+        expect(statement, `${secret} is interpolated into a log statement`).not.toMatch(/console\./);
+      }
+    }
+  });
+
+  /**
+   * The video and the scene are in the line, so a beat can be traced back to its failed fetch.
+   *
+   * §4 moved the formatting into `formatYoutubeDownloadLine`, whose fields arrive on a `params`
+   * object — hence the optional prefix. The claim is unchanged: both identifiers are interpolated
+   * into the line, neither is a constant.
+   */
   it("names the video and the scene it was for", () => {
     const line = BODY.slice(BODY.indexOf("[YouTubeDownload]"));
-    expect(line).toContain("video=${videoId}");
-    expect(line).toContain("scene=${sceneIndex}");
+    expect(line).toMatch(/video=\$\{(params\.)?videoId\}/);
+    expect(line).toMatch(/scene=\$\{(params\.)?sceneIndex\}/);
   });
 });
 
