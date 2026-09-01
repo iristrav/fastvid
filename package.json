@@ -17,7 +17,8 @@
     "migrate:storage": "tsx scripts/migrate-local-storage-to-s3.ts",
     "seed:archives": "node scripts/seed-sample-archives.mjs",
     "archive-backfill": "tsx server/visualMatchingV2/embeddings/archiveEmbeddingBackfill.ts",
-    "migrations:check": "tsx scripts/check-migrations.ts"
+    "migrations:check": "tsx scripts/check-migrations.ts",
+    "preflight": "tsx server/productionPreflightCli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-rekognition": "^3.1091.0",
