@@ -2507,6 +2507,17 @@ function clipRequiresFairUseTransform(filePath: string): boolean {
   return /_ytfu_|_ytcc_|_archive_|_wikivid_|_septube_|_gdelt_/i.test(base);
 }
 
+/**
+ * RONDE 179 — the same predicate, exposed so a test can check the POOL's filename against it.
+ *
+ * The pool now tags its YouTube downloads `_ytcc` so this rule applies to them, and a test that
+ * only greps for both strings could pass while they failed to line up. This lets the real name be
+ * run through the real predicate.
+ */
+export function poolClipRequiresFairUseTransformForTest(filePath: string): boolean {
+  return clipRequiresFairUseTransform(filePath);
+}
+
 function ffmpegSupportsDrawtext(): boolean {
   if (process.env.FFMPEG_DISABLE_DRAWTEXT === "true") return false;
   try {
@@ -4450,7 +4461,23 @@ export async function downloadAndTrimPoolCandidate(
   const safeId = candidate.assetId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
   const isVideo = candidate.mediaType === "video";
   const ext = isVideo ? "mp4" : "jpg";
-  const rawPath = path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}_raw.${ext}`);
+  /**
+   * RONDE 179 — a YouTube clip carries the SAME marker whichever route fetched it.
+   *
+   * `clipRequiresFairUseTransform` reads `_ytcc_` out of the filename, and it is what stops fast
+   * mode from skipping the transform on YouTube material. The cascade's downloads carry that tag;
+   * the pool's were named `..._pool_youtube_cc_...`, which the regex does not match — so the same
+   * video adopted through the pool could skip a transform the cascade would have applied to it.
+   *
+   * One asset, two licence treatments, decided by which route happened to find it. The marker is
+   * added here rather than the rule widened, because the rule is the one both routes already agree
+   * on and a second spelling is a second thing to keep in step.
+   */
+  const licenceTag = candidate.source === "youtube_cc" ? "_ytcc" : "";
+  const rawPath = path.join(
+    workDir,
+    `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}${licenceTag}_${safeId}_raw.${ext}`
+  );
   // RONDE 27: stamp the provider-asset identity into the filename, like every other download
   // route already does. Without it the scene/beat prefix is the only thing distinguishing two
   // copies of the SAME source item, so the cross-scene dedup could not tell them apart: render
@@ -4477,7 +4504,10 @@ export async function downloadAndTrimPoolCandidate(
    */
   const stillSuffix = isVideo ? "" : "_still";
   const outPath = tagPathWithProviderAsset(
-    path.join(workDir, `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}_${safeId}${stillSuffix}.mp4`),
+    path.join(
+      workDir,
+      `scene_${sceneIndex}_b${beatIndex}_pool_${candidate.source}${licenceTag}_${safeId}${stillSuffix}.mp4`
+    ),
     candidate.source,
     candidate.assetId,
     sourcingCache,
@@ -4488,6 +4518,50 @@ export async function downloadAndTrimPoolCandidate(
   setWorkerHeartbeat(`downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`);
   console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
+    /**
+     * RONDE 179 — a YouTube candidate is fetched by the YouTube fetcher, not by fetching its page.
+     *
+     * ── The gap this closes ──────────────────────────────────────────────────────────────────
+     *
+     * `PoolCandidate.remoteUrl` for a YouTube result is the WATCH PAGE — that is deliberate and
+     * correct, because there is no direct media URL to hold and inventing one would put a signed,
+     * expiring link in the timeline. But everything below this point assumes `remoteUrl` is a media
+     * file: it fetches it and streams the response into a `.mp4`.
+     *
+     * For a watch page that request SUCCEEDS. It returns HTTP 200 and a few hundred kilobytes of
+     * HTML, which clears the byte floor and is then handed to ffprobe as video. So R175's wiring
+     * would have put YouTube candidates into the ranking and then lost every single one of them at
+     * download, with a technical-reject line blaming the file rather than the route.
+     *
+     * `downloadYouTubeCCClip` is the pipeline's own YouTube fetcher — the cloud/yt-dlp service, the
+     * RapidAPI fallback, the render-scoped cache and the download ceiling, all of it already built.
+     * This calls that. It is not a second client, and no YouTube knowledge is added here: the start
+     * offset comes from `pickLongVideoStartSec` and the same cached-duration peek the cascade uses,
+     * with the cascade's own fallback when the length is unknown.
+     */
+    if (candidate.source === "youtube_cc") {
+      const knownDurationSec = peekYoutubeVideoContext(candidate.assetId)?.durationSec ?? 0;
+      /** Enough source to trim `holdSec` out of, and never longer than a beat can use. */
+      const window = Math.max(holdSec, 6);
+      const start =
+        knownDurationSec > 0 ? pickLongVideoStartSec(knownDurationSec, window, candidate.assetId) : 15;
+      const ok = await downloadYouTubeCCClip(
+        candidate.assetId,
+        window,
+        start,
+        rawPath,
+        sceneIndex,
+        candidate.title,
+        sourcingCache
+      );
+      if (!ok) {
+        console.warn(
+          `[FunnelDownload] rejected source=youtube_cc assetId=${candidate.assetId} ` +
+            `reason=youtube_fetch_failed`
+        );
+        return null;
+      }
+    } else {
     console.log(`[Hang] downloadAndTrim BEFORE cache-restore s${sceneIndex}b${beatIndex}`);
     const _cr0 = Date.now();
     const fromCache = await withTimeout(tryRestoreFromMediaCache(candidate.remoteUrl, rawPath), 5_000, `cache-restore s${sceneIndex}b${beatIndex}`).catch(() => false);
@@ -4542,6 +4616,7 @@ export async function downloadAndTrimPoolCandidate(
         throw err;
       }
       void reportToMediaCache(candidate.remoteUrl, rawPath, isVideo ? "video/mp4" : "image/jpeg");
+    }
     }
 
     /**
