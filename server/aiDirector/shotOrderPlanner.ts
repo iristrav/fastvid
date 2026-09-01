@@ -11,6 +11,7 @@
  *  replacement for its per-beat, per-candidate decision.
  */
 import type { ShotType } from "../cinematicEditingEngine/types";
+import { SHOT_SEMANTICS, applyShotVariety } from "../shotVocabulary";
 import type { NarrativeFunction, ShotOrderItem, VisualStrategy } from "./types";
 
 /** Canonical 5-step progressions per narrative function. Cycled/truncated to fit the scene's
@@ -26,6 +27,11 @@ const TEMPLATES: Record<NarrativeFunction, ShotType[]> = {
   transition: ["cutaway", "b_roll", "cutaway", "b_roll", "cutaway"],
 };
 
+/**
+ * RONDE 157 — the reasons now come from `SHOT_SEMANTICS`, which is the one place a shot's meaning
+ * lives. Keeping a second copy here is how the two would eventually disagree about what a
+ * `detail` shot is for.
+ */
 const SHOT_REASONS: Record<ShotType, string> = {
   establishing: "Opens the scene by orienting the viewer to where/what this is.",
   wide: "Shows the broader context or environment around the subject.",
@@ -38,6 +44,12 @@ const SHOT_REASONS: Record<ShotType, string> = {
   b_roll: "Provides supporting visual coverage of the topic.",
   archive_footage: "Grounds the scene in real historical or archival material.",
   overlay_shot: "Carries a graphic overlay (map/chart/timeline) rather than a literal shot.",
+  /* ── RONDE 157 §7 — the framings added this round, each with what it is FOR ── */
+  medium_wide: SHOT_SEMANTICS.medium_wide.meaning,
+  extreme_wide: SHOT_SEMANTICS.extreme_wide.meaning,
+  overhead: SHOT_SEMANTICS.overhead.meaning,
+  aerial: SHOT_SEMANTICS.aerial.meaning,
+  pov: SHOT_SEMANTICS.pov.meaning,
 };
 
 function cycleToLength(template: ShotType[], length: number): ShotType[] {
@@ -81,9 +93,25 @@ export function planShotOrder(narrativeFunction: NarrativeFunction, visualStrate
   const sized = cycleToLength(template, beatCount);
   const { shots, overrideReason } = applyStrategyOverride(sized, visualStrategy);
 
-  return shots.map((shotType, i) => ({
+  /**
+   * RONDE 157 §8 — break a run of identical framings, WITHOUT breaking relevance.
+   *
+   * The templates cycle, so a six-beat scene on a four-shot template repeats. `applyShotVariety`
+   * substitutes only a shot with the SAME editorial role, and returns the original untouched when
+   * no such alternative exists — §8's "relevantie blijft belangrijker dan kunstmatige variatie",
+   * enforced rather than hoped for. A run it could not break is left for the quality rules to
+   * report.
+   */
+  const varied = applyShotVariety(shots);
+
+  return varied.map((v, i) => ({
     order: i + 1,
-    shotType,
-    reason: i === shots.length - 1 && overrideReason ? overrideReason : SHOT_REASONS[shotType],
+    shotType: v.shotType,
+    /** A substituted shot carries the POLICY's reason, so the change is auditable. */
+    reason: v.reason
+      ? v.reason
+      : i === shots.length - 1 && overrideReason
+        ? overrideReason
+        : SHOT_REASONS[v.shotType],
   }));
 }
