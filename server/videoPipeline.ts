@@ -334,6 +334,7 @@ import {
   provenToken,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
+import { formatFallback } from "./renderCorrelation";
 export { getSearchProvenance, withSearchProvenance } from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
@@ -32296,6 +32297,28 @@ async function fetchSceneVisualsInner(
             adopted?.source ?? "pool", adopted?.title, dedup.segmentGeoLock
           );
         } else {
+          /**
+           * RONDE 176 — the cascade is a FALLBACK, and it says so in the agreed vocabulary.
+           *
+           * The route above is already pool-first: the cascade is only reached when every pool
+           * candidate failed to DOWNLOAD, never because the ranking preferred something else. What
+           * was missing is a log line that names which of the three things happened, so a
+           * production log can distinguish "the pool found nothing" from "the pool found things and
+           * none of them could be fetched" — two very different problems that used to read the same.
+           */
+          console.log(
+            formatFallback({
+              renderId: dedup.sourcingCache?.lineage?.renderId ?? "-",
+              what: `retrieval s${scene.index}b${beat.index}`,
+              from: "pool",
+              to: "cascade",
+              why:
+                poolCandidates.length === 0
+                  ? "POOL_EMPTY: the pool produced no candidate for this beat"
+                  : `CASCADE_FALLBACK: all ${poolCandidates.length} pool candidate(s) failed to download` +
+                    (_poolFailReasons.length > 0 ? ` — ${_poolFailReasons.join(" | ")}` : ""),
+            })
+          );
           if (_poolFailReasons.length > 0) {
             console.log(`[Retry] s${scene.index}b${beat.index} all ${_poolFailReasons.length} pool candidate(s) failed — falling back to per-beat retrieval. Reasons: ${_poolFailReasons.join(" | ")}`);
           }
