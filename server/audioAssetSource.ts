@@ -27,6 +27,7 @@
 import { SOUND_CATALOG } from "./cinematicAudio/catalog";
 import type { SoundCategoryId } from "./cinematicAudio/types";
 import type { AssetSourceIdentity } from "./projectTimeline";
+import type { SoundEffectType } from "./cinematicEditingEngine/types";
 
 /* ═══════════════════════ the semantic vocabulary ═══════════════════════ */
 
@@ -128,6 +129,70 @@ export function resolveCatalogSound(
       title: variant.label,
     },
   };
+}
+
+/**
+ * ENABLE CINEMATIC PRODUCTION + SFX — the PLANNER'S vocabulary, mapped onto the catalog.
+ *
+ * ── The seam this closes ────────────────────────────────────────────────────────────────────
+ *
+ * `SfxRole` above is this module's own semantic vocabulary. The Phase 4 sound planner has a
+ * DIFFERENT one — `SoundEffectType`, seventeen names reasoned from the beat's content — and
+ * `edlToTimeline` wrote those names straight onto the timeline as
+ * `{ provider: "cinematic_audio", providerAssetId: "explosion" }`.
+ *
+ * Nothing in the repository resolves `cinematic_audio`. Not the render worker, not the rehydrator,
+ * not the renderer. So every sound effect the planner reasoned out reached the timeline, failed to
+ * resolve, and was dropped as "could not be recovered": semantically correct SFX, planned on real
+ * content, that have never made a sound.
+ *
+ * This is the missing row. It maps the planner's word to a catalog category, so the timeline can
+ * carry a REAL Freesound identity — the same identity shape the AMBIENT track has used since
+ * R166, resolved by the same `resolveCatalogSound`, fetched by the same fetcher.
+ *
+ * ── The nulls are the honest half ───────────────────────────────────────────────────────────
+ *
+ * A whoosh, a riser, a heartbeat, a notification, a cash register and a UI click are not field
+ * recordings, and this catalog is a field-recording library. Mapping them to "something close"
+ * would be exactly the fake effect the brief forbids: a `null` here makes the request answerable
+ * ("we know what you mean") and unfulfillable ("we have nothing to play"), and the caller reports
+ * SFX_NOT_AVAILABLE rather than playing a metal clang where a heartbeat belongs.
+ */
+export const SOUND_EFFECT_TO_CATEGORY: Readonly<Record<SoundEffectType, SoundCategoryId | null>> = {
+  camera_click: "camera_shutter",
+  hit: "metal_clang",
+  impact: "metal_clang",
+  typing: "typewriter",
+  keyboard: "keyboard",
+  crowd: "crowd",
+  applause: "applause",
+  wind: "wind",
+  rain: "rain",
+  fire: "fire",
+  explosion: "explosion",
+  page_turn: "paper_turn",
+  /** No recording behind any of these — see the note above on why they are not approximated. */
+  whoosh: null,
+  cash_register: null,
+  notification: null,
+  heartbeat: null,
+  ui_click: null,
+};
+
+/**
+ * A planned sound effect's real recording, or the reason there is none.
+ *
+ * `variantIndex` is supplied by the caller and must be stable — the beat's index, not a random
+ * number — for the determinism reason `resolveCatalogSound` documents.
+ */
+export function resolveSoundEffect(
+  soundType: SoundEffectType,
+  variantIndex = 0
+): AudioAssetLookup {
+  const category = SOUND_EFFECT_TO_CATEGORY[soundType];
+  const found = resolveCatalogSound(category ?? null, variantIndex);
+  if (found.ok) return found;
+  return { ok: false, reason: `SFX_NOT_AVAILABLE "${soundType}": ${found.reason}` };
 }
 
 export function resolveSfx(role: SfxRole, variantIndex = 0): AudioAssetLookup {

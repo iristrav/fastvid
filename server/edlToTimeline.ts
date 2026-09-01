@@ -59,6 +59,7 @@ import type {
   TransitionType,
 } from "./cinematicEditingEngine/types";
 import { graphicIsRenderable } from "./graphicsVocabulary";
+import { resolveSoundEffect } from "./audioAssetSource";
 
 /**
  * The engine's transition vocabulary, mapped to the renderer's.
@@ -478,10 +479,37 @@ export function translateEdl(params: {
       else texts.push({ ...el, animation: caption.animation === "none" ? "none" : "fade" });
     }
 
+    /**
+     * ENABLE CINEMATIC PRODUCTION + SFX — a planned sound now names a REAL recording.
+     *
+     * This loop used to write `{ provider: "cinematic_audio", providerAssetId: sound.soundType }`
+     * — the planner's own word as the asset id. Nothing in the repository resolves
+     * `cinematic_audio`, so every sound effect the planner reasoned out of the beat's content
+     * reached the timeline and was then dropped by the renderer as "could not be recovered". The
+     * plan was right and silent.
+     *
+     * `resolveSoundEffect` is the same bridge the AMBIENT track has used since R166, onto the same
+     * Freesound catalogue, so this adds no second audio system: it fills in the row that was
+     * missing between the planner's vocabulary and the catalogue's.
+     *
+     * A sound with no recording behind it is NOT written. The brief is explicit that a missing
+     * effect must be reported and never approximated, so it goes into `unsupported` with
+     * SFX_NOT_AVAILABLE and the timeline stays honest about what it can play.
+     */
     for (const sound of decision.sounds) {
+      /**
+       * The variant is chosen by SCENE INDEX, matching the ambient track's rule: the catalogue
+       * holds several recordings per category, and picking randomly would make one timeline render
+       * a different mix every time.
+       */
+      const found = resolveSoundEffect(sound.soundType, decision.sceneIndex);
+      if (!found.ok) {
+        unsupported.push(`beat ${decision.beatId}: ${found.reason}`);
+        continue;
+      }
       sfx.push({
         id: timelineElementId("sfx", decision.beatId, sound.soundType, sound.timeSec),
-        source: { provider: "cinematic_audio", providerAssetId: sound.soundType },
+        source: found.identity,
         start: Number((sceneOffsetSec + sound.timeSec).toFixed(3)),
         end: Number((sceneOffsetSec + sound.timeSec + 1.5).toFixed(3)),
         gain: Math.max(0, Math.min(1, sound.volume)),

@@ -235,6 +235,14 @@ export async function planAndStoreCinematicTimeline(
     log.push(`[Audio] unavailable ${missing}`);
   }
   log.push(`[Audio] music ${result.audio.music.reason}`);
+  /**
+   * §9 — one line per sound effect the beat asked for, found or not.
+   *
+   * Built from the FINISHED timeline plus the planner's own refusals, so a FOUND line names a
+   * recording that is really on the document and a NOT_AVAILABLE line names a sound the render
+   * deliberately did not approximate. The Freesound id is a public asset identity, not a secret.
+   */
+  for (const line of formatSfxPlan(result.timeline, result.unsupported)) log.push(line);
   for (const line of result.unsupported) log.push(`[EDL] unsupported ${line}`);
 
   /**
@@ -315,6 +323,45 @@ export async function planAndStoreCinematicTimeline(
     quality,
     log,
   };
+}
+
+/* ═══════════════════════ §9 — what the SFX track actually holds ═══════════════════════ */
+
+/**
+ * One `[SFX]` line per planned sound: the ones that reached the timeline, and the ones that had no
+ * recording behind them.
+ *
+ * ── Why it reads the timeline rather than the plan ──────────────────────────────────────────
+ *
+ * The plan is what was asked for; the timeline is what will play. Reporting from the plan would let
+ * a render claim a sound that was dropped in translation — the exact class of thing the SFX seam
+ * itself turned out to be. A FOUND line therefore names a clip that is on the document, with the
+ * catalogue identity it will be fetched by.
+ */
+export function formatSfxPlan(
+  timeline: ProjectTimeline,
+  unsupported: readonly string[]
+): string[] {
+  const track = timeline.tracks.find((t) => t.kind === "SFX");
+  const clips = track?.kind === "SFX" ? track.clips : [];
+  const lines = clips.map((c) => {
+    /** Element ids are built as `sfx_<beatId>_<soundType>_<time>`; the beat is what a reader needs. */
+    const parts = c.id.split("_");
+    const beat = parts[1] ?? "?";
+    const type = parts.slice(2, -1).join("_") || "?";
+    return (
+      `[SFX] beat=${beat} type=${type} status=FOUND ` +
+      `source=${c.source.provider ?? "?"}:${c.source.providerAssetId ?? "?"} ` +
+      `start=${c.start.toFixed(2)} dur=${(c.end - c.start).toFixed(2)} gain=${c.gain.toFixed(2)}`
+    );
+  });
+  /** The planner's refusals, which `edlToTimeline` records with the SFX_NOT_AVAILABLE marker. */
+  for (const reason of unsupported) {
+    if (!reason.includes("SFX_NOT_AVAILABLE")) continue;
+    lines.push(`[SFX] status=NOT_AVAILABLE ${reason}`);
+  }
+  if (lines.length === 0) lines.push("[SFX] none planned for this video");
+  return lines;
 }
 
 /* ═══════════════════════ §20/§25 — which route produced the video ═══════════════════════ */

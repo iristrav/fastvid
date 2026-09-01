@@ -276,10 +276,15 @@ export async function runRenderJob(params: {
      * unreachable because the object literal did not have those keys. Every one of them was built
      * and tested in RONDE 147 and none of them had ever run outside a test.
      */
+    /**
+     * Built once and shared: the picture's rehydration and the audio fetch below resolve provider
+     * identities through the SAME resolver, so a Freesound id means the same thing to both.
+     */
+    const audioDeps = productionRehydrateDeps({ download: deps.download });
     const rehydration = await deps.rehydrate({
       timeline,
       workDir: path.join(workDir, "assets"),
-      deps: productionRehydrateDeps({ download: deps.download }),
+      deps: audioDeps,
       failFast: true,
     });
     for (const line of formatRehydrationSummary(rehydration)) console.log(line);
@@ -304,10 +309,37 @@ export async function runRenderJob(params: {
     ];
     const audioByClip = new Map<string, string>();
     for (const clip of audioClips) {
-      const url = clip.source.canonicalUrl || clip.source.mediaUrl;
-      if (!url) continue;
+      /**
+       * ENABLE CINEMATIC PRODUCTION + SFX — audio addressed by IDENTITY is fetched too.
+       *
+       * This loop used to require a URL and `continue` without one. Every SFX and AMBIENT clip is
+       * addressed the way video assets are — `provider` + `providerAssetId`, e.g.
+       * `freesound:398913` — and carries no URL at all, so both tracks were skipped here in
+       * silence: not even the warning below fired, because that only runs when a download of an
+       * existing URL fails.
+       *
+       * The resolver is `providerResolver`, the SAME one the picture's rehydration already uses,
+       * reached through the same production deps. Its `freesound` branch has existed since R166 and
+       * had no caller on this path. No second fetcher, no second cache, no second key.
+       */
+      let url = clip.source.canonicalUrl || clip.source.mediaUrl || "";
+      if (!url && clip.source.provider && clip.source.providerAssetId) {
+        const resolved = await audioDeps.providerResolver?.(clip.source).catch(() => null);
+        if (resolved?.ok) url = resolved.url;
+        else {
+          console.warn(
+            `[Audio] job=${job.id} clip=${clip.id} status=UNRESOLVED ` +
+              `provider=${clip.source.provider} asset=${clip.source.providerAssetId} ` +
+              `reason=${resolved && !resolved.ok ? resolved.code : "no_resolver"}`
+          );
+          continue;
+        }
+      }
+      if (!url) {
+        console.warn(`[Audio] job=${job.id} clip=${clip.id} status=NO_SOURCE`);
+        continue;
+      }
       const dest = path.join(audioDir, `${clip.id}.mp3`);
-      if (await deps.download(url, dest).catch(() => false)) audioByClip.set(clip.id, dest);
       /**
        * A missing audio file is NOT a failed render.
        *
@@ -315,7 +347,25 @@ export async function runRenderJob(params: {
        * lost one, and refusing to produce anything would be the worse trade. The renderer reports
        * which audio it actually used, so the loss is visible rather than silent.
        */
+      if (await deps.download(url, dest).catch(() => false)) audioByClip.set(clip.id, dest);
       else console.warn(`[RenderJob] job=${job.id} audio clip ${clip.id} could not be fetched`);
+    }
+    /**
+     * §9 — one line per audio track saying what actually reached the mix.
+     *
+     * Counted from `audioByClip`, which is the set of files ffmpeg is about to be handed, so this
+     * cannot claim a sound the render did not fetch.
+     */
+    for (const kind of ["VOICE", "MUSIC", "AMBIENT", "SFX"] as const) {
+      const clips = audioTrackOf(timeline, kind);
+      if (clips.length === 0) continue;
+      const fetched = clips.filter((c) => audioByClip.has(c.id));
+      console.log(
+        `[Audio] job=${job.id} track=${kind} planned=${clips.length} fetched=${fetched.length}` +
+          (kind === "SFX"
+            ? ` sounds=${fetched.map((c) => c.source.providerAssetId ?? "?").join(",") || "none"}`
+            : "")
+      );
     }
 
     /* 5. ffmpeg, with the Remotion graphics layer laid over it when there is one */

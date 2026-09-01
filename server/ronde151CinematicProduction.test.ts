@@ -364,10 +364,15 @@ describe("RONDE 151 §25 — observability without secrets", () => {
        * RONDE 189 added [Audio] — the ambience laid down and the music verdict, including
        * `musicSourceUnavailable`, which had appeared in no render log at all until it had a caller.
        *
+       * ENABLE CINEMATIC PRODUCTION + SFX added [SFX] — one line per sound effect, found or
+       * NOT_AVAILABLE. It is its own subsystem rather than more [Audio] lines because a reader
+       * grepping for "did this render have effects" should not have to read the ambience and music
+       * verdicts to find out.
+       *
        * Their continuation lines carry the same prefix, so the rule this test enforces is unchanged:
        * a reader can tell which subsystem produced any line without counting brackets.
        */
-      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics|Audio)\]/);
+      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics|Audio|SFX)\]/);
     }
   });
 });
