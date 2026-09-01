@@ -694,6 +694,79 @@ async function startServer() {
     }
   });
 
+  /**
+   * ─── Whole-pipeline download, admin only ─────────────────────────────────
+   *
+   * The Pipeline tab already SHOWS what a render recorded about itself. Looking is not sharing:
+   * nine collapsible panels cannot be usefully copied out of a browser, and the useful thing to do
+   * with a render's account of itself is to send it to somebody. This is the same stored record,
+   * as one text file.
+   *
+   * Admin ONLY — unlike the MP4 download above, which an owner may also use. The report names
+   * providers, queries, gate verdicts and internal reasons for every beat; that is operational
+   * detail about how FastVid works, not something a customer's own video entitles them to.
+   *
+   * Works for EVERY video, deliberately including failed ones: a render that broke is exactly the
+   * one whose account somebody needs to read.
+   */
+  app.get("/api/admin/pipeline/:id", async (req, res) => {
+    try {
+      const { parse: parseCookies } = await import("cookie");
+      const { jwtVerify } = await import("jose");
+      const { COOKIE_NAME } = await import("@shared/const");
+      const { getVideoById, getUserById } = await import("../db");
+      const { formatPipelineExport, pipelineExportFilename } = await import("../pipelineExport");
+
+      const cookies = parseCookies(req.headers.cookie ?? "");
+      const token = cookies[COOKIE_NAME];
+      if (!token) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+      const secret = getSessionSecret();
+      let userId: number;
+      try {
+        const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
+        userId = payload.userId as number;
+        if (!userId) throw new Error("No userId in token");
+      } catch {
+        res.status(401).json({ error: "Invalid session" }); return;
+      }
+
+      /** No owner exemption: this endpoint is admin or nothing. */
+      const user = await getUserById(userId);
+      if (user?.role !== "admin") { res.status(403).json({ error: "Forbidden" }); return; }
+
+      const videoId = parseInt(req.params.id, 10);
+      if (isNaN(videoId)) { res.status(400).json({ error: "Invalid video ID" }); return; }
+
+      const video = await getVideoById(videoId);
+      if (!video) { res.status(404).json({ error: "Video not found" }); return; }
+
+      const meta = (video.metadata ?? null) as Record<string, unknown> | null;
+      const body = formatPipelineExport({
+        videoId,
+        status: video.status ?? null,
+        title: video.title ?? null,
+        prompt: video.prompt ?? null,
+        createdAt: video.createdAt ?? null,
+        errorMessage: video.errorMessage ?? null,
+        pipelineReport: (meta?.pipelineReport as never) ?? null,
+        pipelineGlance: (meta?.pipelineGlance as never) ?? null,
+        qualityReport: meta?.qualityReport ?? null,
+        pipelineStepTiming: meta?.pipelineStepTiming ?? null,
+      });
+
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${pipelineExportFilename(videoId, video.title ?? null)}"`
+      );
+      res.send(body);
+    } catch (err) {
+      console.error("[PipelineExport] Error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
   // ─── Video Stream Endpoint (inline playback with Range support) ───────────
   app.get("/api/stream/video/:id", async (req, res) => {
     try {

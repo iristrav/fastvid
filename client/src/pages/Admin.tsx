@@ -317,9 +317,26 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
               {video.status}
             </span>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/5">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {/*
+              The whole pipeline record as one text file, for EVERY video — including failed ones,
+              which are the renders whose account somebody most needs to read. It sits in the header
+              rather than inside the Pipeline tab so it is reachable from any tab, and it is not
+              conditional on `videoUrl`: a render that produced no MP4 still produced a report, and
+              a render that produced neither still has a status and an error worth sending on.
+            */}
+            <a
+              href={`/api/admin/pipeline/${video.id}`}
+              download
+              title="Download het volledige pipeline-rapport van deze video"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-300 bg-white/5 hover:bg-white/10 hover:text-white transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" /> Pipeline
+            </a>
+            <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/5">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
         <div className="flex gap-1 px-5 pt-3 shrink-0">
           {tabs.map((t) => (
