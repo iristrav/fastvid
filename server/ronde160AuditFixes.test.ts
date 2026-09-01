@@ -15,6 +15,7 @@ import { buildCinematicSceneInputs, type SceneFacts } from "./cinematicPipelineI
 import { runCinematicPipeline } from "./cinematicPipeline";
 import { generateEDL } from "./cinematicEditingEngine";
 import { translateEdl } from "./edlToTimeline";
+import { graphicIsRenderable } from "./graphicsVocabulary";
 import { gradeChain } from "./timelineFilters";
 import { captionTrack, videoTrack } from "./projectTimeline";
 import type { Scene } from "./pipeline/types";
@@ -258,5 +259,134 @@ describe("R160 §6 — the whole timeline agrees with itself", () => {
       return JSON.stringify(rest);
     };
     expect(strip(b.timeline)).toBe(strip(a.timeline));
+  });
+});
+
+/* ═══════════ BUG 3 — every planned motion graphic was reported undrawable ═══════════ */
+
+/**
+ * ── What the audit found ─────────────────────────────────────────────────────────────────────
+ *
+ * The planner names nine kinds of motion graphic. The renderer draws thirty-two. The two lists had
+ * no name in common, and `edlToTimeline` asked a THIRD list — `GRAPHICS_WITH_A_LABEL`, hand-written
+ * in that file when libass was the only way to draw anything — so every graphic the cinematic
+ * engine ever planned came out of translation reported as "not drawn by this renderer".
+ *
+ * These tests run the REAL chain, from production-shaped scene facts through to the timeline, and
+ * assert the graphics arrive in a state the renderer will actually draw. They are written against
+ * the production entry point rather than against `rendererGraphicType`, because the bug was never
+ * in a function — it was in which function was being called.
+ */
+describe("R160 BUG 3 — a planned motion graphic reaches the timeline drawable", () => {
+  /** A scene whose stat callout and narration give the planner something real to draw. */
+  function graphicScene(index: number, statCallout: string, texts: string[]): SceneFacts {
+    const base = sceneFacts(index, texts);
+    return { ...base, scene: { ...base.scene, statCallout } };
+  }
+
+  function withGraphics() {
+    const built = buildCinematicSceneInputs({
+      scenes: [
+        graphicScene(0, "$5B", ["Apple spent 5 billion dollars on it.", "Work began in Berlin, Germany."]),
+      ],
+    });
+    return runCinematicPipeline({ videoId: 1, scenes: built.scenes });
+  }
+
+  it("the planner really does emit motion graphics for this scene", () => {
+    const planned = withGraphics().edl.decisions.flatMap((d) => d.motionGraphics);
+    expect(planned.length).toBeGreaterThan(0);
+    /** Named so the test fails loudly if the planner's vocabulary ever changes under it. */
+    expect(planned.map((g) => g.graphicType)).toContain("statistic_counter");
+    expect(planned.map((g) => g.graphicType)).toContain("map");
+  });
+
+  it("they arrive on the GRAPHICS track under a name the renderer draws", () => {
+    const r = withGraphics();
+    const track = r.timeline.tracks.find((t) => t.kind === "GRAPHICS");
+    if (track?.kind !== "GRAPHICS") throw new Error("no GRAPHICS track");
+    expect(track.graphics.length).toBeGreaterThan(0);
+
+    const undrawable = track.graphics.filter(
+      (g) => !graphicIsRenderable(g.graphicType, g.data, g.label ?? null)
+    );
+    expect(
+      undrawable.map((g) => g.graphicType),
+      "graphics on the timeline the renderer cannot draw"
+    ).toEqual([]);
+  });
+
+  it("a counter and a map both survive translation with their payload intact", () => {
+    const r = withGraphics();
+    const track = r.timeline.tracks.find((t) => t.kind === "GRAPHICS");
+    if (track?.kind !== "GRAPHICS") throw new Error("no GRAPHICS track");
+
+    const counter = track.graphics.find((g) => g.graphicType === "counter");
+    expect(counter, "the statistic counter was lost in translation").toBeTruthy();
+    expect(counter!.data.toValue).toBe(5);
+
+    const map = track.graphics.find((g) => g.graphicType === "map_point");
+    expect(map, "the map was lost in translation").toBeTruthy();
+    expect(typeof map!.data.normX).toBe("number");
+    expect(typeof map!.data.normY).toBe("number");
+  });
+
+  /** §6 — a translated name must not erase what the planner asked for. */
+  it("the document still records the name the planner used", () => {
+    const r = withGraphics();
+    const track = r.timeline.tracks.find((t) => t.kind === "GRAPHICS");
+    if (track?.kind !== "GRAPHICS") throw new Error("no GRAPHICS track");
+    const map = track.graphics.find((g) => g.graphicType === "map_point")!;
+    expect(map.reason).toContain('planned as "map"');
+  });
+
+  it("nothing drawable is reported as unsupported any more", () => {
+    const r = withGraphics();
+    const stillReported = r.unsupported.filter((u) => u.includes("motion graphic"));
+    for (const line of stillReported) {
+      /** Whatever remains must be one of the six that genuinely has no component. */
+      expect(line).toMatch(/"(chart|timeline|arrow|comparison|highlight_box|animated_icon)"/);
+    }
+  });
+
+  /**
+   * The other direction, and the reason this is a repair rather than a loosening: a graphic the
+   * renderer genuinely cannot draw must STILL be reported. Translating three names must not have
+   * turned the report off.
+   */
+  it("a graphic with no component is still reported, with the planner's reason", () => {
+    const { unsupported } = translateEdl({
+      videoId: 1,
+      inputs: [
+        {
+          decision: {
+            beatId: "s0b0",
+            sceneIndex: 0,
+            clip: { candidateId: "c", startSec: 0, endSec: 4, trimStartSec: 0, trimEndSec: 4, reason: "r" },
+            shot: { shotType: "medium", reason: "r" },
+            camera: { movement: "static", intensity: 0, reason: "r" },
+            transitionIn: { type: "cut", durationSec: 0, reason: "r" },
+            captions: [],
+            motionGraphics: [
+              {
+                graphicType: "comparison",
+                data: { leftLabel: "before", rightLabel: "after", connector: "VS" },
+                startSec: 0,
+                durationSec: 2,
+                reason: "the narration draws a comparison",
+              },
+            ],
+            effects: [],
+            sounds: [],
+            pacing: { tone: "neutral", cutSpeedMultiplier: 1, movementIntensity: 0.5, reason: "r" },
+          } as never,
+          sceneOffsetSec: 0,
+          identity: { provider: "wikimedia", providerAssetId: "1" },
+        },
+      ],
+    });
+    const line = unsupported.find((u) => u.includes("comparison"));
+    expect(line, "a graphic with no component stopped being reported").toBeTruthy();
+    expect(line).toContain("the narration draws a comparison");
   });
 });

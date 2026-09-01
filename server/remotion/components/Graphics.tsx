@@ -14,9 +14,11 @@
  *
  * "Gebruik GEEN statische MAP tekst als fake fallback."
  *
- * `map` and `route` are deliberately absent from `RENDERABLE_GRAPHICS`. Their payload survives the
- * whole chain — normX, normY, locationName, the planner's reason — so a real map component can be
- * dropped in later and immediately have everything it needs. Until then they are reported.
+ * RONDE 150 left `map` and `route` out of the vocabulary entirely and kept their payload — normX,
+ * normY, locationName, the planner's reason — travelling intact through the whole chain, so that a
+ * real component could be dropped in later with everything it needs. RONDE 155B dropped it in:
+ * `map_point`, `route` and `multi_point` draw an ABSTRACT coordinate map from that payload. A map
+ * with no coordinate is still refused rather than faked — `chartPayloadIsRenderable` decides.
  */
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion";
@@ -30,11 +32,10 @@ import {
   PercentageRing,
   RouteMap,
   Shape,
-  SHAPE_PATHS,
-  chartPayloadIsRenderable,
   readNumber,
   readText,
 } from "./Charts";
+import { graphicIsRenderable } from "../../graphicsVocabulary";
 
 export type GraphicSpec = {
   id: string;
@@ -48,91 +49,20 @@ export type GraphicSpec = {
 };
 
 /**
- * Graphics this layer draws. Everything else keeps its payload and is REPORTED.
+ * RONDE 160 §7 — the vocabulary and the renderability predicate now live in
+ * `server/graphicsVocabulary.ts`, a plain module with no React in it.
  *
- * Maps, routes and charts are not here on purpose — see the module note. Adding one means writing
- * a component, not adding a string.
+ * They moved because "can this be drawn?" was being answered in three places that had drifted
+ * apart — see that module's header. `edlToTimeline.ts` now asks the SAME function this component
+ * asks, which is the only way the planning path and the drawing path can never disagree again.
+ * Re-exported here so every existing import site is unchanged.
  */
-export const RENDERABLE_GRAPHICS: ReadonlySet<string> = new Set([
-  "location_card",
-  "date_card",
-  "chapter_card",
-  "chapter_title",
-  "lower_third",
-  "headline",
-  "title",
-  "subtitle",
-  "quote",
-  "statistic",
-  "callout",
-  "emphasis",
-  "name",
-  "label",
-  "badge",
-  "counter",
-  "text",
-  /* ── RONDE 155/155B — cards, charts, maps and shapes ──────────────────────────────────────
-   *
-   * `map_point`, `route` and `multi_point` are now HERE, where RONDE 150 deliberately left them
-   * out. What changed is not the rule but the fact behind it: there is now a real component that
-   * draws an abstract coordinate map from the planner's own normX/normY. §14 forbids pretending
-   * to have geographic data; it does not forbid drawing the data that genuinely exists.
-   *
-   * A graphic of these types with no usable payload is STILL unsupported — see
-   * `chartPayloadIsRenderable`, which the renderer and the component both consult.
-   */
-  "date_card",
-  "stat",
-  "progress",
-  "warning",
-  "timeline_event",
-  "bar_chart",
-  "horizontal_bar",
-  "line_chart",
-  "pie_chart",
-  "donut_chart",
-  "percentage_ring",
-  "map_point",
-  "route",
-  "multi_point",
-  "shape",
-  "icon",
-]);
-
-/**
- * Graphic types whose renderability depends on their PAYLOAD, not just their name.
- *
- * A bar chart is drawable if and only if it has values; a map point if and only if it has a
- * coordinate. Text-shaped graphics answer the same question by having words, which is what
- * `readString` already checks — these need a different one.
- */
-export const DATA_DRIVEN_GRAPHICS: ReadonlySet<string> = new Set([
-  "bar_chart", "horizontal_bar", "line_chart", "pie_chart", "donut_chart",
-  "percentage_ring", "map_point", "route", "multi_point",
-]);
-
-/** Graphic types drawn as a shape rather than as words. */
-export const SHAPE_GRAPHICS: ReadonlySet<string> = new Set(["shape", "icon"]);
-
-/**
- * Can this specific graphic be drawn, payload and all?
- *
- * One answer, used by the component to decide and by the renderer to report, so the two can never
- * disagree about whether something was drawn.
- */
-export function graphicIsRenderable(
-  graphicType: string,
-  data: Record<string, unknown>,
-  label: string | null
-): boolean {
-  if (!RENDERABLE_GRAPHICS.has(graphicType)) return false;
-  if (DATA_DRIVEN_GRAPHICS.has(graphicType)) return chartPayloadIsRenderable(graphicType, data);
-  if (SHAPE_GRAPHICS.has(graphicType)) {
-    const name = readText(data, "shape", "icon", "name") ?? label ?? "";
-    return name in SHAPE_PATHS;
-  }
-  return Boolean(label?.trim() || readText(data, "label", "text", "title"));
-}
+export {
+  RENDERABLE_GRAPHICS,
+  DATA_DRIVEN_GRAPHICS,
+  SHAPE_GRAPHICS,
+  graphicIsRenderable,
+} from "../../graphicsVocabulary";
 
 export function unsupportedGraphicsIn(graphics: readonly GraphicSpec[]): GraphicSpec[] {
   return graphics.filter((g) => !graphicIsRenderable(g.graphicType, g.data, g.label));

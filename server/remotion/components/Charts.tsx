@@ -29,6 +29,14 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
 import { easeOut } from "./animation";
+import {
+  SHAPE_PATHS,
+  readNumber,
+  readRingPercent,
+  readRoute,
+  readSeries,
+  readText,
+} from "../../graphicsVocabulary";
 
 const CHART_FONT = "DejaVu Sans, Liberation Sans, sans-serif";
 const ACCENT = "#ffd54a";
@@ -37,95 +45,21 @@ const MUTED = "rgba(255,255,255,0.55)";
 
 /* ═══════════════════════ payload validation ═══════════════════════ */
 
-export type ChartDatum = { label: string; value: number };
-
 /**
- * The bars/slices/points a chart payload really contains.
- *
- * Returns an empty array for anything malformed, and the caller then reports the graphic as
- * unsupported rather than drawing an empty axis. A non-finite value is dropped rather than
- * coerced: an "NaN" bar would render as a zero-height rectangle and read as a real measurement of
- * nothing.
+ * RONDE 160 §7 — the payload readers and the renderability predicate now live in
+ * `server/graphicsVocabulary.ts`, a plain module with no React in it, so the PLANNING path can ask
+ * the same question this file answers. Re-exported here so every existing import site is unchanged.
  */
-export function readSeries(data: Record<string, unknown>): ChartDatum[] {
-  const raw = data.series ?? data.values ?? data.data;
-  if (!Array.isArray(raw)) return [];
-  const out: ChartDatum[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const row = item as Record<string, unknown>;
-    const value = typeof row.value === "number" ? row.value : Number.NaN;
-    if (!Number.isFinite(value)) continue;
-    const label = typeof row.label === "string" ? row.label : "";
-    out.push({ label, value });
-  }
-  return out;
-}
-
-/** A number the payload really carries, or null. Never a default that looks like data. */
-export function readNumber(data: Record<string, unknown>, ...keys: string[]): number | null {
-  for (const k of keys) {
-    const v = data[k];
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-  }
-  return null;
-}
-
-export function readText(data: Record<string, unknown>, ...keys: string[]): string | null {
-  for (const k of keys) {
-    const v = data[k];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  return null;
-}
-
-/**
- * Does this graphic have the data its type needs?
- *
- * One function, so the renderer's "can I draw this" answer and the component's "should I draw
- * this" answer cannot drift apart. The renderer calls it to report; the component calls it to
- * decide.
- */
-export function chartPayloadIsRenderable(graphicType: string, data: Record<string, unknown>): boolean {
-  switch (graphicType) {
-    case "bar_chart":
-    case "horizontal_bar":
-    case "line_chart":
-    case "pie_chart":
-    case "donut_chart":
-      return readSeries(data).length > 0;
-    case "percentage_ring":
-      return readNumber(data, "percent", "value") != null;
-    case "map_point":
-      return readNumber(data, "normX") != null && readNumber(data, "normY") != null;
-    case "route":
-      return readRoute(data).length >= 2;
-    case "multi_point":
-      return readRoute(data).length >= 1;
-    default:
-      return false;
-  }
-}
-
-/** Normalised points for a route or a multi-point map. */
-export function readRoute(data: Record<string, unknown>): Array<{ x: number; y: number; label: string }> {
-  const raw = data.points ?? data.route;
-  if (!Array.isArray(raw)) return [];
-  const out: Array<{ x: number; y: number; label: string }> = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const row = item as Record<string, unknown>;
-    const x = typeof row.normX === "number" ? row.normX : Number.NaN;
-    const y = typeof row.normY === "number" ? row.normY : Number.NaN;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    out.push({
-      x: Math.max(0, Math.min(1, x)),
-      y: Math.max(0, Math.min(1, y)),
-      label: typeof row.label === "string" ? row.label : "",
-    });
-  }
-  return out;
-}
+export {
+  readSeries,
+  readNumber,
+  readText,
+  readRingPercent,
+  readRoute,
+  chartPayloadIsRenderable,
+  SHAPE_PATHS,
+  type ChartDatum,
+} from "../../graphicsVocabulary";
 
 /* ═══════════════════════ how far an animation has run ═══════════════════════ */
 
@@ -350,7 +284,7 @@ export const PercentageRing: React.FC<{
   durationInFrames: number;
 }> = ({ data, durationInFrames }) => {
   const frame = useCurrentFrame();
-  const percent = readNumber(data, "percent", "value");
+  const percent = readRingPercent(data);
   if (percent == null) return null;
 
   const t = growth(frame, durationInFrames);
@@ -537,20 +471,6 @@ export const RouteMap: React.FC<{
  * all these shapes ever needed — reaching for a library would have added a dependency and a
  * failure mode for the sake of eleven outlines.
  */
-export const SHAPE_PATHS: Readonly<Record<string, string>> = {
-  circle: "M0,-40 A40,40 0 1 1 0,40 A40,40 0 1 1 0,-40 Z",
-  line: "M-50,0 L50,0",
-  arrow: "M-45,0 L30,0 M12,-18 L30,0 L12,18",
-  rectangle: "M-50,-32 L50,-32 L50,32 L-50,32 Z",
-  pin: "M0,0 C-14,-20 -22,-30 -22,-42 A22,22 0 1 1 22,-42 C22,-30 14,-20 0,0 Z",
-  marker: "M0,-40 L12,-12 L40,-8 L20,10 L26,38 L0,24 L-26,38 L-20,10 L-40,-8 L-12,-12 Z",
-  check: "M-32,2 L-10,24 L32,-22",
-  x: "M-26,-26 L26,26 M26,-26 L-26,26",
-  play: "M-18,-28 L30,0 L-18,28 Z",
-  camera: "M-44,-20 L-24,-20 L-16,-30 L16,-30 L24,-20 L44,-20 L44,26 L-44,26 Z",
-  location: "M0,0 C-14,-20 -22,-30 -22,-42 A22,22 0 1 1 22,-42 C22,-30 14,-20 0,0 Z",
-};
-
 export const Shape: React.FC<{
   shape: string;
   durationInFrames: number;

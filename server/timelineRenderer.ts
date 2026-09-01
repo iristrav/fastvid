@@ -51,6 +51,7 @@ import {
   buildTransitionGraph,
   buildVideoFilter,
   cameraChain,
+  lookUnsupportedReason,
   transitionIsRenderable,
   unsupportedEffects,
   type MixInput,
@@ -523,6 +524,23 @@ export async function renderTimeline(params: {
     .sort((a, b) => a.timelineStart - b.timelineStart);
   if (clips.length === 0) {
     throw new TimelineRenderError("timeline has no enabled video clips", "NO_VIDEO_CLIPS");
+  }
+
+  /**
+   * RONDE 160 §12 — a look this build cannot execute is REPORTED, like every other lost decision.
+   *
+   * `gradeChain` already refuses to approximate an unknown grade: it returns null and the pixels
+   * are left alone, which is the right behaviour — guessing at "teal_orange" would give the video a
+   * colour treatment nobody chose. What was missing is the sentence saying so. The reporter
+   * (`lookUnsupportedReason`) was written in RONDE 153 and never called from anywhere but its own
+   * test, so a timeline asking for a look that does not exist rendered completely ungraded and
+   * reported success — the one shape of failure §21 singles out.
+   *
+   * Reported once per render rather than once per clip: the look is a property of the video.
+   */
+  if (timeline.look) {
+    const reason = lookUnsupportedReason(timeline.look.grade);
+    if (reason) skipped.push(`unsupported_look ${timeline.look.grade} — ${reason}`);
   }
 
   // ── 1. every clip becomes a normalised segment of exactly its own length ────────────────────

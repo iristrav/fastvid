@@ -55,8 +55,10 @@ import type {
   CameraMovementType,
   CaptionInstruction,
   EditDecision,
+  MotionGraphicType,
   TransitionType,
 } from "./cinematicEditingEngine/types";
+import { graphicIsRenderable } from "./graphicsVocabulary";
 
 /**
  * The engine's transition vocabulary, mapped to the renderer's.
@@ -166,18 +168,48 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
   "chromatic_aberration",
 ]);
 
-/** Graphics whose whole content is words — those the ASS pass can draw today. */
-export const GRAPHICS_WITH_A_LABEL: ReadonlySet<string> = new Set([
-  "location_card",
-  "date_card",
-  "chapter_card",
-  "lower_third",
-  "statistic",
-  "quote",
-  "callout",
-  "label",
-  "badge",
-]);
+/**
+ * The engine's motion-graphic vocabulary, mapped to the renderer's.
+ *
+ * ── RONDE 160 §7 — the missing connection this closes ────────────────────────────────────────
+ *
+ * The planner names nine kinds of motion graphic. The renderer draws thirty-two. The two lists had
+ * NO NAME IN COMMON, so `graphicIsRenderable` answered "no" for every graphic the cinematic engine
+ * ever planned, and `translateEdl` reported all of them as "kept on the GRAPHICS track, not drawn
+ * by this renderer" — unconditionally, on every render. Nothing failed and nothing was silent; the
+ * loss was reported honestly and completely, and the report was never read. The whole motion
+ * graphics feature was inert on the live route.
+ *
+ * ── Why only three of the nine are here ──────────────────────────────────────────────────────
+ *
+ * A name is in this map only when a real component draws THAT PLANNER'S OWN PAYLOAD as it stands.
+ * No field is renamed, added or synthesised to make an entry fit:
+ *
+ *   progress_bar       `{ toValue, suffix, label }`         → the percentage ring reads `toValue`
+ *   statistic_counter  `{ fromValue, toValue, suffix, label }` → the counter reads from/to/suffix
+ *   map                `{ locationName, normX, normY }`     → the abstract map reads normX/normY
+ *
+ * The other six stay untranslated and keep being reported, because translating them would mean
+ * inventing content, which §11 forbids:
+ *
+ *   chart          carries a keyword, not a series — a chart component with nothing to plot
+ *   timeline       carries events[], and a text card would have to compose a sentence from them
+ *   arrow          could be drawn as the `arrow` shape, but the shape draws no text and the
+ *                  planner's whole payload is the label of the thing being pointed at
+ *   comparison     no component draws a side-by-side
+ *   highlight_box  no component draws a box around a region of the picture
+ *   animated_icon  `icon` needs a name this build has a path for; a brand name is not one
+ */
+export const RENDERER_GRAPHIC_TYPE: Readonly<Partial<Record<MotionGraphicType, string>>> = {
+  progress_bar: "progress",
+  statistic_counter: "counter",
+  map: "map_point",
+};
+
+/** The renderer's name for a planned graphic, or the planner's own when there is no translation. */
+export function rendererGraphicType(graphicType: string): string {
+  return RENDERER_GRAPHIC_TYPE[graphicType as MotionGraphicType] ?? graphicType;
+}
 
 /**
  * The words a graphic puts on screen, taken from the planner's payload — never invented.
@@ -405,16 +437,38 @@ export function translateEdl(params: {
      * what the planner decided stays in the document.
      */
     for (const graphic of decision.motionGraphics) {
+      /**
+       * RONDE 160 §7 — translated to the renderer's name, and the planner's name kept in the reason.
+       *
+       * The type on the timeline has to be the one the renderer understands, or the graphic is not
+       * drawn. But "the planner asked for a map" is a decision with a reason attached, and losing
+       * it would make the document unable to explain itself. So the original name travels in
+       * `reason`, which is the field that exists for exactly that.
+       */
+      const rendererType = rendererGraphicType(graphic.graphicType);
+      const label = graphicLabel(rendererType, graphic.data);
       graphics.push({
-        id: timelineElementId("gfx", decision.beatId, graphic.graphicType, graphic.startSec),
-        graphicType: graphic.graphicType,
+        id: timelineElementId("gfx", decision.beatId, rendererType, graphic.startSec),
+        graphicType: rendererType,
         data: graphic.data,
         start: Number((sceneOffsetSec + graphic.startSec).toFixed(3)),
         end: Number((sceneOffsetSec + graphic.startSec + graphic.durationSec).toFixed(3)),
-        label: graphicLabel(graphic.graphicType, graphic.data),
-        reason: graphic.reason,
+        label,
+        reason:
+          rendererType === graphic.graphicType
+            ? graphic.reason
+            : `${graphic.reason} [planned as "${graphic.graphicType}"]`,
       });
-      if (!GRAPHICS_WITH_A_LABEL.has(graphic.graphicType)) {
+      /**
+       * The renderer's OWN answer, not a second list.
+       *
+       * This used to consult `GRAPHICS_WITH_A_LABEL`, a hand-written set in this file whose comment
+       * still said "those the ASS pass can draw today" — it predated the Remotion graphics layer
+       * and was never updated. It called `statistic` drawable and `bar_chart`, `map_point`, `title`
+       * and `counter` undrawable, all of which draw perfectly. Asking `graphicIsRenderable` means
+       * this report and the component's own decision are the same answer, by construction.
+       */
+      if (!graphicIsRenderable(rendererType, graphic.data, label ?? null)) {
         unsupported.push(
           `motion graphic "${graphic.graphicType}" on beat ${decision.beatId} ` +
             `(${graphic.reason}) — kept on the GRAPHICS track, not drawn by this renderer`

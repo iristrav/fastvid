@@ -495,18 +495,49 @@ export function buildVideoFilter(
     if (chain) parts.push(chain);
   }
 
-  // Scale is applied last of the geometry so it composes with whatever fit produced the frame.
+  /**
+   * Scale is applied last of the geometry so it composes with whatever fit produced the frame.
+   *
+   * ── RONDE 160 §8 — scaling DOWN used to break the render ────────────────────────────────────
+   *
+   * The fit chain leaves the frame at exactly the timeline's size, so a scale of 0.5 produces a
+   * half-size picture and the old code then asked ffmpeg to `crop` the full frame size out of it.
+   * ffmpeg refuses — "Invalid too big or non positive size" — the clip fails to encode, and a
+   * one-clip timeline throws MISSING_MEDIA. Every test passed because they all read the filter
+   * string, where `crop=480:480` looks perfectly reasonable.
+   *
+   * Enlarging still crops (there is more picture than frame); shrinking now PADS (there is less),
+   * which is the only thing either operation can mean. `positionX`/`positionY` place the result in
+   * both directions — they were previously read by the cover chain alone, so a scaled clip was
+   * always centred no matter what the editor asked for.
+   */
   if (t?.scale != null && Math.abs(t.scale - 1) > 0.001) {
     const s = Math.max(0.1, Math.min(4, t.scale));
+    /** 0.5 is centred, which is what an absent position has always meant. */
+    const px = Math.max(0, Math.min(1, t.positionX ?? 0.5)).toFixed(4);
+    const py = Math.max(0, Math.min(1, t.positionY ?? 0.5)).toFixed(4);
+    const resized = `scale=iw*${s.toFixed(4)}:ih*${s.toFixed(4)}`;
     parts.push(
-      `scale=iw*${s.toFixed(4)}:ih*${s.toFixed(4)},` +
-        `crop=${fmt.widthPx}:${fmt.heightPx}:(iw-ow)/2:(ih-oh)/2`
+      s > 1
+        ? `${resized},crop=${fmt.widthPx}:${fmt.heightPx}:(iw-ow)*${px}:(ih-oh)*${py}`
+        : `${resized},pad=${fmt.widthPx}:${fmt.heightPx}:(ow-iw)*${px}:(oh-ih)*${py}:black`
     );
   }
+  /**
+   * ── RONDE 160 §8 — opacity used to be a no-op ───────────────────────────────────────────────
+   *
+   * The old chain was `format=yuva420p,colorchannelmixer=aa=O,format=yuv420p`. It set an alpha
+   * channel and then converted to a format that has none, which DISCARDS the alpha rather than
+   * compositing with it: the picture came out at full brightness and opacity did nothing at all.
+   * Measured on a rendered file, a clip at opacity 0.5 was as bright as one at 1.0.
+   *
+   * The comment above it already said the right thing — "composited over black" — so this is that
+   * sentence made true. Over black, compositing at opacity O is exactly multiplying the colour by
+   * O, which is one filter and needs no second input.
+   */
   if (t?.opacity != null && t.opacity < 0.999) {
-    const o = Math.max(0, Math.min(1, t.opacity));
-    // Composited over black rather than left with an alpha channel, which the concat cannot carry.
-    parts.push(`format=yuva420p,colorchannelmixer=aa=${o.toFixed(4)},format=yuv420p`);
+    const o = Math.max(0, Math.min(1, t.opacity)).toFixed(4);
+    parts.push(`format=gbrp,colorchannelmixer=rr=${o}:gg=${o}:bb=${o},format=yuv420p`);
   }
   return parts.join(",");
 }

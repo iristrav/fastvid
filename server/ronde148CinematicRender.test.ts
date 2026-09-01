@@ -192,10 +192,49 @@ describe("§8 — fit, crop, scale, position, opacity", () => {
     expect(s).toContain("crop=320:180");
   });
 
+  /**
+   * RONDE 160 §8 — this test's NAME was always right and its assertion was always wrong.
+   *
+   * It asserted `colorchannelmixer=aa=0.5000`, which sets an alpha channel. The chain then
+   * converted to `yuv420p`, a format with no alpha — so the alpha was DISCARDED rather than
+   * composited, and a clip at opacity 0.5 rendered at full brightness. Measured on a real file:
+   * mean red 250 where 127 was correct. The assertion pinned the bug in place.
+   *
+   * Over black, compositing at opacity O is multiplying the colour by O, which is what the chain
+   * does now. `ronde160EditingRender.test.ts` renders it and reads the pixels back; this keeps
+   * checking the cheap structural half — that it ends in a format the concat can carry.
+   */
   it("opacity composites over black rather than leaving an alpha the concat cannot carry", () => {
     const s = buildVideoFilter(clip({ transform: { opacity: 0.5 } }), FMT, 4);
-    expect(s).toContain("colorchannelmixer=aa=0.5000");
+    expect(s).toContain("colorchannelmixer=rr=0.5000:gg=0.5000:bb=0.5000");
+    expect(s, "an alpha channel the concat cannot carry").not.toContain("colorchannelmixer=aa=");
     expect(s.endsWith("format=yuv420p")).toBe(true);
+  });
+
+  /**
+   * RONDE 160 §8 — the other half of the scale control, which used to make the render FAIL.
+   *
+   * The test above covers scale > 1, where cropping back to the frame is right. Below 1 there is
+   * less picture than frame, and asking ffmpeg to crop the full frame size out of a half-size
+   * image is an error it refuses to run — so the clip did not encode at all.
+   */
+  it("scaling down pads to the frame instead of cropping a picture that is too small", () => {
+    const s = buildVideoFilter(clip({ transform: { scale: 0.5 } }), FMT, 4);
+    expect(s).toContain("scale=iw*0.5000");
+    expect(s).toContain("pad=320:180");
+    expect(s, "cropping a frame larger than the picture is an ffmpeg error").not.toContain("crop=320:180");
+  });
+
+  /** A scaled clip is placed where the editor asked; only the cover chain used to read these. */
+  it("positionX/positionY place a scaled clip rather than always centring it", () => {
+    const centred = buildVideoFilter(clip({ transform: { scale: 0.5 } }), FMT, 4);
+    const corner = buildVideoFilter(
+      clip({ transform: { scale: 0.5, positionX: 0.25, positionY: 0.75 } }),
+      FMT,
+      4
+    );
+    expect(centred).toContain("pad=320:180:(ow-iw)*0.5000:(oh-ih)*0.5000");
+    expect(corner).toContain("pad=320:180:(ow-iw)*0.2500:(oh-ih)*0.7500");
   });
 
   it("opacity 1 adds nothing", () => {
