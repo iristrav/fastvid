@@ -53,6 +53,7 @@ import {
   buildVideoFilter,
   cameraChain,
   lookUnsupportedReason,
+  transitionUnsupportedReason,
   transitionIsRenderable,
   unsupportedEffects,
   type MixInput,
@@ -621,7 +622,21 @@ export async function renderTimeline(params: {
       );
     }
     if (!transitionIsRenderable(clip.transitionIn)) {
-      skipped.push(`unsupported_transition ${clip.transitionIn} on clip ${clip.id}`);
+      /**
+       * RONDE 183 — the melding says WHY, not just that something was unsupported.
+       *
+       * §153 asks for "niet terugvallen naar hard_cut zonder melding", and this line was the
+       * melding — but it named only the transition. `transitionUnsupportedReason` was written for
+       * exactly this and had no caller anywhere but its own test, so the operator reading a render
+       * log could not tell a `film_burn` that needs an overlay asset nobody has configured from a
+       * name ffmpeg has no mode for at all. One is a missing file; the other is a planner asking
+       * for something that does not exist. Same fallback, different actions.
+       */
+      const why = transitionUnsupportedReason(clip.transitionIn);
+      skipped.push(
+        `unsupported_transition ${clip.transitionIn} on clip ${clip.id}` +
+          (why ? ` — ${why}` : "")
+      );
     }
   }
   if (segments.length === 0) {
