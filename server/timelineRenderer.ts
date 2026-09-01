@@ -666,6 +666,28 @@ export async function renderTimeline(params: {
     transitionsRendered = rendered.filter(
       (r, i) => i > 0 && r.clip.transitionIn !== "hard_cut"
     ).length;
+    /**
+     * RONDE 182 — the picture is SHORTER than the plan whenever a transition overlaps, and nothing
+     * said so.
+     *
+     * A crossfade consumes time from both of its neighbours: two 0.65s dissolves make a 12.00s plan
+     * render as 10.70s of video. `buildTransitionGraph` already returns that number as `totalSec`
+     * and this function threw it away, so a timeline whose VOICE track is 12s long rendered a
+     * picture that ends 1.3s before the narration does — and reported success.
+     *
+     * Reported rather than corrected. Whether the last clip should be extended to cover the overlap,
+     * or the plan should place clips accounting for it, is an editorial decision about what a
+     * viewer should see, and it cannot be settled without looking at a rendered frame. What can be
+     * settled is that the discrepancy stops being invisible. §2: niets mag stil verdwijnen.
+     */
+    const shortfall = timeline.durationSec - graph.totalSec;
+    if (shortfall > 1 / Math.max(1, fmt.fps)) {
+      skipped.push(
+        `transition_overlap: the plan is ${timeline.durationSec.toFixed(2)}s and the picture ` +
+          `renders as ${graph.totalSec.toFixed(2)}s — ${transitionsRendered} transition(s) ` +
+          `overlap their neighbours by ${shortfall.toFixed(2)}s in total`
+      );
+    }
   } else {
     const listFile = path.join(workDir, "segments.txt");
     fs.writeFileSync(
