@@ -62,6 +62,20 @@ import {
   type TimelineIssue,
 } from "./timelineValidator";
 import { TIMELINE_SCHEMA_VERSION, type ProjectTimeline } from "./projectTimeline";
+import {
+  formatCandidateSearch,
+  rankReplacementCandidates,
+  replacementContextFor,
+} from "./replacementCandidates";
+
+/**
+ * How many rows to pull from each archive before ranking.
+ *
+ * A cap rather than the whole table: an archive with fifty thousand assets would otherwise be
+ * loaded into memory to answer one editor click. 200 per archive is far more than a person will
+ * scroll through, and the `search` argument is what narrows a large archive properly.
+ */
+const CANDIDATE_POOL_PER_ARCHIVE = 200;
 
 /* ═══════════════════════ §22 — errors a caller can act on ═══════════════════════ */
 
@@ -456,6 +470,92 @@ export const timelineRouter = router({
         userId: ctx.user.id,
         what: `text ${input.elementId}`,
       });
+    }),
+
+  /**
+   * RONDE 156 §2 — what else could go in this slot.
+   *
+   * ── Why the candidates come from the archive ─────────────────────────────────────────────
+   *
+   * `replaceClip` below takes an `archiveAssetId` and looks the identity up itself, so a client
+   * cannot name its own provider. A candidate list drawn from anywhere else would offer options
+   * that route cannot accept. And an archive row is already ingested, licensed and probed, which a
+   * live provider result is not.
+   *
+   * The ranking is `replacementCandidates.ts` — pure and tested. This procedure's own job is the
+   * three things a pure function cannot do: check access, read the pool, and build preview URLs
+   * that carry no credential.
+   */
+  replacementCandidates: protectedProcedure
+    .input(
+      z.object({
+        videoId: z.number().int().positive(),
+        clipId: z.string().min(1).max(200),
+        /** Narrows the archive pool. The ranking still decides the order. */
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(48).default(24),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+
+      const loaded = await loadTimeline(input.videoId);
+      const context = replacementContextFor(loaded.timeline, input.clipId);
+      if (!context) {
+        throw editorError(
+          "TIMELINE_INVALID",
+          `no video clip with id ${input.clipId} on this timeline`,
+          "NOT_FOUND"
+        );
+      }
+
+      const { getAllMediaArchives, listMediaArchiveAssetsPaginated } = await import("./db");
+      const { editorArchiveMediaUrl } = await import("./archiveMediaStream");
+
+      /**
+       * Every archive this deployment has, not one chosen here.
+       *
+       * Which archive a replacement should come from is an editorial question, and the person
+       * choosing is better placed to answer it than a heuristic — so the pool is everything and
+       * the ranking sorts it.
+       */
+      const archives = await getAllMediaArchives();
+      const slugById = new Map<number, string>(archives.map((a) => [a.id, a.slug ?? "archive"]));
+      const pool: Awaited<ReturnType<typeof listMediaArchiveAssetsPaginated>>["items"] = [];
+      for (const archive of archives) {
+        const page = await listMediaArchiveAssetsPaginated(archive.id, {
+          limit: CANDIDATE_POOL_PER_ARCHIVE,
+          offset: 0,
+          ...(input.search?.trim() ? { search: input.search.trim() } : {}),
+        });
+        pool.push(...page.items);
+      }
+
+      const ranked = rankReplacementCandidates(
+        pool,
+        context,
+        (asset) => ({
+          /**
+           * This application's own streaming endpoint, keyed by asset id. NEVER `storageUrl`,
+           * which may be a signed S3 URL — §5/§32 forbid a private URL reaching the browser.
+           */
+          previewUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
+          thumbnailUrl: editorArchiveMediaUrl(asset.id, { storageUrl: asset.storageUrl }),
+          provider: slugById.get(asset.archiveId) ?? "archive",
+        }),
+        input.limit
+      );
+      console.log(formatCandidateSearch(input.clipId, ranked));
+
+      return {
+        clipId: input.clipId,
+        timelineVersion: loaded.timelineVersion,
+        slotDurationSec: context.slotDurationSec,
+        candidates: ranked.candidates,
+        /** §"een lege lijst is nooit een mysterie" — the reasons travel with the result. */
+        rejectedCount: ranked.rejected.length,
+        rejectedReasons: [...new Set(ranked.rejected.map((r) => r.reason))].slice(0, 5),
+      };
     }),
 
   /**

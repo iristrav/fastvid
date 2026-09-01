@@ -32,6 +32,7 @@ import {
   Palette,
   Play,
   RefreshCw,
+  Repeat,
   Save,
   Type as TypeIcon,
   X as XIcon,
@@ -589,6 +590,18 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                     onChange={(patch) =>
                       setDraft((t) => (t ? withEditedClip(t, selection.clip.id, patch) : t))
                     }
+                    videoId={videoId}
+                    timelineVersion={version}
+                    /**
+                     * RONDE 156 — a replacement is saved SERVER-SIDE by its own route, so the
+                     * editor's draft is now behind. Refetching is the only correct response:
+                     * keeping the local draft would let the next save write the old source back
+                     * over the replacement the person just chose.
+                     */
+                    onReplaced={() => {
+                      void utils.timeline.get.invalidate({ videoId });
+                      toast.success("Shot replaced");
+                    }}
                   />
                 ) : selection.kind === "VOICE" || selection.kind === "MUSIC" ||
                   selection.kind === "SFX" || selection.kind === "AMBIENT" ? (
@@ -695,12 +708,203 @@ function Slider({
  * Including, and especially, when it is not recoverable. Hiding that would mean the person finds
  * out at render time, ten minutes later, about a shot they could have replaced in ten seconds.
  */
+
+/**
+ * RONDE 156 §4 — Replace: see real alternatives, preview one, choose it.
+ *
+ * ── Why the candidates are fetched lazily ────────────────────────────────────────────────────
+ *
+ * The query is disabled until the person actually opens the panel. Loading a ranked archive pool
+ * for every clip they merely CLICK ON would make selecting a shot cost a database sweep, and most
+ * selections are to inspect a clip rather than to replace it.
+ *
+ * ── What the client is allowed to send back ─────────────────────────────────────────────────
+ *
+ * `archiveAssetId`, and nothing else. The server looks the provider, the URL and the title up from
+ * the archive row itself — so a client cannot name its own provider and launder a source into a
+ * timeline. That rule predates this panel and this panel does not weaken it.
+ */
+function ReplacePanel({
+  videoId,
+  clipId,
+  timelineVersion,
+  onReplaced,
+}: {
+  videoId: number;
+  clipId: string;
+  timelineVersion: number;
+  onReplaced: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [previewing, setPreviewing] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * The search term is committed on submit rather than on every keystroke.
+   *
+   * Each query ranks up to 200 rows per archive; firing that per character would be a sweep per
+   * letter. A person searching an archive expects to press Enter.
+   */
+  const [committedSearch, setCommittedSearch] = useState("");
+
+  const candidates = trpc.timeline.replacementCandidates.useQuery(
+    { videoId, clipId, limit: 24, ...(committedSearch ? { search: committedSearch } : {}) },
+    { enabled: open, staleTime: 30_000 }
+  );
+
+  const replaceMutation = trpc.timeline.replaceClip.useMutation();
+
+  const choose = async (archiveAssetId: number) => {
+    setError(null);
+    try {
+      await replaceMutation.mutateAsync({
+        videoId,
+        clipId,
+        archiveAssetId,
+        expectedTimelineVersion: timelineVersion,
+      });
+      setOpen(false);
+      setPreviewing(null);
+      onReplaced();
+    } catch (err) {
+      /**
+       * The most likely failure is a version conflict: somebody saved while this panel was open.
+       * Saying so beats a generic error, because the fix is "reload", not "try again".
+       */
+      setError((err as Error).message || "the replacement could not be saved");
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full flex items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 px-3 py-2 text-xs font-medium text-white transition"
+      >
+        <Repeat className="w-3.5 h-3.5" /> Replace this shot
+      </button>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/5 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold text-white">Alternatives for this slot</h4>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="text-[11px] text-white/50 hover:text-white/80"
+        >
+          Cancel
+        </button>
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          setCommittedSearch(search.trim());
+        }}
+      >
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search the archive, then press Enter"
+          className="w-full rounded-md bg-black/30 border border-white/10 px-2.5 py-1.5 text-[11px] text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-400/50"
+        />
+      </form>
+
+      {candidates.isLoading && <p className="text-[11px] text-white/50">Searching the archive…</p>}
+      {candidates.error && (
+        <p className="text-[11px] text-red-300">{candidates.error.message}</p>
+      )}
+
+      {candidates.data && candidates.data.candidates.length === 0 && (
+        <div className="text-[11px] text-white/60 space-y-1">
+          <p>Nothing in the archive fits this slot.</p>
+          {/* §"een lege lijst is nooit een mysterie" — say WHY it is empty. */}
+          {candidates.data.rejectedReasons.map((r) => (
+            <p key={r} className="text-white/40">· {r}</p>
+          ))}
+        </div>
+      )}
+
+      {candidates.data && candidates.data.candidates.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+          {candidates.data.candidates.map((c) => (
+            <div
+              key={c.archiveAssetId}
+              className="rounded-md border border-white/10 bg-black/25 overflow-hidden flex flex-col"
+            >
+              {/* The preview is this app's own streaming endpoint — never a signed provider URL. */}
+              {previewing === c.archiveAssetId && c.previewUrl ? (
+                c.mediaType === "video" ? (
+                  <video
+                    src={c.previewUrl}
+                    className="w-full aspect-video object-cover bg-black"
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                  />
+                ) : (
+                  <img src={c.previewUrl} alt="" className="w-full aspect-video object-cover bg-black" />
+                )
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setPreviewing(c.archiveAssetId)}
+                  className="relative w-full aspect-video bg-black/50 flex items-center justify-center group"
+                >
+                  {c.thumbnailUrl && c.mediaType === "image" ? (
+                    <img src={c.thumbnailUrl} alt="" className="w-full h-full object-cover opacity-80" />
+                  ) : null}
+                  <Play className="absolute w-6 h-6 text-white/70 group-hover:text-white transition" />
+                </button>
+              )}
+              <div className="p-2 space-y-1 flex-1 flex flex-col">
+                <p className="text-[11px] text-white font-medium leading-tight line-clamp-2">
+                  {c.title || "Untitled"}
+                </p>
+                <p className="text-[10px] text-white/45">
+                  {c.provider}
+                  {c.durationSec != null && ` · ${c.durationSec.toFixed(1)}s`}
+                  {c.mediaType === "image" && " · still"}
+                </p>
+                <p className="text-[10px] text-white/35 leading-tight flex-1">{c.reason}</p>
+                <button
+                  type="button"
+                  disabled={replaceMutation.isPending}
+                  onClick={() => choose(c.archiveAssetId)}
+                  className="w-full rounded bg-cyan-500/80 hover:bg-cyan-400 disabled:opacity-40 px-2 py-1 text-[11px] font-semibold text-black transition"
+                >
+                  {replaceMutation.isPending ? "Replacing…" : "Use this clip"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && <p className="text-[11px] text-red-300">{error}</p>}
+    </div>
+  );
+}
+
 function ClipInspector({
   clip,
   onChange,
+  videoId,
+  timelineVersion,
+  onReplaced,
 }: {
   clip: VideoClip;
   onChange: (patch: Partial<VideoClip>) => void;
+  /** RONDE 156 — what the candidate search needs. */
+  videoId: number;
+  timelineVersion: number;
+  onReplaced: () => void;
 }) {
   const recoverable =
     Boolean(clip.source.canonicalUrl || clip.source.mediaUrl) || clip.source.archiveAssetId != null;
@@ -729,6 +933,14 @@ function ClipInspector({
         <Field label="Source out" value={clip.sourceOut != null ? `${clip.sourceOut.toFixed(2)}s` : "not recorded"} />
         {clip.editedByUser && <Field label="Edited" value="replaced by you" />}
       </div>
+
+      {/* ── RONDE 156 — find a different shot for this slot ── */}
+      <ReplacePanel
+        videoId={videoId}
+        clipId={clip.id}
+        timelineVersion={timelineVersion}
+        onReplaced={onReplaced}
+      />
 
       {/* ── §32 — framing ── */}
       <Group title="Framing">
