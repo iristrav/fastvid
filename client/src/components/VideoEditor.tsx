@@ -30,6 +30,7 @@ import {
   Loader2,
   Music,
   Palette,
+  Pause,
   Play,
   RefreshCw,
   Repeat,
@@ -302,6 +303,15 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
   const [selectedId, setSelectedId] = useState<{ kind: TrackKind; id: string } | null>(null);
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  /**
+   * RONDE 158 §13/§14 — where the playhead is, in seconds.
+   *
+   * Driven BY the video element rather than by a timer of our own. A second clock would drift
+   * against the one the viewer is actually watching, and the playhead would slowly stop meaning
+   * what it points at.
+   */
+  const [playheadSec, setPlayheadSec] = useState(0);
+  const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
     if (!data) return;
@@ -511,7 +521,17 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
               <div className="space-y-4 min-w-0">
                 <div className="rounded-xl overflow-hidden border border-white/8 bg-black">
                   {previewUrl ? (
-                    <video ref={videoRef} src={previewUrl} controls playsInline className="w-full max-h-[42vh]" />
+                    <video
+                      ref={videoRef}
+                      src={previewUrl}
+                      controls
+                      playsInline
+                      className="w-full max-h-[42vh]"
+                      onTimeUpdate={(e) => setPlayheadSec(e.currentTarget.currentTime)}
+                      onPlay={() => setPlaying(true)}
+                      onPause={() => setPlaying(false)}
+                      onSeeked={(e) => setPlayheadSec(e.currentTarget.currentTime)}
+                    />
                   ) : (
                     <div className="flex items-center justify-center gap-2 p-12 text-slate-500 text-sm">
                       <Play className="w-4 h-4" /> No preview available yet
@@ -528,6 +548,46 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                   </p>
                 )}
 
+                {/* ── RONDE 158 §14 — transport and scrubber ── */}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = videoRef.current;
+                      if (!el) return;
+                      if (el.paused) void el.play();
+                      else el.pause();
+                    }}
+                    disabled={!previewUrl}
+                    className="flex items-center justify-center w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 transition"
+                    aria-label={playing ? "Pause" : "Play"}
+                  >
+                    {playing ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                  </button>
+                  {/*
+                    The scrubber is bound to the TIMELINE's duration, not the preview file's.
+                    They can differ — the preview may be an older render — and the playhead has to
+                    agree with the lanes underneath it, which are laid out on the timeline's clock.
+                  */}
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0.1, duration)}
+                    step={0.05}
+                    value={Math.min(playheadSec, duration)}
+                    onChange={(e) => {
+                      const at = Number(e.target.value);
+                      setPlayheadSec(at);
+                      if (videoRef.current) videoRef.current.currentTime = at;
+                    }}
+                    className="flex-1 accent-cyan-400"
+                    aria-label="Scrub"
+                  />
+                  <span className="text-[11px] tabular-nums text-slate-400 w-24 text-right">
+                    {fmt(playheadSec)} / {fmt(duration)}
+                  </span>
+                </div>
+
                 {/* ── §14: one lane per track, items sized by their real duration ── */}
                 <div className="rounded-xl border border-white/8 bg-black/30 p-3 space-y-1.5 overflow-x-auto">
                   {TRACK_ORDER.map((kind) => {
@@ -537,7 +597,30 @@ export function VideoEditor({ videoId, onClose }: { videoId: number; onClose: ()
                         <span className="w-16 shrink-0 text-[10px] font-semibold tracking-wide text-slate-500">
                           {kind}
                         </span>
-                        <div className="relative flex-1 h-8 rounded bg-white/[0.03] min-w-[420px]">
+                        <div
+                          className="relative flex-1 h-8 rounded bg-white/[0.03] min-w-[420px]"
+                          /**
+                           * RONDE 158 — click anywhere on a lane to move the playhead there.
+                           *
+                           * On the STRIP, not on the clip buttons, so clicking a clip still selects
+                           * it. The two gestures are different intentions and must not collide.
+                           */
+                          onClick={(e) => {
+                            if (e.target !== e.currentTarget || duration <= 0) return;
+                            const box = e.currentTarget.getBoundingClientRect();
+                            const at = ((e.clientX - box.left) / box.width) * duration;
+                            const clamped = Math.max(0, Math.min(duration, at));
+                            setPlayheadSec(clamped);
+                            if (videoRef.current) videoRef.current.currentTime = clamped;
+                          }}
+                        >
+                          {/* The playhead, drawn on every lane so one glance lines them all up. */}
+                          {duration > 0 && (
+                            <div
+                              className="absolute top-0 bottom-0 w-px bg-cyan-300/80 pointer-events-none z-20"
+                              style={{ left: `${Math.min(100, (playheadSec / duration) * 100)}%` }}
+                            />
+                          )}
                           {items.length === 0 && (
                             <span className="absolute inset-0 flex items-center pl-2 text-[10px] text-slate-600">
                               empty

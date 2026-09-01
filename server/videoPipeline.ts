@@ -39370,8 +39370,13 @@ async function _runVideoPipelineInner(
      * deliver it because a caption planner hit an edge case would be the wrong trade every time.
      */
     try {
-      const { planAndStoreCinematicTimeline, cinematicPlanningEnabled, cinematicRenderPathEnabled, formatRenderRoute } =
-        await import("./cinematicProduction");
+      const {
+        planAndStoreCinematicTimeline,
+        cinematicPlanningEnabled,
+        cinematicRenderPathEnabled,
+        formatRenderRoute,
+        enqueueCinematicRender,
+      } = await import("./cinematicProduction");
       if (cinematicPlanningEnabled()) {
         const lineage = visualDedup.sourcingCache.lineage;
         const outcome = await planAndStoreCinematicTimeline({
@@ -39438,15 +39443,54 @@ async function _runVideoPipelineInner(
             )
           );
         }
+        /**
+         * R159 §24 — when the flag is on and the plan is good, the timeline RENDERS the video.
+         *
+         * A render job is queued from the stored timeline and the same worker that renders a
+         * hand-edited video takes it from there: rehydrate, validate, ffmpeg, Remotion overlay,
+         * composite, ffprobe, upload. §26's "one timeline, one renderer" is kept by not building a
+         * second path — this only puts a row in the queue.
+         *
+         * The compose output produced earlier in this render is still uploaded and still the
+         * video's current output. The cinematic render supersedes it when it finishes, through the
+         * existing `renderAttempt` fencing, so a failure of the new route costs nothing.
+         */
+        let cutover: Awaited<ReturnType<typeof enqueueCinematicRender>> | null = null;
+        if (outcome.ok && cinematicRenderPathEnabled()) {
+          try {
+            const { claimRenderAttempt, createRenderJob } = await import("./db");
+            cutover = await enqueueCinematicRender({
+              videoId,
+              timelineVersion: outcome.timelineVersion,
+              claimAttempt: (id) => claimRenderAttempt(id),
+              createJob: (p) => createRenderJob(p),
+            });
+            for (const line of cutover.log) console.log(pipelineReport.add("summary", line));
+            if (!cutover.ok) {
+              console.warn(
+                pipelineReport.add(
+                  "summary",
+                  `[RenderJob] video=${videoId} cinematic render NOT queued: ${cutover.reason}`
+                )
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `[RenderJob] video=${videoId} cinematic render could not be queued: ` +
+                `${(err as Error).message.slice(0, 200)}`
+            );
+          }
+        }
+
         console.log(
           pipelineReport.add(
             "summary",
             formatRenderRoute({
               videoId,
-              /** Today the delivered file always comes from compose; the flag says when that changes. */
-              route: cinematicRenderPathEnabled() && outcome.ok ? "cinematic_timeline" : "legacy_compose",
+              /** The route is `cinematic_timeline` only when a job was really queued. */
+              route: cutover?.ok ? "cinematic_timeline" : "legacy_compose",
               planOk: outcome.ok,
-              reason: outcome.ok ? undefined : outcome.reason,
+              reason: outcome.ok ? cutover?.ok === false ? cutover.reason : undefined : outcome.reason,
             })
           )
         );

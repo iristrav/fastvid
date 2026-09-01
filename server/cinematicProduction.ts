@@ -310,3 +310,74 @@ export function formatRenderRoute(params: {
     : `the cinematic plan was not usable: ${params.reason ?? "unknown"}`;
   return `[RenderJob] video=${params.videoId} route=legacy_compose RENDER_FALLBACK_USED reason=${why}`;
 }
+
+/* ═══════════════════════ R159 §24 — the cutover ═══════════════════════ */
+
+export type CutoverOutcome =
+  | { ok: true; renderJobId: number; timelineVersion: number; log: string[] }
+  | { ok: false; reason: string; log: string[] };
+
+/**
+ * Turn a stored cinematic plan into a queued render job.
+ *
+ * ── What this deliberately does NOT do ──────────────────────────────────────────────────────
+ *
+ * It does not render. The render job worker already knows how to rehydrate, validate, drive
+ * ffmpeg, ask Remotion for a graphics overlay, composite, probe and upload — and it is the SAME
+ * worker that renders a video a person edited by hand. §26's "één timeline, dezelfde renderer" is
+ * kept by not building a second path here: this function's whole job is to put a row in the queue.
+ *
+ * ── Why a new attempt number ────────────────────────────────────────────────────────────────
+ *
+ * `claimVideoRenderAttempt` fences the output. A late render can then be recognised as superseded
+ * rather than overwriting a newer one — the same mechanism an editor-triggered render uses, for the
+ * same reason. Taking a shortcut here would leave the cinematic route as the one path where two
+ * renders can race.
+ */
+export async function enqueueCinematicRender(params: {
+  videoId: number;
+  timelineVersion: number;
+  requestedByUserId?: number | null;
+  claimAttempt: (videoId: number) => Promise<number | null>;
+  createJob: (p: {
+    videoId: number;
+    requestedByUserId?: number | null;
+    timelineVersion: number;
+    attempt: number;
+  }) => Promise<{ id: number } | null>;
+}): Promise<CutoverOutcome> {
+  const log: string[] = [];
+
+  if (!cinematicRenderPathEnabled()) {
+    return {
+      ok: false,
+      reason: "CINEMATIC_RENDER_PATH is not enabled",
+      log,
+    };
+  }
+
+  const attempt = await params.claimAttempt(params.videoId);
+  if (attempt == null) {
+    return {
+      ok: false,
+      reason: "could not claim a render attempt for this video",
+      log,
+    };
+  }
+
+  const job = await params.createJob({
+    videoId: params.videoId,
+    requestedByUserId: params.requestedByUserId ?? null,
+    timelineVersion: params.timelineVersion,
+    attempt,
+  });
+  if (!job) {
+    return { ok: false, reason: "the render job could not be created", log };
+  }
+
+  log.push(
+    `[RenderJob] video=${params.videoId} job=${job.id} attempt=${attempt} ` +
+      `timelineVersion=${params.timelineVersion} route=cinematic_timeline queued`
+  );
+  return { ok: true, renderJobId: job.id, timelineVersion: params.timelineVersion, log };
+}
