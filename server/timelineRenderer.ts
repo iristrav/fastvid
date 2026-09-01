@@ -231,8 +231,36 @@ export function assAlignment(position: TextStyle["position"]): number {
     case "top": return 8;
     case "center": return 5;
     case "lower_third": return 2;
+    case "lower_center": return 2;
     case "bottom":
     default: return 2;
+  }
+}
+
+/**
+ * How far a bottom-anchored ASS line sits above the bottom of the frame, in pixels.
+ *
+ * ── RONDE 160 §12 — the two renderers used to disagree ──────────────────────────────────────
+ *
+ * `TextPosition` has six values. The ASS path handled four and let the other two fall through to
+ * the plain bottom margin, in silence. For `lower_center` that meant the SAME timeline produced
+ * two different videos depending on which graphics engine ran: Remotion's `positionStyle` puts it
+ * at 28% of the frame height above the bottom, libass put it at 40 pixels.
+ *
+ * The fractions below are the ones `captionLayout.boxForPosition` already computes from (a
+ * lower third is anchored at 0.78 of the frame, lower centre at 0.72) and the ones
+ * `Text.tsx/positionStyle` already renders with. A test asserts the two renderers agree.
+ *
+ * `custom` is not here. `captionLayout` places it inside a caller-supplied `safeZone`, and NEITHER
+ * renderer implements that — Remotion's `positionStyle` also falls through to the bottom. Giving
+ * libass an approximation would make the two disagree again in the other direction, so `custom`
+ * stays at the bottom in both, which is what `TextPosition`'s own doc comment says it does.
+ */
+export function assMarginV(position: TextStyle["position"], heightPx: number): number {
+  switch (position) {
+    case "lower_third": return Math.round(heightPx * 0.22);
+    case "lower_center": return Math.round(heightPx * 0.28);
+    default: return 40;
   }
 }
 
@@ -424,7 +452,7 @@ export function buildAssDocument(params: {
     // instead, because white text on archival footage without either is unreadable.
     const borderStyle = style.backgroundOpacity > 0 ? 3 : 1;
     const outline = style.backgroundOpacity > 0 ? 0 : 3;
-    const marginV = style.position === "lower_third" ? Math.round(params.heightPx * 0.22) : 40;
+    const marginV = assMarginV(style.position, params.heightPx);
     return (
       `Style: ${name},${font},${style.fontSizePx},${primary},&H000000FF,&H00000000,${back},` +
       `-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${assAlignment(style.position)},40,40,${marginV},1`

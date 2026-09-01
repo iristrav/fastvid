@@ -22,7 +22,8 @@ import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { emptyTimeline, type ProjectTimeline } from "./projectTimeline";
-import { renderTimeline } from "./timelineRenderer";
+import { assAlignment, assMarginV, renderTimeline } from "./timelineRenderer";
+import { positionStyle } from "./remotion/components/Text";
 import { LOOK_MODIFIERS, RENDERABLE_LOOKS, lookUnsupportedReason } from "./timelineFilters";
 import { resolveFFmpegBin } from "./ffmpegBinary";
 
@@ -126,5 +127,101 @@ describe("R160 §12 — an unrenderable LOOK is reported instead of silently dro
     }
     expect(lookUnsupportedReason("none")).toBeNull();
     expect(lookUnsupportedReason("not_a_look")).toBeTruthy();
+  });
+});
+
+/* ═══════════ the two graphics engines must put text in the SAME place ═══════════ */
+
+/**
+ * ── The divergence this closes ───────────────────────────────────────────────────────────────
+ *
+ * A timeline is rendered by one of two engines: Remotion when a browser is available, libass when
+ * it is not. Both read the same `TextPosition`. If they disagree about what a position MEANS, the
+ * same timeline produces two different videos and which one you get depends on the machine — the
+ * hardest class of bug to reproduce and the easiest to ship.
+ *
+ * `TextPosition` has six values. The ASS path handled four and let `lower_center` and `custom` fall
+ * through to the plain bottom margin in silence, so `lower_center` came out 28% of the frame height
+ * lower on the libass route than on the Remotion route.
+ */
+describe("R160 §12 — libass and Remotion agree on where a text position is", () => {
+  /** Remotion states its geometry as CSS padding; this reads it back as a fraction of the frame. */
+  function remotionBottomFraction(position: string): number | null {
+    const style = positionStyle(position) as Record<string, unknown>;
+    if (style.justifyContent !== "flex-end") return null;
+    const pad = (style.paddingBottom ?? String(style.padding ?? "").split(/\s+/)[2]) as string | undefined;
+    const m = /^([\d.]+)%$/.exec(pad ?? "");
+    return m ? Number(m[1]) / 100 : null;
+  }
+
+  /**
+   * The positions that were BROKEN are now aligned. `lower_center` had no ASS implementation at
+   * all — it fell through to the plain bottom margin — so bringing it to Remotion's 28% cannot
+   * regress an existing video: no existing video could have been positioned there.
+   */
+  it("lower_third and lower_center land in the same place in both renderers", () => {
+    const HEIGHT = 1080;
+    for (const position of ["lower_third", "lower_center"] as const) {
+      const remotion = remotionBottomFraction(position);
+      expect(remotion, `${position}: Remotion does not anchor it to the bottom`).not.toBeNull();
+      const ass = assMarginV(position, HEIGHT) / HEIGHT;
+      expect(
+        Math.abs(ass - remotion!),
+        `${position}: libass says ${(ass * 100).toFixed(1)}% and Remotion says ${(remotion! * 100).toFixed(1)}%`
+      ).toBeLessThan(0.01);
+    }
+  });
+
+  /**
+   * ── A divergence this round found and deliberately did NOT change ──────────────────────────
+   *
+   * Plain `bottom` is a fixed 40 PIXELS on the ASS route and 6 PERCENT on the Remotion route. One
+   * is absolute and the other is relative, so they do not merely differ — they differ by a
+   * different amount at every resolution: 3.7% apart at 1080p, and the ASS margin is nearly twice
+   * Remotion's at 360p in the other direction.
+   *
+   * It is left alone on purpose. `bottom` is the default position, so every caption in every video
+   * ever rendered on the libass route sits at that 40px margin; changing it would move the
+   * subtitles in all of them, and which of the two numbers is RIGHT is a design decision about
+   * what customers' videos should look like, not an audit finding to be fixed in passing.
+   *
+   * So this test pins the disagreement instead of hiding it. It fails the moment either number
+   * moves, which makes any future change to it deliberate and reviewed.
+   */
+  it("plain `bottom` still differs between the renderers — pinned, not fixed", () => {
+    expect(assMarginV("bottom", 1080)).toBe(40);
+    expect(remotionBottomFraction("bottom")).toBeCloseTo(0.06, 3);
+    /** Absolute versus relative: the gap is not a constant, which is what makes it a real defect. */
+    expect(assMarginV("bottom", 1080) / 1080).not.toBeCloseTo(0.06, 2);
+    expect(assMarginV("bottom", 360) / 360).not.toBeCloseTo(0.06, 2);
+  });
+
+  /** And the three are genuinely different heights — otherwise the agreement above is trivial. */
+  it("the three bottom-anchored positions are actually distinct", () => {
+    const H = 1080;
+    const values = ["bottom", "lower_third", "lower_center"].map((p) =>
+      assMarginV(p as never, H)
+    );
+    expect(new Set(values).size, "two positions render in the same place").toBe(3);
+    expect(values[0]).toBeLessThan(values[1]!);
+    expect(values[1]).toBeLessThan(values[2]!);
+  });
+
+  /**
+   * `custom` is placed inside a caller-supplied safe zone by `captionLayout`, and NEITHER renderer
+   * implements that — both fall back to the bottom. That is a real limitation, and this test pins
+   * it as a SHARED one: the day somebody implements it in one engine, this fails and says so.
+   */
+  it("custom falls back to the bottom in BOTH renderers, not just one", () => {
+    expect(assMarginV("custom", 1080)).toBe(assMarginV("bottom", 1080));
+    expect(remotionBottomFraction("custom")).toBe(remotionBottomFraction("bottom"));
+  });
+
+  /** The non-bottom positions must not be silently treated as bottom either. */
+  it("top and center are not bottom-anchored in either renderer", () => {
+    for (const position of ["top", "center"] as const) {
+      expect(assAlignment(position), position).not.toBe(2);
+      expect(remotionBottomFraction(position), position).toBeNull();
+    }
   });
 });
