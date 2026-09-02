@@ -1379,23 +1379,47 @@ export type YoutubeSourcingReadiness = {
   ready: boolean;
   /** Empty when ready; otherwise the missing requirements, by env name. */
   missing: string[];
+  /**
+   * Configured, but in a shape that usually does not work. Not blocking — the code supports it —
+   * so it is reported beside `ready` rather than instead of it.
+   */
+  warnings: string[];
 };
 
 export function youtubeSourcingReadiness(): YoutubeSourcingReadiness {
   const missing: string[] = [];
+  const warnings: string[] = [];
   if (!envFlagIsOn("ENABLE_YOUTUBE_SOURCING")) missing.push("ENABLE_YOUTUBE_SOURCING");
   if (!process.env.YOUTUBE_API_KEY?.trim()) missing.push("YOUTUBE_API_KEY");
+
+  const cloud = Boolean(process.env.YOUTUBE_CC_DL_SERVICE?.trim());
+  const rapid = Boolean(process.env.RAPIDAPI_KEY?.trim());
   /** Either download route satisfies this — only their absence together blocks a download. */
-  if (!process.env.RAPIDAPI_KEY?.trim() && !process.env.YOUTUBE_CC_DL_SERVICE?.trim()) {
-    missing.push("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+  if (!cloud && !rapid) missing.push("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+
+  /**
+   * The cloud yt-dlp service authenticates with `Authorization: Bearer <YOUTUBE_CC_DL_TOKEN>` and
+   * answers 401 without it. `downloadYouTubeCCClip` omits the header when the token is unset, so a
+   * token-less service is genuinely supported and this is NOT a missing requirement — but a
+   * deployment that set the service URL and forgot the token gets 401 on every download, and the
+   * first version of this readiness check would have called that configuration `ready`.
+   */
+  if (cloud && !process.env.YOUTUBE_CC_DL_TOKEN?.trim()) {
+    warnings.push("YOUTUBE_CC_DL_TOKEN unset — the cloud download service answers 401 unless it is token-less");
   }
-  return { ready: missing.length === 0, missing };
+  return { ready: missing.length === 0, missing, warnings };
 }
 
 /** One field for the route line: `ready`, or what is missing. Never a key's value. */
 export function formatYoutubeReadiness(): string {
-  const { ready, missing } = youtubeSourcingReadiness();
-  return ready ? "youtube=ready" : `youtube=BLOCKED(missing:${missing.join(",")})`;
+  const { ready, missing, warnings } = youtubeSourcingReadiness();
+  const head = ready ? "youtube=ready" : `youtube=BLOCKED(missing:${missing.join(",")})`;
+  return warnings.length ? `${head} youtubeWarn=${warnings.length}` : head;
+}
+
+/** The warnings in full, for the render log — one line each, never a key's value. */
+export function youtubeReadinessWarnings(): string[] {
+  return youtubeSourcingReadiness().warnings.map((w) => `[YouTube] CONFIG_WARNING ${w}`);
 }
 
 /** Archive clip pick driven by asset.tags + title (default on). Set ENABLE_ARCHIVE_TAG_MATCH=false for semantic-only. */
