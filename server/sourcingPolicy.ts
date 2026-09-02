@@ -1357,6 +1357,47 @@ export function youtubeSourcingEnabled(): boolean {
   return envFlagIsOn("ENABLE_YOUTUBE_SOURCING");
 }
 
+/**
+ * WHY YOUTUBE IS OR IS NOT SEARCHING — the flag alone never answered that.
+ *
+ * ── What render 562 shows ───────────────────────────────────────────────────────────────────
+ *
+ *     [YouTubeUsage] used=0
+ *     …and not one live YouTube search in the entire log.
+ *
+ * (The eleven `[YouTubeLicense]` lines in that render are archive.org's own `youtube-<id>`
+ * mirrors, fetched from Internet Archive. Live YouTube never ran.)
+ *
+ * YouTube needs THREE things, not one: the flag, a key to SEARCH with, and a separate service to
+ * DOWNLOAD with — YouTube does not serve media files directly, so the pipeline cannot fetch a
+ * clip with the API key alone. `youtubeSourcingEnabled()` reports only the first, so a render
+ * with the flag on and no key logged `youtube=on` and then quietly searched nothing.
+ *
+ * Names and presence only, never a value — a key must never reach a log.
+ */
+export type YoutubeSourcingReadiness = {
+  ready: boolean;
+  /** Empty when ready; otherwise the missing requirements, by env name. */
+  missing: string[];
+};
+
+export function youtubeSourcingReadiness(): YoutubeSourcingReadiness {
+  const missing: string[] = [];
+  if (!envFlagIsOn("ENABLE_YOUTUBE_SOURCING")) missing.push("ENABLE_YOUTUBE_SOURCING");
+  if (!process.env.YOUTUBE_API_KEY?.trim()) missing.push("YOUTUBE_API_KEY");
+  /** Either download route satisfies this — only their absence together blocks a download. */
+  if (!process.env.RAPIDAPI_KEY?.trim() && !process.env.YOUTUBE_CC_DL_SERVICE?.trim()) {
+    missing.push("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+  }
+  return { ready: missing.length === 0, missing };
+}
+
+/** One field for the route line: `ready`, or what is missing. Never a key's value. */
+export function formatYoutubeReadiness(): string {
+  const { ready, missing } = youtubeSourcingReadiness();
+  return ready ? "youtube=ready" : `youtube=BLOCKED(missing:${missing.join(",")})`;
+}
+
 /** Archive clip pick driven by asset.tags + title (default on). Set ENABLE_ARCHIVE_TAG_MATCH=false for semantic-only. */
 export function archiveTagsPrimaryMatching(): boolean {
   return process.env.ENABLE_ARCHIVE_TAG_MATCH !== "false";

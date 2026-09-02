@@ -103,10 +103,40 @@ describe("§14 — every render says which route it takes", () => {
    * `youtube=on` while sourcing is off is worse than no line at all.
    */
   it("follows the real flag state rather than a snapshot", () => {
-    setFlag("ENABLE_YOUTUBE_SOURCING", "true");
-    expect(formatProductionRoute(1)).toContain("youtube=on");
     setFlag("ENABLE_YOUTUBE_SOURCING", "false");
-    expect(formatProductionRoute(1)).toContain("youtube=off");
+    expect(formatProductionRoute(1)).toContain("ENABLE_YOUTUBE_SOURCING");
+    setFlag("ENABLE_YOUTUBE_SOURCING", "true");
+    expect(
+      formatProductionRoute(1),
+      "the flag is still reported as the blocker after it was switched on"
+    ).not.toMatch(/missing:[^)]*ENABLE_YOUTUBE_SOURCING/);
+  });
+
+  /**
+   * THE FLAG WAS NEVER THE WHOLE ANSWER.
+   *
+   * Render 562 made no live YouTube search at all — `[YouTubeUsage] used=0`, and not one search
+   * in the log. YouTube needs three things: the flag, a key to SEARCH with, and a separate
+   * service to DOWNLOAD with, because YouTube serves no media files directly. The old line
+   * printed `youtube=on` for the flag alone, so a render with the flag set and no key looked
+   * enabled and searched nothing.
+   */
+  it("names which requirement is missing, never a key's value", () => {
+    setFlag("ENABLE_YOUTUBE_SOURCING", "true");
+    setFlag("YOUTUBE_API_KEY", undefined);
+    setFlag("RAPIDAPI_KEY", undefined);
+    setFlag("YOUTUBE_CC_DL_SERVICE", undefined);
+    const blocked = formatProductionRoute(1);
+    expect(blocked, "a missing search key reads as enabled").toContain("youtube=BLOCKED");
+    expect(blocked).toContain("YOUTUBE_API_KEY");
+    expect(blocked).toContain("RAPIDAPI_KEY|YOUTUBE_CC_DL_SERVICE");
+
+    /** Either download route satisfies the third requirement. */
+    setFlag("YOUTUBE_API_KEY", "k");
+    setFlag("RAPIDAPI_KEY", "k");
+    const ready = formatProductionRoute(1);
+    expect(ready).toContain("youtube=ready");
+    expect(ready, "a key's VALUE reached the log").not.toContain("k ");
   });
 
   /** And it has to actually be called, unconditionally, or it is another channel carrying nothing. */

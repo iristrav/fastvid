@@ -51,7 +51,7 @@ import type { TtsWordTiming } from "./voiceTtsAlignment";
  * videoPipeline for types only, so none of this introduces a runtime cycle.
  */
 import { poolRankingV2Enabled } from "./scenePool";
-import { sceneCandidatePoolEnabled, youtubeSourcingEnabled } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, formatYoutubeReadiness } from "./sourcingPolicy";
 import { aiDirectorEnabled } from "./aiDirector/featureFlags";
 import { searchGateStrict } from "./searchQueryContract";
 
@@ -436,7 +436,7 @@ export function formatProductionRoute(videoId: number): string {
     `[ProductionRoute] video=${videoId} route=${route}${why}` +
     ` CINEMATIC_EDITING_ENGINE=${on(planning)} CINEMATIC_RENDER_PATH=${on(renderPath)}` +
     ` POOL_RANKING_V2=${on(poolRankingV2Enabled())} scenePool=${on(sceneCandidatePoolEnabled())}` +
-    ` youtube=${on(youtubeSourcingEnabled())} aiDirector=${on(aiDirectorEnabled())}` +
+    ` ${formatYoutubeReadiness()} aiDirector=${on(aiDirectorEnabled())}` +
     ` searchGateStrict=${on(searchGateStrict())}`
   );
 }
