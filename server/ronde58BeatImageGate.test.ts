@@ -269,7 +269,13 @@ describe("RONDE 58 — the wiring", () => {
   it("a rejection is recorded in the audit, so the reason survives the render", () => {
     const src = SRC();
     const idx = src.indexOf("let winner = pickBestFunnelCandidate(");
-    expect(src.slice(idx, idx + 4600)).toContain('"beat_image_gate"');
+    /**
+     * Window widened from 4600. The funnel's gate loop gained the per-beat verdict counters
+     * (`noteBeatVisionVerdict`), which pushed the reject recording further from this anchor. The
+     * claim is unchanged and is what still fails if the recording goes: a refusal by this gate is
+     * written to the audit, so its reason survives the render.
+     */
+    expect(src.slice(idx, idx + 6400)).toContain('"beat_image_gate"');
   });
 
   it("MAX_JUDGEMENTS_PER_BEAT is small — this is a verification step, not a search", () => {

@@ -143,16 +143,36 @@ export function coverageOfAdoptEntry(entry: {
   return "own_footage";
 }
 
+/**
+ * Exposed for tests only: `verificationOf` is a pure mapping and the `never_asked` case is the
+ * whole point of this round, so it is asserted directly rather than through a ledger fixture.
+ */
+export const __testVerificationOf = (d: { reprieved: boolean; verdict: string; evaluated?: boolean }) =>
+  verificationOf(d);
+
 function verificationOf(decision: {
   reprieved: boolean;
   verdict: string;
+  /** Optional so a caller with an older record still type-checks; absent reads as "looked". */
+  evaluated?: boolean;
 }): BeatVerification {
   if (decision.reprieved) return "reprieved_after_refusal";
   if (decision.verdict === "fits") return "verified_fit";
   if (decision.verdict === "does_not_fit") return "verified_mismatch";
-  // `unknown` covers both "the model could not answer" and "the gate declined to ask". The
-  // ledger does not distinguish them per clip; the render-level counters do, and the report
-  // prints both. Per beat, the honest word for "no verdict" is unknown.
+  /**
+   * `unknown` used to cover BOTH "the model could not answer" AND "the gate declined to ask".
+   *
+   * The ledger now distinguishes them per clip — `BeatRelevanceDecision.evaluated` — so the two
+   * finally reach their own words. `never_asked` has been in this vocabulary since RONDE 166 with
+   * nothing able to produce it; this is what produces it.
+   *
+   * The difference is not cosmetic. "Looked, unsure" is a fact about the PICTURE, and a beat that
+   * ends on it was genuinely examined. "Never looked" is a fact about this RENDER — its budget,
+   * its configuration, a placeholder with nothing to judge — and a beat that ends on THAT was
+   * never examined at all. Reporting the second as the first is how an unexamined beat came to
+   * read as an examined one.
+   */
+  if (decision.evaluated === false) return "never_asked";
   return "unknown";
 }
 

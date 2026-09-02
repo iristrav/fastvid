@@ -185,7 +185,12 @@ describe("§20 — the render report carries coverage alongside the funnel", () 
 
   it("reports every beat's coverage on its own line", () => {
     const lines = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit());
-    const perBeat = lines.filter((l) => l.includes(" beat="));
+    /**
+     * The COVERAGE line specifically. `[BeatLedger]` also carries `beat=`, so a filter on that
+     * alone now matches two lines per beat — both of them correct, and the claim here is about
+     * this one. Filtering by prefix keeps the assertion about what it was always about.
+     */
+    const perBeat = lines.filter((l) => l.startsWith("[VisualCoverageFinal] scene="));
     expect(perBeat).toHaveLength(7);
     for (const l of perBeat) expect(l, `no coverage on: ${l}`).toMatch(/coverage=[A-Z_]+/);
   });

@@ -65,6 +65,27 @@ export type BeatFunnelRecord = {
   placeholder: boolean;
   /** §20 — which rung of the guaranteed ladder produced the picture, when one did. */
   fillTier?: BeatFillTier;
+  /**
+   * THE VISION BREAKDOWN — what the beat image gate actually said about this beat's candidates.
+   *
+   * `visionJudged` above counts SPEND (how many calls this beat cost). These count VERDICTS, and
+   * the two answer different questions: a render can spend ten calls on a beat and refuse all ten,
+   * or spend two and accept both. Only the second number says whether the catalogue had anything.
+   *
+   * Kept strictly disjoint. One candidate contributes to exactly one of the three — a picture the
+   * gate accepted is not also a picture it was unsure about — so they sum to the number of
+   * candidates the gate returned a verdict for, and never to more.
+   */
+  visionAccepted: number;
+  visionRejected: number;
+  visionUnclear: number;
+  /**
+   * Candidates the gate DID NOT LOOK AT: the per-beat look ceiling, a placeholder with nothing to
+   * judge, the gate switched off. Separate from `visionUnavailable`, which means vision should
+   * have been able to answer and could not (an outage, an unreadable frame) — and separate again
+   * from `visionUnclear`, which means it looked and could not decide. Three different facts.
+   */
+  visionNeverAsked: number;
 };
 
 export type BeatOutcomeAudit = {
@@ -99,6 +120,10 @@ export function beatRecord(
       origin: "",
       selected: "none",
       placeholder: false,
+      visionAccepted: 0,
+      visionRejected: 0,
+      visionUnclear: 0,
+      visionNeverAsked: 0,
     };
     audit.beats.set(key, rec);
   }
@@ -164,6 +189,27 @@ export function noteBeatFillTier(
 ): void {
   if (!audit || !tier) return;
   beatRecord(audit, sceneIndex, beatIndex).fillTier = tier;
+}
+
+/**
+ * One VERDICT from the beat image gate, attributed to the beat it was asked about.
+ *
+ * Distinct from `noteBeatVision`, which counts the CALL. A cached verdict costs no call and is
+ * still a verdict; a call that times out costs a call and yields no verdict. Counting them in one
+ * number is how "the gate was asked 29 times" came to be read as "29 pictures were judged".
+ */
+export function noteBeatVisionVerdict(
+  audit: BeatOutcomeAudit | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  outcome: "accepted" | "rejected" | "unclear" | "never_asked"
+): void {
+  if (!audit) return;
+  const rec = beatRecord(audit, sceneIndex, beatIndex);
+  if (outcome === "accepted") rec.visionAccepted++;
+  else if (outcome === "rejected") rec.visionRejected++;
+  else if (outcome === "unclear") rec.visionUnclear++;
+  else rec.visionNeverAsked++;
 }
 
 export function noteBeatVision(
@@ -261,6 +307,42 @@ export function summarizeBeatCoverage(
   return out;
 }
 
+/**
+ * THE BEAT LEDGER — one line per beat, in the funnel's own vocabulary.
+ *
+ * ── What is here, and what is deliberately NOT ──────────────────────────────────────────────
+ *
+ * Every field below is a counter something in the pipeline really increments. The brief also asks
+ * for `found`, `ranked`, `timeline` and `rendered`, and those are NOT here — not as zeroes, not as
+ * estimates. Nothing per beat feeds them today:
+ *
+ *   found      the candidate pool is built per SCENE, not per beat; there is no per-beat "found".
+ *   ranked     ranking happens inside poolRanking over the scene's pool, before a beat is chosen.
+ *   timeline   the EDL is built after the render loop, from adopted clips, with no beat counter.
+ *   rendered   the render manifest names files, not beats.
+ *
+ * Printing them as `found=0` would recreate the exact defect this whole line exists to end: a
+ * counter nobody feeds, read as a measurement. When a stage is instrumented it earns its field.
+ *
+ * ── The invariant ───────────────────────────────────────────────────────────────────────────
+ *
+ * `adopted <= eligible <= offered` where the funnel fed all three. It is asserted in the tests
+ * rather than enforced here: a counter that silently clamps itself cannot report a wiring bug, and
+ * a wiring bug is precisely what this line is for.
+ */
+export function formatBeatLedgerLine(rec: BeatFunnelRecord): string {
+  const evaluated = rec.visionAccepted + rec.visionRejected + rec.visionUnclear;
+  return (
+    `[BeatLedger] beat=s${rec.sceneIndex}b${rec.beatIndex} ` +
+    `offered=${rec.offered} vision_evaluated=${evaluated} ` +
+    `vision_accepted=${rec.visionAccepted} vision_rejected=${rec.visionRejected} ` +
+    `vision_unclear=${rec.visionUnclear} vision_never_asked=${rec.visionNeverAsked} ` +
+    `vision_unavailable=${rec.visionUnavailable} vision_calls=${rec.visionJudged} ` +
+    `eligible=${rec.eligible} adopted=${rec.adopted} ` +
+    `coverage=${resolveBeatCoverage(rec)} origin=${rec.origin || "none"}`
+  );
+}
+
 /** The per-beat line. One per beat, adopted or not. */
 export function formatBeatFunnelLine(
   rec: BeatFunnelRecord,
@@ -275,6 +357,9 @@ export function formatBeatFunnelLine(
     `origin=${rec.origin || "none"} offered=${rec.offered} rejected=${rejected} ` +
     `eligible=${rec.eligible} adopted=${rec.adopted} ` +
     `visionJudged=${rec.visionJudged} visionUnavailable=${rec.visionUnavailable} ` +
+    /** The verdicts, which `visionJudged` (a spend count) cannot express. */
+    `visionAccepted=${rec.visionAccepted} visionRejected=${rec.visionRejected} ` +
+    `visionUnclear=${rec.visionUnclear} visionNeverAsked=${rec.visionNeverAsked} ` +
     `topRejects=${topRejects || "none"} selected=${rec.selected}`
   );
 }
@@ -387,6 +472,14 @@ export function renderBeatFunnelReport(
       `INTENTIONAL_TEXT=${c.INTENTIONAL_TEXT} FALLBACK=${c.FALLBACK} ` +
       `NO_VALID_ASSET=${c.NO_VALID_ASSET}`
   );
+  /**
+   * The ledger, one line per beat, after the funnel lines above.
+   *
+   * A second line per beat rather than more fields on the first: the first answers "where did this
+   * beat's picture come from", the ledger answers "what happened to its candidates". Merging them
+   * produced a line nobody could read, which is how the funnel numbers went unnoticed for so long.
+   */
+  for (const { record } of rows) lines.push(formatBeatLedgerLine(record));
   // Whether the named examples elsewhere in the log are the whole story or a sample. The
   // per-beat counts above are never capped, so only the DETAIL can be short.
   lines.push(`[VisualCoverageFinal] rejectAudit ${formatClipRejectAuditCapacity(rejects)}`);

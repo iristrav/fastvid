@@ -206,3 +206,39 @@ describe("no gate was weakened to make coverage look better", () => {
     expect(fillTiers, "a new fallback route appeared").toBe(3);
   });
 });
+
+/* ═══════════════════════ §7 — the provider summary sees the funnel ═══════════════════════ */
+
+describe("asset usage — assigned counts every adopting route", () => {
+  /**
+   * `formatAssetUsageSummary` derives `assigned` from ADOPTED events on the lineage ledger, and
+   * the only emitter was `adoptClip`. The last production render therefore read
+   * `pexels assigned=0`, `openverse assigned=0`, `internet_archive assigned=0` — every provider the
+   * FUNNEL serves — while wikimedia, which came through adoptClip, read `assigned=2 rendered=1`.
+   * The providers were not idle; their adoptions were filed by a route that recorded nothing.
+   */
+  it("more than one route records an ADOPTED lineage event", () => {
+    const events = [...CODE.matchAll(/recordEvent\(\s*[^,]+,\s*"ADOPTED"/g)].length;
+    expect(
+      events,
+      "only one route records ADOPTED — every provider served by any other route reports assigned=0"
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the funnel records its own adoption against the resolved record", () => {
+    const at = CODE.indexOf("const adoptedRecord =");
+    expect(at, "the funnel records no ADOPTED lineage event").toBeGreaterThan(-1);
+    const block = CODE.slice(at, at + 600);
+    expect(block, "the funnel invents a lineage record instead of resolving one").toContain(
+      ".resolve("
+    );
+    expect(block).toContain('"ADOPTED"');
+  });
+
+  /** An unresolvable candidate must record nothing rather than fabricate a record. */
+  it("records nothing when the candidate has no lineage record", () => {
+    const at = CODE.indexOf("const adoptedRecord =");
+    const block = CODE.slice(at, at + 600);
+    expect(block).toMatch(/if \(adoptedRecord/);
+  });
+});

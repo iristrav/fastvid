@@ -288,6 +288,7 @@ import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
 import {
   createBeatOutcomeAudit,
   noteBeatCandidatesOffered,
+  noteBeatVisionVerdict,
   noteBeatEligible,
   noteBeatAdopted,
   noteBeatFillTier,
@@ -32034,6 +32035,29 @@ async function fetchSceneVisualsInner(
               route: `funnel:${winner.candidate.source}`,
               onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
             });
+            /**
+             * THE VERDICT, attributed to this beat — separately from the SPEND above.
+             *
+             * `noteVisionSpend` counts calls; this counts what the gate said. The two diverge in
+             * both directions: a cached verdict costs no call and is still a verdict, and a call
+             * that times out costs a call and yields none. Reporting only the spend is how "the
+             * gate was asked 29 times" came to be read as "29 pictures were judged".
+             *
+             * `evaluated === false` is the gate declining to LOOK — the per-beat look ceiling, a
+             * placeholder with nothing to judge, the gate switched off. It is neither a rejection
+             * nor an uncertainty, and it is the one outcome that says the shortage is this
+             * render's budget rather than the catalogue.
+             */
+            noteBeatVisionVerdict(
+              dedup.beatOutcomeAudit, scene.index, beat.index,
+              judgement.evaluated === false
+                ? "never_asked"
+                : judgement.verdict === "fits"
+                  ? "accepted"
+                  : judgement.verdict === "does_not_fit"
+                    ? "rejected"
+                    : "unclear"
+            );
             if (judgement.verdict !== "does_not_fit") break;
 
             recordClipReject(
@@ -32487,6 +32511,29 @@ async function fetchSceneVisualsInner(
             dedup.beatOutcomeAudit, scene.index, beat.index,
             candidate.source, path.basename(clipPath)
           );
+          /**
+           * §7 — the ADOPTED lineage event, so `[AssetUsageSummary]` can see this route too.
+           *
+           * `formatAssetUsageSummary` computes `assigned` from the ADOPTED events on the lineage
+           * ledger, and the only place that emitted one was `adoptClip`. That is why the last
+           * production render read `pexels assigned=0 rendered=0`, `openverse assigned=0`,
+           * `internet_archive assigned=0` — every provider the FUNNEL serves — while wikimedia,
+           * which came through adoptClip, read `assigned=2 rendered=1`.
+           *
+           * Same ledger, same event name, same resolver the picture's own outcomes already use:
+           * `resolve` finds the record by path, by derivation chain, or by content key. No second
+           * mechanism, and a candidate whose record cannot be resolved records nothing rather than
+           * inventing one.
+           */
+          const adoptedRecord = dedup.sourcingCache?.lineage?.resolve(
+            clipPath, clipContentKey(clipPath)
+          );
+          if (adoptedRecord && dedup.sourcingCache?.lineage) {
+            dedup.sourcingCache.lineage.recordEvent(adoptedRecord.lineageId, "ADOPTED", {
+              status: "OK",
+              currentPath: clipPath,
+            });
+          }
           // RONDE 53: record the adoption. This is the SECOND route that never did.
           //
           // Ronde 51 closed the scene-pool branch in fetchSceneVisualsInner, but the retrieval
