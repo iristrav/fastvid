@@ -12,7 +12,7 @@
  * Feature flag: EDITORIAL_SEQUENCE_PLANNER_ENABLED (default: "true")
  */
 
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getActiveVideoId } from "./videoGenerationCancel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -245,7 +245,8 @@ export async function getOrGenerateStoryboard(
     _storyboardCache.set(cacheKey, storyboard);
     return storyboard;
   } catch (err) {
-    console.warn(`[Editorial] s${sceneIndex} storyboard LLM failed:`, (err as Error).message?.slice(0, 80));
+    // RENDER 562: the reason used to be cut off at `{error:{message:"Failed to`.
+    console.warn(`[Editorial] s${sceneIndex} storyboard LLM failed:`, describeLlmFailure(err));
     const fb = buildFallback(beats, sceneIndex);
     _storyboardCache.set(cacheKey, fb);
     return fb;

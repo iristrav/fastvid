@@ -26,7 +26,7 @@
  * Feature flag: EDITORIAL_REORDER_ENABLED (default: "true")
  */
 
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getShotForBeat } from "./editorialSequencePlanner";
 import path from "path";
 
@@ -284,10 +284,8 @@ export async function editorialReorderScene(
       changesSummary,
     };
   } catch (err) {
-    console.warn(
-      `[Editorial] s${sceneIndex} reorder skipped:`,
-      (err as Error).message?.slice(0, 80)
-    );
+    // RENDER 562: the reason used to be cut off at `{error:{`. See describeLlmFailure.
+    console.warn(`[Editorial] s${sceneIndex} reorder skipped:`, describeLlmFailure(err));
     return original;
   }
 }

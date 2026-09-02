@@ -289,6 +289,8 @@ import {
   createBeatOutcomeAudit,
   noteBeatCandidatesOffered,
   noteBeatVisionVerdict,
+  resolveBeatCoverage,
+  coverageHasRealFootage,
   noteBeatEligible,
   noteBeatAdopted,
   noteBeatFillTier,
@@ -609,6 +611,7 @@ import {
   formatMontageShortfallWarning,
   logVideoQualityReport,
   assertVisualCoverageExportGate,
+  assertVisionCoverageExportGate,
 } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
@@ -39451,6 +39454,29 @@ async function _runVideoPipelineInner(
     // marks the video "failed" with the concrete reason, exactly like the other
     // post-render pipelineError checks (e.g. "Final video not playable") already do.
     assertVisualCoverageExportGate(qualityReport, visualDedup.sceneRescueColorFallbackCount);
+
+    /**
+     * RENDER 562 — and a video nobody looked at does not ship either.
+     *
+     * Next to the coverage gate because it answers the sibling question. That one asks whether the
+     * viewer got real footage; this asks whether anyone approved it. Render 562 passed the first
+     * and should have failed this one: 45 verdicts, then every vision provider gone, then four
+     * beats of real footage adopted with no judgement at all — one of them a present-day protest
+     * in a WWII documentary.
+     *
+     * Built from the beat audit rather than from the gate's prose. See the gate's own comment for
+     * why both conditions are required and why CLIP is not an acceptable stand-in.
+     */
+    assertVisionCoverageExportGate({
+      providerUnavailable: visualDedup.beatImageGate.judgementsProviderUnavailable,
+      beats: [...visualDedup.beatOutcomeAudit.beats.values()].map((rec) => ({
+        sceneIndex: rec.sceneIndex,
+        beatIndex: rec.beatIndex,
+        verdicts: rec.visionAccepted + rec.visionRejected + rec.visionUnclear,
+        hasRealFootage: coverageHasRealFootage(resolveBeatCoverage(rec)),
+      })),
+      noVerdictSummary: formatNoVerdictReasons(visualDedup.beatImageGate),
+    });
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {

@@ -700,6 +700,51 @@ export class LlmUnavailableError extends Error {
   }
 }
 
+/**
+ * AN LLM FAILURE, DESCRIBED SO THE REASON SURVIVES THE TRUNCATION.
+ *
+ * ── What render 562 could not diagnose ──────────────────────────────────────────────────────
+ *
+ * Three planning passes failed and the log says only this:
+ *
+ *     [Editorial] s1 reorder skipped: LLM invoke failed (groq, model=openai/gpt-oss-20b):
+ *                 400 Bad Request – {error:{
+ *     [SemanticVisual] LLM analysis failed: … 400 Bad Request – {error:{message:"Failed to
+ *
+ * The callers cut the message at 80 characters, and 80 characters of an LLM error is entirely
+ * spent on the provider name, the model id, the status and the opening brace of the JSON body.
+ * The reason — the part after `message:` — never fits. That pattern appears at 66 call sites, so
+ * a recurring 400 in production is structurally undiagnosable.
+ *
+ * ── Why not simply raise the limit ──────────────────────────────────────────────────────────
+ *
+ * Because the body can be kilobytes of echoed request. The budget is not the problem; what the
+ * budget is SPENT on is. This keeps the provider and the status — a reader needs both — and then
+ * spends the remaining characters on the provider's own `message` field rather than on the JSON
+ * scaffolding in front of it.
+ *
+ * Returns the message unchanged when it carries no recognisable body, so a caller can use this
+ * everywhere without having to know which errors came from a provider.
+ */
+export function describeLlmFailure(err: unknown, max = 160): string {
+  const raw = (err as Error)?.message ?? String(err ?? "");
+  if (!raw) return "unknown error";
+  /** `LLM invoke failed (groq, model=x): 400 Bad Request – {…}` → provider, status, body. */
+  const head = /^LLM invoke failed \(([^,)]+)[^)]*\):\s*(\d{3})?\s*([^–—]*)[–—]?\s*([\s\S]*)$/.exec(raw);
+  if (!head) return raw.length > max ? `${raw.slice(0, max)}…` : raw;
+  const [, provider, status, statusText, body] = head;
+  /** The provider's own explanation, wherever it sits in the body. */
+  const detail =
+    /"?message"?\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(body ?? "")?.[1] ??
+    /"?message"?\s*:\s*([^,}\n]+)/.exec(body ?? "")?.[1]?.trim() ??
+    (body ?? "").trim() ??
+    "";
+  const reason = detail || (statusText ?? "").trim() || "no detail";
+  const prefix = `${provider}${status ? ` ${status}` : ""}: `;
+  const room = Math.max(20, max - prefix.length);
+  return prefix + (reason.length > room ? `${reason.slice(0, room)}…` : reason);
+}
+
 /** True when the call never reached a provider, so no attempt was actually made. */
 export function isLlmPreflightRefusal(err: unknown): boolean {
   return err instanceof LlmUnavailableError || (err as { preflight?: boolean })?.preflight === true;

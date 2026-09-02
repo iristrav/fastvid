@@ -3,7 +3,7 @@
  * Uses LLM entity extraction + embedding similarity (OpenAI) with lexical fallback.
  */
 import { createHash } from "crypto";
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getCachedBeatProfile, putCachedBeatProfile } from "./beatSemanticCache";
 import { ENV } from "./_core/env";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
@@ -390,7 +390,8 @@ Do NOT include generic tiers like "soldiers" or "technology" before specific tie
       topicDomain: slug(parsed.topicDomain) || inferTopicDomain(beatText, videoTitle),
     };
   } catch (err) {
-    console.warn("[SemanticVisual] LLM analysis failed:", (err as Error).message?.slice(0, 100));
+    // RENDER 562: the reason used to be cut off before the provider's own message.
+    console.warn("[SemanticVisual] LLM analysis failed:", describeLlmFailure(err));
     return null;
   } finally {
     clearTimeout(timeoutTimer);

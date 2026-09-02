@@ -719,6 +719,90 @@ export function assertVisualCoverageExportGate(
 }
 
 /**
+ * RENDER 562 — A VIDEO NOBODY LOOKED AT DOES NOT SHIP.
+ *
+ * ── What happened ───────────────────────────────────────────────────────────────────────────
+ *
+ * The beat image gate is the only judge in this pipeline that has seen the frame AND read the
+ * narration. On 2 September it lost every provider it has:
+ *
+ *     09:37:33  [LLM] OpenAI quota spent — standing down for 30min
+ *     09:40:30  Gemini 403 PERMISSION_DENIED — "project has been denied access"
+ *               Groq is excluded from image calls entirely (its vision models 404)
+ *     09:42:22  [BeatImageGate] no verdict: 23x gate could not ask
+ *
+ * The gate fails OPEN by design — an outage must not be able to empty a montage — so 23 clips
+ * were adopted with no judgement, and the render finished, uploaded, and was marked `completed`.
+ * One of them was archive footage of a present-day "White Lives Matter" demonstration, sitting in
+ * a documentary about the Second World War.
+ *
+ * ── Why there is no local substitute ────────────────────────────────────────────────────────
+ *
+ * The obvious repair — let CLIP decide when the model cannot — is the repair this file's sibling
+ * already tried and measured as WRONG. On this exact material CLIP's ordering is inverted: render
+ * 531 scored the offending sticker 0.2226 and a signed photograph of Hitler 0.2116 on the same
+ * beat, so a CLIP veto deletes the right picture and keeps the wrong one. See RONDE 58's header in
+ * beatImageRelevanceGate.ts. There is no cheaper judge to fall back to.
+ *
+ * So the only honest options are a working gate, or not shipping. This is the second.
+ *
+ * ── What it refuses, and what it deliberately does not ──────────────────────────────────────
+ *
+ * BOTH conditions must hold:
+ *
+ *   1. a vision provider was unreachable — `judgementsProviderUnavailable`, a counter incremented
+ *      only on the two provider-outage declines. NOT the budget ceiling, NOT a missing frame, NOT
+ *      the gate being switched off: those are the render working as configured, and a render that
+ *      is thrifty is not a render that is blind.
+ *   2. real footage reached a beat that received NO verdict at all. Unjudged footage on screen is
+ *      the harm; an outage that costs nothing but a few skipped candidates is not.
+ *
+ * A render where every provider is down but the gate is switched off passes — the operator turned
+ * the judge off on purpose. A render where the outage cost only candidates that were never used
+ * passes. What cannot pass is delivering pictures nobody approved.
+ *
+ * The counts come from the beat audit rather than from prose in `noVerdictReasons`: this module's
+ * own RONDE 115 note warns that matching on message substrings rots the moment a message is
+ * reworded, and a gate that decides whether a video ships must not rest on that.
+ */
+export type VisionCoverageBeat = {
+  sceneIndex: number;
+  beatIndex: number;
+  /** Verdicts the gate actually returned for this beat: accepted + rejected + unclear. */
+  verdicts: number;
+  /** Did real footage end up on screen for this beat? */
+  hasRealFootage: boolean;
+};
+
+export function assertVisionCoverageExportGate(params: {
+  /** Declines caused by an unreachable provider — never a budget or configuration decline. */
+  providerUnavailable: number;
+  beats: readonly VisionCoverageBeat[];
+  /** The gate's own one-line summary of why it produced no verdicts, for the failure message. */
+  noVerdictSummary?: string;
+}): void {
+  if (params.providerUnavailable <= 0) return;
+  const unchecked = params.beats.filter((b) => b.hasRealFootage && b.verdicts === 0);
+  if (unchecked.length === 0) return;
+
+  const named = unchecked
+    .slice(0, 6)
+    .map((b) => `s${b.sceneIndex}b${b.beatIndex}`)
+    .join(", ");
+  const withFootage = params.beats.filter((b) => b.hasRealFootage).length;
+  throw pipelineError(
+    PIPELINE_ERROR.QUALITY_GATE,
+    `Render rejected — the picture editor was unreachable and this video contains footage nobody ` +
+      `judged: ${unchecked.length} of ${withFootage} beat(s) with real footage received no verdict ` +
+      `(${named}${unchecked.length > 6 ? ", …" : ""}), after ${params.providerUnavailable} ` +
+      `judgement(s) were declined for want of a vision provider. ` +
+      `${params.noVerdictSummary || "No provider was reachable."} ` +
+      `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) and ` +
+      `re-render; set ENABLE_BEAT_IMAGE_RELEVANCE_GATE=false only if you accept unjudged footage.`
+  );
+}
+
+/**
  * RONDE 132 §10 — the short-montage warning, with the numbers that make it actionable.
  *
  * It used to read:

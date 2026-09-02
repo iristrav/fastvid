@@ -254,6 +254,27 @@ export type BeatImageGateState = {
    * every place the render reports on itself.
    */
   judgementsSkipped: number;
+  /**
+   * RENDER 562 — the declines that mean NO VISION PROVIDER COULD BE REACHED.
+   *
+   * A strict subset of `judgementsSkipped`, counted separately because it is the only decline the
+   * operator can do anything about, and the only one that means the render is BLIND rather than
+   * merely thrifty. The others — budget spent, per-beat ceiling, no readable frame, gate switched
+   * off — are the render working as configured.
+   *
+   * Render 562 ended with 45 verdicts and 23 of these, and nothing in the report could tell the
+   * two kinds of decline apart, so a video in which four beats of real footage were never looked
+   * at was delivered as `completed`:
+   *
+   *     09:37:33  [LLM] OpenAI quota spent — standing down for 30min
+   *     09:40:30  Gemini 403 PERMISSION_DENIED — "project has been denied access"
+   *     09:42:22  [BeatImageGate] no verdict: 23x gate could not ask
+   *
+   * A counter rather than a match on `noVerdictReasons`: this module's own RONDE 115 note says a
+   * caller matching on message substrings rots the moment a message is reworded, and the export
+   * gate that now refuses a blind render must not rest on prose.
+   */
+  judgementsProviderUnavailable: number;
   /** Of the attempts, how many went to YouTube candidates — capped separately. */
   youtubeJudgementsUsed: number;
 };
@@ -266,6 +287,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsMismatch: 0,
     judgementsFailed: 0,
     judgementsSkipped: 0,
+    judgementsProviderUnavailable: 0,
     youtubeJudgementsUsed: 0,
     noVerdictReasons: new Map(),
     verdictsByProvider: new Map(),
@@ -630,6 +652,7 @@ export async function judgeBeatImage(params: {
      */
     if (isLlmPreflightRefusal(err)) {
       state.judgementAttempts--;
+      state.judgementsProviderUnavailable++;
       return declined(`gate could not ask: ${(err as Error).message?.slice(0, 90)}`);
     }
     /**
@@ -651,6 +674,7 @@ export async function judgeBeatImage(params: {
      */
     if (isLlmProviderUnavailable(err)) {
       state.judgementAttempts--;
+      state.judgementsProviderUnavailable++;
       return declined(`provider unavailable (no capacity): ${(err as Error).message?.slice(0, 90)}`);
     }
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
