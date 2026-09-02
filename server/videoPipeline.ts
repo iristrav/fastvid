@@ -441,6 +441,7 @@ import {
   inheritBeatRelevance,
   reprieveBeatClip,
   beatClipSeverity,
+  relevanceVerdictForRenderedAsset,
   formatAdoptedFitDecision,
   type BeatRelevanceLedger,
   type BeatRelevanceDecision,
@@ -40128,13 +40129,21 @@ async function _runVideoPipelineInner(
        * could list fifteen well-attributed clips that nobody had looked at. The lookup goes by
        * beat, which is exact: RONDE 103 stores the beat context alongside every decision.
        */
-      const verdictForRecord = (r: { sceneIndex: number; beatIndex: number }) => {
-        for (const { ctx, decision } of visualDedup.beatRelevance.byClipPath.values()) {
-          if (ctx.sceneIndex !== r.sceneIndex || ctx.beatIndex !== r.beatIndex) continue;
-          return { verdict: decision.verdict, cached: decision.cached, reprieved: decision.reprieved };
-        }
-        return null;
-      };
+      /**
+       * RENDER 563 — the verdict must be about the clip on the line.
+       *
+       * This scanned the ledger for the first entry on the same BEAT and returned it, whichever
+       * clip it belonged to. Render 563 printed `verdict=does_not_fit` for a file the gate had
+       * approved by name in the same log, and the reverse — `fits` on a clip nobody looked at —
+       * is the same bug with worse consequences. See relevanceVerdictForRenderedAsset.
+       */
+      const verdictForRecord = (r: {
+        sceneIndex: number;
+        beatIndex: number;
+        localPath?: string;
+        currentFilename?: string;
+        contentKey?: string;
+      }) => relevanceVerdictForRenderedAsset(visualDedup.beatRelevance, r);
       for (const line of formatRenderManifest(
         allRecords, ledger.finalVideoWasVerified, verdictForRecord
       )) {

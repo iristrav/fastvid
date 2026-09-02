@@ -516,6 +516,88 @@ export function formatAdoptedFitDecision(
 }
 
 /**
+ * RENDER 563 — THE MANIFEST REPORTED ANOTHER CLIP'S VERDICT.
+ *
+ * ── The contradiction ───────────────────────────────────────────────────────────────────────
+ *
+ *   [BeatRelevance] s0b1 gate:archive fits clip=scene_0_b1_curated_a57383.mp4
+ *     depicts="Street scene with people in front of a building marked 'Apteka'…"
+ *   [RenderAsset] scene=0 beat=1 file=scene_0_b1_curated_a57383.mp4 verdict=does_not_fit
+ *
+ * The same file, the same beat, two opposite verdicts in one render. The manifest's lookup was:
+ *
+ *     for (const { ctx, decision } of ledger.byClipPath.values())
+ *       if (ctx.sceneIndex === r.sceneIndex && ctx.beatIndex === r.beatIndex) return decision;
+ *
+ * Matched on the BEAT and nothing else, and returned the first entry in insertion order — which,
+ * on a beat that judged several candidates, is the first one looked at, usually a REJECTED one.
+ * The clip the line names took no part in choosing the verdict the line prints.
+ *
+ * ── Why this one matters more than it looks ─────────────────────────────────────────────────
+ *
+ * It is wrong in both directions, and the other direction is the dangerous one: a beat that
+ * refused a candidate and then adopted a good one reports `does_not_fit` (harmless noise), but a
+ * beat that approved a candidate and then adopted a DIFFERENT one reports `fits` — an audit line
+ * stating that a clip was examined and approved when nothing of the sort happened.
+ *
+ * `[RenderAsset]` exists to answer "did anybody check what is in the delivered file". An answer
+ * assembled from a different clip's judgement cannot answer it.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────────────────────
+ *
+ * A verdict counts for a rendered asset only when it was earned by THIS clip, at THIS beat. The
+ * clip is recognised by its path, by its content identity (which survives the trim and overlay
+ * renames — see `byContentKey`), or by its filename. Anything else is `never_asked`, which is
+ * exactly what it is: nobody looked at this picture under this narration.
+ *
+ * `beatClipSeverity` above already preferred the filename before falling back to the beat; the
+ * manifest simply never used the clip at all.
+ */
+export function relevanceVerdictForRenderedAsset(
+  ledger: BeatRelevanceLedger | undefined,
+  asset: {
+    localPath?: string;
+    currentFilename?: string;
+    contentKey?: string;
+    sceneIndex: number;
+    beatIndex: number;
+  }
+): { verdict: BeatImageVerdict; cached: boolean; reprieved: boolean; matchedBy: string } | null {
+  if (!ledger) return null;
+
+  /** The verdict must belong to this beat's narration — a verdict earned elsewhere is not one. */
+  const onThisBeat = (entry: BeatRelevanceEntry | undefined): boolean =>
+    Boolean(
+      entry &&
+        entry.ctx.sceneIndex === asset.sceneIndex &&
+        entry.ctx.beatIndex === asset.beatIndex
+    );
+
+  const answer = (entry: BeatRelevanceEntry, matchedBy: string) => ({
+    verdict: entry.decision.verdict,
+    cached: entry.decision.cached,
+    reprieved: entry.decision.reprieved,
+    matchedBy,
+  });
+
+  const byPath = asset.localPath ? ledger.byClipPath.get(asset.localPath) : undefined;
+  if (onThisBeat(byPath)) return answer(byPath!, "path");
+
+  const byContent = asset.contentKey ? ledger.byContentKey.get(asset.contentKey) : undefined;
+  if (onThisBeat(byContent)) return answer(byContent!, "content");
+
+  const wanted = asset.currentFilename || (asset.localPath ? path.basename(asset.localPath) : "");
+  if (wanted) {
+    for (const [clipPath, entry] of ledger.byClipPath.entries()) {
+      if (path.basename(clipPath) !== wanted) continue;
+      if (!onThisBeat(entry)) continue;
+      return answer(entry, "filename");
+    }
+  }
+  return null;
+}
+
+/**
  * RONDE 166 — how wrong the picture on this beat was judged to be.
  *
  * Looked up by the adopted file's basename, the same handle the adopt audit records, falling back
