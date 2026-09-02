@@ -257,7 +257,7 @@ describe("Vision Gate root-cause fix — Test C: CLIP cannot record a content re
     expect(src).toContain("await withGlobalVisionGate(() => evaluateClipVisionGate(");
     expect(src).toContain("worstScore10: result.worstScore10");
     // What decides is the relevance gate, and its refusal IS recorded.
-    expect(src).toContain("const relevance = await checkBeatRelevance({");
+    expect(src).toContain("const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {");
     expect(src).toContain('"beat_image_gate", queryLabel);');
     // A CLIP fail is logged as a ranking signal, so the demotion is visible rather than silent.
     expect(src).toContain("ranking signal only");

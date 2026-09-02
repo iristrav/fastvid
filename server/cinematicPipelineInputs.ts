@@ -423,6 +423,63 @@ export function candidateFrom(
 }
 
 /**
+ * WHICH CLIP BELONGS TO WHICH BEAT.
+ *
+ * ── Why this is a function and not a `clips[beatIndex]` in the caller ───────────────────────
+ *
+ * The caller had exactly that: `beats.map((_, beatIndex) => composedUsedClips[i][beatIndex])`. The
+ * list it indexes is the set of clips the COMPOSE used, in compose order, and it is not
+ * one-clip-per-beat: a beat can adopt two clips, another none, and the salvage paths push whole
+ * survivor lists into it at once. Pairing beat N with clip N is a guess.
+ *
+ * It went unnoticed because it never ran. Render 562 handed the planner zero beats (see
+ * `sceneBeatsBySceneIndex` in videoPipeline.ts), so `beats.map` iterated an empty array on every
+ * production render this route has ever taken. Fixing the beats makes this line execute against a
+ * real scene for the first time, which is why it is being made correct and testable in the same
+ * change rather than left as it was.
+ *
+ * ── What it uses instead ────────────────────────────────────────────────────────────────────
+ *
+ * The render's own adoption record, which names the beat each clip was adopted FOR at the moment of
+ * adoption. Walking the compose's order and taking the first surviving clip per beat gives each
+ * beat the clip that actually plays for it.
+ *
+ * ── The all-or-nothing rule ─────────────────────────────────────────────────────────────────
+ *
+ * Where the audit says nothing at all about a scene, the positional read stands, so no scene is
+ * worse off than before this change. Where it DOES speak, it speaks for the whole scene: a beat it
+ * does not name gets nothing, and the planner drops that beat with "no clip was adopted for this
+ * beat". Mixing the two would hand a beat another sentence's picture on the strength of an index,
+ * which is the guess this exists to remove.
+ */
+export function pairClipsToBeats(params: {
+  /** The clips the compose used for this scene, in compose order. */
+  clipPaths: string[];
+  /** This scene's adoption records: which beat each clip was adopted for. */
+  adoptions: ReadonlyArray<{ beatIndex: number; basename: string }>;
+  /** The scene's beats, in order. `index` is the beat's own id where it has one. */
+  beats: ReadonlyArray<{ index?: number }>;
+  /** Injected so this stays a pure function — `path.basename` in the caller. */
+  basenameOf: (clipPath: string) => string;
+}): Array<string | null> {
+  const beatOfClip = new Map<string, number>();
+  for (const a of params.adoptions) {
+    if (!beatOfClip.has(a.basename)) beatOfClip.set(a.basename, a.beatIndex);
+  }
+  const clipForBeat = new Map<number, string>();
+  for (const clipPath of params.clipPaths) {
+    const beatIndex = beatOfClip.get(params.basenameOf(clipPath));
+    if (beatIndex == null || clipForBeat.has(beatIndex)) continue;
+    clipForBeat.set(beatIndex, clipPath);
+  }
+  return params.beats.map((beat, position) =>
+    clipForBeat.size
+      ? clipForBeat.get(beat.index ?? position) ?? null
+      : params.clipPaths[position] ?? null
+  );
+}
+
+/**
  * Turn one render's scenes, beats and adopted clips into the cinematic engine's inputs.
  *
  * ── Scene offsets ────────────────────────────────────────────────────────────────────────────

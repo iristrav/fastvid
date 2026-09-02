@@ -326,7 +326,16 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     expect(direct).toHaveLength(1);
     const ytIdx = SRC.indexOf("async function youtubeClipPassesImageGate(");
     expect(SRC.indexOf("judgeBeatImage({", ytIdx)).toBeGreaterThan(ytIdx);
-    expect(SRC.split("checkBeatRelevance({").length - 1).toBeGreaterThanOrEqual(4);
+    /**
+     * The routes reach the decider through `judgeBeatClipRelevance`, which records the gate's
+     * spend AND its verdict and then calls `checkBeatRelevance`. Counting the wrapper is counting
+     * the same routes; counting the raw call would now find only the wrapper's own.
+     */
+    expect(SRC.split("judgeBeatClipRelevance(").length - 1).toBeGreaterThanOrEqual(4);
+    expect(
+      SRC.split("await checkBeatRelevance({").length - 1,
+      "a route reaches the gate without going through the recorder"
+    ).toBe(1);
   });
 
   it("the chokepoint every adopt/rescue route funnels through IS the gate", () => {
@@ -338,7 +347,7 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     const idx = SRC.indexOf("async function beatClipPassesVisionGate(");
     expect(idx).toBeGreaterThan(-1);
     const body = SRC.slice(idx, SRC.indexOf("\n/**\n * RONDE 103 phase 4", idx));
-    expect(body).toContain("const relevance = await checkBeatRelevance({");
+    expect(body).toContain("const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {");
     expect(body).toContain("if (!relevance.allowed) {");
     // And it is reached from the routes, not from one of them.
     const callers = SRC.split("beatClipPassesVisionGate(").length - 1;
@@ -348,7 +357,7 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
   it("the guaranteed ladder's REAL rungs are judged and its cards are not", () => {
     const idx = SRC.indexOf("export async function generateGuaranteedBeatClip(");
     const body = SRC.slice(idx, SRC.indexOf("async function generateGuaranteedBeatClipInner(", idx));
-    expect(body).toContain("await checkBeatRelevance({");
+    expect(body).toContain("await judgeBeatClipRelevance(relevance.dedup, sceneIndex, slotIndex, {");
     expect(body).toContain("placeholder: isPlaceholderGuaranteedTier(tier.tier)");
     // isPlaceholderGuaranteedTier is what draws the line, and it draws it where phase 7 says.
     expect(SRC).toContain('return tier !== "topical" && tier !== "wikimedia";');
@@ -413,6 +422,8 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     const GATES = [
       "beatClipPassesVisionGate(",
       "checkBeatRelevance(",
+      /** The recorder wrapping the gate: reaching it IS reaching the decider. */
+      "judgeBeatClipRelevance(",
       "adoptClip(",
       "generateGuaranteedBeatClip(",
       "ensureBeatVisualFilled(",

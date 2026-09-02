@@ -181,14 +181,25 @@ export async function planAndStoreCinematicTimeline(
     for (const reason of built.dropped) log.push(`[CinematicPipeline] dropped ${reason}`);
 
     if (built.scenes.length === 0) {
-      return {
-        ok: false,
-        code: CINEMATIC_PLAN_ERROR.NO_PLANNABLE_BEATS,
-        reason:
-          "no scene had a beat with both a voice window and a rehydratable clip: " +
-          built.dropped.slice(0, 3).join("; "),
-        log,
-      };
+      /**
+       * RENDER 562 — say which of the two things happened, because they have different causes.
+       *
+       * This reason was a single sentence: "no scene had a beat with both a voice window and a
+       * rehydratable clip". On 562 it was printed for a render whose adapter had been handed
+       * `beats=0` — no beat was examined at all, so nothing failed that test — and it sent the
+       * investigation after voice windows and lineage records for a bug that was neither.
+       *
+       * `stats.beats` counts beats HANDED OVER, before any check runs. Zero means the caller
+       * passed none; non-zero means they were examined and refused, and only then does the
+       * per-beat sentence describe what happened.
+       */
+      const reason =
+        built.stats.beats === 0
+          ? `no beats reached the planner (scenes=${params.scenes.length}, beats=0): the caller ` +
+            "passed no beats to plan, so no beat was examined"
+          : `no beat had both a voice window and a rehydratable clip ` +
+            `(beats=${built.stats.beats}): ${built.dropped.slice(0, 3).join("; ")}`;
+      return { ok: false, code: CINEMATIC_PLAN_ERROR.NO_PLANNABLE_BEATS, reason, log };
     }
 
     result = runCinematicPipeline({

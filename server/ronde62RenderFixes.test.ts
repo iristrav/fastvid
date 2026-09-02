@@ -44,7 +44,7 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     const idx = src.indexOf("async function beatClipPassesImageGate(");
     expect(idx).toBeGreaterThan(-1);
     const block = src.slice(idx, idx + 1400);
-    expect(block).toContain("checkBeatRelevance({");
+    expect(block).toContain("judgeBeatClipRelevance(dedup, sceneIndex, beatIndex, {");
     expect(block).toContain('route: "adopt",');
     expect(block).toContain("return decision.allowed;");
     // And the decider it delegates to is the one that samples frames and refuses on does_not_fit.

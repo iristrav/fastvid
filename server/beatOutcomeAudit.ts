@@ -257,9 +257,30 @@ export function resolveBeatStatus(rec: BeatFunnelRecord, rejected: number): Beat
  * screen?
  *
  *   REAL_ASSET        real footage — adopted, or a real rung of the guaranteed ladder
+ *   REAL_PLUS_FILLER  real footage AND a drawn colour card, both on screen for this beat
  *   INTENTIONAL_TEXT  a card carrying the beat's own narration: chosen, readable, not a failure
  *   FALLBACK          a drawn colour card — something is there, but nothing chose it
  *   NO_VALID_ASSET    the beat reached no picture at all
+ *
+ * ── Why REAL_PLUS_FILLER exists (production render 562) ─────────────────────────────────────
+ *
+ * Six of sixteen beats reported `status=adopted` with a real provider origin and `coverage=FALLBACK`
+ * at the same time, because the fill tier was checked before `adopted`:
+ *
+ *     s2b0  eligible=2 adopted=2 origin=pexels           fillTier=color_fallback → FALLBACK
+ *     s2b2  eligible=2 adopted=2 origin=internet_archive fillTier=color_fallback → FALLBACK
+ *
+ * Neither reading was right, and the log says why. A beat is not one slot: `pushClip` APPENDS, so
+ * the guaranteed ladder's card is added to whatever the beat already holds rather than replacing
+ * it. s2b0's own lines prove both halves are on screen —
+ *
+ *     [Retrieval] s2b0 extendLastClip REFUSED — the same picture has already been held 3.5s …
+ *     [VisualCoverage] s2b0: … fallback=PLACEHOLDER (all real/contextual/AI sourcing exhausted)
+ *
+ * — real footage held for 3.5s, and then a colour card for the rest of the beat's hold. Calling
+ * that FALLBACK loses ten real adoptions (`REAL_ASSET=4` against `TOTAL adopted=10`); calling it
+ * REAL_ASSET claims a beat is covered while part of its screen time is a drawn card. It is a fifth
+ * outcome, and unlike INTENTIONAL_GRAPHIC below it is one real renders actually produce.
  *
  * ── The category that is deliberately absent ────────────────────────────────────────────────
  *
@@ -273,6 +294,7 @@ export function resolveBeatStatus(rec: BeatFunnelRecord, rejected: number): Beat
  */
 export type BeatCoverageCategory =
   | "REAL_ASSET"
+  | "REAL_PLUS_FILLER"
   | "INTENTIONAL_TEXT"
   | "FALLBACK"
   | "NO_VALID_ASSET";
@@ -280,10 +302,14 @@ export type BeatCoverageCategory =
 /**
  * Exactly one category per beat, in a fixed order, from the most specific evidence down.
  *
- * The fill tier is checked before `adopted` because it is the narrower fact: it names the rung
- * that produced the file the viewer sees, while `adopted` only says the adopt path ran.
+ * The MIXED case is checked first because it is the only one that needs two facts at once, and
+ * either fact read alone gives the wrong answer (see the render-562 note above). After that the
+ * fill tier still comes before `adopted`, because on a beat with no adoption it is the narrower
+ * fact: it names the rung that produced the file the viewer sees, while `adopted` only says the
+ * adopt path ran.
  */
 export function resolveBeatCoverage(rec: BeatFunnelRecord): BeatCoverageCategory {
+  if (rec.adopted > 0 && rec.fillTier === "color_fallback") return "REAL_PLUS_FILLER";
   if (rec.fillTier === "topical" || rec.fillTier === "wikimedia") return "REAL_ASSET";
   if (rec.fillTier === "text_overlay") return "INTENTIONAL_TEXT";
   if (rec.fillTier === "color_fallback") return "FALLBACK";
@@ -293,12 +319,18 @@ export function resolveBeatCoverage(rec: BeatFunnelRecord): BeatCoverageCategory
   return "NO_VALID_ASSET";
 }
 
+/** Beats whose viewer saw real footage, whether or not filler followed it. */
+export function coverageHasRealFootage(c: BeatCoverageCategory): boolean {
+  return c === "REAL_ASSET" || c === "REAL_PLUS_FILLER";
+}
+
 /** Render-wide roll-up of the coverage categories. */
 export function summarizeBeatCoverage(
   rows: Array<{ record: BeatFunnelRecord }>
 ): Record<BeatCoverageCategory, number> {
   const out: Record<BeatCoverageCategory, number> = {
     REAL_ASSET: 0,
+    REAL_PLUS_FILLER: 0,
     INTENTIONAL_TEXT: 0,
     FALLBACK: 0,
     NO_VALID_ASSET: 0,
@@ -469,8 +501,14 @@ export function renderBeatFunnelReport(
   const c = summarizeBeatCoverage(rows.map((r) => ({ record: r.record })));
   lines.push(
     `[VisualCoverageFinal] COVERAGE beats=${rows.length} REAL_ASSET=${c.REAL_ASSET} ` +
-      `INTENTIONAL_TEXT=${c.INTENTIONAL_TEXT} FALLBACK=${c.FALLBACK} ` +
-      `NO_VALID_ASSET=${c.NO_VALID_ASSET}`
+      `REAL_PLUS_FILLER=${c.REAL_PLUS_FILLER} INTENTIONAL_TEXT=${c.INTENTIONAL_TEXT} ` +
+      `FALLBACK=${c.FALLBACK} NO_VALID_ASSET=${c.NO_VALID_ASSET} ` +
+      /**
+       * The one number a reader wants and would otherwise have to add up: beats where real footage
+       * reached the screen. It must equal the funnel's `adopted` total, and when it does not, one
+       * of the two counters is wrong — which is the disagreement that exposed this bug.
+       */
+      `realFootage=${c.REAL_ASSET + c.REAL_PLUS_FILLER}`
   );
   /**
    * The ledger, one line per beat, after the funnel lines above.

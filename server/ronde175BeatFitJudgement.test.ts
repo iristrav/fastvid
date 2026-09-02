@@ -223,7 +223,7 @@ describe("RONDE 175 — nothing was loosened to get here", () => {
 
   it("the per-beat spend is still recorded, so the extra calls are visible", () => {
     // A budget that doubled without being measured is how the next round loses an afternoon.
-    expect(read("videoPipeline.ts")).toContain("noteVisionSpend(dedup, scene.index, beat.index, spent)");
+    expect(read("videoPipeline.ts")).toContain("noteVisionSpend(dedup, sceneIndex, beatIndex, spent)");
   });
 
   it("a judged-and-refused candidate is still recorded as refused", () => {

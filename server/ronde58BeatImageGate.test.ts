@@ -224,7 +224,7 @@ describe("RONDE 58 — the wiring", () => {
      * the funnel still judges the candidate about to be adopted, and now it cannot judge it
      * differently from every other route.
      */
-    expect(block).toContain("checkBeatRelevance({");
+    expect(block).toContain("judgeBeatClipRelevance(dedup, scene.index, beat.index, {");
     expect(block).toContain('route: `funnel:${winner.candidate.source}`,');
     // Bounded per beat, and a rejected winner steps down to the next-best rather than to nothing.
     expect(block).toContain("look < MAX_JUDGEMENTS_PER_BEAT");

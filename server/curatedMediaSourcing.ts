@@ -5,6 +5,12 @@ import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
 import { stitchSourceFloorSec } from "./coverageFillPlan";
+import {
+  getSourceFloorMemo,
+  noteSourceFloorFailure,
+  parseSourceFloorFailure,
+  sourceFloorWouldFailAgain,
+} from "./sourceFloorMemo";
 import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
 import {
   extractVisualSearchTags,
@@ -2012,6 +2018,27 @@ export async function prepareCuratedArchiveClip(
   styleContext?: CuratedClipStyleContext
 ): Promise<string> {
   const duration = clampHoldSec(holdSec);
+  /**
+   * RENDER 562 — do not download an asset to ask it a question it has already answered.
+   *
+   * 222 length refusals over 34 assets in one render, one of them refused 26 times. Each repeat
+   * cost a materialization and an ffprobe for a verdict the render already held. RONDE 86 fixed
+   * this in the two routes it examined; three of the five routes into this function still catch
+   * the throw and register nothing, so the check lives HERE, where every route passes.
+   *
+   * Keyed by the floor rather than by the asset: the length refusal depends on the SLOT, so an
+   * asset refused for a long slot is still asked about a short one. The refusal itself is
+   * unchanged — this only declines to make it twice.
+   */
+  const floorForThisSlot = stitchSourceFloorSec(
+    styleContext?.minSourceSec ?? duration,
+    VIDRUSH_MIN_SOURCE_VIDEO_SEC
+  );
+  if (sourceFloorWouldFailAgain(getSourceFloorMemo(), asset.id, floorForThisSlot)) {
+    throw new Error(
+      `source video too short (already refused this render at a ${floorForThisSlot.toFixed(2)}s floor)`
+    );
+  }
   const ext =
     asset.mediaType === "video"
       ? asset.mimeType.includes("webm")
@@ -2132,6 +2159,15 @@ export async function prepareCuratedArchiveClip(
         await materializeArchiveAsset(asset, rawPath);
         await runTrim();
       } else {
+        /**
+         * The one place the length refusal is recorded, so no route can forget to.
+         *
+         * Only a genuine length refusal — `parseSourceFloorFailure` returns null for a 404, an
+         * undecodable file or a baked-text skip, and those keep RONDE 86's existing per-route
+         * handling untouched.
+         */
+        const refusal = parseSourceFloorFailure((err as Error).message ?? "");
+        if (refusal) noteSourceFloorFailure(getSourceFloorMemo(), asset.id, refusal);
         throw err;
       }
     }

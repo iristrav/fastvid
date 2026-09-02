@@ -267,11 +267,19 @@ describe("the funnel is wired to every counter it can feed", () => {
     const at = CODE.indexOf("for (let look = 0; look < MAX_JUDGEMENTS_PER_BEAT && winner; look++)");
     expect(at, "the funnel's gate loop has moved").toBeGreaterThan(-1);
     const loop = CODE.slice(at, at + 3000);
-    expect(loop, "the funnel judges candidates and records no verdict").toContain(
-      "noteBeatVisionVerdict("
+    /**
+     * The verdict is recorded by `judgeBeatClipRelevance`, which is the only thing that calls the
+     * gate. It used to be recorded in this loop — which is precisely why the funnel was the ONLY
+     * one of the gate's five routes whose answers were counted (61 calls, 16 verdicts on render
+     * 562). The claim here is unchanged: this loop's judgements reach the verdict counter.
+     */
+    expect(loop, "the funnel judges candidates outside the recorder").toContain(
+      "judgeBeatClipRelevance("
     );
+    const wrapper = CODE.slice(CODE.indexOf("async function judgeBeatClipRelevance("));
+    expect(wrapper, "the recorder records no verdict").toContain("noteBeatVisionVerdict(");
     /** And it must read the gate's own `evaluated`, not guess from the verdict alone. */
-    expect(loop).toContain("judgement.evaluated === false");
+    expect(wrapper).toContain("decision.evaluated === false");
   });
 
   /** A decline must map to never_asked and to nothing else. */

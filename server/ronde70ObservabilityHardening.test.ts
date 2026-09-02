@@ -419,8 +419,22 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
      * attribution, from the one place that can see every route.
      */
     expect(callsOf("noteVisionDelta")).toBe(0);
-    // Its declaration plus one call from each route that can spend a judgement.
-    expect(callsOf("noteVisionSpend")).toBeGreaterThanOrEqual(4);
+    /**
+     * SUPERSEDED AGAIN, and this time in the direction the rule always wanted.
+     *
+     * This asserted one `noteVisionSpend` call per route. That is what made the spend counter and
+     * the VERDICT counter cover different sets of routes — four routes reported their spend, one
+     * reported its verdict, and render 562's ledger read `vision_calls=61 vision_evaluated=16` as
+     * if the gate had failed 45 times. It had not: `vision_unavailable=0` on every beat.
+     *
+     * Both are now recorded by `judgeBeatClipRelevance`, the one function that calls the gate, so
+     * the two numbers always cover the same routes. Its declaration plus its single call.
+     */
+    expect(callsOf("noteVisionSpend")).toBe(2);
+    expect(
+      callsOf("judgeBeatClipRelevance"),
+      "the recorder's declaration plus one call per route that can spend a judgement"
+    ).toBeGreaterThanOrEqual(5);
     // Still counts judged and unavailable separately, and still only there.
     expect(callsOf("noteBeatVision")).toBe(2);
   });

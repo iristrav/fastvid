@@ -26,6 +26,7 @@ import {
   noteBeatPlaceholder,
   renderBeatFunnelReport,
   resolveBeatCoverage,
+  coverageHasRealFootage,
   beatRecord,
   type BeatFillTier,
 } from "./beatOutcomeAudit";
@@ -132,7 +133,7 @@ function beat(over: Partial<{ adopted: number; placeholder: boolean; fillTier: B
   return rec;
 }
 
-describe("§20 — the four things that can be on screen are told apart", () => {
+describe("§20 — the things that can be on screen are told apart", () => {
   it("real footage adopted by the adopt path is REAL_ASSET", () => {
     expect(resolveBeatCoverage(beat({ adopted: 1 }))).toBe("REAL_ASSET");
   });
@@ -165,6 +166,100 @@ describe("§20 — the four things that can be on screen are told apart", () => 
   /** A card of unrecorded kind is still a card — never counted as nothing, never as real footage. */
   it("a placeholder with no tier recorded is FALLBACK", () => {
     expect(resolveBeatCoverage(beat({ placeholder: true }))).toBe("FALLBACK");
+  });
+});
+
+/* ═══════════════════════ render 562 — real footage AND a colour card ═══════════════════════ */
+
+/**
+ * `pushClip` APPENDS, so the guaranteed ladder's card does not replace what a beat already holds.
+ * Six of render 562's sixteen beats therefore carried both, and the old ordering — fill tier
+ * before `adopted` — reported every one of them as FALLBACK:
+ *
+ *     [BeatLedger] beat=s2b0 … eligible=2 adopted=2 coverage=FALLBACK origin=pexels
+ *     [Retrieval]  s2b0 extendLastClip REFUSED — the same picture has already been held 3.5s …
+ *     [VisualCoverage] s2b0: … fallback=PLACEHOLDER (all real/contextual/AI sourcing exhausted)
+ *
+ * The render's own funnel line said `adopted=10` while its coverage line said `REAL_ASSET=4`. Two
+ * counters over one render disagreeing by more than half is the bug; a mixed category is the fix.
+ */
+describe("§20 — a beat holding both real footage and a colour card", () => {
+  it("is neither REAL_ASSET nor FALLBACK", () => {
+    const rec = beat({ adopted: 1, placeholder: true, fillTier: "color_fallback" });
+    expect(
+      resolveBeatCoverage(rec),
+      "an adopted clip is reported as if nothing chose the beat's picture"
+    ).not.toBe("FALLBACK");
+    expect(
+      resolveBeatCoverage(rec),
+      "a beat part of whose screen time is a drawn card is claimed as fully covered"
+    ).not.toBe("REAL_ASSET");
+    expect(resolveBeatCoverage(rec)).toBe("REAL_PLUS_FILLER");
+  });
+
+  /** The order matters, not just the categories: `adopted` alone must not be enough to reach it. */
+  it("an adopted beat with no colour card stays REAL_ASSET", () => {
+    expect(resolveBeatCoverage(beat({ adopted: 1, placeholder: true }))).toBe("REAL_ASSET");
+    expect(resolveBeatCoverage(beat({ adopted: 1, fillTier: "topical" }))).toBe("REAL_ASSET");
+  });
+
+  /** And a colour card with nothing adopted is still a plain FALLBACK — no coverage was invented. */
+  it("a colour card with no adoption stays FALLBACK", () => {
+    expect(resolveBeatCoverage(beat({ placeholder: true, fillTier: "color_fallback" }))).toBe(
+      "FALLBACK"
+    );
+  });
+
+  /** Both mixed and pure count as footage having reached the screen; nothing else does. */
+  it("real footage is recognised in both categories and no others", () => {
+    expect(coverageHasRealFootage("REAL_ASSET")).toBe(true);
+    expect(coverageHasRealFootage("REAL_PLUS_FILLER")).toBe(true);
+    for (const c of ["INTENTIONAL_TEXT", "FALLBACK", "NO_VALID_ASSET"] as const) {
+      expect(coverageHasRealFootage(c), `${c} is counted as real footage`).toBe(false);
+    }
+  });
+
+  /**
+   * The whole render, rebuilt from the ledger lines of video 562. The coverage totals must now
+   * agree with the funnel's own `adopted` count — the disagreement that exposed the defect.
+   */
+  it("reproduces render 562's beats and agrees with its adoption count", () => {
+    const audit = createBeatOutcomeAudit();
+    /** [scene, beat, adopted, origin, colour card?] — read off the production [BeatLedger] lines. */
+    const production = [
+      [0, 0, 1, "archive", false], [0, 1, 1, "archive", false],
+      [0, 2, 1, "archive", true], [0, 3, 1, "archive", true],
+      [1, 0, 0, "", true], [1, 1, 0, "", true], [1, 2, 1, "internet_archive", true],
+      [1, 3, 0, "", true], [1, 4, 0, "", false], [1, 5, 0, "", false], [1, 6, 0, "", false],
+      [1, 7, 1, "wikimedia", false],
+      [2, 0, 2, "pexels", true], [2, 1, 1, "wikimedia", true],
+      [2, 2, 2, "internet_archive", true], [2, 3, 2, "pexels", false],
+    ] as const;
+    for (const [s, b, adopted, origin, card] of production) {
+      for (let i = 0; i < adopted; i++) noteBeatAdopted(audit, s, b, origin, `s${s}b${b}.mp4`);
+      if (card) {
+        noteBeatPlaceholder(audit, s, b);
+        noteBeatFillTier(audit, s, b, "color_fallback");
+      }
+    }
+    const planned = production.map(([sceneIndex, beatIndex]) => ({ sceneIndex, beatIndex }));
+    const lines = renderBeatFunnelReport(audit, planned, createClipRejectAudit());
+    const roll = lines.find((l) => l.includes("COVERAGE beats="))!;
+
+    expect(roll).toContain("beats=16");
+    expect(roll).toContain("REAL_ASSET=4");
+    expect(roll).toContain("REAL_PLUS_FILLER=6");
+    expect(roll).toContain("FALLBACK=3");
+    expect(roll).toContain("NO_VALID_ASSET=3");
+
+    /**
+     * The invariant the old ordering broke. Ten beats adopted something; ten beats must show
+     * footage. It read REAL_ASSET=4 against adopted=10 in production.
+     */
+    const funnel = lines.find((l) => l.includes("TOTAL beats="))!;
+    expect(funnel).toContain("adopted=10");
+    expect(roll, "the coverage line disagrees with the funnel about how many beats got footage")
+      .toContain("realFootage=10");
   });
 });
 
@@ -221,7 +316,12 @@ describe("§20 — the render report carries coverage alongside the funnel", () 
   it("categorises every beat exactly once", () => {
     const roll = renderBeatFunnelReport(productionLikeAudit(), planned, createClipRejectAudit())
       .find((l) => l.includes("COVERAGE beats="))!;
-    const nums = [...roll.matchAll(/(REAL_ASSET|INTENTIONAL_TEXT|FALLBACK|NO_VALID_ASSET)=(\d+)/g)];
+    const nums = [
+      ...roll.matchAll(
+        /\b(REAL_ASSET|REAL_PLUS_FILLER|INTENTIONAL_TEXT|FALLBACK|NO_VALID_ASSET)=(\d+)/g
+      ),
+    ];
+    expect(nums.map((m) => m[1]), "a category is missing from the roll-up").toHaveLength(5);
     expect(nums.reduce((sum, m) => sum + Number(m[2]), 0)).toBe(7);
   });
 });

@@ -441,6 +441,8 @@ import {
   beatClipSeverity,
   formatAdoptedFitDecision,
   type BeatRelevanceLedger,
+  type BeatRelevanceDecision,
+  type BeatRelevanceParams,
   type BeatVisualContext,
 } from "./beatVisualRelevance";
 import { formatBeatVisualProblems, formatVisualFitAudit } from "./beatVisualStatus";
@@ -493,6 +495,12 @@ import {
   formatCoverageFillPlan,
   planCoverageFill,
 } from "./coverageFillPlan";
+import {
+  createSourceFloorMemo,
+  formatSourceFloorLedger,
+  withSourceFloorMemo,
+  type SourceFloorMemo,
+} from "./sourceFloorMemo";
 import {
   createPipelineReportCollector,
   type PipelineGlance,
@@ -9078,7 +9086,7 @@ export async function generateGuaranteedBeatClip(
     generateGuaranteedBeatClipInner(sceneIndex, slotIndex, duration, workDir, beatText, usedAssetIds, usedStorageUrls, tier)
   );
   if (relevance && clip) {
-    await checkBeatRelevance({
+    await judgeBeatClipRelevance(relevance.dedup, sceneIndex, slotIndex, {
       clipPath: clip,
       contentKey: clipContentKey(clip),
       ctx: {
@@ -9093,7 +9101,6 @@ export async function generateGuaranteedBeatClip(
       ledger: relevance.dedup.beatRelevance,
       route: `guaranteed:${tier.tier ?? "unknown"}`,
       placeholder: isPlaceholderGuaranteedTier(tier.tier),
-      onSpend: (spent) => noteVisionSpend(relevance.dedup, sceneIndex, slotIndex, spent),
     });
   }
   return clip;
@@ -12789,7 +12796,7 @@ async function beatClipPassesImageGate(
   beatIndex: number,
   dedup: VisualDedupState
 ): Promise<boolean> {
-  const decision = await checkBeatRelevance({
+  const decision = await judgeBeatClipRelevance(dedup, sceneIndex, beatIndex, {
     clipPath,
     contentKey,
     ctx: {
@@ -12803,7 +12810,6 @@ async function beatClipPassesImageGate(
     state: dedup.beatImageGate,
     ledger: dedup.beatRelevance,
     route: "adopt",
-    onSpend: (spent) => noteVisionSpend(dedup, sceneIndex, beatIndex, spent),
   });
   return decision.allowed;
 }
@@ -16244,6 +16250,20 @@ async function applyVoiceAlignmentToBeats(
   dedup?: VisualDedupState,
   sceneIndex?: number
 ): Promise<void> {
+  /**
+   * RENDER 562 — the scene's beats, recorded before anything can decide not to align them.
+   *
+   * This is the one function every beat-resolving route calls, and it is called with the array the
+   * route is about to fill clips for, so it is the honest single point of record. The array is
+   * stored BY REFERENCE and both branches below return early without touching it — a scene whose
+   * beats came word-timed from the TTS planner has them already, and "no alignment was needed" is
+   * not "there are no beats". Recording after the early returns is what would lose them.
+   *
+   * Nothing here decides, searches or aligns. It remembers.
+   */
+  if (dedup && sceneIndex != null && beats.length > 0) {
+    dedup.sceneBeatsBySceneIndex.set(sceneIndex, beats);
+  }
   if (dedup && sceneIndex != null && dedup.ttsSceneBeats.get(sceneIndex)?.length) {
     return;
   }
@@ -16538,6 +16558,40 @@ export interface VisualDedupState {
   materializedArchiveRaw: Map<number, string>;
   /** ElevenLabs word-timed beats per scene (when available). */
   ttsSceneBeats: Map<number, TtsPlannedBeat[]>;
+  /**
+   * THE SCENE'S OWN BEATS, kept where no clip-list rebuild can reach them.
+   *
+   * ── What render 562 did ───────────────────────────────────────────────────────────────────
+   *
+   *     [CinematicPipeline] inputs scenes=0 beats=0 planned=0 dropped=3
+   *     [CinematicPipeline] dropped scene 0: no beat could be planned, the scene is not in the edit
+   *     [RenderJob] video=562 route=legacy_compose RENDER_FALLBACK_USED
+   *
+   * `beats=0` is the whole story: that counter increments once per beat the planner is HANDED, so
+   * the planner was handed none. Not one beat failed a check — there were no beats to check, and
+   * the plan's own reason ("no beat with both a voice window and a rehydratable clip") described a
+   * comparison that never happened. With no plan there is no EDL, so no graphics, captions, SFX or
+   * Remotion ran on that render either.
+   *
+   * The beats reached the planner through `sceneVisualResults[i].beats`, an OPTIONAL field on a
+   * record that fourteen places reassign. Several rebuild it from scratch — `{ clips,
+   * beatDurations }` — and every one of those silently drops the beat list. Render 562's last
+   * write for all three scenes was the cheapest of them:
+   *
+   *     [Pipeline] Scene 0: strict refill already attempted this render — guaranteed fill instead
+   *     [Pipeline] Scene 1: strict refill already attempted this render — guaranteed fill instead
+   *     [Pipeline] Scene 2: strict refill already attempted this render — guaranteed fill instead
+   *
+   * ── Why a separate record and not a spread at each site ───────────────────────────────────
+   *
+   * A rule that fourteen assignment sites must remember is the same seam that has already failed
+   * three times in this file (R53's `recordClipAdopt`, R62's still/moving counters, R70's beat
+   * audit — each had exactly one caller and reported zero for every other route). Beats are a fact
+   * about the SCENE'S NARRATION, not about any one clip list, so a rebuilt clip list cannot
+   * invalidate them and they do not belong to that record in the first place. Written once, in the
+   * one function every beat-resolving route calls; read by the cinematic planner.
+   */
+  sceneBeatsBySceneIndex: Map<number, SceneBeat[]>;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -16880,6 +16934,7 @@ export function createVisualDedupState(
     preparedArchiveClips: new Map(),
     materializedArchiveRaw: new Map(),
     ttsSceneBeats: new Map(),
+    sceneBeatsBySceneIndex: new Map(),
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -26651,7 +26706,7 @@ async function beatClipPassesVisionGate(
         `the beat relevance gate decides`
     );
   }
-  const relevance = await checkBeatRelevance({
+  const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
     clipPath,
     contentKey: clipContentKey(clipPath),
     ctx: beatVisualContext(beat, scene, videoTitle),
@@ -26659,7 +26714,6 @@ async function beatClipPassesVisionGate(
     state: dedup.beatImageGate,
     ledger: dedup.beatRelevance,
     route: queryLabel ? `gate:${queryLabel.slice(0, 24)}` : "gate",
-    onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
   });
   if (!relevance.allowed) {
     recordGateVerdict("beat_image_gate", true);
@@ -26811,6 +26865,61 @@ function noteVisionSpend(
 ): void {
   for (let i = 0; i < spent.judged; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "judged");
   for (let i = 0; i < spent.failed; i++) noteBeatVision(dedup.beatOutcomeAudit, sceneIndex, beatIndex, "unavailable");
+}
+
+/**
+ * THE GATE'S ANSWER AND THE GATE'S BILL, RECORDED TOGETHER.
+ *
+ * ── What render 562's ledger said ───────────────────────────────────────────────────────────
+ *
+ *     TOTAAL  vision_calls=61  vision_evaluated=16
+ *
+ * Read as written, the gate was asked sixty-one times and produced sixteen answers. It is not what
+ * happened. There are four `checkBeatRelevance` sites — the guaranteed ladder, the adopt path, the
+ * archive gate and the retrieval funnel — and ALL FOUR reported their spend while only the funnel
+ * reported its verdict. Forty-five verdicts existed and were counted by nothing.
+ *
+ * That is the fifth appearance of one seam: R53's `recordClipAdopt`, R62's still/moving counters,
+ * R70's beat audit, R86's failed-asset registration, and now this. Every one was a rule each route
+ * had to remember, and in every one most routes did not.
+ *
+ * ── Why a wrapper rather than three more call sites ─────────────────────────────────────────
+ *
+ * Adding `noteBeatVisionVerdict` to the other three would fix this render and leave the seam open
+ * for the next route. The spend and the verdict come from ONE call and belong to ONE beat, so the
+ * call is what records them. A new route cannot report half.
+ *
+ * The two counters stay separate numbers because they measure different things: a cached verdict
+ * costs no call and is still a verdict, and a call that times out costs a call and yields none. It
+ * is their being counted by different SETS OF ROUTES that made them incomparable.
+ */
+async function judgeBeatClipRelevance(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  params: Omit<BeatRelevanceParams, "onSpend">
+): Promise<BeatRelevanceDecision> {
+  const decision = await checkBeatRelevance({
+    ...params,
+    onSpend: (spent) => noteVisionSpend(dedup, sceneIndex, beatIndex, spent),
+  });
+  /**
+   * `evaluated === false` is a DECLINE — budget spent, gate off, nothing to judge — and must never
+   * read as a picture the gate looked at and disliked. See `BeatRelevanceDecision.evaluated`.
+   */
+  noteBeatVisionVerdict(
+    dedup.beatOutcomeAudit,
+    sceneIndex,
+    beatIndex,
+    decision.evaluated === false
+      ? "never_asked"
+      : decision.verdict === "fits"
+        ? "accepted"
+        : decision.verdict === "does_not_fit"
+          ? "rejected"
+          : "unclear"
+  );
+  return decision;
 }
 
 
@@ -27009,7 +27118,7 @@ async function pushMotionGraphicBeatClipIfAny(
    * under this narration" has no answer to give. It is registered as a placeholder rather than
    * left unregistered, so the compose barrier can tell "deliberately exempt" from "nobody looked".
    */
-  await checkBeatRelevance({
+  await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
     clipPath: mgfxClip,
     contentKey: clipContentKey(mgfxClip),
     ctx: beatVisualContext(beat, scene, videoTitle),
@@ -32025,7 +32134,7 @@ async function fetchSceneVisualsInner(
             // the cleanup and the cache key used to be this loop's own copy of that logic — and
             // it was the copy that keyed on the picture alone, so a clip the funnel approved on
             // beat 1 was never re-examined on beat 7.
-            const judgement = await checkBeatRelevance({
+            const judgement = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
               clipPath: winner.clipPath,
               contentKey: clipContentKey(winner.clipPath),
               ctx: beatVisualContext(beat, scene, videoTitle),
@@ -32033,31 +32142,12 @@ async function fetchSceneVisualsInner(
               state: dedup.beatImageGate,
               ledger: dedup.beatRelevance,
               route: `funnel:${winner.candidate.source}`,
-              onSpend: (spent) => noteVisionSpend(dedup, scene.index, beat.index, spent),
             });
             /**
-             * THE VERDICT, attributed to this beat — separately from the SPEND above.
-             *
-             * `noteVisionSpend` counts calls; this counts what the gate said. The two diverge in
-             * both directions: a cached verdict costs no call and is still a verdict, and a call
-             * that times out costs a call and yields none. Reporting only the spend is how "the
-             * gate was asked 29 times" came to be read as "29 pictures were judged".
-             *
-             * `evaluated === false` is the gate declining to LOOK — the per-beat look ceiling, a
-             * placeholder with nothing to judge, the gate switched off. It is neither a rejection
-             * nor an uncertainty, and it is the one outcome that says the shortage is this
-             * render's budget rather than the catalogue.
+             * The verdict is recorded by `judgeBeatClipRelevance` above, along with the spend.
+             * It used to be recorded HERE, which is why this was the only one of the gate's four
+             * routes whose answers were counted — 61 calls against 16 verdicts on render 562.
              */
-            noteBeatVisionVerdict(
-              dedup.beatOutcomeAudit, scene.index, beat.index,
-              judgement.evaluated === false
-                ? "never_asked"
-                : judgement.verdict === "fits"
-                  ? "accepted"
-                  : judgement.verdict === "does_not_fit"
-                    ? "rejected"
-                    : "unclear"
-            );
             if (judgement.verdict !== "does_not_fit") break;
 
             recordClipReject(
@@ -36430,12 +36520,23 @@ export async function runVideoPipeline(
    * blocked "WWII" eighteen times on a video the person had asked for by that word. Outside this
    * scope nothing changes: no topic is set and every gate behaves exactly as before.
    */
-  return withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
-    runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
-      runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
-        videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt
-      ))
-    ), ownerUserId)
+  /**
+   * RENDER 562 — the source-length memo, opened for the whole render.
+   *
+   * Render-scoped rather than module-scoped so one video's refusal can never ban an asset for
+   * another video whose slots are shorter. See sourceFloorMemo.ts for what it costs not to have
+   * one: 222 identical refusals over 34 assets in a single render, one asset refused 26 times.
+   */
+  const sourceFloorMemo = createSourceFloorMemo();
+  return withSourceFloorMemo(sourceFloorMemo, () =>
+    withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
+      runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
+        runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
+          videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
+          sourceFloorMemo
+        ))
+      ), ownerUserId)
+    )
   );
 }
 
@@ -36447,7 +36548,9 @@ async function _runVideoPipelineInner(
   customVoiceoverUrl?: string,
   videoLength = "8-10",
   enableSubtitles = false,
-  userPrompt?: string
+  userPrompt?: string,
+  /** Passed in as well as being ambient, so the render can report on it at the end. */
+  sourceFloorMemo?: SourceFloorMemo
 ): Promise<string> {
   videoLength = normalizeVideoLength(videoLength);
   const maxScenes = getScenesForLength(videoLength);
@@ -39648,6 +39751,22 @@ async function _runVideoPipelineInner(
         else console.log(line);
       }
       /**
+       * RENDER 562 — what the source-length floor cost, and what this render could have carried.
+       *
+       * Reported, never acted on. `coverableAtSlowdown` counts refusals whose source was long
+       * enough for the pipeline's OWN coverage machinery to fill the slot at full coverage — the
+       * one number the "is 2.8s right?" question turns on. Deciding it from here, without a real
+       * render to compare against, would turn a measurement into a regression.
+       */
+      if (sourceFloorMemo) {
+        console.log(
+          pipelineReport.add(
+            "sourcing",
+            formatSourceFloorLedger(sourceFloorMemo, MAX_COVERAGE_SLOWDOWN)
+          )
+        );
+      }
+      /**
        * RONDE 95 (§5) — the manifest, and its counterpart.
        *
        * [RenderAsset] lists what the delivered file actually contains, one line per asset, built
@@ -40281,18 +40400,43 @@ async function _runVideoPipelineInner(
         formatRenderRoute,
         enqueueCinematicRender,
       } = await import("./cinematicProduction");
+      const { pairClipsToBeats } = await import("./cinematicPipelineInputs");
       if (cinematicPlanningEnabled()) {
         const lineage = visualDedup.sourcingCache.lineage;
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           scenes: scenes.map((scene, i) => {
-            const beats = sceneVisualResults[i]?.beats ?? [];
-            const clipPaths = composedUsedClips[i] ?? [];
+            /**
+             * RENDER 562 — from the render's own record, not from the clip list.
+             *
+             * `sceneVisualResults[i].beats` is optional, and the routes that rebuild a scene's clip
+             * list drop it. On 562 all three scenes ended on such a route, so this read produced
+             * three empty arrays and the planner reported `beats=0 dropped=3` — no beat failed a
+             * check, there were none to check. `sceneBeatsBySceneIndex` is written where the render
+             * establishes a scene's beats and nothing rebuilds it. The clip list stays the
+             * fallback, so a scene that somehow reached the record without reaching this map is no
+             * worse off than before.
+             */
+            const beats =
+              visualDedup.sceneBeatsBySceneIndex.get(scene.index) ??
+              sceneVisualResults[i]?.beats ??
+              [];
+            /**
+             * `pairClipsToBeats` rather than `clipPaths[beatIndex]` — see its own comment. The
+             * positional read was a guess that only ever ran over an empty beat list; giving the
+             * planner real beats is what makes it execute, so it is corrected in the same change.
+             */
+            const clipForBeat = pairClipsToBeats({
+              clipPaths: composedUsedClips[i] ?? [],
+              adoptions: visualDedup.clipAdoptAudit.filter((e) => e.sceneIndex === scene.index),
+              beats,
+              basenameOf: (clipPath) => path.basename(clipPath),
+            });
             return {
               scene,
               beats,
               clips: beats.map((_, beatIndex) => {
-                const clipPath = clipPaths[beatIndex];
+                const clipPath = clipForBeat[beatIndex];
                 if (!clipPath) return null;
                 const record = lineage.resolve(clipPath);
                 const meta = memoisedVideoStreamMeta(clipPath);
@@ -40431,6 +40575,23 @@ async function _runVideoPipelineInner(
       qualityReport,
       pipelineStepTiming: pipelineStepTiming.toReport(),
       ...(budgetOutcome ? { renderBudget: budgetOutcome } : {}),
+      /**
+       * THE REPORT, BUILT AFTER THE LINES IT REPORTS ON.
+       *
+       * The earlier `mergeVideoMetadata` also stores `pipelineReport.build()`, and it runs before
+       * the sourcing summary, the beat ledger, the search-gate report, the asset audit, the
+       * voice-persist lines, the cinematic route and the SFX plan have been collected. Thirty-four
+       * of the forty-one `.add()` calls in this function happen AFTER it, so the stored report held
+       * seven lines and none of the seven measurement families a reader opens it for.
+       *
+       * The export gave it away: a sixteen-minute render whose report claimed a 159 ms window,
+       * because `build()` stamps `finishedAt` when it is called.
+       *
+       * The early store is KEPT, deliberately. The quality gate a few lines below it throws on a
+       * bad render, and that partial report is the only record such a render leaves. This is the
+       * complete one, written on the path where there is more to say.
+       */
+      pipelineReport: pipelineReport.build(),
     }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
     );

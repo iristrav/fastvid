@@ -95,6 +95,49 @@ describe("RONDE 106 — the render collects what it already prints", () => {
     expect(firstUse).toBeGreaterThan(created);
   });
 
+  /**
+   * AND STORED AFTER THE LAST ONE — the half of the ordering nobody checked.
+   *
+   * This test asserted only that the collector exists before the first `.add`. It did, and the
+   * report was still almost empty, because the STORE ran before thirty-four of the forty-one adds:
+   * the sourcing summary, the beat ledger, the search-gate report, the asset audit, the
+   * voice-persist lines, the cinematic route, the SFX plan — every measurement family a reader
+   * opens the report for.
+   *
+   * The stored export of render 562 gave it away by its own header: `build()` stamps `finishedAt`
+   * when it is called, and a sixteen-minute render reported a 159 ms window.
+   */
+  it("the report is stored after the last line is collected", () => {
+    const lastAdd = PIPELINE.lastIndexOf("pipelineReport.add(");
+    const lastBuild = PIPELINE.lastIndexOf("pipelineReport.build()");
+    expect(lastAdd, "nothing is collected at all").toBeGreaterThan(-1);
+    expect(
+      lastBuild,
+      "the report is built before the last line is added, so everything after that line is lost — " +
+        "build() also stamps finishedAt, which is why a 16-minute render reported a 159ms window"
+    ).toBeGreaterThan(lastAdd);
+  });
+
+  /**
+   * The EARLY store stays. The quality gate throws on a bad render, and the partial report is the
+   * only record such a render leaves — so there are two stores on purpose, not one moved.
+   */
+  it("a render that fails the quality gate still stores what it had", () => {
+    /** Comments quote the defect and mention `build()` by name; this counts executable calls. */
+    const code = PIPELINE.replace(/\/\*[\s\S]*?\*\//g, "");
+    const builds = [...code.matchAll(/pipelineReport\.build\(\)/g)];
+    expect(
+      builds.length,
+      "the early store was removed — a render that throws at the quality gate now stores no report"
+    ).toBe(2);
+    const gate = code.indexOf("PIPELINE_ERROR.QUALITY_GATE");
+    expect(gate, "the quality gate throw has moved").toBeGreaterThan(-1);
+    expect(
+      builds[0]!.index!,
+      "the first store no longer precedes the throw it exists to survive"
+    ).toBeLessThan(gate);
+  });
+
   it("every structured report the render composes is collected", () => {
     /**
      * The rule is: nothing was re-instrumented. Each emitter still prints exactly what it printed
