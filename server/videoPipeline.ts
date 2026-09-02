@@ -498,6 +498,12 @@ import {
   planCoverageFill,
 } from "./coverageFillPlan";
 import {
+  createCandidateSubjectGateState,
+  judgeCandidateSubject,
+  formatCandidateSubjectSummary,
+  type CandidateSubjectGateState,
+} from "./candidateSubjectGate";
+import {
   createSourceFloorMemo,
   formatSourceFloorLedger,
   withSourceFloorMemo,
@@ -16595,6 +16601,12 @@ export interface VisualDedupState {
    * one function every beat-resolving route calls; read by the cinematic planner.
    */
   sceneBeatsBySceneIndex: Map<number, SceneBeat[]>;
+  /**
+   * RENDER 562 — the metadata screen that runs before any download. See candidateSubjectGate.ts.
+   * Render-scoped so two concurrent renders cannot spend each other's budget or read each
+   * other's verdicts, exactly as beatImageGate is.
+   */
+  candidateSubjectGate: CandidateSubjectGateState;
   lock: Promise<void>;
   perf: PipelinePerfProfile;
   /** Named celebrity from user prompt (e.g. Kylie Jenner) — anchor every beat's stock search. */
@@ -16938,6 +16950,7 @@ export function createVisualDedupState(
     materializedArchiveRaw: new Map(),
     ttsSceneBeats: new Map(),
     sceneBeatsBySceneIndex: new Map(),
+    candidateSubjectGate: createCandidateSubjectGateState(),
     lock: Promise.resolve(),
     perf,
     primaryPerson: topic?.primaryPerson?.trim() ?? "",
@@ -31996,10 +32009,77 @@ async function fetchSceneVisualsInner(
         // VisionGate stays sequential (CPU-bound CLIP work — parallelizing it buys little and
         // competes with ffmpeg for the same cores). Results are applied in shortlist order,
         // so `scored` keeps exactly the order the sequential loop produced.
+        /**
+         * RENDER 562 — screen the shortlist on what the provider already told us, before the
+         * first byte is fetched.
+         *
+         * `white-lives-matter-montana-activism-in-butte-2` under narration about Hitler's 1944
+         * ceasefire needs no frame to be refused; the identifier says what it is. It was
+         * nevertheless downloaded, trimmed, and only then offered to a picture editor who had no
+         * provider left to answer with — so it was adopted.
+         *
+         * Text only, so Groq stays in the chain: this is the one relevance check that still runs
+         * when the vision providers are down, which is exactly when it is needed. It may only
+         * REFUSE — see candidateSubjectGate.ts. A candidate it lets through has proved nothing
+         * and still faces the image gate on its real frames.
+         *
+         * NOTHING IS DOWNLOADED HERE, not even a thumbnail. The metadata was returned by the
+         * search that already happened.
+         */
+        /**
+         * IN PARALLEL, for the reason RONDE 5's FIX 6 exists.
+         *
+         * Six sequential text calls at ~1s each would spend a third of a 12-20s beat budget
+         * before a single byte was fetched — which is the exact shape of the defect FIX 6 fixed
+         * for the downloads themselves ("beats were killed mid-loop after downloading passing
+         * candidates"). The screens are independent of one another, so they all go at once and
+         * the results are applied in shortlist order.
+         */
+        const subjectVerdicts = await Promise.all(
+          toScore.map(async (candidate) => {
+            const pool = candidate.poolCandidate;
+            /** Curated archive picks are the operator's own library — not screened by this. */
+            if (!pool) return { candidate, pool: null, decision: null };
+            const decision = await judgeCandidateSubject({
+              facts: {
+                id: pool.id,
+                assetId: pool.assetId,
+                source: pool.source,
+                title: pool.title,
+                description: pool.description,
+                tags: pool.tags,
+              },
+              ctx: {
+                beatText: beat.text,
+                sceneText: scene.text,
+                videoTitle: asVideoTitleString(videoTitle) || undefined,
+                anchors: beatContext.subjects,
+              },
+              state: dedup.candidateSubjectGate,
+            });
+            return { candidate, pool, decision };
+          })
+        );
+        const subjectScreened: FunnelCandidate[] = [];
+        for (const { candidate, pool, decision } of subjectVerdicts) {
+          if (!pool || !decision || decision.allowed) {
+            subjectScreened.push(candidate);
+            continue;
+          }
+          console.warn(
+            `[SubjectGate] s${scene.index}b${beat.index} REFUSED ${pool.source}:${pool.assetId} ` +
+              `— ${decision.reason} (no download made)`
+          );
+          recordClipReject(
+            dedup.clipRejectAudit, scene.index, beat.index,
+            `${pool.source}:${pool.assetId}`, "subject_gate", pool.title
+          );
+        }
+
         const FUNNEL_DOWNLOAD_CONCURRENCY = 3;
         const downloadedClips: Array<{ candidate: FunnelCandidate; clipPath: string }> = [];
-        for (let dlIdx = 0; dlIdx < toScore.length; dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY) {
-          const batch = toScore.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY);
+        for (let dlIdx = 0; dlIdx < subjectScreened.length; dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY) {
+          const batch = subjectScreened.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY);
           const batchResults = await Promise.all(
             batch.map(async (candidate) => ({
               candidate,
@@ -39792,6 +39872,20 @@ async function _runVideoPipelineInner(
           )
         );
       }
+      /**
+       * RENDER 562 — what the metadata screen refused before anything was fetched.
+       *
+       * `refused` is downloads that did not happen. 562 downloaded 100 files to use 10, and
+       * Pexels alone fetched 73 and contributed nothing, so this is the line that says whether
+       * the cheapest check is earning its keep. `noProvider` matters just as much: it says the
+       * screen itself was blind, which is the state this gate exists to survive.
+       */
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          formatCandidateSubjectSummary(visualDedup.candidateSubjectGate)
+        )
+      );
       /**
        * RONDE 95 (§5) — the manifest, and its counterpart.
        *

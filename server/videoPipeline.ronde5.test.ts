@@ -54,7 +54,14 @@ describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => 
     const block = codeOnly(funnelConsumptionBlock());
     expect(block).toContain("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
     expect(block).toContain("dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY");
-    expect(block).toContain("toScore.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY)");
+    /**
+     * The batched slice, over the SCREENED shortlist. The array it reads was renamed when the
+     * metadata subject gate was put in front of the download: `toScore` is the shortlist, and
+     * `subjectScreened` is what survived a check that costs no download. The batching property
+     * this test exists for is unchanged; asserting the screened name also pins the ordering, so
+     * a future change cannot quietly go back to downloading unscreened candidates.
+     */
+    expect(block).toContain("subjectScreened.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY)");
     expect(block).toContain("await Promise.all(");
   });
 
@@ -62,6 +69,7 @@ describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => 
     const block = codeOnly(funnelConsumptionBlock());
     // The old shape awaited downloadFunnelCandidate directly inside a for..of over toScore.
     expect(block).not.toMatch(/for \(const candidate of toScore\)/);
+    expect(block).not.toMatch(/for \(const candidate of subjectScreened\)/);
   });
 
   it("FIX 3 is preserved: failed downloads are still registered, successes still counted", () => {
