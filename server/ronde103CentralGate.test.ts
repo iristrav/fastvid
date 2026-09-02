@@ -357,7 +357,24 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
   it("the guaranteed ladder's REAL rungs are judged and its cards are not", () => {
     const idx = SRC.indexOf("export async function generateGuaranteedBeatClip(");
     const body = SRC.slice(idx, SRC.indexOf("async function generateGuaranteedBeatClipInner(", idx));
-    expect(body).toContain("await judgeBeatClipRelevance(relevance.dedup, sceneIndex, slotIndex, {");
+    /**
+     * RENDER 563 — the beat index moved, the rule did not.
+     *
+     * This asserted `slotIndex` as the beat to file under, and eight render logs showed what that
+     * cost: 49 `real_footage_never_judged` lines on this ladder's own `rescue_archive` rung. The
+     * ladder DID judge; it filed the answer under the fetch slot while the adoption beside it was
+     * recorded under the real beat, so the lookup by (scene, beat) found nothing.
+     *
+     * What this test protects — the real rungs are judged, the cards are not — is unchanged, so
+     * the assertion follows the fix rather than being relaxed. `verdictFiledUnderTheBeat.test.ts`
+     * pins the beat index itself.
+     */
+    expect(body).toContain(
+      "await judgeBeatClipRelevance(relevance.dedup, sceneIndex, verdictBeatIndex, {"
+    );
+    expect(body, "the slot is being filed as the beat again").toContain(
+      "const verdictBeatIndex = relevance.beatIndex ?? slotIndex;"
+    );
     expect(body).toContain("placeholder: isPlaceholderGuaranteedTier(tier.tier)");
     // isPlaceholderGuaranteedTier is what draws the line, and it draws it where phase 7 says.
     expect(SRC).toContain('return tier !== "topical" && tier !== "wikimedia";');

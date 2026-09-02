@@ -9132,19 +9132,57 @@ export async function generateGuaranteedBeatClip(
    * is that it always returns a path, so the refusal is recorded on the ledger and the compose
    * barrier is what acts on it.
    */
-  relevance?: { dedup: VisualDedupState; scene?: { text?: string }; videoTitle?: string },
+  relevance?: {
+    dedup: VisualDedupState;
+    scene?: { text?: string };
+    videoTitle?: string;
+    /**
+     * RENDER 563 — THE BEAT THIS PICTURE IS FOR, which is not always the slot it was fetched in.
+     *
+     * ── What eight renders measured ───────────────────────────────────────────────────────────
+     *
+     *     [BeatVisual] … verification=never_asked reason=real_footage_never_judged source=rescue_archive
+     *
+     * 79 of those lines across 8 renders, 49 of them on this ladder's own `rescue_archive` rung.
+     * Read literally they say the picture editor was never asked — and that is not what happened.
+     * It WAS asked. Its answer was filed under a different number.
+     *
+     * `slotIndex` is a fetch slot, and several callers deliberately offset it away from the real
+     * beat: `2000 + slot` to keep a synthetic entry from colliding with a genuine one,
+     * `beat.index + attempt * 100` to keep retries apart, `si` where the beat is `slotBeatIndex`.
+     * Each of those callers then records the ADOPTION under the real beat — and the verdict stayed
+     * behind on the slot number, in a drawer `verificationForBeat` never opens.
+     *
+     * ── Why that is worse than never asking ──────────────────────────────────────────────────
+     *
+     * A refusal filed under slot 2000+n cannot stop an adoption recorded under beat n. The gate
+     * looked, said no, and the pipeline adopted the picture anyway — because nothing downstream
+     * could find the answer that already existed.
+     *
+     * The rule this restores is not new. RONDE 34 wrote it on the adopt side, at the call site on
+     * line 38860: "record the beat this slot was fetched FOR, not the slot number — the audit is
+     * read back as a clip->beat mapping." It was applied to one of the two records and forgotten
+     * on the other.
+     *
+     * Absent means "the slot IS the beat", which is true of the seven call sites that already
+     * matched, so those are unchanged.
+     */
+    beatIndex?: number;
+  },
 ): Promise<string> {
   const tier: GuaranteedTierOut = tierOut ?? {};
   const clip = await withBeatProvenance({ text: beatText ?? "" }, {}, () =>
     generateGuaranteedBeatClipInner(sceneIndex, slotIndex, duration, workDir, beatText, usedAssetIds, usedStorageUrls, tier)
   );
   if (relevance && clip) {
-    await judgeBeatClipRelevance(relevance.dedup, sceneIndex, slotIndex, {
+    /** The beat the caller will record the adoption under — see the note on `beatIndex` above. */
+    const verdictBeatIndex = relevance.beatIndex ?? slotIndex;
+    await judgeBeatClipRelevance(relevance.dedup, sceneIndex, verdictBeatIndex, {
       clipPath: clip,
       contentKey: clipContentKey(clip),
       ctx: {
         sceneIndex,
-        beatIndex: slotIndex,
+        beatIndex: verdictBeatIndex,
         beatText: beatText ?? "",
         sceneText: relevance.scene?.text,
         videoTitle: asVideoTitleString(relevance.videoTitle) || undefined,
@@ -9402,7 +9440,7 @@ async function appendGuaranteedSceneClips(
       const tierOut: GuaranteedTierOut = {};
       const clip = await generateGuaranteedBeatClip(
         scene.index, slot, holdSec, workDir, scene.text?.slice(0, 90), undefined, undefined, tierOut,
-        dedup ? { dedup, scene } : undefined
+        dedup ? { dedup, scene, beatIndex: 2000 + slot } : undefined
       );
       const key = clipContentKey(clip);
       if (!clips.some((c) => clipContentKey(c) === key)) {
@@ -29744,7 +29782,7 @@ async function rescueBeatVisualWhenEmptyInner(
       undefined,
       undefined,
       tierOut,
-      { dedup, scene, videoTitle }
+      { dedup, scene, videoTitle, beatIndex: beat.index }
     );
     if (!placeholder) continue;
     if (await pushClip(placeholder, holdSec)) {
@@ -30043,7 +30081,7 @@ async function ensureBeatVisualFilled(
       undefined,
       undefined,
       tierOut,
-      { dedup, scene, videoTitle }
+      { dedup, scene, videoTitle, beatIndex: beat.index }
     );
     if (await pushClip(beatClip, holdSec)) {
       /** §20 — same reason as the rescue site: record WHAT filled the beat, not only that it was. */
@@ -37963,7 +38001,7 @@ async function _runVideoPipelineInner(
                           const rescueClip = await generateGuaranteedBeatClip(
                             scene.index, si, hold, workDir, slotBeatText,
                             rescueUsedAssetIds, rescueUsedStorageUrls, slotTierOut,
-                            { dedup: visualDedup, scene, videoTitle }
+                            { dedup: visualDedup, scene, videoTitle, beatIndex: slotBeatIndex ?? si }
                           );
                           rescueClips.push(rescueClip);
                           rescueBeatIndices.push(slotBeatIndex);
@@ -37993,7 +38031,7 @@ async function _runVideoPipelineInner(
                             const retryClip = await generateGuaranteedBeatClip(
                               scene.index, si, hold, workDir, slotBeatText,
                               rescueUsedAssetIds, rescueUsedStorageUrls, retryTierOut,
-                              { dedup: visualDedup, scene, videoTitle }
+                              { dedup: visualDedup, scene, videoTitle, beatIndex: slotBeatIndex ?? si }
                             );
                             rescueClips.push(retryClip);
                             rescueBeatIndices.push(slotBeatIndex);
@@ -38856,7 +38894,7 @@ async function _runVideoPipelineInner(
                         rescueUsedAssetIds,
                         rescueUsedStorageUrls,
                         slotTierOut,
-                        { dedup: visualDedup, scene, videoTitle }
+                        { dedup: visualDedup, scene, videoTitle, beatIndex: slotBeatIndex ?? si }
                       );
                       rescueClips.push(rescueClip);
                       // RONDE 50 (point 8): the beat mapping is published only once the clip it
