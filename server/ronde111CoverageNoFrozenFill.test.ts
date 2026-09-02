@@ -210,8 +210,16 @@ describe("RONDE 111 — a short clip is no longer refused from a short slot", ()
     expect(body).toContain("await ensureBeatVisualFilled(");
     expect(body).toContain("semanticProfiles.get(beat.index)");
     expect(body).toContain("pushSceneClip(clipPath, sec, beat.index)");
-    // ...and pushSceneClip is the one that still consults the relevance gate.
-    expect(PIPELINE).toContain("if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;");
+    /**
+     * ...and pushSceneClip is the one that still consults the relevance gate.
+     *
+     * RENDER 564 made that gate async: it now asks for a verdict when the clip has none, because
+     * a barrier over a ledger can only turn away what somebody already judged. What this test
+     * protects — that these short-hold clips go through the same gate as every other clip —
+     * is unchanged, so the assertion follows the call rather than being dropped. The `await`
+     * matters in its own right: without it the gate returns a Promise, which is always truthy.
+     */
+    expect(PIPELINE).toContain("if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;");
   });
 
   it("the beat it searches on is the one that is actually short, not an arbitrary one", () => {

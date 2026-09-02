@@ -447,14 +447,23 @@ import {
   inheritBeatRelevance,
   reprieveBeatClip,
   beatClipSeverity,
+  ensureVerdictBeforeCompose,
+  maxComposePhaseJudgements,
   relevanceVerdictForRenderedAsset,
+  withComposeJudgeScope,
   formatAdoptedFitDecision,
+  type ComposeJudgeScope,
   type BeatRelevanceLedger,
   type BeatRelevanceDecision,
   type BeatRelevanceParams,
   type BeatVisualContext,
 } from "./beatVisualRelevance";
-import { formatBeatVisualProblems, formatVisualFitAudit } from "./beatVisualStatus";
+import {
+  coverageOfAdoptEntry,
+  formatBeatVisualProblems,
+  formatVisualFitAudit,
+  isGuaranteedClipName,
+} from "./beatVisualStatus";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
@@ -19139,6 +19148,28 @@ async function montageClipPassesComposeGate(
   const base = path.basename(clipPath);
 
   if (relevance) {
+    /**
+     * RENDER 564 — the same rule as on the push route, from the side that knows less.
+     *
+     * This chokepoint has a scene and a clip INDEX; the narration hangs on a BEAT. The render's
+     * adopt audit already maps a clip's basename to the beat it was adopted for, so the scope
+     * resolves it rather than this function acquiring a fifth parameter that eighteen call sites
+     * would have to supply.
+     *
+     * A clip the adopt audit does not know — a pad, a derived file — still cannot be placed, and
+     * that stays a pass. It is now a NAMED pass instead of a silent one.
+     */
+    const ensured = await ensureVerdictBeforeCompose({
+      clipPath,
+      contentKey: clipContentKey(clipPath),
+      route: "compose",
+    });
+    if (ensured.outcome === "beat_unknown" || ensured.outcome === "no_narration") {
+      console.warn(
+        `[ComposeBarrier] s${sceneIndex} clip ${clipIndex}: UNJUDGED ${base} — ` +
+          `${ensured.outcome}; nothing has looked at this picture and nothing can`
+      );
+    }
     const barrier = composeBarrierAllows(relevance, clipPath, clipContentKey(clipPath));
     if (!barrier.allow) {
       console.warn(
@@ -27072,12 +27103,32 @@ function beatVisualContext(
  * cannot judge, and pretending otherwise would empty montages on the routes that build their own
  * files. That gap is counted rather than assumed away — see barrierCoverage.
  */
-function beatClipRefusedByRelevanceGate(
+async function beatClipRefusedByRelevanceGate(
   dedup: VisualDedupState,
   clipPath: string,
   sceneIndex: number,
   beatIndex: number | undefined
-): boolean {
+): Promise<boolean> {
+  /**
+   * RENDER 564 — get an answer before this clip becomes part of a scene.
+   *
+   * The barrier below turns away a refused clip, and a clip nobody judged is not refused. Render
+   * 564 put `scene_1_b0_curated_a57670.mp4` into scene 1 at 17:56:18 with eight verdicts existing
+   * in the entire render and none of them about it; the refusal landed at 17:58:29.
+   *
+   * This route knows its beat, so it asks directly rather than going through the adopt audit.
+   * Already-judged clips cost nothing, and every failure path leaves the barrier's answer exactly
+   * as it was — see ensureVerdictBeforeCompose.
+   */
+  if (beatIndex != null) {
+    await ensureVerdictBeforeCompose({
+      clipPath,
+      contentKey: clipContentKey(clipPath),
+      sceneIndex,
+      beatIndex,
+      route: "push",
+    });
+  }
   const barrier = composeBarrierAllows(dedup.beatRelevance, clipPath, clipContentKey(clipPath));
   if (barrier.allow) return false;
   console.warn(
@@ -30239,7 +30290,7 @@ async function backfillComposeMontageIfShort(
     // RONDE 103, second audit: this is an acceptance point like the four pushSceneClip closures,
     // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
     // later must not be able to push a clip this render has already refused.
-    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -30834,7 +30885,7 @@ async function fetchArchiveSentenceMontage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
-    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) {
@@ -31045,7 +31096,7 @@ async function refillSceneStrictVoiceMatch(
     holdSec: number,
     beatIndex: number
   ): Promise<boolean> => {
-    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) return false;
@@ -31373,7 +31424,7 @@ async function ensureArchiveMontageVoiceCoverage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
-    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -31961,7 +32012,7 @@ async function fetchSceneVisualsInner(
   };
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
-    if (beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
@@ -36843,15 +36894,36 @@ export async function runVideoPipeline(
     state: createCandidateSubjectGateState(),
     contextFor: () => undefined,
   };
+  /**
+   * RENDER 564 — the scope that lets a compose barrier ask for the verdict it is missing.
+   *
+   * Opened here for the same reason as the subject gate's: the records it reads are created deep
+   * inside `_runVideoPipelineInner`, and a scope entered there would have to wrap the rest of a
+   * very long function. Until the resolvers are installed it can place no beat, which reads as
+   * `beat_unknown` and leaves the barrier's own answer untouched.
+   */
+  const composeJudgeScope: ComposeJudgeScope = {
+    workDir: "",
+    state: createBeatImageGateState(),
+    ledger: createBeatRelevanceLedger(),
+    beatForClip: () => undefined,
+    contextFor: () => undefined,
+    /** Until the render installs the real classifier, nothing is treated as a card. */
+    isPlaceholder: () => false,
+    budget: maxComposePhaseJudgements(),
+    spent: 0,
+  };
   return withSourceFloorMemo(sourceFloorMemo, () =>
     withSubjectGateScope(subjectGateScope, () =>
-      withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
-        runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
-          runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
-            videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
-            sourceFloorMemo, subjectGateScope
-          ))
-        ), ownerUserId)
+      withComposeJudgeScope(composeJudgeScope, () =>
+        withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
+          runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
+            runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
+              videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
+              sourceFloorMemo, subjectGateScope, composeJudgeScope
+            ))
+          ), ownerUserId)
+        )
       )
     )
   );
@@ -36869,7 +36941,9 @@ async function _runVideoPipelineInner(
   /** Passed in as well as being ambient, so the render can report on it at the end. */
   sourceFloorMemo?: SourceFloorMemo,
   /** Ambient for the download routes; passed in so this function can install its resolver. */
-  subjectGateScope?: SubjectGateScope
+  subjectGateScope?: SubjectGateScope,
+  /** Ambient for the compose barrier; likewise filled in once the render has its records. */
+  composeJudgeScope?: ComposeJudgeScope
 ): Promise<string> {
   videoLength = normalizeVideoLength(videoLength);
   const maxScenes = getScenesForLength(videoLength);
@@ -37358,6 +37432,57 @@ async function _runVideoPipelineInner(
           visualDedup.clipRejectAudit, sceneIndex, beatIndex,
           `${facts.source}:${facts.assetId}`, "subject_gate", facts.title
         );
+      };
+    }
+    /**
+     * RENDER 564 — the compose barrier gains the two things it needs to ask a question.
+     *
+     * `beatForClip` reads the adopt audit backwards: the compose chokepoint knows a scene and a
+     * clip index, and the beat is what the narration hangs on. The audit already records a
+     * basename per beat, so the mapping exists and is not invented here. Later entries win, which
+     * is the assumption `beatVisualStatus` already makes about that array.
+     *
+     * `contextFor` is the SAME `beatVisualContext` every other judging route builds, over the beat
+     * record every route writes through `applyVoiceAlignmentToBeats`. Two different contexts for
+     * one beat would let two routes reach different answers about one picture.
+     */
+    if (composeJudgeScope) {
+      composeJudgeScope.workDir = workDir;
+      composeJudgeScope.state = visualDedup.beatImageGate;
+      composeJudgeScope.ledger = visualDedup.beatRelevance;
+      composeJudgeScope.beatForClip = (basename) => {
+        for (let i = visualDedup.clipAdoptAudit.length - 1; i >= 0; i--) {
+          const entry = visualDedup.clipAdoptAudit[i]!;
+          if (entry.basename === basename) {
+            return { sceneIndex: entry.sceneIndex, beatIndex: entry.beatIndex };
+          }
+        }
+        return undefined;
+      };
+      composeJudgeScope.contextFor = (sceneIndex, beatIndex) => {
+        const beat = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex];
+        if (!beat?.text?.trim()) return undefined;
+        const scene = scenes.find((s) => s.index === sceneIndex);
+        return beatVisualContext(
+          { text: beat.text, index: beatIndex },
+          { text: scene?.text, index: sceneIndex },
+          asVideoTitleString(videoTitle) || undefined
+        );
+      };
+      /**
+       * A card is not a picture, and asking a vision model whether a grey rectangle belongs under
+       * a line of narration gets a no — which would then refuse the only thing standing between
+       * that beat and an empty slot. `coverageOfAdoptEntry` is the classifier the beat report
+       * already uses; it is resolved here because it lives in a module that imports the gate.
+       */
+      composeJudgeScope.isPlaceholder = (basename) => {
+        for (let i = visualDedup.clipAdoptAudit.length - 1; i >= 0; i--) {
+          const entry = visualDedup.clipAdoptAudit[i]!;
+          if (entry.basename !== basename) continue;
+          const coverage = coverageOfAdoptEntry({ source: entry.source, basename });
+          return coverage !== "own_footage" && coverage !== "subject_only";
+        }
+        return isGuaranteedClipName(basename);
       };
     }
     visualDedup.stepTiming = pipelineStepTiming;

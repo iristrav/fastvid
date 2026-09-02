@@ -39,6 +39,7 @@
  * mostly unobtainable says so instead of reporting a clean sheet.
  */
 
+import { AsyncLocalStorage } from "async_hooks";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -694,6 +695,171 @@ export function composeBarrierAllows(
   }
   if (d.reprieved) return { allow: true, reason: "refused but reprieved deliberately" };
   return { allow: true, reason: d.verdict };
+}
+
+/* ═════════════ the verdict a clip must have BEFORE it becomes part of a scene ═════════════ */
+
+/**
+ * RENDER 564 — COMPOSE DID NOT WAIT FOR AN ANSWER.
+ *
+ * ── The timeline of one clip ────────────────────────────────────────────────────────────────
+ *
+ *     17:55:44  Compose Scene 1 started
+ *     17:56:18  scene_1_b0_curated_a57670.mp4 is in scene 1's montage
+ *     17:58:29  [BeatRelevance] s0b2005 does_not_fit — "A modern restaurant interior…"
+ *     17:58:36  [ComposeBarrier] s1 clip 0: BLOCKED scene_1_b0_curated_a57670.mp4
+ *     18:01:20  stage=FINAL_VIDEO  clip=scene_1_b0_curated_a57670.mp4
+ *
+ * At 17:56:18 the whole render held EIGHT verdicts and not one of them was about that clip. So
+ * `composeBarrierAllows` returned its "never judged — no beat context at this path" pass, the
+ * scene was built, and the refusal arrived two minutes and eleven seconds too late to matter.
+ *
+ * The audit then reported `INVARIANT_BROKEN … the compose barrier was bypassed`, which sent the
+ * investigation after a bypass that never happened. The barrier ran. It had nothing to refuse
+ * with, because a barrier over a ledger can only turn away what somebody already judged.
+ *
+ * ── Why this sits beside the barrier rather than inside it ──────────────────────────────────
+ *
+ * `composeBarrierAllows` is a pure decision over the ledger, with three production callers and
+ * ten in tests. Making it async to let it ask a question would change every one of them and
+ * blur what it is: the rule, not the work. So the question is asked first, here, and the barrier
+ * then does exactly what it always did on a ledger that now has an answer in it.
+ *
+ * ── What it costs, and why that is bounded ──────────────────────────────────────────────────
+ *
+ * Only clips with NO verdict at all are asked about — everything the earlier gates judged is
+ * already in the ledger, and a clip judged under another name is found by content identity. In
+ * render 564 that was four clips. The render-wide ceiling (120) and the per-beat ceiling (4)
+ * bound the worst case exactly as they do everywhere else, and 564 spent 64 of the 120.
+ *
+ * Every exit is fail-open. No scope, no beat, no narration, no provider, budget spent: the clip
+ * is left exactly as it was and the barrier's own answer stands. A vision outage must never be
+ * able to empty a montage — that principle is older than this function and is not weakened here.
+ */
+export type ComposeJudgeScope = {
+  workDir: string;
+  state: BeatImageGateState;
+  ledger: BeatRelevanceLedger;
+  /**
+   * Which beat a clip was adopted for, by basename, from the render's own adopt audit. The
+   * compose barrier knows a scene and a clip INDEX; the beat is what the narration hangs on, and
+   * the adopt audit is the record that already maps the two.
+   */
+  beatForClip: (basename: string) => { sceneIndex: number; beatIndex: number } | undefined;
+  contextFor: (sceneIndex: number, beatIndex: number) => BeatVisualContext | undefined;
+  /**
+   * Is this file a card rather than a picture?
+   *
+   * THE HAZARD THIS EXISTS FOR. A colour fallback or a text overlay depicts nothing, so a vision
+   * model asked whether it belongs under a line of narration will quite reasonably say no — and
+   * the barrier would then refuse the only thing standing between that beat and an empty slot.
+   * Judging a card is not merely money for nothing; it actively empties beats.
+   *
+   * `checkBeatRelevance` has taken a `placeholder` flag since RONDE 103 phase 7 for exactly this,
+   * and it records the clip as seen-and-exempt rather than spending on it. Resolved by the caller
+   * because the classifier (`coverageOfAdoptEntry`) lives in a module that imports THIS one.
+   */
+  isPlaceholder: (basename: string) => boolean;
+  /**
+   * How many judgements this route may spend before it stops asking.
+   *
+   * The render-wide ceiling already bounds the total, but it is sized for the retrieval phase and
+   * would let a pathological render spend most of it here — at compose time, serialised behind the
+   * global vision lock, while ffmpeg is running. A video has on the order of ten clips; render
+   * 564 reached compose with four unjudged. This is a stop, not a target: when it is reached the
+   * remaining clips are left exactly as they were and the barrier's own answer stands.
+   */
+  budget: number;
+  spent: number;
+};
+
+const composeJudgeStorage = new AsyncLocalStorage<ComposeJudgeScope>();
+
+export function getComposeJudgeScope(): ComposeJudgeScope | undefined {
+  return composeJudgeStorage.getStore();
+}
+
+export function withComposeJudgeScope<T>(scope: ComposeJudgeScope, fn: () => T): T {
+  return composeJudgeStorage.run(scope, fn);
+}
+
+/** Why a clip reached compose without being asked about. Logged, never guessed at. */
+export type ComposeJudgeOutcome =
+  | "already_judged"
+  | "no_scope"
+  | "beat_unknown"
+  | "no_narration"
+  | "placeholder"
+  | "budget_spent"
+  | "judged";
+
+export async function ensureVerdictBeforeCompose(params: {
+  clipPath: string;
+  contentKey: string;
+  /** Supplied where the caller knows it — `pushClip` does; the compose barrier does not. */
+  sceneIndex?: number;
+  beatIndex?: number;
+  route?: string;
+}): Promise<{ outcome: ComposeJudgeOutcome; verdict?: BeatImageVerdict }> {
+  const scope = getComposeJudgeScope();
+  if (!scope) return { outcome: "no_scope" };
+
+  const existing =
+    scope.ledger.byClipPath.get(params.clipPath) ??
+    (params.contentKey && !params.contentKey.startsWith("file:")
+      ? scope.ledger.byContentKey.get(params.contentKey)
+      : undefined);
+  if (existing) return { outcome: "already_judged", verdict: existing.decision.verdict };
+
+  const at =
+    params.sceneIndex != null && params.beatIndex != null
+      ? { sceneIndex: params.sceneIndex, beatIndex: params.beatIndex }
+      : scope.beatForClip(path.basename(params.clipPath));
+  if (!at) return { outcome: "beat_unknown" };
+
+  const ctx = scope.contextFor(at.sceneIndex, at.beatIndex);
+  if (!ctx?.beatText?.trim()) return { outcome: "no_narration" };
+
+  /**
+   * A card is registered as exempt rather than judged — see `isPlaceholder`. This still writes an
+   * entry, so the beat reads as "deliberately not judged" instead of "nobody looked", and it
+   * spends nothing from either budget.
+   */
+  const placeholder = scope.isPlaceholder(path.basename(params.clipPath));
+  if (placeholder) {
+    await checkBeatRelevance({
+      clipPath: params.clipPath,
+      contentKey: params.contentKey,
+      ctx,
+      workDir: scope.workDir,
+      state: scope.state,
+      ledger: scope.ledger,
+      route: params.route ?? "compose",
+      placeholder: true,
+    });
+    return { outcome: "placeholder" };
+  }
+
+  if (scope.spent >= scope.budget) return { outcome: "budget_spent" };
+  scope.spent++;
+
+  const decision = await checkBeatRelevance({
+    clipPath: params.clipPath,
+    contentKey: params.contentKey,
+    ctx,
+    workDir: scope.workDir,
+    state: scope.state,
+    ledger: scope.ledger,
+    route: params.route ?? "compose",
+  });
+  return { outcome: "judged", verdict: decision.verdict };
+}
+
+/** How many verdicts the compose phase may buy. Overridable; see `ComposeJudgeScope.budget`. */
+export function maxComposePhaseJudgements(): number {
+  const raw = process.env.MAX_COMPOSE_PHASE_JUDGEMENTS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 0 && n <= 200 ? n : 24;
 }
 
 /** One line per render: what the content decider actually managed to decide. */
