@@ -1383,8 +1383,12 @@ export const appRouter = router({
        */
       const rows = await searchVideos(input);
       return rows.map((row) => {
-        const meta = row.metadata as Record<string, unknown> | null;
-        if (!meta || typeof meta !== "object" || !("pipelineReport" in meta)) return row;
+        /**
+         * Same reader, so a string-shaped column is stripped too. With the blind cast a JSON
+         * string fell through untouched and the whole report rode along in the list response.
+         */
+        const meta = readVideoMetadataObject(row);
+        if (!("pipelineReport" in meta)) return row;
         const { pipelineReport: _omitted, ...rest } = meta;
         return { ...row, metadata: rest };
       });
@@ -1401,7 +1405,8 @@ export const appRouter = router({
       .query(async ({ input }) => {
         const video = await getVideoById(input.videoId);
         if (!video) throw appTrpcError("NOT_FOUND", APP_ERROR.NOT_FOUND, "Resource not found");
-        const meta = (video.metadata ?? null) as Record<string, unknown> | null;
+        /** The canonical reader — a JSON string column returned `undefined` here before. */
+        const meta = readVideoMetadataObject(video);
         return {
           videoId: input.videoId,
           status: video.status,

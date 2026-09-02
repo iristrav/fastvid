@@ -292,8 +292,15 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
     tags?: string[];
     chapters?: { timestamp: string; title: string }[];
   } | null = null;
+  /**
+   * `videos.metadata` is a JSON column, and tRPC may deliver it as a parsed object OR as the raw
+   * JSON string depending on the driver. This handled only the string, so on an object it threw
+   * into the empty catch and the Metadata tab silently showed nothing. Both shapes now work.
+   */
   try {
-    if (video.metadata) parsedMeta = JSON.parse(video.metadata);
+    const raw: unknown = video.metadata;
+    if (typeof raw === "string" && raw.trim()) parsedMeta = JSON.parse(raw);
+    else if (raw && typeof raw === "object") parsedMeta = raw as NonNullable<typeof parsedMeta>;
   } catch {}
 
   const tabs = [

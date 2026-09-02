@@ -741,7 +741,9 @@ async function startServer() {
       const video = await getVideoById(videoId);
       if (!video) { res.status(404).json({ error: "Video not found" }); return; }
 
-      const meta = (video.metadata ?? null) as Record<string, unknown> | null;
+      /** The canonical reader — see readVideoMetadataObject on why a blind cast is not enough. */
+      const { readVideoMetadataObject } = await import("../db");
+      const meta = readVideoMetadataObject(video);
       const body = formatPipelineExport({
         videoId,
         status: video.status ?? null,
@@ -749,10 +751,10 @@ async function startServer() {
         prompt: video.prompt ?? null,
         createdAt: video.createdAt ?? null,
         errorMessage: video.errorMessage ?? null,
-        pipelineReport: (meta?.pipelineReport as never) ?? null,
-        pipelineGlance: (meta?.pipelineGlance as never) ?? null,
-        qualityReport: meta?.qualityReport ?? null,
-        pipelineStepTiming: meta?.pipelineStepTiming ?? null,
+        pipelineReport: (meta.pipelineReport as never) ?? null,
+        pipelineGlance: (meta.pipelineGlance as never) ?? null,
+        qualityReport: meta.qualityReport ?? null,
+        pipelineStepTiming: meta.pipelineStepTiming ?? null,
       });
 
       res.setHeader("Content-Type", "text/plain; charset=utf-8");

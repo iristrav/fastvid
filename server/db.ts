@@ -266,11 +266,45 @@ export async function getVideoByVideoUrl(videoUrl: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
+/**
+ * THE ONE READER FOR `videos.metadata`.
+ *
+ * ── Why this has to accept two shapes ───────────────────────────────────────────────────────
+ *
+ * The column is `json("metadata")`, and what comes back depends on the driver and its settings:
+ * mysql2 hands back a parsed object in some configurations and the raw JSON STRING in others. The
+ * codebase had grown four readers that each assumed one of those and disagreed:
+ *
+ *   1. this function          object only — a string silently became `{}`
+ *   2. admin.getVideoPipeline blind cast — `meta?.pipelineReport` on a string is `undefined`
+ *   3. updateVideoEditorSettings  `{ ...metadata }` — spreading a STRING yields a
+ *                                 character-indexed object (`{0:"{",1:'"',…}`) which is then
+ *                                 written back, DESTROYING every field including pipelineReport
+ *   4. Admin.tsx              `JSON.parse(metadata)` — string only, fails on an object
+ *
+ * At most one of those could be right at a time, and #3 does not merely misread: it corrupts. A
+ * saved editor setting could wipe a render's whole account of itself, which is exactly the
+ * "de pipeline is weg bij alle video's" symptom.
+ *
+ * So there is one reader, it accepts either shape, and it never throws — an unparseable value is
+ * an empty record, which is what every caller already handles.
+ */
 export function readVideoMetadataObject(video?: { metadata?: unknown } | null): Record<string, unknown> {
   const metadata = video?.metadata;
-  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
-    ? (metadata as Record<string, unknown>)
-    : {};
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    return metadata as Record<string, unknown>;
+  }
+  if (typeof metadata === "string" && metadata.trim()) {
+    try {
+      const parsed = JSON.parse(metadata) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* Not JSON. An unreadable column is empty, never a throw in the middle of a render. */
+    }
+  }
+  return {};
 }
 
 /** Merge keys into videos.metadata without dropping fields saved earlier in the pipeline. */
@@ -1477,7 +1511,7 @@ export function readVideoEditorSettings(video: {
   enableSubtitles?: number | null;
   metadata?: unknown;
 }): VideoEditorSettings {
-  const meta = (video.metadata ?? {}) as { backgroundMusicUrl?: string };
+  const meta = readVideoMetadataObject(video) as { backgroundMusicUrl?: string };
   return {
     enableSubtitles: video.enableSubtitles !== 0,
     backgroundMusicUrl: meta.backgroundMusicUrl ?? null,
@@ -1492,7 +1526,14 @@ export async function updateVideoEditorSettings(
   if (!db) return;
   const video = await getVideoById(id);
   if (!video) return;
-  const meta = { ...((video.metadata ?? {}) as Record<string, unknown>) };
+  /**
+   * The canonical reader, not a blind spread.
+   *
+   * `{ ...video.metadata }` on a JSON STRING produces `{0:"{",1:'"',…}` and this function writes
+   * that straight back — so saving an editor setting could erase qualityReport, pipelineReport and
+   * everything else the render stored. See `readVideoMetadataObject`.
+   */
+  const meta = { ...readVideoMetadataObject(video) };
   if (settings.backgroundMusicUrl !== undefined) {
     if (settings.backgroundMusicUrl) {
       meta.backgroundMusicUrl = settings.backgroundMusicUrl;
