@@ -1,0 +1,6 @@
+# Kept unpinned on purpose: yt-dlp is in a running arms race with YouTube's bot detection, and a
+# pinned version works for a few weeks and then silently downloads nothing. The Dockerfile
+# reinstalls on every build, so a redeploy is the upgrade path.
+yt-dlp>=2026.3.3
+fastapi>=0.115
+uvicorn[standard]>=0.32
