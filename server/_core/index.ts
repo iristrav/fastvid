@@ -586,12 +586,19 @@ async function startServer() {
     try {
       const { probeYouTubeCcPipeline } = await import("../videoPipeline");
       const probe = await probeYouTubeCcPipeline();
+      /**
+       * The flag is part of the verdict, and EITHER download route satisfies it.
+       *
+       * This used to require RapidAPI specifically and ignore ENABLE_YOUTUBE_SOURCING entirely, so
+       * it answered 200 for a deployment whose renders skip YouTube before reading a key (render
+       * 562's exact state), and 503 for one running only the cloud yt-dlp service.
+       */
       const ok =
         probe.ready &&
+        probe.sourcingEnabled &&
         probe.searchStatus === 200 &&
         probe.ccResultCount > 0 &&
-        probe.rapidApiStatus === 200 &&
-        probe.rapidApiHasFormat;
+        probe.downloadRoute !== null;
       res.status(ok ? 200 : 503).json({ ok, ...probe });
     } catch (err) {
       res.status(500).json({ ok: false, message: String(err) });

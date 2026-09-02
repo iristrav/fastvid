@@ -13325,23 +13325,50 @@ export async function downloadYouTubeCCClip(
 }
 
 /** Live probe: YouTube CC search + RapidAPI metadata (for /api/health/youtube-probe). */
+/**
+ * IS YOUTUBE ACTUALLY GOING TO WORK — answered without spending a render.
+ *
+ * ── Two things this used to get wrong ───────────────────────────────────────────────────────
+ *
+ * `youtubeCcReady()` asks only about KEYS. It says nothing about ENABLE_YOUTUBE_SOURCING, and that
+ * flag is the very first guard `fetchYouTubeCCClips` checks — so this probe could answer "YouTube
+ * CC pipeline OK" for a deployment whose renders skip YouTube before reading a single key. That is
+ * precisely the state render 562 was in, and a green probe would have made it harder to find, not
+ * easier.
+ *
+ * And it only ever tested the RapidAPI route. `YOUTUBE_CC_DL_SERVICE` — the cloud yt-dlp service,
+ * which `downloadYouTubeCCClip` tries FIRST — was never probed, so an operator running only that
+ * route got a red light from a working configuration.
+ *
+ * Both are now part of the answer: the flag is reported, and the download side passes when EITHER
+ * route works, naming which one did.
+ */
 export async function probeYouTubeCcPipeline(): Promise<{
   ready: boolean;
+  /** ENABLE_YOUTUBE_SOURCING. Keys without this mean renders never reach the keys. */
+  sourcingEnabled: boolean;
   searchStatus: number | null;
   ccResultCount: number;
   rapidApiStatus: number | null;
   rapidApiHasFormat: boolean;
+  /** Which download route answered, if any — the pipeline tries cloud first, then RapidAPI. */
+  downloadRoute: "cloud" | "rapidapi" | null;
+  cloudStatus: number | null;
   sampleVideoId: string | null;
   message: string;
 }> {
+  const sourcingEnabled = youtubeSourcingEnabled();
   const ready = youtubeCcReady();
   if (!ready) {
     return {
       ready: false,
+      sourcingEnabled,
       searchStatus: null,
       ccResultCount: 0,
       rapidApiStatus: null,
       rapidApiHasFormat: false,
+      downloadRoute: null,
+      cloudStatus: null,
       sampleVideoId: null,
       message: "Set YOUTUBE_API_KEY and RAPIDAPI_KEY (or YOUTUBE_CC_DL_SERVICE)",
     };
@@ -13372,13 +13399,40 @@ export async function probeYouTubeCcPipeline(): Promise<{
   } catch (err) {
     return {
       ready: true,
+      sourcingEnabled,
       searchStatus,
       ccResultCount: 0,
       rapidApiStatus: null,
       rapidApiHasFormat: false,
+      downloadRoute: null,
+      cloudStatus: null,
       sampleVideoId: null,
       message: `YouTube search failed: ${(err as Error).message}`,
     };
+  }
+
+  /**
+   * The cloud yt-dlp service, tried first — the same order `downloadYouTubeCCClip` uses.
+   *
+   * Its `/health` is enough: it reports whether yt-dlp and ffmpeg are present and whether auth is
+   * configured, without spending a real download on a probe. A service that answers it is a
+   * service the pipeline can reach and that is holding up its end.
+   */
+  const cloudService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
+  let cloudStatus: number | null = null;
+  if (cloudService) {
+    try {
+      const token = process.env.YOUTUBE_CC_DL_TOKEN?.trim();
+      const resp = await fetchWithTimeout(
+        `${cloudService}/health`,
+        10_000,
+        "YouTube CC probe cloud service",
+        token ? { headers: { Authorization: `Bearer ${token}` } } : {}
+      );
+      cloudStatus = resp.status;
+    } catch {
+      cloudStatus = null;
+    }
   }
 
   let rapidApiStatus: number | null = null;
@@ -13410,25 +13464,42 @@ export async function probeYouTubeCcPipeline(): Promise<{
 
   const searchOk = searchStatus === 200 && ccResultCount > 0;
   const rapidOk = rapidApiStatus === 200 && rapidApiHasFormat;
+  const cloudOk = cloudStatus === 200;
+  /** EITHER route is enough — the pipeline falls through cloud to RapidAPI on every download. */
+  const downloadRoute: "cloud" | "rapidapi" | null = cloudOk ? "cloud" : rapidOk ? "rapidapi" : null;
+
   let message = "YouTube CC pipeline OK";
-  if (!searchOk) {
+  if (!sourcingEnabled) {
+    /**
+     * FIRST, because it outranks everything below it. The keys can be perfect and the render will
+     * still skip YouTube before reading them — which is exactly what render 562 did.
+     */
+    message =
+      "ENABLE_YOUTUBE_SOURCING is not true — the keys below may be fine, but renders skip " +
+      "YouTube before reading them";
+  } else if (!searchOk) {
     message =
       searchStatus === 403
         ? "YouTube API key invalid or quota exceeded"
         : `YouTube CC search returned ${ccResultCount} results (HTTP ${searchStatus})`;
-  } else if (!rapidOk) {
-    message =
-      rapidApiStatus === 403 || rapidApiStatus === 401
+  } else if (!downloadRoute) {
+    message = cloudService
+      ? `No download route answered — cloud service HTTP ${cloudStatus ?? "unreachable"}, ` +
+        `RapidAPI HTTP ${rapidApiStatus ?? "error"}`
+      : rapidApiStatus === 403 || rapidApiStatus === 401
         ? "RapidAPI key invalid or not subscribed to ytstream-download-youtube-videos"
         : `RapidAPI metadata HTTP ${rapidApiStatus ?? "error"} — no MP4 format`;
   }
 
   return {
     ready: true,
+    sourcingEnabled,
     searchStatus,
     ccResultCount,
     rapidApiStatus,
     rapidApiHasFormat,
+    downloadRoute,
+    cloudStatus,
     sampleVideoId,
     message,
   };
