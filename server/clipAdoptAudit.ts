@@ -3,6 +3,10 @@
  */
 import * as path from "path";
 import { recordGoodClipAdoption } from "./clipGoodCache";
+import {
+  relevanceVerdictForRenderedAsset,
+  type BeatRelevanceLedger,
+} from "./beatVisualRelevance";
 import type { VisualSourceLedger } from "./visualSourceLineage";
 
 export type ClipAdoptEntry = {
@@ -76,6 +80,115 @@ export function lineageLedgerFor(audit: ClipAdoptEntry[]): VisualSourceLedger | 
   return ledgerByAudit.get(audit);
 }
 
+/**
+ * RENDER 563 — WHICH ROUTE ADOPTED A PICTURE NOBODY LOOKED AT.
+ *
+ * ── What the render said about itself ───────────────────────────────────────────────────────
+ *
+ *     beat image gate — attempts=38 answered=38 (fits=20 does_not_fit=18) failed=0 never_asked=21
+ *
+ *     [BeatVisual] scene=0 beat=0 verification=never_asked reason=real_footage_never_judged source=archive
+ *     [BeatVisual] scene=1 beat=0 verification=never_asked reason=real_footage_never_judged source=archive
+ *     [BeatVisual] scene=1 beat=1 verification=never_asked reason=real_footage_never_judged source=rescue_stock
+ *     [BeatVisual] scene=1 beat=2 verification=never_asked reason=real_footage_never_judged source=archive
+ *
+ * Real footage in the delivered video that the picture editor was never asked about. Not an
+ * outage — `failed=0`, and every one of the 38 questions put was answered. Not the budget either:
+ * 38 of a possible 120. The questions were simply never asked.
+ *
+ * ── Why this is measured rather than guessed ────────────────────────────────────────────────
+ *
+ * `recordClipAdopt` has 35 call sites. Two routes are known to do the right thing — the funnel's
+ * look loop judges each candidate and puts an unjudged winner back, and the adopt loop requeues a
+ * refused clip instead of dropping it. Reading the other thirty-three by eye and deciding which
+ * ones can reach an adoption without a verdict is exactly the kind of reasoning that has been
+ * wrong before in this file's own history.
+ *
+ * So the render answers it. Every adoption already passes through here — that is the whole
+ * argument for `bindLineageLedger` directly above — and here the relevance ledger can be asked
+ * whether THIS clip was judged for THIS beat. When it was not, the adoption is recorded with its
+ * ROUTE LABEL, and the render prints the list. The next render names the guilty routes instead of
+ * anyone inferring them.
+ *
+ * Nothing is blocked and no verdict is invented: this observes. Deciding what a route should do
+ * instead — keep searching until something passes — is the change that follows, and it needs to
+ * know where to be made.
+ */
+export type UnjudgedAdoption = {
+  sceneIndex: number;
+  beatIndex: number;
+  basename: string;
+  /** The adopt-route label, which is the thing this measurement exists to name. */
+  source: string;
+};
+
+const relevanceByAudit = new WeakMap<ClipAdoptEntry[], BeatRelevanceLedger>();
+const unjudgedByAudit = new WeakMap<ClipAdoptEntry[], UnjudgedAdoption[]>();
+
+export function bindRelevanceLedger(audit: ClipAdoptEntry[], ledger: BeatRelevanceLedger): void {
+  relevanceByAudit.set(audit, ledger);
+}
+
+export function unjudgedAdoptions(audit: ClipAdoptEntry[]): readonly UnjudgedAdoption[] {
+  return unjudgedByAudit.get(audit) ?? [];
+}
+
+/**
+ * One line per route, so the report says WHERE rather than merely HOW MANY.
+ *
+ * Returns [] when every adopted picture was judged — the state this is meant to reach, and one
+ * that must not print a line claiming a clean render is worth reading about.
+ */
+export function formatUnjudgedAdoptions(audit: ClipAdoptEntry[]): string[] {
+  const found = unjudgedAdoptions(audit);
+  if (found.length === 0) return [];
+  const byRoute = new Map<string, UnjudgedAdoption[]>();
+  for (const entry of found) {
+    const list = byRoute.get(entry.source) ?? [];
+    list.push(entry);
+    byRoute.set(entry.source, list);
+  }
+  const lines = [
+    `[UnjudgedAdoption] ${found.length} clip(s) became a beat's picture with no verdict on that beat`,
+  ];
+  for (const [source, entries] of [...byRoute.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    const where = entries
+      .slice(0, 6)
+      .map((e) => `s${e.sceneIndex}b${e.beatIndex}`)
+      .join(",");
+    lines.push(
+      `[UnjudgedAdoption]   route=${source} count=${entries.length} beats=${where}` +
+        (entries.length > 6 ? ",…" : "")
+    );
+  }
+  return lines;
+}
+
+/** Records an adoption the relevance ledger holds no verdict for. Never throws, never blocks. */
+function noteIfUnjudged(
+  audit: ClipAdoptEntry[],
+  sceneIndex: number,
+  beatIndex: number,
+  clipPath: string,
+  source: string,
+  contentKey?: string
+): void {
+  const relevance = relevanceByAudit.get(audit);
+  /** No ledger bound is not evidence of anything — a caller outside a render records nothing. */
+  if (!relevance) return;
+  const verdict = relevanceVerdictForRenderedAsset(relevance, {
+    localPath: clipPath,
+    currentFilename: path.basename(clipPath),
+    ...(contentKey ? { contentKey } : {}),
+    sceneIndex,
+    beatIndex,
+  });
+  if (verdict) return;
+  const list = unjudgedByAudit.get(audit) ?? [];
+  list.push({ sceneIndex, beatIndex, basename: path.basename(clipPath), source });
+  unjudgedByAudit.set(audit, list);
+}
+
 export function recordClipAdopt(
   audit: ClipAdoptEntry[],
   sceneIndex: number,
@@ -93,6 +206,15 @@ export function recordClipAdopt(
   // long render must not stop recording provenance at clip 120.
   const ledger = ledgerByAudit.get(audit);
   const route = adoptRouteForSource(source);
+  /**
+   * RENDER 563 — before anything else, and outside the `if (ledger)` below.
+   *
+   * The lineage may be absent; whether a picture was looked at is a separate question with its own
+   * ledger, and a render missing one must still be able to answer the other. Placed with the same
+   * reasoning as the MAX_ENTRIES note above: this is the record of what went into the video, and
+   * it must not stop at clip 120 either.
+   */
+  noteIfUnjudged(audit, sceneIndex, beatIndex, clipPath, source);
   if (ledger) {
     const record = ledger.resolve(clipPath);
     if (record) {

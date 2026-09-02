@@ -300,7 +300,13 @@ import {
   formatEligibleNotAdoptedByProvider,
 } from "./beatOutcomeAudit";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
-import { bindLineageLedger, createClipAdoptAudit, recordClipAdopt } from "./clipAdoptAudit";
+import {
+  bindLineageLedger,
+  bindRelevanceLedger,
+  createClipAdoptAudit,
+  formatUnjudgedAdoptions,
+  recordClipAdopt,
+} from "./clipAdoptAudit";
 import {
   UNVERIFIED_PROVIDER,
   VisualSourceLedger,
@@ -17166,6 +17172,15 @@ export function createVisualDedupState(
   // binding the ledger to that array once here wires lineage into all of them at once — and
   // makes it impossible for a future adoption route to record an audit entry without one.
   bindLineageLedger(state.clipAdoptAudit, state.sourcingCache.lineage);
+  /**
+   * RENDER 563 — the same binding, for the question "did anybody look at this picture".
+   *
+   * Bound here for the identical reason stated above: all 35 adoption sites hand over this one
+   * array, so a route cannot adopt a beat's picture without the relevance ledger being reachable
+   * at the moment it does. That is what lets the render NAME the routes that adopt unjudged
+   * footage instead of anyone reading 35 call sites and deciding which look risky.
+   */
+  bindRelevanceLedger(state.clipAdoptAudit, state.beatRelevance);
   // Same reasoning on the refusal side: recordClipReject is the one point every gate reports to.
   state.clipRejectAudit.lineage = state.sourcingCache.lineage;
   return state;
@@ -40110,6 +40125,19 @@ async function _runVideoPipelineInner(
           formatCandidateSubjectSummary(visualDedup.candidateSubjectGate)
         )
       );
+      /**
+       * RENDER 563 — which routes put a picture on screen that nobody looked at.
+       *
+       * `never_asked=21` and four `[BeatVisual] … real_footage_never_judged` lines said THAT it
+       * happened; nothing said WHERE. These lines name the adopt route, because that is the fact
+       * needed to fix it and the one thing 35 call sites cannot be read for by eye.
+       *
+       * Warned rather than logged: an unjudged picture in a delivered video is not routine, and a
+       * clean render prints nothing here at all.
+       */
+      for (const line of formatUnjudgedAdoptions(visualDedup.clipAdoptAudit)) {
+        console.warn(pipelineReport.add("summary", line));
+      }
       /**
        * RONDE 95 (§5) — the manifest, and its counterpart.
        *
