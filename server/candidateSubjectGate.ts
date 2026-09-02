@@ -39,6 +39,8 @@
  * short text call, and only the download shortlist is ever asked about — not the 1814.
  */
 
+import { AsyncLocalStorage } from "async_hooks";
+
 import { invokeLLM, isLlmPreflightRefusal, isLlmProviderUnavailable } from "./_core/llm";
 
 export type CandidateSubjectVerdict = "plausible" | "does_not_belong" | "unknown";
@@ -296,6 +298,107 @@ export async function judgeCandidateSubject(params: {
     }
     return decline(`subject check failed: ${(err as Error).message?.slice(0, 80)}`);
   }
+}
+
+/* ═══════════════════════ the gate, where the download actually happens ═══════════════════════ */
+
+/**
+ * RENDER 563 — `[SubjectGate] asked=0`. THE GATE SHIPPED AND NEVER RAN.
+ *
+ * ── What happened ───────────────────────────────────────────────────────────────────────────
+ *
+ * The screen above was wired into the retrieval funnel's shortlist loop, which was the route the
+ * render-562 clip came in on. It is not the only route. `downloadAndTrimPoolCandidate` is called
+ * directly by the scene-pool path as well, and that call fetches bytes without passing the funnel
+ * loop at all — so on the first render after the gate was added, it was asked about nothing while
+ * the render downloaded and adopted material nobody had looked at.
+ *
+ * ── Why the fix is a scope and not a second call ────────────────────────────────────────────
+ *
+ * This exact seam has now failed seven times in this codebase: `recordClipAdopt` (R53), the
+ * still/moving counters (R62), the beat outcome audit (R70), failed-asset registration (R86), the
+ * source-length memo, the vision verdict counter, and this. Every one is the same shape — a rule
+ * that N call sites must remember, remembered by one.
+ *
+ * So the rule moves to the place the routes have in common: the download itself. A route cannot
+ * fetch a pool candidate without passing through `screenCandidateBeforeDownload`, because there is
+ * no other way to fetch one. The context comes from the ambient scope — the pattern this codebase
+ * already uses for `searchProvenanceStorage`, `renderTopicStorage` and `sourceFloorStorage` — so
+ * no caller has to thread a beat's narration through five signatures to make the check possible.
+ *
+ * Outside a scope this allows everything and touches no counter, so a caller that never opens one
+ * behaves exactly as it did before this existed.
+ */
+export type SubjectGateScope = {
+  state: CandidateSubjectGateState;
+  /**
+   * The narration this beat is for, or undefined when the render cannot place the beat. ONE
+   * resolver for every route, so two routes cannot judge the same candidate against different
+   * context and reach different answers.
+   */
+  contextFor: (sceneIndex: number, beatIndex: number) => CandidateSubjectContext | undefined;
+  /** Where a refusal is recorded, so the download site does not need the render's audit. */
+  onRefusal?: (params: {
+    sceneIndex: number;
+    beatIndex: number;
+    facts: CandidateSubjectFacts;
+    reason: string;
+  }) => void;
+};
+
+const subjectGateStorage = new AsyncLocalStorage<SubjectGateScope>();
+
+export function getSubjectGateScope(): SubjectGateScope | undefined {
+  return subjectGateStorage.getStore();
+}
+
+export function withSubjectGateScope<T>(scope: SubjectGateScope, fn: () => T): T {
+  return subjectGateStorage.run(scope, fn);
+}
+
+/**
+ * The one call every download route makes before fetching a pool candidate's bytes.
+ *
+ * Fails open in every direction the judge does, plus two of its own: no scope, and a beat this
+ * render cannot place. Both are counted as declines rather than passed over silently — `asked=0`
+ * with `declined=0` is how this defect looked, and it read as "the gate had nothing to do".
+ */
+export async function screenCandidateBeforeDownload(params: {
+  facts: CandidateSubjectFacts;
+  sceneIndex: number;
+  beatIndex: number;
+  timeoutMs?: number;
+}): Promise<CandidateSubjectDecision> {
+  const scope = getSubjectGateScope();
+  const open = (reason: string): CandidateSubjectDecision => ({
+    verdict: "unknown",
+    allowed: true,
+    reason,
+    evaluated: false,
+  });
+  if (!scope) return open("no subject-gate scope");
+
+  const ctx = scope.contextFor(params.sceneIndex, params.beatIndex);
+  if (!ctx) {
+    scope.state.skipped++;
+    return open(`no narration recorded for s${params.sceneIndex}b${params.beatIndex}`);
+  }
+
+  const decision = await judgeCandidateSubject({
+    facts: params.facts,
+    ctx,
+    state: scope.state,
+    ...(params.timeoutMs != null ? { timeoutMs: params.timeoutMs } : {}),
+  });
+  if (!decision.allowed) {
+    scope.onRefusal?.({
+      sceneIndex: params.sceneIndex,
+      beatIndex: params.beatIndex,
+      facts: params.facts,
+      reason: decision.reason,
+    });
+  }
+  return decision;
 }
 
 /** One line per render, so the saving — and the cost — is countable. */

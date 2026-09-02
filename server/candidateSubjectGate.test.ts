@@ -305,8 +305,23 @@ describe("it sits in front of the download, not after it", () => {
     .filter((l) => !l.trim().startsWith("//"))
     .join("\n");
 
+  /**
+   * RENDER 563 moved this rule rather than changing it.
+   *
+   * This test used to look for a direct `judgeCandidateSubject({` call in the funnel loop, which
+   * is exactly what left the scene-pool route unscreened — `[SubjectGate] asked=0`. The gate now
+   * has ONE entry point, at the download itself, and the funnel reaches it through that. So the
+   * property is unchanged — the shortlist is screened — and the assertion follows it to where the
+   * screen actually lives. `subjectGateAtTheDownload.test.ts` pins the chokepoint.
+   */
   it("the funnel screens its shortlist", () => {
-    expect(PIPE, "nothing calls the subject gate").toContain("judgeCandidateSubject({");
+    expect(PIPE, "nothing screens the funnel's shortlist").toContain(
+      "screenCandidateBeforeDownload({"
+    );
+    expect(
+      PIPE,
+      "a route judges a candidate directly again, which is how the pool path went unscreened"
+    ).not.toContain("judgeCandidateSubject(");
   });
 
   /** The order is the whole point: screen, then download what survived. */
@@ -343,9 +358,16 @@ describe("it sits in front of the download, not after it", () => {
     expect(block).not.toMatch(/for \(const candidate of toScore\)/);
   });
 
+  /**
+   * Also relocated, not relaxed. The funnel loop used to record its own refusals, which meant the
+   * pool route's refusals — once it had any — would have gone unrecorded. The render now registers
+   * one recorder with the gate's scope and every route's refusal reaches it.
+   */
   it("records a refusal in the reject audit so the beat can explain itself", () => {
-    const at = PIPE.indexOf("const subjectScreened");
-    const block = PIPE.slice(at, at + 2200);
+    const at = PIPE.indexOf("subjectGateScope.onRefusal =");
+    expect(at, "no route records a subject-gate refusal any more").toBeGreaterThan(-1);
+    const block = PIPE.slice(at, at + 500);
+    expect(block).toContain("recordClipReject(");
     expect(block).toContain('"subject_gate"');
   });
 

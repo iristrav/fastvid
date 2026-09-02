@@ -499,9 +499,11 @@ import {
 } from "./coverageFillPlan";
 import {
   createCandidateSubjectGateState,
-  judgeCandidateSubject,
+  screenCandidateBeforeDownload,
+  withSubjectGateScope,
   formatCandidateSubjectSummary,
   type CandidateSubjectGateState,
+  type SubjectGateScope,
 } from "./candidateSubjectGate";
 import {
   createSourceFloorMemo,
@@ -4488,6 +4490,41 @@ export async function downloadAndTrimPoolCandidate(
   /** RONDE 88: the render's sourcing cache, so this download opens a lineage like every other. */
   sourcingCache?: SourcingCache
 ): Promise<string | null> {
+  /**
+   * RENDER 563 — the subject screen, at the download rather than at one of its callers.
+   *
+   * `[SubjectGate] asked=0` on the first render after the gate shipped: it was wired into the
+   * retrieval funnel's shortlist loop, and the scene-pool route calls this function directly. So
+   * the check ran nowhere while the render fetched and adopted material nobody had looked at.
+   *
+   * Here it cannot be skipped, because there is no way to fetch a pool candidate that does not
+   * pass through this line. The narration comes from the ambient scope — see the note in
+   * candidateSubjectGate.ts on why this is a scope and not a sixth parameter — and with no scope
+   * open the call allows everything, so nothing outside a render changes.
+   *
+   * NOTHING IS FETCHED to answer it, not even a thumbnail: the metadata was returned by the search
+   * that already happened.
+   */
+  const subjectScreen = await screenCandidateBeforeDownload({
+    facts: {
+      id: candidate.id,
+      assetId: candidate.assetId,
+      source: candidate.source,
+      title: candidate.title,
+      description: candidate.description,
+      tags: candidate.tags,
+    },
+    sceneIndex,
+    beatIndex,
+  });
+  if (!subjectScreen.allowed) {
+    console.warn(
+      `[SubjectGate] s${sceneIndex}b${beatIndex} REFUSED ${candidate.source}:${candidate.assetId} ` +
+        `— ${subjectScreen.reason} (no download made)`
+    );
+    return null;
+  }
+
   const safeId = candidate.assetId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
   const isVideo = candidate.mediaType === "video";
   const ext = isVideo ? "mp4" : "jpg";
@@ -32159,12 +32196,25 @@ async function fetchSceneVisualsInner(
          * candidates"). The screens are independent of one another, so they all go at once and
          * the results are applied in shortlist order.
          */
+        /**
+         * RENDER 563 — through the SAME entry point the download itself uses.
+         *
+         * This loop used to call `judgeCandidateSubject` directly, with a context it built here.
+         * The scene-pool route calls `downloadAndTrimPoolCandidate` without passing this loop, and
+         * so had no screen at all — `[SubjectGate] asked=0` on the render after the gate shipped.
+         *
+         * The check now lives at the download, where no route can miss it. This loop stays because
+         * it asks EARLY and in PARALLEL — refused candidates never enter a download batch, and the
+         * screens go six at once instead of three — but it is an optimisation now, not the
+         * enforcement, and it asks the identical question: same function, same ambient context,
+         * and the judge's own cache means the download's re-ask costs nothing.
+         */
         const subjectVerdicts = await Promise.all(
           toScore.map(async (candidate) => {
             const pool = candidate.poolCandidate;
             /** Curated archive picks are the operator's own library — not screened by this. */
             if (!pool) return { candidate, pool: null, decision: null };
-            const decision = await judgeCandidateSubject({
+            const decision = await screenCandidateBeforeDownload({
               facts: {
                 id: pool.id,
                 assetId: pool.assetId,
@@ -32173,13 +32223,8 @@ async function fetchSceneVisualsInner(
                 description: pool.description,
                 tags: pool.tags,
               },
-              ctx: {
-                beatText: beat.text,
-                sceneText: scene.text,
-                videoTitle: asVideoTitleString(videoTitle) || undefined,
-                anchors: beatContext.subjects,
-              },
-              state: dedup.candidateSubjectGate,
+              sceneIndex: scene.index,
+              beatIndex: beat.index,
             });
             return { candidate, pool, decision };
           })
@@ -32193,10 +32238,6 @@ async function fetchSceneVisualsInner(
           console.warn(
             `[SubjectGate] s${scene.index}b${beat.index} REFUSED ${pool.source}:${pool.assetId} ` +
               `— ${decision.reason} (no download made)`
-          );
-          recordClipReject(
-            dedup.clipRejectAudit, scene.index, beat.index,
-            `${pool.source}:${pool.assetId}`, "subject_gate", pool.title
           );
         }
 
@@ -36735,14 +36776,29 @@ export async function runVideoPipeline(
    * one: 222 identical refusals over 34 assets in a single render, one asset refused 26 times.
    */
   const sourceFloorMemo = createSourceFloorMemo();
+  /**
+   * RENDER 563 — the subject gate's scope, opened for the whole render.
+   *
+   * Opened HERE, beside the other render scopes, rather than where the beat records it reads are
+   * created — that is deep inside `_runVideoPipelineInner`, and a scope entered there would have
+   * to wrap the rest of a very long function. The resolver is therefore installed later, once the
+   * render has scenes and a beat map; until then it places no beat and the gate declines, which is
+   * counted rather than hidden.
+   */
+  const subjectGateScope: SubjectGateScope = {
+    state: createCandidateSubjectGateState(),
+    contextFor: () => undefined,
+  };
   return withSourceFloorMemo(sourceFloorMemo, () =>
-    withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
-      runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
-        runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
-          videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
-          sourceFloorMemo
-        ))
-      ), ownerUserId)
+    withSubjectGateScope(subjectGateScope, () =>
+      withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
+        runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
+          runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
+            videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
+            sourceFloorMemo, subjectGateScope
+          ))
+        ), ownerUserId)
+      )
     )
   );
 }
@@ -36757,7 +36813,9 @@ async function _runVideoPipelineInner(
   enableSubtitles = false,
   userPrompt?: string,
   /** Passed in as well as being ambient, so the render can report on it at the end. */
-  sourceFloorMemo?: SourceFloorMemo
+  sourceFloorMemo?: SourceFloorMemo,
+  /** Ambient for the download routes; passed in so this function can install its resolver. */
+  subjectGateScope?: SubjectGateScope
 ): Promise<string> {
   videoLength = normalizeVideoLength(videoLength);
   const maxScenes = getScenesForLength(videoLength);
@@ -37213,6 +37271,41 @@ async function _runVideoPipelineInner(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked, videoId });
+    /**
+     * RENDER 563 — the subject gate can now place a beat.
+     *
+     * The scope was opened before this function was called (see runVideoPipeline); this is where
+     * it gains the two things it needs and could not have had earlier: the render's beat record
+     * and its scenes. `sceneBeatsBySceneIndex` is the record every beat-resolving route writes
+     * through `applyVoiceAlignmentToBeats`, so a beat is placeable no matter which route resolved
+     * it.
+     *
+     * The state is shared rather than copied, so `[SubjectGate]` at the end of the render reports
+     * the same counters the download sites incremented.
+     */
+    if (subjectGateScope) {
+      visualDedup.candidateSubjectGate = subjectGateScope.state;
+      subjectGateScope.contextFor = (sceneIndex, beatIndex) => {
+        const beatText = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.text;
+        if (!beatText?.trim()) return undefined;
+        const scene = scenes.find((s) => s.index === sceneIndex);
+        return {
+          beatText,
+          ...(scene?.text ? { sceneText: scene.text } : {}),
+          ...(asVideoTitleString(videoTitle) ? { videoTitle: asVideoTitleString(videoTitle) } : {}),
+          /** The same anchors the funnel used to build inline — one answer for both routes. */
+          anchors: [activeMemoryEntity(), ...(scene?.personNames ?? [])].filter(
+            (x): x is string => Boolean(x)
+          ),
+        };
+      };
+      subjectGateScope.onRefusal = ({ sceneIndex, beatIndex, facts, reason: _reason }) => {
+        recordClipReject(
+          visualDedup.clipRejectAudit, sceneIndex, beatIndex,
+          `${facts.source}:${facts.assetId}`, "subject_gate", facts.title
+        );
+      };
+    }
     visualDedup.stepTiming = pipelineStepTiming;
     visualDedup.videoLength = videoLength;
     visualDedup.pipelineStartedMs = pipelineWallStartMs;
