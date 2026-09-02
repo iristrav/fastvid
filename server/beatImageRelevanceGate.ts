@@ -385,7 +385,38 @@ function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
   return lines;
 }
 
-function buildPrompt(
+/**
+ * RENDER 563 — THE JUDGE WAS ANSWERING ABOUT THE FILM, NOT ABOUT THE LINE.
+ *
+ * ── Its own words ───────────────────────────────────────────────────────────────────────────
+ *
+ *     [BeatRelevance] s0b1 fits
+ *       depicts="Street scene with people in front of a building marked 'Apteka'…"
+ *       reason="The footage appears historical, depicting a scene from the World War II era.
+ *               It fits the context of the documentary, which is about Hitler and the choices…"
+ *
+ * The narration for that shot was about Martin Bormann and a note that reached Berlin. The clip is
+ * a pharmacy street somewhere in Eastern Europe. The judge approved it because it fits THE
+ * DOCUMENTARY — and read literally, the prompt let it: `Documentary: "<title>"` was presented as
+ * plain context, and "the subject, the place or the period fits" never said whose subject, whose
+ * place, whose period. Any wartime street fits a wartime film, so almost nothing could fail.
+ *
+ * ── What changed, and what deliberately did not ─────────────────────────────────────────────
+ *
+ * Only the question's SCOPE. The title and the scene are marked as background rather than as the
+ * thing being matched, the decision clause is pinned to the narration line, and one sentence names
+ * the exact substitution the model made so it cannot be reached by accident again.
+ *
+ * The threshold is untouched. Honest atmospheric footage of the right era and setting still
+ * belongs — it is simply the era and setting THIS LINE describes rather than the film's. Archive
+ * material with no caption still belongs. "When you genuinely cannot tell, say it belongs" is
+ * unchanged, so the gate still fails open, and every DOES-NOT-BELONG clause is exactly as it was.
+ * A stricter bar would empty montages, which is a product decision and not this fix.
+ *
+ * Exported so its wording can be held by tests: this text IS the gate's behaviour, and it was
+ * unreachable from a test while it was a local function.
+ */
+export function buildBeatImagePrompt(
   beatText: string,
   frameCount: number,
   videoTitle?: string,
@@ -404,9 +435,11 @@ function buildPrompt(
         " part-way through, so judge what is on screen across all of them, not one instant."
       : "",
     "",
-    videoTitle ? `Documentary: "${videoTitle}"` : "",
-    sceneText && sceneText !== beatText ? `Scene: "${sceneText.slice(0, 300)}"` : "",
-    `Narration for this shot: "${beatText.slice(0, 300)}"`,
+    videoTitle ? `Documentary, for background only — NOT the question: "${videoTitle}"` : "",
+    sceneText && sceneText !== beatText
+      ? `Scene, for background only — NOT the question: "${sceneText.slice(0, 300)}"`
+      : "",
+    `THE QUESTION — narration for this shot: "${beatText.slice(0, 300)}"`,
     ...formatAnchors(anchors),
     "",
     many
@@ -415,14 +448,27 @@ function buildPrompt(
       : "First say plainly what the frame shows — the subject, the period it looks like, and any" +
         " text or graphics visible in it.",
     "",
-    "Then decide. It BELONGS when a viewer would accept it under this narration: the subject, the",
-    "place or the period fits, or it is honest atmospheric footage of the right era and setting.",
-    "Archive material with no caption still belongs if what it shows fits.",
+    "Then decide, about that ONE line of narration and nothing else. The viewer hears that",
+    "sentence while looking at this picture; the documentary as a whole is not what they are",
+    "watching in this moment.",
+    "",
+    "It BELONGS when a viewer would accept it under THAT LINE: what the line is about — its",
+    "subject, its place or its period — is what is on screen, or the clip is honest atmospheric",
+    "footage of the era and setting THAT LINE describes.",
+    "Archive material with no caption still belongs if what it shows fits that line.",
     "",
     "It DOES NOT belong when the frame is plainly about something else — a different subject,",
     "a different century, a different country with nothing to do with the story, modern footage",
     "under historical narration, a logo, a title card, a screenshot of a webpage or a person",
     "talking to camera about an unrelated topic.",
+    /**
+     * The exact substitution render 563 made, named. Without this the model can satisfy every
+     * other rule above and still answer the wrong question, because "wartime footage under a
+     * wartime film" is a true sentence — it is just not the question.
+     */
+    "Fitting the documentary's general topic is NOT a reason to say it belongs. \"This is wartime",
+    "footage and this is a wartime film\" is the answer that puts the wrong picture on screen: it",
+    "would be equally true of any other shot in the film, so it decides nothing about this one.",
     many
       ? "If most of what is on screen is a title card, a leader or a countdown rather than actual" +
         " footage, it does not belong: the viewer would be looking at text, not at the story."
@@ -565,7 +611,7 @@ export async function judgeBeatImage(params: {
             content: [
               {
                 type: "text",
-                text: buildPrompt(beatText, dataUrls.length, videoTitle, sceneText, params.anchors),
+                text: buildBeatImagePrompt(beatText, dataUrls.length, videoTitle, sceneText, params.anchors),
               },
               // "low" detail: enough to recognise subject, period and on-screen text, at a
               // fraction of the tokens a full-resolution read would cost. That is what makes

@@ -114,14 +114,20 @@ describe("RONDE 175 §3 — the judge is told what it is checking against", () =
      * leaves a version that builds the anchors and never prints them — which is the state before
      * this round, and a mutation proved the test could not see it.
      */
-    const idx = src.indexOf("function buildPrompt(");
-    expect(idx).toBeGreaterThan(0);
+    /**
+     * RENDER 563 renamed this function and rewrote the sentence below it. The anchors, and their
+     * position after the narration, are unchanged — so this follows the rename rather than being
+     * relaxed. The narration line itself is now labelled THE QUESTION, because the judge was
+     * answering about the documentary instead; see beatJudgeAsksAboutTheLine.test.ts.
+     */
+    const idx = src.indexOf("export function buildBeatImagePrompt(");
+    expect(idx, "the prompt builder has moved or been renamed again").toBeGreaterThan(0);
     const prompt = src.slice(idx, src.indexOf("\n}", src.indexOf(".join(\"\\n\");", idx)));
     expect(prompt).toContain("...formatAnchors(anchors),");
     // ...positioned after the narration, so the judge reads the line before its anchors.
-    expect(prompt.indexOf("Narration for this shot")).toBeLessThan(
-      prompt.indexOf("...formatAnchors(anchors),")
-    );
+    const narrationAt = prompt.indexOf("narration for this shot");
+    expect(narrationAt, "the narration line is gone from the prompt").toBeGreaterThan(-1);
+    expect(narrationAt).toBeLessThan(prompt.indexOf("...formatAnchors(anchors),"));
   });
 
   it("WHY it matters: the tie-break lets doubt through", () => {
