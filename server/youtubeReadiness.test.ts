@@ -203,4 +203,50 @@ describe("a search that does not happen says so", () => {
   it("the render surfaces a misconfigured download route", () => {
     expect(PIPE).toContain("for (const warning of youtubeReadinessWarnings())");
   });
+
+  /**
+   * THE EXIT THAT PROVED THE OTHERS WERE NEVER REACHED.
+   *
+   * `fetchYouTubeCCClips` already logged a reason for a missing key and for a missing download
+   * route. Render 562's log carries NEITHER, which is exactly how we know the function stopped
+   * before them — on `if (!youtubeSourcingEnabled()) return []`, which said nothing at all. The
+   * whole YouTube branch was absent from that render with no line anywhere explaining it.
+   *
+   * So it was not that RapidAPI failed. It was never asked.
+   */
+  it("the disabled flag says so instead of returning silently", () => {
+    const at = PIPE.indexOf("if (!youtubeSourcingEnabled()) {");
+    expect(at, "the flag guard returns silently again").toBeGreaterThan(-1);
+    const block = PIPE.slice(at, at + 700);
+    expect(block).toContain("SOURCING_DISABLED");
+    expect(block).toContain("ENABLE_YOUTUBE_SOURCING is not true");
+    expect(PIPE).toContain("let youtubeDisabledWarned = false;");
+  });
+
+  /** The quota cooldown was the other silent exit — it now names itself and the way out. */
+  it("the quota cooldown names itself and the fallback that would avoid it", () => {
+    const at = PIPE.indexOf("if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled()");
+    expect(at, "the cooldown guard has moved").toBeGreaterThan(-1);
+    const block = PIPE.slice(at, at + 600);
+    expect(block, "the cooldown exit is still silent").toContain("quota cooldown");
+    expect(block).toContain("ENABLE_YOUTUBE_RAPID_SEARCH");
+  });
+
+  /**
+   * Every exit from the YouTube branch now says why. Counted rather than listed, so a new silent
+   * `return []` added later fails this instead of going unnoticed for another render.
+   */
+  it("no exit from fetchYouTubeCCClips is silent", () => {
+    const at = PIPE.indexOf("export async function fetchYouTubeCCClips(");
+    expect(at, "fetchYouTubeCCClips has moved").toBeGreaterThan(-1);
+    const head = PIPE.slice(at, PIPE.indexOf("const queryList", at));
+    const returns = [...head.matchAll(/return \[\];/g)];
+    const logs = [...head.matchAll(/console\.warn\(/g)];
+    expect(returns.length, "there are no guards left to check").toBeGreaterThanOrEqual(4);
+    expect(
+      logs.length,
+      "an exit from the YouTube branch returns without saying why — that is how render 562 " +
+        "skipped YouTube entirely with no line in the log"
+    ).toBe(returns.length);
+  });
 });

@@ -13608,6 +13608,9 @@ async function searchYoutubeViaRapidApi(
 // F3-45: temporarily exported (visibility only, no logic changed) so
 // server/f345YoutubeCcRuntimeTest.ts can reuse it. Revert to module-private
 // once that temporary diagnostic script is deleted.
+/** RENDER 562 — see SOURCING_DISABLED: warn once per process, not once per scene. */
+let youtubeDisabledWarned = false;
+
 /** RENDER 562 — see SEARCH_SKIPPED below: warn once per process, not once per query. */
 let youtubeSearchKeyWarned = false;
 
@@ -13756,13 +13759,39 @@ export async function fetchYouTubeCCClips(
   usedProviderKeys?: Set<string>,
   sourcingCache?: SourcingCache
 ): Promise<string[]> {
-  if (!youtubeSourcingEnabled()) return [];
+  /**
+   * RENDER 562 — the two silent exits, and how they were found.
+   *
+   * The two guards below this one already log their reason. Render 562's log carries NEITHER,
+   * which is what proves the function never reached them: it stopped here, and here said nothing.
+   * The whole YouTube branch was absent from that render with no line anywhere explaining it, and
+   * `[YouTubeUsage] used=0` was the only trace.
+   *
+   * Once per render, not once per scene: a 3-scene render would otherwise print this three times
+   * and a 20-scene render twenty, saying no more than one line does.
+   */
+  if (!youtubeSourcingEnabled()) {
+    if (!youtubeDisabledWarned) {
+      youtubeDisabledWarned = true;
+      console.warn(
+        "[YouTube] SOURCING_DISABLED reason=ENABLE_YOUTUBE_SOURCING is not true — the whole " +
+          "YouTube branch is skipped before any key is read"
+      );
+    }
+    return [];
+  }
   // RONDE 16: bail on the official-API quota cooldown ONLY when there is no quota-free fallback to
   // try. The RapidAPI fair-use search hits a different host (not Google), so the official cooldown
   // must not suppress it — otherwise the fallback built for the quota-exhausted case never runs.
   // When the fallback IS available, proceed: searchYoutubeVideoCandidates skips the official call
   // during cooldown and routes the fair-use pass through RapidAPI instead.
-  if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled() && youtubeFairUseEnabled())) return [];
+  if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled() && youtubeFairUseEnabled())) {
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex}: YouTube skipped — the official API is in quota cooldown ` +
+        "and the RapidAPI search fallback is not enabled (ENABLE_YOUTUBE_RAPID_SEARCH)"
+    );
+    return [];
+  }
   const results: string[] = [];
 
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;

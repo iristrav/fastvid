@@ -53,10 +53,28 @@ describe("RONDE 16 — the official-API cooldown no longer suppresses the quota-
   const fetchBody = fnBody("export async function fetchYouTubeCCClips");
 
   it("fetchYouTubeCCClips only bails on cooldown when there is no quota-free fallback to try", () => {
+    /**
+     * The CONDITION is what this round is about, and it is unchanged. The guard's body grew a
+     * line — render 562 proved that every silent exit from this function is a render where
+     * YouTube vanishes with nothing in the log to say so — so the one-line form is no longer
+     * pinned, and the condition is pinned on its own instead.
+     */
     expect(fetchBody).toContain(
-      "if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled() && youtubeFairUseEnabled())) return [];"
+      "if (isYoutubeInCooldown() && !(youtubeRapidSearchFallbackEnabled() && youtubeFairUseEnabled()))"
     );
     // the unconditional early return is gone
     expect(fetchBody).not.toContain("if (isYoutubeInCooldown()) return [];");
+  });
+
+  /**
+   * And it says which of the two it was. A cooldown bail and a disabled flag both end the YouTube
+   * branch, and telling them apart from outside is the difference between "top up the quota" and
+   * "set the flag".
+   */
+  it("the cooldown bail names itself and the fallback that would have avoided it", () => {
+    const at = fetchBody.indexOf("isYoutubeInCooldown()");
+    const guard = fetchBody.slice(at, at + 500);
+    expect(guard, "the cooldown exit is silent again").toContain("quota cooldown");
+    expect(guard).toContain("ENABLE_YOUTUBE_RAPID_SEARCH");
   });
 });
