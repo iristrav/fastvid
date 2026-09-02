@@ -2,7 +2,16 @@
  * Universal media research engine — Laag 1 (intent) + Laag 3 (ranking).
  * Laag 2 (multi-source fetch) and Laag 4 (montage) live in videoPipeline.ts.
  */
-import { buildPrioritisedQueries, emptyQueryContext, provenToken } from "./searchQueryContract";
+import {
+  buildPrioritisedQueries,
+  checkPersonName,
+  containsContiguous,
+  emptyQueryContext,
+  getSearchProvenance,
+  provenToken,
+  validateSearchQuery,
+  type VerifiedQueryContext,
+} from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 import path from "path";
 import { invokeLLM } from "./_core/llm";
@@ -560,8 +569,27 @@ function knownFullNames(intent: MediaSearchIntent): string[] {
   push(intent.primaryPerson);
   for (const person of intent.persons) push(person);
   for (const hay of [intent.videoTitle ?? "", intent.beatText]) {
+    /**
+     * RONDE 178 — §11 again, in the one place that still mined a title raw.
+     *
+     * FULL_NAME_RE is two capitalised words in a row, and a title capitalises EVERY word, so on
+     * "The Unseen Forces That Shaped Hitler's World War II Decisions" it reads out "Unseen
+     * Forces", "That Shaped" and "Shaped Hitler" as personal names. That last one is not a
+     * curiosity: `expandAnchorToKnownPerson` completes a lone "Hitler" against this list, so the
+     * anchor became "Shaped Hitler" and render 563 sent it to five providers, twelve refusals
+     * deep, every one `blockedTerms=["Shaped"]`.
+     *
+     * A title is not evidence that anybody is in any beat — the rule `checkPersonName` states and
+     * three other call sites already enforce. A name the title alone asserts is admitted only
+     * when the beat's own narration writes it out too, which is what makes it the beat's name
+     * rather than the thumbnail's.
+     */
+    const fromTitle = hay !== intent.beatText;
     for (const match of hay.matchAll(FULL_NAME_RE)) {
-      push(`${stripPossessive(match[1]!)} ${stripPossessive(match[2]!)}`);
+      const name = `${stripPossessive(match[1]!)} ${stripPossessive(match[2]!)}`;
+      if (!checkPersonName(name, hay, intent.beatText).ok) continue;
+      if (fromTitle && !containsContiguous(intent.beatText, name)) continue;
+      push(name);
     }
   }
   return out;
@@ -732,6 +760,61 @@ export function combinedTypedQueriesForBeat(
   return centralTypedQueries(buildTypedRetrievalContext(beatText, { persons, place, action }));
 }
 
+/**
+ * RONDE 178 — THE ANCHOR WAS NEVER CHECKED AGAINST THE EVIDENCE.
+ *
+ * Every query this builder emits is `${anchor} <something>`, and the anchor came from
+ * `intent.powerWord` or `intent.searchQueries[0]` — both LLM-authored, neither traceable to
+ * anything the script says. `validateSearchQuery` has refused untraceable terms since RONDE 90,
+ * but it runs at the PROVIDER, long after the family is built, so an unprovable anchor did not
+ * produce a worse query — it produced no query at all.
+ *
+ * Render 563 is the whole failure in one line. Its title was "The Unseen Forces That Shaped
+ * Hitler's World War II Decisions", the anchor became "Unseen Forces", and the log reads:
+ *
+ *     [SearchQueryAudit] provider=youtube_cc query="Unseen Forces Berlin" status=BLOCKED
+ *       terms=["Martin Bormann","Berlin","unexpected note","involved"]
+ *       blockedTerms=["Unseen","Forces"] reason=TITLE_INFERENCE_NOT_ALLOWED
+ *
+ * The gate was right, and it names the tragedy itself: the beat had proven "Martin Bormann" and
+ * "Berlin" the entire time. 199 of that render's 252 queries were refused, 54 of them for the
+ * two decorative words in its title, and the word "Hitler" appears in none of the sixteen
+ * YouTube searches. The pipeline asked about the title instead of the beat.
+ *
+ * So the anchor is chosen HERE, against the same context the gate will consult, and a candidate
+ * that cannot be traced loses to one that can. This narrows nothing the gate would have allowed:
+ * the validator is the identical function, and with no ambient context (unit tests, callers
+ * outside a beat scope) it approves everything it approved before.
+ */
+export function chooseProvenAnchor(
+  candidates: readonly string[],
+  ctx: VerifiedQueryContext | undefined
+): { anchor: string; rejected: string[] } {
+  const rejected: string[] = [];
+  for (const raw of candidates) {
+    const candidate = raw?.trim();
+    if (!candidate) continue;
+    if (validateSearchQuery(candidate, ctx).ok) return { anchor: candidate, rejected };
+    rejected.push(candidate);
+  }
+  /**
+   * Nothing the caller offered survives. Rather than give up the anchored family — which is what
+   * produced render 563's empty YouTube — take the beat's own strongest proven term. Persons
+   * first, then the event, then where it happened: the same order of specificity
+   * `buildPrioritisedQueries` ranks by.
+   */
+  if (ctx) {
+    for (const list of [ctx.persons, ctx.events, ctx.places, ctx.countries, ctx.objects]) {
+      for (const token of list) {
+        if (!token.verified) continue;
+        const term = token.term.trim();
+        if (term && validateSearchQuery(term, ctx).ok) return { anchor: term, rejected };
+      }
+    }
+  }
+  return { anchor: "", rejected };
+}
+
 export function buildHistoricalArchivalQueries(
   intent: MediaSearchIntent,
   beatText: string,
@@ -743,10 +826,29 @@ export function buildHistoricalArchivalQueries(
 ): string[] {
   const targets = extractBeatVisualTargets(beatText, intent, intent.videoTitle, opts);
   const fullNames = knownFullNames(intent);
-  const anchor = expandAnchorToKnownPerson(
-    intent.powerWord?.trim() || intent.searchQueries[0]?.trim() || targets[0]?.text || "",
-    fullNames
+  const provenance = getSearchProvenance();
+  const { anchor, rejected: rejectedAnchors } = chooseProvenAnchor(
+    [
+      intent.powerWord?.trim(),
+      intent.searchQueries[0]?.trim(),
+      targets[0]?.text,
+    ]
+      .filter((c): c is string => Boolean(c))
+      .map((c) => expandAnchorToKnownPerson(c, fullNames)),
+    provenance
   );
+  /**
+   * Never silent. An anchor swap changes what the render is about to ask nine providers, so it is
+   * stated — with the reason the validator gave, so "the gate refused it" and "the extractor
+   * offered nothing" stay distinguishable in a log read months later.
+   */
+  if (rejectedAnchors.length > 0) {
+    const first = rejectedAnchors[0]!;
+    const reason = validateSearchQuery(first, provenance).reason ?? "UNVERIFIED_TERM";
+    console.warn(
+      `[QueryAnchor] rejected="${first}" reason=${reason} chosen=${anchor ? `"${anchor}"` : "none"}`
+    );
+  }
   if (!anchor && !targets.length) return intent.searchQueries.slice(0, 6);
 
   const out: string[] = [];
@@ -813,11 +915,27 @@ export function buildHistoricalArchivalQueries(
     }
   }
   out.push(...intent.searchQueries);
+  /**
+   * RONDE 178 — the cap is spent on queries that can actually be asked.
+   *
+   * A proven anchor fixes the family's stem; it does not vouch for a per-target variant or for
+   * the LLM's own `searchQueries`, and render 563 refused those too ("Shaped" 12 times). The cap
+   * below is a budget, and a query the gate will refuse consumes a slot without ever reaching a
+   * provider — so the refusal happens here, where there is still room to fall through to a query
+   * that holds.
+   *
+   * This cannot narrow anything the gate would have allowed: it is the same `validateSearchQuery`
+   * the provider calls, on the same ambient context, and where there is no context it approves
+   * every query exactly as before. The F3-39 breadth note above is unaffected for the same
+   * reason — a blocked query contributes no breadth to the provider cache, only the appearance
+   * of it.
+   */
+  const asked = uniqueQueryStrings(out, 3).filter((q) => validateSearchQuery(q, provenance).ok);
   // RONDE 73: 8 -> 12. The generic set alone is 5 and the per-target variants add several more,
   // so keeping the old cap would have let the combined family evict exactly the breadth the
   // F3-39 note above says the provider query-cache depends on. Better queries AND the existing
   // fallbacks, not better queries INSTEAD of them.
-  return uniqueQueryStrings(out, 3).slice(0, 12);
+  return asked.slice(0, 12);
 }
 
 /** Result of anchorQueriesToHistoricalContext — `anchored` false means untouched inputs. */
