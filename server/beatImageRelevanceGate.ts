@@ -448,13 +448,40 @@ export function buildBeatImagePrompt(
       : "First say plainly what the frame shows — the subject, the period it looks like, and any" +
         " text or graphics visible in it.",
     "",
-    "Then decide, about that ONE line of narration and nothing else. The viewer hears that",
-    "sentence while looking at this picture; the documentary as a whole is not what they are",
-    "watching in this moment.",
+    "Then decide, about that ONE line of narration. The viewer hears that sentence while looking",
+    "at this picture.",
     "",
-    "It BELONGS when a viewer would accept it under THAT LINE: what the line is about — its",
-    "subject, its place or its period — is what is on screen, or the clip is honest atmospheric",
-    "footage of the era and setting THAT LINE describes.",
+    /**
+     * RENDER 564 — THE PERMISSION THIS PROMPT TOOK AWAY BY ACCIDENT.
+     *
+     * Render 563's fix narrowed the question to the beat's own line, which was right. It also
+     * said "the documentary as a whole is not what they are watching" and "fitting the
+     * documentary's general topic is NOT a reason" — and together those two told the model to
+     * refuse anything that was not literally the sentence. Render 564 measured the result:
+     *
+     *     563:  fits=20  does_not_fit=18   47% refused
+     *     564:  fits=6   does_not_fit=58   91% refused
+     *
+     * And it refused THESE, on a film called "Why Did Adolf Hitler Choose Suicide Over Escape?":
+     *
+     *     "Adolf Hitler giving a speech, likely during World War II era."
+     *     "Adolf Hitler standing amidst a crowd of soldiers, likely during WWII, in black and white"
+     *     "Adolf Hitler and German officers in military uniforms outdoors."
+     *     "A man in a flight suit next to an aircraft with a roundel, likely period WWII footage."
+     *
+     * A documentary about a person shows that person. Narration about his final days over footage
+     * of him is not a mismatch — it is the form. Eight of that render's twenty-three beats ended
+     * on a placeholder and its quality score was 0.
+     *
+     * So the reasons are listed explicitly, and the first of them is the one that went missing.
+     * What stays refused is the leap the original fix was for: the ERA on its own.
+     */
+    "It BELONGS when a viewer would accept it under THAT LINE. Any one of these is enough:",
+    "  · someone or something the line NAMES is on screen. A documentary about a person shows",
+    "    that person: a shot of them belongs under a line about them, even when it was filmed at",
+    "    a different moment than the one being described;",
+    "  · the place or the period the line describes is what is on screen;",
+    "  · it is honest atmospheric footage of the era and setting THAT LINE describes.",
     "Archive material with no caption still belongs if what it shows fits that line.",
     "",
     "It DOES NOT belong when the frame is plainly about something else — a different subject,",
@@ -462,13 +489,17 @@ export function buildBeatImagePrompt(
     "under historical narration, a logo, a title card, a screenshot of a webpage or a person",
     "talking to camera about an unrelated topic.",
     /**
-     * The exact substitution render 563 made, named. Without this the model can satisfy every
-     * other rule above and still answer the wrong question, because "wartime footage under a
-     * wartime film" is a true sentence — it is just not the question.
+     * RENDER 563's finding, kept — but pointed only at the leap it was written for.
+     *
+     * The Apteka street ("Street scene… a building marked 'Apteka', likely historical footage")
+     * was approved under narration about a courier's note to Berlin, with the reason "it fits the
+     * context of the documentary". Nothing the line named was on screen; only the era matched.
+     * That is still refused, and now for a stated reason rather than by forbidding the model to
+     * think about the film at all.
      */
-    "Fitting the documentary's general topic is NOT a reason to say it belongs. \"This is wartime",
-    "footage and this is a wartime film\" is the answer that puts the wrong picture on screen: it",
-    "would be equally true of any other shot in the film, so it decides nothing about this one.",
+    "The era on its own is never enough. \"This is wartime footage and this is a wartime film\"",
+    "would be equally true of every other shot in the film, so it decides nothing about this one:",
+    "something the line itself names or describes has to be there as well.",
     many
       ? "If most of what is on screen is a title card, a leader or a countdown rather than actual" +
         " footage, it does not belong: the viewer would be looking at text, not at the story."

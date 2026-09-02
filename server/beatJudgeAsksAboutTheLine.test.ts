@@ -73,22 +73,75 @@ describe("the judge is asked about one line of narration", () => {
   /** And the replacement is pinned to the line. */
   it("pins the decision to that line", () => {
     const p = prompt();
-    expect(p).toContain("Then decide, about that ONE line of narration and nothing else.");
+    expect(p).toContain("Then decide, about that ONE line of narration.");
     expect(p).toContain("It BELONGS when a viewer would accept it under THAT LINE");
   });
 
   /**
-   * The substitution itself, named. Every other rule can be satisfied while still answering the
-   * wrong question, because "wartime footage under a wartime film" is a TRUE sentence — it is
-   * just not an answer about this shot.
+   * RENDER 564 narrowed this rule, and the narrowing is the point.
+   *
+   * The first version said "fitting the documentary's general topic is NOT a reason to say it
+   * belongs" — which, together with "the documentary as a whole is not what they are watching",
+   * told the model to refuse anything that was not literally the sentence. It refused footage of
+   * Adolf Hitler under a documentary about Adolf Hitler; see the block below.
+   *
+   * What the rule was always FOR is the era-alone leap, and that is what it says now.
    */
-  it("refuses the documentary's topic as a reason", () => {
+  it("refuses the era on its own as a reason", () => {
     const p = prompt();
-    expect(p).toContain("Fitting the documentary's general topic is NOT a reason to say it belongs.");
+    expect(p).toContain("The era on its own is never enough.");
     expect(
       p,
       "the prompt does not explain WHY that reason is empty, so it reads as an arbitrary rule"
-    ).toContain("equally true of any other shot in the film");
+    ).toContain("equally true of every other shot in the film");
+    expect(
+      p,
+      "and it must say what WOULD be enough, or it is a refusal with no way back"
+    ).toContain("something the line itself names or describes has to be there as well");
+  });
+
+  /**
+   * THE OVERSHOOT, AND WHY IT MUST NOT COME BACK.
+   *
+   * Render 564 refused, on a film called "Why Did Adolf Hitler Choose Suicide Over Escape?":
+   *
+   *     "Adolf Hitler giving a speech, likely during World War II era."
+   *     "Adolf Hitler standing amidst a crowd of soldiers, likely during WWII, in black and white"
+   *     "Adolf Hitler and German officers in military uniforms outdoors."
+   *
+   * 91% of everything the judge saw, against 47% the render before. Eight of twenty-three beats
+   * ended on a placeholder and the quality score was 0.
+   *
+   * A documentary about a person shows that person. These assertions exist so that permission
+   * cannot be edited away again while the tests stay green.
+   */
+  it("lets the line's own named subject count", () => {
+    const p = prompt();
+    expect(p, "the named-subject permission is gone — the judge will refuse the film's own subject")
+      .toContain("someone or something the line NAMES is on screen");
+    expect(
+      p,
+      "without this, footage of the right person filmed at another moment reads as a mismatch"
+    ).toContain("even when it was filmed at");
+  });
+
+  /** The three grounds are offered as alternatives, not as a set of requirements. */
+  it("states the grounds as alternatives", () => {
+    expect(prompt()).toContain("Any one of these is enough:");
+  });
+
+  /**
+   * The two sentences that caused the overshoot, gone. Either one alone is enough to make the
+   * model treat "not literally this sentence" as "does not belong".
+   */
+  it.each([
+    "the documentary as a whole is not what they are watching",
+    "Fitting the documentary's general topic is NOT a reason",
+    "and nothing else",
+  ])("no longer tells the model to disregard the film: %s", (phrase) => {
+    expect(prompt(), `"${phrase}" is back; it refuses the documentary's own subject`).not.toContain(
+      phrase
+    );
   });
 });
 
