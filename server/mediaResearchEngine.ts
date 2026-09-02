@@ -13,6 +13,7 @@ import {
   type VerifiedQueryContext,
 } from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
+import { getPlannedShot, shotSearchTerms } from "./shotVocabulary";
 import path from "path";
 import { invokeLLM } from "./_core/llm";
 import { ENV } from "./_core/env";
@@ -924,6 +925,32 @@ export function buildHistoricalArchivalQueries(
       `${anchor} historical footage`,
       year ? `${anchor} ${year}` : anchor
     );
+    /**
+     * THE FRAMING THIS BEAT WAS PLANNED FOR, actually asked for.
+     *
+     * ── The gap this closes ─────────────────────────────────────────────────────────────────
+     *
+     * The Director plans a shot per beat, the retrieval contract records a `preferredShot`, and
+     * the ranking weighs shot type at 10%. None of that ever reached a provider: no query in this
+     * system has ever asked for a close-up, a wide or an establishing shot. So the ranking could
+     * only prefer the planned framing when one happened to be in the pool by luck — which, over
+     * twenty-three beats of a documentary, is why every shot sits at the same middle distance.
+     *
+     * ── Why this is safe to append ──────────────────────────────────────────────────────────
+     *
+     * `shotSearchTerms` returns only words from the gate's `PRODUCTION_VOCABULARY`, the closed
+     * class of camera and format words allowed without evidence because they describe the FILM
+     * and make no claim about the world. Anchor + those words is a query the gate cannot refuse
+     * for its shot half, which is exactly what the storyboard planner's own invented phrasing
+     * could not manage — 277 UNVERIFIED_TERM refusals on render 564.
+     *
+     * These are added to a family that is deduplicated and then filtered by the very same
+     * `validateSearchQuery` every other query passes through. Nothing bypasses the gate; a
+     * framing simply gets to be one of the things the render asks about.
+     */
+    for (const term of shotSearchTerms(getPlannedShot())) {
+      out.push(`${anchor} ${term}`);
+    }
   }
   // Layered on top: one extra variant per distinct visual target actually found (Point 1/2 —
   // multiple concrete visual targets, not just the single anchor string), when it adds real

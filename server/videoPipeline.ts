@@ -240,6 +240,7 @@ import {
   clearVisualSearchPlanCacheForVideo,
   type VideoVisualContext,
 } from "./visualSearchPlan";
+import { normaliseShotType, withPlannedShot } from "./shotVocabulary";
 import {
   getOrGenerateStoryboard,
   getShotForBeat,
@@ -3075,15 +3076,34 @@ function withBeatProvenance<T>(
    * without the objects — generateGuaranteedBeatClip, which takes (sceneIndex, beatText). It has
    * what the proof needs; requiring the full types would have left it the last route out.
    */
-  beat: { text?: string },
-  scene: { text?: string; personNames?: string[] },
+  beat: { text?: string; index?: number },
+  scene: { text?: string; personNames?: string[]; index?: number },
   fn: () => Promise<T>,
   opts?: { personName?: string; scenePersons?: string[] }
 ): Promise<T> {
-  if (getSearchProvenance()) return fn();
+  /**
+   * THE FRAMING THIS BEAT WAS PLANNED FOR, in scope alongside its proof.
+   *
+   * It is opened HERE, at the leaf, for the reason RONDE 100B gives above: wrapping the entry
+   * points was tried and was not exhaustive — 425 provider searches reached a query builder with
+   * no scope at all. A planned shot threaded through entry points would arrive at exactly the
+   * routes that already remember things and be missing from the ones that do not. Same seam, same
+   * fix, same place.
+   *
+   * Unlike the provenance it is NOT guarded on an outer scope: a nested call re-states the same
+   * beat's framing, so re-entering costs nothing and cannot narrow anything. And a beat without
+   * indices, or a scene the storyboard never covered, opens no scope at all — which leaves the
+   * query family exactly as it was before this existed.
+   */
+  const plannedShot =
+    beat.index != null && scene.index != null
+      ? getShotForBeat(scene.index, beat.index)?.shotType ?? null
+      : null;
+  const run = () => withPlannedShot(normaliseShotType(plannedShot), fn);
+  if (getSearchProvenance()) return run();
   return withSearchProvenance(
     beatSearchProvenance(beat, scene, opts?.personName ?? "", opts?.scenePersons ?? []),
-    fn
+    run
   );
 }
 
@@ -22228,6 +22248,40 @@ async function adoptClip(
   // Pull per-beat data from planning layers (storyboard + rhythm)
   const _shot = getShotForBeat(sceneIndex, beatIndex);
   const _rhythmTarget = dedup.beatRhythmTargets?.get(`s${sceneIndex}b${beatIndex}`) ?? null;
+  /**
+   * The retrieval contract, resolved ONCE — it now answers two questions, not one.
+   *
+   * It used to be built inline in the object below purely for `scoreRetrievalContract`. It also
+   * carries `preferredShot`, which the Documentary Planning Engine derives for every beat from the
+   * beat's visual goal and narrative act, prints in its own summary line — and which nothing has
+   * ever read. Dead since it was written.
+   */
+  const _contract = dedup.documentaryPlan
+    ? (await import("./documentaryPlanningEngine")).getRetrievalContract(
+        dedup.documentaryPlan,
+        sceneIndex,
+        beatIndex
+      )
+    : null;
+  /**
+   * The framing this beat was planned for: the storyboard's, or the contract's.
+   *
+   * ── Why the storyboard wins ─────────────────────────────────────────────────────────────────
+   *
+   * It is the more specific answer. The storyboard planner reads the beat's own sentence and the
+   * scene around it; the contract derives its shot from the beat's visual GOAL and narrative act,
+   * which is a sound default and a coarser one. Where the storyboard has an opinion it is better
+   * informed, so it is used.
+   *
+   * ── Why the contract is not simply ignored ──────────────────────────────────────────────────
+   *
+   * The storyboard is an LLM call that can be switched off, time out or return nothing for a beat,
+   * and `getShotForBeat` then answers null. Before this the whole shot signal went with it: a beat
+   * with no storyboard entry was ranked as though nobody had planned its framing, even though the
+   * plan on disk said what it should be. Two sources, one channel, stated precedence — rather than
+   * a second scoring path, which is how a system ends up with two rankers that disagree.
+   */
+  const _plannedShot = _shot?.shotType ?? _contract?.preferredShot ?? null;
 
   // Asset Director: re-rank using global video context (blueprint, diversity, continuity,
   // storyboard shot type, rhythm motion target, and per-clip annotation metadata)
@@ -22243,11 +22297,9 @@ async function adoptClip(
     activeLocation: dedup.assetDirectorActiveLocation,
     activeEra: dedup.assetDirectorActiveEra,
     targetMotionLevel: _rhythmTarget ?? null,
-    plannedShotType: _shot?.shotType ?? null,
+    plannedShotType: _plannedShot,
     callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
-    retrievalContract: dedup.documentaryPlan
-      ? (await import("./documentaryPlanningEngine")).getRetrievalContract(dedup.documentaryPlan, sceneIndex, beatIndex)
-      : null,
+    retrievalContract: _contract,
   };
   const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx, dedup.clipAnnotationMeta);
   if (adResult.reordered && adResult.topScore) {

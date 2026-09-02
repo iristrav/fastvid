@@ -111,8 +111,24 @@ const PROVIDER_FETCHERS = [
 describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unproven", () => {
   it("TEST 1 — withBeatProvenance reuses an existing scope instead of replacing it", () => {
     const body = bodyOf(PIPELINE_SRC, "withBeatProvenance");
-    // The guard, in the same shape scenePool.buildSceneCandidatePool uses.
-    expect(body).toContain("if (getSearchProvenance()) return fn();");
+    /**
+     * The guard, in the same shape scenePool.buildSceneCandidatePool uses.
+     *
+     * The early return now hands back `run()` rather than `fn()` directly, because the same
+     * function also puts the beat's PLANNED FRAMING in scope (see `withPlannedShot`). The property
+     * this test exists for is unchanged and is still asserted below: an outer provenance scope is
+     * reused, never replaced — `run` calls `fn` without touching `withSearchProvenance`, so a
+     * nested call still cannot narrow what an outer caller proved.
+     *
+     * Asserted as "returns without opening a provenance scope" rather than as one literal string,
+     * so the guard is checked for what it does instead of how it is spelled.
+     */
+    const earlyReturn = /if \(getSearchProvenance\(\)\) return (fn|run)\(\);/.exec(body);
+    expect(earlyReturn, "the reuse guard is gone").not.toBeNull();
+    const beforeGuard = body.slice(0, earlyReturn!.index);
+    expect(beforeGuard, "a scope is opened before the guard can reuse one").not.toContain(
+      "withSearchProvenance("
+    );
     expect(body).toContain("withSearchProvenance(");
     expect(body).toContain("beatSearchProvenance(");
   });

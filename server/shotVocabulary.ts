@@ -26,6 +26,8 @@
  * No randomness, no clock. §35's determinism rule reaches into the Director too: the same scene
  * must produce the same shot order every time, or two renders of one timeline disagree.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type { ShotType } from "./cinematicEditingEngine/types";
 
 /* ═══════════════════════ what each shot is for ═══════════════════════ */
@@ -73,6 +75,34 @@ export type ShotSemantics = {
    * can actually fill.
    */
   needsSpecialFootage: boolean;
+  /**
+   * HOW TO ASK A PROVIDER FOR THIS FRAMING.
+   *
+   * ── Why the vocabulary needed this ──────────────────────────────────────────────────────────
+   *
+   * Every part of the shot vocabulary existed except the part that asks. A beat's planned shot was
+   * derived, stored on the contract, weighed at 10% during ranking — and never once sent to a
+   * provider. So the ranking could only prefer a close-up if a close-up happened to be in the pool
+   * by luck, and on a documentary that means twenty-three variations of the same middle distance.
+   *
+   * ── Why these words and not the planner's own ───────────────────────────────────────────────
+   *
+   * Every term here is made of words already in `PRODUCTION_VOCABULARY` — the search gate's closed
+   * class of camera and format words, allowed without evidence because they describe the FILM
+   * rather than making a claim about the world. That is what makes these safe to append: a query
+   * built from a proven anchor plus these words cannot be refused for the shot part of it.
+   *
+   * The LLM storyboard planner writes its own free-text `searchQuery` per shot, and that is
+   * exactly what the gate refuses — 277 `UNVERIFIED_TERM` refusals on render 564. Words invented
+   * for a beat cannot be proven by it. These can, because they claim nothing.
+   *
+   * `subjectSearchTerms.test.ts` asserts that property for every entry, so a term that the gate
+   * would refuse cannot be added here without a test going red.
+   *
+   * Empty is a legitimate answer: some framings have no phrasing a stock or archive search
+   * understands, and inventing one would spend a query slot on a guess.
+   */
+  searchTerms: readonly string[];
 };
 
 export const SHOT_SEMANTICS: Readonly<Record<ShotType, ShotSemantics>> = {
@@ -81,48 +111,68 @@ export const SHOT_SEMANTICS: Readonly<Record<ShotType, ShotSemantics>> = {
     role: "orientation",
     meaning: "Opens a scene by telling the viewer where they are before anything else happens.",
     needsSpecialFootage: false,
+    searchTerms: ["establishing shot"],
   },
   extreme_wide: {
     scale: "extreme_wide",
     role: "context",
     meaning: "Places the subject inside a much larger space — scale, isolation, geography.",
     needsSpecialFootage: false,
+    searchTerms: ["wide shot"],
   },
   wide: {
     scale: "wide",
     role: "context",
     meaning: "Shows the environment around the subject and how they relate to it.",
     needsSpecialFootage: false,
+    searchTerms: ["wide shot"],
   },
   medium_wide: {
     scale: "wide",
     role: "subject",
     meaning: "Holds the subject and enough surroundings to keep them situated.",
     needsSpecialFootage: false,
+    searchTerms: ["wide shot"],
   },
   medium: {
     scale: "medium",
     role: "subject",
     meaning: "The neutral distance: the subject at a natural, conversational scale.",
     needsSpecialFootage: false,
+    /**
+     * Deliberately empty, and the reason is editorial rather than technical.
+     *
+     * A medium shot is what a provider returns by default: asking for one narrows nothing and
+     * spends a slot in a capped query family on a word that changes no result. It is also the
+     * framing the fallback storyboard assigns to every beat when the planner is unavailable, so
+     * emitting a term here would put one identical extra query on every beat of a video whose
+     * shots were never actually planned — noise wearing the costume of intent.
+     *
+     * The rule this follows: ask for a framing only when it differs from what you would get
+     * anyway.
+     */
+    searchTerms: [],
   },
   close_up: {
     scale: "close",
     role: "subject",
     meaning: "Draws attention to a face or a subject's expression.",
     needsSpecialFootage: false,
+    searchTerms: ["closeup", "close-up"],
   },
   extreme_close_up: {
     scale: "extreme_close",
     role: "detail",
     meaning: "Isolates one small thing for maximum emphasis — an eye, a word, a switch.",
     needsSpecialFootage: false,
+    searchTerms: ["closeup"],
   },
   detail: {
     scale: "close",
     role: "detail",
     meaning: "Shows a specific object, document, hand or action closely enough to read it.",
     needsSpecialFootage: false,
+    searchTerms: ["closeup"],
   },
   overhead: {
     scale: "medium",
@@ -130,48 +180,56 @@ export const SHOT_SEMANTICS: Readonly<Record<ShotType, ShotSemantics>> = {
     /** Deliberately distinguished from `aerial` — see the note on the union. */
     meaning: "Looks straight DOWN at a surface: a table, a map, a process, a set of objects.",
     needsSpecialFootage: true,
+    searchTerms: ["overhead", "topdown"],
   },
   aerial: {
     scale: "extreme_wide",
     role: "context",
     meaning: "Looks ACROSS a landscape from height — geography, scale, a place from above.",
     needsSpecialFootage: true,
+    searchTerms: ["aerial"],
   },
   pov: {
     scale: "medium",
     role: "subject",
     meaning: "The subject's own view: what they are looking at, from where they stand.",
     needsSpecialFootage: true,
+    searchTerms: [],
   },
   reaction: {
     scale: "close",
     role: "human_response",
     meaning: "Shows how somebody responds, adding a human dimension to a fact.",
     needsSpecialFootage: false,
+    searchTerms: [],
   },
   cutaway: {
     scale: "medium",
     role: "supporting",
     meaning: "Bridges the narration with related coverage while the voice carries on.",
     needsSpecialFootage: false,
+    searchTerms: ["cutaway"],
   },
   b_roll: {
     scale: "medium",
     role: "supporting",
     meaning: "General supporting coverage of the topic, under narration.",
     needsSpecialFootage: false,
+    searchTerms: ["b-roll"],
   },
   archive_footage: {
     scale: "medium",
     role: "supporting",
     meaning: "Grounds the moment in real historical material rather than a modern re-creation.",
     needsSpecialFootage: true,
+    searchTerms: ["archival footage", "newsreel"],
   },
   overlay_shot: {
     scale: "medium",
     role: "graphic",
     meaning: "Carries a graphic — a map, a chart, a timeline — rather than a literal photograph.",
     needsSpecialFootage: false,
+    searchTerms: [],
   },
 };
 
@@ -484,4 +542,103 @@ export function formatAttentionMoment(
     `[Director] attention ${found.moment} at ${beatId} — ${found.evidence}; ` +
     ATTENTION_EFFECTS[found.moment].why
   );
+}
+
+/* ═══════════════════════ the planned shot, where the search can reach it ═══════════════════════ */
+
+/**
+ * THE FRAMING THIS BEAT WAS PLANNED FOR, available to whatever ends up asking a provider.
+ *
+ * ── Why ambient and not a parameter ─────────────────────────────────────────────────────────
+ *
+ * `buildHistoricalArchivalQueries` is reached from five call sites, each fed by one of eight
+ * `buildMediaSearchIntent` calls, and the beat's planned shot is known at none of them — it is
+ * established by the storyboard planner, scenes earlier in the file. Threading it through thirteen
+ * signatures is precisely the seam this codebase keeps being bitten by: a fact several routes must
+ * remember, remembered by one. `recordClipAdopt`, the still/moving counters, the beat verdicts and
+ * the source floor were all that shape, and all were fixed this way.
+ *
+ * It sits beside `searchProvenanceStorage` in spirit and for the same reason: scenes are sourced
+ * concurrently, so a mutable per-render field would let one beat's framing shape another beat's
+ * query.
+ *
+ * ── What a missing scope means ──────────────────────────────────────────────────────────────
+ *
+ * Nothing. Absent means "no framing was planned for this beat", the query keeps exactly the shape
+ * it had before this existed, and no route is worse off than it was. A planned shot is a preference
+ * the search may express, never a requirement it must satisfy.
+ */
+const plannedShotStorage = new AsyncLocalStorage<ShotType>();
+
+/** The framing planned for the beat currently being sourced, or undefined outside any beat scope. */
+export function getPlannedShot(): ShotType | undefined {
+  return plannedShotStorage.getStore();
+}
+
+/** Run `fn` with `shotType` as the ambient framing for every provider query it builds. */
+export function withPlannedShot<T>(shotType: ShotType | null | undefined, fn: () => T): T {
+  return shotType ? plannedShotStorage.run(shotType, fn) : fn();
+}
+
+/**
+ * A planner's loose wording for a framing, as a member of this vocabulary — or null.
+ *
+ * ── Why this is needed ──────────────────────────────────────────────────────────────────────
+ *
+ * The storyboard's `shotType` is a bare string an LLM wrote. It says "medium shot", "close up",
+ * "Wide Shot"; the union spells those `medium`, `close_up`, `wide`. Every reader that wanted the
+ * planned framing had to do its own comparison, and `assetDirector` still does one by hand
+ * (`shotType.includes(planned.split(" ")[0])`), which matches "wide" against "wide" and also
+ * against nothing else it should.
+ *
+ * Recognition lives HERE, next to the vocabulary being recognised, so there is one answer to
+ * "which framing did the planner mean" rather than one per reader.
+ *
+ * Anything unrecognised returns null. Guessing at the nearest match would hand a beat a framing
+ * nobody planned, and asking for nothing is the honest response to wording this vocabulary does
+ * not contain.
+ */
+export function normaliseShotType(loose: string | null | undefined): ShotType | null {
+  if (!loose) return null;
+  const raw = loose.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  /**
+   * The raw spelling is tried FIRST, before the `_shot` suffix is dropped.
+   *
+   * `overlay_shot` is a member of this union whose name ENDS in the suffix, so stripping first
+   * turned the vocabulary's own spelling into `overlay`, which is not a framing at all — the one
+   * shot type that could not be recognised was the one written exactly as the union spells it.
+   */
+  if (raw in SHOT_SEMANTICS) return raw as ShotType;
+  const key = raw.replace(/_shot$/, "");
+  if (key in SHOT_SEMANTICS) return key as ShotType;
+  /** "close" and "closeup" both mean close_up; the planner uses either. */
+  const aliases: Readonly<Record<string, ShotType>> = {
+    close: "close_up",
+    closeup: "close_up",
+    extreme_close: "extreme_close_up",
+    extreme_closeup: "extreme_close_up",
+    establishing_wide: "establishing",
+    insert: "detail",
+    macro: "extreme_close_up",
+    drone: "aerial",
+    birds_eye: "overhead",
+    top_down: "overhead",
+    topdown: "overhead",
+    archive: "archive_footage",
+    archival: "archive_footage",
+    b_roll_shot: "b_roll",
+    broll: "b_roll",
+  };
+  return aliases[key] ?? null;
+}
+
+/**
+ * The words that ask for a framing, or an empty list.
+ *
+ * Accepts the planner's loose wording as well as a union member, because every caller has the
+ * former and none of them should have to know how to turn it into the latter.
+ */
+export function shotSearchTerms(shotType: string | null | undefined): readonly string[] {
+  const known = normaliseShotType(shotType);
+  return known ? SHOT_SEMANTICS[known].searchTerms : [];
 }

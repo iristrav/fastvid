@@ -55,6 +55,7 @@ import {
   scoreRetrievalContract,
   type RetrievalContract,
 } from "./documentaryPlanningEngine";
+import { normaliseShotType } from "./shotVocabulary";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -702,7 +703,26 @@ function scoreShotVariety(
   // Planned shot type match: overrides 1 level of penalty
   if (plannedShotType) {
     const planned = plannedShotType.toLowerCase();
-    if (shotType.toLowerCase().includes(planned.split(" ")[0]!)) {
+    /**
+     * The first-word rule, plus the vocabulary's own answer.
+     *
+     * The substring test reads the FIRST WORD of the planned shot and looks for it inside the
+     * candidate's type: "close up" → "close", found in "close-up". It works for most wordings and
+     * misses the ones that differ in punctuation rather than words — a planned "b-roll" never
+     * matched a candidate typed `b_roll`, so a beat planned as supporting coverage was ranked as
+     * though nothing had been planned for it.
+     *
+     * `normaliseShotType` is the vocabulary saying which framing each wording means, so the two
+     * are compared as framings rather than as strings. It is OR-ed with the old rule rather than
+     * replacing it: every clip that scored this bonus before still scores it, and the ones that
+     * were missed on a hyphen now do too. Nothing loses a bonus it used to have.
+     */
+    const bothKnown = normaliseShotType(plannedShotType);
+    const candidateKnown = normaliseShotType(shotType);
+    if (
+      shotType.toLowerCase().includes(planned.split(" ")[0]!) ||
+      (bothKnown != null && bothKnown === candidateKnown)
+    ) {
       varietyScore = Math.min(100, varietyScore + 25);
     }
   }
