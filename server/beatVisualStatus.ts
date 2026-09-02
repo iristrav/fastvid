@@ -343,7 +343,31 @@ export function tallyBeatVisualStatuses(statuses: readonly BeatVisualStatus[]): 
  */
 export function formatVisualFitAudit(
   statuses: readonly BeatVisualStatus[],
-  severityOf: (sceneIndex: number, beatIndex: number, basename: string) => string
+  severityOf: (sceneIndex: number, beatIndex: number, basename: string) => string,
+  /**
+   * RENDER 564 — WHAT IS ACTUALLY IN THE DELIVERED FILE.
+   *
+   * The invariant below says a refused clip "is on screen". It was built from the ADOPT audit,
+   * which records what a beat was given — not what survived. Render 564 printed seven of these,
+   * and six were about clips the compose barrier had turned away:
+   *
+   *     [ComposeBarrier] s0 clip 6: BLOCKED scene_0_b5_curated_a57670.mp4 — refused on s0b2005
+   *     [VisualFitAudit] INVARIANT_BROKEN beat=s0b2005 … the compose barrier was bypassed
+   *
+   * The loudest line in the report, printed at error level, crying wolf on exactly the case where
+   * the guard did its job — and sending the investigation after a bypass that never happened.
+   * That is the failure RONDE 142 and 159 both describe: a check that contradicts the code is how
+   * a real finding gets ignored.
+   *
+   * Basenames of the clips the concat actually took, from the FINAL_VIDEO events rather than from
+   * `record.currentFilename`: one lineage record can be re-pointed across several copies of an
+   * asset, so the record's filename is not evidence of which copy was delivered, while the event
+   * carries the path `markFinalVideo` was handed.
+   *
+   * Absent means delivery is unknown — the audit then reports the refusal without claiming it
+   * reached the screen, because it cannot know that.
+   */
+  deliveredBasenames?: ReadonlySet<string>
 ): string[] {
   if (statuses.length === 0) return [];
   const counts = {
@@ -359,6 +383,14 @@ export function formatVisualFitAudit(
     reprievedSoftMismatch: 0,
     rejectedHardMismatch: 0,
     rejectedUnrelated: 0,
+    /**
+     * RENDER 564 — refused, adopted anyway, and then removed before the concat.
+     *
+     * Counted rather than silent. This is the compose barrier doing its job, and a render where
+     * it happens often is telling you the retrieval stage keeps handing beats material the picture
+     * editor will not accept — a real signal, and a different one from the invariant above.
+     */
+    refusedAndRemoved: 0,
   };
   const lines: string[] = [];
   for (const s of statuses) {
@@ -422,10 +454,30 @@ export function formatVisualFitAudit(
      * this state while the audit said nothing.
      */
     if (blocking && s.verification === "verified_mismatch" && s.coverage === "own_footage") {
-      lines.push(
-        `[VisualFitAudit] INVARIANT_BROKEN beat=s${s.sceneIndex}b${s.beatIndex} ` +
-          `severity=${severity} is on screen with no reprieve — the compose barrier was bypassed`
-      );
+      /**
+       * RENDER 564 — say only what is known.
+       *
+       * `delivered` decides between two genuinely different findings. A refused clip IN the
+       * delivered file is the invariant this check exists for. A refused clip the barrier
+       * removed is the guard WORKING, and shouting INVARIANT_BROKEN at it — at error level, six
+       * times out of seven — buries the one case that mattered.
+       */
+      const delivered = deliveredBasenames?.has(s.basename);
+      if (delivered === false) {
+        counts.refusedAndRemoved++;
+      } else if (delivered === true) {
+        lines.push(
+          `[VisualFitAudit] INVARIANT_BROKEN beat=s${s.sceneIndex}b${s.beatIndex} ` +
+            `severity=${severity} is in the delivered file with no reprieve — ` +
+            `the compose barrier did not stop it`
+        );
+      } else {
+        /** No delivery record to consult: report the refusal, claim nothing about the screen. */
+        lines.push(
+          `[VisualFitAudit] REFUSED_AND_ADOPTED beat=s${s.sceneIndex}b${s.beatIndex} ` +
+            `severity=${severity} was adopted with no reprieve — delivery not checked`
+        );
+      }
     }
   }
   lines.unshift(
@@ -437,7 +489,8 @@ export function formatVisualFitAudit(
       `neverAsked=${counts.neverAsked} adoptedFit=${counts.adoptedFit} ` +
       `reprievedSoftMismatch=${counts.reprievedSoftMismatch} ` +
       `rejectedHardMismatch=${counts.rejectedHardMismatch} ` +
-      `rejectedUnrelated=${counts.rejectedUnrelated}`
+      `rejectedUnrelated=${counts.rejectedUnrelated} ` +
+      `refusedAndRemoved=${counts.refusedAndRemoved}`
   );
   return lines;
 }

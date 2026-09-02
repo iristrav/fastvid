@@ -426,12 +426,22 @@ describe("RONDE 166 — [VisualFitAudit] and the two never_asked beats", () => {
      * So the assertion was true about the code and wrong about the render. A genuinely clean
      * render is the fixture without that beat.
      */
+    /**
+     * RENDER 564 added the precondition: the audit reads the ADOPT audit, and being adopted is
+     * not being delivered. `wedding.mp4` is named as delivered so the second assertion still
+     * describes the violation it was written for — a refused picture that actually reached the
+     * file — rather than one the compose barrier removed on the way.
+     */
+    const delivered = new Set(["wedding.mp4"]);
     const clean = statuses.filter((s) => s.verification !== "verified_mismatch");
-    expect(formatVisualFitAudit(clean, severityOf).some((l) => l.includes("INVARIANT_BROKEN")))
+    expect(formatVisualFitAudit(clean, severityOf, delivered).some((l) => l.includes("INVARIANT_BROKEN")))
       .toBe(false);
     // And the beat that was removed is exactly the one the audit now names.
-    expect(formatVisualFitAudit([...statuses], severityOf).some((l) => l.includes("INVARIANT_BROKEN")))
-      .toBe(true);
+    expect(
+      formatVisualFitAudit([...statuses], severityOf, delivered).some((l) =>
+        l.includes("INVARIANT_BROKEN")
+      )
+    ).toBe(true);
   });
 
   it("every never_asked beat gets a named reason", () => {

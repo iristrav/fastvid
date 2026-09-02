@@ -323,8 +323,42 @@ describe("RONDE 167 — F4: the fit audit was flattering itself", () => {
      * timeline down a path that never met the compose barrier. Video 554 reported four beats in
      * exactly this state and the audit said nothing about any of them.
      */
+    /**
+     * RENDER 564 — the precondition this test always assumed, now stated.
+     *
+     * "ON SCREEN" is in this test's own name, and the audit had no way to know it: it read the
+     * ADOPT audit, which records what a beat was given, not what survived. Render 564 printed
+     * seven of these lines and six were about clips the compose barrier had removed — the guard
+     * working, reported at error level as the guard failing.
+     *
+     * So delivery is supplied. The finding is unchanged; the fixture now says which clip reached
+     * the file, which is the fact the claim rests on.
+     */
+    const delivered = new Set(["vague.mp4"]);
+    const lines = formatVisualFitAudit([...statuses], () => "HARD_MISMATCH", delivered);
+    expect(lines.some((l) => l.includes("INVARIANT_BROKEN") && l.includes("did not stop it")))
+      .toBe(true);
+  });
+
+  /**
+   * The other half of the same fact, and the one render 564 was full of: refused, adopted, and
+   * then removed before the concat. That is the barrier doing its job, so it is counted rather
+   * than shouted about.
+   */
+  it("a hard mismatch the barrier removed is not called a violation", () => {
+    const lines = formatVisualFitAudit([...statuses], () => "HARD_MISMATCH", new Set<string>());
+    expect(
+      lines.some((l) => l.includes("INVARIANT_BROKEN")),
+      "the barrier removed the clip and the audit still cried foul"
+    ).toBe(false);
+    expect(lines[0]).toContain("refusedAndRemoved=1");
+  });
+
+  /** With no delivery record at all, the audit reports the refusal and claims nothing more. */
+  it("claims nothing about the screen when delivery is unknown", () => {
     const lines = formatVisualFitAudit([...statuses], () => "HARD_MISMATCH");
-    expect(lines.some((l) => l.includes("INVARIANT_BROKEN") && l.includes("compose barrier was bypassed")))
+    expect(lines.some((l) => l.includes("INVARIANT_BROKEN"))).toBe(false);
+    expect(lines.some((l) => l.includes("REFUSED_AND_ADOPTED") && l.includes("delivery not checked")))
       .toBe(true);
   });
 

@@ -40384,11 +40384,25 @@ async function _runVideoPipelineInner(
          * judged. The severity comes from the relevance ledger's own words, through the same
          * classifier the reprieve guard consults, so the report and the decision cannot disagree.
          */
+        /**
+         * RENDER 564 — what the concat actually took, so the invariant can tell a bypass from a
+         * barrier that worked. Read from the FINAL_VIDEO EVENTS rather than from the records: one
+         * lineage record can be re-pointed across several copies of an asset, so its filename is
+         * not evidence of which copy was delivered, while the event carries the path
+         * `markFinalVideo` was handed.
+         */
+        const deliveredBasenames = new Set(
+          ledger
+            .allEvents()
+            .filter((e) => e.stage === "FINAL_VIDEO" && e.currentPath)
+            .map((e) => path.basename(e.currentPath!))
+        );
         for (const line of formatVisualFitAudit(
           // Every beat, not only the failing ones — verifiedFit and adoptedFit are counted here.
           qualityReport.beatVisualStatuses ?? [],
           (sceneIndex, beatIndex, basename) =>
-            beatClipSeverity(visualDedup.beatRelevance, sceneIndex, beatIndex, basename)
+            beatClipSeverity(visualDedup.beatRelevance, sceneIndex, beatIndex, basename),
+          deliveredBasenames
         )) {
           if (line.includes("INVARIANT_BROKEN")) console.error(pipelineReport.add("beats", line));
           else console.log(pipelineReport.add("beats", line));

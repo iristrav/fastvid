@@ -311,4 +311,40 @@ describe("both gates ask, and the diagnostic does not", () => {
     const at = CODE.indexOf("composeJudgeScope.contextFor =");
     expect(CODE.slice(at, at + 400)).toContain("beatVisualContext(");
   });
+
+  /* ───────── the audit is told what was actually delivered ───────── */
+
+  /**
+   * A MUTATION ESCAPED HERE.
+   *
+   * `formatVisualFitAudit` now takes the set of clips the concat actually took, and its own tests
+   * cover every branch of that. Removing the argument at the PIPELINE's call site broke none of
+   * them — they test the function, and the function was still right. The audit would simply have
+   * gone back to reporting "delivery not checked" on every render, which is the same class of gap
+   * this whole round is about: a rule that is correct in one place and not reached from the other.
+   */
+  it("the render tells the audit which clips were delivered", () => {
+    expect(CODE, "the audit is called without the delivered set again").toContain(
+      "beatClipSeverity(visualDedup.beatRelevance, sceneIndex, beatIndex, basename),\n          deliveredBasenames"
+    );
+  });
+
+  /**
+   * Built from the FINAL_VIDEO EVENTS, not from the records.
+   *
+   * One lineage record can be re-pointed across several copies of an asset — render 564 had one
+   * covering five filenames across three scenes — so `record.currentFilename` is not evidence of
+   * which copy reached the file. The event carries the path `markFinalVideo` was handed.
+   */
+  it("reads delivery from the events, not from a record's current filename", () => {
+    const at = CODE.indexOf("const deliveredBasenames = new Set(");
+    expect(at, "the delivered set is gone").toBeGreaterThan(-1);
+    const body = CODE.slice(at, at + 400);
+    expect(body).toContain('e.stage === "FINAL_VIDEO"');
+    expect(body).toContain("e.currentPath");
+    expect(
+      body,
+      "delivery is read from the record's mutable filename, which one asset's copies overwrite"
+    ).not.toContain("currentFilename");
+  });
 });
