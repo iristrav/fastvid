@@ -37,6 +37,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildHistoricalArchivalQueries,
   chooseProvenAnchor,
+  looksLikeSentenceFragment,
   type MediaSearchIntent,
 } from "./mediaResearchEngine";
 import {
@@ -136,6 +137,76 @@ describe("an anchor the beat cannot prove is not an anchor", () => {
   it("invents nothing when the beat proves nothing", () => {
     expect(chooseProvenAnchor(["Unseen Forces"], emptyQueryContext("")).anchor).toBe("");
   });
+
+  /* ─────────────────── RENDER 564: the fallback traded down ─────────────────── */
+
+  /**
+   * THE LINE THAT EXPOSED IT.
+   *
+   *     [QueryAnchor] rejected="Führerbunker interior Berlin 1945" reason=UNVERIFIED_TERM
+   *                   chosen="made final stand"
+   *
+   * The refusal was right — none of those terms is in that beat. The replacement was not: "made
+   * final stand archival footage" is not a question any provider can answer. `looksLikeSentence
+   * Fragment` is this module's own check for a clause-shaped anchor and was never applied here.
+   */
+  it("does not fall back to a verb phrase", () => {
+    const beat = "He made his final stand in the bunker as the shells came closer.";
+    const ctx = emptyQueryContext(beat);
+    ctx.events.push(provenToken("made final stand", "event", "beat_text", beat));
+    expect(
+      chooseProvenAnchor(["Führerbunker interior Berlin 1945"], ctx).anchor,
+      "a clause was chosen as the thing to search for"
+    ).not.toBe("made final stand");
+  });
+
+  /**
+   * A clause is SKIPPED, and the search continues past it — it does not merely lose a ranking.
+   *
+   * The first version of this test was called "prefers a proven object over an event phrase" and
+   * it passed with the ordering change reverted, because the fragment check had already removed
+   * the clause. It was pinning an ordering that was doing nothing. What actually matters is this:
+   * a clause-shaped candidate does not stop the loop, so a real subject further down is still
+   * reached.
+   */
+  it("keeps looking past a clause instead of settling for it", () => {
+    const beat = "He made his final stand in the bunker as the shells came closer.";
+    const ctx = emptyQueryContext(beat);
+    ctx.events.push(provenToken("made final stand", "event", "beat_text", beat));
+    ctx.objects.push(provenToken("bunker", "object", "beat_text", beat));
+    expect(
+      chooseProvenAnchor(["Führerbunker interior Berlin 1945"], ctx).anchor,
+      "the clause ended the search and the beat lost the subject sitting behind it"
+    ).toBe("bunker");
+  });
+
+  /** Events are demoted, not removed — a named event is still a good anchor. */
+  it("still uses a named event when nothing else is proven", () => {
+    const beat = "The Battle of Berlin reached the city centre that April.";
+    const ctx = emptyQueryContext(beat);
+    ctx.events.push(provenToken("Battle of Berlin", "event", "beat_text", beat));
+    expect(chooseProvenAnchor(["Unseen Forces"], ctx).anchor).toBe("Battle of Berlin");
+  });
+
+  /**
+   * The light and reporting verbs a narration sentence turns on. The list already carried
+   * "chose", "decided" and "ordered"; "made" was missing, which is the whole of render 564's
+   * defect. Checked through the public function so this holds wherever the list is consulted.
+   */
+  it.each(["made", "took", "gave", "became", "began", "brought", "wrote", "thought"])(
+    "treats a phrase led by '%s' as a clause, not a subject",
+    (verb) => {
+      expect(looksLikeSentenceFragment(`${verb} final stand`)).toBe(true);
+    }
+  );
+
+  /** And the words that name things are untouched by that list. */
+  it.each(["Adolf Hitler", "Berlin bunker", "Battle of Berlin", "Eva Braun", "bunker"])(
+    "still accepts '%s' as a subject",
+    (subject) => {
+      expect(looksLikeSentenceFragment(subject)).toBe(false);
+    }
+  );
 
   /**
    * Outside a beat scope — unit tests, callers that hold no provenance — the validator approves

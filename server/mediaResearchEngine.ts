@@ -528,6 +528,17 @@ const QUERY_ANCHOR_LEAD_STOPWORDS = new Set([
   "under", "up", "with", "within", "without", "after", "before", "during", "through",
   "did", "does", "do", "was", "were", "is", "are", "had", "has", "have", "been", "being",
   "chose", "chosen", "decided", "planned", "wanted", "tried", "refused", "ordered",
+  /**
+   * RENDER 564 — the same class, completed.
+   *
+   * `[QueryAnchor] rejected="Führerbunker interior Berlin 1945" chosen="made final stand"` — a
+   * usable query traded for a verb phrase, because "made" was not on this list while "chose" and
+   * "decided" were. These are the light and reporting verbs a narration sentence turns on; none
+   * of them can begin the name of a thing you can search for, which is what this list is.
+   */
+  "made", "took", "gave", "came", "went", "said", "told", "left", "kept", "held", "put",
+  "saw", "knew", "found", "felt", "became", "began", "ended", "started", "stopped", "turned",
+  "brought", "sent", "wrote", "spoke", "asked", "answered", "believed", "thought", "meant",
   "when", "while", "where", "which", "who", "whose", "why", "how", "that", "this", "these",
   "those", "then", "than", "if", "because", "although", "though", "since", "until",
 ]);
@@ -804,11 +815,33 @@ export function chooseProvenAnchor(
    * `buildPrioritisedQueries` ranks by.
    */
   if (ctx) {
+    /**
+     * RENDER 564 — two corrections to this fallback, both from one log line:
+     *
+     *     [QueryAnchor] rejected="Führerbunker interior Berlin 1945" reason=UNVERIFIED_TERM
+     *                   chosen="made final stand"
+     *
+     * A perfectly good query was refused — correctly, its terms are not in this beat — and
+     * replaced with a verb phrase that names nothing. "made final stand archival footage" is not
+     * a question any provider can answer.
+     *
+     * `looksLikeSentenceFragment` is this module's own check for exactly that, and it was simply
+     * not applied here.
+     *
+     * The order is deliberately UNCHANGED. A first attempt at this fix also demoted `ctx.events`
+     * below the noun lists, on the theory that the event phrase is the one built from what a verb
+     * governs. The test written for it passed with the demotion reverted — the fragment check had
+     * already removed the clause, so the ordering was doing nothing — and once that was visible
+     * the reorder could not be justified at all: "Battle of Berlin" is a better anchor than the
+     * bare object noun "bunker", and demoting it would have made the family worse on exactly the
+     * beats that have a named event. One check, doing one job.
+     */
     for (const list of [ctx.persons, ctx.events, ctx.places, ctx.countries, ctx.objects]) {
       for (const token of list) {
         if (!token.verified) continue;
         const term = token.term.trim();
-        if (term && validateSearchQuery(term, ctx).ok) return { anchor: term, rejected };
+        if (!term || looksLikeSentenceFragment(term)) continue;
+        if (validateSearchQuery(term, ctx).ok) return { anchor: term, rejected };
       }
     }
   }
