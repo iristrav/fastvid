@@ -36,6 +36,22 @@ const FIXTURE_VIDEO_PATH = path.join(__dirname, "__fixtures__", "f331-tiny-test-
 // (`const EUROPEANA_API_KEY = process.env.EUROPEANA_API_KEY || ""`), so tests that need the key
 // "present" must set process.env before the module is (re-)imported — vi.resetModules() +
 // dynamic import() per test, rather than a top-level static import.
+/**
+ * MEASURED IMPORT-COST CLIFF — why the timeouts below are what they are.
+ *
+ * Every test in this file calls `vi.resetModules()` and re-imports `videoPipeline.ts` (see the
+ * note at the top on why it must: EUROPEANA_API_KEY is read into a module-level constant at import
+ * time). That module is ~40,000 lines, so each test pays a full transform-and-import before its
+ * first assertion, and the default 5s budget was sitting directly on that edge.
+ *
+ * This was proven rather than assumed. Adding THIRTY-FIVE LINES OF PURE COMMENT to
+ * `videoPipeline.ts` — no behaviour, no new code path — makes exactly these tests time out, and
+ * removing them makes the file pass again, reproducibly, alternating runs. The tests are measuring
+ * the module's import cost, not the code they claim to test.
+ *
+ * The timeout is therefore raised to cover the import, and NOTHING ELSE IS CHANGED: no assertion,
+ * no stub, no expectation. A functional regression in this file still fails it.
+ */
 const nodeFetchMock = vi.fn();
 vi.mock("node-fetch", () => ({ default: (...args: unknown[]) => nodeFetchMock(...args) }));
 
@@ -68,7 +84,7 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
 
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
-  });
+  }, 30_000);
 
   it("is a clean no-op (no network call) without EUROPEANA_API_KEY", async () => {
     process.env.EUROPEANA_API_KEY = "";
@@ -77,7 +93,7 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
     const result = await fetchEuropeanaVideos("Kylie Jenner", 6, "/tmp", 0, 1);
     expect(result).toEqual([]);
     expect(nodeFetchMock).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it("an item WITH a per-item rights URL passes the license gate and reaches the download stage", async () => {
     process.env.EUROPEANA_API_KEY = "test-key";
@@ -114,7 +130,7 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
 
     const downloadCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("good-video.mp4"));
     expect(downloadCalls).toHaveLength(1);
-  });
+  }, 30_000);
 
   it("an item WITHOUT a per-item rights URL is skipped and never downloaded", async () => {
     process.env.EUROPEANA_API_KEY = "test-key";
@@ -146,7 +162,7 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
     expect(result).toEqual([]);
     const downloadCalls = nodeFetchMock.mock.calls.filter(([u]) => String(u).includes("norights-video.mp4"));
     expect(downloadCalls).toHaveLength(0);
-  });
+  }, 30_000);
 
   it("never throws when the search request itself fails", async () => {
     process.env.EUROPEANA_API_KEY = "test-key";
@@ -154,7 +170,7 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
     nodeFetchMock.mockRejectedValue(new Error("network down"));
     const fetchEuropeanaVideos = await loadFetchEuropeanaVideos();
     await expect(fetchEuropeanaVideos("X", 6, "/tmp", 0, 1)).resolves.toEqual([]);
-  });
+  }, 30_000);
 
   it("F3-29 Test 8 — makes no network calls at all once cancellation has been requested for the active video", async () => {
     process.env.EUROPEANA_API_KEY = "test-key";
@@ -167,7 +183,7 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
 
     expect(result).toEqual([]);
     expect(nodeFetchMock).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it("F3-31 Test 5 — stops record-fetching as soon as one license-safe video has been found (count=1), even with more results in the page", async () => {
     process.env.EUROPEANA_API_KEY = "test-key";
@@ -243,5 +259,5 @@ describe("fetchEuropeanaVideos — F3-30 (real video, per-item license gate)", (
     } finally {
       fs.rmSync(tmpWorkDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

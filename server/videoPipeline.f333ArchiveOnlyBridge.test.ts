@@ -221,10 +221,16 @@ describe("recoverSceneClipsIfEmpty — F3-33 Test 3/4 (bridge to the F3-28/29/30
     // placeholder clips, so `result` isn't asserted on further here — the cascade reach itself
     // (proven above) is this test's only claim.
     void result;
-  }, 20_000); // Real ffmpeg work (3 text-overlay fallback encodes, ~3.8s standalone) can exceed
+  }, 45_000); // Real ffmpeg work (3 text-overlay fallback encodes, ~3.8s standalone) can exceed
   // the default 5000ms under full-suite CPU contention from other concurrent real-ffmpeg tests —
   // not a functional regression (deterministic, passes reliably standalone); same rationale as
   // the explicit testTimeout bump in videoPipeline.f349HistoricalCascadeDedup.test.ts.
+  //
+  // Raised from 20s to 45s on MEASURED evidence, not to hide a flake: this test also imports
+  // videoPipeline.ts (~40,000 lines), and adding thirty-five lines of PURE COMMENT to that module
+  // — no behaviour, no new code path — makes this test time out, reproducibly, while removing them
+  // makes it pass. The budget was measuring the module's import cost on top of the ffmpeg work.
+  // Nothing else in this test is changed: a real regression in the cascade still fails it.
 
   it("Test 4 — a sufficiently filled scene (clips.length >= minNeeded after the archive-only pass) never triggers the top-up/cascade", async () => {
     let n = 0;

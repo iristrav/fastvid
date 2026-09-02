@@ -388,11 +388,27 @@ describe("RONDE 70 §3/§4 — adopted, placeholder, and the gap between eligibl
     const src = PIPELINE();
     const callsOf = (fn: string) =>
       src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l) && l.includes(`${fn}(`)).length;
-    // Import lines carry no parenthesis, so these are call sites only — one each.
-    expect(callsOf("noteBeatCandidatesOffered")).toBe(1);
-    expect(callsOf("noteBeatEligible")).toBe(1);
-    expect(callsOf("noteBeatAdopted")).toBe(1);
-    expect(callsOf("noteBeatPlaceholder")).toBe(1);
+    /**
+     * Import lines carry no parenthesis, so these are call sites only.
+     *
+     * ── Why this is no longer "exactly one" ────────────────────────────────────────────────
+     *
+     * It used to require exactly one call site each, and that assertion is what kept the defect
+     * alive. There is more than one ADOPTING ROUTE: `adoptClip` and the retrieval funnel, which
+     * downloads, vision-gates and picks its own winner without ever going through `adoptClip`.
+     * Pinning "one" pinned "only adoptClip counts", so every beat the funnel served reported
+     * `offered=0` — and `resolveBeatStatus` turns that into the word `no_candidates`. A production
+     * render that downloaded 56 assets reported `noCandidates=10`.
+     *
+     * The rule this test exists for is unchanged and is what is asserted now: a stage that counts
+     * NOWHERE reads zero for every beat of every render. That a second route also counts is the
+     * fix, not a violation — and `funnelBeatAccounting.test.ts` pins that the funnel is one of
+     * them, so "at least one" cannot quietly become "only the old one" again.
+     */
+    expect(callsOf("noteBeatCandidatesOffered")).toBeGreaterThanOrEqual(1);
+    expect(callsOf("noteBeatEligible")).toBeGreaterThanOrEqual(1);
+    expect(callsOf("noteBeatAdopted")).toBeGreaterThanOrEqual(1);
+    expect(callsOf("noteBeatPlaceholder")).toBeGreaterThanOrEqual(1);
     /**
      * SUPERSEDED BY RONDE 103, deliberately.
      *

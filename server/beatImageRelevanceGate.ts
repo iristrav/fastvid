@@ -61,6 +61,25 @@ export type BeatImageJudgement = {
    * no provider produced those.
    */
   provider?: string;
+  /**
+   * Did a model actually LOOK at this picture?
+   *
+   * ── Why a verdict of "unknown" is not enough ────────────────────────────────────────────
+   *
+   * `unknown` is returned by two completely different events. The model looked and could not
+   * decide — an ambiguous frame, an outage mid-answer. And the gate DECLINED TO LOOK: the render
+   * budget was spent, the gate is switched off, there was no readable frame. `beatVisualStatus`
+   * says so in a comment and then collapses both into the same word, and its own vocabulary has
+   * carried a `never_asked` member since RONDE 166 that nothing can produce.
+   *
+   * That matters because the two demand opposite responses. "Looked, unsure" is a fact about the
+   * picture. "Never looked" is a fact about the RENDER, and a beat that ends without a picture
+   * because nobody looked must never be reported as a beat with no valid asset.
+   *
+   * `false` only on a decline — every path that reached a model, including one that errored
+   * mid-answer, sets it true.
+   */
+  evaluated: boolean;
 };
 
 function envInt(key: string, fallback: number, min: number, max: number): number {
@@ -427,16 +446,26 @@ export async function judgeBeatImage(params: {
   timeoutMs?: number;
 }): Promise<BeatImageJudgement> {
   const { framePaths, beatText, videoTitle, sceneText, contentKey, state } = params;
-  const unknown = (reason: string): BeatImageJudgement => {
+  /**
+   * No verdict, from a model that DID look — an ambiguous frame, an answer with no verdict in it,
+   * a provider that failed mid-call. `evaluated: true`: the picture was seen and settled nothing.
+   */
+  const unknown = (reason: string, evaluated = true): BeatImageJudgement => {
     // RONDE 115: every route out of here without a verdict is counted by its reason, so a render
     // that got none can say WHY in one line instead of forty-four identical ones.
     state.noVerdictReasons.set(reason, (state.noVerdictReasons.get(reason) ?? 0) + 1);
-    return { verdict: "unknown", depicts: "", reason };
+    return { verdict: "unknown", depicts: "", reason, evaluated };
   };
-  /** A decline: the gate never looked. Counted so the render summary cannot claim it did. */
+  /**
+   * A decline: the gate never looked. Counted so the render summary cannot claim it did.
+   *
+   * `evaluated: false` is the whole point — see the field's note on `BeatImageJudgement`. A beat
+   * whose picture was never looked at is a fact about the RENDER's budget, not about the picture,
+   * and the two must not arrive at the caller wearing the same word.
+   */
   const declined = (reason: string): BeatImageJudgement => {
     state.judgementsSkipped++;
-    return unknown(reason);
+    return unknown(reason, false);
   };
 
   if (!beatImageRelevanceGateEnabled()) return declined("gate disabled");
@@ -447,7 +476,8 @@ export async function judgeBeatImage(params: {
    */
   const seenKey = `${contentKey}|${params.beatIdentity ?? ""}`;
   const cached = state.seen.get(seenKey);
-  if (cached) return { ...cached, cached: true };
+  /** A verdict this render already earned by looking — see `evaluated` on BeatImageJudgement. */
+  if (cached) return { ...cached, cached: true, evaluated: true };
   if (!beatText?.trim()) return declined("no narration to judge against");
 
   /**
@@ -469,8 +499,10 @@ export async function judgeBeatImage(params: {
       depicts: stored.depicts,
       reason: stored.reason,
       cached: true,
+      /** A stored verdict was earned by a real look, on an earlier beat or an earlier render. */
+      evaluated: true,
     };
-    state.seen.set(seenKey, { verdict: stored.verdict, depicts: stored.depicts, reason: stored.reason });
+    state.seen.set(seenKey, { verdict: stored.verdict, depicts: stored.depicts, reason: stored.reason, evaluated: true });
     return fromStore;
   }
 
@@ -547,6 +579,7 @@ export async function judgeBeatImage(params: {
       verdict: parsed.belongs ? "fits" : "does_not_fit",
       depicts: (parsed.depicts ?? "").slice(0, 160),
       reason: (parsed.reason ?? "").slice(0, 160),
+      evaluated: true,
       ...(provider ? { provider } : {}),
     };
     // RONDE 119: the provider that answered is counted here, at the one point where a verdict is

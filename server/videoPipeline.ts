@@ -31914,6 +31914,28 @@ async function fetchSceneVisualsInner(
             downloadedClips.push({ candidate, clipPath });
           }
         }
+        /**
+         * THE FUNNEL REPORTS TO THE BEAT AUDIT — the route that does the work, counted at last.
+         *
+         * ── The measurement defect this closes ──────────────────────────────────────────────
+         *
+         * `noteBeatCandidatesOffered` had exactly one caller: `adoptClip`. The retrieval funnel
+         * adopts through its own block below and never goes through `adoptClip` — the same gap
+         * RONDE 53 closed for `recordClipAdopt` and RONDE 62 closed for the still/moving counters,
+         * one layer up and still open.
+         *
+         * So every beat the funnel served reported `offered=0`, and `resolveBeatStatus` labels a
+         * beat with `offered === 0` and nothing else recorded as `no_candidates`. A production
+         * render that downloaded 56 assets reported `noCandidates=10` and `REAL_ASSET=1` — numbers
+         * that describe one route's bookkeeping, not the video.
+         *
+         * `downloadedClips` is the honest count: files on disk, handed to evaluation for THIS
+         * beat, which is exactly what `offered` means in `adoptClip` ("candidate paths handed to
+         * the adopt path"). Nothing is fetched, ranked or judged here — this counts.
+         */
+        noteBeatCandidatesOffered(
+          dedup.beatOutcomeAudit, scene.index, beat.index, downloadedClips.length
+        );
         for (const { candidate, clipPath } of downloadedClips) {
           const visionResult = await evaluateClipVisionGate(
             clipPath,
@@ -32452,6 +32474,19 @@ async function fetchSceneVisualsInner(
           });
           dedup.visualDedupStats.uniqueAssets++;
           funnelClip = clipPath;
+          /**
+           * The funnel's adoption, in the beat audit's own vocabulary.
+           *
+           * A winner here has passed the beat image gate, which is the acceptance point
+           * `noteBeatEligible` exists for — and it becomes the beat's picture, which is
+           * `noteBeatAdopted`. Without these two the audit sees a beat the funnel filled as
+           * `adopted=0`, and the coverage roll-up counts it as FALLBACK or NO_VALID_ASSET.
+           */
+          noteBeatEligible(dedup.beatOutcomeAudit, scene.index, beat.index);
+          noteBeatAdopted(
+            dedup.beatOutcomeAudit, scene.index, beat.index,
+            candidate.source, path.basename(clipPath)
+          );
           // RONDE 53: record the adoption. This is the SECOND route that never did.
           //
           // Ronde 51 closed the scene-pool branch in fetchSceneVisualsInner, but the retrieval
