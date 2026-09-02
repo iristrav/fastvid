@@ -167,7 +167,20 @@ export type CinematicInputsResult = {
    */
   dropped: string[];
   /** Counts for the render log. */
-  stats: { scenes: number; beats: number; planned: number; withTrim: number; withProbe: number };
+  stats: {
+    scenes: number;
+    beats: number;
+    planned: number;
+    withTrim: number;
+    withProbe: number;
+    /**
+     * Beats whose position was laid out from `holdSec` because nothing measured their voice window.
+     * Not a fault — an unaligned render is ordinary — but it is the difference between an edit cut
+     * to the narration and one cut to the script's estimate, and render 563 proved that difference
+     * has to be visible in the log rather than inferred from a validator failure.
+     */
+    laidOut: number;
+  };
 };
 
 /* ═══════════════════════ the translation ═══════════════════════ */
@@ -498,7 +511,7 @@ export function buildCinematicSceneInputs(params: {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
   const out: CinematicSceneInput[] = [];
-  const stats = { scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0 };
+  const stats = { scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0, laidOut: 0 };
 
   let cursorSec = 0;
   params.scenes.forEach((sceneFacts, sceneOrder) => {
@@ -511,11 +524,41 @@ export function buildCinematicSceneInputs(params: {
     cursorSec = sceneOffsetSec + Math.max(0, scene.duration);
 
     const beats: CinematicBeatInput[] = [];
+    /**
+     * RENDER 563 — where a beat sits in its scene when nothing measured it.
+     *
+     * `voiceStartSec` is absent whenever the render did not align the narration: no scene audio on
+     * disk, or a beat set built by `buildSceneBeats` rather than the TTS planner. That is a real
+     * and ordinary state, and `?? 0` turned it into the claim that the beat starts at second zero.
+     * Every beat in a scene then made the same claim, and `edlToTimeline` composed each with the
+     * same `sceneOffsetSec` — so they landed on top of each other:
+     *
+     *     [Validator] BLOCKING VIDEO/vc_ceab35ceb7 [0.000s → 3.500s] video_overlap:
+     *       overlaps vc_2c67ea567f by 3.500s
+     *     [CinematicPipeline] video=563 plan NOT stored code=CINEMATIC_TIMELINE_INVALID
+     *     [RenderJob] video=563 route=legacy_compose RENDER_FALLBACK_USED
+     *
+     * One overlap was enough to throw away the whole plan, which is why that render's two rendered
+     * Remotion graphics never reached the delivered video: the legacy route does not know them.
+     *
+     * So an unmeasured beat is LAID OUT instead of defaulted — end to end from the scene's start,
+     * along its own `holdSec`. That is the pipeline's own number, the same one the montage cuts
+     * on, not an estimate of anything: a beat's hold is how long the scene holds on it. The cursor
+     * advances over EVERY beat including the dropped ones, because narration does not skip the
+     * beats that failed to find footage — a later beat still begins where the voice has reached.
+     */
+    let beatCursorSec = 0;
     sceneFacts.beats.forEach((beat, beatIndex) => {
       stats.beats++;
-      const adopted = sceneFacts.clips[beatIndex] ?? null;
       const beatId = beatIdFor(scene.index, beatIndex);
 
+      const measured = beat.voiceStartSec != null;
+      const start = beat.voiceStartSec ?? beatCursorSec;
+      const end = beat.voiceEndSec ?? start + (beat.holdSec ?? 0);
+      if (!measured) stats.laidOut++;
+      beatCursorSec = Math.max(beatCursorSec, end);
+
+      const adopted = sceneFacts.clips[beatIndex] ?? null;
       if (!adopted) {
         dropped.push(`${beatId}: no clip was adopted for this beat`);
         return;
@@ -536,8 +579,6 @@ export function buildCinematicSceneInputs(params: {
         return;
       }
 
-      const start = beat.voiceStartSec ?? 0;
-      const end = beat.voiceEndSec ?? start + (beat.holdSec ?? 0);
       const durationSec = Math.max(0, end - start);
       if (durationSec <= 0) {
         dropped.push(`${beatId}: the beat has no voice window and no hold length`);
@@ -600,6 +641,7 @@ export function formatCinematicInputs(result: CinematicInputsResult): string {
   return (
     `[CinematicPipeline] inputs scenes=${result.stats.scenes} beats=${result.stats.beats} ` +
     `planned=${result.stats.planned} probed=${result.stats.withProbe} ` +
-    `trimmed=${result.stats.withTrim} dropped=${result.dropped.length}`
+    `trimmed=${result.stats.withTrim} laidOut=${result.stats.laidOut} ` +
+    `dropped=${result.dropped.length}`
   );
 }
