@@ -231,6 +231,31 @@ export function renderOutputKey(videoId: number, jobId: number): string {
 export async function runRenderJob(params: {
   jobId: number;
   deps?: Partial<RenderWorkerDeps>;
+  /**
+   * Clip id → a file this process ALREADY holds, for a render started by the run that produced it.
+   *
+   * ── Why this exists ─────────────────────────────────────────────────────────────────────────
+   *
+   * The pipeline downloads, probes, judges and adopts every clip, and then plans a timeline over
+   * exactly those files. The render job that follows used to start from nothing and re-fetch all of
+   * them — from an archive row, a provider API, a cache — even though the bytes were sitting on the
+   * same disk, in the same process, seconds old.
+   *
+   * Render 564 is what that costs. Two clips needed the archive, one row's storage read came back
+   * empty, `failFast` stopped the render, and `ASSET_NOT_REHYDRATABLE` killed a video whose every
+   * frame had already been downloaded successfully. Re-fetching an asset we hold is not a safety
+   * measure; it is a second chance to fail.
+   *
+   * This is the SAME seam as `recordClipAdopt`, the still/moving counters and the beat verdicts: a
+   * fact one route establishes and the next route does not receive. The fix is the same shape —
+   * carry it rather than re-derive it.
+   *
+   * Only a render that starts inside the producing run can pass this. The poll loop renders jobs
+   * whose work directories are long gone, so it passes nothing and rehydration behaves exactly as
+   * it always has. `rehydrateAsset` re-checks that each path exists and is non-empty before
+   * trusting it, so a stale entry costs a fetch, never a wrong file.
+   */
+  existingByClipId?: Map<string, string>;
 }): Promise<RenderJobOutcome> {
   const deps: RenderWorkerDeps = { ...defaultRenderWorkerDeps(), ...params.deps };
   const job = await getRenderJobById(params.jobId);
@@ -286,6 +311,7 @@ export async function runRenderJob(params: {
       workDir: path.join(workDir, "assets"),
       deps: audioDeps,
       failFast: true,
+      existingByClipId: params.existingByClipId,
     });
     for (const line of formatRehydrationSummary(rehydration)) console.log(line);
     if (!rehydration.ok) {

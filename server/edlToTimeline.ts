@@ -60,6 +60,7 @@ import type {
 } from "./cinematicEditingEngine/types";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import { resolveSoundEffect } from "./audioAssetSource";
+import { beatIndexFromBeatId } from "./cinematicPipelineInputs";
 
 /**
  * The engine's transition vocabulary, mapped to the renderer's.
@@ -448,6 +449,20 @@ export function translateEdl(params: {
       transitionOut: "hard_cut",
       previewSource: "asset",
       sceneIndex: decision.sceneIndex,
+      /**
+       * WHICH BEAT THIS CLIP ILLUSTRATES — written down, not left to be inferred.
+       *
+       * The field has existed on `TimelineVideoClip` since RONDE 148 ("kept so a replacement can be
+       * offered from that beat") and nothing has ever set it. `sceneIndex` alone cannot say which
+       * of a scene's beats a clip belongs to, so every consumer that needed the beat had to parse
+       * it back out of the element id or give up.
+       *
+       * The number is not derived from the clip's position: it comes from the decision's own beat
+       * id, which the beat carried from the moment the pipeline handed it over. An id that did not
+       * come from `beatIdFor` leaves the field absent rather than defaulting to 0 — see
+       * `beatIndexFromBeatId`.
+       */
+      beatIndex: beatIndexFromBeatId(decision.beatId)?.beatIndex,
     });
 
     for (const caption of decision.captions) {

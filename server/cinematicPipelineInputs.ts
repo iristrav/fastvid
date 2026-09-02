@@ -191,6 +191,21 @@ export function beatIdFor(sceneIndex: number, beatIndex: number): string {
 }
 
 /**
+ * The inverse of `beatIdFor`, so a beat id can be read back as the two numbers that made it.
+ *
+ * It lives HERE, beside the function that mints the format, because a second place that knows how
+ * a beat id is spelled is a second place to get it wrong when the format changes. Anything that
+ * does not match the exact shape returns null rather than a plausible-looking zero: an unparseable
+ * id means "this did not come from `beatIdFor`", and a caller that treats that as beat 0 would file
+ * one beat's facts under another's.
+ */
+export function beatIndexFromBeatId(beatId: string): { sceneIndex: number; beatIndex: number } | null {
+  const match = /^s(\d+)b(\d+)$/.exec(beatId.trim());
+  if (!match) return null;
+  return { sceneIndex: Number(match[1]), beatIndex: Number(match[2]) };
+}
+
+/**
  * The candidate's identity, from the adoption record and never from the filename.
  *
  * Falls back to the lineage's own `candidateId` and then to a positional id, because the engine
@@ -490,6 +505,46 @@ export function pairClipsToBeats(params: {
       ? clipForBeat.get(beat.index ?? position) ?? null
       : params.clipPaths[position] ?? null
   );
+}
+
+/**
+ * THE FILES THIS PROCESS ALREADY HOLDS, ADDRESSED THE WAY THE RENDERER ASKS FOR THEM.
+ *
+ * ── The problem this solves ─────────────────────────────────────────────────────────────────
+ *
+ * A render downloads every clip, probes it, judges it, adopts it — and then the render job that
+ * follows throws all of it away and fetches each asset again from its provider, its archive row or
+ * the cache. On render 564 that second fetch failed for one of two archive assets and
+ * `ASSET_NOT_REHYDRATABLE` killed a video whose every frame was already on disk.
+ *
+ * Re-fetching what we hold is not caution. It is a second opportunity to fail, taken on every
+ * clip, for no gain.
+ *
+ * ── Why (sceneIndex, beatIndex) and not the path ────────────────────────────────────────────
+ *
+ * The renderer addresses media by CLIP ID; the pipeline knows files by beat. The timeline clip
+ * carries `sceneIndex` and `beatIndex` precisely so a replacement can be offered from that beat,
+ * and those two numbers are the only key both sides already agree on. A clip missing either is
+ * skipped rather than guessed at — it simply rehydrates as it always did.
+ *
+ * This does no I/O and asserts nothing about the files. `rehydrateAsset` re-checks that each path
+ * exists and is non-empty before trusting it, so a path that has since been swept costs one
+ * ordinary fetch.
+ */
+export function localFilesForTimelineClips(params: {
+  /** The plan's video clips, each carrying the beat it illustrates. */
+  clips: ReadonlyArray<{ id: string; sceneIndex?: number; beatIndex?: number }>;
+  /** What the render used for that beat, or undefined where it used nothing. */
+  localPathFor: (sceneIndex: number, beatIndex: number) => string | null | undefined;
+}): Map<string, string> {
+  const byClipId = new Map<string, string>();
+  for (const clip of params.clips) {
+    if (clip.sceneIndex == null || clip.beatIndex == null) continue;
+    const localPath = params.localPathFor(clip.sceneIndex, clip.beatIndex);
+    if (!localPath) continue;
+    byClipId.set(clip.id, localPath);
+  }
+  return byClipId;
 }
 
 /**

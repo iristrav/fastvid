@@ -84,6 +84,24 @@ export function cinematicRenderPathEnabled(): boolean {
   return process.env.CINEMATIC_RENDER_PATH === "true";
 }
 
+/**
+ * How long a render may wait for its own cinematic pass before the watchdog is allowed back in.
+ *
+ * The pipeline renders the timeline in-process now, and `timelineRenderer` spawns ffmpeg through
+ * its own exec — the render watchdog never sees those children, so for the length of that render
+ * the pipeline looks idle. The pipeline pings the watchdog while it waits, and this is the bound on
+ * how long it may keep doing that: past it the pings stop and a genuinely stuck render is caught by
+ * the same mechanism that catches every other one.
+ *
+ * Twenty minutes by default. Not a timeout on the render (its ffmpeg children are not the
+ * pipeline's to kill) — a bound on how long the pipeline vouches for it.
+ */
+export function inProcessCinematicRenderBudgetMs(): number {
+  const raw = parseInt(process.env.CINEMATIC_INPROCESS_RENDER_BUDGET_MS ?? "", 10);
+  if (Number.isFinite(raw) && raw > 0) return Math.min(raw, 60 * 60_000);
+  return 20 * 60_000;
+}
+
 /* ═══════════════════════ what a planning attempt reports ═══════════════════════ */
 
 export const CINEMATIC_PLAN_ERROR = {

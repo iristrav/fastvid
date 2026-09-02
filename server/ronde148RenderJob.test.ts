@@ -779,6 +779,91 @@ describe("the render worker, end to end", () => {
     expect(dbState.job?.errorMessage).toContain("vc_0");
   }, 120_000);
 
+  /* ═══════════ RENDER 564 — the files this process already holds ═══════════ */
+
+  /**
+   * The exact failure that killed render 564, inverted into a proof.
+   *
+   * On 564 the pipeline downloaded every clip, judged it, adopted it and planned a timeline over
+   * those files — and the render job then re-fetched all of them from scratch. One archive read
+   * came back empty, `failFast` stopped the render, `ASSET_NOT_REHYDRATABLE` killed the job, and
+   * the video that reached the viewer was the compose montage.
+   *
+   * Here EVERY download fails, which is strictly worse than 564 (there only one of two did). The
+   * render must still succeed, on real ffmpeg, because the bytes are already on this disk and were
+   * handed over. If `existingByClipId` ever stops being passed through, this goes red with the same
+   * error code that appeared in production.
+   */
+  it("RENDER 564: the clips this process already holds are used, not re-fetched", async () => {
+    dbState.timeline = goodTimeline();
+    dbState.timelineVersion = 1;
+    dbState.videoRenderAttempt = 1;
+    dbState.published = null;
+    uploads.length = 0;
+
+    dbState.job = {
+      id: 564, videoId: 1, status: "running", timelineVersion: 1, attempt: 1,
+      progressStep: "rehydrating", progress: 0, outputUrl: null, errorCode: null, errorMessage: null,
+    };
+
+    let downloadsAttempted = 0;
+    const result = await runRenderJob({
+      jobId: 564,
+      existingByClipId: new Map([
+        ["vc_0", SOURCE_A],
+        ["vc_1", SOURCE_B],
+      ]),
+      deps: {
+        workRoot: () => ROOT,
+        upload: async (key, filePath) => {
+          uploads.push({ key, bytes: fs.statSync(filePath).size });
+          return { key, url: `/local-storage/${key}` };
+        },
+        /** Every network route is dead. The render may not need one. */
+        download: async () => {
+          downloadsAttempted++;
+          return false;
+        },
+      },
+    });
+
+    expect(result.ok, result.ok ? "" : `${result.code}: ${result.message}`).toBe(true);
+    if (!result.ok) return;
+    expect(downloadsAttempted).toBe(0);
+    expect(result.durationSec).toBeGreaterThan(5.5);
+    expect(uploads).toHaveLength(1);
+    expect(result.published).toBe(true);
+  }, 420_000);
+
+  /**
+   * The counterpart, so the test above cannot pass for the wrong reason.
+   *
+   * A path that no longer exists — swept between the render and the job — must NOT be trusted. The
+   * render falls through to its ordinary fetch, and with the network dead that is the 564 failure
+   * again. This is what stops `existingByClipId` from becoming a way to hand the renderer a file
+   * that is not there.
+   */
+  it("a stale local path is not trusted — it costs a fetch, never a wrong file", async () => {
+    dbState.timeline = goodTimeline();
+    dbState.timelineVersion = 1;
+    dbState.videoRenderAttempt = 1;
+
+    dbState.job = {
+      id: 565, videoId: 1, status: "running", timelineVersion: 1, attempt: 1,
+      progressStep: "rehydrating", progress: 0, outputUrl: null, errorCode: null, errorMessage: null,
+    };
+    const result = await runRenderJob({
+      jobId: 565,
+      existingByClipId: new Map([["vc_0", path.join(ROOT, "swept-away-by-the-cleanup.mp4")]]),
+      deps: { workRoot: () => ROOT, download: async () => false },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe(RENDER_ERROR.ASSET_NOT_REHYDRATABLE);
+    expect(result.message).toContain("vc_0");
+  }, 120_000);
+
   it("A FAILED UPLOAD DOES NOT DESTROY THE PREVIOUS GOOD EDIT", async () => {
     // §29 — the render succeeded, the upload did not, and the last working video stays current.
     dbState.timeline = goodTimeline();

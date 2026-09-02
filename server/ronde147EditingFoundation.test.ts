@@ -412,6 +412,42 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
     expect(clip!.sourceOut).toBe(6.5);
   });
 
+  /**
+   * RENDER 564 — the clip remembers WHICH BEAT it illustrates.
+   *
+   * `beatIndex` has been on `TimelineVideoClip` since RONDE 148 and nothing ever set it, so every
+   * consumer that needed a clip's beat had to parse it back out of the element id or give up. The
+   * cutover needs it: it is how the render job is told which already-downloaded file belongs to
+   * which clip, and `sceneIndex` alone cannot distinguish a scene's beats from one another.
+   */
+  it("the clip records the beat it illustrates, from the decision's own beat id", () => {
+    const { timeline } = translateEdl({
+      videoId: 1,
+      inputs: [
+        { decision: decision({ beatId: "s2b7", sceneIndex: 2 }), sceneOffsetSec: 0, identity },
+      ],
+    });
+    const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
+    expect(clip!.sceneIndex).toBe(2);
+    expect(clip!.beatIndex).toBe(7);
+  });
+
+  /**
+   * An id in another shape leaves the field ABSENT. Defaulting it to 0 would file this clip under
+   * beat 0 of its scene and hand that beat's file to a clip that never belonged to it — the same
+   * class of mistake as a verdict recorded under the wrong beat.
+   */
+  it("a beat id in another shape leaves beatIndex absent rather than defaulting to zero", () => {
+    const { timeline } = translateEdl({
+      videoId: 1,
+      inputs: [{ decision: decision({ beatId: "b1" }), sceneOffsetSec: 0, identity }],
+    });
+    const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
+    expect(clip!.beatIndex).toBeUndefined();
+  });
+
   it("beat-relative times become absolute using the caller's offset", () => {
     // The one thing the adapter computes, and it is arithmetic on the planner's own numbers.
     const { timeline } = translateEdl({

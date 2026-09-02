@@ -40949,6 +40949,14 @@ async function _runVideoPipelineInner(
      * A failure in any of this never costs a finished video. The render is complete; refusing to
      * deliver it because a caption planner hit an edge case would be the wrong trade every time.
      */
+    /**
+     * The cinematic render's output, when it produced one — the file the viewer receives.
+     *
+     * Declared out here because the write that persists the video's URL is below this whole block.
+     * Null means the compose montage is what gets delivered, and the reason is logged where it is
+     * decided rather than inferred from this being null.
+     */
+    let cinematicDeliveredUrl: string | null = null;
     try {
       const {
         planAndStoreCinematicTimeline,
@@ -40956,10 +40964,20 @@ async function _runVideoPipelineInner(
         cinematicRenderPathEnabled,
         formatRenderRoute,
         enqueueCinematicRender,
+        inProcessCinematicRenderBudgetMs,
       } = await import("./cinematicProduction");
       const { pairClipsToBeats } = await import("./cinematicPipelineInputs");
       if (cinematicPlanningEnabled()) {
         const lineage = visualDedup.sourcingCache.lineage;
+        /**
+         * THE FILES THIS RENDER ALREADY HOLDS, keyed the way the plan will ask for them.
+         *
+         * Filled while the planner's inputs are built, because that is the one place where a beat's
+         * position and the file the render used for it are both in hand. It is handed to the render
+         * job below so the job does not re-fetch assets that are already on this disk — the failure
+         * that killed render 564. See `localFilesForTimelineClips`.
+         */
+        const localFileByBeat = new Map<string, string>();
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           scenes: scenes.map((scene, i) => {
@@ -40988,6 +41006,9 @@ async function _runVideoPipelineInner(
               adoptions: visualDedup.clipAdoptAudit.filter((e) => e.sceneIndex === scene.index),
               beats,
               basenameOf: (clipPath) => path.basename(clipPath),
+            });
+            clipForBeat.forEach((clipPath, beatIndex) => {
+              if (clipPath) localFileByBeat.set(`${scene.index}:${beatIndex}`, clipPath);
             });
             return {
               scene,
@@ -41068,9 +41089,11 @@ async function _runVideoPipelineInner(
          * existing `renderAttempt` fencing, so a failure of the new route costs nothing.
          */
         let cutover: Awaited<ReturnType<typeof enqueueCinematicRender>> | null = null;
+        /** Why the delivered file is NOT the cinematic render, when it is not. Never left empty. */
+        let cinematicRefusal: string | null = null;
         if (outcome.ok && cinematicRenderPathEnabled()) {
           try {
-            const { claimRenderAttempt, createRenderJob } = await import("./db");
+            const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob } = await import("./db");
             cutover = await enqueueCinematicRender({
               videoId,
               timelineVersion: outcome.timelineVersion,
@@ -41079,33 +41102,157 @@ async function _runVideoPipelineInner(
             });
             for (const line of cutover.log) console.log(pipelineReport.add("summary", line));
             if (!cutover.ok) {
+              cinematicRefusal = cutover.reason;
               console.warn(
                 pipelineReport.add(
                   "summary",
                   `[RenderJob] video=${videoId} cinematic render NOT queued: ${cutover.reason}`
                 )
               );
+            } else {
+              /**
+               * §19's cutover, FINISHED: the timeline renders the file the viewer receives.
+               *
+               * ── Why this is run here and not left to the poll loop ──────────────────────────
+               *
+               * The queue was only ever half the cutover. A queued job renders minutes later and
+               * publishes to `editedVideoUrl`, a column ONLY the timeline editor reads — the
+               * dashboard shows and downloads `videoUrl`. So on render 564 the cinematic route was
+               * chosen, the plan was stored, the job was queued 27 ms before COMPLETE, and the file
+               * the viewer downloaded was still the compose montage. Graphics, ambience, SFX,
+               * captions and planned transitions all live on the route that did not deliver.
+               *
+               * Rendering it HERE, before the video is marked complete, is what makes the plan the
+               * product. It is the SAME `runRenderJob` the editor's re-render uses, on the same
+               * queue row, with the same attempt fencing — §26's "one timeline, one renderer" holds
+               * because no second renderer is introduced. What changes is only WHEN it runs and
+               * which column its output lands in.
+               *
+               * ── The claim is what keeps the poll loop out ───────────────────────────────────
+               *
+               * `claimQueuedRenderJob` is a conditional UPDATE from `queued` to `running`: exactly
+               * one caller can win it. Losing it means the worker already took this job, and then
+               * this render does NOT render it a second time — it says so and delivers the compose
+               * file, which is the honest outcome rather than two ffmpeg runs racing for one row.
+               */
+              const claimed = await claimQueuedRenderJob(cutover.renderJobId);
+              if (!claimed) {
+                cinematicRefusal =
+                  `the render job worker claimed job ${cutover.renderJobId} first, so this render ` +
+                  "did not produce the cinematic file";
+              } else {
+                onProgress?.({ stage: "Rendering the edit", percent: 97 });
+                const { runRenderJob } = await import("./renderJobWorker");
+                const { localFilesForTimelineClips } = await import("./cinematicPipelineInputs");
+                const { videoTrack } = await import("./projectTimeline");
+                const existingByClipId = localFilesForTimelineClips({
+                  clips: videoTrack(outcome.timeline),
+                  localPathFor: (sceneIndex, beatIndex) =>
+                    localFileByBeat.get(`${sceneIndex}:${beatIndex}`) ?? null,
+                });
+                console.log(
+                  pipelineReport.add(
+                    "summary",
+                    `[RenderJob] video=${videoId} job=${cutover.renderJobId} rendering in-process ` +
+                      `clips=${videoTrack(outcome.timeline).length} ` +
+                      `alreadyLocal=${existingByClipId.size}`
+                  )
+                );
+                /**
+                 * THE WATCHDOG DOES NOT SEE THIS RENDER'S FFMPEG, SO IT IS TOLD ABOUT IT.
+                 *
+                 * `timelineRenderer` spawns through its own `execFileAsync`; only the compose path's
+                 * `execRaw` calls `trackChild`. The watchdog's total-budget check measures IDLE time
+                 * since the last signal, so without this the whole cinematic render looks like a
+                 * hang — and a watchdog kill here would fire `throwIfVideoGenerationCancelled` and
+                 * fail a video whose compose file was already uploaded and fine.
+                 *
+                 * The heartbeat is bounded rather than unconditional. An unconditional ping would
+                 * switch the watchdog off for as long as this took, which is exactly the protection
+                 * it exists to provide. Past the deadline the pings stop, the pipeline delivers the
+                 * compose montage with a stated reason, and the watchdog is free to act again.
+                 *
+                 * The render is not killed at the deadline — its ffmpeg children are not ours to
+                 * SIGKILL from here. It continues, and if it eventually finishes it publishes to
+                 * `editedVideoUrl` like any other job, so the work is not thrown away; it simply is
+                 * not what this render waited for.
+                 */
+                const renderDeadlineMs = inProcessCinematicRenderBudgetMs();
+                const renderStartedAt = Date.now();
+                const heartbeat = setInterval(() => {
+                  if (Date.now() - renderStartedAt > renderDeadlineMs) return;
+                  get_activeWatchdog()?.ping(
+                    `cinematic render job=${cutover?.ok ? cutover.renderJobId : "?"} ` +
+                      `${Math.round((Date.now() - renderStartedAt) / 1000)}s`
+                  );
+                }, 30_000);
+                let jobOutcome: Awaited<ReturnType<typeof runRenderJob>>;
+                try {
+                  jobOutcome = await runRenderJob({
+                    jobId: cutover.renderJobId,
+                    existingByClipId,
+                  });
+                } finally {
+                  clearInterval(heartbeat);
+                }
+                if (Date.now() - renderStartedAt > renderDeadlineMs && jobOutcome.ok) {
+                  console.warn(
+                    pipelineReport.add(
+                      "summary",
+                      `[RenderJob] video=${videoId} job=${cutover.renderJobId} finished after its ` +
+                        `in-process budget (${Math.round((Date.now() - renderStartedAt) / 1000)}s > ` +
+                        `${Math.round(renderDeadlineMs / 1000)}s) — delivered anyway, it is a real file`
+                    )
+                  );
+                }
+                if (jobOutcome.ok) {
+                  cinematicDeliveredUrl = jobOutcome.outputUrl;
+                  console.log(
+                    pipelineReport.add(
+                      "summary",
+                      `[RenderJob] video=${videoId} job=${cutover.renderJobId} ` +
+                        `DELIVERED_BY=cinematic_timeline duration=` +
+                        `${jobOutcome.durationSec?.toFixed(2) ?? "unmeasured"}s`
+                    )
+                  );
+                } else {
+                  cinematicRefusal = `${jobOutcome.code} — ${jobOutcome.message}`;
+                }
+              }
             }
           } catch (err) {
-            console.warn(
-              `[RenderJob] video=${videoId} cinematic render could not be queued: ` +
-                `${(err as Error).message.slice(0, 200)}`
-            );
+            cinematicRefusal = `the cinematic render threw: ${(err as Error).message.slice(0, 200)}`;
           }
         }
 
+        /**
+         * A cinematic render that did not deliver is stated, with its reason, every time.
+         *
+         * "Geen stille terugval": the viewer still gets the compose montage — a real video beats no
+         * video — but nobody has to infer from a missing `[Graphics]` line that they got the older
+         * route. `RENDER_FALLBACK_USED` is greppable and the reason is the renderer's own words.
+         */
         console.log(
           pipelineReport.add(
             "summary",
             formatRenderRoute({
               videoId,
-              /** The route is `cinematic_timeline` only when a job was really queued. */
-              route: cutover?.ok ? "cinematic_timeline" : "legacy_compose",
+              /** The route is `cinematic_timeline` only when its file is the one being delivered. */
+              route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose",
               planOk: outcome.ok,
-              reason: outcome.ok ? cutover?.ok === false ? cutover.reason : undefined : outcome.reason,
+              reason: outcome.ok ? cinematicRefusal ?? undefined : outcome.reason,
             })
           )
         );
+        if (!cinematicDeliveredUrl && cinematicRefusal) {
+          console.warn(
+            pipelineReport.add(
+              "summary",
+              `[RenderJob] video=${videoId} the delivered file is the compose montage — ` +
+                `${cinematicRefusal}`
+            )
+          );
+        }
       }
     } catch (err) {
       console.warn(
@@ -41161,16 +41308,32 @@ async function _runVideoPipelineInner(
     // knows how to turn a cancellation into the correct terminal status) handle it instead.
     throwIfVideoGenerationCancelled(videoId);
 
+    /**
+     * WHAT THE VIEWER ACTUALLY RECEIVES.
+     *
+     * `url` is the compose montage. `cinematicDeliveredUrl` is set only when the timeline render
+     * above produced and published a real file. Preferring it here is the whole point of the
+     * cutover: before this, the good render existed but landed in `editedVideoUrl`, which only the
+     * timeline editor reads, so every downloaded video came from compose no matter which route ran.
+     *
+     * Falling back to `url` is deliberate and never silent — the `RENDER_FALLBACK_USED` line above
+     * carries the renderer's own reason.
+     */
+    const deliveredUrl = cinematicDeliveredUrl ?? url;
+
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
-      videoUrl: url,
+      videoUrl: deliveredUrl,
       progressStep: STAGE_LABELS.complete,
       progressPercent: 100,
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     const totalMs = Date.now() - t0;
-    console.log(`[Pipeline] Video ${videoId} COMPLETE in ${(totalMs/60000).toFixed(1)} min: ${url}`);
+    console.log(
+      `[Pipeline] Video ${videoId} COMPLETE in ${(totalMs / 60000).toFixed(1)} min ` +
+        `via ${cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose"}: ${deliveredUrl}`
+    );
     profiler.printReport(totalMs, pipelineStepTiming.toReport());
     /**
      * RONDE 157 — the variety memory is written whenever variety is on.
@@ -41240,7 +41403,14 @@ async function _runVideoPipelineInner(
       });
     }
 
-    return url;
+    /**
+     * The DELIVERED file, not the compose intermediate.
+     *
+     * Callers treat this return value as "the video that was made" — it is written to the row and
+     * handed to the notification. Returning `url` here would hand every caller the montage while
+     * the database held the cinematic render, and the two would disagree about the same video.
+     */
+    return deliveredUrl;
   } finally {
     watchdog.stop();
     getRenderCtx().watchdog = null;
