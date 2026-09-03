@@ -144,6 +144,36 @@ export function formatProviderFunnel(rows: readonly ProviderFunnelRow[]): string
       );
     }
   }
+  /**
+   * P25 — DID LOOKING AT THE PICTURES CHANGE THE FILM?
+   *
+   * A production render made 64 vision judgements across three model providers and, by the reading
+   * of the log, "contributed nothing". Nothing measured whether that was true: the census counts
+   * how often a model was ASKED, and every table here counts verdicts. Neither says whether a
+   * verdict ever removed a shot.
+   *
+   * It is derivable from what is already counted. A refusal that was reprieved changed nothing —
+   * the clip was used anyway, because every alternative was refused too. A refusal that was NOT
+   * reprieved is the picture editor actually taking a shot out of the film. So:
+   *
+   *     refusals honoured = refused - reprieved
+   *
+   * Zero, on a render with dozens of judgements, means every call was paid for and none of them
+   * altered the edit. That is not automatically a defect — a render whose candidates are all good
+   * SHOULD have nothing removed — but it is the number that tells the two apart, and it was the one
+   * number nobody could see.
+   *
+   * `fits` is deliberately not counted as an effect. Confirming a clip that would have been used
+   * anyway changes nothing about the film; it only changes what is known about it.
+   */
+  const honoured = Math.max(0, total.refused - total.reprieved);
+  lines.push(
+    `[ProviderFunnel] the picture editor removed ${honoured} shot(s) from this film ` +
+      `(${total.judged} judged, ${total.refused} refused, ${total.reprieved} of those used anyway)` +
+      (total.judged > 0 && honoured === 0
+        ? " — every judgement was paid for and none of them changed the edit"
+        : "")
+  );
   if (total.reprieved > 0 && total.reprieved >= total.fits) {
     lines.push(
       `[ProviderFunnel] ${total.reprieved} of the pictures in this film were REFUSED and used ` +

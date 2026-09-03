@@ -91,21 +91,37 @@ export function formatComposeScopeDecision(params: {
   verdict: ComposeScopeVerdict;
   detail?: string;
 }): string {
-  const head = `[ComposeGate] s${params.sceneIndex} clip ${params.clipIndex}: scope abandoned —`;
+  /**
+   * P21 — THE OUTCOME FIRST, THEN THE STORY.
+   *
+   * A production log carried four `[ComposeGate] … scope abandoned —` lines and they read as four
+   * clips lost. Two of the three outcomes are PASSES: a clip that was already adopted is kept, and
+   * so is one with a usable earlier measurement. Only the third throws a clip away.
+   *
+   * The verdict was there, at the end of a sentence long enough that four lines had to be read in
+   * full to learn that nothing had necessarily gone wrong. `KEPT` and `REFUSED` sit immediately
+   * after the head so the same four lines triage at a glance and grep cleanly — the reason still
+   * follows, because a verdict without its reason is the other half of this defect.
+   *
+   * "scope abandoned" stays in the head. It is the CONDITION all three share — the render's budget
+   * ended before this clip could be checked — and it is what someone counting these lines is
+   * actually counting.
+   */
+  const head = `[ComposeGate] s${params.sceneIndex} clip ${params.clipIndex}: scope abandoned`;
   const { verdict } = params;
   if (verdict.decision === "run_full_gate") {
     // Never reached in production; present so the formatter is total rather than partial.
-    return `${head} scope is alive, running the full gate on ${params.basename}`;
+    return `${head} — scope is alive, running the full gate on ${params.basename}`;
   }
   if (verdict.decision === "pass") {
     const why =
       verdict.basis === "already_adopted"
         ? "clip was already adopted (technical gate, vision gate and adoption all behind it)"
         : "keeping it on a measurement already taken";
-    return `${head} ${why}: ${params.basename}${params.detail ? ` (${params.detail})` : ""}`;
+    return `${head} KEPT — ${why}: ${params.basename}${params.detail ? ` (${params.detail})` : ""}`;
   }
   return (
-    `${head} ${params.basename} was never adopted and has no earlier measurement — ` +
+    `${head} REFUSED — ${params.basename} was never adopted and has no earlier measurement — ` +
     "refusing rather than spending probe work the scope has ended"
   );
 }

@@ -234,12 +234,81 @@ describe("the report names the problem, not only the numbers", () => {
     expect(formatProviderFunnel([])[0]).toContain("no clip from any provider reached");
   });
 
-  it("every row is one line, plus a total", () => {
+  /**
+   * One line per provider, plus a total, plus the one sentence about what the judging DID. The
+   * point of the assertion is that a provider costs exactly one line — a report that grows two
+   * lines per source stops being readable at nineteen of them.
+   */
+  it("every row is one line, plus a total and the effect", () => {
     const rows = providerVisionFunnel({
       ledger: ledgerOf([["/a.mp4", {}], ["/b.mp4", {}]]),
       providerOf: providers({ "/a.mp4": "x", "/b.mp4": "y" }),
     });
-    expect(formatProviderFunnel(rows)).toHaveLength(rows.length + 1);
+    expect(formatProviderFunnel(rows)).toHaveLength(rows.length + 2);
+  });
+});
+
+/* ═══════════════════════ P25 — did the judging change the film? ═══════════════════════ */
+
+/**
+ * A production render made 64 vision judgements across three providers and, by the reading of the
+ * log, "contributed nothing". Nothing measured whether that was true: the census counts how often a
+ * model was ASKED, and the table above counts verdicts. Neither said whether a verdict ever removed
+ * a shot.
+ *
+ * It is derivable from what is already there. A refusal that was REPRIEVED changed nothing — the
+ * clip went in anyway because every alternative was refused too. A refusal that was not reprieved
+ * is the editor actually taking a shot out.
+ */
+describe("the report says what the judging actually removed", () => {
+  const lines = (entries: Array<[string, Partial<BeatRelevanceDecision>]>) =>
+    formatProviderFunnel(
+      providerVisionFunnel({ ledger: ledgerOf(entries), providerOf: () => "pexels" })
+    ).join("\n");
+
+  it("counts refusals that were honoured, not refusals that were overruled", () => {
+    const s = lines([
+      ["/a.mp4", { verdict: "does_not_fit" }],
+      ["/b.mp4", { verdict: "does_not_fit" }],
+      ["/c.mp4", { verdict: "does_not_fit", reprieved: true }],
+      ["/d.mp4", { verdict: "fits" }],
+    ]);
+    expect(s).toContain("removed 2 shot(s) from this film");
+  });
+
+  /** The finding P25 describes: judgements were made and the edit is identical either way. */
+  it("says plainly when nothing was changed by any of it", () => {
+    const s = lines([
+      ["/a.mp4", { verdict: "fits" }],
+      ["/b.mp4", { verdict: "does_not_fit", reprieved: true }],
+    ]);
+    expect(s).toContain("removed 0 shot(s)");
+    expect(s).toContain("none of them changed the edit");
+  });
+
+  /**
+   * A confirmation is not an effect. A clip the editor approved would have been used anyway — what
+   * changed is what is KNOWN about the film, not the film.
+   */
+  it("does not count an acceptance as a change", () => {
+    const s = lines([
+      ["/a.mp4", { verdict: "fits" }],
+      ["/b.mp4", { verdict: "fits" }],
+    ]);
+    expect(s).toContain("removed 0 shot(s)");
+  });
+
+  /** A render that asked nothing gets no verdict about its judging, because it made none. */
+  it("does not lecture a render that judged nothing", () => {
+    const s = lines([["/a.mp4", { evaluated: false, verdict: "unknown" }]]);
+    expect(s).toContain("removed 0 shot(s)");
+    expect(s).not.toContain("none of them changed the edit");
+  });
+
+  /** More reprieves than refusals is not negative removals. */
+  it("never reports a negative", () => {
+    const s = lines([["/a.mp4", { verdict: "fits", reprieved: true }]]);
+    expect(s).toContain("removed 0 shot(s)");
   });
 });
 

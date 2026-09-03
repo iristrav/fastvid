@@ -95,7 +95,7 @@ type PipelineGlance = {
   score?: number;
   beats?: number;
   verifiedOwnVisual?: number;
-  finalClips?: number;
+  uniqueClips?: number;
   unverifiedClips?: number;
   gateAttempts?: number;
   gateAnswered?: number;
@@ -146,7 +146,7 @@ function PipelineGlanceCell({ metadata }: { metadata: unknown }) {
         )}
       </div>
       <p className="text-[10px] font-mono text-slate-500 whitespace-nowrap">
-        {g.verifiedOwnVisual ?? 0}/{g.beats ?? 0} beats · {g.finalClips ?? 0} clips
+        {g.verifiedOwnVisual ?? 0}/{g.beats ?? 0} beats · {g.uniqueClips ?? 0} clips
         {g.gateAttempts != null && ` · gate ${g.gateAnswered ?? 0}/${g.gateAttempts}`}
       </p>
       {(g.warnings ?? 0) > 0 && (

@@ -40166,7 +40166,7 @@ async function _runVideoPipelineInner(
         score: qualityReport.score,
         beats: qualityReport.beatVisuals?.beats,
         verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual,
-        finalClips: qualityReport.totalClips,
+        uniqueClips: qualityReport.totalClips,
         unverifiedClips: qualityReport.bySource?.[UNVERIFIED_PROVIDER] ?? 0,
         gateAttempts: judgementTally(visualDedup.beatImageGate).attempts,
         gateAnswered: judgementTally(visualDedup.beatImageGate).answered,

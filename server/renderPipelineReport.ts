@@ -134,7 +134,27 @@ export type PipelineGlance = {
   score?: number;
   beats?: number;
   verifiedOwnVisual?: number;
-  finalClips?: number;
+  /**
+   * DISTINCT CLIPS THIS RENDER USED — not clips in the delivered file.
+   *
+   * ── P24: four numbers, four questions, near-identical names ─────────────────────────────
+   *
+   * A production log carried `finalClips=8`, `final_clips=7`, seven `[RenderAsset]` lines and
+   * `[AssetIdentity] TOTAL clips=8`, and read as four answers to one question that disagreed with
+   * each other. They are four DIFFERENT questions:
+   *
+   *   uniqueClips (here)        distinct clip paths the render worked with
+   *   final_clips               clips PROVEN in the delivered file — records carrying FINAL_VIDEO,
+   *                             the ledger's strictest stage
+   *   [AssetIdentity] clips     clips the editor manifest carries, with a rehydratable identity
+   *   [RenderAsset] lines       clips a picture-editor verdict was actually recorded for
+   *
+   * None of those is wrong. `8` and `7` differ because a clip the render used need not have reached
+   * the delivered file, and a clip in the file need not have been judged. This field was called
+   * `finalClips` while carrying `qualityReport.totalClips`, which is the first of the four — so the
+   * one name that promised the delivered file was the one that never described it.
+   */
+  uniqueClips?: number;
   unverifiedClips?: number;
   gateAttempts?: number;
   gateAnswered?: number;
