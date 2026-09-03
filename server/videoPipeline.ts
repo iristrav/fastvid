@@ -241,6 +241,7 @@ import {
   type VideoVisualContext,
 } from "./visualSearchPlan";
 import { normaliseShotType, withPlannedShot } from "./shotVocabulary";
+import { formatVisionCensus, getVisionCensus, newVisionCensus, withVisionCensus } from "./visionCensus";
 import {
   getOrGenerateStoryboard,
   getShotForBeat,
@@ -12960,6 +12961,12 @@ async function youtubeClipPassesImageGate(
   const spentBefore = gate.judgementAttempts;
   const judgement = await judgeBeatImage({
     framePaths,
+    /**
+     * Named so the render's vision roll-call can separate what the YouTube branch cost from what
+     * the beat judge cost. They arrive at the same gate with the same shape and were, until this,
+     * indistinguishable in every count.
+     */
+    censusCaller: "youtube_screening",
     beatText: scriptGuided.beatText,
     videoTitle: scriptGuided.videoTitle,
     contentKey: clipContentKey(clipPath),
@@ -36965,7 +36972,16 @@ export async function runVideoPipeline(
     budget: maxComposePhaseJudgements(),
     spent: 0,
   };
-  return withSourceFloorMemo(sourceFloorMemo, () =>
+  /**
+   * The render's vision roll-call, in scope for every route that can ask a model to look.
+   *
+   * Ambient rather than a field on the render context, for the reason every other scope in this
+   * chain is ambient: `MAX_CONCURRENT_RENDERS` can be greater than one, and two renders sharing a
+   * module-level counter would each report the other's spend. See `visionCensus.ts`.
+   */
+  const visionCensus = newVisionCensus();
+  return withVisionCensus(visionCensus, () =>
+    withSourceFloorMemo(sourceFloorMemo, () =>
     withSubjectGateScope(subjectGateScope, () =>
       withComposeJudgeScope(composeJudgeScope, () =>
         withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
@@ -36978,6 +36994,7 @@ export async function runVideoPipeline(
         )
       )
     )
+  )
   );
 }
 
@@ -40903,6 +40920,17 @@ async function _runVideoPipelineInner(
           return { durationSec: Number(meta.durationSec.toFixed(3)) };
         }
       );
+      /**
+       * THE VISION ROLL-CALL, for the whole render, in one place.
+       *
+       * Printed here rather than inside any one caller, because the point of it is that no single
+       * caller could ever produce it. Five routes reach a vision model; two kept their own ledgers
+       * and three kept none, so every render-level count of vision spend was a count of one
+       * subsystem presented as a total.
+       */
+      for (const line of formatVisionCensus(getVisionCensus())) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
       await updateVideoScenes(videoId, editorScenes);
       for (const line of formatManifestIdentityReport(editorScenes)) {
         console.log(pipelineReport.add("sourcing", line));
@@ -41267,6 +41295,35 @@ async function _runVideoPipelineInner(
                         `${jobOutcome.durationSec?.toFixed(2) ?? "unmeasured"}s`
                     )
                   );
+                  /**
+                   * THE REPORT NOW DESCRIBES WHAT WAS DELIVERED.
+                   *
+                   * `qualityReport.postRenderSpotCheck` was filled at stage 6 from the COMPOSE
+                   * montage — black frames, freezes and silences measured on a file that, since the
+                   * cutover, nobody receives. Overwriting it with the render job's own check on the
+                   * delivered file is the whole point: a report about a different video is worse
+                   * than no report, because it reads as reassurance.
+                   *
+                   * Only overwritten when the cinematic render actually delivered. On the fallback
+                   * path the compose file IS the deliverable, and its own numbers are the right
+                   * ones — see the `RENDER_FALLBACK_USED` line above.
+                   *
+                   * The final `mergeVideoMetadata` runs after this block, so this reaches the
+                   * stored record.
+                   */
+                  if (jobOutcome.spotCheck) {
+                    const spot = jobOutcome.spotCheck;
+                    qualityReport.postRenderSpotCheck = {
+                      ok: spot.ok,
+                      blackFrameCount: spot.blackFrameCount,
+                      framesChecked: spot.framesChecked,
+                      worstMeanLuma: spot.worstMeanLuma,
+                      warnings: spot.warnings,
+                    };
+                    for (const w of spot.warnings) {
+                      qualityReport.warnings.push(`Delivered file: ${w}`);
+                    }
+                  }
                 } else {
                   cinematicRefusal = `${jobOutcome.code} — ${jobOutcome.message}`;
                 }

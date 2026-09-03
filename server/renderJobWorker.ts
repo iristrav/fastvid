@@ -60,6 +60,11 @@ import { productionRehydrateDeps } from "./rehydrationDeps";
 import { renderTimeline, checkRenderedFile, type GraphicsOverlayFile } from "./timelineRenderer";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { storagePutFromFile } from "./storage";
+import {
+  postRenderSpotCheckEnabled,
+  spotCheckFinalVideo,
+  type PostRenderSpotCheckResult,
+} from "./postRenderSpotCheck";
 import { resolveLocalStorageFilePath } from "./storageLocal";
 import { downloadToFileStreaming } from "./videoPipeline";
 import type { ProjectTimeline } from "./projectTimeline";
@@ -68,7 +73,20 @@ import { audioTrackOf } from "./projectTimeline";
 /* ═══════════════════════ the outcome of one job ═══════════════════════ */
 
 export type RenderJobOutcome =
-  | { ok: true; outputUrl: string; published: boolean; durationSec: number | null }
+  | {
+      ok: true;
+      outputUrl: string;
+      published: boolean;
+      durationSec: number | null;
+      /**
+       * The content check on the DELIVERED file, or null when it was switched off or threw.
+       *
+       * Returned rather than only logged so the caller can put it in the quality report — the
+       * report used to describe the compose montage, which after the cutover is not the file
+       * anybody receives.
+       */
+      spotCheck: PostRenderSpotCheckResult | null;
+    }
   | { ok: false; code: RenderErrorCode; message: string };
 
 /* ═══════════════════════ dependencies, injected so this is testable ═══════════════════════ */
@@ -138,6 +156,68 @@ export function defaultRenderWorkerDeps(): RenderWorkerDeps {
       return fs.existsSync(destPath) && fs.statSync(destPath).size > 0;
     },
     workRoot: () => os.tmpdir(),
+  };
+}
+
+/* ═══════════════════════ what is actually under the voice ═══════════════════════ */
+
+export type AudioBed = {
+  /** Tracks with at least one clip the renderer could actually fetch. */
+  present: string[];
+  /** Tracks the plan filled and the renderer could not recover, with counts. */
+  lost: string[];
+  /** True when the narration plays over nothing at all for the whole film. */
+  bare: boolean;
+  line: string;
+};
+
+/**
+ * WHAT A VIEWER WILL HEAR UNDER THE NARRATION, STATED RATHER THAN ASSUMED.
+ *
+ * ── The two ways a documentary ends up bare ─────────────────────────────────────────────────
+ *
+ * This build has no music catalogue. `cinematicAmbient` says so plainly and leaves the MUSIC track
+ * empty rather than laying down the synthesised sine bed the compose route used — which is the
+ * right call, because a sine drone is not music. But it means the delivered film's bed is
+ * ambience and sound effects alone.
+ *
+ * And those can vanish silently. An AMBIENT or SFX clip is addressed by identity —
+ * `freesound:401178` — and needs FREESOUND_API_KEY to resolve. Without it the clip is planned,
+ * carried into the timeline, and then skipped at fetch time with one line in a `skipped` array
+ * that nothing printed. A ten-minute documentary of voice over silence would render, pass every
+ * check, and look correct in every report.
+ *
+ * ── Why this is a description and not a gate ────────────────────────────────────────────────
+ *
+ * A documentary scored with room tone and no music is a legitimate film. So is one deliberately
+ * played dry. Refusing to deliver either would be this function making an editorial decision it
+ * has no standing to make. What it will not do is let the answer be discovered from the video:
+ * `bare` is stated on its own line, and the caller decides what that is worth.
+ */
+export function describeAudioBed(params: {
+  timeline: ProjectTimeline;
+  /** Clip ids the renderer actually holds a file for. */
+  recovered: ReadonlySet<string>;
+}): AudioBed {
+  const present: string[] = [];
+  const lost: string[] = [];
+  for (const kind of ["MUSIC", "AMBIENT", "SFX"] as const) {
+    const clips = audioTrackOf(params.timeline, kind).filter((c) => !c.disabled);
+    if (clips.length === 0) continue;
+    const got = clips.filter((c) => params.recovered.has(c.id)).length;
+    if (got > 0) present.push(`${kind.toLowerCase()}=${got}`);
+    if (got < clips.length) lost.push(`${kind.toLowerCase()}=${clips.length - got}`);
+  }
+  const voice = audioTrackOf(params.timeline, "VOICE").filter((c) => !c.disabled).length;
+  const bare = present.length === 0;
+  return {
+    present,
+    lost,
+    bare,
+    line:
+      `[RenderJob] audioBed voice=${voice} ` +
+      `${present.length ? present.join(" ") : "nothing under the narration"}` +
+      (lost.length ? ` UNRECOVERED(${lost.join(" ")})` : ""),
   };
 }
 
@@ -422,6 +502,25 @@ export async function runRenderJob(params: {
           ? " (the overlay route was available but did not produce a file — see skipped)"
           : "")
     );
+    /**
+     * Everything the renderer could not carry, said out loud.
+     *
+     * `rendered.skipped` has always been populated — an audio clip with no source, an effect this
+     * renderer cannot execute, an overlay that did not appear — and nothing printed it. A render
+     * that silently dropped its whole ambience track looked identical to one that never planned any.
+     */
+    for (const s of rendered.skipped ?? []) {
+      console.warn(`[RenderJob] job=${job.id} not carried: ${s}`);
+    }
+    const bed = describeAudioBed({ timeline, recovered: new Set(audioByClip.keys()) });
+    console.log(bed.line);
+    if (bed.bare) {
+      console.warn(
+        `[RenderJob] job=${job.id} AUDIO_BED_EMPTY — the narration plays over silence for the ` +
+          "whole film. This build has no music catalogue, and no ambience or SFX was recovered " +
+          "(FREESOUND_API_KEY resolves those)."
+      );
+    }
 
     /* 6. the ffprobe gate — measured, never assumed */
     const check = await deps.check({
@@ -434,6 +533,45 @@ export async function runRenderJob(params: {
         RENDER_ERROR.RENDER_FAILED,
         `the rendered file failed its quality check: ${check.problems.join("; ")}`
       );
+    }
+
+    /**
+     * 6b. THE CONTENT CHECK — on the file that will actually be delivered.
+     *
+     * ── Why this had to move ────────────────────────────────────────────────────────────────
+     *
+     * `checkRenderedFile` above is a container check: does the file exist, does it carry the
+     * streams, is it the right size and shape, is it as long as the plan says. It cannot tell a
+     * finished documentary from six minutes of black.
+     *
+     * The check that CAN — `blackdetect`, `freezedetect`, `silencedetect` over a full linear decode
+     * — has existed for a long time and ran on `finalVideoPath`, the compose montage. When delivery
+     * moved to this route, the montage stopped being the deliverable and every content check stayed
+     * pointed at it. The delivered file's only inspection was ffprobe.
+     *
+     * ── Why it reports and does not block ───────────────────────────────────────────────────
+     *
+     * The same policy the compose path has always had. A spot check is a description, and its
+     * warnings are frequently about material that is legitimately dark or legitimately quiet — a
+     * night-time archive shot, a held beat before a chapter card. Failing a finished render on one
+     * would throw away a good video over a heuristic. It is recorded, logged and returned, and the
+     * caller decides.
+     *
+     * It runs before the work directory is swept, because after that the file is gone.
+     */
+    let spotCheck: PostRenderSpotCheckResult | null = null;
+    if (postRenderSpotCheckEnabled()) {
+      spotCheck = await spotCheckFinalVideo(outputPath).catch(() => null);
+      if (spotCheck) {
+        console.log(
+          `[RenderJob] video=${job.videoId} job=${job.id} contentCheck ok=${spotCheck.ok} ` +
+            `black=${spotCheck.blackSegments} freeze=${spotCheck.freezeSegments} ` +
+            `silent=${spotCheck.silentSegments} frames=${spotCheck.framesChecked}`
+        );
+        for (const w of spotCheck.warnings) {
+          console.warn(`[RenderJob] video=${job.videoId} job=${job.id} contentCheck: ${w}`);
+        }
+      }
     }
 
     /* 7. upload to a key that belongs to this job alone */
@@ -486,7 +624,7 @@ export async function runRenderJob(params: {
         ` renderer=timelineRenderer published=${published} clips=${rendered.clipsRendered} ` +
         `duration=${check.durationSec?.toFixed(2) ?? "null"}s`
     );
-    return { ok: true, outputUrl, published, durationSec: check.durationSec };
+    return { ok: true, outputUrl, published, durationSec: check.durationSec, spotCheck };
   } catch (err) {
     return await fail(RENDER_ERROR.RENDER_FAILED, (err as Error).message ?? String(err));
   } finally {

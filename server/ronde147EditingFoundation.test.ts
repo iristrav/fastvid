@@ -450,15 +450,45 @@ describe("PHASE 10 — the adapter translates and decides nothing", () => {
 
   it("beat-relative times become absolute using the caller's offset", () => {
     // The one thing the adapter computes, and it is arithmetic on the planner's own numbers.
+    //
+    // Read on the SECOND clip. The property under test — a beat's own seconds plus its scene's
+    // offset — is unchanged, but the first clip in a translation is now pulled back to zero by
+    // `holdPictureUnderVoice`, because a film that opens on ten seconds of nothing is a hole, not
+    // an edit. Asserting the arithmetic on the leading clip would be asserting the absence of that
+    // repair rather than the offset maths it was written for.
     const { timeline } = translateEdl({
+      videoId: 1,
+      inputs: [
+        { decision: decision({ beatId: "s0b0" }), sceneOffsetSec: 0, identity },
+        { decision: decision({ beatId: "s1b0" }), sceneOffsetSec: 10, identity },
+      ],
+    });
+    const track = timeline.tracks.find((t) => t.kind === "VIDEO");
+    const clips = track && track.kind === "VIDEO" ? track.clips : [];
+    expect(clips[1]!.timelineStart).toBe(10);
+    expect(clips[1]!.timelineEnd).toBe(14);
+    expect(timeline.durationSec).toBe(14);
+  });
+
+  /**
+   * The repair itself, asserted here so the change to the test above is not the only record of it.
+   *
+   * A translation whose first surviving clip starts late has lost its opening beat to a colour card
+   * or an unattributable adoption. Holding the first shot back to zero is what keeps the film from
+   * opening on nothing — and it does NOT touch `sourceIn`, so the shot still shows the frames the
+   * planner chose; it simply begins sooner.
+   */
+  it("a film that would open on nothing opens on its first shot instead", () => {
+    const { timeline, covered } = translateEdl({
       videoId: 1,
       inputs: [{ decision: decision(), sceneOffsetSec: 10, identity }],
     });
     const track = timeline.tracks.find((t) => t.kind === "VIDEO");
     const clip = track && track.kind === "VIDEO" ? track.clips[0]! : null;
-    expect(clip!.timelineStart).toBe(10);
+    expect(clip!.timelineStart).toBe(0);
     expect(clip!.timelineEnd).toBe(14);
-    expect(timeline.durationSec).toBe(14);
+    expect(clip!.sourceIn).toBe(2.5);
+    expect(covered.join(" ")).toContain("the first shot now starts at 0");
   });
 
   it("the engine's transition and camera vocabularies map to the renderer's", () => {

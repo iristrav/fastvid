@@ -254,11 +254,20 @@ describe("every route is covered because none of them has to remember", () => {
    */
   it("the scope is opened once per render, around the whole render", () => {
     expect(PIPE).toContain("const sourceFloorMemo = createSourceFloorMemo()");
-    expect(PIPE, "the memo scope does not wrap the render").toMatch(
-      /return withSourceFloorMemo\(sourceFloorMemo, \(\) =>/
-    );
+    /**
+     * The property is ENCLOSURE, not the word `return` in front of it.
+     *
+     * This used to match `return withSourceFloorMemo(...)`, which held only while the memo happened
+     * to be the outermost scope in the chain. It is not any more — the vision census wraps it — and
+     * nothing about the memo changed. What has to stay true is that the scope opens before the
+     * render body and closes after it, so every route inside shares one memo.
+     */
     const scopes = [...PIPE.matchAll(/withSourceFloorMemo\(/g)];
     expect(scopes, "more than one scope is opened; renders would share a memo").toHaveLength(1);
+    const scopeAt = PIPE.indexOf("withSourceFloorMemo(sourceFloorMemo, () =>");
+    const bodyAt = PIPE.indexOf("_runVideoPipelineInner(");
+    expect(scopeAt, "the memo scope is gone").toBeGreaterThan(-1);
+    expect(bodyAt, "the render body moved out of the scope").toBeGreaterThan(scopeAt);
   });
 
   it("the render reports what the floor cost it", () => {

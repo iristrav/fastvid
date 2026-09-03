@@ -21,6 +21,7 @@ import { buildVisionPrompt, PROMPT_VERSION } from "./visionPromptBuilder";
 import { OpenAIVisionProvider } from "./visionProvider";
 import { loadVisionScore, storeVisionScore } from "./visionScoreCache";
 import { recordVisionCallOutcome } from "./visionMetrics";
+import { recordVisionAsk } from "../visionCensus";
 import { logVisionScorer } from "./logging";
 import type {
   RankedCandidate,
@@ -210,6 +211,15 @@ export async function scoreCandidates(
     entries: traceEntries,
   };
 
+  /**
+   * The roll-call, alongside the rich metrics this caller already keeps.
+   *
+   * `recordVisionCallOutcome` measures THIS caller's cost and quality — latency, tokens,
+   * per-dimension scores. The census answers a different question that spans every caller: how
+   * many times did anything in this render ask a model to look at a picture. One scored batch is
+   * one ask, however many candidates it carried.
+   */
+  recordVisionAsk("funnel_scorer", "judged");
   recordVisionCallOutcome({
     candidatesScored: candidates.length,
     cacheHits: cacheHitCount,

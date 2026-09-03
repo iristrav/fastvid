@@ -325,7 +325,100 @@ export type EdlTranslation = {
   timeline: ProjectTimeline;
   /** Fields the engine expressed and the renderer cannot yet execute. Reported, never dropped. */
   unsupported: string[];
+  /**
+   * Every hold this translation added to keep the picture under the narration, one line each.
+   *
+   * Separate from `unsupported` on purpose. `unsupported` means "the plan asked for something this
+   * renderer cannot do"; this means "the plan had a hole and the edit was closed over it". They
+   * need different reactions — the first is a feature gap, the second is a sourcing failure that
+   * happened to be survivable.
+   */
+  covered: string[];
 };
+
+/**
+ * HOLD THE OUTGOING SHOT UNTIL THE NEXT ONE ARRIVES, AND HOLD THE LAST ONE UNTIL THE VOICE STOPS.
+ *
+ * ── The failure this exists to prevent ──────────────────────────────────────────────────────
+ *
+ * A beat whose adopted clip has no rehydratable identity — a colour card, a guaranteed fill, any
+ * adoption the lineage ledger could not attribute — is dropped by the planner. That is correct: an
+ * edit cannot be built around a file that exists only in this render's temp directory.
+ *
+ * What was NOT correct is what happened next. The dropped beat left a hole; `video_gap` is
+ * non-blocking; the timeline's length was computed from the surviving PICTURE clips alone; and the
+ * final mux carries `-shortest` bounded by the video. A documentary that lost its last two beats
+ * therefore ended mid-sentence, and the render's own duration check compared the file against the
+ * already-shortened number and passed it.
+ *
+ * ── Why a hold, and not black, and not a shorter film ───────────────────────────────────────
+ *
+ * This is what an editor does. A shot that runs a few seconds long is ordinary documentary
+ * grammar; a cut to black under narration is a mistake, and a film that stops before the narrator
+ * does is a broken deliverable. The renderer already makes the hold cheap and safe: a video input
+ * is opened with `-stream_loop -1` and bounded by `-t`, so a clip asked to fill more time than its
+ * source holds simply fills it.
+ *
+ * ── The rules, in the order an editor would apply them ──────────────────────────────────────
+ *
+ *   1. a gap between two shots      the OUTGOING shot is held until the incoming one starts
+ *   2. a gap before the first shot  the first shot starts earlier — the film opens on picture
+ *   3. a gap after the last shot    the last shot is held until the narration ends
+ *
+ * Rule 2 moves `timelineStart` and deliberately does NOT touch `sourceIn`: the shot keeps the
+ * frames the planner chose and simply begins sooner. Pulling `sourceIn` back would show footage
+ * nobody picked.
+ *
+ * Nothing here is silent. Every hold is described in `covered`, with the beat it belongs to and
+ * how long it lasted, so a render that needed twelve of them reads as the sourcing problem it is
+ * rather than as a slightly slower edit.
+ */
+export function holdPictureUnderVoice(params: {
+  /** The plan's video clips, in timeline order. Mutated in place — they are this call's own. */
+  clips: TimelineVideoClip[];
+  /** How long the narration runs. Absent or zero means "no voice to cover". */
+  voiceDurationSec?: number | null;
+}): string[] {
+  const covered: string[] = [];
+  const clips = params.clips;
+  if (clips.length === 0) return covered;
+  /** Below this, a "gap" is floating-point noise from three additions, not a hole in the edit. */
+  const EPS = 0.001;
+  const say = (n: number) => n.toFixed(3);
+
+  if (clips[0]!.timelineStart > EPS) {
+    const first = clips[0]!;
+    covered.push(
+      `${first.id}: the film opened on ${say(first.timelineStart)}s of nothing — ` +
+        "the first shot now starts at 0"
+    );
+    first.timelineStart = 0;
+  }
+
+  for (let i = 0; i < clips.length - 1; i++) {
+    const outgoing = clips[i]!;
+    const incoming = clips[i + 1]!;
+    const gap = incoming.timelineStart - outgoing.timelineEnd;
+    if (gap <= EPS) continue;
+    covered.push(
+      `${outgoing.id}: held ${say(gap)}s to reach ${incoming.id} — ` +
+        "a beat between them has no usable picture"
+    );
+    outgoing.timelineEnd = incoming.timelineStart;
+  }
+
+  const voiceEnd = params.voiceDurationSec ?? 0;
+  const last = clips[clips.length - 1]!;
+  if (voiceEnd > last.timelineEnd + EPS) {
+    covered.push(
+      `${last.id}: held ${say(voiceEnd - last.timelineEnd)}s to the end of the narration — ` +
+        "the picture ran out before the voice did"
+    );
+    last.timelineEnd = voiceEnd;
+  }
+
+  return covered;
+}
 
 /**
  * Turn a set of edit decisions into a project timeline.
@@ -628,7 +721,30 @@ export function translateEdl(params: {
   }
 
   clips.sort((a, b) => a.timelineStart - b.timelineStart);
-  const duration = clips.length > 0 ? Math.max(...clips.map((c) => c.timelineEnd)) : 0;
+  /**
+   * Close the holes BEFORE the length is measured — see `holdPictureUnderVoice`.
+   *
+   * Order matters here. Measuring first and covering after would leave `durationSec` describing
+   * the plan's holes rather than the edit that will actually be rendered.
+   */
+  const covered = holdPictureUnderVoice({
+    clips,
+    voiceDurationSec: params.voice?.durationSec ?? null,
+  });
+  /**
+   * The film is as long as the LONGER of its picture and its voice.
+   *
+   * This used to be the picture alone. Every consumer downstream trusts this number: the renderer
+   * bounds the mux by it, and the render job's quality gate compares the finished file against it.
+   * A length taken from the picture alone therefore validated its own truncation — the voice could
+   * be cut off and the check would confirm the file was exactly as long as it was supposed to be.
+   *
+   * `holdPictureUnderVoice` has already extended the last shot to the voice, so in practice these
+   * two agree. Taking the max anyway means a future path that adds picture without covering
+   * cannot quietly re-open the same hole.
+   */
+  const pictureEnd = clips.length > 0 ? Math.max(...clips.map((c) => c.timelineEnd)) : 0;
+  const duration = Math.max(pictureEnd, params.voice?.durationSec ?? 0);
 
   timeline.tracks = [
     { kind: "VIDEO", clips },
@@ -652,7 +768,7 @@ export function translateEdl(params: {
     { kind: "GRAPHICS", graphics },
   ];
   timeline.durationSec = Number(duration.toFixed(3));
-  return { timeline, unsupported };
+  return { timeline, unsupported, covered };
 }
 
 /** What the translation could not carry across, for the render log. */
@@ -661,8 +777,14 @@ export function formatEdlTranslation(result: EdlTranslation): string[] {
   const clips = clipCount && clipCount.kind === "VIDEO" ? clipCount.clips.length : 0;
   const lines = [
     `[EdlToTimeline] clips=${clips} duration=${result.timeline.durationSec.toFixed(2)}s ` +
-      `unsupported=${result.unsupported.length}`,
+      `unsupported=${result.unsupported.length} held=${result.covered.length}`,
   ];
   for (const u of result.unsupported) lines.push(`   not executed: ${u}`);
+  /**
+   * Every hold, named. `held=0` is the healthy render and reads as such; a render with twelve of
+   * these has a sourcing problem that happened to be survivable, and that is a different thing from
+   * a slightly slower edit. Reporting it here is what keeps the repair from being a silent one.
+   */
+  for (const c of result.covered) lines.push(`   HELD: ${c}`);
   return lines;
 }

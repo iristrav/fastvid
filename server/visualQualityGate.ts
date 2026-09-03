@@ -2,6 +2,7 @@
  * Local visual quality gate — CLIP text↔image similarity + luma (no LLM vision API).
  */
 import fs from "fs";
+import { recordVisionAsk } from "./visionCensus";
 import path from "path";
 import { curatedClipPathAssetId } from "./curatedMediaSourcing";
 import { strictVoiceVisualMatchEnabled, isFastShortVideoLength } from "./sourcingPolicy";
@@ -578,8 +579,17 @@ export async function evaluateClipVisionGate(
   contentKey?: string
 ): Promise<VisionGateResult> {
   if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath, fastMode)) {
+    recordVisionAsk("clip_quality_gate", "skipped");
     return { pass: true, worstScore10: null, skipped: true, fromCache: false };
   }
+  /**
+   * Counted here, where the gate commits to looking.
+   *
+   * This caller reached a vision model on every render and appeared in no ledger at all: not
+   * `visionMetrics` (which belongs to the funnel scorer) and not `beatOutcomeAudit` (which belongs
+   * to the beat judge). A render's stated vision spend was therefore always an undercount.
+   */
+  recordVisionAsk("clip_quality_gate", "judged");
 
   const visionT0 = Date.now();
   console.log(`[VisionGate] BEFORE ensureClipPipelinesLoaded s${sceneIndex}b${beatIndex}`);
@@ -680,10 +690,18 @@ export async function scoreAdoptedClipQuality(
   wellFramed: boolean;
   wrongSubject: boolean;
 } | null> {
-  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) return null;
+  if (!clipVisionGateEnabled() || !shouldVisionCheckClip(clipPath)) {
+    recordVisionAsk("adopted_clip_quality", "skipped");
+    return null;
+  }
 
   const framePaths = await extractPreviewFrames(clipPath, workDir, sceneIndex, beatIndex, fastMode, shortVideo);
-  if (framePaths.length === 0) return null;
+  if (framePaths.length === 0) {
+    /** No frame came out of the clip, so nothing was asked — a different fact from a refusal. */
+    recordVisionAsk("adopted_clip_quality", "skipped");
+    return null;
+  }
+  recordVisionAsk("adopted_clip_quality", "judged");
 
   const assetId = curatedClipPathAssetId(clipPath);
   // loadStoredFrameEmbeddings is synchronous and reads the durable store's in-process cache;

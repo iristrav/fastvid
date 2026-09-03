@@ -370,7 +370,17 @@ describe("RONDE 60 #3 — YouTube finally reaches the beat-image gate", () => {
   it("the frames it judges are cleaned up", () => {
     const src = SRC();
     const idx = src.indexOf("async function youtubeClipPassesImageGate(");
-    const block = src.slice(idx, idx + 2200);
+    /**
+     * Bounded by where the function actually ends, not by a character count.
+     *
+     * This used to slice a fixed 2200 characters, which made the assertion depend on how much
+     * COMMENTARY sat between the judgement and the cleanup — adding a paragraph of explanation
+     * pushed the unlink out of the window and turned a documentation change into a red test. The
+     * property being guarded is "the frames this function extracts are deleted inside it", and the
+     * function's own closing brace is where that stops being true.
+     */
+    const nextFn = src.indexOf("\nasync function ", idx + 1);
+    const block = src.slice(idx, nextFn > idx ? nextFn : idx + 4000);
     expect(block).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
   });
 

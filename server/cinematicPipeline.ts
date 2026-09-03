@@ -142,6 +142,15 @@ export type CinematicPipelineResult = {
    */
   unsupported: string[];
   /**
+   * Every hold the adapter added to keep the picture under the narration, one line each.
+   *
+   * Distinct from `unsupported`, which means "this renderer cannot execute what the plan asked
+   * for". This means "the plan had a hole and the edit was closed over it" — a sourcing failure
+   * that happened to be survivable. `held=0` is the healthy render; a dozen of these is a report
+   * about retrieval, not about the edit.
+   */
+  covered: string[];
+  /**
    * RONDE 166 (§1/§2) — the ambience that was laid down, and the music verdict.
    *
    * `music` is always present and always states whether a track was available, so a caller can
@@ -285,7 +294,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       ...(trims[i] ? { sourceTrim: trims[i]! } : {}),
     })
   );
-  const { timeline, unsupported } = translateEdl({
+  const { timeline, unsupported, covered } = translateEdl({
     videoId: params.videoId,
     inputs: translationInputs,
     format: params.format,
@@ -330,6 +339,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     edl,
     director,
     unsupported,
+    covered,
     renderId,
     audio: audioPlan,
     attention,
@@ -450,6 +460,6 @@ export function formatCinematicPlan(result: CinematicPipelineResult): string {
     `engine=${result.used.cinematicEngine} director=${result.used.aiDirector} ` +
     `decisions=${result.edl.decisions.length} clips=${clips} cameras=${withCamera} ` +
     `transitions=${transitions} duration=${result.timeline.durationSec.toFixed(2)}s ` +
-    `unsupported=${result.unsupported.length}`
+    `unsupported=${result.unsupported.length} held=${result.covered.length}`
   );
 }

@@ -37,6 +37,7 @@
 import fs from "fs";
 import { invokeLLM, isLlmPreflightRefusal, isLlmProviderUnavailable } from "./_core/llm";
 import { imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
+import { recordVisionAsk, type VisionCaller } from "./visionCensus";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
@@ -543,8 +544,18 @@ export async function judgeBeatImage(params: {
   beatIdentity?: string;
   state: BeatImageGateState;
   timeoutMs?: number;
+  /**
+   * Which route is asking, for the render's vision roll-call.
+   *
+   * The gate cannot tell its callers apart on its own — the YouTube pre-pool screening and the
+   * per-beat judge both arrive here with frames and a line of text — and a census that lumps them
+   * together cannot answer "what did the YouTube branch cost us". So the caller names itself. The
+   * default is the ordinary beat judge, which is every caller but one.
+   */
+  censusCaller?: VisionCaller;
 }): Promise<BeatImageJudgement> {
   const { framePaths, beatText, videoTitle, sceneText, contentKey, state } = params;
+  const asker: VisionCaller = params.censusCaller ?? "beat_judge";
   /**
    * No verdict, from a model that DID look — an ambiguous frame, an answer with no verdict in it,
    * a provider that failed mid-call. `evaluated: true`: the picture was seen and settled nothing.
@@ -553,6 +564,12 @@ export async function judgeBeatImage(params: {
     // RONDE 115: every route out of here without a verdict is counted by its reason, so a render
     // that got none can say WHY in one line instead of forty-four identical ones.
     state.noVerdictReasons.set(reason, (state.noVerdictReasons.get(reason) ?? 0) + 1);
+    /**
+     * `evaluated` is what separates the two. True means the model WAS asked and produced nothing
+     * usable — a timeout, a refusal, an unparseable answer. False means we never asked, and
+     * `declined` has already recorded that as skipped; recording again here would double-count.
+     */
+    if (evaluated) recordVisionAsk(asker, "unavailable");
     return { verdict: "unknown", depicts: "", reason, evaluated };
   };
   /**
@@ -564,6 +581,8 @@ export async function judgeBeatImage(params: {
    */
   const declined = (reason: string): BeatImageJudgement => {
     state.judgementsSkipped++;
+    /** Deliberately not asked — a spent budget, a disabled gate, no usable frame. */
+    recordVisionAsk(asker, "skipped");
     return unknown(reason, false);
   };
 
@@ -576,7 +595,11 @@ export async function judgeBeatImage(params: {
   const seenKey = `${contentKey}|${params.beatIdentity ?? ""}`;
   const cached = state.seen.get(seenKey);
   /** A verdict this render already earned by looking — see `evaluated` on BeatImageJudgement. */
-  if (cached) return { ...cached, cached: true, evaluated: true };
+  if (cached) {
+    /** A verdict this render already earned. No model was asked for it a second time. */
+    recordVisionAsk(asker, "skipped");
+    return { ...cached, cached: true, evaluated: true };
+  }
   if (!beatText?.trim()) return declined("no narration to judge against");
 
   /**
@@ -602,6 +625,8 @@ export async function judgeBeatImage(params: {
       evaluated: true,
     };
     state.seen.set(seenKey, { verdict: stored.verdict, depicts: stored.depicts, reason: stored.reason, evaluated: true });
+    /** Answered from the durable store. Real evidence, no model asked for it in this render. */
+    recordVisionAsk(asker, "skipped");
     return fromStore;
   }
 
@@ -673,6 +698,15 @@ export async function judgeBeatImage(params: {
       return unknown("answer had no verdict");
     }
 
+    /**
+     * The one place an ask is counted as ANSWERED.
+     *
+     * Deliberately here and not where the request is sent. Every failure below and above returns
+     * through `unknown(reason, true)`, which records `unavailable`; counting at send time as well
+     * would make one failed call appear as two events — asked and answered, then asked and not.
+     * The model gave a verdict exactly once, at this line.
+     */
+    recordVisionAsk(asker, "judged");
     const provider = response.provider;
     const judgement: BeatImageJudgement = {
       verdict: parsed.belongs ? "fits" : "does_not_fit",

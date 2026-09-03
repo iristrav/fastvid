@@ -67,6 +67,24 @@ export type TimelineIssueCode =
   | "negative_source_in"
   | "video_overlap"
   | "video_gap"
+  /**
+   * The picture runs out before the narration does.
+   *
+   * BLOCKING, and deliberately not a variety of `video_gap`. A gap is a hole an editor can live
+   * with — the shot on either side of it is still doing its job. This is a different fact: the film
+   * physically stops while somebody is still speaking, and the final mux's `-shortest` is bounded
+   * by the picture, so the voice is CUT rather than played over black.
+   *
+   * It exists because that failure used to be invisible from inside. A beat with no rehydratable
+   * clip was dropped, the timeline took its length from the surviving picture, and the render's own
+   * duration check then compared the file against that shortened number and passed it. Three checks
+   * agreed the deliverable was correct while it ended mid-sentence.
+   *
+   * `holdPictureUnderVoice` closes this before a timeline is ever built, so reaching here means a
+   * route produced picture and voice that disagree without going through the adapter. That is worth
+   * stopping a render for.
+   */
+  | "picture_short_of_voice"
   | "duration_mismatch"
   | "invalid_transition"
   | "out_of_track_range"
@@ -385,6 +403,30 @@ function checkVideoContinuity(
         reason: `the video starts at ${first.timelineStart.toFixed(3)}s, not at zero`,
       });
     }
+    /**
+     * Does the picture reach the end of the narration?
+     *
+     * Asked against the VOICE track rather than `durationSec`, because `durationSec` is a claim the
+     * same document makes about itself and a truncated edit shortens both together. The voice is
+     * the independent measurement: it is as long as the narrator spoke, whatever the picture did.
+     *
+     * The tolerance is a quarter of a second — below that, a film ending a few frames before the
+     * last syllable's decay is a rounding artefact, not a truncation.
+     */
+    const voiceEnd = audioTrackOf(timeline, "VOICE").reduce((m, c) => Math.max(m, c.end), 0);
+    const lastPicture = ordered[ordered.length - 1]!;
+    const uncovered = voiceEnd - lastPicture.timelineEnd;
+    if (voiceEnd > 0 && uncovered > 0.25) {
+      issues.push({
+        code: "picture_short_of_voice", track: "VIDEO", elementId: lastPicture.id,
+        start: lastPicture.timelineEnd, end: voiceEnd,
+        reason:
+          `the picture ends at ${lastPicture.timelineEnd.toFixed(3)}s but the narration runs to ` +
+          `${voiceEnd.toFixed(3)}s — ${uncovered.toFixed(3)}s of speech would be cut off, because ` +
+          "the final mux is bounded by the video",
+      });
+    }
+
     const last = ordered[ordered.length - 1]!;
     const drift = Math.abs(last.timelineEnd - timeline.durationSec);
     if (timeline.durationSec > 0 && drift > 0.25) {

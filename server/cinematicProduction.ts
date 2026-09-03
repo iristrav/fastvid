@@ -273,6 +273,14 @@ export async function planAndStoreCinematicTimeline(
    */
   for (const line of formatSfxPlan(result.timeline, result.unsupported)) log.push(line);
   for (const line of result.unsupported) log.push(`[EDL] unsupported ${line}`);
+  /**
+   * Every hold, in the render log where a reader will actually meet it.
+   *
+   * A hold means a beat had no usable picture and the neighbouring shot was stretched over it.
+   * Left unreported it looks like an editorial choice — a slightly slower cut — instead of the
+   * sourcing failure it is. See `holdPictureUnderVoice`.
+   */
+  for (const line of result.covered) log.push(`[EDL] HELD ${line}`);
 
   /**
    * The losslessness check on the REAL edit, not only in a test. A decision that failed to cross
