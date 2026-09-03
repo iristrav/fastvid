@@ -1706,28 +1706,49 @@ async function buildSceneCandidatePoolInner(
 /**
  * RONDE 160 (FASE 7) — use the real ranking engine instead of the keyword counter below.
  *
- * Off by default. The engine is connected, tested and reachable by configuration; switching it on
- * changes which asset every beat of every render picks, and this environment has no provider
- * credentials, so that change cannot be MEASURED here. Turning it on is therefore a deliberate
- * production decision with a before/after comparison behind it — not something a deploy inherits
- * from an audit round. Set POOL_RANKING_V2=true to activate.
+ * ── Who decides ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `POOL_RANKING_V2` decides, in both directions, when it is set at all. When it is NOT set, this
+ * follows `CINEMATIC_EDITING_ENGINE`: on for the cinematic route, off for the legacy one.
+ *
+ * That inheritance is deliberate (RONDE 170) and it is also a real coupling worth stating plainly,
+ * because on a deployment that never sets `POOL_RANKING_V2` — which is the normal case — turning
+ * the cinematic editing engine off ALSO changes which asset every beat picks, and nothing about the
+ * name of that switch says so. `describePoolRankingV2()` exists so the render's own route line can
+ * report which of the two decided, rather than leaving an operator to work it out from two
+ * variables.
+ *
+ * The reason for binding it to that route rather than switching it on globally: the legacy compose
+ * path has years of tuning built around the keyword scorer's behaviour, and changing what every
+ * existing render picks is not something an integration round should do as a side effect.
  */
 export function poolRankingV2Enabled(): boolean {
+  return describePoolRankingV2().on;
+}
+
+/**
+ * The same answer, plus which switch produced it.
+ *
+ * `decidedBy` is the honest part: "explicit" means an operator asked for this, "cinematic_route"
+ * means it was inherited. A log line that says only `POOL_RANKING_V2=on` cannot tell those apart,
+ * and they call for completely different actions when a render ranks its footage unexpectedly.
+ *
+ * Not `source`. In this codebase that word means the provider a clip came from, in the pool's own
+ * candidate type and in every report built on it — and `ronde203ProviderMatrix` reads the pool's
+ * provider list straight out of this file's `source: "..."` literals, so a second meaning here
+ * would put "explicit" in a table of footage providers.
+ */
+export function describePoolRankingV2(): {
+  on: boolean;
+  decidedBy: "explicit" | "cinematic_route";
+} {
   const explicit = (process.env.POOL_RANKING_V2 ?? "").trim().toLowerCase();
-  if (explicit === "true") return true;
-  if (explicit === "false") return false;
-  /**
-   * RONDE 170 — ON for the cinematic route, OFF for the legacy one, unless told otherwise.
-   *
-   * The brief asks for the ranking to become part of the NORMAL cinematic retrieval path, and it
-   * is bound to that route rather than switched on globally for a reason: the legacy compose path
-   * has years of tuning built around the keyword scorer's behaviour, and changing what every
-   * existing render picks is not something an integration round should do as a side effect.
-   *
-   * `POOL_RANKING_V2` still overrides in both directions, so either route can be forced either way
-   * for a comparison render.
-   */
-  return (process.env.CINEMATIC_EDITING_ENGINE ?? "").trim().toLowerCase() === "true";
+  if (explicit === "true") return { on: true, decidedBy: "explicit" };
+  if (explicit === "false") return { on: false, decidedBy: "explicit" };
+  return {
+    on: (process.env.CINEMATIC_EDITING_ENGINE ?? "").trim().toLowerCase() === "true",
+    decidedBy: "cinematic_route",
+  };
 }
 
 /**
@@ -1869,10 +1890,14 @@ export function selectCandidatesFromPool(
    * ── What was wrong ────────────────────────────────────────────────────────────────────────
    *
    * The penalty used to live inside the branch above, which runs only when
-   * `poolRankingV2Enabled()` — and that follows `CINEMATIC_EDITING_ENGINE`, off by default. So on
-   * the route that actually ships, R180 handed this function a usage ledger and nothing ever read
-   * it. Every beat of a scene ranked the SAME pool by keyword overlap alone and sorted it stably,
-   * which is deterministic and deterministically returns the same candidate first.
+   * `poolRankingV2Enabled()`. On a deployment where that is off — and unless `POOL_RANKING_V2` is
+   * set it simply follows `CINEMATIC_EDITING_ENGINE` — R180 handed this function a usage ledger and
+   * nothing ever read it. Every beat of a scene ranked the SAME pool by keyword overlap alone and
+   * sorted it stably, which is deterministic and deterministically returns the same candidate
+   * first.
+   *
+   * Both branches ship. Which one a render uses is a matter of configuration, so the repetition
+   * rule has to hold in both; that is the whole point of applying it here as well.
    *
    * The damage lands precisely where it is hardest to see: on a TIE. Two stock clips whose titles
    * both carry the beat's nouns score identically, so beat 0 and beat 1 both took the first one —

@@ -51,7 +51,7 @@ import type { TtsWordTiming } from "./voiceTtsAlignment";
  * not act on. Every one of these is a pure env read with no side effects, and scenePool imports
  * videoPipeline for types only, so none of this introduces a runtime cycle.
  */
-import { poolRankingV2Enabled } from "./scenePool";
+import { describePoolRankingV2 } from "./scenePool";
 import { sceneCandidatePoolEnabled, formatYoutubeReadiness } from "./sourcingPolicy";
 import { aiDirectorEnabled } from "./aiDirector/featureFlags";
 import { searchGateStrict } from "./searchQueryContract";
@@ -485,10 +485,20 @@ export function formatProductionRoute(videoId: number): string {
       ? ""
       : ` reason=${!planning ? "CINEMATIC_EDITING_ENGINE is not enabled" : "CINEMATIC_RENDER_PATH is not enabled"}`;
   const on = (b: boolean) => (b ? "on" : "off");
+  /**
+   * WHICH SWITCH DECIDED THE RANKING.
+   *
+   * `POOL_RANKING_V2` is unset on a normal deployment, and then it follows
+   * `CINEMATIC_EDITING_ENGINE` — so turning the cinematic engine off also changes which asset every
+   * beat picks, and nothing about that variable's name says so. `POOL_RANKING_V2=on` alone cannot
+   * tell an operator whether someone asked for this ranking or whether the render inherited it,
+   * and those call for different actions when a film's footage choices look wrong.
+   */
+  const ranking = describePoolRankingV2();
   return (
     `[ProductionRoute] video=${videoId} route=${route}${why}` +
     ` CINEMATIC_EDITING_ENGINE=${on(planning)} CINEMATIC_RENDER_PATH=${on(renderPath)}` +
-    ` POOL_RANKING_V2=${on(poolRankingV2Enabled())} scenePool=${on(sceneCandidatePoolEnabled())}` +
+    ` POOL_RANKING_V2=${on(ranking.on)}(${ranking.decidedBy}) scenePool=${on(sceneCandidatePoolEnabled())}` +
     ` ${formatYoutubeReadiness()} aiDirector=${on(aiDirectorEnabled())}` +
     ` searchGateStrict=${on(searchGateStrict())}`
   );
