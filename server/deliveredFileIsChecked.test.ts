@@ -81,10 +81,20 @@ describe("the render job inspects the file it is about to deliver", () => {
     expect(worker).toContain("spotCheck: PostRenderSpotCheckResult | null;");
     /**
      * The property is that the successful outcome CARRIES it, not the exact spelling of the
-     * return. The A/V sync result now rides on the same object, so a literal `spotCheck };` was
-     * asserting where in the list it happened to sit.
+     * return. That outcome has since grown two more fields — the A/V sync result and the delivered
+     * file's own clip list — and the return went multi-line, so both a literal `spotCheck };` and a
+     * regex anchored on `return { ok: true,` on ONE line were asserting formatting.
      */
-    expect(worker).toMatch(/return \{ ok: true,[^}]*\bspotCheck\b/);
+    /**
+     * Anchored on the shorthand `outputUrl,` — that spelling occurs only in the delivery return.
+     * The TYPE declares it as `outputUrl: string;`, and the earlier `return { ok: true, timeline …`
+     * is a different function's outcome entirely, which is what a bare `indexOf("return {")` found.
+     */
+    const url = worker.indexOf("outputUrl,\n");
+    expect(url).toBeGreaterThan(-1);
+    const ret = worker.slice(worker.lastIndexOf("return {", url), worker.indexOf("};", url));
+    expect(ret).toContain("ok: true");
+    expect(ret).toContain("spotCheck");
   });
 
   it("respects the existing switch rather than adding a second one", () => {

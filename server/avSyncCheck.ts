@@ -204,13 +204,39 @@ async function streamDuration(filePath: string, kind: "v" | "a"): Promise<number
     /* falls through to the format-level read below */
   }
   /**
-   * Some muxers write no per-stream duration. The container's own is then the best available
-   * answer for that stream, and it is better than reporting the stream as missing — which would
-   * turn a metadata quirk into a `no_audio` finding.
+   * Some muxers write no per-stream duration. The container's own is then the best available answer
+   * for that stream, and it is better than reporting the stream as missing — which would turn a
+   * metadata quirk into a `no_audio` finding.
+   *
+   * ── But only when the stream is actually there ──────────────────────────────────────────────
+   *
+   * `-select_streams` filters STREAM entries. It does not filter `format` entries, so
+   * `-select_streams a:0 -show_entries format=duration` on a file with no audio at all does not
+   * return nothing — it returns the container's duration, cheerfully:
+   *
+   *     $ ffprobe -select_streams a:0 -show_entries stream=duration  video_only.mp4   →  (empty)
+   *     $ ffprobe -select_streams a:0 -show_entries format=duration  video_only.mp4   →  3.000000
+   *
+   * So this fallback answered "the audio is exactly as long as the picture" for a film with no
+   * audio whatsoever, and `no_audio` — the one finding a viewer would notice within a second —
+   * could never fire. A nine-minute render with no narration passed this check reporting
+   * `ok=true no findings`.
+   *
+   * Asking whether the stream EXISTS first is what makes the fallback mean what its comment says.
    */
   try {
+    const { stdout: present } = await exec(
+      `"${ffprobeBin()}" -v error -select_streams ${kind} -show_entries stream=index ` +
+        `-of csv=p=0 "${filePath}"`,
+      { timeout: 20_000 }
+    );
+    if (String(present).trim() === "") return null;
+  } catch {
+    return null;
+  }
+  try {
     const { stdout } = await exec(
-      `"${ffprobeBin()}" -v error -select_streams ${kind}:0 -show_entries format=duration ` +
+      `"${ffprobeBin()}" -v error -show_entries format=duration ` +
         `-of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
       { timeout: 20_000 }
     );

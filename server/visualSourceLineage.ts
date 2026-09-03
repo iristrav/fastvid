@@ -1046,6 +1046,46 @@ export class VisualSourceLedger {
     return marked;
   }
 
+  /**
+   * The delivered file turned out to be a DIFFERENT file. Throw the old proof away and prove again.
+   *
+   * ── Why this is needed at all ───────────────────────────────────────────────────────────────
+   *
+   * FINAL_VIDEO is proven from the input list of the concat that produced the validated output, and
+   * the pipeline proves it as soon as that concat finishes. Since the delivery cutover the compose
+   * montage is no longer necessarily the file that ships: the cinematic render runs afterwards and,
+   * when it succeeds, ITS output is what the viewer receives.
+   *
+   * So the proof was being made about a file nobody would ever see, and `[AssetUsageSummary]`'s
+   * `rendered` column, `[VisualFunnel]`'s `finalVideo` and every "unused" figure derived from them
+   * described the discarded montage. A clip the cinematic renderer could not recover — in its
+   * `skipped` list, absent from the delivered picture — was reported as being in the video.
+   *
+   * `markFinalVideo` cannot fix that by being called again: it deliberately skips a record that
+   * already carries the stage, so a second call can only ADD. Correcting a claim needs the claim
+   * withdrawn first, and withdrawing it has to be explicit rather than a quiet second marking.
+   *
+   * ── What it does not do ─────────────────────────────────────────────────────────────────────
+   *
+   * It does not touch any other stage. DOWNLOADED, ADOPTED and COMPOSED are facts about what this
+   * render did, and they remain true whichever file was delivered — only the last link changes.
+   *
+   * Returns the number of clips proven in the new file.
+   */
+  replaceFinalVideo(clipPaths: Iterable<string>): number {
+    /**
+     * In place, because `events` is `readonly` and should stay that way — nothing outside this
+     * class may rewrite the render's history, and one method that withdraws exactly one stage is a
+     * much smaller hole than a reassignable field.
+     */
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      if (this.events[i]!.stage === "FINAL_VIDEO") this.events.splice(i, 1);
+    }
+    for (const record of this.records.values()) record.finalVideoAt = undefined;
+    this.finalVideoProven = false;
+    return this.markFinalVideo(clipPaths);
+  }
+
   /** True once the pipeline has actually checked which clips reached the delivered file. */
   get finalVideoWasVerified(): boolean {
     return this.finalVideoProven;

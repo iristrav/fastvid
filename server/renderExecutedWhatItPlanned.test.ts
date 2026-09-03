@@ -66,6 +66,39 @@ describe("the render says what it executed, not only that it finished", () => {
     expect(src).toContain("rendered.camerasExecuted === 0");
   });
 
+  /**
+   * …and says WHICH of the two it is. The plan asked for stillness, or it asked for movement the
+   * renderer could not produce: an editorial outcome and a defect, reading identically as zero.
+   *
+   * A feature-length run measured 159 shots, 159 holds and no moves — 124 planned as `medium`,
+   * whose camera rule holds unless the pacing is "exciting", and 35 as archive video held by an
+   * explicit rule. Nothing had failed, and the warning could not say so.
+   */
+  it("tells a deliberate hold apart from a move that failed to execute", () => {
+    const src = worker();
+    expect(src).toContain("rendered.camerasPlanned === 0");
+    expect(src).toContain("The PLAN asked for no movement at all");
+    expect(src).toContain("that is a renderer failure, not an editorial choice");
+    // And the line reports both numbers, so the ratio is readable without the warning firing.
+    expect(src).toContain("cameras=${rendered.camerasExecuted}/${rendered.camerasPlanned}");
+  });
+
+  /**
+   * Planned and executed must be decided by the SAME function, or "planned 12, executed 0" could
+   * mean the two disagree about what counts as a move rather than that anything went wrong.
+   */
+  it("counts planned and executed moves through one definition", () => {
+    const fs2 = require("fs") as typeof import("fs");
+    const path2 = require("path") as typeof import("path");
+    const renderer = fs2.readFileSync(path2.join(__dirname, "timelineRenderer.ts"), "utf8");
+    const at = renderer.indexOf("camerasExecuted: rendered.filter(");
+    const end = renderer.indexOf("renderedClipIds:", at);
+    expect(at).toBeGreaterThan(-1);
+    const block = renderer.slice(at, end);
+    expect([...block.matchAll(/cameraChain\(/g)]).toHaveLength(2);
+    expect(block).toContain("camerasPlanned: clips.filter(");
+  });
+
   it("names a mix in which nothing ducked under the narrator", () => {
     const src = worker();
     expect(src).toContain("NOTHING_DUCKED");

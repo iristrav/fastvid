@@ -92,6 +92,15 @@ export type RenderJobOutcome =
        * Null only when the probe itself threw. See `avSyncCheck.ts`.
        */
       avSync: AvSyncResult | null;
+      /**
+       * The clips the join actually consumed — this file's own input list.
+       *
+       * The pipeline proves FINAL_VIDEO from the input list of the concat that produced the
+       * validated output. On the compose route that is `finalConcatInputs`; on this route it is
+       * this. Without it the pipeline had to prove the delivered file's contents from the montage
+       * it discarded, which reported a clip this renderer could not recover as being in the video.
+       */
+      renderedClipIds: string[];
     }
   | { ok: false; code: RenderErrorCode; message: string };
 
@@ -533,7 +542,8 @@ export async function runRenderJob(params: {
      */
     console.log(
       `[RenderJob] job=${job.id} executed clips=${rendered.clipsRendered} ` +
-        `cameras=${rendered.camerasExecuted} transitions=${rendered.transitionsRendered} ` +
+        `cameras=${rendered.camerasExecuted}/${rendered.camerasPlanned} ` +
+        `transitions=${rendered.transitionsRendered} ` +
         `captions=${rendered.captionsDrawn} texts=${rendered.textsDrawn} ` +
         `audioTracks=${rendered.audioTracks} ducked=${rendered.duckedTracks} ` +
         `ffmpegCommands=${rendered.ffmpegCommands}`
@@ -551,10 +561,25 @@ export async function runRenderJob(params: {
           "hard cuts alone. Either the plan asked for none, or none of them could be executed."
       );
     }
+    /**
+     * A film with no camera movement, and WHICH of the two reasons it is.
+     *
+     * The plan asked for stillness, or it asked for movement the renderer could not produce. Those
+     * are an editorial outcome and a defect respectively, and a count of zero reads the same for
+     * both — the earlier version of this warning sent a reader to the renderer when the answer is
+     * almost always in the plan. A feature-length run measured 159 shots, 159 holds and zero moves:
+     * 124 of them planned as `medium`, whose camera rule holds unless the pacing is "exciting", and
+     * 35 as archive video, held by an explicit rule. Nothing had failed.
+     */
     if (rendered.clipsRendered > 0 && rendered.camerasExecuted === 0) {
       console.warn(
-        `[RenderJob] job=${job.id} NO_CAMERA_MOVEMENT — every shot is static. A documentary of ` +
-          "still frames is a choice; this one was not made deliberately unless the plan says so."
+        `[RenderJob] job=${job.id} NO_CAMERA_MOVEMENT — every shot is static. ` +
+          (rendered.camerasPlanned === 0
+            ? "The PLAN asked for no movement at all: every shot is a deliberate hold. That is a " +
+              "legitimate documentary answer and it is also what a film of nothing but medium " +
+              "shots produces, so it is worth knowing which one this is."
+            : `The plan asked for ${rendered.camerasPlanned} move(s) and NONE was executed — ` +
+              "that is a renderer failure, not an editorial choice.")
       );
     }
     if (rendered.audioTracks > 1 && rendered.duckedTracks === 0) {
@@ -705,7 +730,15 @@ export async function runRenderJob(params: {
         ` renderer=timelineRenderer published=${published} clips=${rendered.clipsRendered} ` +
         `duration=${check.durationSec?.toFixed(2) ?? "null"}s`
     );
-    return { ok: true, outputUrl, published, durationSec: check.durationSec, spotCheck, avSync };
+    return {
+      ok: true,
+      outputUrl,
+      published,
+      durationSec: check.durationSec,
+      spotCheck,
+      avSync,
+      renderedClipIds: rendered.renderedClipIds,
+    };
   } catch (err) {
     return await fail(RENDER_ERROR.RENDER_FAILED, (err as Error).message ?? String(err));
   } finally {

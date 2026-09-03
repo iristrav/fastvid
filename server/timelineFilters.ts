@@ -686,19 +686,55 @@ export function buildTransitionGraph(params: {
   if (joins.every((j) => j === null)) return null;
 
   const steps: string[] = [];
-  let label = "0:v";
+  /**
+   * EVERY INPUT ON THE SAME TIMEBASE, BEFORE ANYTHING JOINS THEM.
+   *
+   * ── The render this failure kills ────────────────────────────────────────────────────────
+   *
+   * `concat` emits on AV_TIME_BASE (1/1000000). A raw decoded input arrives on its stream's own
+   * timebase (1/12800 at 25fps, 1/15360 at 30). `xfade` refuses two inputs whose timebases differ:
+   *
+   *     First input link main timebase (1/1000000) do not match
+   *     the corresponding second input link xfade timebase (1/12800)
+   *     Nothing was written into output file
+   *
+   * So the moment a hard cut is followed anywhere later by a dissolve, this graph produces a
+   * ZERO-BYTE file. Not a degraded render — no render.
+   *
+   * ── Why it was never seen ────────────────────────────────────────────────────────────────
+   *
+   * It needs a `concat` step and an `xfade` step in the same chain, which needs at least three
+   * shots with a cut before a dissolve. The longest render in the entire test suite was three
+   * shots with two dissolves and no cut between them, so the combination never occurred. It occurs
+   * in the first thirty seconds of any real documentary, which mixes cuts and dissolves by
+   * definition — and a nine-minute render found it on the seventh join.
+   *
+   * ── The fix ──────────────────────────────────────────────────────────────────────────────
+   *
+   * `settb=AVTB` on every input, so every link in the graph is already on the timebase `concat`
+   * would impose anyway. It is metadata only: no scaling, no re-encode, no frame touched. The
+   * segments reaching here are already normalised to one fps and one size by `renderSegment`, so
+   * this is the one remaining property they did not share.
+   *
+   * Normalising unconditionally rather than "where a concat is involved" is deliberate. The
+   * condition would be a rule about which joins a future planner may combine, held in a place
+   * nobody would think to look, and getting it wrong costs a whole render rather than a frame.
+   */
+  for (let i = 0; i < durations.length; i++) steps.push(`[${i}:v]settb=AVTB[t${i}]`);
+
+  let label = "t0";
   let elapsed = durations[0]!;
   for (let i = 1; i < durations.length; i++) {
     const join = joins[i - 1];
     const out = i === durations.length - 1 ? "vout" : `v${i}`;
     if (!join) {
       // A hard cut inside an otherwise-transitioned sequence: concat the two, no overlap.
-      steps.push(`[${label}][${i}:v]concat=n=2:v=1:a=0[${out}]`);
+      steps.push(`[${label}][t${i}]concat=n=2:v=1:a=0[${out}]`);
       elapsed += durations[i]!;
     } else {
       const offset = Math.max(0, elapsed - join.sec);
       steps.push(
-        `[${label}][${i}:v]xfade=transition=${join.name}:duration=${join.sec.toFixed(3)}:` +
+        `[${label}][t${i}]xfade=transition=${join.name}:duration=${join.sec.toFixed(3)}:` +
           `offset=${offset.toFixed(3)}[${out}]`
       );
       elapsed = elapsed - join.sec + durations[i]!;

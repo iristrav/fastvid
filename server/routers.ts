@@ -113,7 +113,6 @@ import {
   updateNicheRequest,
 } from "./nicheRequestsDb";
 import { runVideoPipeline } from "./videoPipeline";
-import { runModularVideoPipeline } from "./pipeline/orchestrator";
 import {
   assertUserCanEnqueueVideo,
   enqueueVideoJob,
@@ -762,26 +761,29 @@ async function _runVideoGeneration(
     }, 15_000);
     let videoUrl: string;
     try {
-      // PIPELINE_ARCHITECTURE=modular (Phase 2, default unset) switches to the new
-      // service-oriented pipeline (server/pipeline/orchestrator.ts) — structurally complete
-      // but not yet verified against real traffic (see the Phase 2 migration summary), so the
-      // default stays the proven runVideoPipeline unchanged. A second, differently-named
-      // confirmation var is required so a single typo'd/misapplied env var can't silently
-      // switch 100% of production traffic onto the unverified pipeline.
-      const modularPipelineRequested = process.env.PIPELINE_ARCHITECTURE === "modular";
-      const modularPipelineConfirmed =
-        process.env.PIPELINE_ARCHITECTURE_CONFIRM === "modular-i-understand-unverified";
-      const useModularPipeline = modularPipelineRequested && modularPipelineConfirmed;
-      if (modularPipelineRequested && !modularPipelineConfirmed) {
-        console.error(
-          "[Fastvid] PIPELINE_ARCHITECTURE=modular is set but PIPELINE_ARCHITECTURE_CONFIRM is " +
-            "missing/incorrect — refusing to switch traffic to the unverified modular pipeline. " +
-            "Using the proven runVideoPipeline instead. Set PIPELINE_ARCHITECTURE_CONFIRM=" +
-            "modular-i-understand-unverified to deliberately opt in."
-        );
-      }
-      const pipelineFn = useModularPipeline ? runModularVideoPipeline : runVideoPipeline;
-      const pipelineRun = pipelineFn(
+      /**
+       * §39 — THE MODULAR PIPELINE IS RETIRED. There is one pipeline.
+       *
+       * `PIPELINE_ARCHITECTURE=modular` used to route a render to a second, parallel
+       * orchestrator, behind a second confirmation variable that spelled out
+       * `modular-i-understand-unverified`. It never carried a render. It is gone, and so is the
+       * switch: an env var that selects between two architectures is a question this codebase can
+       * now answer.
+       *
+       * The reason it could never ship is not that it was unfinished. It is that it worked at the
+       * wrong granularity — by its own docstring it called Media Search ONCE PER SCENE, on that
+       * scene's primary beat, and used the top-ranked candidate. Every part of this system built
+       * since is per BEAT: the picture editor's verdicts, the shot vocabulary, the Asset Director's
+       * ranking, the cinematic timeline. Turning it on would not have been an unverified version of
+       * today's film; it would have been a visibly coarser one, with one shot where the plan asks
+       * for six.
+       *
+       * `server/pipeline/types.ts` stays — it is the shared scene/beat vocabulary that thirty-two
+       * live modules import, and it was never part of the rival architecture.
+       *
+       * Recover from git if it is ever wanted back; see server/pipeline/README.md.
+       */
+      const pipelineRun = runVideoPipeline(
         videoId,
         approvedScript,
         async (progress) => {

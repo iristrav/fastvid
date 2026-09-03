@@ -41562,6 +41562,69 @@ async function _runVideoPipelineInner(
                       qualityReport.warnings.push(`Delivered file: ${w}`);
                     }
                   }
+                  /**
+                   * AND SO DOES THE SOURCE AUDIT — FINAL_VIDEO IS PROVEN FROM THE DELIVERED FILE.
+                   *
+                   * ── The claim that was about the wrong video ──────────────────────────────
+                   *
+                   * `markFinalVideo` runs at stage 6, from `finalConcatInputs` — the input list of
+                   * the concat that produced the COMPOSE montage. Its own comment says it is
+                   * emitted there "because this is the first moment FINAL_VIDEO is knowable", and
+                   * that stopped being true at the cutover: the delivered file is produced here,
+                   * eight hundred lines later, by a different renderer, from its own clip list.
+                   *
+                   * So `[AssetUsageSummary]`'s `rendered` column, `[VisualFunnel]`'s `finalVideo`
+                   * and every `unused` figure derived from them described a file nobody receives.
+                   * A clip the cinematic renderer could NOT recover — named in its `skipped` list,
+                   * absent from the delivered picture — was reported as being in the video, which
+                   * is the same defect as the spot check above, one column further along.
+                   *
+                   * ── Why the numbers are re-printed rather than quietly corrected ──────────
+                   *
+                   * The first table has already been logged. Replacing the proof and saying
+                   * nothing would leave two contradictory tables in one render log with no
+                   * indication which is which. The corrected lines are printed again, labelled,
+                   * and they are the ones the stored report ends with.
+                   *
+                   * ── What cannot be proven, and is not claimed ─────────────────────────────
+                   *
+                   * A rendered clip is attributable only when this render holds the local file the
+                   * timeline named — `existingByClipId`. Clips the job rehydrated for itself live
+                   * at paths the lineage never saw, and they are counted as unattributable rather
+                   * than guessed at, exactly as `[AssetUsageSummary]` treats UNVERIFIED.
+                   */
+                  try {
+                    const ledger = visualDedup.sourcingCache.lineage;
+                    const deliveredPaths: string[] = [];
+                    let unattributable = 0;
+                    for (const clipId of jobOutcome.renderedClipIds) {
+                      const local = existingByClipId.get(clipId);
+                      if (local) deliveredPaths.push(local);
+                      else unattributable++;
+                    }
+                    const proven = ledger.replaceFinalVideo(deliveredPaths);
+                    console.log(
+                      pipelineReport.add(
+                        "sourcing",
+                        `[VisualAudit] delivered file carried ${jobOutcome.renderedClipIds.length} ` +
+                          `shot(s); ${proven} clip(s) proven in it` +
+                          (unattributable > 0
+                            ? `, ${unattributable} rehydrated by the render job and not attributable`
+                            : "")
+                      )
+                    );
+                    const redone = ledger.summary();
+                    for (const line of formatAssetUsageSummary(redone, ledger.finalVideoWasVerified)) {
+                      pipelineReport.add("sourcing", `${line} (delivered)`);
+                      if (line.startsWith("[AssetUsageInconsistency]")) console.warn(`${line} (delivered)`);
+                      else console.log(`${line} (delivered)`);
+                    }
+                  } catch (err) {
+                    console.warn(
+                      `[VisualAudit] video=${videoId} could not re-prove FINAL_VIDEO against the ` +
+                        `delivered file: ${(err as Error).message.slice(0, 200)}`
+                    );
+                  }
                 } else {
                   cinematicRefusal = `${jobOutcome.code} — ${jobOutcome.message}`;
                 }

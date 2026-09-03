@@ -138,6 +138,31 @@ export type RenderedTimeline = {
   graphicsRenderer: GraphicsRenderer;
   skipped: string[];
   ffmpegCommands: number;
+  /**
+   * How many clips the PLAN asked to move, against `camerasExecuted`, which is how many did.
+   *
+   * A film with no camera movement has two completely different causes and they read identically
+   * in a count of zero: the planner decided every shot should be held — which is a legitimate and
+   * frequent documentary answer — or it asked for movement the renderer could not produce. Without
+   * the planned figure, the render's `NO_CAMERA_MOVEMENT` warning could only say that nothing
+   * moved, which sends a reader to the renderer when the answer is usually in the plan.
+   *
+   * A feature-length run measured 159 shots, 159 holds, zero moves: 124 planned as `medium` (whose
+   * camera rule holds unless pacing is "exciting") and 35 as archive video (held by an explicit
+   * rule to preserve the footage's own motion). Nothing was broken. Nothing said so either.
+   */
+  camerasPlanned: number;
+  /**
+   * The clips that became segments and went into the join — the delivered file's own input list.
+   *
+   * This is the exact counterpart of compose's `finalConcatInputs`, and it exists for the same
+   * reason: FINAL_VIDEO is a claim about what is IN the delivered video, and the only honest basis
+   * for it is the input list of the join that produced the validated output. A clip whose source
+   * could not be recovered, or whose encode failed, is in `skipped` and not here — and before this
+   * the pipeline had no way to tell the difference on the cinematic route, so it proved the
+   * delivered file's contents from the compose montage it had thrown away.
+   */
+  renderedClipIds: string[];
 };
 
 export class TimelineRenderError extends Error {
@@ -1011,9 +1036,24 @@ export async function renderTimeline(params: {
     camerasExecuted: rendered.filter((r) => cameraChain(
       r.clip.camera ?? { type: "camera_hold" }, fmt, r.durationSec
     ) !== null).length,
+    /**
+     * Counted over the clips the timeline HOLDS, not the ones that rendered, and through the same
+     * `cameraChain` that decides whether a move is real — so "planned" and "executed" cannot mean
+     * two different things. A `camera_hold` yields null from both and is a plan for stillness, not
+     * an unfulfilled request.
+     */
+    camerasPlanned: clips.filter((c) => cameraChain(
+      c.camera ?? { type: "camera_hold" }, fmt, Math.max(0.04, c.timelineEnd - c.timelineStart)
+    ) !== null).length,
     graphicsRenderer,
     skipped,
     ffmpegCommands: commands,
+    /**
+     * `rendered` is index-aligned with `segments`: a clip is pushed to both only once its segment
+     * exists on disk and is bigger than a header. So this is what the join actually consumed, not
+     * what the timeline asked for.
+     */
+    renderedClipIds: rendered.map((r) => r.clip.id),
   };
 }
 
