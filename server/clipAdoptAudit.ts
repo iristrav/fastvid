@@ -72,6 +72,17 @@ export function createClipAdoptAudit(): ClipAdoptEntry[] {
  */
 const ledgerByAudit = new WeakMap<ClipAdoptEntry[], VisualSourceLedger>();
 
+/**
+ * How many adoptions this render could not trace to an existing lineage record.
+ *
+ * Keyed on the audit array, which is the render's own scope — the same handle `ledgerByAudit`
+ * uses — so two concurrent renders count separately without either knowing the other exists.
+ */
+const untracedByAudit = new WeakMap<ClipAdoptEntry[], number>();
+
+/** Name this many, then only count. A render that lost its lineage must not replace its own log. */
+const UNTRACED_TO_NAME = 5;
+
 export function bindLineageLedger(audit: ClipAdoptEntry[], ledger: VisualSourceLedger): void {
   ledgerByAudit.set(audit, ledger);
 }
@@ -241,7 +252,39 @@ export function recordClipAdopt(
        * provider, so it is counted in the UNVERIFIED bucket and shows up in the audit as a clip
        * whose origin this render cannot prove. Passing `source` as the provider here would have
        * turned every such hole into a confident, wrong answer.
+       *
+       * ── P11: and it now SAYS SO, which it never did ──────────────────────────────────────
+       *
+       * `resolve` is generous before it gives up: the exact path, then the derivation chain, then
+       * the content key. Reaching here means all three missed, and the usual cause is a file
+       * written from another file by a site that registered neither — `linkDerivedPath`'s contract
+       * is "call it at every site that writes a new file from an existing one", and a contract kept
+       * by convention is a contract that drifts. One asset then becomes several records: one for
+       * the original and one for every copy, each of the copies UNVERIFIED.
+       *
+       * The aggregate was visible — `[AssetLifecycleAudit]` counts the UNVERIFIED bucket — and
+       * WHICH clip and WHICH route were not, so the number could be watched and never diagnosed.
+       * Render 555's eighteen unexplained assets took a production log and a whole round to trace
+       * to one cause.
+       *
+       * Bounded, because a render that loses its lineage wholesale would otherwise replace its own
+       * log with this line. The first few name the clip; after that only the count grows, and the
+       * bucket in the audit remains the authority on how many there were.
        */
+      const seen = (untracedByAudit.get(audit) ?? 0) + 1;
+      untracedByAudit.set(audit, seen);
+      if (seen <= UNTRACED_TO_NAME) {
+        console.warn(
+          `[Lineage] UNTRACED_ADOPTION s${sceneIndex}b${beatIndex} route=${route} ` +
+            `source=${source} clip=${path.basename(clipPath)} — no record for this path, its ` +
+            "derivation chain or its content key; adopted as UNVERIFIED"
+        );
+      } else if (seen === UNTRACED_TO_NAME + 1) {
+        console.warn(
+          `[Lineage] UNTRACED_ADOPTION — further occurrences are counted, not named. ` +
+            "See the UNVERIFIED bucket in [AssetLifecycleAudit] for the total."
+        );
+      }
       const created = ledger.createLineage({
         sceneIndex,
         beatIndex,

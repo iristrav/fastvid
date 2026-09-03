@@ -41306,12 +41306,39 @@ async function _runVideoPipelineInner(
               sceneVisualResults[i]?.beats ??
               [];
             /**
+             * §19 — THE PLANNER MUST NOT NEED COMPOSE TO HAVE RUN.
+             *
+             * ── Why the duplicate render could not simply be deleted ─────────────────────────
+             *
+             * `composedUsedClips[i]` is written BY the compose stage: it is the list of clips each
+             * scene's montage was actually built from. Reading only that made compose an INPUT to
+             * the cinematic plan, not merely a fallback behind it — delete the compose stage and
+             * this array is empty for every scene, every beat is dropped for having no clip, no
+             * timeline is stored, and the route falls back to the compose that no longer exists.
+             *
+             * That is the real reason the old render is still there, and it is a much more specific
+             * reason than "the new route is unproven". A spare tyre can be removed; an axle cannot.
+             *
+             * ── The fallback, which already existed elsewhere ────────────────────────────────
+             *
+             * `sceneVisualResults[i].clips` is the scene's SELECTED set — the clips retrieval chose,
+             * available before anything is composed. Stage 5's critical review already prefers the
+             * composed list and falls back to exactly this, for exactly this reason. Using the same
+             * pair here changes nothing when compose ran (the composed list is more accurate: it has
+             * had unusable files filtered out of it) and gives the planner real clips when it did
+             * not.
+             *
+             * This is also the render-562 failure mode from the other side: scenes that finished on
+             * a route which rebuilds the clip list reported `beats=0 dropped=3` and lost their whole
+             * plan. Those scenes now have somewhere to read from.
+             *
              * `pairClipsToBeats` rather than `clipPaths[beatIndex]` — see its own comment. The
              * positional read was a guess that only ever ran over an empty beat list; giving the
              * planner real beats is what makes it execute, so it is corrected in the same change.
              */
+            const composedForScene = composedUsedClips[i] ?? [];
             const clipForBeat = pairClipsToBeats({
-              clipPaths: composedUsedClips[i] ?? [],
+              clipPaths: composedForScene.length > 0 ? composedForScene : sceneVisualResults[i]?.clips ?? [],
               adoptions: visualDedup.clipAdoptAudit.filter((e) => e.sceneIndex === scene.index),
               beats,
               basenameOf: (clipPath) => path.basename(clipPath),
