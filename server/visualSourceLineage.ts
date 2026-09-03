@@ -1626,17 +1626,104 @@ export function formatSelectedButNotRendered(
   for (const e of events) {
     if (e.stage === "REPLACED") replaced.set(e.lineageId, e.reason ?? "no reason recorded");
   }
-  const out: string[] = [];
+  /**
+   * ONE PHYSICAL ASSET IS ONE LINE, EVEN WHEN THE PIPELINE DERIVED FILES FROM IT.
+   *
+   * ── What render 567 reported, and why it was two lines ──────────────────────────────────────
+   *
+   *     [AssetNotRendered] assetId=…#18 provider=youtube_cc scene=0 beat=0
+   *                        reachedSelected=true  reachedAssigned=false DROPPED_WITHOUT_EVENT
+   *     [AssetNotRendered] assetId=…#30 provider=youtube_cc scene=0 beat=0
+   *                        reachedSelected=false reachedAssigned=true  DROPPED_WITHOUT_EVENT
+   *
+   * Two records, the same scene, the same beat, the same provider, the same file
+   * (`scene_0_ytcc_0__pid_youtube_cc-…_transformed.mp4`), and exactly mirrored lifecycles. That
+   * shape is not two assets. It is ONE asset whose lifecycle straddles a derivation:
+   * `adoptClip` fair-use-transforms the clip, `linkDerivedPath` opens a CHILD record for the
+   * transformed file — by design, so provenance survives the rename — and records ADOPTED on the
+   * child, while SELECTED had already been recorded on the parent.
+   *
+   * This function walked `records` flat, so it saw a parent that was selected and never adopted
+   * and a child that was adopted and never selected, and reported both as incomplete. Reading that
+   * log, one clip looks like two half-lost ones, which is what sent an investigation looking for a
+   * duplicate-record bug that does not exist.
+   *
+   * ── What rolling up does and does not change ────────────────────────────────────────────────
+   *
+   * The chain is folded onto its root — `parentLineageId` is set only by `linkDerivedPath`, which
+   * the pipeline calls when it produced one file from another, so membership is proof and not
+   * inference. A stage counts as reached when ANY member reached it, which is the truth about the
+   * asset: the bytes that were selected are the bytes that were adopted.
+   *
+   * Nothing is suppressed. An asset genuinely left out still prints exactly one
+   * DROPPED_WITHOUT_EVENT line, and a chain where any member reached FINAL_VIDEO is correctly
+   * silent, because the asset IS in the film under its derived name. What disappears is the
+   * double-counting, and with it the false impression that a selected clip and an adopted clip
+   * were two different pieces of footage.
+   */
+  type Rolled = {
+    record: VisualLineageRecord;
+    selected: boolean;
+    adopted: boolean;
+    inFinal: boolean;
+    why?: string;
+    members: string[];
+  };
+  const byId = new Map<string, VisualLineageRecord>();
+  for (const r of records) byId.set(r.lineageId, r);
+  const rootIdOf = (r: VisualLineageRecord): string => {
+    let cur: VisualLineageRecord | undefined = r;
+    const seen = new Set<string>();
+    while (cur?.parentLineageId && !seen.has(cur.lineageId)) {
+      seen.add(cur.lineageId);
+      const parent = byId.get(cur.parentLineageId);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur?.lineageId ?? r.lineageId;
+  };
+
+  const chains = new Map<string, Rolled>();
   for (const r of records) {
-    if (r.finalVideoAt != null) continue;
-    if (r.selectedAt == null && r.adoptedAt == null) continue;
+    const rootId = rootIdOf(r);
+    const prior = chains.get(rootId);
     const why = replaced.get(r.lineageId);
+    if (!prior) {
+      chains.set(rootId, {
+        /** The root carries the identity a reader can act on: provider, asset id, scene, beat. */
+        record: byId.get(rootId) ?? r,
+        selected: r.selectedAt != null,
+        adopted: r.adoptedAt != null,
+        inFinal: r.finalVideoAt != null,
+        why,
+        members: [r.lineageId],
+      });
+      continue;
+    }
+    prior.selected ||= r.selectedAt != null;
+    prior.adopted ||= r.adoptedAt != null;
+    prior.inFinal ||= r.finalVideoAt != null;
+    prior.why ??= why;
+    prior.members.push(r.lineageId);
+  }
+
+  const out: string[] = [];
+  for (const c of chains.values()) {
+    if (c.inFinal) continue;
+    if (!c.selected && !c.adopted) continue;
+    const r = c.record;
+    /** Named when the asset outlived a rename, so the line can still be tied to every event. */
+    const derived =
+      c.members.length > 1
+        ? ` derivedIds=${c.members.filter((id) => id !== r.lineageId).join(",")}`
+        : "";
     out.push(
       `[AssetNotRendered] assetId=${r.lineageId} provider=${r.provider ?? UNVERIFIED_PROVIDER} ` +
         `scene=${r.sceneIndex} beat=${r.beatIndex} ` +
-        `reachedSelected=${r.selectedAt != null} reachedAssigned=${r.adoptedAt != null} ` +
-        `outcome=${why ? "REPLACED" : "DROPPED_WITHOUT_EVENT"}` +
-        (why ? ` reason=${why}` : "")
+        `reachedSelected=${c.selected} reachedAssigned=${c.adopted} ` +
+        `outcome=${c.why ? "REPLACED" : "DROPPED_WITHOUT_EVENT"}` +
+        (c.why ? ` reason=${c.why}` : "") +
+        derived
     );
   }
   return out;
