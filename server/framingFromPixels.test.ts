@@ -131,7 +131,13 @@ describe("the framing reaches the ranking instead of stopping at the judge", () 
    * reading a filename.
    */
   it("the pipeline files it where the ranking looks", () => {
-    expect(pipeline).toContain("observedShotType: decision.framing,");
+    /**
+     * The property is that the framing reaches the meta the ranker reads. It is written
+     * conditionally now — alongside the judge's description, which rides on the same write — so a
+     * literal `observedShotType: decision.framing,` was asserting the shape of the assignment
+     * rather than the fact of it.
+     */
+    expect(pipeline).toContain("observedShotType: decision.framing");
     expect(pipeline).toContain("dedup.clipAnnotationMeta.set(params.clipPath, {");
   });
 

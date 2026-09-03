@@ -27283,11 +27283,19 @@ async function judgeBeatClipRelevance(
    * already what `rankCandidatesWithContext` is handed, so there is no second store to keep in
    * step and no route that can read one without the other.
    */
-  if (decision.framing && params.clipPath) {
+  if ((decision.framing || decision.depicts) && params.clipPath) {
     const existing = dedup.clipAnnotationMeta.get(params.clipPath) ?? {};
     dedup.clipAnnotationMeta.set(params.clipPath, {
       ...existing,
-      observedShotType: decision.framing,
+      ...(decision.framing ? { observedShotType: decision.framing } : {}),
+      /**
+       * The judge's own description of these frames, kept rather than logged and dropped.
+       *
+       * It is the strongest evidence a non-archive candidate has about its own content, and the
+       * 40% annotation weight had nothing better than a provider's reel title to work with. See
+       * `observedDepicts` on CandidateMeta.
+       */
+      ...(decision.depicts ? { observedDepicts: decision.depicts } : {}),
     });
   }
   return decision;

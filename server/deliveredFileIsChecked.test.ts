@@ -79,7 +79,12 @@ describe("the render job inspects the file it is about to deliver", () => {
 
   it("hands the result back to the caller instead of only logging it", () => {
     expect(worker).toContain("spotCheck: PostRenderSpotCheckResult | null;");
-    expect(worker).toContain("spotCheck };");
+    /**
+     * The property is that the successful outcome CARRIES it, not the exact spelling of the
+     * return. The A/V sync result now rides on the same object, so a literal `spotCheck };` was
+     * asserting where in the list it happened to sit.
+     */
+    expect(worker).toMatch(/return \{ ok: true,[^}]*\bspotCheck\b/);
   });
 
   it("respects the existing switch rather than adding a second one", () => {

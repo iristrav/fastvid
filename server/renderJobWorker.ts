@@ -60,6 +60,7 @@ import { productionRehydrateDeps } from "./rehydrationDeps";
 import { renderTimeline, checkRenderedFile, type GraphicsOverlayFile } from "./timelineRenderer";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { storagePutFromFile } from "./storage";
+import { checkFileAvSync, formatAvSync, type AvSyncResult } from "./avSyncCheck";
 import {
   postRenderSpotCheckEnabled,
   spotCheckFinalVideo,
@@ -86,6 +87,11 @@ export type RenderJobOutcome =
        * anybody receives.
        */
       spotCheck: PostRenderSpotCheckResult | null;
+      /**
+       * Whether the picture and the sound start and stop together, measured on the delivered file.
+       * Null only when the probe itself threw. See `avSyncCheck.ts`.
+       */
+      avSync: AvSyncResult | null;
     }
   | { ok: false; code: RenderErrorCode; message: string };
 
@@ -536,7 +542,27 @@ export async function runRenderJob(params: {
     }
 
     /**
-     * 6b. THE CONTENT CHECK — on the file that will actually be delivered.
+     * 6b. DO THE TWO STREAMS LINE UP?
+     *
+     * `checkRenderedFile` above asks about each stream on its own — is there video, is there
+     * audio, is the container the right shape. It cannot see a film whose narration runs four
+     * seconds past its picture, or one that opens on silence, or one whose voice was cut
+     * mid-word by a mux bounded by the wrong stream. That last one is not hypothetical: it is
+     * exactly what a dropped beat used to do here.
+     *
+     * Cheap enough to run unconditionally — two ffprobe reads and one silencedetect pass — and it
+     * is the check whose absence a viewer notices first.
+     */
+    const avSync = await checkFileAvSync(outputPath).catch(() => null);
+    if (avSync) {
+      for (const line of formatAvSync(avSync)) {
+        if (avSync.ok) console.log(line);
+        else console.warn(`[RenderJob] job=${job.id} ${line}`);
+      }
+    }
+
+    /**
+     * 6c. THE CONTENT CHECK — on the file that will actually be delivered.
      *
      * ── Why this had to move ────────────────────────────────────────────────────────────────
      *
@@ -624,7 +650,7 @@ export async function runRenderJob(params: {
         ` renderer=timelineRenderer published=${published} clips=${rendered.clipsRendered} ` +
         `duration=${check.durationSec?.toFixed(2) ?? "null"}s`
     );
-    return { ok: true, outputUrl, published, durationSec: check.durationSec, spotCheck };
+    return { ok: true, outputUrl, published, durationSec: check.durationSec, spotCheck, avSync };
   } catch (err) {
     return await fail(RENDER_ERROR.RENDER_FAILED, (err as Error).message ?? String(err));
   } finally {

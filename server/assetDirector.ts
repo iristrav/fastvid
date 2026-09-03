@@ -89,6 +89,21 @@ export type CandidateMeta = {
    * could not tell — never "medium".
    */
   observedShotType?: string | null;
+  /**
+   * WHAT A MODEL SAID IS ACTUALLY IN THIS CLIP'S FRAMES.
+   *
+   * The beat image judge answers `depicts` for every candidate it looks at, from any provider, and
+   * it is describing THESE pixels rather than the asset they were cut from. Until now that
+   * sentence was logged and thrown away.
+   *
+   * It matters most for the providers this ranker is weakest on. `scoreAnnotationFingerprint`
+   * carries 40% of a candidate's score, and for anything without curated annotation it falls back
+   * to keyword overlap against the provider's own title and tags — text describing a whole
+   * twenty-minute reel, not the four seconds being considered. A description of the actual frames
+   * is better evidence than that, and worse evidence than a human-reviewed structured annotation.
+   * It is scored accordingly: above providerText, below a real annotation.
+   */
+  observedDepicts?: string | null;
   plannerMotionTarget?: number | null;
   /** Cosine similarity of beat-text vs stored asset embedding (0–1). */
   embeddingSimilarity?: number | null;
@@ -509,11 +524,34 @@ function scoreAnnotationFingerprint(
           .join(" ")
           .toLowerCase()
       : "";
-    const hits = words.filter((w) => base.includes(w) || providerHay.includes(w)).length;
+    /**
+     * What a model saw in THESE frames, which no external provider supplies about itself.
+     *
+     * This is the parity fix. A Pexels or Internet Archive candidate arrives with a title about
+     * the whole asset; the judge has looked at the exact seconds under consideration and said what
+     * is in them. Matching the beat's words against that is closer to what this score is supposed
+     * to measure than matching them against a reel's name.
+     */
+    const seenHay = (meta?.observedDepicts ?? "").toLowerCase();
+    const hits = words.filter(
+      (w) => base.includes(w) || providerHay.includes(w) || seenHay.includes(w)
+    ).length;
     // providerHay carries a higher ceiling (up to 55) than filename-only ever did (35) — it is
     // real third-party text, not a guess — but still capped well below a genuine annotation
     // match, since a title/tag mention is not proof the beat's exact claim is depicted.
-    const ceiling = providerHay ? 55 : 35;
+    /**
+     * Three tiers of evidence, ordered by how much they actually prove.
+     *
+     *   35  the download filename — usually `scene_0_ccc_0.mp4`, a positional label
+     *   55  the provider's own text — real third-party description, but of the whole asset
+     *   70  a model's description of THESE frames — the closest thing to seeing the clip
+     *
+     * Still below a curated annotation, which reaches 100: that is human-reviewed, structured, and
+     * names persons, objects, location and era rather than being one sentence of prose. Ordering
+     * the tiers by evidential weight is the point — a candidate is not rewarded for being from a
+     * particular provider, it is rewarded for having something real behind it.
+     */
+    const ceiling = seenHay ? 70 : providerHay ? 55 : 35;
     const fallback = Math.round(25 + (words.length > 0 ? (hits / words.length) * ceiling : 0));
     return { score: fallback, people: 0, objects: 0, actions: 0, location: 0, era: 0, emotion: 0, style: 0, knowledgeGraph: 0 };
   }
