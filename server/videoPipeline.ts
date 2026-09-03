@@ -27482,7 +27482,53 @@ async function beatClipRefusedByRelevanceGate(
   if (beatIndex != null) {
     recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, barrier.reason);
   }
+  tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, barrier.reason);
   return true;
+}
+
+/**
+ * THE PUSH SAYS WHAT IT DECIDED, AT THE MOMENT IT DECIDES IT.
+ *
+ * ── Why a line here and not only a ledger event ─────────────────────────────────────────────
+ *
+ * `pushSceneClip` is the narrowest point at which a clip becomes a beat's clip: it is the sole
+ * writer of `clipBeatIndices`, and `clipBeatIndices` is the only test the placeholder rescue makes.
+ * Every caller nevertheless does `await pushClip(clip);` and throws the answer away, so the moment
+ * a beat lost its real asset appeared nowhere in the log — it could only be inferred, afterwards,
+ * from a guaranteed filler showing up.
+ *
+ * The ledger already gets a terminal outcome for a refusal, and the beat tally already gets a
+ * reason. Both are read at the END of the render. This is the same fact in the running log, in the
+ * beat's own order, so a reader can follow one asset down the file instead of reconstructing it
+ * from three summaries.
+ *
+ * ── Identity, not position ──────────────────────────────────────────────────────────────────
+ *
+ * The asset is named by what the ledger proved about it — provider and provider asset id, folded
+ * to the root of any derivation chain — and never by an index. `resolve` walks the path, the
+ * derivation chain and the content key, so a transformed file still reports the identity of the
+ * asset it was made from. When the ledger does not know the clip, the line says `asset=unknown`
+ * and carries the basename: an honest gap, not a guess.
+ */
+function tracePushOutcome(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined,
+  accepted: boolean,
+  reason: string
+): void {
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath, clipContentKey(clipPath)) ?? null;
+  const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
+  const asset = root
+    ? `${root.provider ?? "UNVERIFIED"}:${root.providerAssetId ?? root.archiveAssetId ?? root.lineageId}`
+    : "unknown";
+  console.log(
+    `[PushTrace] scene=${sceneIndex} beat=${beatIndex ?? "?"} asset=${asset} ` +
+      `lineage=${root?.lineageId ?? "none"} accepted=${accepted} reason=${reason} ` +
+      `file=${path.basename(clipPath)}`
+  );
 }
 
 /**
@@ -27509,6 +27555,7 @@ function noteDuplicateClipRefused(
       dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, "duplicate_clip_once_per_video"
     );
   }
+  tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, "duplicate_clip_once_per_video");
 }
 
 /** RONDE 103: attribute one gate call's spend to the beat that asked for it. */
@@ -30216,9 +30263,25 @@ async function rescueBeatVisualWhenEmptyInner(
     // This block runs at the exact moment the beat falls back to a placeholder, so it is also
     // the beat's terminal event for the funnel audit.
     noteBeatPlaceholder(dedup.beatOutcomeAudit, scene.index, beat.index);
+    /**
+     * "EXHAUSTED" IS A CLAIM, AND IT MAY ONLY BE MADE WHEN IT IS TRUE.
+     *
+     * This line ended in `(all real/contextual/AI sourcing strategies exhausted)` unconditionally.
+     * For VID-0567's beat 0 that was the opposite of what happened: a YouTube clip had been found,
+     * downloaded, judged `fits`, selected, transformed and ADOPTED, and was then refused at
+     * `pushSceneClip`. Nothing was exhausted — a real asset was turned away.
+     *
+     * `rejectedHere` is the beat's own tally, which both push refusals now write. So the beat can
+     * distinguish the two cases it never could: nothing was ever offered, or something was offered
+     * and refused. The reason is the gate's own words, not a new vocabulary.
+     */
+    const fallbackReason =
+      rejectedHere > 0
+        ? `REAL_ASSET_REJECTED (${topRejects})`
+        : "ALL_SOURCING_EXHAUSTED (nothing was offered for this beat)";
     console.warn(
       `[VisualCoverage] s${scene.index}b${beat.index}: rejected=${rejectedHere} topRejects=${topRejects} ` +
-        `contextualSearch=true fallback=PLACEHOLDER (all real/contextual/AI sourcing strategies exhausted)`
+        `contextualSearch=true fallback=PLACEHOLDER fallbackReason=${fallbackReason}`
     );
   }
 
@@ -31304,6 +31367,7 @@ async function fetchArchiveSentenceMontage(
       clips.push(clipPath);
       beatDurations.push(actualHold);
       clipBeatIndices.push(beatIndex);
+      tracePushOutcome(dedup, clipPath, scene.index, beatIndex, true, "accepted");
       markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
       if (clipPath && !isPipelineFallbackClip(clipPath) && fs.existsSync(clipPath)) {
         dedup.lastMuskStockClip = clipPath; dedup.lastRealClip = clipPath;
@@ -31442,6 +31506,15 @@ async function refillSceneStrictVoiceMatch(
       clips.push(candidate);
       beatDurations.push(seedHoldSec);
       clipBeatIndices.push(entry.beatIndex);
+      /**
+       * The FIFTH writer of `clipBeatIndices`, and not a `pushSceneClip`.
+       *
+       * This loop re-seeds a scene's clip list from the adopt audit, so a beat can be assigned here
+       * without ever passing the push gates. Traced with the same line as the gated routes — a
+       * reader following one asset must see every moment it was given a beat, whichever door it
+       * came through.
+       */
+      tracePushOutcome(dedup, candidate, scene.index, entry.beatIndex, true, "accepted_reseed");
     }
     // Bug 1 fix: pass the seeded clips' real narrative beatIndex through so
     // appendGuaranteedSceneClips can fill exactly the missing beats in their correct positions
@@ -31513,6 +31586,7 @@ async function refillSceneStrictVoiceMatch(
       clips.push(clipPath);
       beatDurations.push(actualHold);
       clipBeatIndices.push(beatIndex);
+      tracePushOutcome(dedup, clipPath, scene.index, beatIndex, true, "accepted");
       markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
       return true;
     });
@@ -31845,6 +31919,7 @@ async function ensureArchiveMontageVoiceCoverage(
     // backfillArchiveMontageFromPool always supplies a real beatIndex in practice; this fallback
     // only guards the declared-optional type contract, never the actual runtime call pattern.
     clipBeatIndices.push(beatIndex ?? 0);
+    tracePushOutcome(dedup, clipPath, scene.index, beatIndex ?? 0, true, "accepted");
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     coverage = await estimateBalancedMontageCoverageSec(clips, beatDurations, scene.duration);
     return true;

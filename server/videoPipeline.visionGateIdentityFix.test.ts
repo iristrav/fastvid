@@ -96,7 +96,14 @@ describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip prote
   it("the already-attempted branch seeds `clips` from real (non-fallback) adopt-audit entries for this scene before topping up with guaranteed fill", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     expect(scoped).toContain('entry.source !== "fallback" && entry.source !== "rescue_placeholder"');
     expect(scoped).toContain("fs.existsSync(candidate)");
     expect(scoped).toContain("appendGuaranteedSceneClips(");
@@ -104,7 +111,14 @@ describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip prote
 
   it("still calls appendGuaranteedSceneClips to top up any remaining gap (doesn't remove the guaranteed-fill safety net)", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     const appendIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
     expect(appendIdx).toBeGreaterThan(-1);
   });
@@ -118,7 +132,14 @@ describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip prote
   // clip is still untouched in the actual `clips` array.
   it("seeded real entries are ordered by beatIndex, not by chronological adoption order, so the montage plays back in narrative beat order", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     expect(scoped).toContain(".sort((a, b) => a.beatIndex - b.beatIndex)");
   });
 });
@@ -168,14 +189,28 @@ describe("Vision Gate final hardening — Test A: refillSceneStrictVoiceMatch th
 
   it("collects a parallel clipBeatIndices array alongside the seeded real clips (beat 0 and 2 missing, beat 1 and 3 real -> indices [1, 3], not [0, 1])", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     expect(scoped).toContain("const clipBeatIndices: number[] = [];");
     expect(scoped).toContain("clipBeatIndices.push(entry.beatIndex);");
   });
 
   it("passes clipBeatIndices as the 7th argument to appendGuaranteedSceneClips so gap-filling knows the real beats' true positions", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     const appendIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
     expect(appendIdx).toBeGreaterThan(-1);
     const callSite = scoped.slice(appendIdx, appendIdx + 200);
@@ -188,7 +223,14 @@ describe("Vision Gate final hardening — Test C: a real adopted clip is never r
 
   it("seeds `clips` from real adopt-audit entries BEFORE calling appendGuaranteedSceneClips, so the real clip is already present when gap-filling runs (not replaced by it)", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     const seedLoopIdx = scoped.indexOf("for (const entry of realEntriesForScene)");
     const appendCallIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
     expect(seedLoopIdx).toBeGreaterThan(-1);
@@ -198,7 +240,14 @@ describe("Vision Gate final hardening — Test C: a real adopted clip is never r
 
   it("only seeds entries whose source is a real adoption, excluding fallback/rescue_placeholder — a previously-placeholder-filled beat is correctly left for gap-filling, not falsely protected", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
-    const scoped = src.slice(idx, idx + 3000);
+    /**
+     * Scoped to the END OF THE FUNCTION, not to a byte count. The branch grew — every
+     * beat-assignment site now traces its outcome — and a fixed 3000-character window pushed
+     * `appendGuaranteedSceneClips(` outside it, failing three tests for a change that kept
+     * the property whole. A window measured in characters guards the length of the code, not
+     * its behaviour.
+     */
+    const scoped = src.slice(idx);
     expect(scoped).toContain('entry.source !== "fallback" && entry.source !== "rescue_placeholder"');
   });
 });
