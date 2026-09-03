@@ -22305,6 +22305,17 @@ async function adoptClip(
     activeEra: dedup.assetDirectorActiveEra,
     targetMotionLevel: _rhythmTarget ?? null,
     plannedShotType: _plannedShot,
+    /**
+     * The framings of the shots already in this scene, as a model saw them.
+     *
+     * Reads the same per-clip meta the judge writes its observation into, so the run penalty
+     * compares like with like. A clip nobody judged returns undefined and the filename reading
+     * stands, exactly as before.
+     */
+    shotTypeOf: (clipPath: string) =>
+      dedup.clipAnnotationMeta.get(clipPath)?.observedShotType ??
+      dedup.clipAnnotationMeta.get(clipPath)?.annotation?.cinematography?.shotType ??
+      null,
     callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
     retrievalContract: _contract,
   };
@@ -27260,6 +27271,25 @@ async function judgeBeatClipRelevance(
           ? "rejected"
           : "unclear"
   );
+  /**
+   * THE FRAMING THE JUDGE JUST SAW, filed where the ranking will look for it.
+   *
+   * This is the seam this codebase keeps finding: a fact one route establishes and the next does
+   * not receive. A model has just had this clip's frames in front of it and named how the shot is
+   * framed — and `scoreShotVariety` would still have fallen back to a regex over the download
+   * filename, because nothing carried the answer across.
+   *
+   * Merged into the existing per-clip meta rather than stored separately: `clipAnnotationMeta` is
+   * already what `rankCandidatesWithContext` is handed, so there is no second store to keep in
+   * step and no route that can read one without the other.
+   */
+  if (decision.framing && params.clipPath) {
+    const existing = dedup.clipAnnotationMeta.get(params.clipPath) ?? {};
+    dedup.clipAnnotationMeta.set(params.clipPath, {
+      ...existing,
+      observedShotType: decision.framing,
+    });
+  }
   return decision;
 }
 

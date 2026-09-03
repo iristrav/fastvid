@@ -75,6 +75,20 @@ export type CandidateMeta = {
   annotation?: ClipAnnotation | null;
   editorialScore?: number | null;
   plannerShotType?: string | null;
+  /**
+   * THE FRAMING A MODEL ACTUALLY SAW, when one has looked at this clip.
+   *
+   * `scoreShotVariety` below falls back to `inferShotTypeFromPath` — regexes over the download
+   * filename and the beat's own words. For a curated archive asset that is harmless: those carry
+   * real `cinematography.shotType`. For Pexels, YouTube, Wikimedia and the Internet Archive, which
+   * is most of what a render downloads, it is a guess about a picture nobody looked at, feeding a
+   * 10% score weight and every decision about what should come next.
+   *
+   * The beat image judge already has the clip's frames in front of a model. It now names the
+   * framing in the same answer, and that answer arrives here. Absent means no model looked, or it
+   * could not tell — never "medium".
+   */
+  observedShotType?: string | null;
   plannerMotionTarget?: number | null;
   /** Cosine similarity of beat-text vs stored asset embedding (0–1). */
   embeddingSimilarity?: number | null;
@@ -241,6 +255,20 @@ export type AssetDirectorContext = {
   budgetTracker?: VisualBudgetTracker | null;
   sceneAdoptedClips: string[];
   prevSceneClips: string[];
+  /**
+   * WHAT THE ALREADY-ADOPTED SHOTS ACTUALLY LOOK LIKE.
+   *
+   * The consecutive-run penalty compares this candidate's framing against the framings of the
+   * shots already in this scene. Those were read with `inferShotTypeFromPath` — a regex over each
+   * previous clip's DOWNLOAD FILENAME — so a run of three genuine close-ups went unpenalised
+   * whenever their filenames did not happen to contain the word "close", and three unrelated shots
+   * were penalised as a run whenever they did.
+   *
+   * The pipeline now knows the real framings: the beat image judge names them from the frames.
+   * This resolver hands them back, keyed by clip path. Absent, or returning null, leaves the
+   * filename reading in place — a scene whose earlier shots nobody judged is no worse off.
+   */
+  shotTypeOf?: (clipPath: string) => string | null | undefined;
   /** Style memory extracted from the previous scene's adopted clips. */
   editorialMemory?: SceneStyleMemory | null;
   activeEntity?: string | null;
@@ -680,15 +708,32 @@ function scoreShotVariety(
   sceneAdoptedClips: string[],
   meta?: CandidateMeta,
   plannedShotType?: string | null,
-  editorialMemory?: SceneStyleMemory | null
+  editorialMemory?: SceneStyleMemory | null,
+  shotTypeOf?: (clipPath: string) => string | null | undefined
 ): { score: number; shotType: string } {
+  /**
+   * Curated annotation, then a model's own reading of the frames, then the filename.
+   *
+   * Annotation first because it is the strongest evidence there is: a human-reviewed archive
+   * record. `observedShotType` second because it is a model looking at THIS clip's pixels.
+   * `inferShotTypeFromPath` last because it is a guess, and it stays only so that a candidate
+   * nobody judged is no worse off than before this existed.
+   */
   const shotType = meta?.annotation?.cinematography?.shotType
+    ?? meta?.observedShotType
     ?? inferShotTypeFromPath(clipPath, beatText);
 
   // Consecutive penalty
   let consecutive = 0;
   for (let i = sceneAdoptedClips.length - 1; i >= 0; i--) {
-    const prevType = inferShotTypeFromPath(sceneAdoptedClips[i]!, beatText);
+    const previous = sceneAdoptedClips[i]!;
+    /**
+     * The same precedence the candidate itself gets: what a model saw, then the filename.
+     *
+     * Comparing an observed framing against a guessed one would make the penalty depend on which
+     * of two clips happened to be judged, which is worse than either reading applied consistently.
+     */
+    const prevType = shotTypeOf?.(previous) ?? inferShotTypeFromPath(previous, beatText);
     if (prevType === shotType) consecutive++;
     else break;
   }
@@ -877,7 +922,8 @@ function scoreCandidate(
 
   // ── 4. Shot variety + continuity (10%) ────────────────────────────────────
   const { score: shotVariety, shotType } = scoreShotVariety(
-    clipPath, beatText, ctx.sceneAdoptedClips, meta, ctx.plannedShotType, ctx.editorialMemory
+    clipPath, beatText, ctx.sceneAdoptedClips, meta, ctx.plannedShotType, ctx.editorialMemory,
+    ctx.shotTypeOf
   );
 
   // ── 5. Blueprint (10%) ────────────────────────────────────────────────────

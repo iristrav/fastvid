@@ -54,6 +54,7 @@ import {
   type BeatSubjectAnchors,
 } from "./beatImageRelevanceGate";
 import { extractFrameAtFraction } from "./localClipVision";
+import type { ShotType } from "./cinematicEditingEngine/types";
 /**
  * RONDE 166 — the severity vocabulary, read from the kind this decision's own words already imply.
  *
@@ -113,6 +114,18 @@ export type BeatRelevanceDecision = {
   /** What the model says is in the frame. Empty for `unknown`. */
   depicts: string;
   reason: string;
+  /**
+   * How the shot is FRAMED, read off the frames the judge just looked at.
+   *
+   * Carried out of the gate because this is the only moment in the pipeline where a model has the
+   * actual pixels of the actual clip in front of it. Everything downstream that wanted to know a
+   * candidate's framing — the 10% shot-variety weight, the planned-shot bonus, the shot-progression
+   * layer — was reading `inferShotTypeFromPath`, a regex over the download filename.
+   *
+   * Absent when the judge was not asked, answered from cache, or said "unclear". Absent is not
+   * `medium`.
+   */
+  framing?: ShotType;
   /** Which route asked — `adopt`, `funnel`, `rescue`, `compose`, … Logged, never decisive. */
   route: string;
   /**
@@ -357,6 +370,8 @@ export async function checkBeatRelevance(
     cached: judgement.cached === true,
     depicts: judgement.depicts,
     reason: judgement.reason,
+    /** Carried, not re-derived — see `framing` on this type. Absent stays absent. */
+    ...(judgement.framing ? { framing: judgement.framing } : {}),
     route,
     /** The gate's own answer to "did a model look at this", carried rather than re-derived. */
     evaluated: judgement.evaluated,
@@ -399,6 +414,14 @@ export function recordExternalRelevanceVerdict(
     reason: string;
     cached?: boolean;
     evaluated?: boolean;
+    /**
+     * Optional, and absent for every existing caller.
+     *
+     * This recorder exists for verdicts earned OUTSIDE `checkBeatRelevance` — the YouTube
+     * pre-pool screening, the compose barrier. Those callers hold a real judgement and may know
+     * its framing; a caller that does not simply omits it, exactly as before.
+     */
+    framing?: ShotType;
   },
   route: string
 ): BeatRelevanceDecision {
@@ -409,6 +432,8 @@ export function recordExternalRelevanceVerdict(
     cached: judgement.cached === true,
     depicts: judgement.depicts,
     reason: judgement.reason,
+    /** Carried, not re-derived — see `framing` on this type. Absent stays absent. */
+    ...(judgement.framing ? { framing: judgement.framing } : {}),
     route,
     /** See the parameter's note: an omitted flag means a real look, never a decline. */
     evaluated: judgement.evaluated !== false,

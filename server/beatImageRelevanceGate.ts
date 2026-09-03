@@ -38,6 +38,8 @@ import fs from "fs";
 import { invokeLLM, isLlmPreflightRefusal, isLlmProviderUnavailable } from "./_core/llm";
 import { imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
 import { recordVisionAsk, type VisionCaller } from "./visionCensus";
+import { normaliseShotType } from "./shotVocabulary";
+import type { ShotType } from "./cinematicEditingEngine/types";
 import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
@@ -47,6 +49,20 @@ export type BeatImageJudgement = {
   /** What the model says is in the frame — logged so a wrong verdict is diagnosable. */
   depicts: string;
   reason: string;
+  /**
+   * HOW THE SHOT IS FRAMED, read off the frames rather than off the filename.
+   *
+   * `inferShotTypeFromPath` in assetDirector.ts answers this question for every candidate by
+   * running regexes over the download name and the beat's own words. For a curated archive asset
+   * that is harmless — those carry real `cinematography.shotType` annotation. For Pexels, YouTube,
+   * Wikimedia and the Internet Archive, which is most of what a render downloads, it is a guess
+   * about a picture nobody looked at, feeding a 10% weight and the shot-progression layer.
+   *
+   * Absent when the judge was not asked, answered from cache, or could not tell. Absent is not
+   * `medium`: "we do not know this shot's framing" and "this is a medium shot" lead to different
+   * editorial decisions, and collapsing them is how a montage ends up all at one distance.
+   */
+  framing?: ShotType;
   /**
    * RONDE 103: true when this verdict was read back from `state.seen` rather than earned by a
    * call. Logging it is not cosmetic — a log line that says `fits` without saying `cached=true`
@@ -101,8 +117,29 @@ const RESPONSE_SCHEMA = {
         depicts: { type: "string" },
         belongs: { type: "boolean" },
         reason: { type: "string" },
+        /**
+         * HOW THIS SHOT IS FRAMED, from the frames themselves.
+         *
+         * The one place in the whole pipeline that has actual pixels of the actual clip in front
+         * of a model that can describe them. Every other answer to "what kind of shot is this"
+         * was a regex over the download filename — `inferShotTypeFromPath` — which for every
+         * provider but the curated archive is a guess dressed as a measurement.
+         *
+         * Asked here rather than in a second call because the frames, the model and the request
+         * already exist. One extra field on an answer we are already paying for costs a handful
+         * of tokens; a separate vision pass per candidate would cost a render.
+         */
+        framing: {
+          type: "string",
+          enum: [
+            "establishing", "extreme_wide", "wide", "medium_wide", "medium",
+            "close_up", "extreme_close_up", "detail", "overhead", "aerial",
+            "pov", "reaction", "cutaway", "b_roll", "archive_footage",
+            "overlay_shot", "unclear",
+          ],
+        },
       },
-      required: ["depicts", "belongs", "reason"],
+      required: ["depicts", "belongs", "reason", "framing"],
       additionalProperties: false,
     },
   },
@@ -507,6 +544,26 @@ export function buildBeatImagePrompt(
       : "",
     "",
     "Judge the picture, not its file name. When you genuinely cannot tell, say it belongs.",
+    "",
+    /**
+     * The framing question, asked of the only reader in the pipeline that can see the shot.
+     *
+     * Kept short and separate from the belongs/does-not-belong reasoning, so it cannot pull the
+     * verdict around: the model is told plainly that its answer here changes nothing about
+     * whether the clip is used. Without that, a model asked to name a framing tends to justify
+     * it, and a close-up it has just labelled starts to look more suitable than it is.
+     */
+    "Separately, and without letting it change your verdict: name how this shot is FRAMED.",
+    "  establishing — opens a place before anything happens in it",
+    "  extreme_wide / wide / medium_wide — the subject inside its surroundings",
+    "  medium — the subject at a natural, conversational distance",
+    "  close_up / extreme_close_up — a face or one small thing filling the frame",
+    "  detail — an object, a document or a hand, close enough to read",
+    "  overhead — looking straight DOWN; aerial — looking ACROSS from height",
+    "  pov · reaction · cutaway · b_roll · archive_footage · overlay_shot",
+    "Answer \"unclear\" rather than guessing. A wrong framing is worse than no framing:",
+    "it is used to decide what should come next, and a montage built on wrong framings repeats",
+    "itself without anything noticing.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -692,7 +749,12 @@ export async function judgeBeatImage(params: {
       state.judgementsFailed++;
       return unknown("no answer");
     }
-    const parsed = JSON.parse(content) as { depicts?: string; belongs?: boolean; reason?: string };
+    const parsed = JSON.parse(content) as {
+      depicts?: string;
+      belongs?: boolean;
+      reason?: string;
+      framing?: string;
+    };
     if (typeof parsed.belongs !== "boolean") {
       state.judgementsFailed++;
       return unknown("answer had no verdict");
@@ -710,6 +772,14 @@ export async function judgeBeatImage(params: {
     const provider = response.provider;
     const judgement: BeatImageJudgement = {
       verdict: parsed.belongs ? "fits" : "does_not_fit",
+      /**
+       * `normaliseShotType` is the vocabulary's own reader, so "unclear" and anything the model
+       * invents outside the enum both come back null and the field stays absent. A framing this
+       * vocabulary does not contain is not a framing.
+       */
+      ...(normaliseShotType(parsed.framing ?? null)
+        ? { framing: normaliseShotType(parsed.framing ?? null)! }
+        : {}),
       depicts: (parsed.depicts ?? "").slice(0, 160),
       reason: (parsed.reason ?? "").slice(0, 160),
       evaluated: true,
