@@ -1729,6 +1729,94 @@ export function formatSelectedButNotRendered(
   return out;
 }
 
+/**
+ * THE INVARIANT: A GENERIC FILLER MAY NOT QUIETLY TAKE AN ADOPTED ASSET'S BEAT.
+ *
+ * ── The state this makes impossible to reach unreported ─────────────────────────────────────
+ *
+ *     an ADOPTED real asset  +  the same beat  +  a guaranteed filler  +  no ending on the asset
+ *
+ * VID-0567's beat 0 was exactly that. A YouTube clip was found, downloaded, judged `fits`,
+ * selected, transformed and ADOPTED; the beat was then filled with
+ * `scene_0_slot100_guaranteed.mp4`, and nothing on the ledger said what became of the clip.
+ *
+ * The mechanism is that adoption and ACCEPTANCE are two different events, in that order. The
+ * funnel records ADOPTED as soon as it picks a winner (videoPipeline ~33405); the clip only
+ * becomes the beat's clip when `pushSceneClip` returns true, which is the sole writer of
+ * `clipBeatIndices` — and the callers discard that boolean. A refusal therefore left the asset
+ * adopted, the beat empty, and `rescueBeatVisualWhenEmptyInner` free to fill it.
+ *
+ * ── What this function does, and what it deliberately does not ──────────────────────────────
+ *
+ * It REPORTS. It does not put the refused clip back: a barrier that judged this footage wrong for
+ * this narration made an editorial decision, and overriding it to avoid a placeholder would turn a
+ * blocking problem into a non-blocking one.
+ *
+ * It is also not a second definition of "accounted for". `hasTerminalOutcome` is the same
+ * predicate the vanished rule and the lifecycle audit use, reached here through the same event
+ * fold — so an asset the render explained (REJECTED at the push, REPLACED by a later pass, a
+ * failed download) is silent here, and only a genuinely unexplained one is named.
+ *
+ * The chain is folded onto its root first, for the reason `formatSelectedButNotRendered` folds:
+ * the fair-use transform makes a derived child, and the asset is adopted under the child's name
+ * while its identity lives on the root.
+ */
+export function formatFillerOverAdoptedAsset(
+  records: readonly VisualLineageRecord[],
+  events: readonly VisualLineageEvent[],
+  /** The beats a generic filler ended up on, as `${sceneIndex}:${beatIndex}`. */
+  filledBeats: ReadonlySet<string>
+): string[] {
+  if (filledBeats.size === 0) return [];
+  const byId = new Map<string, VisualLineageRecord>();
+  for (const r of records) byId.set(r.lineageId, r);
+  const rootIdOf = (r: VisualLineageRecord): string => {
+    let cur: VisualLineageRecord | undefined = r;
+    const seen = new Set<string>();
+    while (cur?.parentLineageId && !seen.has(cur.lineageId)) {
+      seen.add(cur.lineageId);
+      const parent = byId.get(cur.parentLineageId);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur?.lineageId ?? r.lineageId;
+  };
+
+  /** Every stage each chain reached, so "explained" means the same thing it means elsewhere. */
+  const stagesByRoot = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  const adoptedRoots = new Map<string, VisualLineageRecord>();
+  for (const r of records) {
+    const rootId = rootIdOf(r);
+    if (r.adoptedAt != null && !adoptedRoots.has(rootId)) {
+      adoptedRoots.set(rootId, byId.get(rootId) ?? r);
+    }
+  }
+  for (const e of events) {
+    const rec = byId.get(e.lineageId);
+    if (!rec) continue;
+    const rootId = rootIdOf(rec);
+    let stages = stagesByRoot.get(rootId);
+    if (!stages) stagesByRoot.set(rootId, (stages = new Map()));
+    if (e.status !== "OK" || !stages.has(e.stage)) stages.set(e.stage, e.status);
+  }
+
+  const out: string[] = [];
+  for (const [rootId, root] of adoptedRoots) {
+    const key = `${root.sceneIndex}:${root.beatIndex}`;
+    if (!filledBeats.has(key)) continue;
+    const stages = stagesByRoot.get(rootId) ?? new Map<LineageStage, LineageEventStatus>();
+    if (stages.has("FINAL_VIDEO") || hasTerminalOutcome(stages)) continue;
+    out.push(
+      `[FillerOverAdopted] INVARIANT_BROKEN assetId=${rootId} ` +
+        `provider=${root.provider ?? UNVERIFIED_PROVIDER} ` +
+        `providerAssetId=${root.providerAssetId ?? "none"} ` +
+        `scene=${root.sceneIndex} beat=${root.beatIndex} ` +
+        `— this beat was filled with a generic clip while this adopted asset has no ending`
+    );
+  }
+  return out;
+}
+
 /** The per-provider summary block, §F. */
 export function formatSourceSummary(summary: VisualSourceSummary, finalVideoVerified: boolean): string[] {
   const lines = ["[VisualSourceSummary]"];

@@ -319,6 +319,7 @@ import {
   formatFinalVisualReport,
   formatRenderManifest,
   formatSelectedButNotRendered,
+  formatFillerOverAdoptedAsset,
   formatFunnelReport,
   formatLineageLine,
   formatSourceSummary,
@@ -40902,6 +40903,30 @@ async function _runVideoPipelineInner(
         allRecords, ledger.allEvents(), ledger.finalVideoWasVerified
       )) {
         console.warn(pipelineReport.add("dropped", line));
+      }
+      /**
+       * §17's invariant, checked by the render on itself.
+       *
+       * "An ADOPTED real asset + the same beat + a guaranteed filler + no ending on the asset" is
+       * the state VID-0567's beat 0 was in, and nothing in the render said so. The beats a filler
+       * ended up on are read from the delivered manifest rather than from any counter, so this
+       * asks about the film that exists.
+       *
+       * Reported at `error` level because it is an invariant, not an observation: reaching it means
+       * a real asset was adopted for a beat and a generic clip took that beat with no explanation
+       * anywhere. A render that is fine prints nothing.
+       */
+      {
+        const filledBeats = new Set<string>();
+        for (const entry of visualDedup.clipAdoptAudit) {
+          if (!isPipelineFallbackClip(entry.basename)) continue;
+          filledBeats.add(`${entry.sceneIndex}:${entry.beatIndex}`);
+        }
+        for (const line of formatFillerOverAdoptedAsset(
+          allRecords, ledger.allEvents(), filledBeats
+        )) {
+          console.error(pipelineReport.add("dropped", line));
+        }
       }
       // RONDE 89 (§15): what the provider gate did — built, validated, rejected, sent, blocked,
       // and how many calls arrived without a context and were counted as bypass attempts.
