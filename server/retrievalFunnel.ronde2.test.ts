@@ -272,7 +272,10 @@ describe("FIX 3 — wiring at the single call site", () => {
     // The loop body lives inline in a very large function; there is no exported unit to call.
     // RONDE 5 batched the downloads (FIX 6); the failure branch now lives in the batch-apply
     // loop. Anchor on the batch loop start — the registration+continue shape is unchanged.
-    const idx = pipelineSrc.indexOf("for (let dlIdx = 0; dlIdx < subjectScreened.length;");
+    // The iterated array was renamed to `downloadOrder` when YouTube was moved to the front of
+    // the download order; it is a permutation of the same screened set, so this anchor only
+    // follows the rename.
+    const idx = pipelineSrc.indexOf("for (let dlIdx = 0; dlIdx < downloadOrder.length;");
     expect(idx).toBeGreaterThan(-1);
     const branch = codeOnly(pipelineSrc.slice(idx, idx + 3200));
     expect(branch).toMatch(
@@ -299,7 +302,7 @@ describe("FIX 3 — wiring at the single call site", () => {
   });
 
   it("downloadedCount still counts only real downloads", () => {
-    const idx = pipelineSrc.indexOf("for (let dlIdx = 0; dlIdx < subjectScreened.length;");
+    const idx = pipelineSrc.indexOf("for (let dlIdx = 0; dlIdx < downloadOrder.length;");
     const branch = pipelineSrc.slice(idx, idx + 3400);
     const addIdx = branch.indexOf("dedup.usedFunnelCandidateIds.add(candidate.id);");
     const countIdx = branch.indexOf("downloadedCount++;");

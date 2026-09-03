@@ -1258,6 +1258,54 @@ export function buildDownloadShortlist(
 }
 
 /**
+ * THE MOST EXPENSIVE DOWNLOAD GOES FIRST, OR IT NEVER GOES AT ALL.
+ *
+ * ── What the production render measured ─────────────────────────────────────────────────────
+ *
+ * Seventeen YouTube videos were FOUND and seventeen downloads were refused. Every refusal read
+ * the same, and it is the `0s` that matters:
+ *
+ *     [Pipeline] Scene 1: skipping YouTube download of 9V7Zgx4rDDA
+ *                — 0s left in the scene budget, not enough to finish
+ *     [YouTubeDownload] ... status=DOWNLOAD_TIMEOUT reason=scene_budget_too_short_to_start
+ *
+ * Seventeen out of seventeen at zero. Not "too little" — nothing at all. So no picture editor
+ * ever judged a YouTube clip on its merits, and not one byte was ever fetched, which rules out
+ * both explanations `20 downloaded / 0 adopted` used to carry. It was neither relevance nor a
+ * broken provider. The source was asked at a moment when the answer could not physically arrive.
+ *
+ * ── Why a bigger budget cannot fix it ───────────────────────────────────────────────────────
+ *
+ * `withSceneFetchTimeout` sets `deadlineAtMs: Math.min(Date.now() + delayMs, parentDeadline)` —
+ * a nested scope can never outlive its parent, by design. So handing YouTube its own generous
+ * slice buys nothing once the beat's own scope is spent: the slice is clamped to what is left,
+ * which is zero. The only thing that moves is WHEN it is asked.
+ *
+ * ── Why one candidate, and why not a re-ranking ─────────────────────────────────────────────
+ *
+ * The shortlist is ordered by `rankingScore` and the downloads run in batches of three, so a
+ * YouTube candidate in the second batch is attempted after the first batch's transfers and vision
+ * work have already drained a 12-20s beat. Hoisting the single highest-ranked one into the first
+ * batch is enough to give it a real window.
+ *
+ * It is deliberately ONE. Membership is not touched — `buildDownloadShortlist` still decides who
+ * is in, with its caps and its budget unchanged — and every other candidate keeps its exact
+ * relative order. No score is altered and nothing is dropped, so a hoisted candidate that fails
+ * costs the beat one download slot's worth of time and the rest of the shortlist follows as it
+ * always did. Hoisting the whole source would invert the ranking and let the slowest provider in
+ * the cascade take the beat, which is the defect on the other side of this one.
+ */
+export function hoistBudgetSensitiveDownload(
+  shortlist: readonly FunnelCandidate[]
+): FunnelCandidate[] {
+  const first = shortlist.findIndex((c) => c.source === "youtube_cc");
+  // Already first, or not present: the order is already the one we want.
+  if (first <= 0) return [...shortlist];
+  const hoisted = shortlist[first];
+  return [hoisted, ...shortlist.filter((_, i) => i !== first)];
+}
+
+/**
  * RONDE 65: score spread below which the CLIP ranking is treated as noise.
  *
  * One point on a 0-10 integer scale is 0.025 of cosine similarity — smaller than the gap render

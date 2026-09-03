@@ -554,6 +554,7 @@ import {
   orderCandidatesForBeatGap,
   pickBestFunnelCandidate,
   buildDownloadShortlist,
+  hoistBudgetSensitiveDownload,
   reorderShortlistForBeat,
   MAX_FUNNEL_CANDIDATES_TO_SCORE,
   keepOnlyJudgedWinner,
@@ -32661,9 +32662,32 @@ async function fetchSceneVisualsInner(
         }
 
         const FUNNEL_DOWNLOAD_CONCURRENCY = 3;
+        /**
+         * YOUTUBE IS ASKED WHILE THERE IS STILL TIME TO ANSWER.
+         *
+         * This is the route the production render actually uses — `fetchSceneVisualsInner`'s funnel
+         * branch, whose downloads go through `downloadFunnelCandidate` →
+         * `downloadAndTrimPoolCandidate` → `downloadYouTubeCCClip`, which is where all seventeen
+         * `0s left in the scene budget` refusals came from. Ordering it here rather than in the
+         * cascade is the whole point: `fetchBeatArchivalThenPexels` is a different route and this
+         * render never entered it.
+         *
+         * See `hoistBudgetSensitiveDownload` for why this is an ordering change and not a budget
+         * one — a nested scope is clamped to its parent's deadline, so a larger slice cannot buy
+         * time a spent beat does not have.
+         */
+        const downloadOrder = youtubeFirstEnabled()
+          ? hoistBudgetSensitiveDownload(subjectScreened)
+          : subjectScreened;
+        if (downloadOrder[0] !== subjectScreened[0]) {
+          console.log(
+            `[Funnel] s${scene.index}b${beat.index}: YouTube candidate moved to the front of the ` +
+              `download order — it is the only source whose transfer the beat budget can refuse outright`
+          );
+        }
         const downloadedClips: Array<{ candidate: FunnelCandidate; clipPath: string }> = [];
-        for (let dlIdx = 0; dlIdx < subjectScreened.length; dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY) {
-          const batch = subjectScreened.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY);
+        for (let dlIdx = 0; dlIdx < downloadOrder.length; dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY) {
+          const batch = downloadOrder.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY);
           const batchResults = await Promise.all(
             batch.map(async (candidate) => ({
               candidate,

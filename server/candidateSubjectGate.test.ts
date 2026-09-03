@@ -324,13 +324,31 @@ describe("it sits in front of the download, not after it", () => {
     ).not.toContain("judgeCandidateSubject(");
   });
 
-  /** The order is the whole point: screen, then download what survived. */
+  /**
+   * The order is the whole point: screen, then download what survived.
+   *
+   * The loop now iterates `downloadOrder` rather than `subjectScreened` directly — the YouTube-first
+   * ordering sits between them, because YouTube's transfer is the only one the beat budget can
+   * refuse outright and it has to be attempted while the budget still exists. That is a permutation
+   * and nothing else, so the property this test guards is unchanged and the assertion follows it:
+   * the list the loop reads must still be DERIVED from the screened list, so a candidate the screen
+   * refused can never be reordered into a download.
+   */
   it("the download loop runs over the screened list", () => {
     const screenAt = PIPE.indexOf("const subjectScreened");
-    const loopAt = PIPE.indexOf("for (let dlIdx = 0; dlIdx < subjectScreened.length");
+    const orderAt = PIPE.indexOf("hoistBudgetSensitiveDownload(subjectScreened)");
+    const loopAt = PIPE.indexOf("for (let dlIdx = 0; dlIdx < downloadOrder.length");
     expect(screenAt, "the screening step is gone").toBeGreaterThan(-1);
-    expect(loopAt, "the download loop no longer reads the screened list").toBeGreaterThan(-1);
-    expect(loopAt, "the download happens before the screen").toBeGreaterThan(screenAt);
+    expect(orderAt, "the download order is no longer built from the screened list").toBeGreaterThan(-1);
+    expect(loopAt, "the download loop no longer reads the ordered list").toBeGreaterThan(-1);
+    expect(orderAt, "the ordering happens before the screen").toBeGreaterThan(screenAt);
+    expect(loopAt, "the download happens before the screen").toBeGreaterThan(orderAt);
+    // The ordered list may only ever be the screened list, or a permutation of it.
+    expect(
+      PIPE,
+      "the download order is built from something other than the screened list"
+    ).toContain("const downloadOrder = youtubeFirstEnabled()");
+    expect(PIPE).toContain(": subjectScreened;");
   });
 
   /** A curated archive pick is the operator's own library and is deliberately not screened. */

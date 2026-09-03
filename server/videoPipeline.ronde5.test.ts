@@ -55,13 +55,21 @@ describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => 
     expect(block).toContain("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
     expect(block).toContain("dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY");
     /**
-     * The batched slice, over the SCREENED shortlist. The array it reads was renamed when the
-     * metadata subject gate was put in front of the download: `toScore` is the shortlist, and
-     * `subjectScreened` is what survived a check that costs no download. The batching property
-     * this test exists for is unchanged; asserting the screened name also pins the ordering, so
-     * a future change cannot quietly go back to downloading unscreened candidates.
+     * The batched slice, over the SCREENED shortlist. The array it reads has been renamed twice,
+     * and both renames were the shortlist growing a stage rather than the batching changing:
+     * `toScore` is the shortlist, `subjectScreened` is what survived a check that costs no
+     * download, and `downloadOrder` is that same set with the YouTube candidate moved to the front
+     * (its transfer is the only one the beat budget refuses outright, so it has to be attempted
+     * while the budget still exists).
+     *
+     * The batching property this test exists for is unchanged. Asserting the derivation as well as
+     * the name keeps what the previous assertion bought: the batched list must still come from the
+     * screened one, so a future change can neither go back to downloading unscreened candidates nor
+     * compute an order and then ignore it.
      */
-    expect(block).toContain("subjectScreened.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY)");
+    expect(block).toContain("downloadOrder.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY)");
+    expect(block).toContain("hoistBudgetSensitiveDownload(subjectScreened)");
+    expect(block).toContain(": subjectScreened;");
     expect(block).toContain("await Promise.all(");
   });
 
