@@ -185,7 +185,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2776,6 +2776,82 @@ export async function fetchBeatArchivalThenPexels(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
+  /**
+   * YOUTUBE IS ASKED FIRST, WITHIN ITS OWN SLICE.
+   *
+   * ── What the production log proved ────────────────────────────────────────────────────────
+   *
+   * YouTube sat at the back of this cascade and never got a turn. Seventeen videos FOUND,
+   * seventeen downloads refused, and every refusal identical:
+   *
+   *     Scene 1: skipping YouTube download of 9V7Zgx4rDDA
+   *              — 0s left in the scene budget, not enough to finish
+   *
+   * Seventeen out of seventeen at `0s left`. The picture editor judged none of them, so nothing
+   * was ever refused on its merits and not one byte was fetched. `[ProviderFunnel]` would have
+   * reported judged=0 — which is the difference between "this source finds the wrong material"
+   * and "this source is never asked", and until this round those looked identical.
+   *
+   * ── Why it is bounded rather than simply moved ───────────────────────────────────────────
+   *
+   * The same log says the budget is the binding constraint everywhere: 45 scope aborts, 56 clips
+   * refused for want of time, `[ArchiveFilter] overlay budget spent (40/40)`. YouTube over
+   * RapidAPI is the slowest source here — that render had `cloudService=MISSING`, so the fast
+   * yt-dlp route was not even available — and putting the slowest source first unbounded would
+   * starve the curated archive, which is what actually delivers footage today.
+   *
+   * So it gets `youtubeBeatBudgetMs`, the same shape of slice the archive already takes. Past the
+   * slice this returns null and the cascade below runs completely unchanged, in its original
+   * order. Nothing is removed and nothing is reordered behind it.
+   *
+   * ── Why it is not inside `youtubeOnlySourcingEnabled` ────────────────────────────────────
+   *
+   * That mode asks YouTube and then Pexels, skipping the archive entirely. This is the other
+   * thing: YouTube first, then the archive and the rest.
+   */
+  if (youtubeFirstEnabled() && !youtubeOnlySourcingEnabled() && !curatedArchiveOnlyVisuals()) {
+    const ytBudget = youtubeBeatBudgetMs(
+      dedup.videoLength,
+      get_activeBudgetTracker()?.remainingMs?.()
+    );
+    try {
+      const ytFirst = await withSceneFetchTimeout(
+        () => fetchBeatYoutubeOnly(
+          beat,
+          scene,
+          workDir,
+          sceneIndex,
+          clipFetchDur,
+          dedup,
+          adoptOpts,
+          personName,
+          videoTitle,
+          `${tag}yt-first`
+        ),
+        ytBudget,
+        `youtube-first s${sceneIndex} b${beat.index}`
+      );
+      if (ytFirst) {
+        console.log(
+          `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube answered first ` +
+            `(${Math.round(ytBudget / 1000)}s slice) — cascade not needed`
+        );
+        return ytFirst;
+      }
+    } catch (err) {
+      /**
+       * A slice that ran out is not a failure, it is the bound doing its job — and it must not
+       * cost the beat its remaining sources. Reported so a render where YouTube eats its slice on
+       * every beat is visible rather than merely slow.
+       */
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube-first slice spent ` +
+          `(${Math.round(ytBudget / 1000)}s) — continuing with the archive cascade` +
+          (isScopeAbortError(err) ? " (scene scope ended)" : "")
+      );
+    }
+  }
+
   // User's own curated media archive is checked first for every beat, on every topic —
   // not just when curatedArchiveOnlyVisuals() mode is on. That flag still controls the
   // rest of this function's archive-only behavior (Wikimedia-first, Pexels gating below).

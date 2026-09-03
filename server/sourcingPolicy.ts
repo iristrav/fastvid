@@ -1052,6 +1052,70 @@ export function youtubeMaxDownloadsPerRender(): number {
   return 20;
 }
 
+/**
+ * ASK YOUTUBE FIRST, BEFORE THE ARCHIVE AND EVERYTHING ELSE.
+ *
+ * ── What the production log showed ──────────────────────────────────────────────────────────
+ *
+ * YouTube contributed nothing, and not for any of the reasons anyone assumed. Seventeen videos
+ * were FOUND, seventeen downloads were refused, and every single refusal read:
+ *
+ *     [Pipeline] Scene 1: skipping YouTube download of 9V7Zgx4rDDA
+ *                — 0s left in the scene budget, not enough to finish
+ *
+ * Seventeen out of seventeen at `0s left`. Not "too little" — nothing. The picture editor judged
+ * none of them, so no clip was ever refused on its merits, and not one byte was ever fetched. The
+ * RONDE 68 guard ("do not start a transfer the budget cannot finish") was working perfectly and
+ * never got a turn.
+ *
+ * That is an ORDERING problem. YouTube sits at the back of the cascade, behind the curated archive,
+ * Wikimedia and the internet stills, and by the time it is asked the scene has nothing left.
+ *
+ * ── Why it is not simply moved to the front ─────────────────────────────────────────────────
+ *
+ * Because the same log says the budget is the binding constraint everywhere: 45 scope aborts, 56
+ * clips refused for want of time, and `[ArchiveFilter] overlay budget spent (40/40)`. YouTube over
+ * RapidAPI is the slowest source in the cascade — that render had `cloudService=MISSING`, so the
+ * fast yt-dlp route was not even available — and putting the slowest source first with no bound
+ * would starve the archive, which is the source that actually delivers footage today.
+ *
+ * So it goes first WITH ITS OWN SLICE. Past that slice the cascade continues exactly as it did.
+ */
+export function youtubeFirstEnabled(): boolean {
+  return process.env.YOUTUBE_FIRST !== "false";
+}
+
+/**
+ * How long the YouTube-first attempt may spend on one beat before the cascade moves on.
+ *
+ * Same shape as `archiveBeatBudgetMs` — a share of the real headroom, floored at a base and capped
+ * so one beat cannot take the scene — and deliberately SMALLER, because this is the first source
+ * asked rather than the one the render is relying on. A beat that finds nothing on YouTube must
+ * still reach the archive with time to spare; that is the whole reason this is bounded at all.
+ *
+ * The floor is above `YOUTUBE_MIN_DOWNLOAD_WINDOW_MS` (12s) on purpose. Below that the download
+ * guard refuses to start, so a smaller slice would reproduce the exact defect this fixes: a source
+ * that is asked and can never answer.
+ */
+export function youtubeBeatBudgetMs(
+  videoLength?: string | null,
+  remainingWallClockMs?: number | null
+): number {
+  const raw = process.env.YOUTUBE_BEAT_BUDGET_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    // An explicit override is an instruction, not a starting point — but never below the download
+    // guard's own minimum, or the source is switched off by arithmetic rather than by choice.
+    if (!isNaN(n) && n >= 15_000 && n <= 120_000) return n;
+  }
+  const base = isFastShortVideoLength(videoLength) ? 20_000 : 30_000;
+  if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return base;
+  const headroom = remainingWallClockMs - SOURCING_RESERVE_MS;
+  if (headroom <= 0) return base;
+  const share = Math.floor(headroom / BEATS_ASSUMED_REMAINING);
+  return Math.min(Math.max(base, share), base * 2);
+}
+
 export function youtubeDownloadTimeoutMs(): number {
   const raw = process.env.YOUTUBE_DOWNLOAD_TIMEOUT_MS?.trim();
   if (raw) {
