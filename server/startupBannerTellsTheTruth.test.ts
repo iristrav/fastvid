@@ -93,6 +93,68 @@ describe("the YouTube banner reports the flag", () => {
   });
 });
 
+/**
+ * THE SECOND HARDCODED VERDICT, FOUND BY LOOKING FOR THE FIRST ONE'S SHAPE.
+ *
+ * Two lines below the YouTube one sat:
+ *
+ *     console.log("[Fastvid] Video pipeline:",
+ *       "single-pass compose (beelden + voice + jaartallen) — geen apart edit/effecten-stadium");
+ *
+ * Also read nothing, also branched on nothing, and worse than the first because it describes the
+ * ARCHITECTURE: it states this build has no separate edit/effects stage. That is false whenever
+ * CINEMATIC_EDITING_ENGINE and CINEMATIC_RENDER_PATH are on — then the delivered MP4 comes from
+ * `runRenderJob` → `renderTimeline`, with transitions, camera moves, captions and a graphics
+ * overlay — and the banner would have gone on claiming single-pass compose.
+ */
+describe("the pipeline banner reports the cinematic flags", () => {
+  it("is not a hardcoded architecture claim", () => {
+    expect(
+      banner(),
+      "the banner states the pipeline architecture without reading it"
+    ).not.toContain('"single-pass compose (beelden + voice + jaartallen) — geen apart edit/effecten-stadium"');
+  });
+
+  it("reads both flags, because they mean different things", () => {
+    const src = banner();
+    const at = src.indexOf('"[Fastvid] Video pipeline:"');
+    expect(at, "the pipeline status line is gone").toBeGreaterThan(-1);
+    const line = src.slice(at, at + 900);
+    expect(line).toContain("cinematicPlans");
+    expect(line).toContain("cinematicDelivers");
+    expect(src).toContain("cinematicPlanningEnabled, cinematicRenderPathEnabled");
+  });
+
+  /**
+   * Three states, not two. Planning on with the render path off is a real configuration — the
+   * timeline is stored for the editor while compose still delivers — and a two-way line would
+   * report it as one of the other two.
+   */
+  it("distinguishes planned-but-not-delivered from both extremes", () => {
+    const src = banner();
+    const at = src.indexOf('"[Fastvid] Video pipeline:"');
+    const line = src.slice(at, at + 900);
+    expect(line).toContain("cinematic timeline delivers the video");
+    expect(line).toContain("PLANNED and stored for the editor");
+    expect(line).toContain("no separate edit/effects stage");
+    // Each of the two lesser states names the variable that advances it.
+    expect(line).toContain("set CINEMATIC_RENDER_PATH=true");
+    expect(line).toContain("set CINEMATIC_EDITING_ENGINE=true");
+  });
+
+  /**
+   * `cinematicProduction` pulls in the whole editing chain. The boot banner must not be what drags
+   * it into the web process, nor what fails a boot because a describing line could not load.
+   */
+  it("loads the flags without dragging the editing chain into boot", () => {
+    const src = banner();
+    expect(src).toContain('await import(\n    "../cinematicProduction"\n  )');
+    expect(src, "a static import would pull the editing chain into the web process").not.toContain(
+      'from "../cinematicProduction"'
+    );
+  });
+});
+
 describe("the sibling key lines were already computed and stay that way", () => {
   it("each reports presence from the environment", () => {
     const src = banner();

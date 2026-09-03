@@ -335,9 +335,45 @@ async function startServer() {
         ? `✓ ElevenLabs → ${ttsFallbackChain.join(" → ")} fallback`
         : "✗ No TTS — set ELEVENLABS_API_KEY, FISH_AUDIO_API_KEY, or GOOGLE_TTS_API_KEY"
   );
+  /**
+   * THE SECOND HARDCODED VERDICT IN THIS BANNER, FOUND BY LOOKING FOR THE FIRST ONE'S SHAPE.
+   *
+   * This was the literal string `"single-pass compose (beelden + voice + jaartallen) — geen apart
+   * edit/effecten-stadium"`. Like the YouTube line above it read nothing and branched on nothing,
+   * and it is the more damaging of the two, because it describes the ARCHITECTURE: it states that
+   * this build has no separate edit/effects stage.
+   *
+   * That is false whenever `CINEMATIC_EDITING_ENGINE` and `CINEMATIC_RENDER_PATH` are on. Then the
+   * delivered MP4 is produced by `runRenderJob` → `renderTimeline` — a real edit stage, with
+   * transitions, camera moves, captions and a graphics overlay — and the banner would still have
+   * claimed single-pass compose.
+   *
+   * The two flags are separate on purpose and the line says both, because they mean different
+   * things: planning alone stores a timeline the editor can open while the delivered video still
+   * comes from compose. Read from the predicates, never from `process.env` here, so the line cannot
+   * drift away from the behaviour it describes — the same rule `formatProductionRoute` follows for
+   * the per-render `[ProductionRoute]` line.
+   */
+  /**
+   * Imported dynamically, for the reason `videoPipeline` states where it prints
+   * `[ProductionRoute]`: `cinematicProduction` pulls in the whole editing chain, and the boot
+   * banner must never be the thing that drags it into the web process — or that fails a boot
+   * because a describing line could not load.
+   */
+  const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import(
+    "../cinematicProduction"
+  );
+  const cinematicPlans = cinematicPlanningEnabled();
+  const cinematicDelivers = cinematicRenderPathEnabled();
   console.log(
     "[Fastvid] Video pipeline:",
-    "single-pass compose (beelden + voice + jaartallen) — geen apart edit/effecten-stadium"
+    cinematicPlans && cinematicDelivers
+      ? "✓ cinematic timeline delivers the video (plan → render job → transitions/camera/captions/graphics)"
+      : cinematicPlans
+        ? "◐ cinematic timeline PLANNED and stored for the editor, but compose still delivers the video " +
+          "(set CINEMATIC_RENDER_PATH=true to deliver from the timeline)"
+        : "✗ single-pass compose (beelden + voice + jaartallen) — no separate edit/effects stage " +
+          "(set CINEMATIC_EDITING_ENGINE=true, then CINEMATIC_RENDER_PATH=true)"
   );
   console.log("[Fastvid] SERPAPI_KEY:", process.env.SERPAPI_KEY ? "✓ set" : "✗ NOT SET — celebrity image search disabled");
   console.log("[Fastvid] UNSPLASH_ACCESS_KEY:", process.env.UNSPLASH_ACCESS_KEY?.trim() ? "✓ set" : "✗ NOT SET — Unsplash image search disabled");

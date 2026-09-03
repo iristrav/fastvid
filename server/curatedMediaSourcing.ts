@@ -1475,6 +1475,9 @@ function archiveS3CachePath(key: string): string {
   return path.join(ARCHIVE_S3_CACHE_DIR, key.replace(/\//g, "_"));
 }
 
+/** Distinguishes two temp names within one process; the pid separates processes. */
+let archiveCacheWriteSeq = 0;
+
 // Caps concurrent archive-asset network downloads. Unlike ffmpeg/ffprobe spawns (already
 // gated by ffmpegSemaphore), these fetch() calls had no limit — under a burst of many
 // scenes/beats downloading at once on a modest host, that could open more simultaneous
@@ -1529,16 +1532,59 @@ export async function materializeArchiveAsset(asset: ArchiveAssetRow, destPath: 
   if (asset.storageUrl.startsWith("/manus-storage/")) {
     const key = asset.storageKey ?? asset.storageUrl.replace(/^\/manus-storage\//, "");
     const cachePath = archiveS3CachePath(key);
+    /**
+     * A CACHE HIT THAT FAILS IS A CACHE MISS, NOT A DEAD ASSET.
+     *
+     * Render 566 lost eighteen distinct archive assets to twenty-eight of these:
+     *
+     *     [Pipeline] Scene 2 beat 1: curated asset 57364 failed: ENOENT: no such file or directory,
+     *     copyfile '/app/uploads/archive-s3-cache/media-archive_37_…mp4' -> '/var/tmp/…mp4'
+     *
+     * The ENOENT is on the SOURCE — the cache file `existsSync` had just confirmed. Between the
+     * check and the copy it was gone, which is what a non-atomic cache write produces: the writer
+     * below used to `copyFileSync(destPath, cachePath)` straight onto the live path, and
+     * `copyFileSync` TRUNCATES its target before refilling it. Two renders wanting the same asset —
+     * the normal case, since a scene reuses its best archive clips across beats — put one process
+     * inside that window while another was reading it. A redeploy's SIGTERM mid-copy leaves the
+     * same hole.
+     *
+     * Both halves are fixed: the write is atomic (below), and a failed read falls through to the
+     * download instead of failing the asset. The fallthrough is not papering over the race — it is
+     * the correct behaviour for a CACHE, whose entries may legitimately vanish at any moment
+     * (eviction, a wiped ephemeral volume, a half-written file from a killed process). Nothing is
+     * silent: the miss is logged with its reason.
+     */
     if (fs.existsSync(cachePath)) {
-      fs.copyFileSync(cachePath, destPath);
-      return;
+      try {
+        fs.copyFileSync(cachePath, destPath);
+        return;
+      } catch (err) {
+        console.warn(
+          `[CuratedMedia] cache entry for ${key} could not be read (${(err as Error).message}) — ` +
+            `re-fetching from storage`
+        );
+        try { fs.unlinkSync(cachePath); } catch { /* already gone, which is the point */ }
+      }
     }
     await archiveDownloadLimit(async () => {
       const signedUrl = await storageGetSignedUrl(key);
       await streamArchiveAssetDownload(signedUrl, destPath, 120_000);
       try {
         fs.mkdirSync(ARCHIVE_S3_CACHE_DIR, { recursive: true });
-        fs.copyFileSync(destPath, cachePath);
+        /**
+         * Written beside the entry and renamed onto it. `rename` within one filesystem is atomic,
+         * so a concurrent reader sees either the previous complete file or the new complete file,
+         * and never the truncation window `copyFileSync` opened. The temp name carries the pid and
+         * a counter so two writers cannot collide on it either.
+         */
+        const tmpPath = `${cachePath}.${process.pid}.${archiveCacheWriteSeq++}.tmp`;
+        try {
+          fs.copyFileSync(destPath, tmpPath);
+          fs.renameSync(tmpPath, cachePath);
+        } catch (err) {
+          try { fs.unlinkSync(tmpPath); } catch { /* nothing to clean up */ }
+          throw err;
+        }
       } catch (err) {
         console.warn(`[CuratedMedia] Failed to cache archive asset ${key}:`, (err as Error).message);
       }
