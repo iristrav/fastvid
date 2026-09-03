@@ -37,6 +37,7 @@ import {
 } from "./cinematicPipeline";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
 import { formatCinematicAudio } from "./cinematicAmbient";
+import { formatCueSheet, type CurvePoint } from "./musicDirector";
 import {
   judgeTimeline,
   formatQualityFindings,
@@ -155,6 +156,14 @@ export type CinematicPlanParams = {
   }) => Promise<{ saved: boolean }>;
   /** What the row already holds, so the version this plan is stored at is the next one. */
   storedVersion?: number;
+  /**
+   * The Documentary Planning Engine's emotional curve, when this render built one.
+   *
+   * Only used to spot the score. Passed rather than re-derived because the engine has already read
+   * the whole script to produce it, and a second reading here would be a second opinion about the
+   * same film — the thing this codebase has spent rounds removing.
+   */
+  emotionalCurve?: readonly CurvePoint[];
 };
 
 /**
@@ -226,6 +235,14 @@ export async function planAndStoreCinematicTimeline(
       voice: params.voice ?? null,
       words: params.words,
       format: params.format,
+      /**
+       * The film's emotional shape, so the score follows the story rather than the clock.
+       *
+       * Absent is fine and is not the same as flat: `planMusicCues` gives an unmeasured film a
+       * neutral cue sheet with a real opening and close, because those exist whether or not
+       * anything measured the intensity between them.
+       */
+      emotionalCurve: params.emotionalCurve,
     });
   } catch (err) {
     /**
@@ -264,6 +281,16 @@ export async function planAndStoreCinematicTimeline(
     log.push(`[Audio] unavailable ${missing}`);
   }
   log.push(`[Audio] music ${result.audio.music.reason}`);
+  /**
+   * The cue sheet, always — scored or not.
+   *
+   * `[Audio] music …` says why there is no catalogue. This says what a catalogue WOULD have been
+   * asked for: an intro over the opening, a build through the third act, deliberate silence under
+   * the quietest passage. That turns "this build has no music" from a dead end into a
+   * specification, and a deployment that registers a catalogue can see immediately whether it
+   * covered the film. See `musicDirector.ts`.
+   */
+  for (const line of formatCueSheet(result.cueSheet)) log.push(line);
   /**
    * §9 — one line per sound effect the beat asked for, found or not.
    *

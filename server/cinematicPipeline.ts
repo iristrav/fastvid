@@ -49,6 +49,13 @@ import { formatGraphics, newRenderId } from "./renderCorrelation";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
+import {
+  formatCueSheet,
+  planMusicCues,
+  scoreCues,
+  type CurvePoint,
+  type ScoredCue,
+} from "./musicDirector";
 
 /* ═══════════════════════ what a caller must supply ═══════════════════════ */
 
@@ -105,6 +112,15 @@ export type CinematicPipelineParams = {
   /** Emit a narration subtitle per beat. On by default — see the note at the generateEDL call. */
   includeSubtitles?: boolean;
   /**
+   * The film's emotional shape, from the Documentary Planning Engine.
+   *
+   * Used to spot the score: where music should be, what it should be doing, and where the film is
+   * better off without it. Optional, and an absent curve produces a neutral cue sheet rather than
+   * no cue sheet — a film still has an opening and a close whether or not anything measured its
+   * intensity. See `musicDirector.ts`.
+   */
+  emotionalCurve?: readonly CurvePoint[];
+  /**
    * RONDE 172 — the render's correlation id.
    *
    * Passed in rather than minted here whenever the caller already has one: the sourcing ledger
@@ -150,6 +166,14 @@ export type CinematicPipelineResult = {
    * about retrieval, not about the edit.
    */
   covered: string[];
+  /**
+   * WHERE MUSIC SHOULD BE, AND WHAT COULD FILL IT.
+   *
+   * Planned on every render, whether or not this deployment has a catalogue. A cue that came back
+   * empty says so with its reason, so "we chose silence here" and "we had nothing to play here"
+   * stay distinguishable — see `musicDirector.ts`.
+   */
+  cueSheet: ScoredCue[];
   /**
    * RONDE 166 (§1/§2) — the ambience that was laid down, and the music verdict.
    *
@@ -334,12 +358,61 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   if (ambientTrack?.kind === "AMBIENT") ambientTrack.clips.push(...ambientClips(audioPlan));
   for (const line of audioPlan.unavailable) unsupported.push(line);
 
+  /**
+   * THE SCORE — a cue sheet from the film's own emotional shape, filled from whatever catalogue
+   * this deployment has registered.
+   *
+   * ── Why the cue sheet is planned even when nothing can fill it ──────────────────────────────
+   *
+   * This repository ships no music, and `EMPTY_MUSIC_CATALOGUE` is the honest default: inventing
+   * track identifiers nobody has verified would be fabrication, and a fabricated licence field is
+   * worse than silence. So on most deployments every cue comes back `UNSCORED`.
+   *
+   * The planning still runs, and that is the point. A render then reports WHERE music should have
+   * been and what it should have been doing — an intro over the opening, a build through the
+   * third act, deliberate silence under the quietest passage — instead of reporting nothing at
+   * all. The gap becomes a measurement rather than an absence, and a deployment that registers a
+   * catalogue gets a scored film with no further change to this file.
+   *
+   * `silence` cues are never filled and are not counted as gaps. Choosing not to score a passage
+   * is a spotting decision, and the most effective bar in a documentary score is frequently the
+   * one where it stops.
+   */
+  const cueSheet = scoreCues(
+    planMusicCues({
+      curve: params.emotionalCurve ?? [],
+      sceneWindows,
+      totalDurationSec: timeline.durationSec,
+    })
+  );
+  const musicTrack = timeline.tracks.find((t) => t.kind === "MUSIC");
+  if (musicTrack?.kind === "MUSIC") {
+    for (const scored of cueSheet) {
+      if (!scored.track) continue;
+      musicTrack.clips.push({
+        id: `music_${scored.cue.role}_${scored.cue.startSec.toFixed(0)}`,
+        source: scored.track.identity,
+        start: scored.cue.startSec,
+        end: scored.cue.endSec,
+        /**
+         * Well under the voice, and ducked further by `DUCK_MUSIC` when the narrator speaks.
+         * A documentary bed sits where you notice it only when it stops.
+         */
+        gain: 0.22,
+        fadeInSec: 1.5,
+        fadeOutSec: 2,
+        duckUnderVoice: true,
+      });
+    }
+  }
+
   return {
     timeline,
     edl,
     director,
     unsupported,
     covered,
+    cueSheet,
     renderId,
     audio: audioPlan,
     attention,

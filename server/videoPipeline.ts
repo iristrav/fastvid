@@ -41175,6 +41175,15 @@ async function _runVideoPipelineInner(
               : null,
           words: storedAlignment?.words ?? [],
           persist: (p) => saveVideoTimeline(p),
+          /**
+           * The emotional curve this render already built, handed to the score.
+           *
+           * `buildDocumentaryPlan` runs at the top of the render and produces the curve from the
+           * whole script. Passing it here is what lets the music cue sheet follow the story — an
+           * intro over the opening, a build where intensity rises, deliberate silence under the
+           * quietest passage — instead of laying one bed across everything.
+           */
+          emotionalCurve: visualDedup.documentaryPlan?.emotionalCurve,
           storedVersion: (await getStoredTimeline(videoId))?.timelineVersion ?? 0,
         });
         for (const line of outcome.log) console.log(pipelineReport.add("summary", line));

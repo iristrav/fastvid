@@ -371,8 +371,14 @@ describe("RONDE 151 §25 — observability without secrets", () => {
        *
        * Their continuation lines carry the same prefix, so the rule this test enforces is unchanged:
        * a reader can tell which subsystem produced any line without counting brackets.
+       *
+       * [Music] is the cue sheet — where the score should be, what each cue is doing, and whether
+       * anything could fill it. Its own subsystem rather than more [Audio] lines for the same
+       * reason [SFX] is: a reader asking "was this film scored, and where" should not have to read
+       * ambience verdicts to find out. On a deployment with no registered catalogue every cue
+       * reports UNSCORED, which is the point — the gap is a measurement instead of a silence.
        */
-      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics|Audio|SFX)\]/);
+      expect(line).toMatch(/^\[(CinematicPipeline|EDL|Validator|Timeline|Director|Graphics|Audio|SFX|Music)\]/);
     }
   });
 });
