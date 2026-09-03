@@ -242,6 +242,7 @@ import {
 } from "./visualSearchPlan";
 import { normaliseShotType, withPlannedShot } from "./shotVocabulary";
 import { formatVisionCensus, getVisionCensus, newVisionCensus, withVisionCensus } from "./visionCensus";
+import { formatProviderFunnel, providerVisionFunnel } from "./providerFunnel";
 import {
   getOrGenerateStoryboard,
   getShotForBeat,
@@ -40364,6 +40365,33 @@ async function _runVideoPipelineInner(
         pipelineReport.add("sourcing", line);
         if (line.startsWith("[AssetUsageInconsistency]")) console.warn(line);
         else console.log(line);
+      }
+      /**
+       * WHERE EACH SOURCE LOSES ITS FOOTAGE — the step the usage summary cannot see.
+       *
+       * `[AssetUsageSummary]` counts found/validated/selected/downloaded/assigned per provider, and
+       * a render with 137 downloads and 7 adoptions raises exactly one question that table cannot
+       * answer: where did the other 130 stop. Almost all of them stop at the picture editor, whose
+       * verdicts live in a ledger keyed by clip path with no idea which provider anything came
+       * from — while the lineage knows the provider and nothing about verdicts.
+       *
+       * Joined here rather than counted along the way, because counting would mean every judging
+       * route also remembering to attribute its verdict, and that is the seam this codebase keeps
+       * rediscovering. See `providerFunnel.ts`.
+       */
+      for (const line of formatProviderFunnel(
+        providerVisionFunnel({
+          ledger: visualDedup.beatRelevance,
+          providerOf: (clipPath) => ledger.resolve(clipPath)?.provider ?? null,
+        })
+      )) {
+        pipelineReport.add("sourcing", line);
+        /** A source that supplied candidates and had every one refused is a warning, not a stat. */
+        if (line.includes("NOT ONE was accepted") || line.includes("being overruled")) {
+          console.warn(line);
+        } else {
+          console.log(line);
+        }
       }
       /**
        * RENDER 562 — what the source-length floor cost, and what this render could have carried.

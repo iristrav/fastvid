@@ -990,7 +990,37 @@ export function buildHistoricalArchivalQueries(
    * reason — a blocked query contributes no breadth to the provider cache, only the appearance
    * of it.
    */
-  const asked = uniqueQueryStrings(out, 3).filter((q) => validateSearchQuery(q, provenance).ok);
+  const candidates = uniqueQueryStrings(out, 3);
+  const asked = candidates.filter((q) => validateSearchQuery(q, provenance).ok);
+  /**
+   * HOW MANY QUESTIONS THIS BEAT ACTUALLY GOT TO ASK.
+   *
+   * ── Why a count of refusals is not the useful number ────────────────────────────────────────
+   *
+   * Render 564 blocked 388 of 755 queries, and that figure says almost nothing on its own. Half of
+   * those refusals are the gate doing exactly its job — the LLM invented a noun the script never
+   * used, and a query built on it would have found something plausible and wrong.
+   *
+   * The number that matters is what a beat is LEFT with. A beat that built eleven queries and can
+   * ask nine is healthy. A beat that built eleven and can ask one goes to nineteen providers with a
+   * single phrase, gets one narrow pool, and takes whatever is in it — and in the render report
+   * that beat is indistinguishable from one that simply found nothing.
+   *
+   * So the refusal is not warned about. The STARVATION is.
+   */
+  if (candidates.length >= 3 && asked.length <= 1) {
+    const blocked = candidates
+      .filter((q) => !validateSearchQuery(q, provenance).ok)
+      .slice(0, 3)
+      .map((q) => `"${q}"`)
+      .join(", ");
+    console.warn(
+      `[QueryBreadth] STARVED built=${candidates.length} asked=${asked.length} ` +
+        `anchor="${anchor}" — this beat reaches every provider with ` +
+        `${asked.length === 0 ? "no query at all" : "one phrase"}. ` +
+        `Refused: ${blocked}`
+    );
+  }
   // RONDE 73: 8 -> 12. The generic set alone is 5 and the per-target variants add several more,
   // so keeping the old cap would have let the combined family evict exactly the breadth the
   // F3-39 note above says the provider query-cache depends on. Better queries AND the existing
