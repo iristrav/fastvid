@@ -27417,13 +27417,60 @@ async function beatClipRefusedByRelevanceGate(
       route: "push",
     });
   }
-  const barrier = composeBarrierAllows(dedup.beatRelevance, clipPath, clipContentKey(clipPath));
+  const contentKey = clipContentKey(clipPath);
+  const barrier = composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey);
   if (barrier.allow) return false;
   console.warn(
     `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +
       `${path.basename(clipPath)} — ${barrier.reason}`
   );
+  /**
+   * A REFUSAL IS AN OUTCOME, AND IT BELONGS ON THE LEDGER.
+   *
+   * ── The hole this closes ────────────────────────────────────────────────────────────────────
+   *
+   * This warned to the console and returned. The clip therefore never entered the scene's clip
+   * list — and `noteSceneClipsResourced`, the one place that writes REPLACED when a scene is
+   * re-sourced, iterates `previous.clips`. An asset refused HERE is not in that list and never can
+   * be, so no later pass could explain it either. Its ledger record stopped at ADOPTED with
+   * nothing after it, which is exactly what `[AssetNotRendered] … reachedAssigned=true
+   * outcome=DROPPED_WITHOUT_EVENT` reports.
+   *
+   * Render 567's approved YouTube clip is in that state: adopted for s0b0, absent from the film,
+   * and the beat filled by `scene_0_slot100_guaranteed.mp4` instead. Whether this gate is what
+   * turned that particular clip away is NOT established — the supplied log begins after sourcing —
+   * but a refusal that records nothing can never be read back, whichever clip it happens to.
+   *
+   * ── Why here and not in the callers ─────────────────────────────────────────────────────────
+   *
+   * There are four `pushSceneClip` definitions and every one of them opens with this call. Putting
+   * the recording in the callers means remembering it four times and a fifth time for the next
+   * one; putting it here means the refusal cannot be made without recording it. That is the seam
+   * this codebase keeps splitting on, closed at the single point all routes already pass through.
+   *
+   * `recordRejection` resolves by path, derivation chain and content key, and returns false when
+   * the ledger never knew the clip — an honest miss, not an invented record.
+   */
+  dedup.sourcingCache?.lineage?.recordRejection(clipPath, barrier.reason, contentKey);
   return true;
+}
+
+/**
+ * The other refusal every `pushSceneClip` makes: this render already used this footage.
+ *
+ * Same reasoning as above — it printed a warning and returned false, so a clip turned away for
+ * being a repeat left the ledger holding ADOPTED and no ending. A duplicate is a perfectly good
+ * editorial decision and it has a reason worth keeping; what it must not be is silent.
+ *
+ * The four call sites differ in whether they warn, which is why the warning stays theirs and only
+ * the recording lives here.
+ */
+function noteDuplicateClipRefused(
+  dedup: VisualDedupState,
+  clipPath: string,
+  contentKey: string
+): void {
+  dedup.sourcingCache?.lineage?.recordRejection(clipPath, "duplicate_clip_once_per_video", contentKey);
 }
 
 /** RONDE 103: attribute one gate call's spend to the beat that asked for it. */
@@ -31207,6 +31254,7 @@ async function fetchArchiveSentenceMontage(
         console.warn(
           `[Pipeline] Scene ${scene.index} zin ${beatIndex}: duplicate clip ${path.basename(clipPath)}`
         );
+        noteDuplicateClipRefused(dedup, clipPath, key);
         return false;
       }
       let actualHold = holdSec;
@@ -31414,7 +31462,10 @@ async function refillSceneStrictVoiceMatch(
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
-      if (dedup.usedContentKeys.has(key)) return false;
+      if (dedup.usedContentKeys.has(key)) {
+        noteDuplicateClipRefused(dedup, clipPath, key);
+        return false;
+      }
       let actualHold = holdSec;
       if (fs.existsSync(clipPath)) {
         const probed = await probeVideoDurationSec(clipPath);
@@ -31741,7 +31792,10 @@ async function ensureArchiveMontageVoiceCoverage(
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
-    if (dedup.usedContentKeys.has(key)) return false;
+    if (dedup.usedContentKeys.has(key)) {
+      noteDuplicateClipRefused(dedup, clipPath, key);
+      return false;
+    }
     let actualHold = holdSec;
     if (!curatedClipPathAssetId(clipPath) && fs.existsSync(clipPath)) {
       const probed = await probeVideoDurationSec(clipPath);
@@ -32333,6 +32387,7 @@ async function fetchSceneVisualsInner(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)} (once per video)`
       );
+      noteDuplicateClipRefused(dedup, clipPath, key);
       return false;
     }
     let actualHold = holdSec;

@@ -480,8 +480,29 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     // their own files would empty every montage.
     const idx = SRC.indexOf("function beatClipRefusedByRelevanceGate(");
     const body = SRC.slice(idx, SRC.indexOf("\n}", idx));
-    expect(body).toContain("composeBarrierAllows(dedup.beatRelevance, clipPath, clipContentKey(clipPath))");
+    /**
+     * The content key is now computed once and reused, because the refusal is also RECORDED and
+     * both the barrier and the ledger must be asked about the same asset. The property this pinned
+     * is unchanged — the barrier is consulted with the clip's own content key — so it is asserted
+     * on the value rather than on one spelling of the expression, and the reuse is asserted too:
+     * a second, separately-derived key here would let the gate refuse one asset while the ledger
+     * ended another.
+     */
+    expect(body).toContain("const contentKey = clipContentKey(clipPath);");
+    expect(body).toContain("composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey)");
     expect(body).toContain("if (barrier.allow) return false;");
+    /**
+     * And a refusal leaves an ending on the ledger. Before this, both refusals in every
+     * `pushSceneClip` warned to the console and returned — so a clip turned away here never
+     * entered the scene's clip list, which is the only list `noteSceneClipsResourced` walks, and
+     * nothing downstream could ever explain it. That is the `reachedAssigned=true
+     * outcome=DROPPED_WITHOUT_EVENT` the render audit reports.
+     */
+    expect(body).toContain("recordRejection(clipPath, barrier.reason, contentKey)");
+    expect(
+      body.indexOf("recordRejection"),
+      "the gate returns its refusal before recording it"
+    ).toBeLessThan(body.lastIndexOf("return true;"));
   });
 
   it("SECOND AUDIT — the last-resort clip is judged like any other real picture", () => {
