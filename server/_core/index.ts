@@ -28,6 +28,8 @@ import {
   fishAudioFallbackEnabled,
   googleTtsFallbackEnabled,
   youtubeSourcingEnabled,
+  formatYoutubeReadiness,
+  youtubeReadinessWarnings,
   europeanaSourcingEnabled,
 } from "../sourcingPolicy";
 import { ENV, openAiKeyFromEnv } from "./env";
@@ -281,7 +283,30 @@ async function startServer() {
   const ytDownload = !!(process.env.RAPIDAPI_KEY?.trim() || process.env.YOUTUBE_CC_DL_SERVICE?.trim());
   console.log("[Fastvid] RAPIDAPI_KEY:", ytDownload ? "✓ set" : "✗ NOT SET — YouTube CC download disabled");
   console.log("[Fastvid] YOUTUBE_API_KEY:", ytSearch ? "✓ set" : "✗ NOT SET — YouTube CC search disabled");
-  console.log("[Fastvid] YouTube clip sourcing: disabled");
+  /**
+   * A BANNER THAT REPORTS THE FLAG, RATHER THAN A WORD SOMEONE TYPED.
+   *
+   * This line was the literal string `"[Fastvid] YouTube clip sourcing: disabled"`. It read no
+   * environment variable and had no branch: every boot printed `disabled`, whatever
+   * ENABLE_YOUTUBE_SOURCING was set to.
+   *
+   * It cost a real misdiagnosis. Investigating why YouTube contributed nothing, this line was
+   * taken as evidence that the flag was off — while the same render's log carried seventeen live
+   * YouTube searches and seventeen download attempts, which `maxEntityYoutubeFetchesPerVideo` and
+   * every other call site return 0 for when the flag is off. The searches prove the flag was ON.
+   * The banner simply could not say so.
+   *
+   * So it prints the readiness that decides the behaviour — `formatYoutubeReadiness()`, the same
+   * summary the render's own route line uses — plus the flag itself, which is the one thing that
+   * readiness reports as merely "missing" and which outranks every key beside it. Names and
+   * presence only; a key's value never reaches a log.
+   */
+  console.log(
+    "[Fastvid] YouTube clip sourcing:",
+    youtubeSourcingEnabled() ? "enabled" : "disabled (ENABLE_YOUTUBE_SOURCING is not true)",
+    formatYoutubeReadiness()
+  );
+  for (const warning of youtubeReadinessWarnings()) console.log(warning);
   console.log(
     "[Fastvid] Visual sourcing:",
     curatedArchiveOnlyVisuals()
