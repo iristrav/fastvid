@@ -1,4 +1,14 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The one-minute length no longer takes a different path by default — see
+ * `isFastShortVideoLength`. The fast-short tuning still EXISTS and is still what this file is
+ * about, so these tests enable it explicitly rather than being loosened: the behaviour is
+ * unchanged, only its default is.
+ */
+beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
 import {
   allowDegradedVisualExport,
   beatVisualRescueEnabled,

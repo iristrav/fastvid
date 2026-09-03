@@ -1,4 +1,12 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The one-minute length no longer takes the fast-short path by default — see
+ * `isFastShortVideoLength`. That tuning still EXISTS and is what this file asserts, so the flag is
+ * set here rather than the expectations being loosened: the behaviour is unchanged, only its
+ * default is.
+ */
+
 import {
   archiveVisualBeatSecForVideo,
   archiveVisualMaxClipSecForVideo,
@@ -19,6 +27,9 @@ describe("sourcingPolicy — F3-23 fast-path shot duration", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.FAST_ARCHIVE_BEAT_SEC;
+    // Set here, not via vi.stubEnv: this file replaces process.env wholesale on every test, which
+    // would discard a stub set outside it.
+    process.env.FAST_SHORT_PATH = "true";
   });
 
   afterEach(() => {

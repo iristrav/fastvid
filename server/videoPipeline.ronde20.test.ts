@@ -1,6 +1,16 @@
 import { readFileSync } from "fs";
 import path from "path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The one-minute length no longer takes the fast-short path by default — see
+ * `isFastShortVideoLength`. That tuning still EXISTS and is what this file asserts, so the flag is
+ * set here rather than the expectations being loosened: the behaviour is unchanged, only its
+ * default is.
+ */
+beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
 import { composeRescueWallClockMs } from "./sourcingPolicy";
 
 // RONDE 20 — render 527 hung outright and then showed "busy" in the app for hours. Three defects,

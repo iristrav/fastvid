@@ -425,8 +425,52 @@ export function pipelineComposeGraceMs(videoLength?: string | null): number {
   return isFastShortVideoLength(videoLength) ? 240_000 : 0;
 }
 
-/** ≤1 min videos — fast archive-first path (independent of wall-clock limit). */
+/**
+ * THE TEST LENGTH TAKES THE PRODUCTION PATH.
+ *
+ * ── What this used to do, and why it made the test useless ──────────────────────────────────
+ *
+ * The one-minute length is admin-only and exists to TEST a render. It also selected a different
+ * product. Seventy-four branches keyed on it, and they are not tuning — they change what the film
+ * is and what is checked about it:
+ *
+ *   postRenderSpotCheckEnabledForVideo   the content check on the DELIVERED file — skipped
+ *   applySemanticAiRerank                semantic reranking of candidates — skipped
+ *   skipLlmSemantic                      the LLM semantic pass — skipped
+ *   fastShortPlainComposeEnabled         a simpler montage
+ *   composeLocalClipsOnly                compose may not fetch; only files already on disk
+ *   polishBeforeComposeEnabled           weak-beat polish — off
+ *   maxVisualCandidatesPerBeatTry        8 candidates per beat instead of 14
+ *   stockClipQualityFloor                a LOWER bar (7 instead of 8)
+ *   archiveMinVideoClipsTarget           no minimum moving footage at all
+ *   beatVisualRescueAiMaxClips           2 rescue clips instead of 3
+ *
+ * So a one-minute run answered questions about a pipeline nobody ships. And there is no shorter
+ * honest option: `VIDEO_LENGTH_VALUES` is ["1", "8-10", "10-15", "15-20"], so the choice was a
+ * one-minute test on a different architecture or a ten-minute one on the real thing.
+ *
+ * ── What changes ────────────────────────────────────────────────────────────────────────────
+ *
+ * The one-minute length now takes the same path as every other length. Every branch above applies
+ * to it, including the content check on the delivered file — which is the thing a test is FOR.
+ *
+ * ── The one real risk, and its escape hatch ─────────────────────────────────────────────────
+ *
+ * Wall clock. A one-minute video gets 20 minutes (`maxPipelineWallClockMin`), and it now does the
+ * work a full render does: semantic reranking, polish, fourteen candidates a beat, a spot check.
+ * `pipelineComposeGraceMs` also stops applying, which took 240s of post-cap grace away.
+ *
+ * Twenty minutes for roughly eighteen shots is a generous budget and this is expected to fit. It is
+ * not MEASURED — this environment has no credentials and cannot run a render — so the old path is
+ * kept whole and one variable restores it:
+ *
+ *     FAST_SHORT_PATH=true
+ *
+ * That is a rollback for a measured timeout, not a second architecture to choose between. The
+ * default is one behaviour at every length, which is the only way a test length tests anything.
+ */
 export function isFastShortVideoLength(videoLength?: string | null): boolean {
+  if (process.env.FAST_SHORT_PATH?.trim().toLowerCase() !== "true") return false;
   return targetVideoDurationMinutes(videoLength) <= 1;
 }
 
