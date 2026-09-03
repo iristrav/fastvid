@@ -525,11 +525,18 @@ describe("RONDE 70 §6/§7 — Ronde 69 is still intact", () => {
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(src.indexOf("{", start), src.indexOf("\n}", start));
     const statements = body.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("//"));
+    /**
+     * The ceiling's counter is `downloadSlotsClaimed`. It moved off `downloadCount` because that
+     * field has a second reader — the end-of-render fold, which reports it as `[AssetUsageSummary]`'s
+     * `downloaded` column — and a ceiling that counts ATTEMPTS by design was handing that reader
+     * attempts. The atomicity asserted here is untouched: still one read and one write, adjacent,
+     * with nothing between them.
+     */
     expect(statements).toEqual([
       "{",
       'const m = providerMetrics(cache, "youtube_cc");',
-      "if (m.downloadCount >= maxDownloads) return false;",
-      "m.downloadCount++;",
+      "if (m.downloadSlotsClaimed >= maxDownloads) return false;",
+      "m.downloadSlotsClaimed++;",
       "return true;",
     ]);
     const claim = src.indexOf("if (!claimDownloadSlot()) {");

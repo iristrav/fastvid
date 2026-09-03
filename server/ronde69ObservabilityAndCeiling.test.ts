@@ -278,7 +278,7 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
     expect(claimYoutubeDownloadSlot(cache, limit)).toBe(false);
 
     // And the counter never passes the limit — 21/20 is what render 534 printed.
-    expect(providerMetrics(cache, "youtube_cc").downloadCount).toBe(limit);
+    expect(providerMetrics(cache, "youtube_cc").downloadSlotsClaimed).toBe(limit);
   });
 
   it("TEST B (concurrent) — ten simultaneous requests with five slots left take exactly five", async () => {
@@ -302,7 +302,7 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
 
     expect(results.filter(Boolean)).toHaveLength(5);
     expect(results.filter((r) => !r)).toHaveLength(5);
-    expect(providerMetrics(cache, "youtube_cc").downloadCount).toBe(limit);
+    expect(providerMetrics(cache, "youtube_cc").downloadSlotsClaimed).toBe(limit);
   });
 
   it("TEST B2 — a failed download does not give its slot back", () => {
@@ -313,7 +313,7 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
       // The download fails. Nothing is returned to the pool: the cap is on ATTEMPTS.
     }
     expect(claimYoutubeDownloadSlot(cache, limit)).toBe(false);
-    expect(providerMetrics(cache, "youtube_cc").downloadCount).toBe(limit);
+    expect(providerMetrics(cache, "youtube_cc").downloadSlotsClaimed).toBe(limit);
   });
 
   it("TEST C (isolation) — a render that spends its budget does not spend another render's", () => {
@@ -324,11 +324,11 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
     for (let i = 0; i < limit; i++) expect(claimYoutubeDownloadSlot(renderA, limit)).toBe(true);
     expect(claimYoutubeDownloadSlot(renderA, limit)).toBe(false);
 
-    expect(providerMetrics(renderA, "youtube_cc").downloadCount).toBe(limit);
-    expect(providerMetrics(renderB, "youtube_cc").downloadCount).toBe(0);
+    expect(providerMetrics(renderA, "youtube_cc").downloadSlotsClaimed).toBe(limit);
+    expect(providerMetrics(renderB, "youtube_cc").downloadSlotsClaimed).toBe(0);
     // B still has its full budget.
     expect(claimYoutubeDownloadSlot(renderB, limit)).toBe(true);
-    expect(providerMetrics(renderB, "youtube_cc").downloadCount).toBe(1);
+    expect(providerMetrics(renderB, "youtube_cc").downloadSlotsClaimed).toBe(1);
   });
 
   it("TEST C2 — nothing is shared between renders: no module-level counter backs this", () => {
@@ -351,7 +351,7 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
     let allowed = 0;
     for (let i = 0; i < 25; i++) if (claimYoutubeDownloadSlot(cache, limit)) allowed++;
     expect(allowed).toBe(5);
-    expect(providerMetrics(cache, "youtube_cc").downloadCount).toBe(5);
+    expect(providerMetrics(cache, "youtube_cc").downloadSlotsClaimed).toBe(5);
   });
 
   it("the claim happens BEFORE the download, with nothing awaited in between", () => {
@@ -377,19 +377,43 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
     expect(statements).toEqual([
       "{",
       'const m = providerMetrics(cache, "youtube_cc");',
-      "if (m.downloadCount >= maxDownloads) return false;",
-      "m.downloadCount++;",
+      "if (m.downloadSlotsClaimed >= maxDownloads) return false;",
+      "m.downloadSlotsClaimed++;",
       "return true;",
     ]);
   });
 
+  /**
+   * The slot is claimed once, in the claim, and nowhere else.
+   *
+   * RONDE 68's post-download increment was the bug: a slot counted after the transfer returned is
+   * a slot two interleaved callers both spend. That property is unchanged and now belongs to
+   * `downloadSlotsClaimed`, because the ceiling's counter and the report's counter are no longer
+   * the same field — `downloadCount` means downloads that ARRIVED, for the usage summary, and the
+   * loop bumping THAT after a successful transfer is correct.
+   */
   it("the post-download increment RONDE 68 relied on is gone — the slot is counted once", () => {
     const src = PIPELINE();
-    const bumps = [...src.matchAll(/providerMetrics\(sourcingCache, "youtube_cc"\)\.downloadCount\+\+/g)];
+    const bumps = [
+      ...src.matchAll(/providerMetrics\(sourcingCache, "youtube_cc"\)\.downloadSlotsClaimed\+\+/g),
+    ];
     expect(bumps).toHaveLength(0);
-    // Exactly one place increments YouTube's download count now.
-    const inner = [...src.matchAll(/m\.downloadCount\+\+;/g)];
-    expect(inner).toHaveLength(1);
+    // Exactly one place claims a slot now.
+    expect([...src.matchAll(/m\.downloadSlotsClaimed\+\+;/g)]).toHaveLength(1);
+    /**
+     * And the two counters have not been re-merged. A ceiling that reads the success count is the
+     * ceiling that does not hold; a report that reads the claim count is the report that said
+     * `downloaded=20` for a render that retrieved nothing.
+     */
+    const claim = src.slice(
+      src.indexOf("export function claimYoutubeDownloadSlot("),
+      src.indexOf("\n}", src.indexOf("export function claimYoutubeDownloadSlot("))
+    );
+    expect(claim).not.toContain("downloadCount");
+    // The success counter is bumped exactly once, on the path where bytes actually arrived.
+    expect(
+      [...src.matchAll(/providerMetrics\(sourcingCache, "youtube_cc"\)\.downloadCount\+\+/g)]
+    ).toHaveLength(1);
   });
 
   it("every call site threads the render's cache, or the ceiling counts against a throwaway", () => {

@@ -146,7 +146,7 @@ describe("RONDE 142 §2 — the YouTube download ceiling holds for cache-less ca
       for (let i = 0; i < 5; i++) granted.push(claimYoutubeDownloadSlot(undefined, 3));
     });
     expect(granted).toEqual([true, true, true, false, false]);
-    expect(cache.metrics.get("youtube_cc")?.downloadCount).toBe(3);
+    expect(cache.metrics.get("youtube_cc")?.downloadSlotsClaimed).toBe(3);
   });
 
   it("slots claimed with a cache and without it come out of the same budget", async () => {

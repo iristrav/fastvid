@@ -44,7 +44,9 @@ const PIPELINE = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"),
 describe("RONDE 68 — the ceiling counts what it claimed to count", () => {
   it("the counter is render-scoped, not a local reset on every call", () => {
     const src = PIPELINE();
-    expect(src).toContain('const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadCount;');
+    expect(src).toContain(
+      'const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadSlotsClaimed;'
+    );
     // The local that made the cap per-call is gone.
     expect(src).not.toContain("let downloadAttempts = 0;");
     expect(src).not.toContain("downloadAttempts++;");
@@ -64,10 +66,18 @@ describe("RONDE 68 — the ceiling counts what it claimed to count", () => {
     // no longer a property of where the calls happen to sit. See claimYoutubeDownloadSlot.
     const src = PIPELINE();
     expect(src).toContain('const m = providerMetrics(cache, "youtube_cc");');
-    expect(src).toContain("if (m.downloadCount >= maxDownloads) return false;");
-    expect(src).toContain("m.downloadCount++;");
-    // And the loop no longer increments behind the download's back.
-    expect(src).not.toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
+    expect(src).toContain("if (m.downloadSlotsClaimed >= maxDownloads) return false;");
+    expect(src).toContain("m.downloadSlotsClaimed++;");
+    /**
+     * And the loop no longer increments behind the download's back.
+     *
+     * The field is `downloadSlotsClaimed` now, and moving this assertion onto it is what keeps the
+     * test honest rather than merely green. The ceiling's counter must still be written in exactly
+     * one place; `downloadCount` is a different number with a different meaning — successes, for
+     * the usage report — and the loop bumping THAT after a download arrives is correct and is what
+     * this split exists to allow.
+     */
+    expect(src).not.toContain('providerMetrics(sourcingCache, "youtube_cc").downloadSlotsClaimed++;');
   });
 
   it("the ceiling is a render budget YouTube can still work within", () => {

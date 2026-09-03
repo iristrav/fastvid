@@ -789,9 +789,19 @@ describe("RONDE 88 — the provider-fact columns fill for external providers too
     expect(s.total.downloadSucceeded).toBe(7);
   });
 
-  it("TEST 52 — the render folds the provider counters in, and skips providers it already counted", () => {
+  /**
+   * SEARCHES are still folded only where the ledger counted none — a search is one provider fact
+   * reported through one channel, so taking both would double it.
+   *
+   * DOWNLOADS are no longer an either/or. The scene-pool route files real DOWNLOAD_SUCCEEDED events
+   * and the direct fetchers report on the counter, and those are different retrieval paths that both
+   * run in one render: skipping the counter because events exist silently dropped every download the
+   * fetchers made. The two channels are disjoint by construction, so they add. See the fold's own
+   * comment, and youtubeDownloadAccounting.test.ts for the property this replaces.
+   */
+  it("TEST 52 — the render folds the provider counters in, without counting any twice", () => {
     expect(PIPELINE_SRC).toContain("if (already[provider]?.searches) continue;");
-    expect(PIPELINE_SRC).toContain("if (known > 0 || m.downloadCount <= 0) continue;");
+    expect(PIPELINE_SRC).toContain("if (m.downloadCount <= 0) continue;");
     expect(PIPELINE_SRC).toContain("ledger.countProviderDownloads(provider, m.downloadCount)");
   });
 });

@@ -166,8 +166,17 @@ describe("RONDE 68 TEST 4/5 — the archival sources get their turn", () => {
 
   it("YouTube cannot spend the whole render's fetch budget on downloads", () => {
     const src = SRC();
-    // Render-scoped ceiling (RONDE 68, commit 2866c8b) — not a per-call local.
-    expect(src).toContain('const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadCount;');
+    /**
+     * Render-scoped ceiling (RONDE 68, commit 2866c8b) — not a per-call local.
+     *
+     * The counter moved to `downloadSlotsClaimed`. It has to be a field of the render-scoped
+     * metrics, which is the whole property here; which field stopped being arbitrary the moment
+     * `downloadCount` had a second reader — the usage report — that needs successes rather than
+     * attempts, and was silently being handed attempts.
+     */
+    expect(src).toContain(
+      'const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadSlotsClaimed;'
+    );
     expect([...src.matchAll(/downloadsSoFar\(\) >= maxDownloadAttempts/g)]).toHaveLength(3);
   });
 

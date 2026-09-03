@@ -4641,6 +4641,28 @@ export async function downloadAndTrimPoolCandidate(
    * did here.
    */
   const heartbeatLabel = `downloadAndTrim s${sceneIndex}b${beatIndex} src=${candidate.source}`;
+  /**
+   * WHY THE DOWNLOAD RECORD THIS FUNCTION OPENS WAS NEVER CLOSED.
+   *
+   * `tagPathWithProviderAsset` above files DOWNLOAD_STARTED for every pool candidate. Nothing in
+   * this function has ever filed the outcome — not on success, not on any of the eight refusals,
+   * not on a throw. So the scene-pool route, which is the primary retrieval path in the cinematic
+   * build, contributed:
+   *
+   *   nothing to `[AssetUsageSummary]`'s `downloaded` column (no DOWNLOAD_SUCCEEDED, and this
+   *     route does not bump `providerMetrics.downloadCount` either — only the direct fetchers do)
+   *   nothing to the failure-reason histogram, however many candidates it lost
+   *   a record that reads as still in flight, for every candidate it ever touched
+   *
+   * That is the same seam this codebase keeps rediscovering — a rule several routes must remember,
+   * remembered by one. So this does not ask the eight refusals to remember it. One variable is set
+   * at the single place that knows whether a file arrived, and the outcome is filed in the `finally`
+   * that already runs on every exit including the throws.
+   *
+   * Null while nothing is known yet; the reason string is the one the refusal already logs, so the
+   * histogram and the log agree instead of inventing a second vocabulary.
+   */
+  let arrivalFailure: string | null = "download_did_not_complete";
   setWorkerHeartbeat(heartbeatLabel);
   console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
@@ -4685,6 +4707,7 @@ export async function downloadAndTrimPoolCandidate(
           `[FunnelDownload] rejected source=youtube_cc assetId=${candidate.assetId} ` +
             `reason=youtube_fetch_failed`
         );
+        arrivalFailure = "youtube_fetch_failed";
         return null;
       }
     } else {
@@ -4729,6 +4752,7 @@ export async function downloadAndTrimPoolCandidate(
         console.warn(
           `[FunnelDownload] rejected source=${candidate.source} assetId=${candidate.id ?? "unknown"} status=${resp.status} url=${candidate.remoteUrl}`
         );
+        arrivalFailure = `http_${resp.status}`;
         return null;
       }
       /**
@@ -4760,6 +4784,7 @@ export async function downloadAndTrimPoolCandidate(
           `[FunnelDownload] rejected source=${candidate.source} assetId=${candidate.assetId} ` +
             `reason=html_not_media contentType=${contentType.split(";")[0]}`
         );
+        arrivalFailure = "html_not_media";
         return null;
       }
       // Streams straight to rawPath instead of Buffer.from(await resp.arrayBuffer()), so the
@@ -4807,9 +4832,19 @@ export async function downloadAndTrimPoolCandidate(
         mediaType: isVideo ? "video" : "image",
         verdict: sizeVerdict,
       }));
+      arrivalFailure = "below_byte_floor";
       try { if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath); } catch { /* ignore */ }
       return null;
     }
+    /**
+     * The file is here. Everything past this point is about whether it is USABLE — it probes, it
+     * trims, it is judged — and none of that changes the fact that this provider delivered bytes.
+     *
+     * Keeping the two apart is the whole point: a source that delivers nothing and a source that
+     * delivers plenty and has it all refused are a retrieval problem and a relevance problem, and
+     * a `downloaded` column that folds them together cannot tell anyone which one they have.
+     */
+    arrivalFailure = null;
 
     // F3-17: rawPath is a temporary intermediate file (downloaded fresh above, or restored from
     // media cache) — guaranteed cleanup via finally once ffprobe/trim/stillImageToVideo are done
@@ -5012,6 +5047,21 @@ export async function downloadAndTrimPoolCandidate(
      * behind. A `finally` is the only construct that cannot be forgotten by a future branch.
      */
     clearWorkerHeartbeat(heartbeatLabel);
+    /**
+     * And for the same reason, the download record opened by `tagPathWithProviderAsset` is closed
+     * here rather than at each of those exits. `arrivalFailure` is null only once the file has
+     * cleared the byte floor, so a throw anywhere — including one from a branch written next year —
+     * files a failure rather than leaving the record open forever.
+     *
+     * A no-op when this path was never given to the ledger, which is itself visible: a candidate
+     * that reached a download without being recorded.
+     */
+    recordProviderDownloadOutcome(
+      sourcingCache,
+      outPath,
+      arrivalFailure === null,
+      arrivalFailure ?? undefined
+    );
   }
 }
 
@@ -7196,7 +7246,22 @@ export async function fetchPexelsClips(
               }
 
               downloaded = true; // Success
-              providerMetrics(sourcingCache, "pexels").downloadCount++;
+              /**
+               * The arrival, filed as the real event rather than on the counter channel.
+               *
+               * Pexels was the one provider reporting the same download through BOTH channels — the
+               * counter here, and a DOWNLOAD_SUCCEEDED seventy lines below after the trim. That was
+               * harmless only while the fold treated the two as alternatives. Now that the pool
+               * route files events for every provider, the fold has to ADD the counter to the
+               * events instead of choosing between them, and a provider on both channels would be
+               * counted twice.
+               *
+               * The event is also the more accurate of the two here: it says the bytes ARRIVED,
+               * which is what `[AssetUsageSummary]`'s `downloaded` column means. The later call
+               * fires only once the trim has also produced a clip; both name the same lineage
+               * record, and `summary()` deduplicates identical (record, stage, status) pairs.
+               */
+              recordProviderDownloadOutcome(sourcingCache, outPath, true);
             } catch (err) {
               console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
               try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
@@ -14022,7 +14087,12 @@ export async function fetchYouTubeCCClips(
    * cap fired every time and bounded nothing. Counting on the render-scoped metrics object
    * makes it what the comment always claimed it was.
    */
-  const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadCount;
+  /**
+   * What the CEILING has spent — attempts, including the ones that came back with nothing. The
+   * cheap early exits below and the ceiling itself must read the same number, or the loop reads one
+   * budget and `claimYoutubeDownloadSlot` enforces another.
+   */
+  const downloadsSoFar = () => providerMetrics(sourcingCache, "youtube_cc").downloadSlotsClaimed;
   const maxDownloadAttempts = youtubeMaxDownloadsPerRender();
 
   /**
@@ -14234,6 +14304,43 @@ export async function fetchYouTubeCCClips(
               sourcingCache,
               startIsExact
             );
+            /**
+             * THE DOWNLOAD RECORD THIS ROUTE OPENED, CLOSED.
+             *
+             * `tagPathWithProviderAsset` above files DOWNLOAD_STARTED for every YouTube candidate.
+             * Nothing on this route has ever filed the outcome, and that single omission is what
+             * makes the render report's YouTube row unreadable:
+             *
+             *   - `downloadSucceeded` for youtube_cc stayed 0 however many clips actually arrived,
+             *   - so the end-of-render fold saw a zero and folded `providerMetrics.downloadCount`
+             *     into the `downloaded` column instead,
+             *   - and that counter is `claimYoutubeDownloadSlot`'s, which counts ATTEMPTS by design
+             *     (RONDE 69: "the limit is on ATTEMPTS, not on successes") because a ceiling that
+             *     only counted successes was the ceiling that did not hold.
+             *
+             * So `[AssetUsageSummary] provider=youtube_cc downloaded=20` has been reporting twenty
+             * slots CLAIMED. Twenty attempts of which two arrived and were refused, and twenty that
+             * all arrived and were all refused, print the same line — and they are a retrieval
+             * problem and a relevance problem respectively, with nothing in common.
+             *
+             * Neither reader was wrong; one field was being asked two questions. The ceiling has
+             * `downloadSlotsClaimed` now, so this route reports what actually arrived the way the other
+             * eighteen do — `downloadCount` on a success, and the real lineage outcome through the
+             * same `recordProviderDownloadOutcome` four other call sites already use. No new
+             * ledger, no second accounting system.
+             *
+             * The failure is filed too, which is what puts YouTube's download failures into the
+             * failure-reason histogram for the first time. Until now this route opened a
+             * DOWNLOAD_STARTED for every candidate and closed none of them, so a YouTube clip that
+             * never arrived left a record that reads, forever, as still in flight.
+             */
+            recordProviderDownloadOutcome(
+              sourcingCache,
+              outPath,
+              ok,
+              ok ? undefined : "youtube_download_failed"
+            );
+            if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
             if (ok && !(await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided))) {
               // Rejected on what it shows, not on what it is called. The file is removed so a
               // later beat cannot pick it up off disk, and the loop moves to the next candidate.
@@ -18258,7 +18365,27 @@ export interface ProviderSourcingMetrics {
   licenseCacheHits: number;
   /** A cached REJECTED verdict was honoured — the asset was skipped without any network call. */
   licenseRejectedCacheHits: number;
+  /**
+   * Downloads that ARRIVED. Bytes on disk, past whatever size floor the route enforces.
+   *
+   * This is the field the end-of-render fold reports in `[AssetUsageSummary]`'s `downloaded`
+   * column for every route that does not file its own DOWNLOAD_SUCCEEDED events, so it has to
+   * mean the same thing everywhere. For one provider it did not: YouTube's render-wide ceiling
+   * read and wrote this counter, and that ceiling counts ATTEMPTS on purpose, so a claimed slot
+   * bumped a success and the report was reading attempts. See `downloadSlotsClaimed`.
+   */
   downloadCount: number;
+  /**
+   * Download slots the render-wide YouTube ceiling has handed out — claimed, not delivered.
+   *
+   * The ceiling has to bound attempts rather than successes: RONDE 69 established that a ceiling
+   * counting only successes is the ceiling that does not hold, because the render whose 134
+   * downloads were nearly all failures never reached it. That is the right rule for a ceiling and
+   * the wrong number for a report, and until this the two shared one field.
+   *
+   * Nothing else reads this. It exists so `downloadCount` can keep one meaning.
+   */
+  downloadSlotsClaimed: number;
   downloadCacheHits: number;
   duplicateSkipped: number;
   acceptedCount: number;
@@ -18373,7 +18500,7 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
     // RONDE 124: the three licence outcomes, kept apart so a report can say how much material
     // was refused outright versus merely unproven.
     licenseVerified: 0, licenseUnverified: 0, licenseRejected: 0, usedCount: 0,
-    downloadCount: 0, downloadCacheHits: 0,
+    downloadCount: 0, downloadSlotsClaimed: 0, downloadCacheHits: 0,
     duplicateSkipped: 0, acceptedCount: 0,
     eligibleCount: 0, adoptedCount: 0,
   };
@@ -18469,6 +18596,19 @@ export function providerMetrics(cache: SourcingCache | undefined, provider: stri
  * 134 downloads of render 533 were nearly all failures, and a ceiling that only counted the
  * successes is exactly the ceiling that did not hold.
  *
+ * ── The counter this reads is its own ───────────────────────────────────────────────────────
+ *
+ * It used to be `downloadCount`, which every other provider bumps only once bytes have arrived,
+ * and which the end-of-render fold reports as `[AssetUsageSummary]`'s `downloaded` column. So the
+ * rule that makes this ceiling correct — count the attempt, keep the slot on failure — silently
+ * made YouTube the one row in that table where `downloaded=20` meant twenty slots CLAIMED. A render
+ * that retrieved no usable YouTube footage whatsoever and one that retrieved twenty clips and had
+ * them all refused printed the same number, and they are a retrieval failure and a relevance
+ * failure with nothing in common.
+ *
+ * Neither reading was wrong; one field was being asked two questions. `downloadSlotsClaimed` answers
+ * the ceiling's, `downloadCount` answers the report's, and neither has to compromise.
+ *
  * Returns true when the slot is yours, false when the render is out.
  */
 export function claimYoutubeDownloadSlot(
@@ -18476,8 +18616,8 @@ export function claimYoutubeDownloadSlot(
   maxDownloads: number
 ): boolean {
   const m = providerMetrics(cache, "youtube_cc");
-  if (m.downloadCount >= maxDownloads) return false;
-  m.downloadCount++;
+  if (m.downloadSlotsClaimed >= maxDownloads) return false;
+  m.downloadSlotsClaimed++;
   return true;
 }
 
@@ -40334,12 +40474,35 @@ async function _runVideoPipelineInner(
             ledger.countSearch(provider, i === 0 ? m.resultCount : 0);
           }
         }
-        // Same reasoning for the completed downloads. Every external provider already increments
-        // downloadCount on a successful fetch; the curated path reports its own through real
-        // DOWNLOAD_SUCCEEDED events, so it is skipped here and never counted twice.
+        /**
+         * Same reasoning for the completed downloads, and the two channels are now ADDED rather
+         * than chosen between.
+         *
+         * ── Why it used to choose ───────────────────────────────────────────────────────────
+         *
+         * A provider that filed real DOWNLOAD_SUCCEEDED events was skipped here entirely, on the
+         * reasoning that a route reporting events reports all of its downloads that way and folding
+         * the counter on top would double-count. That held while only the curated route filed
+         * events.
+         *
+         * It stops holding the moment the scene-pool route files them, because the pool route and
+         * the direct fetchers are DIFFERENT retrieval paths that can both run in one render:
+         * wikimedia counts its direct fetches on the counter and its pool fetches as events, and
+         * "choose one" would silently drop whichever channel came second.
+         *
+         * ── Why adding is safe ──────────────────────────────────────────────────────────────
+         *
+         * The two channels are disjoint by construction: the pool route files events and bumps no
+         * counter, the direct fetchers bump the counter and file no events. Pexels was the single
+         * exception, reporting one download through both, and it now files the event alone.
+         *
+         * `downloadCount` means SUCCESSES for every provider, which is what makes the addition
+         * honest. It did not always: youtube_cc's ceiling used to read the same field, so a claimed
+         * slot bumped it and this fold reported ATTEMPTS in the `downloaded` column. The ceiling has
+         * its own `downloadSlotsClaimed` now — see `claimYoutubeDownloadSlot`.
+         */
         for (const [provider, m] of visualDedup.sourcingCache.metrics) {
-          const known = already[provider]?.downloadSucceeded ?? 0;
-          if (known > 0 || m.downloadCount <= 0) continue;
+          if (m.downloadCount <= 0) continue;
           ledger.countProviderDownloads(provider, m.downloadCount);
         }
       }

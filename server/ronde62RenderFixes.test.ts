@@ -166,7 +166,12 @@ describe("RONDE 62 #2 — the YouTube duration comes from the call that works", 
 describe("RONDE 62 #3 — 97 downloads for nothing does not happen again", () => {
   it("the ceiling is counted on render-scoped state, not on a per-call local", () => {
     const src = PIPELINE();
-    expect(src).toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount');
+    /**
+     * The CEILING's counter, which is `downloadSlotsClaimed`. Asserting `downloadCount` here would
+     * now pass for the wrong reason: that field also has a legitimate call site on the success
+     * path, so it no longer says anything about where the ceiling is kept.
+     */
+    expect(src).toContain('providerMetrics(sourcingCache, "youtube_cc").downloadSlotsClaimed');
     expect(src).not.toContain("let downloadAttempts = 0;");
   });
 
