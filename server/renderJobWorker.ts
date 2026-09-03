@@ -509,6 +509,61 @@ export async function runRenderJob(params: {
           : "")
     );
     /**
+     * WHAT THIS RENDER ACTUALLY EXECUTED — one line, everything the renderer measured.
+     *
+     * ── Why this was missing ────────────────────────────────────────────────────────────────
+     *
+     * `RenderedTimeline` carries `captionsDrawn`, `textsDrawn`, `transitionsRendered`,
+     * `camerasExecuted` and `duckedTracks`. Every one of them is a real count taken while ffmpeg
+     * ran, and the job printed none of them. So the questions "did the cinematic editing actually
+     * happen", "were there transitions or just cuts", "was anything ducked", "did the captions get
+     * drawn" could each only be answered by inferring from what was ABSENT from the log — which is
+     * exactly the guesswork this codebase keeps removing.
+     *
+     * A film that planned twelve crossfades and executed zero now says so on the line that says it
+     * finished.
+     *
+     * ── What this line does NOT prove ───────────────────────────────────────────────────────
+     *
+     * That the pixels are in the file. These are counts of what the renderer was given and drew,
+     * not an inspection of the output. Proving a caption is legible in a delivered MP4
+     * needs OCR over sampled frames, and claiming it without that would be the fabricated
+     * validation this codebase has spent rounds removing. The A/V check below measures the
+     * container; nothing here or anywhere else reads the picture back for text.
+     */
+    console.log(
+      `[RenderJob] job=${job.id} executed clips=${rendered.clipsRendered} ` +
+        `cameras=${rendered.camerasExecuted} transitions=${rendered.transitionsRendered} ` +
+        `captions=${rendered.captionsDrawn} texts=${rendered.textsDrawn} ` +
+        `audioTracks=${rendered.audioTracks} ducked=${rendered.duckedTracks} ` +
+        `ffmpegCommands=${rendered.ffmpegCommands}`
+    );
+    /**
+     * The editorial silences, each stated once.
+     *
+     * A montage of pure hard cuts and a montage whose crossfades all failed are the same file and
+     * a different problem. Same for a film with no camera movement, and for an audio mix where
+     * nothing ducked under the narrator.
+     */
+    if (rendered.clipsRendered > 1 && rendered.transitionsRendered === 0) {
+      console.warn(
+        `[RenderJob] job=${job.id} NO_TRANSITIONS — ${rendered.clipsRendered} shots joined by ` +
+          "hard cuts alone. Either the plan asked for none, or none of them could be executed."
+      );
+    }
+    if (rendered.clipsRendered > 0 && rendered.camerasExecuted === 0) {
+      console.warn(
+        `[RenderJob] job=${job.id} NO_CAMERA_MOVEMENT — every shot is static. A documentary of ` +
+          "still frames is a choice; this one was not made deliberately unless the plan says so."
+      );
+    }
+    if (rendered.audioTracks > 1 && rendered.duckedTracks === 0) {
+      console.warn(
+        `[RenderJob] job=${job.id} NOTHING_DUCKED — ${rendered.audioTracks} audio tracks and no ` +
+          "sidechain compression. The narrator is competing with the bed rather than sitting over it."
+      );
+    }
+    /**
      * Everything the renderer could not carry, said out loud.
      *
      * `rendered.skipped` has always been populated — an audio clip with no source, an effect this
@@ -528,7 +583,7 @@ export async function runRenderJob(params: {
       );
     }
 
-    /* 6. the ffprobe gate — measured, never assumed */
+    /* 6a. the ffprobe gate — measured, never assumed */
     const check = await deps.check({
       filePath: outputPath,
       timeline,
