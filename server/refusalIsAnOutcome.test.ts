@@ -122,7 +122,12 @@ describe("every push route records its refusals", () => {
   it("every duplicate refusal is recorded", () => {
     const defs = SRC.match(/const pushSceneClip = async/g) ?? [];
     const refusals = SRC.match(/if \(dedup\.usedContentKeys\.has\(key\)\)/g) ?? [];
-    const records = SRC.match(/noteDuplicateClipRefused\(dedup, clipPath, key\)/g) ?? [];
+    /**
+     * Matched on the call, not on its argument list. The signature has already grown once — the
+     * beat's reject tally needs the scene and beat the ledger call did not — and pinning the exact
+     * spelling made this test fail for a change that kept the property it exists to guard.
+     */
+    const records = SRC.match(/noteDuplicateClipRefused\(\s*dedup,\s*clipPath,\s*key\b/g) ?? [];
     expect(defs.length, "the number of push routes changed").toBe(4);
     expect(refusals.length).toBe(4);
     expect(records.length, "a duplicate refusal exists that records nothing").toBe(

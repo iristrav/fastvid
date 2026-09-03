@@ -27452,6 +27452,35 @@ async function beatClipRefusedByRelevanceGate(
    * the ledger never knew the clip — an honest miss, not an invented record.
    */
   dedup.sourcingCache?.lineage?.recordRejection(clipPath, barrier.reason, contentKey);
+  /**
+   * AND THE BEAT'S OWN TALLY, WHICH IS WHAT THE PLACEHOLDER DECISION READS.
+   *
+   * ── The false statement this removes ────────────────────────────────────────────────────────
+   *
+   * When a beat ends up empty, `rescueBeatVisualWhenEmptyInner` prints
+   *
+   *     [VisualCoverage] s0b0: rejected=0 topRejects=none contextualSearch=true
+   *                      fallback=PLACEHOLDER (all real/contextual/AI sourcing strategies exhausted)
+   *
+   * and then makes `scene_0_slot100_guaranteed.mp4`. For render 567's beat 0 that parenthetical was
+   * untrue: a real YouTube clip had been found, downloaded, judged `fits`, selected, transformed
+   * and adopted. Nothing was exhausted — the asset was turned away at this gate, and because the
+   * refusal was recorded nowhere the tally said `rejected=0`, which is indistinguishable from a
+   * beat that was never offered anything.
+   *
+   * `beatRejectCount` and `beatRejectReasons` already feed that line. Writing here is what makes it
+   * tell the truth: the same beat now reads `rejected=1 topRejects=<the barrier's own reason>`.
+   *
+   * ── What is deliberately NOT done ───────────────────────────────────────────────────────────
+   *
+   * The clip is still refused. A barrier that judged this footage wrong for this narration is an
+   * editorial decision, and forcing it into the film to avoid a placeholder would be exactly the
+   * "turn a blocking problem into a non-blocking one" this project forbids. The placeholder stays;
+   * what changes is that it can be explained.
+   */
+  if (beatIndex != null) {
+    recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, barrier.reason);
+  }
   return true;
 }
 
@@ -27468,9 +27497,17 @@ async function beatClipRefusedByRelevanceGate(
 function noteDuplicateClipRefused(
   dedup: VisualDedupState,
   clipPath: string,
-  contentKey: string
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
 ): void {
   dedup.sourcingCache?.lineage?.recordRejection(clipPath, "duplicate_clip_once_per_video", contentKey);
+  /** Same reason as the barrier above: the beat's tally is what the placeholder decision reads. */
+  if (beatIndex != null) {
+    recordClipReject(
+      dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, "duplicate_clip_once_per_video"
+    );
+  }
 }
 
 /** RONDE 103: attribute one gate call's spend to the beat that asked for it. */
@@ -31254,7 +31291,7 @@ async function fetchArchiveSentenceMontage(
         console.warn(
           `[Pipeline] Scene ${scene.index} zin ${beatIndex}: duplicate clip ${path.basename(clipPath)}`
         );
-        noteDuplicateClipRefused(dedup, clipPath, key);
+        noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
         return false;
       }
       let actualHold = holdSec;
@@ -31463,7 +31500,7 @@ async function refillSceneStrictVoiceMatch(
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) {
-        noteDuplicateClipRefused(dedup, clipPath, key);
+        noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
         return false;
       }
       let actualHold = holdSec;
@@ -31793,7 +31830,7 @@ async function ensureArchiveMontageVoiceCoverage(
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
-      noteDuplicateClipRefused(dedup, clipPath, key);
+      noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
       return false;
     }
     let actualHold = holdSec;
@@ -32387,7 +32424,7 @@ async function fetchSceneVisualsInner(
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beatIndex}: skipping duplicate clip ${path.basename(clipPath)} (once per video)`
       );
-      noteDuplicateClipRefused(dedup, clipPath, key);
+      noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
       return false;
     }
     let actualHold = holdSec;
