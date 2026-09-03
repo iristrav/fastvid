@@ -52,6 +52,7 @@ import {
 } from "./mediaResearchEngine";
 import type { Scene } from "./pipeline/types";
 import type { AssetSourceIdentity } from "./projectTimeline";
+import { identityFromAdoption, identityIsRehydratable } from "./assetIdentity";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
 
 /* ═══════════════════════ what the production pipeline supplies ═══════════════════════ */
@@ -228,19 +229,51 @@ function candidateIdFor(adoption: AdoptionFacts | null, sceneIndex: number, beat
  * Returns null when the adoption record proves nothing, and the caller then DROPS the beat rather
  * than planning around a shot it cannot fetch back. §6: never substitute another clip.
  */
+/**
+ * ONE RULE FOR "CAN THIS CLIP BE FETCHED BACK", NOT TWO.
+ *
+ * ── What render 567 lost to the second copy ─────────────────────────────────────────────────
+ *
+ * The cinematic planner dropped TWELVE of thirteen beats:
+ *
+ *     [CinematicPipeline] inputs scenes=2 beats=13 planned=2 dropped=12
+ *     [CinematicPipeline] dropped s1b1: adopted clip has no rehydratable identity (provider=unknown)
+ *
+ * while the render's own identity report, printed minutes later from the same ledger records,
+ * said the opposite about the same clips:
+ *
+ *     [AssetIdentity] s1c1 provider=UNVERIFIED assetId=null archiveAssetId=57449 ... rehydratable=true
+ *     [AssetIdentity] s1c5 provider=UNVERIFIED assetId=null archiveAssetId=57420 ... rehydratable=true
+ *
+ * Five of the ten delivered clips were in exactly that state: a real archive asset id, and no
+ * provider NAME on the record. `identityIsRehydratable` opens with `if (identity.archiveAssetId !=
+ * null) return true` — "this system holds the file and serves it itself" — and the render job
+ * proves it is right, because its rehydrator fetches by that id alone (`REHYDRATION_DOWNLOAD_FAILED
+ * — archiveAssetId=57353 could not be read from storage` is a storage failure on a handle it
+ * accepted, not a refusal to try).
+ *
+ * This function was a SECOND implementation of that question with a stricter rule — it demanded a
+ * provider name on top of the handle — so a clip FastVid stores itself was called unplannable for
+ * want of a label. That is the recurring seam in this codebase: one rule, two copies, one of them
+ * wrong.
+ *
+ * ── Why delegating is not a relaxation ──────────────────────────────────────────────────────
+ *
+ * It is stricter in the case that matters. `identityFromAdoption` labels an unknown provider
+ * `UNVERIFIED`, and `identityIsRehydratable` then refuses an UNVERIFIED clip carrying only a media
+ * URL — "a provider FastVid could not prove is not a provider it can go back to". The old code
+ * here accepted that clip, because a `sourceUrl` satisfied its `hasHandle` and any non-empty
+ * provider string satisfied the rest. So this both admits the archive-backed clips it was wrongly
+ * dropping AND turns away the expiring-URL clips it was wrongly admitting.
+ *
+ * The guard the drop exists for is untouched: a clip with no durable handle at all still returns
+ * null and is still dropped with its provider named, because planning a shot around a file that
+ * exists only in this render's temp directory is the failure the ledger was built to end.
+ */
 export function identityFrom(adoption: AdoptionFacts | null): AssetSourceIdentity | null {
   if (!adoption) return null;
-  const hasHandle =
-    Boolean(adoption.providerAssetId) || adoption.archiveAssetId != null || Boolean(adoption.sourceUrl);
-  if (!adoption.provider || !hasHandle) return null;
-  return {
-    provider: adoption.provider,
-    ...(adoption.providerAssetId ? { providerAssetId: adoption.providerAssetId } : {}),
-    ...(adoption.archiveAssetId != null ? { archiveAssetId: adoption.archiveAssetId } : {}),
-    ...(adoption.sourceUrl ? { mediaUrl: adoption.sourceUrl } : {}),
-    ...(adoption.originalUrl ? { sourcePageUrl: adoption.originalUrl } : {}),
-    ...(adoption.assetTitle ? { title: adoption.assetTitle } : {}),
-  };
+  const identity = identityFromAdoption(adoption);
+  return identity && identityIsRehydratable(identity) ? identity : null;
 }
 
 /**

@@ -220,12 +220,30 @@ describe("RONDE 151 §2 — an unknown field is empty, never plausible", () => {
 /* ═══════════════════════ §6 / TEST 5 — identity, and never a substitution ═══════════════════════ */
 
 describe("RONDE 151 §6 — the adoption record is the only source of identity", () => {
+  /**
+   * The page URL is now DERIVED from the id, and that is the canonical rule rather than a new one.
+   *
+   * `identityFrom` used to be a second implementation of `identityFromAdoption`, and render 567
+   * showed what the divergence cost — see `oneRehydratabilityRule.test.ts`. It now delegates, so it
+   * inherits the canonical treatment of URLs, which this expectation is updated to state in full:
+   *
+   *   · `sourceUrl` is the provider's MEDIA url and lands in `mediaUrl`, which is what it is
+   *   · `sourcePageUrl` is COMPUTED from provider + id — `File:X.jpg` on wikimedia is
+   *     `commons.wikimedia.org/wiki/File%3AX.jpg` — because a CDN link expires and an id does not
+   *
+   * The old code put the record's `originalUrl` straight into `sourcePageUrl`. Asserting the
+   * derived value is a stronger claim than asserting its absence: it pins the mapping, so a
+   * provider whose page shape changes cannot silently start emitting a wrong link.
+   *
+   * Still nothing from the filename, which is what this test is named for.
+   */
   it("builds the identity from the record, never from the filename", () => {
     const identity = identityFrom(adoption({ provider: "wikimedia", providerAssetId: "File:X.jpg" }));
     expect(identity).toEqual({
       provider: "wikimedia",
       providerAssetId: "File:X.jpg",
       mediaUrl: "https://videos.pexels.com/x.mp4",
+      sourcePageUrl: "https://commons.wikimedia.org/wiki/File%3AX.jpg",
       title: "Apple Park",
     });
   });
