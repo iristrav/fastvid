@@ -45,9 +45,16 @@ describe("the cinematic plan can be built without the compose stage", () => {
   it("prefers what compose actually used, and falls back to what retrieval selected", () => {
     const src = pipeline();
     expect(src).toContain("const composedForScene = composedUsedClips[i] ?? [];");
-    expect(src).toContain(
-      "clipPaths: composedForScene.length > 0 ? composedForScene : sceneVisualResults[i]?.clips ?? [],"
-    );
+    /**
+     * The preference is now hoisted into two named values, because the round that made the choice
+     * MEASURABLE — [CinematicSourceDecision] and [CinematicSourceDivergence] — needs both sides by
+     * name to report their counts and their difference. The behaviour is byte-for-byte the same
+     * choice; asserting it on the values rather than on one spelling of the ternary is what keeps
+     * this test about the property instead of about the formatting.
+     */
+    expect(src).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
+    expect(src).toContain("const usingCompose = composedForScene.length > 0;");
+    expect(src).toContain("clipPaths: usingCompose ? composedForScene : canonicalForScene,");
   });
 
   /**
@@ -59,8 +66,11 @@ describe("the cinematic plan can be built without the compose stage", () => {
     const src = pipeline();
     const at = src.indexOf("const composedForScene = composedUsedClips[i] ?? [];");
     const line = src.slice(at, src.indexOf("adoptions:", at));
-    // The composed list is the FIRST branch of the conditional, not the fallback.
-    expect(line.indexOf("composedForScene.length > 0 ? composedForScene")).toBeGreaterThan(-1);
+    // The composed list is the TRUE branch — the one taken when it exists — not the fallback.
+    expect(line).toContain("usingCompose ? composedForScene : canonicalForScene");
+    expect(line).toContain("const usingCompose = composedForScene.length > 0;");
+    // And the fallback is the canonical retrieval state, not some third list.
+    expect(line).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
   });
 
   /**

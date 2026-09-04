@@ -41629,8 +41629,59 @@ async function _runVideoPipelineInner(
              * planner real beats is what makes it execute, so it is corrected in the same change.
              */
             const composedForScene = composedUsedClips[i] ?? [];
+            /**
+             * §3 — THE PREFERENCE IS MADE VISIBLE, NOT CHANGED.
+             *
+             * The planner takes compose's output when there is any, and the canonical
+             * retrieval/adoption state only as a fallback. Compose does not OVERWRITE
+             * `sceneVisualResults` — that array is intact — but what compose leaves out, the planner
+             * never sees. Whether the legacy route can therefore hide an adopted asset from the new
+             * one is a real question, and until now nothing in a render answered it.
+             *
+             * Changing the preference is a separate, measured decision and is deliberately not made
+             * here. These lines make the next production render decide it on evidence: which source
+             * was used, whether the other was available, and — the one that matters — which files
+             * are in the canonical state and missing from compose's.
+             *
+             * Compared by basename, because the two arrays hold paths produced at different stages
+             * of the same render and the basename is what survives the compose rename. A file that
+             * compose padded or overlaid appears under its derived name, so this over-reports rather
+             * than under-reports; a divergence line is a prompt to look, not a verdict.
+             */
+            const canonicalForScene = sceneVisualResults[i]?.clips ?? [];
+            const usingCompose = composedForScene.length > 0;
+            console.log(
+              `[CinematicSourceDecision] scene=${scene.index} ` +
+                `preferredSource=${usingCompose ? "composedUsedClips" : "sceneVisualResults"} ` +
+                `canonicalSourceAvailable=${canonicalForScene.length > 0} ` +
+                `composedSourceCount=${composedForScene.length} ` +
+                `canonicalSourceCount=${canonicalForScene.length}`
+            );
+            if (usingCompose && canonicalForScene.length > 0) {
+              const composedNames = new Set(composedForScene.map((p) => path.basename(p)));
+              const missing = canonicalForScene.filter(
+                (p) => !composedNames.has(path.basename(p))
+              );
+              if (missing.length > 0) {
+                console.warn(
+                  `[CinematicSourceDivergence] scene=${scene.index} ` +
+                    `canonicalCount=${canonicalForScene.length} composeCount=${composedForScene.length} ` +
+                    `missingFromCompose=${missing.length}`
+                );
+                for (const p of missing.slice(0, 10)) {
+                  const rec = visualDedup.sourcingCache?.lineage?.resolve(p, clipContentKey(p));
+                  const provider = rec?.provider ?? "UNVERIFIED";
+                  const sourceId = rec?.providerAssetId ?? rec?.archiveAssetId ?? "none";
+                  console.warn(
+                    `[CinematicSourceDivergence] scene=${scene.index} ` +
+                      `asset=${provider}:${sourceId} canonicalState=${rec?.adoptedAt != null ? "ADOPTED" : "PRESENT"} ` +
+                      `composeState=MISSING file=${path.basename(p)}`
+                  );
+                }
+              }
+            }
             const clipForBeat = pairClipsToBeats({
-              clipPaths: composedForScene.length > 0 ? composedForScene : sceneVisualResults[i]?.clips ?? [],
+              clipPaths: usingCompose ? composedForScene : canonicalForScene,
               adoptions: visualDedup.clipAdoptAudit.filter((e) => e.sceneIndex === scene.index),
               beats,
               basenameOf: (clipPath) => path.basename(clipPath),

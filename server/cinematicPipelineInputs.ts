@@ -270,6 +270,26 @@ function candidateIdFor(adoption: AdoptionFacts | null, sceneIndex: number, beat
  * null and is still dropped with its provider named, because planning a shot around a file that
  * exists only in this render's temp directory is the failure the ledger was built to end.
  */
+/**
+ * The canonical name for one asset, in the form every forensic line in this pipeline uses.
+ *
+ * Provider plus the provider's own id, because those are the two facts that survive a rename, a
+ * trim, a fair-use transform and a re-download. Never an array position, never a bare filename, and
+ * never a temporary URL — a CDN link identifies where a file was for a few hours, not what it is.
+ *
+ * An adoption the ledger could not resolve prints `asset=unknown`, which is an honest gap. Naming
+ * it after the path it happens to sit at today would make the log look complete and read wrong.
+ */
+function assetLabel(adoption: AdoptionFacts | null | undefined): string {
+  if (!adoption) return "asset=unknown provider=none sourceId=none";
+  const provider = adoption.provider?.trim() || "unknown";
+  const sourceId =
+    adoption.providerAssetId?.trim() ||
+    (adoption.archiveAssetId != null ? String(adoption.archiveAssetId) : "") ||
+    "none";
+  return `asset=${provider}:${sourceId} provider=${provider} sourceId=${sourceId}`;
+}
+
 export function identityFrom(adoption: AdoptionFacts | null): AssetSourceIdentity | null {
   if (!adoption) return null;
   const identity = identityFromAdoption(adoption);
@@ -649,6 +669,11 @@ export function buildCinematicSceneInputs(params: {
       const adopted = sceneFacts.clips[beatIndex] ?? null;
       if (!adopted) {
         dropped.push(`${beatId}: no clip was adopted for this beat`);
+        /** No asset to name: there was nothing here to lose. */
+        console.log(
+          `[CinematicDrop] scene=${scene.index} beat=${beatIndex} asset=none ` +
+            `reason=NO_ADOPTED_CLIP`
+        );
         return;
       }
       const identity = identityFrom(adopted.adoption);
@@ -664,14 +689,34 @@ export function buildCinematicSceneInputs(params: {
           `${beatId}: adopted clip has no rehydratable identity ` +
             `(provider=${adopted.adoption?.provider ?? "unknown"})`
         );
+        console.log(
+          `[CinematicDrop] scene=${scene.index} beat=${beatIndex} ` +
+            `${assetLabel(adopted.adoption)} reason=NOT_REHYDRATABLE`
+        );
         return;
       }
 
       const durationSec = Math.max(0, end - start);
       if (durationSec <= 0) {
         dropped.push(`${beatId}: the beat has no voice window and no hold length`);
+        console.log(
+          `[CinematicDrop] scene=${scene.index} beat=${beatIndex} ` +
+            `${assetLabel(adopted.adoption)} reason=NO_VOICE_WINDOW`
+        );
         return;
       }
+      /**
+       * §5 — the kept assets are logged too, not only the losses.
+       *
+       * A drop list alone cannot answer "did MY asset survive": absence from it is not presence in
+       * the plan, and reading a log by what is missing from it is the guesswork this whole round
+       * removes. With both lines, `ADOPTED → CINEMATIC_SELECTED` and `ADOPTED → CINEMATIC_DROPPED`
+       * are the only two endings, and neither is silent.
+       */
+      console.log(
+        `[CinematicSelected] scene=${scene.index} beat=${beatIndex} ` +
+          `${assetLabel(adopted.adoption)} start=${start.toFixed(2)} duration=${durationSec.toFixed(2)}`
+      );
 
       if (adopted.facts.durationSec != null) stats.withProbe++;
       if (adopted.adoption?.sourceInSec != null) stats.withTrim++;
