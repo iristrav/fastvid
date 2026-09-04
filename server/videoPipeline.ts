@@ -321,6 +321,7 @@ import {
   formatSelectedButNotRendered,
   formatFillerOverAdoptedAsset,
   formatFunnelReport,
+  formatProviderFunnelInvariant,
   formatLineageLine,
   formatSourceSummary,
   assertNoSelectedClipWithoutOutcome,
@@ -40790,6 +40791,19 @@ async function _runVideoPipelineInner(
       for (const line of formatFunnelReport(summary, ledger.finalVideoWasVerified)) {
         console.log(pipelineReport.add("sourcing", line));
       }
+      /**
+       * §12 — how much of that funnel this render can actually account for, candidate by candidate.
+       *
+       * `retrieved=30` is a running total from `countSearch`; the ledger opens a record only when a
+       * candidate is tagged or downloaded. The line above therefore invites a reading it cannot
+       * support — that twenty-nine were considered and turned down — when in truth they were never
+       * individually tracked. This says which of the two gaps a number belongs to, and warns only
+       * on the one that is a defect: a record the ledger opened and then lost track of.
+       */
+      for (const line of formatProviderFunnelInvariant(summary, ledger.allRecords(), ledger.allEvents())) {
+        if (line.includes("INVARIANT_BROKEN")) console.warn(pipelineReport.add("sourcing", line));
+        else console.log(pipelineReport.add("sourcing", line));
+      }
       // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
       // rendered — plus a refusal to print a funnel that widens.
       for (const line of formatAssetUsageSummary(summary, ledger.finalVideoWasVerified)) {
@@ -41846,6 +41860,56 @@ async function _runVideoPipelineInner(
                       `alreadyLocal=${existingByClipId.size}`
                   )
                 );
+                /**
+                 * §7 — THE RENDER'S INPUT, ASSET BY ASSET, BEFORE A FRAME IS DRAWN.
+                 *
+                 * `[RenderAsset]` describes the DELIVERED file, built afterwards from the lineage
+                 * ledger. That is the right report for "what does this video contain" and the wrong
+                 * one for "what was this renderer handed" — a render that fails, is cancelled or
+                 * drops a clip produces no such lines at all, and the two questions then have the
+                 * same empty answer.
+                 *
+                 * These lines are emitted from the timeline itself, so the last checkpoint before
+                 * ffmpeg is on the record whatever happens next. `TimelineVideoClip.source` is an
+                 * `AssetSourceIdentity`, so the identity is the one the planner proved rather than
+                 * anything re-derived here.
+                 *
+                 * `origin` distinguishes what the film is made of. A guaranteed filler is a real
+                 * file and a real render input, and calling it a real ASSET would inflate every
+                 * count that matters — this is the same distinction `[FORENSIC_BEAT_SUMMARY]`
+                 * needs and the one VID-0567 turned on.
+                 */
+                {
+                  const inputs = videoTrack(outcome.timeline);
+                  const originOf = (c: (typeof inputs)[number]): string =>
+                    isPipelineFallbackClip(c.source.title ?? c.id)
+                      ? "GUARANTEED_FILLER"
+                      : c.source.provider && c.source.provider !== "UNVERIFIED"
+                        ? "REAL_ASSET"
+                        : "UNVERIFIED_SOURCE";
+                  const real = inputs.filter((c) => originOf(c) === "REAL_ASSET").length;
+                  const filler = inputs.filter((c) => originOf(c) === "GUARANTEED_FILLER").length;
+                  console.log(
+                    `[FinalRenderInputs] render=${videoId} job=${cutover.renderJobId} ` +
+                      `clips=${inputs.length} realAssets=${real} fallbackAssets=${filler} ` +
+                      `unverified=${inputs.length - real - filler} ` +
+                      `alreadyLocal=${existingByClipId.size} ` +
+                      `pictureDuration=${(outcome.timeline.durationSec ?? 0).toFixed(2)}`
+                  );
+                  for (const c of inputs) {
+                    const sourceId =
+                      c.source.providerAssetId ??
+                      (c.source.archiveAssetId != null ? String(c.source.archiveAssetId) : "none");
+                    console.log(
+                      `[FinalRenderAsset] render=${videoId} job=${cutover.renderJobId} ` +
+                        `asset=${c.source.provider}:${sourceId} provider=${c.source.provider} ` +
+                        `sourceId=${sourceId} clip=${c.id} ` +
+                        `start=${c.timelineStart.toFixed(2)} ` +
+                        `duration=${(c.timelineEnd - c.timelineStart).toFixed(2)} ` +
+                        `origin=${originOf(c)} local=${existingByClipId.has(c.id)}`
+                    );
+                  }
+                }
                 /**
                  * THE WATCHDOG DOES NOT SEE THIS RENDER'S FFMPEG, SO IT IS TOLD ABOUT IT.
                  *

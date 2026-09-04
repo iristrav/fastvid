@@ -1871,6 +1871,79 @@ export function formatFunnelReport(summary: VisualSourceSummary, finalVideoVerif
 }
 
 /**
+ * §12 — HOW MANY OF A PROVIDER'S CANDIDATES THIS RENDER CAN ACCOUNT FOR, ONE BY ONE.
+ *
+ * ── The gap this measures ───────────────────────────────────────────────────────────────────
+ *
+ * `[VisualFunnel] youtube_cc retrieved=30 eligible=1 ranked=1 selected=1` invites the reading that
+ * thirty candidates were considered and twenty-nine were turned down. It cannot support that
+ * reading. `retrieved` is a RUNNING TOTAL, added up by `countSearch(provider, results.length)` once
+ * per search; the ledger opens a RECORD only when a candidate is tagged or downloaded. So the
+ * twenty-nine were never individually tracked, and there is nothing to ask why about.
+ *
+ * That is a real limit and this function states it rather than papering over it. It reports, per
+ * provider, how many candidates the searches returned, how many became records, how many of those
+ * records reached a terminal outcome, and the difference — `unexplained`.
+ *
+ * ── Why this does not invent the missing reasons ────────────────────────────────────────────
+ *
+ * Giving all thirty a reason would mean opening a lineage record for every search result, which is
+ * a behaviour change with a real cost — thirty records per provider per scene, most for candidates
+ * nothing ever looked at again — and this round is observability only. Guessing a reason for the
+ * twenty-nine would be worse: it would make the log look complete and read wrong, which is the
+ * defect this whole investigation started from.
+ *
+ * So the honest report is a number. `unexplained=29` says exactly what is not known, and
+ * `INVARIANT_BROKEN` fires only for the case that IS a defect: a candidate the ledger opened a
+ * record for and then lost track of. Those are the ones that can be chased.
+ */
+export function formatProviderFunnelInvariant(
+  summary: VisualSourceSummary,
+  records: readonly VisualLineageRecord[],
+  events: readonly VisualLineageEvent[]
+): string[] {
+  /** Every stage each record reached, folded the same way every other rule folds it. */
+  const stagesById = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  for (const e of events) {
+    let stages = stagesById.get(e.lineageId);
+    if (!stages) stagesById.set(e.lineageId, (stages = new Map()));
+    if (e.status !== "OK" || !stages.has(e.stage)) stages.set(e.stage, e.status);
+  }
+
+  const byProvider = new Map<string, { tracked: number; terminal: number }>();
+  for (const r of records) {
+    /** A derived file is not a second candidate — only roots are counted. */
+    if (r.parentLineageId) continue;
+    const key = r.provider ?? UNVERIFIED_PROVIDER;
+    const entry = byProvider.get(key) ?? { tracked: 0, terminal: 0 };
+    entry.tracked++;
+    const stages = stagesById.get(r.lineageId) ?? new Map<LineageStage, LineageEventStatus>();
+    if (stages.has("FINAL_VIDEO") || hasTerminalOutcome(stages)) entry.terminal++;
+    byProvider.set(key, entry);
+  }
+
+  const lines: string[] = [];
+  for (const [provider, counts] of Object.entries(summary.byProvider)) {
+    const seen = byProvider.get(provider) ?? { tracked: 0, terminal: 0 };
+    /**
+     * Two different gaps, kept apart because they have different fixes.
+     *
+     *   untracked — a search result that never became a record. A limit of the design.
+     *   unexplained — a record with no ending. A defect, and chaseable by lineage id.
+     */
+    const untracked = Math.max(0, counts.results - seen.tracked);
+    const unexplained = Math.max(0, seen.tracked - seen.terminal);
+    const broken = unexplained > 0 ? " INVARIANT_BROKEN" : "";
+    lines.push(
+      `[ProviderFunnelInvariant] provider=${provider} candidates=${counts.results} ` +
+        `tracked=${seen.tracked} terminalOutcomes=${seen.terminal} ` +
+        `untracked=${untracked} unexplained=${unexplained}${broken}`
+    );
+  }
+  return lines;
+}
+
+/**
  * RONDE 94 — the per-provider lifecycle, in the words the question is usually asked in.
  *
  * "How many YouTube clips did we find, and how many actually ended up in the video?" The ledger
