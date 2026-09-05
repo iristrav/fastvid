@@ -8,7 +8,12 @@ import {
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
 import type { VisualSourceLedger } from "./visualSourceLineage";
-import { adoptionPolicyFor, type AdoptCategory } from "./adoptionPolicy";
+import {
+  adoptionPolicyFor,
+  visionVerdictFromGate,
+  type AdoptCategory,
+  type AdoptionVisionVerdict,
+} from "./adoptionPolicy";
 
 export type ClipAdoptEntry = {
   sceneIndex: number;
@@ -238,6 +243,15 @@ export type AdoptionEvidence = {
   eligible: boolean;
   /** Did the picture editor return a verdict for this clip on this beat? */
   judged: boolean;
+  /**
+   * RONDE 94 — WHAT the editor said, not merely whether it spoke.
+   *
+   * `judged` is kept because it answers a different question the funnel audit still asks ("was
+   * this picture ever put to the editor at all"), and because collapsing the two would lose the
+   * distinction between a picture nobody looked at and one that was looked at and refused. Only
+   * APPROVED backs a REAL_FUNNEL claim.
+   */
+  vision: AdoptionVisionVerdict;
   /** True when the route's declared requirements are all met by the evidence above. */
   backed: boolean;
 };
@@ -259,21 +273,32 @@ function noteAdoptionEvidence(
   const ledger = ledgerByAudit.get(audit);
   const relevance = relevanceByAudit.get(audit);
 
-  /** No ledger bound is a caller outside a render; it proves nothing either way. */
-  const record = ledger?.resolve(clipPath) ?? null;
-  const eligible = Boolean(ledger && record && ledger.hasStage(record.lineageId, "ELIGIBLE"));
-  const judged = Boolean(
-    relevance &&
-      relevanceVerdictForRenderedAsset(relevance, {
+  /**
+   * No ledger bound is a caller outside a render; it proves nothing either way.
+   *
+   * RONDE 94: the same central helper the montage guard asks, so the evidence line and the
+   * refusal can never disagree about whether a clip was eligible.
+   */
+  const eligible = Boolean(ledger?.isEligible(clipPath));
+  const judgement = relevance
+    ? relevanceVerdictForRenderedAsset(relevance, {
         localPath: clipPath,
         currentFilename: path.basename(clipPath),
         sceneIndex,
         beatIndex,
       })
-  );
+    : null;
+  const judged = Boolean(judgement);
+  const vision = visionVerdictFromGate(judgement?.verdict);
 
+  /**
+   * RONDE 94: `backed` now means what the guard means by it — APPROVED, not "spoken about".
+   * The two readings must agree, or the evidence line would report as backed exactly the
+   * adoptions the montage guard refuses.
+   */
   const backed =
-    (!policy.requiresEligibility || eligible) && (!policy.requiresVision || judged);
+    (!policy.requiresEligibility || eligible) &&
+    (!policy.requiresVision || vision === "APPROVED");
 
   const list = evidenceByAudit.get(audit) ?? [];
   list.push({
@@ -284,6 +309,7 @@ function noteAdoptionEvidence(
     category: policy.category,
     eligible,
     judged,
+    vision,
     backed,
   });
   evidenceByAudit.set(audit, list);

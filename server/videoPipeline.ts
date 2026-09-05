@@ -159,7 +159,7 @@ import {
   resolveBeatScriptVisualAnchor,
   resolveBeatVisualIntent,
 } from "./scriptVisualKeywords";
-import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, type VisionGateResult } from "./visualQualityGate";
+import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, visionPipelineIsUnavailable, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
   clipEmbeddingIndexEnabled,
@@ -220,6 +220,7 @@ import {
   censusAdoptionPolicies,
   currentAdoptionIntent,
   formatAdoptionPolicyCensus,
+  visionVerdictFromGate,
   withAdoptionIntent,
 } from "./adoptionPolicy";
 import {
@@ -9667,7 +9668,13 @@ async function appendGuaranteedSceneClips(
         dedup ? { dedup, scene, beatIndex: 2000 + slot } : undefined
       );
       const key = clipContentKey(clip);
-      if (!clips.some((c) => clipContentKey(c) === key)) {
+      const guaranteedIntent = guaranteedAdoptSource(tierOut.tier);
+      if (
+        !clips.some((c) => clipContentKey(c) === key) &&
+        !(await withAdoptionIntent(guaranteedIntent, () =>
+          dedup ? adoptionGuardRefusesPush(dedup, clip, scene.index, 2000 + slot) : Promise.resolve(false)
+        ))
+      ) {
         clips.push(clip);
         beatDurations.push(holdSec);
         // Audit-gap fix (same class as Round 17 + follow-up fixes): every other
@@ -23062,7 +23069,8 @@ async function adoptClip(
        */
       const eligibleRecord = dedup.sourcingCache.lineage.resolve(p, contentKey);
       if (eligibleRecord) {
-        dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "ELIGIBLE", { status: "OK" });
+        /** RONDE 94: through the one writer, so eligibility has a single spelling. */
+        dedup.sourcingCache.lineage.markEligible(p, contentKey, "adopt_clip_gates_cleared");
         dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "RANKED", { status: "OK" });
         dedup.sourcingCache.lineage.recordEvent(eligibleRecord.lineageId, "SELECTED", { status: "OK" });
         eligibleRecord.sceneIndex = sceneIndex;
@@ -23523,6 +23531,26 @@ async function recoverSceneClipsIfEmptyInner(
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
       if (clips.some((c) => clipContentKey(c) === key)) continue;
+      /**
+       * RONDE 94 — the scene recovery ladder judges its pictures like every other route.
+       *
+       * `fetchCuratedArchiveBeatClip` returns a clip without ever putting it to the picture editor,
+       * and this loop then wrote it straight into the scene's clip list. Nothing downstream asked:
+       * `recoverSceneClipsIfEmpty`'s result is assigned directly to `sceneVisualResults[si]`, so it
+       * never met one of the five push variants and never met a gate. That is one of the sources of
+       * render 568's `verification=never_asked reason=real_footage_never_judged` on 15 of 17 beats.
+       *
+       * The same gate every other route calls, with this route's own label — which also records
+       * ELIGIBLE centrally (see `markEligible`), so the guard below has something real to read.
+       * When the gate cannot run at all the verdict is absent, the guard refuses, and this route
+       * contributes nothing rather than contributing unjudged footage.
+       */
+      if (!(await beatClipPassesVisionGate(
+        clip, stubBeat, scene, workDir, topicContext, dedup, undefined, "recovered_scene"
+      )).pass) {
+        continue;
+      }
+      if (await withAdoptionIntent("recovered_scene", () => adoptionGuardRefusesPush(dedup, clip, scene.index, stubBeat.index))) continue;
       clips.push(clip);
       beatDurations.push(stubBeat.holdSec);
       if (clips.length >= need) break;
@@ -23538,6 +23566,7 @@ async function recoverSceneClipsIfEmptyInner(
         async (clipPath, holdSec = stubBeat.holdSec) => {
           const key = clipContentKey(clipPath);
           if (clips.some((c) => clipContentKey(c) === key)) return false;
+          if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, stubBeat.index)) return false;
           clips.push(clipPath);
           beatDurations.push(holdSec);
           return true;
@@ -23605,6 +23634,7 @@ async function recoverSceneClipsIfEmptyInner(
         if (!fbClip) continue;
         const key = clipContentKey(fbClip);
         if (clips.some((c) => clipContentKey(c) === key)) continue;
+        if (await withAdoptionIntent("recovered_scene", () => adoptionGuardRefusesPush(dedup, fbClip, scene.index, stubBeat.index))) continue;
         clips.push(fbClip);
         beatDurations.push(recoverHoldSec);
       }
@@ -23621,6 +23651,7 @@ async function recoverSceneClipsIfEmptyInner(
           async (clipPath, holdSec = stubBeat.holdSec) => {
             const key = clipContentKey(clipPath);
             if (clips.some((c) => clipContentKey(c) === key)) return false;
+            if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, stubBeat.index)) return false;
             clips.push(clipPath);
             beatDurations.push(holdSec);
             return true;
@@ -23661,6 +23692,7 @@ async function recoverSceneClipsIfEmptyInner(
           async (clipPath, holdSec = stubBeat.holdSec) => {
             const key = clipContentKey(clipPath);
             if (clips.some((c) => clipContentKey(c) === key)) return false;
+            if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, sceneBeat.index)) return false;
             clips.push(clipPath);
             beatDurations.push(holdSec);
             return true;
@@ -23759,6 +23791,7 @@ async function recoverSceneClipsIfEmptyInner(
     if (!clip || isPipelineFallbackClip(clip)) continue;
     const key = clipContentKey(clip);
     if (clips.some((c) => clipContentKey(c) === key)) continue;
+    if (await withAdoptionIntent("recovered_scene", () => adoptionGuardRefusesPush(dedup, clip, scene.index, stubBeat.index))) continue;
     clips.push(clip);
     beatDurations.push(VIDRUSH_BEAT_SEC);
     if (clips.length >= n) break;
@@ -23876,7 +23909,7 @@ async function rescueFastShortComposeClips(
   console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — similar archive`);
   const beatForRescue = beat;
   const pushRescue = async (clipPath: string, sec = holdSec): Promise<boolean> =>
-    pushClip(clipPath, sec);
+    withAdoptionIntent("rescue_similar", () => pushClip(clipPath, sec));
   if (
     await adoptBestSimilarBeatClip(
       beatForRescue,
@@ -23921,7 +23954,7 @@ async function rescueFastShortComposeClips(
       "compose_rescue_archive",
       rescueVision
     );
-    if (vision.pass) await pushClip(archiveClip, holdSec);
+    if (vision.pass) await withAdoptionIntent("rescue_archive", () => pushClip(archiveClip, holdSec));
   }
 
   if (collected.length === 0) {
@@ -23944,7 +23977,9 @@ async function rescueFastShortComposeClips(
   if (collected.length === 0) {
     const recovered = await recoverSceneClipsIfEmpty(scene, workDir, videoTitle, dedup);
     for (let i = 0; i < recovered.clips.length; i++) {
-      if (await pushClip(recovered.clips[i]!, recovered.beatDurations[i] ?? holdSec)) break;
+      const rec = recovered.clips[i]!;
+      const recHold = recovered.beatDurations[i] ?? holdSec;
+      if (await withAdoptionIntent("recovered_scene", () => pushClip(rec, recHold))) break;
     }
   }
 
@@ -27359,6 +27394,26 @@ async function beatClipPassesVisionGate(
     return { pass: false, worstScore10: null, skipped: false, fromCache: false };
   }
   /**
+   * RONDE 94 — WHERE ELIGIBILITY IS ACTUALLY DECIDED, AND NOW RECORDED.
+   *
+   * Everything above this line is deterministic and free of the picture editor: the candidate
+   * exists, it is not a pipeline placeholder, it is not mostly black on the routes that check, and
+   * it carries no burnt-in chyron. A candidate that reaches this line has passed its route's own
+   * eligibility criteria and is about to cost a judgement. That IS the eligibility decision — it
+   * simply had no voice on 33 of the 35 routes, because only `adoptClip` and the curated ranked
+   * queue ever wrote it down.
+   *
+   * This function's own doc says why it is the right hook: "every rescue and adoption route
+   * funnels through here, so one hook covers them all." No new criterion is introduced — the gates
+   * that decide are the ones that already ran — and no second registry: the lineage ledger records
+   * it, exactly as the two existing sites do.
+   *
+   * A candidate the ledger has never seen records nothing and stays ineligible. That is deliberate
+   * and it is the honest direction: an asset with no provenance must not acquire one here.
+   */
+  dedup.sourcingCache?.lineage?.markEligible(clipPath, clipContentKey(clipPath), `vision_gate:${queryLabel}`);
+
+  /**
    * RONDE 104 — the last judge that decides content without seeing the picture.
    *
    * RONDE 29 added this because a "white lives matter" roadside clip went under narration about
@@ -27679,7 +27734,7 @@ async function beatClipRefusedByRelevanceGate(
  *
  * `pushSceneClip` is the narrowest point at which a clip becomes a beat's clip: it is the sole
  * writer of `clipBeatIndices`, and `clipBeatIndices` is the only test the placeholder rescue makes.
- * Every caller nevertheless does `await pushClip(clip);` and throws the answer away, so the moment
+ * Every caller nevertheless awaits the push and throws the answer away, so the moment
  * a beat lost its real asset appeared nowhere in the log — it could only be inferred, afterwards,
  * from a guaranteed filler showing up.
  *
@@ -27757,25 +27812,37 @@ async function adoptionGuardRefusesPush(
   if (!source) return false;
 
   const ledger = dedup.sourcingCache?.lineage;
-  const record = ledger?.resolve(clipPath) ?? null;
-  const eligible = Boolean(ledger && record && ledger.hasStage(record.lineageId, "ELIGIBLE"));
-  const judged = Boolean(
-    dedup.beatRelevance &&
-      beatIndex != null &&
-      relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
-        localPath: clipPath,
-        currentFilename: path.basename(clipPath),
-        sceneIndex,
-        beatIndex,
-      })
-  );
+  /** RONDE 94: the single central read — same helper the adopt audit and every route now use. */
+  const eligible = Boolean(ledger?.isEligible(clipPath, clipContentKey(clipPath)));
+  /**
+   * RONDE 94: what the editor SAID, not merely whether it spoke. `does_not_fit` and `unknown` are
+   * no longer silently as good as `fits` — see `visionVerdictFromGate`.
+   */
+  const judgement =
+    dedup.beatRelevance && beatIndex != null
+      ? relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+          localPath: clipPath,
+          currentFilename: path.basename(clipPath),
+          contentKey: clipContentKey(clipPath),
+          sceneIndex,
+          beatIndex,
+        })
+      : null;
+  const vision = visionVerdictFromGate(judgement?.verdict);
+  /**
+   * RONDE 94: not "was this picture judged" but "could anything be judged at all". See
+   * `adoptionGuardVerdict` — this suspends the vision requirement only when the model never
+   * loaded, and RONDE 89's export gate still refuses the film such a render produces.
+   */
+  const visionAvailable = !visionPipelineIsUnavailable();
 
-  const verdict = adoptionGuardVerdict({ source, eligible, judged });
+  const verdict = adoptionGuardVerdict({ source, eligible, vision, visionAvailable });
   if (verdict.allowed) return false;
 
   console.warn(
     `[AdoptionGuard] scene=${sceneIndex} beat=${beatIndex ?? "?"} route=${source} ` +
-      `blocked=${verdict.code} reason=${verdict.reason} file=${path.basename(clipPath)}`
+      `eligible=${eligible} vision=${vision}${visionAvailable ? "" : " visionUnavailable"} blocked=${verdict.code} reason=${verdict.reason} ` +
+      `file=${path.basename(clipPath)}`
   );
   recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex ?? 0, clipPath, verdict.code);
   ledger?.recordRejection(clipPath, verdict.code, clipContentKey(clipPath));
@@ -28099,7 +28166,7 @@ async function pushMotionGraphicBeatClipIfAny(
     route: "motion_graphic",
     placeholder: true,
   });
-  return await pushClip(mgfxClip, holdSec);
+  return await withAdoptionIntent("motion_graphic", () => pushClip(mgfxClip, holdSec));
 }
 
 async function applyVideoBeatTextOverlay(
@@ -28118,10 +28185,24 @@ async function applyVideoBeatTextOverlay(
    * family) needs the hand-off written down explicitly, and this is where it happens for every
    * route at once rather than at thirteen call sites.
    */
-  relevance?: BeatRelevanceLedger
+  relevance?: BeatRelevanceLedger,
+  /** RONDE 94 — see `carry` below: the overlay is a derivation, and it must be recorded as one. */
+  lineageForOverlay?: VisualSourceLedger
 ): Promise<string> {
   const carry = (out: string): string => {
     if (relevance) inheritBeatRelevance(relevance, clipPath, out);
+    /**
+     * RONDE 94 — the rename must not break the provenance chain either.
+     *
+     * RONDE 103 phase 17 carried the RELEVANCE decision across this rename and left the lineage to
+     * the content key, which works for anything with real provenance and silently fails for the
+     * `file:` family. `linkDerivedPath` is this ledger's declared mechanism for exactly this step —
+     * its own doc names "the text overlay" as a call site it expects — so the derived file is a
+     * child of the clip it was burnt from rather than a new identity that happens to look similar.
+     * Without it `isEligible(withText)` can answer false for an asset that was eligible one line
+     * earlier, which would turn RONDE 94's enforcement into a refusal of the pipeline's own work.
+     */
+    lineageForOverlay?.linkDerivedPath(out, clipPath, "OVERLAYED", { reason: "faceless_text_overlay" });
     return out;
   };
   if (deferFacelessSubtitlesToCompose() && facelessSubtitlesEnabled()) {
@@ -28394,7 +28475,7 @@ async function adoptBestSimilarBeatClip(
       bestClip = clip;
       bestTitle = picked.asset.title ?? String(picked.asset.id);
     }
-    if (vision.pass && (await pushClip(clip, holdSec))) {
+    if (vision.pass && (await withAdoptionIntent(similarSource, () => pushClip(clip, holdSec)))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: similar archive match ` +
           `"${picked.asset.title ?? picked.asset.id}" (CLIP ${score}/10)`
@@ -28416,7 +28497,11 @@ async function adoptBestSimilarBeatClip(
     }
   }
 
-  if (bestClip && bestScore >= similarFloor && (await pushClip(bestClip, holdSec))) {
+  if (
+    bestClip &&
+    bestScore >= similarFloor &&
+    (await withAdoptionIntent(similarSource, () => pushClip(bestClip!, holdSec)))
+  ) {
     console.warn(
       `[Pipeline] Scene ${scene.index} beat ${beat.index}: best similar archive ` +
         `"${bestTitle}" (CLIP ${bestScore}/10, floor ${similarFloor})`
@@ -28480,7 +28565,7 @@ async function adoptBestSimilarBeatClip(
     const score = vision.worstScore10 ?? preScore ?? 0;
     if (!vision.pass) continue;
 
-    if (await pushClip(clip, holdSec)) {
+    if (await withAdoptionIntent("archive_topic", () => pushClip(clip, holdSec))) {
       console.warn(
         `[Pipeline] Scene ${scene.index} beat ${beat.index}: topic-anchored archive ` +
           `"${picked.asset.title ?? picked.asset.id}" (tags/score ${picked.score}, CLIP ${score}/10)`
@@ -28599,7 +28684,7 @@ export async function adoptArchiveBeatClip(
       clipPath, sec, beat, scene, workDir, videoTitle, dedup, semanticProfile
     );
     if (padded) effectiveClip = padded;
-    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(effectiveClip, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     /**
      * RONDE 86/87 — the two renames that used to end a clip's provenance.
      *
@@ -28818,7 +28903,8 @@ export async function adoptArchiveBeatClip(
        * never selected, and collapsing the three would hide exactly that.
        */
       const candidateLineage = ensureCuratedAssetLineage(dedup, picked, scene.index, beat.index);
-      funnel.recordEvent(candidateLineage.lineageId, "ELIGIBLE", { status: "OK" });
+      /** RONDE 94: same central writer as every other route — see `markEligible`. */
+      funnel.markLineageEligible(candidateLineage.lineageId, "curated_ranked_queue");
       funnel.recordEvent(candidateLineage.lineageId, "RANKED", { status: "OK" });
     }
 
@@ -29142,9 +29228,9 @@ async function adoptWikimediaBeatClipInner(
   const tryClip = async (clipPath: string | null | undefined, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (await isMostlyBlackClip(clipPath)) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-    return await pushClip(withText, sec);
+    return await withAdoptionIntent("wikimedia", () => pushClip(withText, sec));
   };
 
   const baseAnalysis = analyzeSceneVisual(beat.text, videoTitle);
@@ -29202,7 +29288,7 @@ async function adoptWikimediaBeatClipInner(
     console.log(`[Hang] adoptWikiPath BEFORE applyVideoBeatTextOverlay s${_si}b${_bi}`);
     const _ot0 = Date.now();
     const withText = await withTimeout(
-      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance),
+      applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage),
       30_000, `applyVideoBeatTextOverlay s${_si}b${_bi}`
     ).catch((err: Error) => { console.error(`[Hang] applyVideoBeatTextOverlay TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return clipPath; });
     console.log(`[Hang] adoptWikiPath AFTER applyVideoBeatTextOverlay s${_si}b${_bi} elapsed=${Date.now()-_ot0}ms`);
@@ -29214,7 +29300,7 @@ async function adoptWikimediaBeatClipInner(
     ).catch((err: Error) => { console.error(`[Hang] montageClipPassesComposeGate TIMEOUT/ERROR s${_si}b${_bi}: ${err.message}`); return true; });
     console.log(`[Hang] adoptWikiPath AFTER montageClipPassesComposeGate s${_si}b${_bi} pass=${gatePass} elapsed=${Date.now()-_gt0}ms`);
     if (!gatePass) { clearWorkerHeartbeat(heartbeatLabel); return false; }
-    if (!(await pushClip(withText, holdSec))) { clearWorkerHeartbeat(heartbeatLabel); return false; }
+    if (!(await withAdoptionIntent(label, () => pushClip(withText, holdSec)))) { clearWorkerHeartbeat(heartbeatLabel); return false; }
     console.log(`[Hang] adoptWikiPath EXIT s${_si}b${_bi} adopted=true total=${Date.now()-_awpT0}ms`);
     clearWorkerHeartbeat(heartbeatLabel);
     recordClipAdopt(
@@ -29475,9 +29561,9 @@ async function adoptInternetArchiveBeatClipInner(
       "internet_archive"
     );
     if (!vision.pass) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-    if (await pushClip(withText, sec)) {
+    if (await withAdoptionIntent("internet_archive", () => pushClip(withText, sec))) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -29591,9 +29677,9 @@ async function adoptKlingBeatClip(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-    if (await pushClip(withText, sec)) {
+    if (await withAdoptionIntent("kling", () => pushClip(withText, sec))) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       return true;
     }
@@ -29686,9 +29772,9 @@ async function adoptEuropeanaBeatClipInner(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-    if (await pushClip(withText, sec)) {
+    if (await withAdoptionIntent("europeana", () => pushClip(withText, sec))) {
       dedup.usedContentKeys.add(clipContentKey(withText));
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -29800,9 +29886,9 @@ async function adoptAiBeatClip(
   ) {
     return false;
   }
-  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
+  const withText = await applyVideoBeatTextOverlay(aiClip, beat, scene, workDir, holdSec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
   if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-  if (await pushClip(withText, holdSec)) {
+  if (await withAdoptionIntent(rescueTier ? "rescue_ai" : "ai", () => pushClip(withText, holdSec))) {
     recordClipAdopt(
       dedup.clipAdoptAudit,
       scene.index,
@@ -29883,9 +29969,10 @@ async function adoptStockBeatClipFallbackInner(
       stockVisionFloor
     );
     if (!vision.pass) return false;
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-    if (!(await pushClip(withText, sec))) return false;
+    const stockIntent = stockAdoptSource ?? (source === "Pexels" ? "pexels" : "pixabay");
+    if (!(await withAdoptionIntent(stockIntent, () => pushClip(withText, sec)))) return false;
     recordClipAdopt(
       dedup.clipAdoptAudit,
       scene.index,
@@ -30122,9 +30209,9 @@ async function adoptEmergencyGeoStockClipInner(
     ) {
       return false;
     }
-    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance);
+    const withText = await applyVideoBeatTextOverlay(clipPath, beat, scene, workDir, sec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
     if (!(await montageClipPassesComposeGate(withText, scene.index, beat.index, dedup.beatRelevance))) return false;
-    if (await pushClip(withText, sec)) {
+    if (await withAdoptionIntent("pexels", () => pushClip(withText, sec))) {
       recordClipAdopt(
         dedup.clipAdoptAudit,
         scene.index,
@@ -30360,7 +30447,7 @@ async function rescueBeatVisualWhenEmptyInner(
       const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { dedup, beatIndex: beat.index });
       if (wikiClips.length > 0) {
         const clip = wikiClips[0]!;
-        if (clip && (await pushClip(clip, holdSec))) {
+        if (clip && (await withAdoptionIntent("rescue_wikimedia", () => pushClip(clip, holdSec)))) {
           recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, clip, "rescue_wikimedia", undefined, dedup.segmentGeoLock);
           dedup.lastRealClip = clip;
           console.log(`[Retrieval] s${scene.index}b${beat.index} Wikimedia rescue HIT: "${q.slice(0, 50)}"`);
@@ -30389,7 +30476,7 @@ async function rescueBeatVisualWhenEmptyInner(
       historicalRescueBudgetMs(dedup),
       `historical archival rescue s${scene.index} b${beat.index}`
     );
-    if (histRescue && (await pushClip(histRescue, holdSec))) {
+    if (histRescue && (await withAdoptionIntent("rescue_archive", () => pushClip(histRescue, holdSec)))) {
       console.log(`[Retrieval] s${scene.index}b${beat.index} historical archival rescue HIT`);
       return true;
     }
@@ -30406,7 +30493,7 @@ async function rescueBeatVisualWhenEmptyInner(
     const gKey = `s${scene.index}b${beat.index}`;
     const graphicPath = dedup.graphicClips.get(gKey);
     if (graphicPath && fs.existsSync(graphicPath)) {
-      if (await pushClip(graphicPath, holdSec)) {
+      if (await withAdoptionIntent("rescue_graphic", () => pushClip(graphicPath, holdSec))) {
         recordClipAdopt(dedup.clipAdoptAudit, scene.index, beat.index, beat.text, graphicPath, "rescue_graphic", undefined, dedup.segmentGeoLock);
         console.log(`[EditorialGraphics] s${scene.index}b${beat.index} graphic HIT "${gKey}"`);
         return true;
@@ -30458,7 +30545,7 @@ async function rescueBeatVisualWhenEmptyInner(
          * lineage record; when pushClip turns it away the record was left saying nothing, which is
          * how `extend_s*` files reached render 554's vanished list.
          */
-        if (extended && !(await pushClip(extended, holdSec))) {
+        if (extended && !(await withAdoptionIntent("rescue_extend", () => pushClip(extended, holdSec)))) {
           /**
            * RONDE 167 §2 — pushClip refuses for two different reasons and they are not the same
            * ending.
@@ -30587,7 +30674,10 @@ async function rescueBeatVisualWhenEmptyInner(
       { dedup, scene, videoTitle, beatIndex: beat.index }
     );
     if (!placeholder) continue;
-    if (await pushClip(placeholder, holdSec)) {
+    const placeholderIntent = isPlaceholderGuaranteedTier(tierOut.tier)
+      ? "rescue_placeholder"
+      : guaranteedAdoptSource(tierOut.tier);
+    if (await withAdoptionIntent(placeholderIntent, () => pushClip(placeholder, holdSec))) {
       /**
        * §20 — the rung that answered is what the viewer sees. `noteBeatPlaceholder` above says the
        * search was exhausted; this says whether the result is real footage, a card with the beat's
@@ -30703,7 +30793,7 @@ async function trySubjectFallbackForBeat(
   const rejectsBefore = dedup.clipRejectAudit.entries.length;
   let adopted: string | null = null;
   const capture = async (clipPath: string, sec?: number): Promise<boolean> => {
-    const ok = await pushClip(clipPath, sec ?? holdSec);
+    const ok = await withAdoptionIntent(SUBJECT_FALLBACK_ROUTE, () => pushClip(clipPath, sec ?? holdSec));
     if (ok) adopted = clipPath;
     return ok;
   };
@@ -30835,7 +30925,12 @@ async function ensureBeatVisualFilled(
       (await beatClipPassesVisionGate(
         lastResort, beat, scene, workDir, videoTitle, dedup, semanticProfile, "last_resort"
       )).pass;
-    if (lastResort && lastResortFits && !isPipelineFallbackClip(lastResort) && (await pushClip(lastResort, holdSec))) {
+    if (
+      lastResort &&
+      lastResortFits &&
+      !isPipelineFallbackClip(lastResort) &&
+      (await withAdoptionIntent("stock", () => pushClip(lastResort!, holdSec)))
+    ) {
       markLicensedStockBeatUsed(dedup);
       recordClipAdopt(
         dedup.clipAdoptAudit,
@@ -30886,7 +30981,7 @@ async function ensureBeatVisualFilled(
       tierOut,
       { dedup, scene, videoTitle, beatIndex: beat.index }
     );
-    if (await pushClip(beatClip, holdSec)) {
+    if (await withAdoptionIntent(guaranteedAdoptSource(tierOut.tier), () => pushClip(beatClip, holdSec))) {
       /** §20 — same reason as the rescue site: record WHAT filled the beat, not only that it was. */
       noteBeatFillTier(dedup.beatOutcomeAudit, scene.index, beat.index, tierOut.tier);
       recordClipAdopt(
@@ -31297,7 +31392,12 @@ async function fillBeatVisual(
         dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, guaranteedTierOut,
         { dedup, scene, videoTitle }
       );
-      if (guaranteed && (await pushClip(guaranteed, holdSec))) {
+      if (
+        guaranteed &&
+        (await withAdoptionIntent(guaranteedAdoptSource(guaranteedTierOut.tier), () =>
+          pushClip(guaranteed!, holdSec)
+        ))
+      ) {
         /** §20 — the third per-beat guaranteed fill, recorded like the other two. */
         noteBeatFillTier(dedup.beatOutcomeAudit, scene.index, beat.index, guaranteedTierOut.tier);
         // Audit-gap fix (same class as Round 17 + follow-up fixes): this emergency-finish
@@ -33679,7 +33779,10 @@ async function fetchSceneVisualsInner(
                 produced: Boolean(researched) || gateFits + gateRejected > 0,
                 accepted: Boolean(researched),
               });
-              if (researched && (await pushClip(researched, beat.holdSec))) {
+              if (
+                researched &&
+                (await withAdoptionIntent("research_refetch", () => pushClip(researched!, beat.holdSec)))
+              ) {
                 // The research candidate is the beat's picture. Nothing below runs for this beat:
                 // it has real footage the gate approved, which is the outcome the whole round is for.
                 continue;
@@ -34353,8 +34456,8 @@ async function fetchSceneVisualsInner(
       if (realOnly && isLicensedStockClip(clip) && !canUseLicensedStockBeat(dedup)) {
         clip = null;
       } else {
-        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
-        await pushClip(clip);
+        clip = await applyVideoBeatTextOverlay(clip, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
+        await withAdoptionIntent("beat_fetch", () => pushClip(clip!));
       }
     }
     if (
@@ -34375,8 +34478,8 @@ async function fetchSceneVisualsInner(
       } catch {
       }
       if (aiOnly && !isPipelineFallbackClip(aiOnly)) {
-        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
-        await pushClip(withText);
+        const withText = await applyVideoBeatTextOverlay(aiOnly, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
+        await withAdoptionIntent("ai", () => pushClip(withText));
         console.log(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: AI clip (power word "${beat.powerWord}")`
         );
@@ -34450,8 +34553,8 @@ async function fetchSceneVisualsInner(
         );
       }
       if (rescue && !isPipelineFallbackClip(rescue)) {
-        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance);
-        await pushClip(withText);
+        const withText = await applyVideoBeatTextOverlay(rescue, beat, scene, workDir, beat.holdSec, dedup.perf.fastStockMode, dedup.beatRelevance, dedup.sourcingCache?.lineage);
+        await withAdoptionIntent("script_image", () => pushClip(withText));
       } else if (!archiveOnly) {
         console.warn(
           `[Pipeline] Scene ${scene.index} beat ${beat.index}: no clip (beat skipped, no grey)`
@@ -39548,6 +39651,7 @@ async function _runVideoPipelineInner(
                   topicContext,
                   visualDedup,
                   async (clipPath, holdSec = stubBeat.holdSec) => {
+                    if (await adoptionGuardRefusesPush(visualDedup, clipPath, scene.index, stubBeat.index)) return true;
                     clips.push(clipPath);
                     beatDurations.push(holdSec);
                     return clips.length < minNeeded;

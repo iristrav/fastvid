@@ -103,7 +103,11 @@ describe("Final production fix — fillBeatVisual emergency-finish guaranteed cl
     const end = src.indexOf("return true;", idx);
     expect(end).toBeGreaterThan(idx);
     const scoped = src.slice(idx, end);
-    expect(scoped).toContain("pushClip(guaranteed, holdSec)");
+    // RONDE 94: the push declares the tier it is adopting under; the non-null assertion follows
+    // from moving the call into a closure. The rule — recorded only after a successful push —
+    // is asserted unchanged on the line below.
+    expect(scoped).toContain("pushClip(guaranteed!, holdSec)");
+    expect(scoped).toContain("withAdoptionIntent(guaranteedAdoptSource(guaranteedTierOut.tier)");
     expect(scoped).toMatch(/recordClipAdopt\(\s*\n?\s*dedup\.clipAdoptAudit/);
     // RONDE 50: tier-aware source, see the note on the appendGuaranteedSceneClips test above.
     expect(scoped).toContain("guaranteedAdoptSource(guaranteedTierOut.tier)");

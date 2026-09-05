@@ -150,6 +150,23 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   sepiasearch: REAL_FUNNEL(),
   youtube: REAL_FUNNEL(),
   youtube_cc: REAL_FUNNEL(),
+  /**
+   * RONDE 94 — the three montage insertion points that adopted without declaring anything.
+   *
+   * `fetchSceneVisualsInner` pushes the beat's own fetched clip, the forced script image, and the
+   * research re-fetch straight into the montage. None of the three calls `recordClipAdopt`, so
+   * they were invisible to every audit RONDE 90-93 built, and — because they declared no intent —
+   * the RONDE 93 guard let them past on the null branch.
+   *
+   * They are declared REAL_FUNNEL because that is what they are: candidates the normal retrieval
+   * ladder produced for this beat. It is also the strictest category available, which is the right
+   * direction for a route whose classification was in doubt — a REAL_FUNNEL claim without
+   * eligibility and vision is refused, so an over-generous reading here cannot smuggle anything
+   * through; it can only block the route until it registers the evidence it claims to have.
+   */
+  beat_fetch: REAL_FUNNEL(),
+  script_image: REAL_FUNNEL(),
+  research_refetch: REAL_FUNNEL(),
 
   // ── Real media, off the funnel ────────────────────────────────────────────────────────────
   rescue_archive: RESCUE_REAL(
@@ -171,6 +188,14 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   ),
   rescue_similar: RESCUE_REAL(
     "archive media matched by similarity after the beat's own sourcing failed"
+  ),
+  /**
+   * RONDE 94 — `recoverSceneClipsIfEmpty` re-pushes clips it assembled for a scene that produced
+   * none at all. The clips are real (curated archive, Commons, stock), but they were selected
+   * against a sentence stub rather than the beat, one rung below the beat's own sourcing.
+   */
+  recovered_scene: RESCUE_REAL(
+    "scene-level recovery after the scene's own beats produced no clip at all"
   ),
 
   /**
@@ -466,6 +491,28 @@ export type AdoptionGuardVerdict =
   | { allowed: false; code: "UNDECLARED_ADOPT_ROUTE" | "FUNNEL_WITHOUT_EVIDENCE"; reason: string };
 
 /**
+ * RONDE 94 — WHAT THE PICTURE EDITOR ACTUALLY SAID.
+ *
+ * RONDE 93's guard asked a boolean: was there a verdict? That is not the question. The gate's own
+ * vocabulary is `"fits" | "does_not_fit" | "unknown"`, and RONDE 93 counted all three as "judged" —
+ * so a picture the editor had just REFUSED satisfied the vision requirement, and so did one it
+ * could not read. Absence of a verdict was the only thing that failed.
+ *
+ * That is the implicit approval this round exists to remove. A REAL_FUNNEL claim means an editor
+ * looked at this picture under this narration and said yes. Everything else — refused, unreadable,
+ * never asked — is not a yes, and the four are now distinguishable so the refusal can say which.
+ */
+export type AdoptionVisionVerdict = "APPROVED" | "REJECTED" | "UNCLEAR" | "NOT_ASKED";
+
+/** The gate's own vocabulary, translated once so no call site has to remember the mapping. */
+export function visionVerdictFromGate(verdict: string | null | undefined): AdoptionVisionVerdict {
+  if (verdict === "fits") return "APPROVED";
+  if (verdict === "does_not_fit") return "REJECTED";
+  if (verdict === "unknown") return "UNCLEAR";
+  return "NOT_ASKED";
+}
+
+/**
  * RONDE 93 — may this clip enter the montage?
  *
  * Two refusals, and they are deliberately not the same kind of thing.
@@ -475,18 +522,44 @@ export type AdoptionGuardVerdict =
  * sites and a behavioural one covers the runtime producers. So this refusal has no legitimate
  * traffic to break, which is exactly why it can be switched on with no measurement first.
  *
- * FUNNEL_WITHOUT_EVIDENCE is the rule RONDE 93 is ultimately for: a REAL_FUNNEL route must have
- * been found eligible and must have been judged. It is behind `ENFORCE_FUNNEL_ADOPTION` and OFF by
- * default, and that is not timidity — RONDE 92 measured why. `ELIGIBLE` is written at two sites in
- * the whole pipeline while 35 routes adopt, so switching this on today would refuse nearly every
- * adoption, drive `verifiedOwnVisual` to zero and make RONDE 89's export gate reject every render.
- * The flag exists so that one production render's `[AdoptionEvidence]` line decides when it is
- * safe, rather than the first firing being in front of a user.
+ * FUNNEL_WITHOUT_EVIDENCE is the rule this sequence of rounds is ultimately for: a REAL_FUNNEL
+ * route must have been found eligible and its picture must have been APPROVED.
+ *
+ * RONDE 93 shipped it behind `ENFORCE_FUNNEL_ADOPTION`, off by default, and that was not timidity —
+ * `ELIGIBLE` was written at two sites in the whole pipeline while 35 routes adopted, so switching
+ * it on then would have refused nearly every adoption, driven `verifiedOwnVisual` to zero and made
+ * RONDE 89's export gate reject every render.
+ *
+ * RONDE 94 removed the reason instead of waiting for a measurement that could only have confirmed
+ * it: eligibility is now recorded centrally at the one point every route passes through, every
+ * route declares what it is adopting, and the default is ON. `=false` remains as the explicit
+ * opt-out for a test that is proving something else, or for an operator during an incident.
  */
 export function adoptionGuardVerdict(input: {
   source: string | null;
   eligible: boolean;
-  judged: boolean;
+  vision: AdoptionVisionVerdict;
+  /**
+   * RONDE 94 — false ONLY when the picture editor could not be reached at all in this process.
+   *
+   * ── Why this is not a hole ──────────────────────────────────────────────────────────────────
+   *
+   * `beatClipPassesVisionGate` fails open when the local CLIP model will not load: it returns
+   * `skipped: true` and the relevance ledger records `unknown`. That predates this round and it is
+   * deliberate — a model-loading failure must not stop the product. But it means that in such a
+   * render EVERY picture is UNCLEAR, so enforcing the vision requirement there does not enforce a
+   * standard, it refuses every real adoption for a reason that has nothing to do with any picture.
+   *
+   * What is suspended is exactly one requirement, render-wide, for a reason the render logs. What
+   * is NOT suspended: eligibility, the declared-route rule, and RONDE 89's export gate — which
+   * refuses a film whose beats hold no verified visual. A render with no editor produces precisely
+   * that film, so it still cannot ship; it simply fails at the gate that can say why, instead of
+   * disappearing into thousands of per-clip refusals.
+   *
+   * The flag is a fact about the environment, never about a clip. A single unjudged picture in a
+   * render where the editor answered other questions is REFUSED, and there is a test for it.
+   */
+  visionAvailable?: boolean;
 }): AdoptionGuardVerdict {
   if (!input.source) return { allowed: true };
   const policy = adoptionPolicyFor(input.source);
@@ -503,7 +576,19 @@ export function adoptionGuardVerdict(input: {
 
   const missing: string[] = [];
   if (policy.requiresEligibility && !input.eligible) missing.push("eligibility");
-  if (policy.requiresVision && !input.judged) missing.push("vision");
+  /**
+   * RONDE 94 — only APPROVED satisfies a vision requirement.
+   *
+   * The three failing states are named separately because they are three different problems and
+   * the log has to be able to tell them apart: REJECTED means the editor looked and said no,
+   * UNCLEAR means it looked and could not tell, NOT_ASKED means nobody looked. Collapsing them
+   * into "unjudged" is how render 568 reported 15 of 17 beats as `never_asked` while the gate had
+   * in fact refused some of them.
+   */
+  const visionAvailable = input.visionAvailable !== false;
+  if (policy.requiresVision && visionAvailable && input.vision !== "APPROVED") {
+    missing.push(`vision (${input.vision})`);
+  }
   if (missing.length === 0) return { allowed: true };
   return {
     allowed: false,
@@ -513,9 +598,25 @@ export function adoptionGuardVerdict(input: {
 }
 
 /**
- * Off by default. See `adoptionGuardVerdict` for the measurement that has to come first — this is
- * a switch waiting on evidence, not a gate someone forgot to enable.
+ * RONDE 94 — ON IN PRODUCTION, AND THE DEFAULT SAYS SO.
+ *
+ * RONDE 93 shipped this off, waiting for one production render to prove that eligibility was
+ * registered widely enough for enforcement not to refuse the pipeline's own work. That reasoning
+ * was sound and it is now spent: RONDE 94 fixed the thing the measurement was going to measure.
+ * `ELIGIBLE` is no longer written at two sites out of thirty-five — `beatClipPassesVisionGate`
+ * records it centrally, for every route that reaches the picture editor, which is every real
+ * adoption route in the file.
+ *
+ * So the default inverts. `ENFORCE_FUNNEL_ADOPTION=false` still disables it, because a few tests
+ * need to assert the permissive behaviour explicitly and because an operator must be able to turn
+ * a gate off in an incident. Absent that explicit opt-out, production is strict: a route that
+ * claims REAL_FUNNEL without eligibility and an APPROVED verdict does not reach the montage.
+ *
+ * What this costs is stated plainly rather than hidden: if a real render turns out to judge fewer
+ * pictures than this assumes, the refusals cascade into RONDE 89's export gate and the render
+ * fails instead of shipping unverified footage as verified. That is the failure direction this
+ * whole sequence of rounds was for.
  */
 export function funnelAdoptionEnforced(): boolean {
-  return process.env.ENFORCE_FUNNEL_ADOPTION === "true";
+  return process.env.ENFORCE_FUNNEL_ADOPTION !== "false";
 }

@@ -830,6 +830,56 @@ export class VisualSourceLedger {
     return false;
   }
 
+  /**
+   * RONDE 94 — THE ONE PLACE ELIGIBILITY IS WRITTEN.
+   *
+   * RONDE 92 measured the gap that made every later round conditional: `ELIGIBLE` was written at
+   * two call sites — `adoptClip`'s acceptance point and `adoptArchiveBeatClip`'s ranked queue —
+   * while thirty-five routes adopt. Every route that pushes directly (Internet Archive, Europeana,
+   * Kling, Wikimedia, the AI ladder, stock, the emergency geo path, similar-archive) cleared its
+   * own deterministic gates and then went to the picture editor without the fact ever being
+   * recorded. That is the whole of render 568's `retrieved=3995 eligible=4`: not a retrieval
+   * collapse, a bookkeeping one.
+   *
+   * The fix is not a new criterion and not a new registry — the brief forbids both, and rightly:
+   * the criteria already exist, distributed across the routes, and this ledger is already the
+   * source of truth. What was missing is a single place for the routes to SAY so. It is called
+   * from `beatClipPassesVisionGate`, immediately after the baked-text veto and immediately before
+   * the picture is judged, because that is the real decision every route already makes: this
+   * candidate survived its route's deterministic filters and is worth paying a judgement for.
+   *
+   * Returns false when the ledger has never seen the file. That is not a failure to record — it is
+   * the honest answer that this candidate has no provenance, and the caller must NOT invent one.
+   */
+  markEligible(clipPath: string, contentKey?: string, reason?: string): boolean {
+    const record = this.resolve(clipPath, contentKey);
+    if (!record) return false;
+    return this.markLineageEligible(record.lineageId, reason);
+  }
+
+  /**
+   * The same write for a caller that already holds the record — the curated ranked queue opens the
+   * candidate's lineage itself and never has a local path to resolve from. One implementation, so
+   * "eligible" cannot come to mean two slightly different things depending on the route.
+   */
+  markLineageEligible(lineageId: string, reason?: string): boolean {
+    if (this.hasStage(lineageId, "ELIGIBLE")) return true;
+    return Boolean(this.recordEvent(lineageId, "ELIGIBLE", { status: "OK", reason }));
+  }
+
+  /**
+   * RONDE 94 — THE ONE PLACE ELIGIBILITY IS READ.
+   *
+   * Every REAL_FUNNEL enforcement decision asks this, so the answer cannot drift between the
+   * archive route and the Wikimedia one. It resolves through the derivation chain and the content
+   * key (a padded, trimmed or overlaid file is the same asset), then asks `hasStage`, which walks
+   * to the root — eligibility was established for the ASSET, not for the third file made from it.
+   */
+  isEligible(clipPath: string, contentKey?: string): boolean {
+    const record = this.resolve(clipPath, contentKey);
+    return Boolean(record && this.hasStage(record.lineageId, "ELIGIBLE"));
+  }
+
   /** Walks up the derivation chain to the record this one ultimately came from. */
   rootOf(lineageId: string): VisualLineageRecord | null {
     let record = this.records.get(lineageId) ?? null;

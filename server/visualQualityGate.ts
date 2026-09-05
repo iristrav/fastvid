@@ -21,6 +21,26 @@ import {
 } from "./localClipVision";
 
 const VISION_GATE_CACHE_MAX = 512;
+/**
+ * RONDE 94 — did the picture editor ever become available in this process?
+ *
+ * Set by the fail-open branch below, read by the adoption guard. Deliberately a plain
+ * process-level fact rather than render state: the model is loaded once per process, so its
+ * availability is a property of the environment, and threading it through every route would be
+ * fifteen call sites remembering a rule that belongs in one.
+ */
+let visionPipelineUnavailable = false;
+
+/** True once any judgement in this process was skipped because the model would not load. */
+export function visionPipelineIsUnavailable(): boolean {
+  return visionPipelineUnavailable;
+}
+
+/** Test-only reset, so one suite's unavailable model does not leak into the next. */
+export function resetVisionPipelineAvailability(): void {
+  visionPipelineUnavailable = false;
+}
+
 const visionGateCache = new Map<string, boolean>();
 /** Phase 20 counter: how often a full CLIP evaluation was avoided by the cache above.
  *  Process-wide and monotonic — read as a delta by the caller that reports render metrics. */
@@ -602,6 +622,23 @@ export async function evaluateClipVisionGate(
   // If pipeline failed to load, skip vision check (fail-open) rather than
   // re-attempting to load the model on every single embedImageFromPath call.
   if (!pipelineReady) {
+    /**
+     * RONDE 94 — a render that COULD NOT ASK is not a render that CHOSE NOT TO.
+     *
+     * This branch is a deliberate fail-open and predates RONDE 94: when the local CLIP model does
+     * not load, refusing every picture would stop the product rather than protect it. The adoption
+     * guard has to be able to tell that state apart from an unjudged picture in a render where the
+     * editor was working — otherwise a model-loading failure silently becomes "refuse everything",
+     * and a render where the editor answered and said no becomes indistinguishable from it.
+     *
+     * Recording the fact here rather than inferring it downstream: this is the only line in the
+     * codebase that knows the pipeline failed to load. Nothing is excused by it — see
+     * `adoptionGuardVerdict`, where an unavailable editor suspends only the vision requirement,
+     * never eligibility, and never the declared-route rule; and RONDE 89's export gate still
+     * refuses a film whose beats hold no verified visual, which is exactly what such a render
+     * produces.
+     */
+    visionPipelineUnavailable = true;
     console.warn(`[VisionGate] pipeline not ready s${sceneIndex}b${beatIndex} — skipping vision gate (fail-open)`);
     return { pass: true, worstScore10: null, skipped: true, fromCache: false };
   }

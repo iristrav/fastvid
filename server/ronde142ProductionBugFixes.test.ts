@@ -138,8 +138,10 @@ describe("RONDE 142 BUG 1 — one picture cannot be extended past the limit", ()
     expect(block).toContain("mayExtendAgain({");
     expect(block).toContain("if (!extendDecision.allowed)");
     expect(block).toContain("formatExtendRefusal(");
-    // Charged after the push, never before.
-    const push = block.indexOf("await pushClip(extended, holdSec)");
+    // Charged after the push, never before. RONDE 94 wrapped the push in the adoption intent
+    // that names this route (`rescue_extend`); the ordering rule is untouched.
+    expect(block).toContain('withAdoptionIntent("rescue_extend"');
+    const push = block.indexOf("pushClip(extended, holdSec)");
     const charge = block.indexOf("recordExtension(dedup.extendHold");
     expect(push).toBeGreaterThan(0);
     expect(charge).toBeGreaterThan(push);

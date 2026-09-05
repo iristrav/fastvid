@@ -407,7 +407,14 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
 
   it("the text overlay carries the decision across the file it writes", () => {
     const idx = SRC.indexOf("async function applyVideoBeatTextOverlay(");
-    const body = SRC.slice(idx, idx + 2400);
+    expect(idx).toBeGreaterThan(-1);
+    /**
+     * Bounded by the function's own end rather than a byte count. RONDE 94 documented the lineage
+     * link inside `carry` and a fixed +2400 window stopped reaching the return below it — a green
+     * test turning red on a change that did not touch the rule. Same correction RONDE 167 made to
+     * ronde142's extension block, for the same reason.
+     */
+    const body = SRC.slice(idx, SRC.indexOf("\n}\n", idx));
     expect(body).toContain("inheritBeatRelevance(relevance, clipPath, out)");
     expect(body).toContain("return carry(await burnFacelessTextOnVideoClip(");
     // Every call site hands it the ledger, so no route loses its verdict at the rename.
@@ -517,9 +524,14 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     const block = SRC.slice(idx, idx + 700);
     expect(block).toContain("beatClipPassesVisionGate(");
     expect(block).toContain('"last_resort"');
-    expect(block).toContain("if (lastResort && lastResortFits &&");
-    // The gate is asked BEFORE the clip is pushed, not after.
-    expect(idx).toBeLessThan(SRC.indexOf("if (lastResort && lastResortFits &&"));
+    /**
+     * RONDE 94 wrapped this push in `withAdoptionIntent("stock", ...)` and the condition became a
+     * multi-line one, so the anchor moved to the push itself. The rule is unchanged and still
+     * checked below: the vision gate is asked BEFORE the clip is pushed, never after.
+     */
+    expect(block).toContain("pushClip(lastResort!, holdSec)");
+    expect(block).toContain('withAdoptionIntent("stock"');
+    expect(idx).toBeLessThan(SRC.indexOf("pushClip(lastResort!, holdSec)"));
   });
 
   it("the render summary reports declines, so a render that stopped looking says so", () => {
