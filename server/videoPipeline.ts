@@ -35335,6 +35335,53 @@ export async function composeSceneVideoInner(
       usedClipsOut.length = 0;
       usedClipsOut.push(...pendingUsedClips);
     }
+    /**
+     * ASSIGNED → COMPOSE, AT THE ONE DOOR EVERY COMPOSE ROUTE LEAVES THROUGH.
+     *
+     * ── Why here, and not at each internal filter ───────────────────────────────────────────
+     *
+     * `composeSceneVideoInner` is forty pages long and drops clips in many places — a gate, a
+     * duplicate, a decode failure, a rescue that rebuilds the list. Instrumenting each of those
+     * means finding all of them and remembering the next one, which is the seam this codebase has
+     * split on fourteen times.
+     *
+     * This function is already documented as the single exit, and both sides of the question are
+     * in scope here: `clips` is exactly what compose was handed, `pendingUsedClips` is exactly
+     * what it kept. The difference is what it dropped — by construction, with nothing to forget.
+     *
+     * ── Where the reason comes from ─────────────────────────────────────────────────────────
+     *
+     * Not from here. A diff knows THAT a clip went, never WHY. The gates that refused it already
+     * file terminal outcomes on the ledger — the compose gate, the duplicate check, the validation
+     * swap all call `recordAssetOutcome` — so a clip with an ending already recorded keeps that
+     * ending and its own reason. Only a clip that left with nothing recorded gets `UNKNOWN`, which
+     * is the honest answer and the one worth chasing in the next render. No reason is invented.
+     */
+    const composeLedger = composeOptions?.dedup?.sourcingCache?.lineage;
+    if (composeLedger) {
+      const kept = new Set(pendingUsedClips);
+      for (const clipPath of clips) {
+        const contentKey = clipContentKey(clipPath);
+        composeLedger.recordEventForPath(clipPath, "COMPOSE_INPUT", { status: "OK", contentKey });
+        if (kept.has(clipPath)) {
+          composeLedger.recordEventForPath(clipPath, "COMPOSE_SELECTED", { status: "OK", contentKey });
+          continue;
+        }
+        /** Already explained by whoever refused it — that reason is better than anything here. */
+        if (composeLedger.hasOutcomeFor(clipPath, contentKey)) continue;
+        composeLedger.recordEventForPath(clipPath, "COMPOSE_DROPPED", {
+          status: "REJECTED",
+          reason: "UNKNOWN",
+          contentKey,
+        });
+      }
+      const dropped = clips.length - pendingUsedClips.length;
+      console.log(
+        `[ComposeBeatSummary] scene=${scene.index} composeInputs=${clips.length} ` +
+          `composeSelected=${pendingUsedClips.length} composeDropped=${Math.max(0, dropped)} ` +
+          `phase=${phase}`
+      );
+    }
     if (targetDur != null && targetDur > 0 && composedPath === outputPath) {
       const covered = await repairShortSceneVideo(
         composedPath,

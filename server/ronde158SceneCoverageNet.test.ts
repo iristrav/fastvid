@@ -175,8 +175,18 @@ describe("RONDE 158 — wired at the single exit, not at five more pads", () => 
   it("the exit knows the scene's own length, and skips the check without one", () => {
     expect(PIPE).toContain("const returnComposed = async (composedPath: string, targetDur?: number)");
     const idx = PIPE.indexOf("const returnComposed = async (");
-    const body = PIPE.slice(idx, idx + 1600);
+    /**
+     * Scoped to the whole exit, not to a fixed 1600 characters. The function grew — it now records
+     * COMPOSE_INPUT/SELECTED/DROPPED for every clip it was handed — and a window measured in
+     * characters pushed the coverage check outside it, failing a test whose property was untouched.
+     * The guard is the ORDER: the coverage check still runs inside this exit, after the used-clip
+     * list is published.
+     */
+    const body = PIPE.slice(idx, PIPE.indexOf("\n  };", idx));
     expect(body).toContain("if (targetDur != null && targetDur > 0 && composedPath === outputPath) {");
+    expect(body.indexOf("usedClipsOut.push(...pendingUsedClips)")).toBeLessThan(
+      body.indexOf("if (targetDur != null")
+    );
   });
 
   it("it repairs with the existing pad chain, not a new one", () => {

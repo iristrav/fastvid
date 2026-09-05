@@ -89,6 +89,9 @@ export const LINEAGE_STAGES = [
    *
    * CINEMATIC_DROPPED is terminal; the other three are progress.
    */
+  "COMPOSE_INPUT",
+  "COMPOSE_SELECTED",
+  "COMPOSE_DROPPED",
   "CINEMATIC_SELECTED",
   "CINEMATIC_DROPPED",
   "RENDER_INPUT",
@@ -1926,6 +1929,9 @@ export type AssetLifecycle = {
   selected: boolean;
   adopted: boolean;
   composed: boolean;
+  composeInput: boolean;
+  composeSelected: boolean;
+  composeDropped: boolean;
   cinematicSelected: boolean;
   cinematicDropped: boolean;
   renderInput: boolean;
@@ -1983,6 +1989,7 @@ export function lifecyclesOf(
 
     const finalVideo = has("FINAL_VIDEO");
     const cinematicDropped = has("CINEMATIC_DROPPED");
+    const composeDropped = has("COMPOSE_DROPPED");
     const downloadDied = has("DOWNLOAD_FAILED") && !has("DOWNLOAD_SUCCEEDED");
 
     /**
@@ -1993,6 +2000,7 @@ export function lifecyclesOf(
     if (finalVideo) terminalStatus = "FINAL";
     else if (has("DELIVERED") || has("RENDER_INPUT")) terminalStatus = "DELIVERED_INPUT";
     else if (cinematicDropped) terminalStatus = "DROPPED_AT_CINEMATIC";
+    else if (composeDropped) terminalStatus = "DROPPED_AT_COMPOSE";
     else if (has("REPLACED") || has("REMOVED")) terminalStatus = "REPLACED";
     else if (downloadDied) terminalStatus = "DROPPED_AT_DOWNLOAD";
     else if (rejected) {
@@ -2010,6 +2018,9 @@ export function lifecyclesOf(
       selected: r.selectedAt != null,
       adopted: r.adoptedAt != null,
       composed: r.composedAt != null,
+      composeInput: has("COMPOSE_INPUT"),
+      composeSelected: has("COMPOSE_SELECTED"),
+      composeDropped,
       cinematicSelected: has("CINEMATIC_SELECTED"),
       cinematicDropped,
       renderInput: has("RENDER_INPUT"),
@@ -2049,6 +2060,15 @@ export function formatLifecycleInvariants(
       a.terminalStatus === "UNEXPLAINED"
     ) {
       say(a, "ADOPTED_ASSET_MISSING_CINEMATIC_TERMINAL_EVENT");
+    }
+    /**
+     * G — assigned to a beat, and compose neither kept nor refused it.
+     *
+     * Scoped to assets compose actually SAW. An adopted clip that never reached compose is
+     * invariant A's case, and firing both on one asset would double-report the same gap.
+     */
+    if (a.composeInput && !a.composeSelected && !a.composeDropped && !a.finalVideo) {
+      say(a, "ASSIGNED_ASSET_MISSING_COMPOSE_OUTCOME");
     }
     /** B — the planner saw it and neither kept nor refused it. */
     if (a.cinematicSelected && a.cinematicDropped) {
@@ -2415,6 +2435,8 @@ function hasTerminalOutcome(stages: Map<LineageStage, LineageEventStatus>): bool
   if (stages.has("REPLACED") || stages.has("REMOVED")) return true;
   /** The planner refusing a clip is an ending, and it names its own reason. */
   if (stages.has("CINEMATIC_DROPPED")) return true;
+  /** So is compose leaving it out — recorded at the one door every compose route exits through. */
+  if (stages.has("COMPOSE_DROPPED")) return true;
   if ([...stages.values()].some((st) => st.includes("REJECTED"))) return true;
   /**
    * RONDE 167 F1 — a download that never finished is an ending, and the rule called it a
