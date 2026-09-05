@@ -216,6 +216,19 @@ import {
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import {
+  admitToShortlist,
+  beatShortlistViolations,
+  createBeatShortlistState,
+  formatBeatShortlists,
+  isShortlisted,
+  noteEligible as noteBeatShortlistEligible,
+  noteNotAsked,
+  noteRetrieved,
+  noteVisionAsked,
+  noteVisionOutcome,
+  type BeatShortlistState,
+} from "./beatShortlist";
+import {
   adoptionGuardVerdict,
   censusAdoptionPolicies,
   currentAdoptionIntent,
@@ -17256,6 +17269,13 @@ export interface VisualDedupState {
    */
   beatRelevance: BeatRelevanceLedger;
   /**
+   * RONDE 95: the per-beat funnel record and the bounded shortlist that is the vision boundary.
+   *
+   * Render-scoped for the same reason as the two ledgers above: a beat's shortlist is a budget,
+   * and two concurrent renders must not spend each other's. See ./beatShortlist.
+   */
+  beatShortlist: BeatShortlistState;
+  /**
    * RONDE 61: funnel candidates the beat-image gate has REFUSED. Separate from
    * usedFunnelCandidateIds, which is a soft variety preference the picker restores when
    * everything has been used — this one is never restored.
@@ -17558,6 +17578,7 @@ export function createVisualDedupState(
     subjectFallbackBeats: new Set<string>(),
     beatImageGate: createBeatImageGateState(),
     beatRelevance: createBeatRelevanceLedger(),
+    beatShortlist: createBeatShortlistState(),
     beatImageRejectedIds: new Set<string>(),
     mismatchTally: createMismatchTally(),
     mismatchResearchedBeats: new Set<string>(),
@@ -22509,6 +22530,26 @@ async function adoptClip(
     undefined;
   const entityRules = extractBeatRealEntities(beatText, opts.sceneText ?? "", opts.videoTitle ?? "");
 
+  /**
+   * RONDE 95 — the retrieval side of the per-beat funnel, counted where retrieval actually ends.
+   *
+   * `adoptClip` is the multi-candidate entry point: 29 call sites hand it the paths a route
+   * produced for one beat. Counting here rather than inside each provider is deliberate — it is
+   * the boundary at which "what retrieval produced for this beat" is a single, complete number,
+   * and it is one site instead of a rule 29 routes would have to remember.
+   *
+   * `deduped` is measured against the content key, which is the identity the rest of the pipeline
+   * uses; two paths for the same asset are one candidate, and saying otherwise would inflate the
+   * retrieved column exactly where render 568's 3995 came from.
+   */
+  {
+    const uniqueKeys = new Set(paths.map((p) => clipContentKey(p)));
+    noteRetrieved(dedup.beatShortlist, sceneIndex, beatIndex, paths.length, {
+      normalized: paths.length,
+      deduped: Math.max(0, paths.length - uniqueKeys.size),
+    });
+  }
+
   // Fase 4 (beeldkwaliteit vervolgpatch): generic providerText fallback for every provider that
   // tags its output path (tagPathWithProviderAsset) and records real title/description/tags via
   // putCachedProviderAsset — not just the CelebrityClipCandidate-returning providers the earlier
@@ -27412,6 +27453,39 @@ async function beatClipPassesVisionGate(
    * and it is the honest direction: an asset with no provenance must not acquire one here.
    */
   dedup.sourcingCache?.lineage?.markEligible(clipPath, clipContentKey(clipPath), `vision_gate:${queryLabel}`);
+  noteBeatShortlistEligible(dedup.beatShortlist, scene.index, beat.index);
+
+  /**
+   * RONDE 95 — THE BOUNDED SHORTLIST, AND THE BOUNDARY IT DRAWS.
+   *
+   * RONDE 94 made this function the one place eligibility is recorded, on the argument its own
+   * doc already made: every rescue and adoption route funnels through here. The same argument
+   * makes it the only place a per-beat vision bound can be enforced without a second selection
+   * engine — which the brief forbids and which would be the seventeenth instance of two structures
+   * answering one question.
+   *
+   * Render 568's shape was 3995 candidates, 38 judgements, and no rule anywhere about WHICH 38.
+   * The editor was asked about whatever arrived first at whichever route ran first. The bound
+   * turns that into a decision: a beat may put at most `maxShortlistPerBeat()` candidates to the
+   * editor, derived from the existing `MAX_JUDGEMENTS_PER_BEAT` budget rather than invented.
+   *
+   * Turning the candidate away here rather than letting it through unjudged is the whole point.
+   * Under RONDE 94 an unjudged picture cannot be adopted as REAL_FUNNEL anyway, so admitting it
+   * past the bound would buy nothing and cost a download, a transcode and a refusal further down.
+   * Refused with a named reason, so the beat's account says `SHORTLIST_FULL` rather than joining
+   * render 568's undifferentiated `never_asked`.
+   */
+  const shortlistKey = clipContentKey(clipPath);
+  const admission = admitToShortlist(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
+  if (!admission.admitted) {
+    noteNotAsked(dedup.beatShortlist, scene.index, beat.index, admission.reason);
+    console.log(
+      `[BeatShortlist] s${scene.index}b${beat.index} not asked — ${admission.reason} ` +
+        `(${admission.slotsUsed}/${admission.cap}) route=${queryLabel} file=${path.basename(clipPath)}`
+    );
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "shortlist_full", queryLabel);
+    return { pass: false, worstScore10: null, skipped: true, fromCache: false };
+  }
 
   /**
    * RONDE 104 — the last judge that decides content without seeing the picture.
@@ -27498,6 +27572,7 @@ async function beatClipPassesVisionGate(
         `the beat relevance gate decides`
     );
   }
+  noteVisionAsked(dedup.beatShortlist, scene.index, beat.index);
   const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
     clipPath,
     contentKey: clipContentKey(clipPath),
@@ -27507,6 +27582,31 @@ async function beatClipPassesVisionGate(
     ledger: dedup.beatRelevance,
     route: queryLabel ? `gate:${queryLabel.slice(0, 24)}` : "gate",
   });
+  /**
+   * RONDE 95 PHASE 2 — what the editor said, recorded per beat and per outcome.
+   *
+   * Read back from the relevance ledger rather than from `relevance.allowed`, because `allowed`
+   * folds `fits` and `unknown` together — the gate adopts on an unreadable answer by design — and
+   * this record exists precisely to keep the five outcomes apart. `VISION_UNAVAILABLE` is the
+   * render-wide fact RONDE 94 introduced: the model never loaded, so no answer here is about any
+   * picture.
+   */
+  noteVisionOutcome(
+    dedup.beatShortlist,
+    scene.index,
+    beat.index,
+    visionPipelineIsUnavailable()
+      ? "VISION_UNAVAILABLE"
+      : visionVerdictFromGate(
+          relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+            localPath: clipPath,
+            currentFilename: path.basename(clipPath),
+            contentKey: clipContentKey(clipPath),
+            sceneIndex: scene.index,
+            beatIndex: beat.index,
+          })?.verdict
+        )
+  );
   if (!relevance.allowed) {
     recordGateVerdict("beat_image_gate", true);
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "beat_image_gate", queryLabel);
@@ -41334,6 +41434,24 @@ async function _runVideoPipelineInner(
        * Warned rather than logged: an unjudged picture in a delivered video is not routine, and a
        * clean render prints nothing here at all.
        */
+      /**
+       * RONDE 95 — the per-beat funnel, which is the line render 568 needed and did not have.
+       *
+       * `[VisualFunnel] TOTAL retrieved=3995 eligible=4` is a render-wide number and says nothing
+       * about which beat starved. This says it per beat, in the order the pipeline walks the
+       * stages, and ends every beat with no approval on a NAMED reason rather than on the word
+       * "never_asked" — which was a restatement of the question, not an answer to it.
+       */
+      for (const line of formatBeatShortlists(visualDedup.beatShortlist)) {
+        console.log(pipelineReport.add("summary", line));
+      }
+      /**
+       * And the four things that record makes checkable at runtime, none of which could be stated
+       * before the stages sat side by side. A clean render prints nothing here.
+       */
+      for (const line of beatShortlistViolations(visualDedup.beatShortlist)) {
+        console.warn(pipelineReport.add("summary", line));
+      }
       for (const line of formatUnjudgedAdoptions(visualDedup.clipAdoptAudit)) {
         console.warn(pipelineReport.add("summary", line));
       }
