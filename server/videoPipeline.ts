@@ -237,6 +237,8 @@ import {
 } from "./beatVisualIntent";
 import {
   admitToShortlist,
+  beatShortlistExhausted,
+  maxShortlistPerBeat,
   beatShortlistViolations,
   createBeatShortlistState,
   formatBeatShortlists,
@@ -22932,6 +22934,26 @@ async function adoptClip(
     noteBeatCandidatesOffered(dedup.beatOutcomeAudit, sceneIndex, beatIndex, finalPaths.length);
 
     for (const p of finalPaths) {
+      /**
+       * RONDE 97 (production timeout) — a beat that has asked enough STOPS, it does not keep
+       * paying and refusing.
+       *
+       * RONDE 95 put the shortlist bound inside the vision gate, which runs after the ffprobe,
+       * the black-frame pass and the CLIP scoring below. So once a beat's shortlist was full this
+       * loop kept paying for every remaining candidate and refusing each one — and, never getting
+       * a success, went on to the rescue ladder and the guaranteed ladder as well. A real render
+       * timed out at 33 minutes.
+       *
+       * The bound always meant "this beat has asked enough". Asked here, before the first
+       * expensive call, it means that.
+       */
+      if (beatShortlistExhausted(dedup.beatShortlist, sceneIndex, beatIndex)) {
+        console.log(
+          `[BeatShortlist] s${sceneIndex}b${beatIndex} stopped looking — shortlist spent ` +
+            `(${maxShortlistPerBeat()} candidates asked)`
+        );
+        break;
+      }
       if (!p || dedup.usedPaths.has(p) || !fs.existsSync(p)) continue;
       // Invariant 2 (no duplicate work): this is the authoritative same-render asset-identity
       // gate, and it now runs FIRST — before isValidVideoFile's ffprobe, before

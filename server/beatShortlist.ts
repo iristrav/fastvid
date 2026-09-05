@@ -248,6 +248,34 @@ export function admitToShortlist(
   return { admitted: true, alreadyOnList: false, slotsUsed: f.shortlisted, cap };
 }
 
+/**
+ * RONDE 97 (production timeout) — HAS THIS BEAT FINISHED LOOKING?
+ *
+ * ── The regression this exists to fix ───────────────────────────────────────────────────────
+ *
+ * RONDE 95 placed the bound inside `beatClipPassesVisionGate`, which runs AFTER a candidate has
+ * been downloaded, probed and transcoded. So a beat whose shortlist was full went on paying the
+ * full price for every remaining candidate and then refusing it — and because the route never got
+ * a success, it walked its entire candidate list, then the rescue ladder, then the guaranteed
+ * ladder. The bound saved the cheap thing (a judgement) and multiplied the expensive one.
+ *
+ * A real render timed out at 33 minutes. That is what that shape costs.
+ *
+ * The bound was always meant to mean "this beat has asked enough", not "this candidate fails".
+ * This is the question a candidate LOOP asks before paying for the next one, so a beat that has
+ * spent its shortlist stops looking instead of failing repeatedly.
+ */
+export function beatShortlistExhausted(
+  state: BeatShortlistState | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  cap = maxShortlistPerBeat()
+): boolean {
+  if (!state) return false;
+  const f = state.beats.get(key(sceneIndex, beatIndex));
+  return Boolean(f && f.shortlisted >= cap);
+}
+
 /** Was this asset ever on this beat's shortlist? The question the adoption guard asks. */
 export function isShortlisted(
   state: BeatShortlistState | undefined,

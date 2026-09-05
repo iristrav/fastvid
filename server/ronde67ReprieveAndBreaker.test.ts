@@ -42,7 +42,18 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
     const src = PIPELINE();
     const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 15500);
+    /**
+     * Bounded by the function that contains the loop rather than by a byte count.
+     *
+     * RONDE 97 documented the shortlist stop at the top of this loop and a fixed +15500 window
+     * stopped reaching `requeuedAfterRefusal.add(p)` — a green test turning red on a change that
+     * did not touch the rule. Same correction RONDE 167 made to ronde142's extension block and
+     * RONDE 94 made to ronde103's overlay block, for the same reason.
+     */
+    const fnAt = src.indexOf("async function adoptClip(");
+    expect(fnAt).toBeGreaterThan(-1);
+    const block = src.slice(idx, src.indexOf("\n}\n", fnAt));
+    expect(block.length).toBeGreaterThan(0);
     expect(block).toContain("requeuedAfterRefusal.add(p);");
     expect(block).toContain("finalPaths.push(p);");
     // The gate is not applied a second time to a clip that has already been refused.
