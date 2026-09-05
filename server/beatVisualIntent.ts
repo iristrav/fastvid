@@ -255,3 +255,78 @@ export function formatIntentSummary(state: BeatVisualIntentState | undefined): s
   }
   return lines;
 }
+
+/**
+ * RONDE 97 §1 — WHY THIS QUERY EXISTS, in the fields the brief names.
+ *
+ * The query audit already records what a query said and whether it was allowed. It could not say
+ * what the beat was ASKING FOR when it was built, so a query that turned out to retrieve nothing
+ * could not be traced back to the intent that produced it. This closes that: one line per query,
+ * carrying the beat, the intent's content fields, the planned shot, and the provider that was
+ * asked.
+ *
+ * Derived entirely from the intent record and the query string — nothing is re-extracted, so this
+ * cannot disagree with the ranking about what the beat wanted.
+ */
+export type QueryProvenance = {
+  sceneIndex: number;
+  beatIndex: number;
+  subject: string;
+  event: string;
+  place: string;
+  period: string;
+  action: string;
+  shotIntent: string;
+  query: string;
+  provider: string;
+};
+
+export function queryProvenance(
+  intent: BeatVisualIntent | null | undefined,
+  query: string,
+  provider: string
+): QueryProvenance {
+  return {
+    sceneIndex: intent?.sceneIndex ?? -1,
+    beatIndex: intent?.beatIndex ?? -1,
+    subject: intent?.subject ?? "",
+    event: intent?.event[0] ?? "",
+    place: intent?.location[0] ?? "",
+    period: intent?.period[0] ?? "",
+    action: intent?.action[0] ?? "",
+    shotIntent: intent?.preferredShot ?? "",
+    query: (query ?? "").trim(),
+    provider: (provider ?? "").trim() || "unknown",
+  };
+}
+
+/** One line, and the empty fields are omitted for the same reason `formatVisualIntent` omits them. */
+export function formatQueryProvenance(p: QueryProvenance): string {
+  const parts = [`s${p.sceneIndex}b${p.beatIndex}`, `provider=${p.provider}`, `query="${p.query}"`];
+  const add = (label: string, value: string) => {
+    if (value) parts.push(`${label}=${value}`);
+  };
+  add("subject", p.subject);
+  add("event", p.event);
+  add("place", p.place);
+  add("period", p.period);
+  add("action", p.action);
+  add("shotIntent", p.shotIntent);
+  return `[QueryProvenance] ${parts.join(" ")}`;
+}
+
+/**
+ * The two fields the planner supplies and `VerifiedQueryContext` does not, shaped for the query
+ * builder. Kept here rather than in the builder so there is one definition of what the planner
+ * contributes to a query, and the builder stays free of any dependency on this module.
+ */
+export function queryIntentHints(
+  intent: BeatVisualIntent | null | undefined
+): { subject?: string; preferredShot?: string } | undefined {
+  if (!intent) return undefined;
+  if (!intent.subject && !intent.preferredShot) return undefined;
+  return {
+    ...(intent.evidenceRequirement === "hard" && intent.subject ? { subject: intent.subject } : {}),
+    ...(intent.preferredShot ? { preferredShot: intent.preferredShot } : {}),
+  };
+}

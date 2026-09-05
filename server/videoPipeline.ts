@@ -218,6 +218,10 @@ import {
 import { foldSearchText } from "./searchTextNormalize";
 import {
   beatVisualIntent,
+  formatQueryProvenance,
+  queryIntentHints,
+  queryProvenance,
+  type BeatVisualIntent,
   createBeatVisualIntentState,
   ensureBeatVisualIntent,
   formatIntentSummary,
@@ -16383,9 +16387,25 @@ export function extractActionCue(beatText: string): string {
  */
 export function typedQueryPrefix(
   beatText: string,
-  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
+  opts: {
+    scenePersons?: string[];
+    forcePerson?: string;
+    sceneText?: string;
+    /**
+     * RONDE 97 §1 — the planner's half of the beat's intent, when the caller holds it.
+     *
+     * Optional because several callers build a query for a stub beat that has no planner contract,
+     * and a beat with no plan must produce exactly the queries it produced before. Where it IS
+     * supplied, the planner's hard subject leads and the planned shot becomes camera vocabulary on
+     * a query that already has a content anchor — see `applyIntentHints`.
+     */
+    intent?: BeatVisualIntent | null;
+  } = {}
 ): string[] {
-  return buildPrioritisedQueries(buildVerifiedQueryContextForBeat(beatText, opts)).map((q) => q.query);
+  return buildPrioritisedQueries(
+    buildVerifiedQueryContextForBeat(beatText, opts),
+    queryIntentHints(opts.intent)
+  ).map((q) => q.query);
 }
 
 /**
@@ -16435,9 +16455,18 @@ export function typedQueryLead(beatText: string, scenePersons: string[] = []): s
  */
 export function typedQueryLadder(
   beatText: string,
-  opts: { scenePersons?: string[]; forcePerson?: string; sceneText?: string } = {}
+  opts: {
+    scenePersons?: string[];
+    forcePerson?: string;
+    sceneText?: string;
+    /** RONDE 97 §1 — see `typedQueryPrefix` for why this is optional. */
+    intent?: BeatVisualIntent | null;
+  } = {}
 ): Array<{ level: 1 | 2 | 3 | 4; queries: string[] }> {
-  return buildBeatSearchLadder(buildVerifiedQueryContextForBeat(beatText, opts)).map((rung) => ({
+  return buildBeatSearchLadder(
+    buildVerifiedQueryContextForBeat(beatText, opts),
+    queryIntentHints(opts.intent)
+  ).map((rung) => ({
     level: rung.level,
     queries: rung.queries.map((q) => q.query),
   }));
@@ -29363,10 +29392,40 @@ function typedRetrievalQueriesForBeat(
     spaceTopic: false,
     muskTopic: false,
   });
-  return buildHistoricalArchivalQueries(intent, beat.text, {
+  const historical = buildHistoricalArchivalQueries(intent, beat.text, {
     place: extractVisualPlacePhrase(beat.text),
     action: extractActionCue(beat.text),
   });
+
+  /**
+   * RONDE 97 §1 — THE PLANNER'S HALF REACHES THE QUERIES.
+   *
+   * The eight typed fields already reached query generation: `buildPrioritisedQueries` reads the
+   * same `VerifiedQueryContext` the intent record is built from. The two that did not are the
+   * planner's — the beat's hard subject and the shot it was planned for — and this is the beat's
+   * own query entry point, so this is where they join.
+   *
+   * The typed ladder leads and the historical builder follows, deduplicated. Nothing is removed:
+   * a beat whose planner said nothing produces exactly the queries it produced before, because
+   * `queryIntentHints` returns undefined and `applyIntentHints` is then a no-op.
+   */
+  const beatIntent = beatVisualIntent(dedup.beatIntent, scene.index, beat.index);
+  const typed = typedQueryPrefix(beat.text, {
+    sceneText: scene.text,
+    intent: beatIntent,
+  });
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const q of [...typed, ...historical]) {
+    const k = q.trim().toLowerCase();
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    merged.push(q);
+    if (beatIntent) {
+      console.log(formatQueryProvenance(queryProvenance(beatIntent, q, "typed_retrieval")));
+    }
+  }
+  return merged;
 }
 
 async function adoptWikimediaBeatClip(

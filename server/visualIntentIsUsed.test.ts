@@ -11,8 +11,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
+import { buildPrioritisedQueries, validateSearchQuery } from "./searchQueryContract";
 import {
   buildBeatVisualIntent,
+  formatQueryProvenance,
+  queryIntentHints,
+  queryProvenance,
   createBeatVisualIntentState,
   ensureBeatVisualIntent,
   formatIntentSummary,
@@ -226,5 +230,127 @@ describe("the intent is reportable", () => {
   it("prints nothing for a render with no beats", () => {
     expect(formatIntentSummary(createBeatVisualIntentState())).toEqual([]);
     expect(formatIntentSummary(undefined)).toEqual([]);
+  });
+});
+
+
+/* ═══════════════ RONDE 97 §1 — the intent reaches QUERY GENERATION too ═══════════════ */
+
+describe("the planner's half of the intent reaches query generation", () => {
+  /**
+   * Eight of the ten fields already reached it: `buildPrioritisedQueries` reads the same
+   * `VerifiedQueryContext` the intent record is built from. The two that did not are the planner's
+   * — the beat's hard subject and the shot it was planned for — and those are what this closes.
+   */
+  const ctx = () => buildVerifiedQueryContextForBeat(beatText, { sceneText: beatText });
+
+  it("hands the builder only what the context does not already carry", () => {
+    const hints = queryIntentHints(
+      buildBeatVisualIntent({ sceneIndex: 0, beatIndex: 0, ctx: ctx(), contract })
+    );
+    expect(hints).toEqual({ subject: "Führerbunker", preferredShot: "archive_footage" });
+  });
+
+  /** A soft subject is an extractor's report, not a requirement — it does not lead. */
+  it("only a HARD requirement leads the queries", () => {
+    const soft = queryIntentHints(
+      buildBeatVisualIntent({ sceneIndex: 0, beatIndex: 0, ctx: ctx(), contract: null })
+    );
+    expect(soft?.subject).toBeUndefined();
+  });
+
+  /** A beat with no plan must produce exactly the queries it produced before. */
+  it("is a no-op when the planner said nothing", () => {
+    expect(queryIntentHints(null)).toBeUndefined();
+    const bare = buildBeatVisualIntent({ sceneIndex: 0, beatIndex: 0, ctx: null, contract: null });
+    expect(queryIntentHints(bare)).toBeUndefined();
+    const before = buildPrioritisedQueries(ctx()).map((q) => q.query);
+    const after = buildPrioritisedQueries(ctx(), undefined).map((q) => q.query);
+    expect(after).toEqual(before);
+  });
+
+  it("moves a query naming the planner's subject to the front", () => {
+    const hinted = buildPrioritisedQueries(ctx(), { subject: "Berlin" }).map((q) => q.query);
+    expect(hinted.length).toBeGreaterThan(0);
+    expect(hinted[0]!.toLowerCase()).toContain("berlin");
+  });
+
+  /**
+   * THE RULE THAT PROTECTS RONDE 95. Camera vocabulary may extend a query that already has a
+   * content anchor; it can never become one, so it cannot manufacture a query the anchor rule
+   * would have refused.
+   */
+  it("adds shot vocabulary only to a query that already has a subject", () => {
+    const withShot = buildPrioritisedQueries(ctx(), { preferredShot: "archive_footage" });
+    for (const q of withShot) {
+      expect(validateSearchQuery(q.query).ok, `${q.query} lost its content anchor`).toBe(true);
+    }
+    expect(withShot.some((q) => q.query.includes("archival footage"))).toBe(true);
+  });
+
+  /** Added, never substituted: the un-extended query stays available behind it. */
+  it("keeps the plain query behind the extended one", () => {
+    const plain = buildPrioritisedQueries(ctx()).map((q) => q.query);
+    const extended = buildPrioritisedQueries(ctx(), { preferredShot: "aerial" }).map((q) => q.query);
+    for (const q of plain) expect(extended).toContain(q);
+    expect(extended.length).toBe(plain.length + 1);
+  });
+
+  /** A shot the vocabulary has no term for adds nothing rather than inventing one. */
+  it("adds nothing for a shot with no archive vocabulary", () => {
+    const plain = buildPrioritisedQueries(ctx()).map((q) => q.query);
+    const cutaway = buildPrioritisedQueries(ctx(), { preferredShot: "cutaway" }).map((q) => q.query);
+    expect(cutaway).toEqual(plain);
+  });
+
+  it("the beat's own query entry point passes the intent", () => {
+    const at = PIPE.indexOf("function typedRetrievalQueriesForBeat(");
+    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
+    expect(body).toContain("beatVisualIntent(dedup.beatIntent, scene.index, beat.index)");
+    expect(body).toContain("intent: beatIntent");
+    expect(body).toContain("formatQueryProvenance(");
+  });
+});
+
+/* ═══════════════ query provenance ═══════════════ */
+
+describe("every query can say why it exists", () => {
+  const intent = () =>
+    buildBeatVisualIntent({
+      sceneIndex: 2,
+      beatIndex: 1,
+      ctx: buildVerifiedQueryContextForBeat(beatText, { sceneText: beatText }),
+      contract,
+    });
+
+  it("carries every field the brief names", () => {
+    const p = queryProvenance(intent(), "Führerbunker Berlin 1945", "internet_archive");
+    for (const field of [
+      "sceneIndex", "beatIndex", "subject", "event", "place",
+      "period", "action", "shotIntent", "query", "provider",
+    ] as const) {
+      expect(p, `${field} is missing from the query provenance`).toHaveProperty(field);
+    }
+    expect(p.sceneIndex).toBe(2);
+    expect(p.beatIndex).toBe(1);
+    expect(p.subject).toBe("Führerbunker");
+    expect(p.shotIntent).toBe("archive_footage");
+    expect(p.provider).toBe("internet_archive");
+  });
+
+  it("prints one readable line", () => {
+    const line = formatQueryProvenance(queryProvenance(intent(), "Berlin 1945", "wikimedia"));
+    expect(line.startsWith("[QueryProvenance] s2b1")).toBe(true);
+    expect(line).toContain('query="Berlin 1945"');
+    expect(line).toContain("provider=wikimedia");
+    expect(line).toContain("subject=Führerbunker");
+  });
+
+  /** Nothing is re-extracted, so this can never disagree with the ranking about what was wanted. */
+  it("says so honestly when there is no intent to report", () => {
+    const p = queryProvenance(null, "anything", "");
+    expect(p.sceneIndex).toBe(-1);
+    expect(p.subject).toBe("");
+    expect(p.provider).toBe("unknown");
   });
 });

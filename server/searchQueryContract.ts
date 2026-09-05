@@ -661,7 +661,49 @@ function p1Present(persons: QueryToken[]): boolean {
   return persons.length > 0;
 }
 
-export function buildPrioritisedQueries(ctx: VerifiedQueryContext): PrioritisedQuery[] {
+/**
+ * RONDE 97 §1 — THE PLANNER'S HALF OF THE INTENT, WHICH THE CONTEXT DOES NOT CARRY.
+ *
+ * `VerifiedQueryContext` holds everything the EXTRACTORS proved: persons, places, events, actions,
+ * objects, time. The builder below has always used all of it, so eight of the intent's ten fields
+ * already reached query generation.
+ *
+ * The two that did not are the two the planner supplies rather than the extractors: what the beat
+ * MUST contain, and the shot it was planned for. Passed as a structural shape rather than as
+ * `BeatVisualIntent` so this module keeps its direction of dependency — `beatVisualIntent` imports
+ * from here, and importing back would be a cycle.
+ */
+export type QueryIntentHints = {
+  /** The planner's hard requirement. A query naming it answers the beat more exactly. */
+  subject?: string;
+  /** The framing this beat was planned for — camera vocabulary, and only ever an addition. */
+  preferredShot?: string;
+};
+
+/** Shot vocabulary the archive providers actually index, keyed by the planner's shot names. */
+const SHOT_VOCABULARY: Readonly<Record<string, string>> = {
+  establishing: "establishing shot",
+  extreme_wide: "wide shot",
+  wide: "wide shot",
+  medium_wide: "",
+  medium: "",
+  close_up: "close up",
+  extreme_close_up: "close up",
+  detail: "detail",
+  overhead: "overhead",
+  aerial: "aerial",
+  pov: "",
+  reaction: "",
+  cutaway: "",
+  b_roll: "",
+  archive_footage: "archival footage",
+  overlay_shot: "",
+};
+
+export function buildPrioritisedQueries(
+  ctx: VerifiedQueryContext,
+  intent?: QueryIntentHints
+): PrioritisedQuery[] {
   const v = (list: QueryToken[]) => list.filter((t) => t.verified && t.term.trim());
   const persons = v(ctx.persons);
   const places = [...v(ctx.places), ...v(ctx.countries)];
@@ -814,7 +856,8 @@ export function buildPrioritisedQueries(ctx: VerifiedQueryContext): PrioritisedQ
   else if (p1) push(p1, technical);
   else if (place) push(place, technical);
 
-  return out;
+  /** RONDE 97 §1 — the planner's two fields, applied last. See `applyIntentHints`. */
+  return applyIntentHints(out, intent);
 }
 
 /**
@@ -830,10 +873,52 @@ export function buildPrioritisedQueries(ctx: VerifiedQueryContext): PrioritisedQ
  * accepted. Nothing here performs a search or decides anything; it only says which questions
  * belong together and in what order they should be asked.
  */
+/**
+ * RONDE 97 §1 — the planner's two fields, applied to a finished query list.
+ *
+ * Two effects, both additive, and neither able to introduce content:
+ *
+ *   · A query naming the planner's `mustContain` subject is moved to the front. The planner
+ *     stating a hard requirement is a stronger claim than an extractor reporting a word, and the
+ *     bounded shortlist means the order queries run in decides what is ever seen.
+ *   · The planned shot becomes camera vocabulary APPENDED to the strongest query that already has
+ *     a content anchor — never a query of its own. RONDE 95 established that camera vocabulary
+ *     with no subject is `NO_CONTENT_ANCHOR`, and this cannot produce one: it only ever extends a
+ *     query that already passed.
+ */
+function applyIntentHints(
+  queries: PrioritisedQuery[],
+  intent: QueryIntentHints | undefined
+): PrioritisedQuery[] {
+  if (!intent || queries.length === 0) return queries;
+
+  let out = queries;
+  const subject = foldSearchText(intent.subject ?? "");
+  if (subject) {
+    const names = (q: PrioritisedQuery) => foldSearchText(q.query).includes(subject);
+    out = [...out.filter(names), ...out.filter((q) => !names(q))];
+  }
+
+  const vocab = SHOT_VOCABULARY[(intent.preferredShot ?? "").trim().toLowerCase()] ?? "";
+  const lead = out[0];
+  if (vocab && lead && hasContentAnchor(lead.query) && !foldSearchText(lead.query).includes(foldSearchText(vocab))) {
+    const extended: PrioritisedQuery = {
+      ...lead,
+      query: `${lead.query} ${vocab}`.replace(/\s+/g, " ").trim(),
+      priority: 0,
+    };
+    /** Added, never substituted: the un-extended query stays available behind it. */
+    out = [extended, ...out];
+  }
+
+  return out.map((q, i) => ({ ...q, priority: i + 1 }));
+}
+
 export function buildBeatSearchLadder(
-  ctx: VerifiedQueryContext
+  ctx: VerifiedQueryContext,
+  intent?: QueryIntentHints
 ): Array<{ level: 1 | 2 | 3 | 4; queries: PrioritisedQuery[] }> {
-  const all = buildPrioritisedQueries(ctx);
+  const all = buildPrioritisedQueries(ctx, intent);
   const out: Array<{ level: 1 | 2 | 3 | 4; queries: PrioritisedQuery[] }> = [];
   for (const level of [4, 3, 2, 1] as const) {
     const queries = all.filter((q) => q.level === level);
