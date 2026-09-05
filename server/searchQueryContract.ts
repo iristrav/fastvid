@@ -972,6 +972,29 @@ export function validateSearchQuery(
       return { ok: false, reason: "FORBIDDEN_PRONOUN", offendingTerm: w, blockedTerms: [w] };
     }
   }
+  /**
+   * ── H (hoisted). A query with no subject is wrong on its own terms, context or no context.
+   *
+   * RONDE 95 — this rule used to live at the bottom of the function, below the context-less early
+   * return, so a caller that could prove nothing had `"documentary"`, `"historical footage"` and
+   * `"documentary wide establishing aerial"` accepted as valid searches. Measured, not assumed:
+   * the anchor helper already answered false for `"documentary"` while this function answered
+   * `{ ok: true }` for it, and the two disagreeing is precisely the shape of the render-568
+   * queries this contract exists to stop.
+   *
+   * It belongs above the early return because it needs no context at all: it asks whether the
+   * query's own words contain anything but production vocabulary and function words. The comment
+   * on the early return says the validator can then apply only "the checks that need none" — this
+   * is one of them, and leaving it below was an ordering accident rather than a decision.
+   *
+   * The rule itself is unchanged and still delegates to the one helper, so the generator-side
+   * check and the gate-side check remain a single definition. What changes is that a caller
+   * without a proven context can no longer be given a pass it never earned.
+   */
+  if (!hasContentAnchor(q)) {
+    return { ok: false, reason: "NO_CONTENT_ANCHOR", offendingTerm: q, blockedTerms: [] };
+  }
+
   if (!ctx) return { ok: true };
 
   // Everything the context proves, by stem, so "canals" in the query is proven by "canal".
@@ -1065,12 +1088,13 @@ export function validateSearchQuery(
   // ── H. A query of nothing but camera vocabulary asks for "aerial footage" of the world in
   // general. It is not wrong about anything, which is exactly the problem: it has no subject.
   //
-  // RONDE 88A P4: this rule now lives in `hasContentAnchor`, so a generator can ask it BEFORE
+  // RONDE 88A P4: the rule lives in the exported anchor helper, so a generator can ask it BEFORE
   // building a query the gate would only throw away. Delegated rather than duplicated — one
   // definition of "has a subject", which is what stops the generator-side check becoming a lie.
-  if (!hasContentAnchor(q)) {
-    return { ok: false, reason: "NO_CONTENT_ANCHOR", offendingTerm: q, blockedTerms: [] };
-  }
+  //
+  // RONDE 95 moved the check itself above the context-less early return, since it needs no
+  // context; a query reaching this line has already passed it. Re-testing here would be a second
+  // implementation of the same question, which is what this file's own history warns about.
   return { ok: true };
 }
 

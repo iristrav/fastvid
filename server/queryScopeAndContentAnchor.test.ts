@@ -244,3 +244,66 @@ describe("the emergency stock generator stops building queries about nothing", (
     }
   });
 });
+
+/* ═══════════════ RONDE 95 — a query with no subject is refused with or without a context ═══════════════ */
+
+describe("RONDE 95 — the content anchor needs no context, and no longer waits for one", () => {
+  /**
+   * THE GAP, MEASURED BEFORE IT WAS CLOSED.
+   *
+   * `hasContentAnchor("documentary")` already answered false, while
+   * `validateSearchQuery("documentary")` answered `{ ok: true }` — because rule H sat BELOW the
+   * `if (!ctx) return { ok: true }` early return. Any caller that could not supply a proven
+   * context had "documentary", "historical footage" and "documentary wide establishing aerial"
+   * accepted as valid searches, which is the exact shape of the render-568 queries this contract
+   * exists to stop.
+   *
+   * The rule needs no context: it asks whether the query's own words contain anything but
+   * production vocabulary and function words. Its position below the early return was an ordering
+   * accident, and these tests keep it above.
+   */
+  it.each([
+    "documentary",
+    "documentary wide establishing aerial",
+    "historical footage",
+    "archival footage b-roll",
+    "wide establishing shot",
+    "aerial",
+  ])("refuses %j with no context at all", (query) => {
+    const verdict = validateSearchQuery(query);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.reason).toBe("NO_CONTENT_ANCHOR");
+  });
+
+  /** Camera vocabulary may MODIFY a real subject; it may not BE the subject. */
+  it("allows camera vocabulary once a real subject is present", () => {
+    expect(validateSearchQuery("Fuhrerbunker Berlin aerial").ok).toBe(true);
+    expect(validateSearchQuery("documentary Fuhrerbunker").ok).toBe(true);
+  });
+
+  /** The generator-side check and the gate-side check stay one definition, never two. */
+  it("the two checks agree on every case", () => {
+    for (const q of [
+      "documentary",
+      "historical footage",
+      "Fuhrerbunker",
+      "Fuhrerbunker Berlin aerial",
+      "wide establishing",
+      "Churchill 1940",
+    ]) {
+      const anchored = hasContentAnchor(q);
+      const verdict = validateSearchQuery(q);
+      const refusedForAnchor = verdict.ok === false && verdict.reason === "NO_CONTENT_ANCHOR";
+      expect(refusedForAnchor, `${q}: the two checks disagree`).toBe(!anchored);
+    }
+  });
+
+  /** One implementation. A second copy of the rule is how the two come to disagree. */
+  it("the validator asks the helper rather than re-deriving the rule", () => {
+    const SRC = fs.readFileSync(path.join(__dirname, "searchQueryContract.ts"), "utf8");
+    const at = SRC.indexOf("export function validateSearchQuery(");
+    const body = SRC.slice(at, SRC.indexOf("\n}\n", at));
+    expect([...body.matchAll(/hasContentAnchor\(/g)].length).toBe(1);
+    expect(body.indexOf("hasContentAnchor(")).toBeLessThan(body.indexOf("if (!ctx) return"));
+  });
+});
