@@ -16136,15 +16136,57 @@ function isKnownGeoPhrase(phrase: string): boolean {
  * A month is never a place, at any step.
  */
 export function extractVisualPlacePhrase(beatText: string): string {
+  return extractVisualPlacePhrases(beatText)[0] ?? "";
+}
+
+/**
+ * RONDE 88A — EVERY place the beat names, not only the one that wins.
+ *
+ * ── What render 568 measured ────────────────────────────────────────────────────────────────
+ *
+ *     terms=["Adolf Hitler","Joseph Stalin","wrapped","bunker"]
+ *
+ * No Führerbunker. The obvious reading is that the extractor does not know the word — and that is
+ * wrong. Measured against this very function:
+ *
+ *     "Hitler spent his final days in the Führerbunker."           -> "Führerbunker"
+ *     "In the Führerbunker beneath Berlin, Adolf Hitler wrapped…"  -> "Berlin"
+ *
+ * It knows the word perfectly well. The beat named two places and the context could hold one, so
+ * the SPECIFIC location lost to the GENERIC city — because step 2 (a phrase the geo vocabulary
+ * recognises) is tried before step 3, and step 3's own comment is the one that names Führerbunker
+ * as its reason for existing. "Berlin" is in the vocabulary; "Führerbunker" is in no vocabulary at
+ * all, which is exactly what makes it the term an archive search needs.
+ *
+ * ── Why the answer is a list and not a reordering ────────────────────────────────────────────
+ *
+ * Reordering would change which place is THE place, and `place` feeds the geo gates, the typed
+ * retrieval context and every query `buildPrioritisedQueries` builds from `places[0]`. That is a
+ * ranking change across the pipeline to fix a completeness problem, and this round forbids blind
+ * scoring changes for good reason.
+ *
+ * So the preference order is untouched — `extractVisualPlacePhrase` still returns Berlin, byte for
+ * byte — and the places the beat also named stop being discarded. Nothing that reads "the place"
+ * sees any difference; what changes is that the context can no longer be asked "does this beat
+ * mention the Führerbunker?" and answer no.
+ *
+ * ── What this does not do ───────────────────────────────────────────────────────────────────
+ *
+ * It proves nothing new. `validateSearchQuery` already proves every word of `ctx.evidence`, and
+ * the beat text IS that evidence — so a query saying "Führerbunker" was already provable by the
+ * script itself once RONDE 88A's folding fix landed. A typed place token is a statement about
+ * WHAT KIND of thing the word is, which is what the audit line, `candidatePeriodMatch` and the
+ * research anchor read. The gate's answer is unchanged.
+ */
+export function extractVisualPlacePhrases(beatText: string): string[] {
   const text = (beatText ?? "").replace(/\[visual:[^\]]*\]/gi, " ").trim();
-  if (!text) return "";
+  if (!text) return [];
   const runs = [...text.matchAll(new RegExp(CAPITALISED_RUN_SOURCE, "gu"))]
     .map((m) => stripLeadingArticle(m[0]))
     .filter((r) => r && !isMonthPhrase(r));
 
   // 1. building nouns, anywhere in the sentence.
   const structure = runs.find(endsInPlaceStructure);
-  if (structure) return structure;
 
   // 2 + 3. prepositional phrases; the article, when present, must be a whole word.
   const prepositional = new RegExp(
@@ -16157,11 +16199,53 @@ export function extractVisualPlacePhrase(beatText: string): string {
     if (phrase && !isMonthPhrase(phrase)) candidates.push(phrase);
   }
   const vocabHit = candidates.find((c) => endsInPlaceStructure(c) || isKnownGeoPhrase(c));
-  if (vocabHit) return vocabHit;
-  if (candidates.length > 0) return candidates[0]!;
 
   // 4. a bare place name the beat opens with.
-  return runs.find(isKnownGeoPhrase) ?? "";
+  const bare = runs.filter(isKnownGeoPhrase);
+
+  /**
+   * The head of this list is the four-step preference order, unchanged: structure, then the
+   * vocabulary hit, then the first prepositional phrase, then a bare geo run. Everything after it
+   * is the rest of what the beat named.
+   */
+  const ordered = [structure, vocabHit, candidates[0], ...candidates, ...bare].filter(
+    (p): p is string => Boolean(p)
+  );
+
+  /**
+   * A PERSON'S NAME IS NOT A PLACE, AND STEP 3 COULD NOT TELL.
+   *
+   * PLACE_PREPOSITIONS contains "of" and "from", so step 3 — the step that exists to catch a
+   * location no vocabulary knows — also catches a name. Measured on this function before this
+   * guard existed:
+   *
+   *     "The final hours of Adolf Hitler in the Führerbunker."   ->   "Adolf Hitler"
+   *
+   * The winner was a person, and the actual location of the beat was discarded behind him. That
+   * value then travels on as `place` into the geo gates, the typed retrieval context and every
+   * query built from `places[0]`.
+   *
+   * This is not the preference reordering the note above declines to make: it removes a CATEGORY
+   * ERROR rather than re-ranking two places, and it uses the beat's own person extractor rather
+   * than a new vocabulary — the same relationship `extractPersonNamesFromText` already enforces in
+   * the other direction, where it refuses a run whose words all name places. When it empties the
+   * list, "" is the honest answer: the beat named no place, which is better than naming a man.
+   */
+  const personNames = extractPersonNamesFromText(text).map((n) => n.toLowerCase());
+  const isPersonName = (phrase: string): boolean => {
+    const p = phrase.toLowerCase();
+    return personNames.some((n) => n === p || n.includes(p) || p.includes(n));
+  };
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const phrase of ordered) {
+    const key = phrase.toLowerCase();
+    if (seen.has(key) || isPersonName(phrase)) continue;
+    seen.add(key);
+    out.push(phrase);
+  }
+  return out;
 }
 
 /**
@@ -16414,8 +16498,20 @@ export function buildVerifiedQueryContextForBeat(
     );
   }
 
-  const place = extractVisualPlacePhrase(text);
-  if (place) ctx.places.push(provenToken(place, "place", "beat_text", text));
+  /**
+   * RONDE 88A — the beat's places, all of them, primary first.
+   *
+   * `place` below is still `extractVisualPlacePhrase`'s single answer and still what the typed
+   * retrieval context and every `places[0]` consumer receives; see `extractVisualPlacePhrases` for
+   * why the winner is not reordered. The rest stop being thrown away, so a beat that says
+   * "In the Führerbunker beneath Berlin" can no longer be asked whether it mentions the
+   * Führerbunker and answer no.
+   */
+  const placePhrases = extractVisualPlacePhrases(text);
+  const place = placePhrases[0] ?? "";
+  for (const phrase of placePhrases) {
+    ctx.places.push(provenToken(phrase, "place", "beat_text", text));
+  }
   const action = extractActionCue(text);
   if (action) ctx.actions.push(provenToken(action, "action", "beat_text", text));
   const typed = buildTypedRetrievalContext(text, {
