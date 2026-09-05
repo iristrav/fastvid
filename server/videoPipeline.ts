@@ -216,6 +216,15 @@ import {
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import {
+  beatVisualIntent,
+  createBeatVisualIntentState,
+  ensureBeatVisualIntent,
+  formatIntentSummary,
+  formatVisualIntent,
+  intentMatchScore,
+  type BeatVisualIntentState,
+} from "./beatVisualIntent";
+import {
   admitToShortlist,
   beatShortlistViolations,
   createBeatShortlistState,
@@ -17276,6 +17285,13 @@ export interface VisualDedupState {
    */
   beatShortlist: BeatShortlistState;
   /**
+   * RONDE 96: what each beat is looking for, joined once from the three subsystems that each
+   * held a third of the answer. Render-scoped like every other per-beat ledger.
+   */
+  beatIntent: BeatVisualIntentState;
+  /** One `[VisualIntent]` line per beat, however many routes ask for the record. */
+  beatIntentLogged: Set<string>;
+  /**
    * RONDE 61: funnel candidates the beat-image gate has REFUSED. Separate from
    * usedFunnelCandidateIds, which is a soft variety preference the picker restores when
    * everything has been used — this one is never restored.
@@ -17579,6 +17595,8 @@ export function createVisualDedupState(
     beatImageGate: createBeatImageGateState(),
     beatRelevance: createBeatRelevanceLedger(),
     beatShortlist: createBeatShortlistState(),
+    beatIntent: createBeatVisualIntentState(),
+    beatIntentLogged: new Set<string>(),
     beatImageRejectedIds: new Set<string>(),
     mismatchTally: createMismatchTally(),
     mismatchResearchedBeats: new Set<string>(),
@@ -22600,9 +22618,75 @@ async function adoptClip(
     realEntityScore(entityRules, sourceQuery, p) +
     nextLevelScore(p) +
     (muskTopic ? muskBrandScore(sourceQuery, p) : 0);
+  /**
+   * RONDE 96 — resolved BEFORE the sort, because the sort now reads it.
+   *
+   * The contract was previously fetched below, purely for `scoreRetrievalContract`. Moving it up
+   * changes nothing about what it contains — `getRetrievalContract` is a map lookup on a plan the
+   * render already holds — and it lets the beat's intent exist before the first ordering decision
+   * is taken, rather than being joined after the order was already fixed.
+   */
+  const _contract = dedup.documentaryPlan
+    ? (await import("./documentaryPlanningEngine")).getRetrievalContract(
+        dedup.documentaryPlan,
+        sceneIndex,
+        beatIndex
+      )
+    : null;
+
+  /**
+   * RONDE 96 — THE BEAT'S INTENT, JOINED HERE BECAUSE THIS IS WHERE ALL THREE PARTS EXIST.
+   *
+   * `_contract` two lines up is the planner's half; `buildVerifiedQueryContextForBeat` is the
+   * extractors' half. `adoptClip` is the only place in the file that holds both at once, and it
+   * holds them for the beat that is about to be ranked — so the join costs one call and the
+   * ranking below can read what the beat is actually looking for instead of inferring it from a
+   * filename.
+   *
+   * Cached per beat: the second route to reach this beat gets the record the first one built, so
+   * two routes can never rank against two different readings of the same sentence.
+   */
+  const _intent = ensureBeatVisualIntent(dedup.beatIntent, {
+    sceneIndex,
+    beatIndex,
+    ctx: buildVerifiedQueryContextForBeat(beatText, {
+      sceneText: opts.sceneText,
+    }),
+    contract: _contract,
+    narrativePurpose: _contract?.visualGoal,
+  });
+  if (!dedup.beatIntentLogged.has(`s${sceneIndex}b${beatIndex}`)) {
+    dedup.beatIntentLogged.add(`s${sceneIndex}b${beatIndex}`);
+    console.log(formatVisualIntent(_intent));
+  }
+
+  /**
+   * RONDE 96 — the beat's intent is a TERM in the existing score, not a second ranker.
+   *
+   * `intentMatchScore` reads the provider's own text — the title, description and tags the asset
+   * arrived with — against the ten fields the beat stated it was looking for, and adds the result
+   * to the score `candidateScore` already produces. It does not admit, refuse or override
+   * anything: eligibility, the shortlist bound and the vision verdict keep their own jobs, and a
+   * scorer that could also reject would be the second selection engine the brief forbids.
+   *
+   * Why it belongs here rather than deeper: this is the only sort that sees the whole candidate
+   * pool for one beat. A candidate the beat actually asked for should reach the bounded shortlist
+   * before one it did not, and after RONDE 95 the shortlist is small — so the ORDER candidates
+   * arrive in now decides which ones ever get looked at.
+   */
+  const intentScore = (p: string): number =>
+    intentMatchScore(
+      _intent,
+      [dedup.clipAnnotationMeta.get(p)?.providerText, path.basename(p)].filter(Boolean).join(" ")
+    );
   const sortedPaths = [...paths].sort((a, b) =>
     // Content decides; motion only breaks a tie. See compareBeatCandidates.
-    compareBeatCandidates(candidateScore(a), isStillPhotoClip(a), candidateScore(b), isStillPhotoClip(b))
+    compareBeatCandidates(
+      candidateScore(a) + intentScore(a),
+      isStillPhotoClip(a),
+      candidateScore(b) + intentScore(b),
+      isStillPhotoClip(b)
+    )
   );
 
   // Point 9 (final multi-candidate visual selection patch — score explainability): log the
@@ -22682,20 +22766,10 @@ async function adoptClip(
   const _shot = getShotForBeat(sceneIndex, beatIndex);
   const _rhythmTarget = dedup.beatRhythmTargets?.get(`s${sceneIndex}b${beatIndex}`) ?? null;
   /**
-   * The retrieval contract, resolved ONCE — it now answers two questions, not one.
-   *
-   * It used to be built inline in the object below purely for `scoreRetrievalContract`. It also
-   * carries `preferredShot`, which the Documentary Planning Engine derives for every beat from the
-   * beat's visual goal and narrative act, prints in its own summary line — and which nothing has
-   * ever read. Dead since it was written.
+   * The retrieval contract and the beat's intent are resolved ABOVE, before the sort, because
+   * RONDE 96's ranking reads them. See the note there; `_contract` still answers the two
+   * questions it answered before — `scoreRetrievalContract` and `preferredShot`.
    */
-  const _contract = dedup.documentaryPlan
-    ? (await import("./documentaryPlanningEngine")).getRetrievalContract(
-        dedup.documentaryPlan,
-        sceneIndex,
-        beatIndex
-      )
-    : null;
   /**
    * The framing this beat was planned for: the storyboard's, or the contract's.
    *
@@ -41442,6 +41516,16 @@ async function _runVideoPipelineInner(
        * stages, and ends every beat with no approval on a NAMED reason rather than on the word
        * "never_asked" — which was a restatement of the question, not an answer to it.
        */
+      /**
+       * RONDE 96 — what each beat said it was looking for, and the beats that could say nothing.
+       *
+       * A `[VisualIntentGap]` line is the strongest single predictor of a bad beat: no subject, no
+       * entity and no planner contract means every query it built was unanchored and every
+       * candidate it ranked was ranked against nothing.
+       */
+      for (const line of formatIntentSummary(visualDedup.beatIntent)) {
+        console.log(pipelineReport.add("summary", line));
+      }
       for (const line of formatBeatShortlists(visualDedup.beatShortlist)) {
         console.log(pipelineReport.add("summary", line));
       }
