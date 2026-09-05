@@ -30,6 +30,7 @@
  */
 import type { ProjectTimeline, TimelineFormat, TimelineVideoClip } from "./projectTimeline";
 import { captionTrack, textTrackOf, videoTrack } from "./projectTimeline";
+import { foldSearchText } from "./searchTextNormalize";
 
 /* ═══════════════════════ what a candidate looks like on the wire ═══════════════════════ */
 
@@ -122,12 +123,13 @@ export function replacementContextFor(
   const overlaps = (a: { start: number; end: number }) =>
     a.start < clip.timelineEnd && clip.timelineStart < a.end;
 
-  const words = [
+  const onScreenText = [
     ...captionTrack(timeline).filter((c) => !c.disabled && overlaps(c)).map((c) => c.text),
     ...textTrackOf(timeline, "TEXT").filter((t) => !t.disabled && overlaps(t)).map((t) => t.text),
-  ]
-    .join(" ")
-    .toLowerCase()
+  ].join(" ");
+  // RONDE 88A: folded before the ASCII split. Unfolded, the caption word "Führerbunker" split
+  // into "f" and "hrerbunker" and the replacement search ran on the fragment.
+  const words = foldSearchText(onScreenText)
     .split(/[^a-z0-9']+/)
     .filter((w) => w.length > 3);
 

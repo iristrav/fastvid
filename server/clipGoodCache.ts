@@ -4,6 +4,7 @@
 import fs from "fs";
 import path from "path";
 import { LOCAL_UPLOADS_DIR } from "./storageLocal";
+import { foldSearchText } from "./searchTextNormalize";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 
 type GoodCacheAsset = {
@@ -91,9 +92,10 @@ export function goodClipCacheBoost(asset: GoodCacheAsset, beatText: string): num
     if (assetBasename && rec.basename && assetBasename.includes(rec.basename.replace(/\.[^.]+$/, ""))) {
       boost = Math.max(boost, 8 + Math.min(4, rec.adoptCount));
     }
-    const sharedWords = rec.beatText
-      .toLowerCase()
-      .split(/\W+/)
+    // RONDE 88A: folded, and `beatLower` is folded to match. `\W` cut "Führerbunker" into "f"
+    // and "hrerbunker", so the one word that made two beats about the same thing never counted.
+    const sharedWords = foldSearchText(rec.beatText)
+      .split(/[^\p{L}\p{N}]+/u)
       .filter((w) => w.length >= 5 && beatLower.includes(w));
     if (sharedWords.length >= 2) {
       boost = Math.max(boost, 4 + Math.min(3, rec.adoptCount));

@@ -214,6 +214,7 @@ import {
   type CuratedCandidatePick,
   type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
+import { foldSearchText } from "./searchTextNormalize";
 import {
   fileSizeVerdict,
   formatBelowQualityBar,
@@ -4644,6 +4645,7 @@ export async function downloadAndTrimPoolCandidate(
     return null;
   }
 
+  // ascii-safe: filename, not search text — a non-ASCII byte in a path is the bug, not the fix.
   const safeId = candidate.assetId.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
   const isVideo = candidate.mediaType === "video";
   const ext = isVideo ? "mp4" : "jpg";
@@ -8555,6 +8557,7 @@ async function fetchOpenverseImages(
         // vision-gate identity — asset-specific: the same asset revisited reuses its own path
         // (intentional, matches the existing usedImageUrls dedup), a different asset never can.
         const assetTag =
+          // ascii-safe: a filename fragment derived from a provider id, never matched as a word.
           ((images[i]?.id?.trim() || imgUrl).replace(/[^a-zA-Z0-9]/g, "").slice(0, 24)) || String(i);
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}openverse_${assetTag}.jpg`);
         /**
@@ -15690,8 +15693,13 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
   // previously this was "the first non-stop word", which is how "Eva Braun come" happened.
   if (persons.length > 0) {
     const person = persons[0]!;
-    const personWords = new Set(person.toLowerCase().split(/\W+/).filter(Boolean));
-    const notPerson = (w: string) => !personWords.has(w);
+    // RONDE 88A: folded on both sides, not `\W`-split. `\W` treats every accented letter as
+    // punctuation, so "Göring" became {g, ring} and `notPerson("göring")` answered true — the
+    // extractor could append a person's own name to itself as the "best remaining entity".
+    const personWords = new Set(
+      foldSearchText(person).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    );
+    const notPerson = (w: string) => !personWords.has(foldSearchText(w));
     const extra = proper.find(notPerson) ?? common.find(notPerson) ?? "";
     return extra ? `${person} ${extra}` : person;
   }
@@ -15749,9 +15757,17 @@ export function scriptStockSearchQueries(
   if (persons.length > 0) return [persons[0]];
   const sceneSubject = sceneText ? extractBeatSubject(sceneText, persons) : "";
   if (sceneSubject && sceneSubject.length >= 2) return [sceneSubject];
-  const titleWords = (videoTitle ?? "")
-    .split(/\W+/)
-    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w.toLowerCase()));
+  /**
+   * RONDE 88A — this is the line that produced `hrerbunker`.
+   *
+   * `\W` is ASCII-only, so "Führerbunker" split into "F" and "hrerbunker"; the one-letter fragment
+   * fell to the `length >= 4` filter and the SEARCH QUERY became a word no archive contains.
+   * `foldSearchText` is the fix `searchTextNormalize` already carries for exactly this case, and it
+   * is what every other keyword builder in the pipeline runs first.
+   */
+  const titleWords = foldSearchText(videoTitle ?? "")
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
   if (titleWords.length > 0) return [titleWords.slice(0, 3).join(" ")];
   /**
    * RONDE 100B — nothing left, so ask for nothing.
@@ -21237,9 +21253,9 @@ function enrichStockQuery(
 }
 
 function tokenizeForRelevance(text: string): string[] {
-  return text
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
-    .toLowerCase()
+  /** RONDE 88A: folded first — "Führerbunker" tokenised to "hrerbunker" and scored against nothing. */
+  return foldSearchText(text)
+    .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));
 }
@@ -33926,6 +33942,7 @@ async function fetchSceneVisualsInner(
           // quality gate judged the render on the 13 beats it could see, reporting
           // "wiki=0 stock=0" while three Wikimedia and six Pexels clips were in the video.
           const adopted = poolCandidates.find(
+            // ascii-safe: reproduces the filename written by the line below, character for character.
             (c) => poolClip!.includes(c.assetId.replace(/[^a-z0-9]/gi, "_").slice(0, 30))
           ) ?? poolCandidates[0];
           recordClipAdopt(
@@ -34590,9 +34607,13 @@ function extractKeywords(text: string, count: number = 4): string[] {
     "since","even","only","still","now","here","there","some","any","every",
   ]);
 
-  // Clean text: remove punctuation, lowercase, split into words
+  // Clean text: remove punctuation, lowercase, split into words.
+  //
+  // RONDE 88A: Unicode-aware, and deliberately NOT folded. These words are drawn on screen, so
+  // "Führerbunker" must stay "Führerbunker" — folding would put "Fuhrerbunker" in front of the
+  // viewer. The old ASCII class was the worst of both: it put "hrerbunker" there.
   const words = text
-    .replace(/[^a-zA-Z\s]/g, " ")
+    .replace(/[^\p{L}\s]/gu, " ")
     .toLowerCase()
     .split(/\s+/)
     .filter(w => w.length >= 4 && !STOP_WORDS.has(w));

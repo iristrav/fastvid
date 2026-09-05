@@ -3,6 +3,7 @@
  * Targets spoken narration length (WPM) so VO matches chosen video length.
  */
 import { normalizeVideoLength, type VideoLength } from "../shared/videoLengths";
+import { foldSearchText } from "./searchTextNormalize";
 
 export interface ScriptLengthBudget {
   videoLength: string;
@@ -464,10 +465,13 @@ Return ONLY the markdown script (narration + headings).`;
 
 /** True if spoken narration still reflects the user's topic (guards broken length-refine). */
 export function scriptStillOnTopic(topicPrompt: string, script: string): boolean {
-  const narration = extractFullNarrationText(script).toLowerCase();
-  const topic = topicPrompt.toLowerCase().trim();
+  // RONDE 88A: both sides folded. A topic of "Der Führerbunker" tokenised to ["hrerbunker"]
+  // against an unfolded narration, found no hit, and reported a perfectly on-topic script as off.
+  const narration = foldSearchText(extractFullNarrationText(script));
+  const topic = foldSearchText(topicPrompt).trim();
   if (!topic || !narration) return false;
 
+  // ascii-safe: `topic` is already folded above, so nothing non-ASCII reaches this class.
   const tokens = topic
     .split(/[^a-z0-9]+/i)
     .map((w) => w.trim())

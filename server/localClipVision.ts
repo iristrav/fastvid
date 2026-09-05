@@ -6,6 +6,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
+import { foldSearchText } from "./searchTextNormalize";
 import { promisify } from "util";
 import { exec as execCb } from "child_process";
 import { cosineSimilarityVectors, type BeatSemanticProfile } from "./semanticVisualMatching";
@@ -585,10 +586,13 @@ export function dedupeQueryParts(parts: string[]): string[] {
   for (const raw of parts) {
     const part = collapseRepeatedWords(raw).trim();
     if (!part) continue;
-    const norm = part.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    // RONDE 88A: folded, so "Führerbunker interior" and "fuhrerbunker interior" are recognised as
+    // the same query part. Unfolded, both sides collapsed to "f hrerbunker" and a genuine
+    // duplicate written the other way survived into the provider call.
+    const norm = foldSearchText(part).replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
     if (!norm) continue;
     const redundant = kept.some((k) => {
-      const kn = k.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+      const kn = foldSearchText(k).replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
       return kn.startsWith(norm) || norm.startsWith(kn) || kn.includes(norm);
     });
     if (redundant) continue;
@@ -603,7 +607,8 @@ export function collapseRepeatedWords(text: string): string {
   const out: string[] = [];
   for (const w of words) {
     const prev = out[out.length - 1];
-    const bare = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    /** RONDE 88A: folded, so "Führer Führer" collapses however each copy was spelled. */
+    const bare = (s: string) => foldSearchText(s).replace(/[^a-z0-9]/g, "");
     if (prev && bare(prev) && bare(prev) === bare(w)) continue;
     out.push(w);
   }

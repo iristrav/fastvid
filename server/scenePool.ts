@@ -20,6 +20,7 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { foldSearchText } from "./searchTextNormalize";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import type { CachedCandidate, CandidateSource } from "./sceneCandidateCache";
 import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicenseStatus";
@@ -1781,7 +1782,10 @@ export type PoolSelectionContext = {
 function beatTokensFor(beatText: string, powerWord: string, keywords: string[]): string[] {
   return Array.from(new Set(
     [powerWord, ...keywords, ...beatText.toLowerCase().split(/\s+/)]
-      .map(t => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
+      // RONDE 88A: fold before the ASCII strip. Without it "Führerbunker" became "fhrerbunker",
+      // which no provider's title, tag or description contains — the beat's most distinctive word
+      // scored zero against every candidate that actually showed it.
+      .map(t => foldSearchText(t).replace(/[^a-z0-9]/g, ""))
       .filter(t => t.length > 2)
   ));
 }
@@ -1814,7 +1818,9 @@ function keywordRelevanceScore(
     ...c.title.toLowerCase().split(/\s+/),
     ...c.tags.flatMap(t => t.toLowerCase().split(/\s+/)),
     ...(c.description ?? "").toLowerCase().split(/\s+/),
-  ].map(t => t.replace(/[^a-z0-9]/g, "")).filter(t => t.length > 2);
+    // RONDE 88A: folded on this side too — see beatTokensFor. Both sides of a comparison have to
+    // agree about what a word is, or the fix on one side only moves the mismatch.
+  ].map(t => foldSearchText(t).replace(/[^a-z0-9]/g, "")).filter(t => t.length > 2);
 
   let score = 0;
   for (const token of beatTokens) {
@@ -2001,6 +2007,7 @@ export async function rankCandidatesByThumbnailClip(
     const ext = candidate.thumbnailUrl.includes(".png") ? ".png" : ".jpg";
     const tmpPath = path.join(
       tmpDir,
+      // ascii-safe: filename, not search text.
       `pool_thumb_s${sceneIndex}_b${beatIndex}_${candidate.assetId.replace(/[^a-z0-9]/gi, "_").slice(0, 30)}${ext}`
     );
     try {

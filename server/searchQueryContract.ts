@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import { foldSearchText } from "./searchTextNormalize";
+
 /**
  * RONDE 88 — a search term is proven, or it is not sent.
  *
@@ -343,9 +345,23 @@ export function isProductionWord(token: string): boolean {
  * derivation, not inflection, and proving one from the other is the kind of inference this round
  * exists to refuse. A builder that appends "cyclists" to a beat about cycling is guessing, and
  * the gate says so.
+ *
+ * ── RONDE 88A: "the same word" has to survive an umlaut ─────────────────────────────────────
+ *
+ * Render 568 refused six queries for the term `fuhrerbunker`. The script says "Führerbunker" —
+ * `scriptVisualKeywords`, `curatedMediaSourcing`, `mediaResearchEngine` and `scriptGuidedClipFinder`
+ * all run their text through `foldSearchText` first, because `ü` is a letter and an English-language
+ * archive spells it `u`. This function did not fold, so the folded query token `fuhrerbunker` was
+ * compared against the unfolded evidence `führerbunker`, matched nothing, and the gate reported
+ * UNVERIFIED_TERM about a word the beat actually contains.
+ *
+ * That is the failure mode this module was built to prevent, arriving from the other side: not a
+ * guess accepted, but the script's own word refused. Folding here makes the comparison symmetric —
+ * `führerbunker`, `Fuhrerbunker` and `fuhrerbunker` are one word, and every one of them still has
+ * to be IN the evidence to be proven. Nothing becomes allowed that the script does not say.
  */
 export function evidenceStems(word: string): string[] {
-  const w = word.trim().toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, "");
+  const w = foldSearchText(word.trim()).replace(/[^\p{L}\p{N}'-]/gu, "");
   if (!w) return [];
   const out = new Set<string>([w]);
   const add = (s: string) => {
@@ -961,7 +977,9 @@ export function validateSearchQuery(
   for (const list of [ctx.persons, ctx.places, ctx.countries, ctx.events, ctx.actions, ctx.objects]) {
     for (const token of list) {
       if (token.verified) continue;
-      for (const w of token.term.toLowerCase().split(/\s+/)) rejected.set(w, token.source);
+      // Folded, because the lookup below is folded — an unfolded key would silently mislabel a
+      // refused LLM term as an anonymous UNVERIFIED_TERM, hiding WHO guessed it.
+      for (const w of foldSearchText(token.term).split(/\s+/)) rejected.set(w, token.source);
     }
   }
 
@@ -972,7 +990,7 @@ export function validateSearchQuery(
   let firstTerm: string | undefined;
   let contentWords = 0;
   for (const raw of words) {
-    const w = raw.toLowerCase();
+    const w = foldSearchText(raw);
     if (isProductionWord(w) || isFunctionWord(w)) continue;
     contentWords++;
     if (evidenceStems(w).some((form) => proven.has(form))) continue;

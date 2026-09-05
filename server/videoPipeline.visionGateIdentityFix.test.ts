@@ -67,7 +67,11 @@ describe("Vision Gate root-cause fix — Test A: fetchOpenverseImages path colli
   it("still falls back to a still-unique value when both id and URL are unexpectedly empty (never reintroduces `i` alone as the sole disambiguator for that edge case)", () => {
     const idx = src.indexOf("const assetTag");
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 200);
+    // Scoped to the statement, not to a byte count — a comment added above the fallback expression
+    // used to push it out of a snug window and report the fallback as gone.
+    const end = src.indexOf(";", idx);
+    expect(end).toBeGreaterThan(idx);
+    const scoped = src.slice(idx, end);
     expect(scoped).toContain("String(i)");
   });
 });
