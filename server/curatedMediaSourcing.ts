@@ -12,6 +12,7 @@ import {
   sourceFloorWouldFailAgain,
 } from "./sourceFloorMemo";
 import { containCenterFilter, stillImageMaxSec, stillKenBurnsEnabled, stillZoomOutExpr } from "./stillImagePolicy";
+import { preparationKey, runPreparation } from "./preparationCache";
 import {
   extractVisualSearchTags,
   extractSceneSearchTags,
@@ -2192,10 +2193,51 @@ export async function prepareCuratedArchiveClip(
       throw new Error(`curated asset ${asset.id} has baked edit text — skipped`);
     }
 
-    const runTrim = () =>
-      asset.mediaType === "image"
-        ? convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext)
-        : trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
+    /**
+     * RONDE 97 §3 — THE TRANSCODE HAPPENS ONCE PER (ASSET, SLOT), NOT ONCE PER BEAT.
+     *
+     * `acquireSharedRawMaterialization` above already shares the DOWNLOAD. What it does not share
+     * is this ffmpeg pass, because `outPath` carries the scene and beat in its name — so two beats
+     * that want the same asset for the same duration produce two byte-identical files by running
+     * ffmpeg twice. Render 568 paid for one asset thirty-eight times, and after RONDE 88A fixed
+     * the search half of that, this is what remained.
+     *
+     * The key deliberately does NOT contain the scene or the beat: those change the file's NAME
+     * and not its CONTENT. It contains what does change the bytes — the asset, the duration
+     * rounded to a tenth, the media type and the style the caller asked for. A caller that
+     * transforms differently gets a different key and a real second preparation.
+     *
+     * On reuse the cached file is COPIED to this beat's own `outPath` rather than returned in its
+     * place. That is the conservative choice and it is deliberate: several places in this codebase
+     * still read a scene and a beat out of a curated filename, and handing beat 3 a file called
+     * `scene_0_b0_curated_a57364.mp4` would fix a performance problem by creating a provenance
+     * one. A local copy costs a file write; the transcode it replaces costs an ffmpeg process.
+     */
+    const prepKey = preparationKey({
+      assetIdentity: `archive:${asset.id}`,
+      holdSec: duration,
+      variant: [
+        asset.mediaType,
+        styleContext?.minSourceSec != null ? `floor${floorForThisSlot.toFixed(2)}` : "",
+      ]
+        .filter(Boolean)
+        .join(":"),
+    });
+    const runTrim = async () => {
+      const outcome = await runPreparation(workDir, prepKey, async () => {
+        if (asset.mediaType === "image") {
+          await convertImageToKenBurns(rawPath, outPath, duration, sceneIndex, beatIndex, styleContext);
+        } else {
+          await trimVideoClip(rawPath, outPath, duration, beatIndex, styleContext, sceneIndex, beatIndex);
+        }
+        return outPath;
+      });
+      if (outcome.status === "FAILED") throw outcome.error;
+      if (outcome.path !== outPath) {
+        /** A reuse. Copy rather than alias — see the note above on filename provenance. */
+        await fs.promises.copyFile(outcome.path, outPath);
+      }
+    };
     try {
       await runTrim();
     } catch (err) {

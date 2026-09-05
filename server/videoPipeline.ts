@@ -35,6 +35,7 @@ import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata,
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
+import { formatPreparationCache, resetPreparationScope } from "./preparationCache";
 import {
   classifyProviderFailure,
   cooldownMsForFailure,
@@ -41523,6 +41524,15 @@ async function _runVideoPipelineInner(
        * entity and no planner contract means every query it built was unanchored and every
        * candidate it ranked was ranked against nothing.
        */
+      /**
+       * RONDE 97 §3 — what preparation cost, and what the idempotent layer saved.
+       *
+       * `requested=38 started=1 reused=37` is render 568's duplication as a single line, instead
+       * of thirty-eight download entries somebody has to count by hand.
+       */
+      for (const line of formatPreparationCache(workDir)) {
+        console.log(pipelineReport.add("summary", line));
+      }
       for (const line of formatIntentSummary(visualDedup.beatIntent)) {
         console.log(pipelineReport.add("summary", line));
       }
@@ -43010,6 +43020,15 @@ async function _runVideoPipelineInner(
     clearStoryboardCacheForVideo(videoId);
     clearVisualSearchPlanCacheForVideo(videoId);
     try {
+      /**
+       * RONDE 97 §3 — the preparation cache is keyed on this directory, so it goes with it.
+       *
+       * A worker process outlives a render. Leaving the entries behind would grow a map for every
+       * render the process ever ran, and — worse — leave paths pointing into a directory that no
+       * longer exists, which `runPreparation`'s existence check would then have to catch one entry
+       * at a time. Released here, where the directory's own lifetime ends.
+       */
+      resetPreparationScope(workDir);
       fs.rmSync(workDir, { recursive: true, force: true });
     } catch { /* ignore */ }
   }
