@@ -37,6 +37,12 @@ import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
 import { formatPreparationCache, resetPreparationScope } from "./preparationCache";
 import {
+  budgetAllows,
+  createRetrievalBudgetState,
+  formatRetrievalBudgets,
+  type RetrievalBudgetState,
+} from "./retrievalBudget";
+import {
   classifyProviderFailure,
   cooldownMsForFailure,
   formatProviderCooldown,
@@ -17319,6 +17325,12 @@ export interface VisualDedupState {
    * held a third of the answer. Render-scoped like every other per-beat ledger.
    */
   beatIntent: BeatVisualIntentState;
+  /**
+   * RONDE 97 §10: what each beat has spent on queries, downloads, preparations and rescues.
+   * Render-scoped, like every other per-beat ledger — a budget two renders shared would be no
+   * budget at all.
+   */
+  beatBudget: RetrievalBudgetState;
   /** One `[VisualIntent]` line per beat, however many routes ask for the record. */
   beatIntentLogged: Set<string>;
   /**
@@ -17626,6 +17638,7 @@ export function createVisualDedupState(
     beatRelevance: createBeatRelevanceLedger(),
     beatShortlist: createBeatShortlistState(),
     beatIntent: createBeatVisualIntentState(),
+    beatBudget: createRetrievalBudgetState(),
     beatIntentLogged: new Set<string>(),
     beatImageRejectedIds: new Set<string>(),
     mismatchTally: createMismatchTally(),
@@ -29409,6 +29422,16 @@ function typedRetrievalQueriesForBeat(
    * a beat whose planner said nothing produces exactly the queries it produced before, because
    * `queryIntentHints` returns undefined and `applyIntentHints` is then a no-op.
    */
+  /**
+   * RONDE 97 §10 — a beat that has spent its query budget stops asking.
+   *
+   * Not an error: it has asked enough, and the honest response is to let it settle for what it
+   * already has with the reason recorded. Charged here because this is the beat's own query entry
+   * point, so one charge covers every route that asks through it.
+   */
+  if (!budgetAllows(dedup.beatBudget, scene.index, beat.index, "queries")) {
+    return [];
+  }
   const beatIntent = beatVisualIntent(dedup.beatIntent, scene.index, beat.index);
   const typed = typedQueryPrefix(beat.text, {
     sceneText: scene.text,
@@ -41589,6 +41612,10 @@ async function _runVideoPipelineInner(
        * `requested=38 started=1 reused=37` is render 568's duplication as a single line, instead
        * of thirty-eight download entries somebody has to count by hand.
        */
+      /** RONDE 97 §10 — what the render spent per beat, and which beats hit a ceiling. */
+      for (const line of formatRetrievalBudgets(visualDedup.beatBudget)) {
+        console.log(pipelineReport.add("summary", line));
+      }
       for (const line of formatPreparationCache(workDir)) {
         console.log(pipelineReport.add("summary", line));
       }
