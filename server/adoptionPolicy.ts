@@ -128,6 +128,26 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   pixabay: REAL_FUNNEL(),
   stock: REAL_FUNNEL(),
   pool: REAL_FUNNEL(),
+  own_archive: REAL_FUNNEL(),
+  wikimedia_video: REAL_FUNNEL(),
+  /**
+   * RONDE 91 — the provider labels the scene-pool path reports.
+   *
+   * These reach `recordClipAdopt` through runtime expressions (`candidate.source`, `label`,
+   * `stockAdoptSource`), not string literals, so RONDE 90's structural test — which reads the
+   * literals at the call sites — could not see them. The suite could: three existing tests failed
+   * the moment an undeclared label stopped counting as `own_footage`, which is the check working.
+   * `clipAdoptAudit` and `editorialReviewEngine` already knew all of these by name.
+   */
+  loc: REAL_FUNNEL(),
+  nara: REAL_FUNNEL(),
+  nasa: REAL_FUNNEL(),
+  flickr: REAL_FUNNEL(),
+  gdelt: REAL_FUNNEL(),
+  mediaccc: REAL_FUNNEL(),
+  sepiasearch: REAL_FUNNEL(),
+  youtube: REAL_FUNNEL(),
+  youtube_cc: REAL_FUNNEL(),
 
   // ── Real media, off the funnel ────────────────────────────────────────────────────────────
   rescue_archive: RESCUE_REAL(
@@ -135,6 +155,20 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   ),
   rescue_wikimedia: RESCUE_REAL(
     "the guaranteed ladder asks Commons for one more real image after every other route failed"
+  ),
+  rescue_stock: RESCUE_REAL(
+    "licensed stock reached after the beat's own sourcing failed"
+  ),
+  /**
+   * Real archive media found by SIMILARITY to another beat's picture rather than by this beat's
+   * own query. Genuinely sourced, and an answer to a different question — which is why it is a
+   * rescue and may not claim to be the beat's verified visual.
+   */
+  archive_similar: RESCUE_REAL(
+    "archive media matched by similarity to a neighbouring beat, not by this beat's own query"
+  ),
+  rescue_similar: RESCUE_REAL(
+    "archive media matched by similarity after the beat's own sourcing failed"
   ),
 
   /**
@@ -210,6 +244,16 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   mgfx: SYNTHETIC("GRAPHIC", "a drawn card; there is no photograph to judge"),
   rescue_graphic: SYNTHETIC("GRAPHIC", "a drawn card produced after every media route failed"),
 
+  /**
+   * The guaranteed ladder's two synthetic rungs, under their tier names.
+   *
+   * `guaranteedAdoptSource` collapses both to "fallback", but the tier words reach the adopt
+   * audit by other paths and `beatVisualStatus` has always had to handle them. Declared here so
+   * that handling comes from one table instead of two.
+   */
+  text_overlay: SYNTHETIC("GRAPHIC", "a card with the beat's own words on it; depicts nothing"),
+  color_fallback: SYNTHETIC("PLACEHOLDER", "a drawn colour card; depicts nothing"),
+
   // ── Nothing was found ─────────────────────────────────────────────────────────────────────
   fallback: SYNTHETIC("PLACEHOLDER", "a colour/text card standing in for a picture never found"),
   guaranteed: SYNTHETIC("PLACEHOLDER", "the guaranteed ladder's last rung; depicts nothing"),
@@ -246,12 +290,70 @@ function normalise(source: string): string {
  * is visible, instead of being the permissive one and invisible.
  */
 export function adoptionPolicyFor(source: string): AdoptionPolicy {
-  return POLICIES[normalise(source)] ?? UNDECLARED;
+  const key = normalise(source);
+  const exact = POLICIES[key];
+  if (exact) return exact;
+  /**
+   * `rescue_similar` is a FAMILY, not a label: the codebase already treats it as a prefix
+   * (`editorialReviewEngine` matches `startsWith("rescue_similar")`, so does `clipAdoptAudit`),
+   * and `rescue_similar_v2` exists. One prefix, declared once, rather than a row per version —
+   * and deliberately the only prefix, so this cannot quietly become a second shape-based
+   * classifier with the permissive default this module was written to remove.
+   */
+  if (key.startsWith("rescue_similar")) return POLICIES.rescue_similar!;
+  return UNDECLARED;
 }
 
 /** Every declared label, for the structural test and for reporting. */
 export function declaredAdoptSources(): string[] {
   return Object.keys(POLICIES).sort();
+}
+
+/**
+ * RONDE 91 — WHAT KIND OF PICTURE THIS BEAT ENDED UP WITH, decided by the declared policy.
+ *
+ * ── The third permissive default ────────────────────────────────────────────────────────────
+ *
+ * `beatVisualStatus.coverageOfAdoptEntry` held a second source→coverage table of twelve entries
+ * and returned `"own_footage"` for everything else. So did `adoptRouteForSource` with `"primary"`.
+ * Three tables, three defaults, and in every one of them the UNKNOWN case was the flattering one.
+ *
+ * That default has teeth. `verifiedOwnVisual = coverage === "own_footage" && verification ===
+ * "verified_fit"` feeds `beatVisuals.verifiedOwnVisual`, which is what RONDE 89's
+ * `NO_VERIFIED_OWN_VISUAL` export condition reads. An undeclared route landing on `own_footage`
+ * could therefore become a beat's verified visual and help a render past the delivery gate.
+ *
+ * Deriving coverage from the declared policy closes that: a route that may not count as real
+ * footage cannot be `own_footage`, so it cannot be a verified visual, so it cannot answer for a
+ * beat at the export gate. This is the enforcement `countsAsRealFootage` was declared for.
+ *
+ * ── Where an undeclared route lands, and why ────────────────────────────────────────────────
+ *
+ * `"none"`. Not `own_footage` — that is the claim being withdrawn — and not `placeholder`, which
+ * would assert it is a drawn card when nobody knows what it is. "This beat has a picture this
+ * render cannot classify" is exactly `none`, and it is the honest answer.
+ */
+export function coverageForAdoptSource(
+  source: string
+): "own_footage" | "subject_only" | "held_frame" | "graphic" | "placeholder" | "generated" | "none" {
+  const policy = adoptionPolicyFor(source);
+  switch (policy.category) {
+    case "REAL_FUNNEL":
+    case "RESCUE_REAL":
+      return "own_footage";
+    case "FALLBACK_SUBJECT":
+      return "subject_only";
+    case "BACKFILL_TIME":
+      return "held_frame";
+    case "GENERATED":
+      return "generated";
+    case "GRAPHIC":
+      return "graphic";
+    case "PLACEHOLDER":
+      return "placeholder";
+    case "UNDECLARED":
+      return "none";
+  }
 }
 
 /**

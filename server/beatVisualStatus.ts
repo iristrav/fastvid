@@ -33,6 +33,7 @@
  * route label and the relevance ledger's verdict — and states the combination. There is no second
  * AI, no CLIP score, no keyword rule.
  */
+import { coverageForAdoptSource } from "./adoptionPolicy";
 import * as path from "path";
 
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
@@ -105,21 +106,14 @@ export type BeatVisualStatus = {
   reason: string;
 };
 
-/** Routes that mean "no footage was found for this beat" rather than "footage was found". */
-const COVERAGE_BY_SOURCE: ReadonlyMap<string, BeatCoverage> = new Map<string, BeatCoverage>([
-  ["fallback", "placeholder"],
-  ["rescue_placeholder", "placeholder"],
-  ["rescue_extend", "held_frame"],
-  ["subject_fallback", "subject_only"],
-  ["rescue_graphic", "graphic"],
-  ["graphic", "graphic"],
-  ["motion_graphic", "graphic"],
-  ["rescue_ai", "generated"],
-  ["kling", "generated"],
-  ["ai", "generated"],
-  ["text_overlay", "graphic"],
-  ["color_fallback", "placeholder"],
-]);
+/**
+ * RONDE 91 — the source→coverage table that used to live here is gone.
+ *
+ * It held twelve entries and everything else fell through to `own_footage`. `adoptionPolicy` now
+ * declares every adopt label the pipeline can produce and `coverageForAdoptSource` derives the
+ * coverage from `countsAsRealFootage`, so there is one table instead of two that could disagree —
+ * and no permissive default for a label nobody declared. See `coverageOfAdoptEntry`.
+ */
 
 /** A guaranteed-ladder file is a card the ladder drew when everything else had failed. */
 export function isGuaranteedClipName(basename: string): boolean {
@@ -137,10 +131,32 @@ export function coverageOfAdoptEntry(entry: {
   source: string;
   basename: string;
 }): BeatCoverage {
-  const mapped = COVERAGE_BY_SOURCE.get(entry.source.trim().toLowerCase());
-  if (mapped) return mapped;
-  if (isGuaranteedClipName(entry.basename)) return "placeholder";
-  return "own_footage";
+  /**
+   * RONDE 91 — the declared adoption policy decides this, not a second string table.
+   *
+   * This function used to consult `COVERAGE_BY_SOURCE` (twelve entries) and return `own_footage`
+   * for everything else. `adoptRouteForSource` had the same shape with `primary`, and RONDE 90
+   * found a third. In all three the UNKNOWN case was the flattering one.
+   *
+   * That mattered here more than anywhere else: `verifiedOwnVisual` is `own_footage` AND
+   * `verified_fit`, it feeds `beatVisuals.verifiedOwnVisual`, and RONDE 89's
+   * `NO_VERIFIED_OWN_VISUAL` export condition reads that number. A route nobody had declared could
+   * land on `own_footage`, be judged a fit, become a beat's verified visual, and help a render past
+   * the delivery gate — which is the exact shape of the failure this whole line of work exists to
+   * stop.
+   *
+   * `coverageForAdoptSource` derives the answer from `countsAsRealFootage`, so a route that may not
+   * claim real footage cannot be `own_footage`, and an undeclared route lands on `none`.
+   */
+  const coverage = coverageForAdoptSource(entry.source);
+  /**
+   * The filename stays a second opinion for one case only, and it is still needed: the guaranteed
+   * ladder's placeholder rungs write a recognisable name, and a caller can record them under a
+   * generic route label. A card is a card whatever the label said — but this may only ever make
+   * the reading MORE conservative, never less, so it cannot resurrect the old default.
+   */
+  if (coverage === "own_footage" && isGuaranteedClipName(entry.basename)) return "placeholder";
+  return coverage;
 }
 
 /**

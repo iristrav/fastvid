@@ -24,6 +24,8 @@
  * The relevance architecture is untouched. Every clip these rounds add still comes through the
  * same beat → search-query → vision chain; nothing is added because it is the right length.
  */
+import { coverageOfAdoptEntry } from "./beatVisualStatus";
+import { adoptionPolicyFor } from "./adoptionPolicy";
 import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
@@ -263,8 +265,17 @@ describe("RONDE 111 — when no new candidate exists, the scene's own footage mo
 
   it("it is recorded as a rescue, never as a verified fit for the beat", () => {
     // rescue_extend maps to held_frame coverage in the quality report — it counts as a stand-in.
-    const status = fs.readFileSync(path.join(__dirname, "beatVisualStatus.ts"), "utf8");
-    expect(status).toContain('["rescue_extend", "held_frame"]');
+    //
+    // RONDE 91: this used to grep beatVisualStatus.ts for the literal table entry
+    // `["rescue_extend", "held_frame"]`. That table is gone — the twelve-entry map fell through to
+    // `own_footage` for everything else, and the coverage is now derived from the declared adoption
+    // policy instead. The CLAIM is unchanged and is asserted directly against the function, which
+    // is stronger than reading the source for a string: a future edit that keeps the literal but
+    // breaks the behaviour would have passed the old form and fails this one.
+    expect(coverageOfAdoptEntry({ source: "rescue_extend", basename: "extend_s1b2.mp4" }))
+      .toBe("held_frame");
+    // And a held frame can never be the beat's verified own visual, whatever the gate said.
+    expect(adoptionPolicyFor("rescue_extend").countsAsVerifiedVisual).toBe(false);
   });
 
   it("with no real clip at all it says so instead of pretending it filled the scene", () => {

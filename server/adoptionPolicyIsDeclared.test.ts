@@ -45,6 +45,7 @@ import {
   isDeclaredAdoptSource,
 } from "./adoptionPolicy";
 import { guaranteedAdoptSource } from "./videoPipeline";
+import { buildBeatVisualStatuses, coverageOfAdoptEntry } from "./beatVisualStatus";
 import { SUBJECT_FALLBACK_ROUTE } from "./beatSubjectFallback";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
@@ -249,5 +250,95 @@ describe("the census reaches the render log", () => {
     expect(block).toContain('line.includes("UNDECLARED_ADOPT_SOURCE")');
     expect(block).toContain("console.warn");
     expect(block).toContain("console.log");
+  });
+});
+
+
+/* ═══════════════ RONDE 91 — the policy now DECIDES coverage ═══════════════ */
+
+/**
+ * ── The third permissive default ────────────────────────────────────────────────────────────
+ *
+ * `coverageOfAdoptEntry` held a twelve-entry source->coverage map and returned `own_footage` for
+ * everything else — the same shape as `adoptRouteForSource`'s `primary`. It has teeth that the
+ * other two do not: `verifiedOwnVisual = own_footage && verified_fit` feeds
+ * `beatVisuals.verifiedOwnVisual`, which is exactly what RONDE 89's NO_VERIFIED_OWN_VISUAL export
+ * condition reads. An undeclared route could therefore become a beat's verified visual and help a
+ * render past the delivery gate.
+ */
+describe("coverage is derived from the declared policy", () => {
+  const cov = (source: string, basename = "clip.mp4") =>
+    coverageOfAdoptEntry({ source, basename });
+
+  it("real funnel and rescue media are own footage", () => {
+    expect(cov("archive")).toBe("own_footage");
+    expect(cov("wikimedia")).toBe("own_footage");
+    expect(cov("rescue_wikimedia")).toBe("own_footage");
+    expect(cov("rescue_archive")).toBe("own_footage");
+  });
+
+  it("keeps every distinction the old table drew", () => {
+    expect(cov("subject_fallback")).toBe("subject_only");
+    expect(cov("rescue_extend")).toBe("held_frame");
+    expect(cov("fallback")).toBe("placeholder");
+    expect(cov("rescue_placeholder")).toBe("placeholder");
+    expect(cov("color_fallback")).toBe("placeholder");
+    expect(cov("rescue_graphic")).toBe("graphic");
+    expect(cov("graphic")).toBe("graphic");
+    expect(cov("motion_graphic")).toBe("graphic");
+    expect(cov("text_overlay")).toBe("graphic");
+    expect(cov("ai")).toBe("generated");
+    expect(cov("rescue_ai")).toBe("generated");
+    expect(cov("kling")).toBe("generated");
+  });
+
+  /** THE FIX. An undeclared route can no longer claim the beat has a picture of its own. */
+  it("an undeclared route is not own footage", () => {
+    expect(cov("some_route_nobody_declared")).toBe("none");
+  });
+
+  /** And therefore cannot become a verified visual, even with a passing verdict. */
+  it("an undeclared route cannot become a verified own visual", () => {
+    const [status] = buildBeatVisualStatuses(
+      [{ sceneIndex: 0, beatIndex: 0, beatText: "b", basename: "x.mp4", source: "mystery_route" }] as never,
+      undefined
+    );
+    expect(status!.coverage).toBe("none");
+    expect(status!.verifiedOwnVisual).toBe(false);
+  });
+
+  /** A declared funnel route still can — the fix must not flatten every beat to unverified. */
+  it("a funnel route still reaches own_footage", () => {
+    const [status] = buildBeatVisualStatuses(
+      [{ sceneIndex: 0, beatIndex: 0, beatText: "b", basename: "x.mp4", source: "archive" }] as never,
+      undefined
+    );
+    expect(status!.coverage).toBe("own_footage");
+  });
+
+  /** The filename second opinion may only ever make the reading MORE conservative. */
+  it("a guaranteed filename downgrades own footage and nothing else", () => {
+    expect(cov("archive", "scene_1_slot103_guaranteed.mp4")).toBe("placeholder");
+    expect(cov("subject_fallback", "scene_1_slot103_guaranteed.mp4")).toBe("subject_only");
+    expect(cov("mystery_route", "scene_1_slot103_guaranteed.mp4")).toBe("none");
+  });
+
+  /** rescue_similar is a family the codebase already treats as a prefix. */
+  it("covers the rescue_similar family without a row per version", () => {
+    expect(adoptionPolicyFor("rescue_similar_v2").category).toBe("RESCUE_REAL");
+    expect(cov("rescue_similar_v2")).toBe("own_footage");
+  });
+
+  /**
+   * The labels that reach adoption through runtime expressions rather than literals. Three
+   * existing tests caught these when they briefly became UNDECLARED — this pins them so the
+   * suite says so directly rather than by side effect.
+   */
+  it("declares the provider labels the scene pool reports at runtime", () => {
+    for (const s of ["loc", "nara", "nasa", "flickr", "gdelt", "mediaccc", "sepiasearch",
+                     "youtube", "youtube_cc", "wikimedia_video", "own_archive",
+                     "rescue_stock", "archive_similar"]) {
+      expect(isDeclaredAdoptSource(s), `${s} has no declared policy`).toBe(true);
+    }
   });
 });
