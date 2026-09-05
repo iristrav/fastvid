@@ -16792,6 +16792,22 @@ function resolveScenePersons(scene: Scene, videoTitle?: string, globalPrimaryPer
  * Eén kernwoord per zin: persoon > event > sterkste inhoudswoord (uit narratie).
  * Primair zoekanker per beat — geen [VISUAL:] tags in script.
  */
+/**
+ * RONDE 97 (render 569) — word forms that name a quality or an abstraction rather than a thing.
+ *
+ * Deliberately narrow, and deliberately about ENGLISH WORD FORM rather than about any subject:
+ *
+ *   -able/-ible/-ous/-ful/-ish/-ive  adjectives  ("unmistakable", "relentless" via -less below)
+ *   -less                            adjectives
+ *   -ness/-ance/-ence/-ity           abstractions ("significance")
+ *   -ed                              past participles ("planned")
+ *
+ * `-tion`, `-sion`, `-ment` and `-al` are NOT here on purpose: "invasion", "occupation",
+ * "bombardment" and "funeral" are events and things an archive can actually answer, and excluding
+ * them would cost more than the adjectives gain.
+ */
+const NON_PICTORIAL_WORD_FORM = /(?:able|ible|ous|ful|ish|ive|less|ness|ance|ence|ity|ed)$/i;
+
 function extractPowerWordFromSentence(sentence: string, persons: string[] = []): string {
   const clean = sentence.replace(/\[visual:[^\]]*\]/gi, " ").trim();
   if (!clean) return "documentary";
@@ -16815,6 +16831,27 @@ function extractPowerWordFromSentence(sentence: string, persons: string[] = []):
     for (const [re] of STOCK_TOPIC_WORD_RULES) {
       if (re.test(`\\b${w}\\b`) || re.test(w)) return 90;
     }
+    /**
+     * RONDE 97 (render 569) — LENGTH IS NOT A MEASURE OF WHAT CAN BE PHOTOGRAPHED.
+     *
+     * This fallback ranked by `w.length`, so the longest word in the sentence became the beat's
+     * search term. Render 569 shows exactly what that produced, and every one of these really was
+     * the longest word in its sentence:
+     *
+     *     "unmistakable" ×7   "significance" ×4   "planned" ×6   "staunch" ×9
+     *
+     * Pexels answered with a woman drinking on a beach, a hare on a country path and a person on
+     * a BMX bike, the picture editor correctly refused 47 of 59 candidates, and the film ended up
+     * on colour cards.
+     *
+     * A word ending in an adjective or abstraction suffix names a QUALITY, and a past participle
+     * names something that already happened — none of the three is a thing a footage library can
+     * be asked for. They are pushed below every concrete word rather than removed, so a sentence
+     * that genuinely contains nothing else still yields its best available term.
+     *
+     * A general word-form rule, not a list of topics: nothing here knows what this video is about.
+     */
+    if (NON_PICTORIAL_WORD_FORM.test(w)) return -1;
     return w.length;
   };
   const ranked = [...tokens].sort((a, b) => scoreToken(b) - scoreToken(a));

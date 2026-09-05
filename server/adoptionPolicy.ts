@@ -75,6 +75,31 @@ export type AdoptionPolicy = {
   requiresEligibility: boolean;
   /** Must the picture editor have judged this picture against its beat? */
   requiresVision: boolean;
+  /**
+   * RONDE 97 (render 569) — HOW STRONG that requirement is, which RONDE 94 got wrong.
+   *
+   * RONDE 94 made `requiresVision` mean "the editor said APPROVED", for every category that had
+   * it. Render 569 measured what that costs: 48 of 52 adoption refusals were
+   *
+   *     route=subject_fallback ... claims FALLBACK_SUBJECT without vision (UNCLEAR)
+   *
+   * `subject_fallback` declares `countsAsVerifiedVisual: false`. It claims nothing that an
+   * approval would back — it is a picture OF THE BEAT'S SUBJECT rather than of what the beat
+   * describes, and the whole point of the category is that it is honest about being less. Demanding
+   * an approval from it refused the last real rung before a colour card, and all fourteen beats
+   * fell through to colour cards. The export gate then correctly refused the film.
+   *
+   * So the requirement has two strengths, and which one applies follows from what the category
+   * CLAIMS rather than from a single boolean:
+   *
+   *   "approved"     — only REAL_FUNNEL, the one category that claims a verified own visual.
+   *   "not_rejected" — a category that claims real footage but never verification. The editor's
+   *                    veto still binds: a picture it looked at and REFUSED does not go in. An
+   *                    `unknown` does, which is the answer the gate is designed to give when it
+   *                    cannot tell, and the answer render 569 got for almost everything.
+   *   "none"         — nothing photographic is claimed; there is nothing for an editor to judge.
+   */
+  visionRequirement: "approved" | "not_rejected" | "none";
   /** May this count toward "the film is made of real footage"? */
   countsAsRealFootage: boolean;
   /** May this count toward "this beat has an approved picture of its own"? */
@@ -87,6 +112,8 @@ const REAL_FUNNEL = (): AdoptionPolicy => ({
   category: "REAL_FUNNEL",
   requiresEligibility: true,
   requiresVision: true,
+  /** The only category that claims a verified own visual, so the only one that needs a yes. */
+  visionRequirement: "approved",
   countsAsRealFootage: true,
   countsAsVerifiedVisual: true,
 });
@@ -95,6 +122,8 @@ const RESCUE_REAL = (reason: string): AdoptionPolicy => ({
   category: "RESCUE_REAL",
   requiresEligibility: false,
   requiresVision: true,
+  /** Real footage off the funnel. The editor's veto binds; its silence does not refuse it. */
+  visionRequirement: "not_rejected",
   countsAsRealFootage: true,
   countsAsVerifiedVisual: false,
   exceptionReason: reason,
@@ -104,6 +133,7 @@ const SYNTHETIC = (category: AdoptCategory, reason: string): AdoptionPolicy => (
   category,
   requiresEligibility: false,
   requiresVision: false,
+  visionRequirement: "none",
   countsAsRealFootage: false,
   countsAsVerifiedVisual: false,
   exceptionReason: reason,
@@ -207,6 +237,15 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "FALLBACK_SUBJECT",
     requiresEligibility: false,
     requiresVision: true,
+    /**
+     * RONDE 97 — NOT "approved". This is the fix render 569 demanded.
+     *
+     * A subject fallback is a real picture OF THE BEAT'S SUBJECT rather than of what the beat
+     * describes, and it already declares `countsAsVerifiedVisual: false`. There is nothing for
+     * an approval to back. Demanding one refused 48 adoptions in render 569 and left all
+     * fourteen beats on colour cards. The editor's veto still binds; its silence does not.
+     */
+    visionRequirement: "not_rejected",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason:
@@ -218,6 +257,7 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "BACKFILL_TIME",
     requiresEligibility: false,
     requiresVision: false,
+    visionRequirement: "none",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason: "extends a picture already adopted for this scene; makes no new claim",
@@ -226,6 +266,7 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "BACKFILL_TIME",
     requiresEligibility: false,
     requiresVision: false,
+    visionRequirement: "none",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason: "extends a picture already adopted for this scene; makes no new claim",
@@ -234,6 +275,7 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "BACKFILL_TIME",
     requiresEligibility: false,
     requiresVision: false,
+    visionRequirement: "none",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason: "fills scene time the beat loop left uncovered",
@@ -244,6 +286,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "GENERATED",
     requiresEligibility: false,
     requiresVision: true,
+    /** Generated pixels claim nothing real, but a picture the editor refused still stays out. */
+    visionRequirement: "not_rejected",
     countsAsRealFootage: false,
     countsAsVerifiedVisual: false,
     exceptionReason: "generated from the beat's own words; has no provider to be eligible at",
@@ -252,6 +296,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "GENERATED",
     requiresEligibility: false,
     requiresVision: true,
+    /** Generated pixels claim nothing real, but a picture the editor refused still stays out. */
+    visionRequirement: "not_rejected",
     countsAsRealFootage: false,
     countsAsVerifiedVisual: false,
     exceptionReason: "generated after every real-media route failed",
@@ -260,6 +306,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
     category: "GENERATED",
     requiresEligibility: false,
     requiresVision: true,
+    /** Generated pixels claim nothing real, but a picture the editor refused still stays out. */
+    visionRequirement: "not_rejected",
     countsAsRealFootage: false,
     countsAsVerifiedVisual: false,
     exceptionReason: "generated video; has no provider to be eligible at",
@@ -295,6 +343,7 @@ const UNDECLARED: AdoptionPolicy = {
   category: "UNDECLARED",
   requiresEligibility: false,
   requiresVision: false,
+  visionRequirement: "none",
   countsAsRealFootage: false,
   countsAsVerifiedVisual: false,
   exceptionReason: "no adoption policy is declared for this route — see adoptionPolicy.ts",
@@ -586,8 +635,26 @@ export function adoptionGuardVerdict(input: {
    * in fact refused some of them.
    */
   const visionAvailable = input.visionAvailable !== false;
-  if (policy.requiresVision && visionAvailable && input.vision !== "APPROVED") {
-    missing.push(`vision (${input.vision})`);
+  /**
+   * RONDE 97 (render 569) — the requirement is as strong as the CLAIM, not uniformly "approved".
+   *
+   * REAL_FUNNEL claims a verified own visual, so nothing but a yes will do. Every other category
+   * that involves a photograph claims real footage and explicitly NOT verification, so what binds
+   * there is the editor's veto: a picture it looked at and refused stays out, and a picture it
+   * could not read goes in. `unknown` is the answer this gate is designed to give when it cannot
+   * tell — the beat image gate's own doc says an unknown "adopts the clip exactly as before" —
+   * and it is the answer render 569 got for almost everything.
+   *
+   * Treating that silence as a refusal is what emptied render 569: 48 of 52 blocked adoptions were
+   * `subject_fallback` turned away for an UNCLEAR, all fourteen beats fell to colour cards, and the
+   * export gate correctly refused the film. The gate was right; the rule in front of it was wrong.
+   */
+  if (visionAvailable) {
+    if (policy.visionRequirement === "approved" && input.vision !== "APPROVED") {
+      missing.push(`vision (${input.vision})`);
+    } else if (policy.visionRequirement === "not_rejected" && input.vision === "REJECTED") {
+      missing.push("vision (REJECTED)");
+    }
   }
   if (missing.length === 0) return { allowed: true };
   return {

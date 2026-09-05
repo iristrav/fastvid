@@ -223,14 +223,55 @@ describe("the montage guard refuses only what it can justify refusing", () => {
     ).toBe(true);
   });
 
-  it("but a rescue still needs the picture approved, not merely looked at", () => {
+  /**
+   * RONDE 97 (render 569) — A RESCUE OBEYS THE EDITOR'S VETO, NOT ITS SILENCE.
+   *
+   * RONDE 94 asserted here that a rescue needed an APPROVED verdict. Render 569 measured what that
+   * costs. 48 of its 52 blocked adoptions read
+   *
+   *     route=subject_fallback ... claims FALLBACK_SUBJECT without vision (UNCLEAR)
+   *
+   * and the beat image gate's own doc says an `unknown` "adopts the clip exactly as before" —
+   * unknown is what it answers when it cannot tell, not a refusal. So every rescue and every
+   * subject fallback was turned away for a non-answer, all fourteen beats fell through to colour
+   * cards, and RONDE 89's export gate correctly refused the film.
+   *
+   * The rule now follows the CLAIM. `rescue_wikimedia` declares `countsAsVerifiedVisual: false`;
+   * there is nothing for an approval to back. What still binds is the veto, and these assertions
+   * are stronger than the old ones in the way that matters: a REFUSED picture is refused, and
+   * that is checked for both rungs rather than folded into a blanket rule.
+   */
+  it("a rescue is refused a picture the editor REFUSED", () => {
     delete process.env[ENV];
-    expect(
-      verdict({ source: "rescue_wikimedia", eligible: false, vision: "NOT_ASKED" }).allowed
-    ).toBe(false);
     expect(
       verdict({ source: "rescue_wikimedia", eligible: false, vision: "REJECTED" }).allowed
     ).toBe(false);
+    expect(
+      verdict({ source: "subject_fallback", eligible: false, vision: "REJECTED" }).allowed
+    ).toBe(false);
+  });
+
+  it("a rescue is NOT refused a picture the editor could not read", () => {
+    delete process.env[ENV];
+    for (const vision of ["UNCLEAR", "NOT_ASKED"] as const) {
+      expect(
+        verdict({ source: "rescue_wikimedia", eligible: false, vision }).allowed,
+        `a rescue was refused for ${vision}, which is render 569's failure`
+      ).toBe(true);
+      expect(
+        verdict({ source: "subject_fallback", eligible: false, vision }).allowed,
+        `a subject fallback was refused for ${vision}, which is render 569's failure`
+      ).toBe(true);
+    }
+  });
+
+  /** And the strongest claim keeps the strongest requirement — that half is unchanged. */
+  it("REAL_FUNNEL still needs a yes, not merely the absence of a no", () => {
+    delete process.env[ENV];
+    for (const vision of ["UNCLEAR", "NOT_ASKED", "REJECTED"] as const) {
+      expect(verdict({ source: "archive", eligible: true, vision }).allowed).toBe(false);
+    }
+    expect(verdict({ source: "archive", eligible: true, vision: "APPROVED" }).allowed).toBe(true);
   });
 
   /** A placeholder requires neither and must never be refused for lacking them. */
