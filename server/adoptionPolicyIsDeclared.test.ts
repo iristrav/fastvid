@@ -238,9 +238,18 @@ describe("the census separates what the funnel conflated", () => {
 
 describe("the census reaches the render log", () => {
   it("is emitted beside the unjudged-adoption report", () => {
-    expect(PIPE).toContain("censusAdoptionPolicies(");
-    const at = PIPE.indexOf("censusAdoptionPolicies(");
-    expect(PIPE.slice(Math.max(0, at - 1400), at)).toContain("formatUnjudgedAdoptions(");
+    // RONDE 92: ordering, not a byte window. This asserted the census sat within 1400 characters
+    // of formatUnjudgedAdoptions, and RONDE 92 inserted formatAdoptionEvidence between the two —
+    // so a test about WHERE the census is emitted failed for a reason that had nothing to do with
+    // it. The claim is that both are in the render's own summary block and the census follows the
+    // unjudged report; that is what is asserted now, and no insertion between them can break it.
+    const unjudged = PIPE.indexOf("formatUnjudgedAdoptions(visualDedup.clipAdoptAudit)");
+    const census = PIPE.indexOf("censusAdoptionPolicies(");
+    expect(unjudged, "the unjudged-adoption report is gone").toBeGreaterThan(-1);
+    expect(census, "the adoption-policy census is gone").toBeGreaterThan(-1);
+    expect(census).toBeGreaterThan(unjudged);
+    // Both read the same render's audit, so they describe one render rather than two states.
+    expect(PIPE.slice(unjudged, census)).toContain("visualDedup.clipAdoptAudit");
   });
 
   /** An undeclared route is a warning; the ordinary census is not. */

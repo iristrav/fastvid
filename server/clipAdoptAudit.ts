@@ -8,6 +8,7 @@ import {
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
 import type { VisualSourceLedger } from "./visualSourceLineage";
+import { adoptionPolicyFor, type AdoptCategory } from "./adoptionPolicy";
 
 export type ClipAdoptEntry = {
   sceneIndex: number;
@@ -200,6 +201,134 @@ function noteIfUnjudged(
   unjudgedByAudit.set(audit, list);
 }
 
+/**
+ * RONDE 92 — IS THIS ROUTE'S CLAIM ACTUALLY BACKED?
+ *
+ * `adoptionPolicy` says what a route MAY claim. This asks whether the render holds the evidence.
+ * A REAL_FUNNEL route declares `requiresEligibility` and `requiresVision`; the ledger knows
+ * whether the asset ever reached ELIGIBLE, and the relevance ledger knows whether the picture
+ * editor judged it for this beat.
+ *
+ * ── The read side that never existed ────────────────────────────────────────────────────────
+ *
+ * `ELIGIBLE` has been a lineage stage since RONDE 87 and is written at two places in the whole
+ * pipeline. Nothing ever asked the question back, which is why render 568 could report
+ * `wikimedia retrieved=400 eligible=0 adopted=2` without any part of the render objecting.
+ * `VisualSourceLedger.hasStage` is that query; this is its first caller.
+ *
+ * ── Measured now, enforced next — and why that order is not a hedge ─────────────────────────
+ *
+ * RONDE 92's own prohibition list forbids blocking adoption before eligibility is correctly
+ * registered. Today it is not: two write sites against 35 adoption routes. Refusing or demoting
+ * every unbacked REAL_FUNNEL claim right now would hit essentially all of them, drive
+ * `verifiedOwnVisual` to zero, and make RONDE 89's export gate refuse every render — a brick,
+ * not a repair.
+ *
+ * So this produces the one number that decides when enforcement is safe: how many adoptions claim
+ * the funnel, and how many of those the ledger can back. The invariants are already named (H, I)
+ * and the guard is one `if` away once that number says so.
+ */
+export type AdoptionEvidence = {
+  sceneIndex: number;
+  beatIndex: number;
+  source: string;
+  basename: string;
+  category: AdoptCategory;
+  /** Did the ledger ever record ELIGIBLE for this asset (or the asset it derives from)? */
+  eligible: boolean;
+  /** Did the picture editor return a verdict for this clip on this beat? */
+  judged: boolean;
+  /** True when the route's declared requirements are all met by the evidence above. */
+  backed: boolean;
+};
+
+const evidenceByAudit = new WeakMap<ClipAdoptEntry[], AdoptionEvidence[]>();
+
+export function adoptionEvidence(audit: ClipAdoptEntry[]): readonly AdoptionEvidence[] {
+  return evidenceByAudit.get(audit) ?? [];
+}
+
+function noteAdoptionEvidence(
+  audit: ClipAdoptEntry[],
+  sceneIndex: number,
+  beatIndex: number,
+  clipPath: string,
+  source: string
+): void {
+  const policy = adoptionPolicyFor(source);
+  const ledger = ledgerByAudit.get(audit);
+  const relevance = relevanceByAudit.get(audit);
+
+  /** No ledger bound is a caller outside a render; it proves nothing either way. */
+  const record = ledger?.resolve(clipPath) ?? null;
+  const eligible = Boolean(ledger && record && ledger.hasStage(record.lineageId, "ELIGIBLE"));
+  const judged = Boolean(
+    relevance &&
+      relevanceVerdictForRenderedAsset(relevance, {
+        localPath: clipPath,
+        currentFilename: path.basename(clipPath),
+        sceneIndex,
+        beatIndex,
+      })
+  );
+
+  const backed =
+    (!policy.requiresEligibility || eligible) && (!policy.requiresVision || judged);
+
+  const list = evidenceByAudit.get(audit) ?? [];
+  list.push({
+    sceneIndex,
+    beatIndex,
+    source,
+    basename: path.basename(clipPath),
+    category: policy.category,
+    eligible,
+    judged,
+    backed,
+  });
+  evidenceByAudit.set(audit, list);
+}
+
+/**
+ * Invariants H and I, as counted findings rather than prose.
+ *
+ * H — a route claiming REAL_FUNNEL that the ledger cannot show ever became eligible.
+ * I — a route claiming REAL_FUNNEL whose picture the editor never judged for its beat.
+ *
+ * A render where every funnel claim is backed prints one clean line and no warnings, which is the
+ * state this is aiming at and the reason the warnings are separate from the census.
+ */
+export function formatAdoptionEvidence(audit: ClipAdoptEntry[]): string[] {
+  const all = adoptionEvidence(audit);
+  if (all.length === 0) return [];
+  const funnel = all.filter((e) => e.category === "REAL_FUNNEL");
+  const backed = funnel.filter((e) => e.backed).length;
+  const noEligibility = funnel.filter((e) => !e.eligible);
+  const noVision = funnel.filter((e) => !e.judged);
+  const lines = [
+    `[AdoptionEvidence] adoptions=${all.length} realFunnel=${funnel.length} ` +
+      `backed=${backed} withoutEligibility=${noEligibility.length} ` +
+      `withoutVision=${noVision.length}`,
+  ];
+  const name = (list: readonly AdoptionEvidence[]) =>
+    [...new Set(list.map((e) => e.source))].sort().join(",");
+  if (noEligibility.length > 0) {
+    lines.push(
+      `[AdoptionEvidence] INVARIANT_H REAL_FUNNEL_ADOPTION_WITHOUT_ELIGIBILITY ` +
+        `count=${noEligibility.length} routes=${name(noEligibility)} — ` +
+        `the ledger holds no ELIGIBLE event for these assets`
+    );
+  }
+  if (noVision.length > 0) {
+    lines.push(
+      `[AdoptionEvidence] INVARIANT_I REAL_FUNNEL_ADOPTION_WITHOUT_VISION ` +
+        `count=${noVision.length} routes=${name(noVision)} — ` +
+        `no verdict was recorded for these pictures on their beats`
+    );
+  }
+  return lines;
+}
+
 export function recordClipAdopt(
   audit: ClipAdoptEntry[],
   sceneIndex: number,
@@ -226,6 +355,7 @@ export function recordClipAdopt(
    * it must not stop at clip 120 either.
    */
   noteIfUnjudged(audit, sceneIndex, beatIndex, clipPath, source);
+  noteAdoptionEvidence(audit, sceneIndex, beatIndex, clipPath, source);
   if (ledger) {
     const record = ledger.resolve(clipPath);
     if (record) {

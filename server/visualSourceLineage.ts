@@ -786,6 +786,50 @@ export class VisualSourceLedger {
     return record;
   }
 
+  /**
+   * RONDE 92 — DID THIS ASSET EVER REACH THIS STAGE?
+   *
+   * ── The read side that was never built ──────────────────────────────────────────────────────
+   *
+   * `ELIGIBLE` has been in `LINEAGE_STAGES` since RONDE 87 and is recorded at exactly two places
+   * in the pipeline — the funnel's acceptance point and the shortlist's candidate registration.
+   * Nothing has ever asked the question back. That is why render 568 could report
+   *
+   *     [VisualFunnel] wikimedia retrieved=400 eligible=0 adopted=2 finalVideo=1
+   *
+   * and no part of the render objected: the fact was on the ledger's write side only, so an
+   * adoption had no way to say whether the candidate it adopted had ever been found eligible.
+   *
+   * The eligibility registry RONDE 92's brief asks for therefore already exists — it is this
+   * ledger — and what was missing is one query. Building a second registry keyed by canonical
+   * identity would have duplicated the thing that already holds canonical identity, and would have
+   * been the sixteenth instance of two structures answering one question.
+   *
+   * ── Why it walks to the root ────────────────────────────────────────────────────────────────
+   *
+   * A clip is padded and overlaid on its way to adoption, and each hop opens a CHILD record. The
+   * eligibility was established for the asset, not for the third file made from it, so the
+   * question is asked of the root — the same resolution `tracePushOutcome` and the compose
+   * instrumentation already use.
+   */
+  hasStage(lineageId: string, stage: LineageStage): boolean {
+    const root = this.rootOf(lineageId);
+    if (!root) return false;
+    /** Every record on the chain from this one up to the root; a stage on any of them counts. */
+    const chain = new Set<string>([lineageId, root.lineageId]);
+    let cursor = this.records.get(lineageId) ?? null;
+    const guard = new Set<string>();
+    while (cursor?.parentLineageId && !guard.has(cursor.lineageId)) {
+      guard.add(cursor.lineageId);
+      chain.add(cursor.parentLineageId);
+      cursor = this.records.get(cursor.parentLineageId) ?? null;
+    }
+    for (const event of this.events) {
+      if (event.stage === stage && chain.has(event.lineageId)) return true;
+    }
+    return false;
+  }
+
   /** Walks up the derivation chain to the record this one ultimately came from. */
   rootOf(lineageId: string): VisualLineageRecord | null {
     let record = this.records.get(lineageId) ?? null;

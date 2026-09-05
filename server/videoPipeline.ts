@@ -310,6 +310,7 @@ import {
   bindRelevanceLedger,
   createClipAdoptAudit,
   formatUnjudgedAdoptions,
+  formatAdoptionEvidence,
   recordClipAdopt,
 } from "./clipAdoptAudit";
 import {
@@ -41154,6 +41155,20 @@ async function _runVideoPipelineInner(
        */
       for (const line of formatUnjudgedAdoptions(visualDedup.clipAdoptAudit)) {
         console.warn(pipelineReport.add("summary", line));
+      }
+      /**
+       * RONDE 92 — how many adoptions claim the funnel, and how many the ledger can back.
+       *
+       * `ELIGIBLE` has been a lineage stage since RONDE 87, written at two sites, read by nothing.
+       * This is the read side. The count it prints is the number that decides when the REAL_FUNNEL
+       * guard can be switched from measuring to refusing without bricking every render.
+       */
+      for (const line of formatAdoptionEvidence(visualDedup.clipAdoptAudit)) {
+        if (line.includes("INVARIANT_")) {
+          console.warn(pipelineReport.add("summary", line));
+        } else {
+          console.log(pipelineReport.add("summary", line));
+        }
       }
       /**
        * RONDE 90 PHASE 2 — WHAT THIS FILM IS MADE OF, by declared category.
