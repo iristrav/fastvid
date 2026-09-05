@@ -31,6 +31,8 @@ const ALL_GOOD: HostProbes = {
   hasBrowser: () => true,
   canReachDatabase: async () => true,
   canReachRedis: async () => true,
+  /** RONDE 95 FINAL — the picture editor loads on a healthy host; see the block of tests below. */
+  canLoadVisionModel: async () => true,
 };
 
 /** Every variable any capability names, so a "fully configured" environment can be built. */
@@ -241,5 +243,86 @@ describe("R191 — the flags are reported, not required", () => {
     const report = await productionPreflight(ALL_GOOD, env);
     expect(report.verdict).toBe("PRODUCTION_RENDER_POSSIBLE");
     expect(report.routes.every((r) => !r.on)).toBe(true);
+  });
+});
+
+
+/* ═══════════════ RONDE 95 FINAL — the dependency RONDE 94 made critical ═══════════════ */
+
+describe("RONDE 95 — a host that cannot load the picture editor is reported before the render", () => {
+  /**
+   * WHY THIS IS A PREFLIGHT ITEM AND NOT A RUNTIME ONE.
+   *
+   * `beatClipPassesVisionGate` fails open when the local CLIP model will not load — deliberately,
+   * and that predates this round. So a render on such a host does not crash. Every picture reads
+   * as `unknown`, `visionPipelineIsUnavailable()` becomes true, RONDE 94's adoption guard suspends
+   * the vision requirement render-wide, no beat acquires a verified visual, and RONDE 89's export
+   * gate then refuses the finished film.
+   *
+   * Hours of retrieval, download, transcode and compose, thrown away at the last gate — and
+   * invisible from the environment, because the model has no key and no URL. It either loads on
+   * this machine or it does not, which is why the probe LOADS it rather than reading a variable.
+   */
+  const noVision: HostProbes = { ...ALL_GOOD, canLoadVisionModel: async () => false };
+
+  it("reports the picture editor for every deployment", async () => {
+    const report = await productionPreflight(ALL_GOOD, fullyConfigured("v"));
+    const clip = report.host.find((h) => h.id === "clip_vision");
+    expect(clip, "the preflight does not probe the picture editor at all").toBeTruthy();
+    expect(clip!.available).toBe(true);
+  });
+
+  /** With the gate enforced — the default since RONDE 94 — the render cannot succeed. */
+  it("blocks the render when adoption is enforced", async () => {
+    const env = { ...fullyConfigured("v") };
+    delete env.ENFORCE_FUNNEL_ADOPTION;
+    const report = await productionPreflight(noVision, env);
+    expect(report.verdict).toBe("PRODUCTION_RENDER_BLOCKED");
+    expect(report.blockers.join(" ")).toContain("clip_vision");
+    expect(report.blockers.join(" ")).toContain("refused at export");
+  });
+
+  it("blocks it just as firmly when the flag is set to true", async () => {
+    const report = await productionPreflight(noVision, {
+      ...fullyConfigured("v"),
+      ENFORCE_FUNNEL_ADOPTION: "true",
+    });
+    expect(report.verdict).toBe("PRODUCTION_RENDER_BLOCKED");
+  });
+
+  /**
+   * With enforcement explicitly off the same render completes and ships unverified footage — a
+   * worse film, not an impossible one. The verdict follows the configuration rather than guessing.
+   */
+  it("degrades rather than blocks when enforcement is explicitly disabled", async () => {
+    const report = await productionPreflight(noVision, {
+      ...fullyConfigured("v"),
+      ENFORCE_FUNNEL_ADOPTION: "false",
+    });
+    expect(report.verdict).toBe("PRODUCTION_RENDER_DEGRADED");
+    expect(report.blockers.join(" ")).not.toContain("clip_vision");
+    expect(report.degradations.join(" ")).toContain("clip_vision");
+    expect(report.degradations.join(" ")).toContain("unverified footage");
+  });
+
+  /** The report must say what it means for the film, not merely name a component. */
+  it("says what a missing picture editor costs", async () => {
+    const report = await productionPreflight(noVision, fullyConfigured("v"));
+    const clip = report.host.find((h) => h.id === "clip_vision")!;
+    expect(clip.detail).toContain("WILL NOT LOAD");
+    expect(clip.detail).toContain("verified visual");
+  });
+
+  /** A healthy host is neither blocked nor degraded by this check. */
+  it("a loading model is not a degradation", async () => {
+    const report = await productionPreflight(ALL_GOOD, fullyConfigured("v"));
+    expect(report.degradations.join(" ")).not.toContain("clip_vision");
+    expect(report.blockers.join(" ")).not.toContain("clip_vision");
+  });
+
+  /** And it still cannot leak a credential — the R191 rule applies to the new line too. */
+  it("prints no value", async () => {
+    const report = await productionPreflight(noVision, fullyConfigured("s3cr3t-value"));
+    expect(formatPreflight(report)).not.toContain("s3cr3t-value");
   });
 });

@@ -237,6 +237,70 @@ async function main() {
     clipReady,
     clipHint: clipStatus.hint,
   }).catch((e) => console.warn("[Worker] Heartbeat (post-CLIP) failed:", (e as Error).message));
+
+  /**
+   * RONDE 95 FINAL — the preflight runs where the renders run, not only from a terminal.
+   *
+   * `productionPreflight` has existed since RONDE 191 and had exactly one caller: a CLI somebody
+   * has to remember to run. So the environment that actually renders never checked itself, and a
+   * missing dependency was discovered by a render — which is the case the preflight was built to
+   * prevent.
+   *
+   * Placed AFTER the CLIP warm-up on purpose: the vision probe loads the model, the warm-up has
+   * just loaded it, and `ensureClipPipelinesLoaded` caches — so the check costs nothing here and
+   * would cost a cold load anywhere earlier.
+   *
+   * It reports and does not refuse. A BLOCKED verdict is printed as a banner and written to the
+   * heartbeat, but the queue still starts: the pipeline already refuses to SHIP a bad render
+   * (RONDE 89's export gate), so the only thing a boot refusal would save is wasted compute, and
+   * the only thing a false positive would cost is the entire product. Visibility is what §29 asks
+   * for and what can be justified without a production render to check the verdict against.
+   */
+  try {
+    const { productionPreflight, formatPreflight } = await import("./productionPreflight");
+    const { execSync } = await import("child_process");
+    const { ensureClipPipelinesLoaded } = await import("./localClipVision");
+    const { graphicsOverlayAvailable } = await import("./graphicsOverlayDeps");
+    const report = await productionPreflight({
+      hasBinary: (name) => {
+        try {
+          execSync(`command -v ${name}`, { stdio: "ignore" });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      hasBrowser: () => graphicsOverlayAvailable(),
+      canReachDatabase: async () => {
+        try {
+          const { getDb } = await import("./db");
+          const db = await getDb();
+          if (!db) return false;
+          await db.execute("SELECT 1" as never);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      canReachRedis: async () => true,
+      canLoadVisionModel: async () => ensureClipPipelinesLoaded().catch(() => false),
+    });
+    console.log(formatPreflight(report));
+    if (report.verdict === "PRODUCTION_RENDER_BLOCKED") {
+      console.error(
+        "[Preflight] PRODUCTION_RENDER_BLOCKED — a render started now cannot produce a " +
+          `shippable video. Blockers: ${report.blockers.join(" | ")}`
+      );
+    }
+    await recordWorkerHeartbeat("worker", {
+      clipReady,
+      clipHint: `preflight=${report.verdict}${clipStatus.hint ? ` ${clipStatus.hint}` : ""}`,
+    }).catch(() => {});
+  } catch (err) {
+    /** A preflight that cannot run must never be the reason a worker does not start. */
+    console.warn("[Preflight] could not run at boot:", (err as Error).message);
+  }
+
   startVideoQueueWorker();
   /**
    * RONDE 148 — render jobs poll alongside the generation queue, in the same process.

@@ -60,6 +60,21 @@ const probes: HostProbes = {
       return false;
     }
   },
+  /**
+   * RONDE 95 FINAL — loads the model, which is the only way to know it loads.
+   *
+   * `ensureClipPipelinesLoaded` is the same call `beatClipPassesVisionGate` makes on the first
+   * beat of a real render, and it caches, so paying for it here costs the render nothing and
+   * moves the discovery from beat one to before the run.
+   */
+  canLoadVisionModel: async () => {
+    try {
+      const { ensureClipPipelinesLoaded } = await import("./localClipVision");
+      return await ensureClipPipelinesLoaded();
+    } catch {
+      return false;
+    }
+  },
   canReachRedis: async () => {
     try {
       const mod = (await import("ioredis")) as unknown as { default: new (url: string) => {

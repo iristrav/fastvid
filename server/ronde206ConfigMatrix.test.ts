@@ -39,6 +39,14 @@ const ALL_GOOD: HostProbes = {
   hasBrowser: () => true,
   canReachDatabase: async () => true,
   canReachRedis: async () => true,
+  /**
+   * RONDE 95 FINAL — a healthy host loads the picture editor.
+   *
+   * This matrix asks whether a MISSING OPTIONAL PROVIDER blocks a render; the vision model is
+   * neither optional nor a provider, so it is held good here and its own two verdicts (blocked
+   * when adoption is enforced, degraded when it is not) are covered in ronde191Preflight.
+   */
+  canLoadVisionModel: async () => true,
 };
 
 /** Production sources, so "has a real consumer" is asked of the shipping code and not of a test. */

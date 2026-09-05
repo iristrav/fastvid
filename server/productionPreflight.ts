@@ -341,6 +341,20 @@ export type HostProbes = {
   /** Attempted CONNECTION, not the presence of a URL — a URL pointing nowhere looks like readiness. */
   canReachDatabase: () => Promise<boolean>;
   canReachRedis: () => Promise<boolean>;
+  /**
+   * RONDE 95 FINAL — can the picture editor actually be loaded on this host?
+   *
+   * This is the probe RONDE 94 made critical and nothing checked. `beatClipPassesVisionGate` fails
+   * open when the local CLIP model will not load, so a render on a host without it does not crash:
+   * every picture reads as `unknown`, `visionPipelineIsUnavailable()` becomes true, the adoption
+   * guard suspends the vision requirement render-wide, no beat acquires a verified visual, and
+   * RONDE 89's export gate then refuses the finished film.
+   *
+   * That is a render that runs for hours and is thrown away at the last gate. It is precisely the
+   * case a preflight exists to move to the front, and it could not be seen from the environment:
+   * there is no key for it and no URL — the model either loads on this machine or it does not.
+   */
+  canLoadVisionModel: () => Promise<boolean>;
 };
 
 export async function checkHost(probes: HostProbes, env: NodeJS.ProcessEnv = process.env): Promise<ToolStatus[]> {
@@ -377,6 +391,23 @@ export async function checkHost(probes: HostProbes, env: NodeJS.ProcessEnv = pro
     const ok = await probes.canReachDatabase();
     out.push({ id: "mysql", available: ok, detail: ok ? "reachable" : "CONFIGURED BUT UNREACHABLE" });
   }
+  /**
+   * RONDE 95 FINAL — the model, probed by loading it, not by reading a variable.
+   *
+   * Reported for every deployment, and turned into a BLOCKER only when funnel adoption is
+   * enforced — see the verdict below. Loading is what the render itself does, so a probe that
+   * merely looked for a file would be answering a different question than the one that matters.
+   */
+  const vision = await probes.canLoadVisionModel();
+  out.push({
+    id: "clip_vision",
+    available: vision,
+    detail: vision
+      ? "the picture editor loads — beats can earn an APPROVED verdict"
+      : "WILL NOT LOAD — every picture reads as unknown, no beat can become a verified visual, " +
+        "and the export gate refuses the finished film",
+  });
+
   /** Only probed when the configuration actually opens it — see the `queue` capability. */
   if ((env.QUEUE_BACKEND ?? "").trim() !== "bullmq") {
     out.push({ id: "redis", available: true, detail: "not required — QUEUE_BACKEND is not bullmq" });
@@ -451,6 +482,26 @@ export async function productionPreflight(
     /** A missing browser is the textbook degradation: the render runs, graphics are not drawn. */
     if (!h.available && h.id === "chrome_headless_shell") {
       degradations.push(`${h.id}: ${h.detail}`);
+    }
+    /**
+     * RONDE 95 FINAL — a missing picture editor is fatal exactly when the gate is enforced.
+     *
+     * Not an opinion about how good the film would be: with `ENFORCE_FUNNEL_ADOPTION` on (the
+     * default since RONDE 94) a render without CLIP is GUARANTEED to be refused by RONDE 89's
+     * export gate, because no beat can hold a verified visual. Starting it wastes the whole run.
+     *
+     * With enforcement explicitly disabled the same render completes and ships unverified
+     * footage — a worse film, not an impossible one — so it degrades rather than blocks. The
+     * verdict follows the configuration rather than guessing at it.
+     */
+    if (!h.available && h.id === "clip_vision") {
+      const enforced = (env.ENFORCE_FUNNEL_ADOPTION ?? "") !== "false";
+      (enforced ? blockers : degradations).push(
+        `${h.id}: ${h.detail}` +
+          (enforced
+            ? " (ENFORCE_FUNNEL_ADOPTION is on, so this render would be refused at export)"
+            : " (ENFORCE_FUNNEL_ADOPTION=false, so the render ships unverified footage instead)")
+      );
     }
   }
 
