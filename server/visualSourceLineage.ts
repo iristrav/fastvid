@@ -328,6 +328,19 @@ export type VisualLineageRecord = {
   sourceUrl?: string;
   /** The provider's canonical page for the asset, when it differs from sourceUrl. */
   originalUrl?: string;
+  /**
+   * RONDE 96 §9 — the preview image, held APART from the asset's identity.
+   *
+   * Several providers hand back a thumbnail beside the asset and one hands back a thumbnail AS the
+   * asset URL (`scenePool` line ~898, `thumbnailUrl: item.url`), and archive.org and Wikimedia
+   * both derive theirs from the asset's own identifier — so a thumbnail and its source look alike,
+   * differ only in a path segment, and were being written into the same field. Two records for one
+   * asset, and the lineage invariant reporting an error it could not explain.
+   *
+   * Recorded, never canonical: a thumbnail is real, it is worth keeping, and it can never be what
+   * the ledger means by "this asset". See `isThumbnailUrl`.
+   */
+  thumbnailUrl?: string;
   localPath: string;
   originalFilename: string;
   /** Updated as the clip is trimmed, padded and overlaid. */
@@ -384,6 +397,42 @@ export type VisualLineageRecord = {
   /** Set only when the delivered file's concat input provably contains this clip's scene. */
   finalVideoAt?: number;
 };
+
+/**
+ * RONDE 96 §9 — IS THIS URL A PREVIEW RATHER THAN THE ASSET?
+ *
+ * Matched on the conventions the providers this pipeline actually uses publish, not on a guess
+ * about URLs in general:
+ *
+ *   · archive.org serves every item's preview from `/services/img/<identifier>` — the identifier
+ *     is the asset's real id, which is exactly why the two were confusable.
+ *   · Wikimedia inserts `/thumb/` into the path and appends `<width>px-<name>`.
+ *   · Europeana's `edmPreview` and the generic `?width=`/`&size=` resize parameters.
+ *
+ * Deliberately conservative: an unrecognised URL is NOT a thumbnail. A false positive would strip
+ * an asset of its real identity, which is worse than the problem being solved.
+ */
+export function isThumbnailUrl(url: string | null | undefined): boolean {
+  const u = (url ?? "").trim().toLowerCase();
+  if (!u) return false;
+  if (u.includes("/services/img/")) return true;
+  if (u.includes("/thumb/") && /\/\d+px-/.test(u)) return true;
+  if (u.includes("edmpreview")) return true;
+  if (/[?&](width|height|size|thumb)=/.test(u)) return true;
+  return false;
+}
+
+/**
+ * The first URL that is a real asset identity, ignoring previews. Returns undefined when every
+ * candidate was a thumbnail — an asset with only a preview URL has no canonical URL, and saying so
+ * is more useful than promoting the preview.
+ */
+function canonicalUrl(...candidates: (string | undefined)[]): string | undefined {
+  for (const c of candidates) {
+    if (c && !isThumbnailUrl(c)) return c;
+  }
+  return undefined;
+}
 
 export type CreateLineageInput = {
   sceneIndex: number;
@@ -589,7 +638,19 @@ export class VisualSourceLedger {
       providerStatus: provider ? "VERIFIED" : "UNVERIFIED",
       providerAssetId: input.providerAssetId ?? parent?.providerAssetId,
       sourceUrl: input.sourceUrl ?? parent?.sourceUrl,
-      originalUrl: input.originalUrl ?? parent?.originalUrl,
+      /**
+       * RONDE 96 §9 — a thumbnail never becomes the canonical URL.
+       *
+       * The caller may pass one without knowing: archive.org's preview is built from the same
+       * identifier as the asset, so a provider adapter that reaches for "a URL for this item" can
+       * hand over either. Sorted here rather than at the adapters, because this is the one place
+       * every route passes and a rule enforced at fifteen adapters is a rule fourteen of them will
+       * eventually forget — this file's most repeated failure.
+       */
+      originalUrl: canonicalUrl(input.originalUrl, parent?.originalUrl),
+      thumbnailUrl:
+        [input.originalUrl, input.sourceUrl].find((u) => isThumbnailUrl(u)) ??
+        parent?.thumbnailUrl,
       localPath: input.localPath,
       originalFilename: basename,
       currentFilename: basename,
