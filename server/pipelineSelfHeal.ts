@@ -18,7 +18,7 @@ import {
   type ScriptLengthBudget,
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
-import { assertQualityReportExportGate } from "./videoQualityReport";
+import { assertQualityReportExportGate, indefensibleExportConditions } from "./videoQualityReport";
 import type { FinalVideoValidation } from "./finalVideoGate";
 import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled, blockExportOnVisualMismatch } from "./sourcingPolicy";
 
@@ -204,6 +204,32 @@ export function enforceQualityExportGate(
   videoLength?: string | null,
   finalVideo?: FinalVideoValidation | null
 ): void {
+  /**
+   * RONDE 89 — the two conditions no score may overrule, checked before any flag.
+   *
+   * Render 568 shipped on `availabilityAdjusted=82/100` over a measured `raw=24/100`, with 15 of
+   * 17 beats reading `verification=never_asked` and 17 of 20 clips reading `provider=UNVERIFIED`.
+   * Every switch that could have stopped it — `strictQualityExportEnabled`,
+   * `qualityExportHardTierEnabled`, `blockExportOnVisualMismatch` — was off, and the checks below
+   * all hang off one of them. So this one hangs off nothing: see `indefensibleExportConditions`
+   * for why these two are not a threshold and cannot be argued with.
+   *
+   * It throws the same PIPELINE_ERROR.QUALITY_GATE every other blocking check here throws, so the
+   * reason is stored on `videos.errorMessage` and reaches the person who asked for the video
+   * rather than only the worker log.
+   */
+  const indefensible = indefensibleExportConditions(report);
+  if (indefensible.length > 0) {
+    for (const c of indefensible) {
+      console.error(`[Quality] Video ${videoId}: EXPORT BLOCKED ${c.code} — ${c.detail}`);
+    }
+    throw pipelineError(
+      PIPELINE_ERROR.QUALITY_GATE,
+      `Export blocked — this render cannot say what it is showing: ` +
+        indefensible.map((c) => `${c.code}: ${c.detail}`).join(" | ")
+    );
+  }
+
   if (
     blockExportOnVisualMismatch() &&
     report.voiceVisualMatch &&

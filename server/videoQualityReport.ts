@@ -656,6 +656,100 @@ export function logVideoQualityReport(videoId: number, report: VideoQualityRepor
   }
 }
 
+/** One reason a render must not be delivered, whatever its score says. */
+export type IndefensibleExportCondition = {
+  /** Machine-readable, stable, and the same word in the log and the thrown error. */
+  code: "NO_VERIFIED_OWN_VISUAL" | "MOSTLY_UNVERIFIED_CLIPS";
+  detail: string;
+};
+
+/** More than half the delivered clips having no proven source is the second condition's bar. */
+const UNVERIFIED_CLIP_SHARE_LIMIT = 0.5;
+
+/**
+ * RONDE 89 — THE TWO THINGS A SCORE MAY NOT OVERRULE.
+ *
+ * ── What render 568 delivered ───────────────────────────────────────────────────────────────
+ *
+ *     [Quality] Video 568: visual quality raw=24/100, availabilityAdjusted=82/100
+ *               (export minimum 45) … The adjusted number is an availability decision, NOT a
+ *               measurement of picture quality; raw is the measurement.
+ *     [Quality] Video 568: export gate passed (score=82/100)
+ *
+ * The pipeline measured the picture at 24/100, an availability policy raised it to 82, and the
+ * gate decided on the raised number. The log said out loud that the number it was deciding on was
+ * not a measurement, and shipped anyway.
+ *
+ * What shipped, from the same render:
+ *
+ *     15 of 17 beats   visual_status=no_verified_visual verification=never_asked
+ *                      reason=real_footage_never_judged
+ *     17 of 20 clips   provider=UNVERIFIED
+ *     240              beeldgate-momenten niet bevraagd — "die clips zijn ONGEZIEN aangenomen"
+ *
+ * ── Why this is a separate gate and not a threshold change ──────────────────────────────────
+ *
+ * Raising the minimum score would trade one arbitrary number for another, and the availability
+ * policy would still be the thing being compared against it. These two conditions are not about
+ * DEGREE. They are the cases where the render cannot answer "why is this picture on screen?" at
+ * all, for the film as a whole:
+ *
+ *   NO_VERIFIED_OWN_VISUAL   not one beat got a picture of its own that the picture editor
+ *                            looked at and approved. Whatever the montage contains, nothing in
+ *                            it was verified to belong to the sentence it plays under.
+ *   MOSTLY_UNVERIFIED_CLIPS  most of the delivered film has no proven provider — the lineage
+ *                            cannot say where the pictures came from.
+ *
+ * A score can be argued with. Neither of these can.
+ *
+ * ── Deliberately unconditional ──────────────────────────────────────────────────────────────
+ *
+ * Every other check in `enforceQualityExportGate` fires only under `ENABLE_QUALITY_EXPORT_HARD_TIER`
+ * (opt-in, default off) or `strictQualityExportEnabled()`. This one is checked before either,
+ * because a flag that has to be remembered is exactly how render 568 shipped: the conditions
+ * below were all true and every switch that could have stopped it was off.
+ *
+ * ── What it deliberately does NOT do ────────────────────────────────────────────────────────
+ *
+ * It does not judge picture quality, framing, relevance or pacing — those are the score's job and
+ * it is left alone. It does not fire on missing data: a report built without a relevance ledger
+ * or without clips (a tool, a test, a caller outside a render) yields no conditions, because
+ * "nothing was measured" is not evidence of a bad render. And it never lowers a threshold or
+ * relabels an outcome — it only refuses to call a render deliverable when the render itself has
+ * already recorded that it could not verify what it shows.
+ */
+export function indefensibleExportConditions(
+  report: VideoQualityReport
+): IndefensibleExportCondition[] {
+  const out: IndefensibleExportCondition[] = [];
+
+  const beats = report.beatVisuals;
+  if (beats && beats.beats > 0 && beats.verifiedOwnVisual === 0) {
+    const neverAsked = beats.byVerification.never_asked;
+    out.push({
+      code: "NO_VERIFIED_OWN_VISUAL",
+      detail:
+        `0 of ${beats.beats} beat(s) got an approved picture of their own ` +
+        `(never_asked=${neverAsked}, own_footage=${beats.ownFootage}) — ` +
+        `nothing on screen was verified against the narration it plays under`,
+    });
+  }
+
+  const unverified = report.bySource[UNVERIFIED_SOURCE] ?? 0;
+  if (report.totalClips > 0 && unverified / report.totalClips > UNVERIFIED_CLIP_SHARE_LIMIT) {
+    const pct = Math.round((unverified / report.totalClips) * 100);
+    out.push({
+      code: "MOSTLY_UNVERIFIED_CLIPS",
+      detail:
+        `${unverified} of ${report.totalClips} delivered clip(s) have no proven source ` +
+        `(${pct}%, limit ${Math.round(UNVERIFIED_CLIP_SHARE_LIMIT * 100)}%) — ` +
+        `the lineage cannot say where most of this film came from`,
+    });
+  }
+
+  return out;
+}
+
 /** Log geo export warnings when strict mode off. */
 export function assertQualityReportExportGate(report: VideoQualityReport): void {
   const violations = report.criticalGeoViolations ?? [];
