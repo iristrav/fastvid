@@ -905,6 +905,37 @@ export function queryProper(query: string): string {
 }
 
 /**
+ * RONDE 88A P4 — does this query ask for anything, or only for a way of filming it?
+ *
+ * ── What render 568 measured ────────────────────────────────────────────────────────────────
+ *
+ *     reason=NO_CONTENT_ANCHOR   documentary ×68   establishing ×40   historical ×20
+ *
+ * 128 queries built, gated and thrown away. The gate was right every time — "documentary" names a
+ * genre, not a subject, and "wide establishing aerial" is a camera instruction with nothing to
+ * point the camera at. What the gate cannot do is stop them being BUILT, and a builder that
+ * produces 128 unsendable queries has spent the render's time on all of them.
+ *
+ * This is check H, lifted out so a generator can ask the same question BEFORE it builds. Not a
+ * second rulebook: `validateSearchQuery` now calls this function for check H, so there is exactly
+ * one definition of "has a subject" and the generator and the gate cannot drift apart.
+ *
+ * It answers about the query's WORDS only. Whether those words are PROVEN is a different question,
+ * needs the beat's context, and stays where it is.
+ */
+export function hasContentAnchor(query: string): boolean {
+  const q = queryProper(query ?? "").trim();
+  if (!q) return false;
+  return q
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    .filter(Boolean)
+    .some((raw) => {
+      const w = foldSearchText(raw);
+      return Boolean(w) && !isProductionWord(w) && !isFunctionWord(w);
+    });
+}
+
+/**
  * The last gate before a query reaches a provider.
  *
  * `ctx` is the beat's proven context. Every CONTENT word in the query must be traceable to it;
@@ -988,11 +1019,9 @@ export function validateSearchQuery(
   const blocked: string[] = [];
   let firstReason: QueryRejectReason | undefined;
   let firstTerm: string | undefined;
-  let contentWords = 0;
   for (const raw of words) {
     const w = foldSearchText(raw);
     if (isProductionWord(w) || isFunctionWord(w)) continue;
-    contentWords++;
     if (evidenceStems(w).some((form) => proven.has(form))) continue;
     const source = rejected.get(w);
     const reason: QueryRejectReason =
@@ -1035,7 +1064,11 @@ export function validateSearchQuery(
 
   // ── H. A query of nothing but camera vocabulary asks for "aerial footage" of the world in
   // general. It is not wrong about anything, which is exactly the problem: it has no subject.
-  if (contentWords === 0) {
+  //
+  // RONDE 88A P4: this rule now lives in `hasContentAnchor`, so a generator can ask it BEFORE
+  // building a query the gate would only throw away. Delegated rather than duplicated — one
+  // definition of "has a subject", which is what stops the generator-side check becoming a lie.
+  if (!hasContentAnchor(q)) {
     return { ok: false, reason: "NO_CONTENT_ANCHOR", offendingTerm: q, blockedTerms: [] };
   }
   return { ok: true };
@@ -1121,6 +1154,20 @@ export function allTokenLists(ctx: VerifiedQueryContext): QueryToken[][] {
 
 // ─── Logging (§19) ───────────────────────────────────────────────────────────
 
+/**
+ * RONDE 88A P3 — `render= scene= beat=`, filled from the ambient scope when the caller gives none.
+ *
+ * One helper for all three lines, so they cannot drift into disagreeing about which render they
+ * are describing. See `withQueryScope` for why the default lives here and not at the call sites.
+ */
+function scopeFields(meta: { renderId?: string; sceneIndex?: number; beatIndex?: number }): string {
+  const scope = getQueryScope();
+  const render = meta.renderId ?? (scope.videoId != null ? String(scope.videoId) : undefined);
+  const scene = meta.sceneIndex ?? scope.sceneIndex;
+  const beat = meta.beatIndex ?? scope.beatIndex;
+  return `render=${render ?? "-"} scene=${scene ?? "?"} beat=${beat ?? "?"}`;
+}
+
 export function formatSearchQueryLog(meta: {
   renderId?: string;
   sceneIndex?: number;
@@ -1134,8 +1181,8 @@ export function formatSearchQueryLog(meta: {
   const persons = (meta.tokens ?? []).filter((t) => t.type === "person").map((t) => t.term);
   const places = (meta.tokens ?? []).filter((t) => t.type === "place" || t.type === "country").map((t) => t.term);
   return (
-    `[SearchQuery] render=${meta.renderId ?? "-"} scene=${meta.sceneIndex ?? "?"} ` +
-    `beat=${meta.beatIndex ?? "?"} priority=${meta.priority ?? "?"} query="${meta.query}" ` +
+    `[SearchQuery] ${scopeFields(meta)} ` +
+    `priority=${meta.priority ?? "?"} query="${meta.query}" ` +
     `persons=${JSON.stringify(persons)} places=${JSON.stringify(places)} ` +
     `verified=true route=${meta.route ?? "-"} provider=${meta.provider ?? "-"}`
   );
@@ -1153,8 +1200,8 @@ export function formatSearchQueryRejected(meta: {
   provider?: string;
 }): string {
   return (
-    `[SearchQueryRejected] render=${meta.renderId ?? "-"} scene=${meta.sceneIndex ?? "?"} ` +
-    `beat=${meta.beatIndex ?? "?"} query="${meta.query}" term="${meta.offendingTerm ?? ""}" ` +
+    `[SearchQueryRejected] ${scopeFields(meta)} ` +
+    `query="${meta.query}" term="${meta.offendingTerm ?? ""}" ` +
     `termSource=${meta.termSource ?? "unknown"} verified=false reason=${meta.reason} ` +
     `route=${meta.route ?? "-"} provider=${meta.provider ?? "-"}`
   );
@@ -1190,8 +1237,8 @@ export function formatSearchQueryAudit(meta: {
   provider?: string;
 }): string {
   return (
-    `[SearchQueryAudit] render=${meta.renderId ?? "-"} scene=${meta.sceneIndex ?? "?"} ` +
-    `beat=${meta.beatIndex ?? "?"} provider=${meta.provider ?? "-"} route=${meta.route ?? "-"} ` +
+    `[SearchQueryAudit] ${scopeFields(meta)} ` +
+    `provider=${meta.provider ?? "-"} route=${meta.route ?? "-"} ` +
     `query="${meta.query}" status=${meta.status ?? (meta.verified ? "ALLOWED" : "BLOCKED")} ` +
     `verified=${meta.verified} ` +
     `terms=${JSON.stringify([...(meta.terms ?? [])])} ` +
@@ -1420,6 +1467,67 @@ export function withSearchProvenance<T>(ctx: VerifiedQueryContext | undefined, f
 }
 
 /**
+ * RONDE 88A P3 — WHICH RENDER, WHICH SCENE, WHICH BEAT.
+ *
+ * ── What render 568 measured ────────────────────────────────────────────────────────────────
+ *
+ *     [SearchQueryAudit] render=- scene=? beat=? provider=pexels …
+ *
+ * Every one of them. Not some — all. Three fields the log has declared since RONDE 90, printed as
+ * placeholders on every line of every render, which makes the whole audit unchaseable: a reader
+ * counting 128 refusals for "documentary" cannot ask which beats asked for it, and a reader looking
+ * at one bad shot cannot find the queries that produced it.
+ *
+ * ── Why they were empty ─────────────────────────────────────────────────────────────────────
+ *
+ * Not scope loss. `searchGateDecision` mints its ticket with `mintVerifiedQuery(text, ambient,
+ * { route })` — route and nothing else — and `formatSearchQueryRejected` is called with no scope
+ * arguments at all. The fields were never filled by anybody. `VerifiedQueryContext` carries what a
+ * beat PROVES and deliberately not which beat it is, so there was nothing ambient to read either.
+ *
+ * ── Why the default lives in the formatters ─────────────────────────────────────────────────
+ *
+ * Filling in the two call sites would work today and would be the fifteenth instance of this
+ * codebase's recurring seam: a rule every route has to remember. The formatters take the scope from
+ * here when the caller gives none, so a new logging site — and `keepProvableDirectorQueries` in
+ * scriptVisualKeywords, which also passed nothing — is scoped without knowing this exists. An
+ * explicit value still wins, because a caller that knows better than the ambient scope is right.
+ *
+ * A search outside any beat scope still prints `-` and `?`, and must: that is the honest answer for
+ * a query nobody can place, and it is the same answer strict mode already gives it.
+ */
+export type QueryScope = {
+  /** `videos.id` — the render this query belongs to. */
+  readonly videoId?: number;
+  readonly sceneIndex?: number;
+  readonly beatIndex?: number;
+};
+
+const queryScopeStorage = new AsyncLocalStorage<QueryScope>();
+
+/** Where the current provider search is happening, or an empty scope outside any beat. */
+export function getQueryScope(): QueryScope {
+  return queryScopeStorage.getStore() ?? {};
+}
+
+/**
+ * Run `fn` with `scope` as the ambient identity for every query logged inside it.
+ *
+ * Opened at the same leaf as the provenance (`withBeatProvenance`), for the reason RONDE 100B
+ * states there: wrapping the entry points was tried and was not exhaustive.
+ */
+export function withQueryScope<T>(scope: QueryScope, fn: () => T): T {
+  const clean: QueryScope = {
+    ...(scope.videoId != null ? { videoId: scope.videoId } : {}),
+    ...(scope.sceneIndex != null ? { sceneIndex: scope.sceneIndex } : {}),
+    ...(scope.beatIndex != null ? { beatIndex: scope.beatIndex } : {}),
+  };
+  // Nothing to say is not worth a scope — an empty one would shadow an outer, richer one.
+  if (Object.keys(clean).length === 0) return fn();
+  return queryScopeStorage.run({ ...getQueryScope(), ...clean }, fn);
+}
+
+/**
  * The RENDER'S topic — `videos.prompt`, what the person typed — for the whole render.
  *
  * ── The production failure this closes ──────────────────────────────────────────────────────
@@ -1510,9 +1618,24 @@ export function searchGateDecision(
   // A caller's own ticket already carries its proof; a bare string is judged against the beat it
   // is running inside. The proof comes from where the search happens, not from the string.
   const verdict = validateSearchQuery(text, preVerified ? undefined : ambient);
+  /**
+   * RONDE 88A P3 — the ticket says where it was minted, not only what it proves.
+   *
+   * `{ route }` was the whole meta object, so every ticket this gate produced carried
+   * `sceneIndex: undefined`, and the audit line printed the `scene=? beat=?` it was reading off the
+   * ticket. The scope is ambient (see `withQueryScope`), so this needs no new parameter and no
+   * caller has to remember it.
+   */
+  const scope = getQueryScope();
+  const meta = {
+    route,
+    ...(scope.videoId != null ? { renderId: String(scope.videoId) } : {}),
+    ...(scope.sceneIndex != null ? { sceneIndex: scope.sceneIndex } : {}),
+    ...(scope.beatIndex != null ? { beatIndex: scope.beatIndex } : {}),
+  };
   const ticket: VerifiedSearchQuery =
     preVerified ??
-    (ambient ? mintVerifiedQuery(text, ambient, { route }) : legacyQueryTicket(text, route));
+    (ambient ? mintVerifiedQuery(text, ambient, meta) : { ...legacyQueryTicket(text, route), ...meta });
 
   searchGateAudit.record("queriesBuilt", provider, ticket.route);
 

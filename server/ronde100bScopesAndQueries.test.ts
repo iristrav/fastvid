@@ -348,9 +348,14 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
     // If this ever gets minted somewhere else, the whole trace in RONDE 100A stops holding.
     const mints = CONTRACT_SRC.split("\n").filter((l) => l.includes('"LEGACY_QUERY_BUILDER"'));
     expect(mints.filter((l) => l.includes("rejectReason:"))).toHaveLength(1);
-    expect(bodyOf(CONTRACT_SRC, "searchGateDecision")).toContain(
-      "(ambient ? mintVerifiedQuery(text, ambient, { route }) : legacyQueryTicket(text, route))"
-    );
+    // RONDE 88A P3 added the ambient scope to the ticket's meta, so the literal argument list is
+    // no longer `{ route }`. The claim this test makes is about the SHAPE of the choice — mint
+    // with a context, or a named legacy ticket without one — so it is asserted as that shape, plus
+    // the rule that made the literal worth pinning: this function may not build a ticket itself.
+    const body = bodyOf(CONTRACT_SRC, "searchGateDecision");
+    expect(body).toContain("ambient ? mintVerifiedQuery(text, ambient, meta)");
+    expect(body).toContain("legacyQueryTicket(text, route)");
+    expect(body).not.toMatch(/verified:\s*true/);
   });
 });
 

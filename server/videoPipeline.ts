@@ -349,6 +349,7 @@ import {
   searchGateDecision,
   withRenderTopic,
   withSearchProvenance,
+  withQueryScope,
   isFunctionWord,
   isPronounToken,
   provenToken,
@@ -381,6 +382,7 @@ function scenePoolYoutubeSearch(sourcingCache?: SourcingCache): YoutubePoolSearc
     );
 }
 export { getRenderTopic, getSearchProvenance, withRenderTopic, withSearchProvenance } from "./searchQueryContract";
+export { getQueryScope, withQueryScope } from "./searchQueryContract";
 import { applyEditorialScoreFeedback } from "./editorialScoreFeedback";
 import { runEditorialReview, editorialReviewEnabled } from "./editorialReviewEngine";
 import { printRenderQualityReport } from "./renderQualityReport";
@@ -3183,7 +3185,24 @@ function withBeatProvenance<T>(
     beat.index != null && scene.index != null
       ? getShotForBeat(scene.index, beat.index)?.shotType ?? null
       : null;
-  const run = () => withPlannedShot(normaliseShotType(plannedShot), fn);
+  /**
+   * RONDE 88A P3 — WHICH beat, alongside what it proves.
+   *
+   * Render 568 printed `[SearchQueryAudit] render=- scene=? beat=?` on every line it produced,
+   * because nothing ever filled those fields: the provenance says what a beat proves and
+   * deliberately not which beat it is. The identity is right here — `beat.index` and `scene.index`
+   * are already read two lines up to look up the planned shot — so it costs nothing to state it.
+   *
+   * Opened like `withPlannedShot` and unlike the provenance: NOT guarded on an outer scope. A
+   * nested call re-states the same beat, and `withQueryScope` merges rather than replaces, so a
+   * deeper call that knows only its beat index cannot erase the scene it is running in. A caller
+   * with neither index opens no scope, which leaves the log exactly as honest as it was.
+   */
+  const run = () =>
+    withQueryScope(
+      { videoId: getActiveVideoId(), sceneIndex: scene.index, beatIndex: beat.index },
+      () => withPlannedShot(normaliseShotType(plannedShot), fn)
+    );
   if (getSearchProvenance()) return run();
   return withSearchProvenance(
     beatSearchProvenance(beat, scene, opts?.personName ?? "", opts?.scenePersons ?? []),

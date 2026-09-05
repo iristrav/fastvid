@@ -56,8 +56,10 @@ import {
   emptyQueryContext,
   getSearchProvenance,
   searchGateDecision,
+  withQueryScope,
   withSearchProvenance,
 } from "./searchQueryContract";
+import { getActiveVideoId } from "./videoGenerationCancel";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -1391,10 +1393,20 @@ async function withTimeoutFetch(
 export async function buildSceneCandidatePool(
   req: BuildPoolRequest
 ): Promise<SceneCandidatePool> {
-  if (getSearchProvenance()) return buildSceneCandidatePoolInner(req);
-  return withSearchProvenance(emptyQueryContext(req.sceneText ?? ""), () =>
-    buildSceneCandidatePoolInner(req)
-  );
+  /**
+   * RONDE 88A P3 — the pool runs above the beat loop, so it states the SCENE and no beat.
+   *
+   * `beat=?` on a pool query is the truthful answer: the pool is asked once per scene, before any
+   * beat is being filled. `scene=?` was not — `req.sceneIndex` has always been right here. Merged
+   * rather than replaced (see withQueryScope), so a beat scope that is already open keeps its own,
+   * more specific identity.
+   */
+  return withQueryScope({ videoId: getActiveVideoId(), sceneIndex: req.sceneIndex }, () => {
+    if (getSearchProvenance()) return buildSceneCandidatePoolInner(req);
+    return withSearchProvenance(emptyQueryContext(req.sceneText ?? ""), () =>
+      buildSceneCandidatePoolInner(req)
+    );
+  });
 }
 
 async function buildSceneCandidatePoolInner(
