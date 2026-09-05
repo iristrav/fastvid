@@ -238,10 +238,34 @@ describe("RONDE 32 — FIX B: a rescue batch never collects the same curated ass
     // sourcing already failed, so re-using an asset the video used earlier is strictly better
     // than falling through to a colour card. Guarded structurally because the wiring, not a
     // return value, is what encodes the decision.
+    //
+    // ── RONDE 88A: the same claim, made about the calls it was always about ──────────────────
+    //
+    // This used to forbid the render-wide set in EVERY `generateGuaranteedBeatClip` call in the
+    // file, which is wider than the rationale above supports. Three of those calls hand their clip
+    // to `pushClip` — a `pushSceneClip` variant, every one of which refuses on render-wide
+    // `usedContentKeys` before doing anything else. There the render-wide rule is applied to the
+    // clip regardless; withholding the set from the SEARCH only meant the render downloaded and
+    // transcoded footage it had already decided it could not use. Render 568 paid for archive row
+    // ww2:57364 thirty-eight times that way, out of the scene's own budget.
+    //
+    // So the assertion is now made about the rescue-batch calls it was written for, and the calls
+    // it no longer covers are covered — with the opposite requirement, which is the correct one for
+    // them — by duplicatePreparationIsPrevented.test.ts, whose invariant also holds every non-push
+    // call to the batch-scoped rule this test states.
     const src = fs.readFileSync(REPO_PIPELINE, "utf8");
     const rescueBlocks = src.match(/const rescueUsedAssetIds = new Set<number>\(\);/g) ?? [];
     expect(rescueBlocks.length).toBe(2);
-    expect(src).not.toMatch(/generateGuaranteedBeatClip\([^)]*usedCuratedAssetIds/s);
+
+    const batchScopedCalls = [...src.matchAll(/generateGuaranteedBeatClip\([\s\S]*?\n\s*\);/g)]
+      .map((m) => m[0])
+      .filter((call) => call.includes("rescueUsedAssetIds"));
+    // One per rescue block at minimum — if these stop existing the test must fail, not pass empty.
+    expect(batchScopedCalls.length).toBeGreaterThanOrEqual(2);
+    for (const call of batchScopedCalls) {
+      expect(call).toContain("rescueUsedStorageUrls");
+      expect(call).not.toMatch(/usedCuratedAssetIds|usedCuratedStorageUrls/);
+    }
   });
 });
 

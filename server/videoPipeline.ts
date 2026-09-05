@@ -22858,6 +22858,33 @@ async function adoptClip(
       // so this stays the single acceptance point that marks the asset as used.
       dedup.usedPaths.add(p);
       dedup.usedContentKeys.add(contentKey);
+      /**
+       * RONDE 88A — ONE DECISION, BOTH REGISTRIES.
+       *
+       * The comment three lines down already knows this key's family can be "curated": the funnel's
+       * own download branch (`downloadFunnelCandidate`, `candidate.archivePick`) calls
+       * `prepareCuratedArchiveClip` and produces `…_curated_a<id>.mp4`. So a curated archive row can
+       * be adopted right here.
+       *
+       * `usedContentKeys` is what stops the same footage twice; `usedCuratedAssetIds` /
+       * `usedCuratedStorageUrls` are what the curated SEARCH reads — the pool filter in
+       * `searchCuratedCandidatesForBeat`, `listCuratedArchiveCandidates`' excludeIds, the
+       * eligibility loop in `fetchCuratedArchiveBeatClip`, and `archiveAssetPreflight`. Writing one
+       * and not the other leaves the search blind to a decision the render has already made: the
+       * asset keeps winning the ranking, keeps being downloaded and transcoded, and is refused again
+       * at the push every time. Render 568 paid for asset ww2:57364 thirty-eight times and used it
+       * once.
+       *
+       * Every other acceptance point in this file writes both (the four `pushSceneClip` variants,
+       * `rejectClip`, the compose backfills, the fast-short rescue). This was the one that did not —
+       * the same seam as RONDE 53's `recordClipAdopt`, RONDE 70's beat audit and RONDE 86's failed
+       * assets: a rule several routes must remember, remembered by all but one.
+       *
+       * It cannot change WHICH footage this render may use. `usedContentKeys` above already refuses
+       * this asset everywhere, one step later; this only lets the search see that refusal before
+       * paying for it.
+       */
+      markCuratedAssetUsed(p, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(p, dedup));
       // Phase 20: attribute the acceptance to whatever produced the content key — a provider
       // name for provider-tagged assets, otherwise the key's own family ("stock", "still",
       // "curated", "file"). Pure counter increment, no I/O.
@@ -30290,14 +30317,50 @@ async function rescueBeatVisualWhenEmptyInner(
 
   for (let attempt = 0; attempt < 4; attempt++) {
     const tierOut: GuaranteedTierOut = {};
+    /**
+     * RONDE 88A — THE LADDER MUST NOT PAY FOR A CLIP THIS BEAT'S PUSH WILL REFUSE.
+     *
+     * ── What render 568 measured ──────────────────────────────────────────────────────────────
+     *
+     *     09:46:46  #2 score=926 id=57364
+     *     09:46:54  Scene 1 beat 6:   curated archive #57364 (score 505)
+     *     09:46:54  [PushTrace] scene=1 beat=6 asset=ww2:57364 accepted=false
+     *                                          reason=duplicate_clip_once_per_video
+     *     09:46:55  #2 score=926 id=57364
+     *     09:46:58  Scene 1 beat 106: curated archive #57364 (score 509)
+     *     09:47:02  Scene 1 beat 206: …
+     *
+     * "beat 106" and "beat 206" are this loop's own `beat.index + attempt * 100`, handed to
+     * `fetchCuratedArchiveBeatClip` as the slot's beat index. One archive row was searched, ranked,
+     * downloaded, transcoded and written out thirty-eight times across the render, and refused at
+     * the push every single time — CPU and wall-clock spent inside the scene's budget, before
+     * Wikimedia and YouTube ever got their turn.
+     *
+     * ── Why it repeated ───────────────────────────────────────────────────────────────────────
+     *
+     * `generateGuaranteedBeatClipInner` defaults its two exclusion sets to FRESH EMPTY Sets when the
+     * caller passes none (`usedAssetIds ?? new Set()`), and it marks its pick in those sets — so the
+     * marking dies with the call. Every attempt started from zero knowledge and the archive answered
+     * with its top-scoring row again.
+     *
+     * ── Why the render-wide sets, and why that does not contradict RONDE 34 point 8 ──────────────
+     *
+     * RONDE 34 keeps rescue batches on their own exclusion sets deliberately: a render-wide
+     * exclusion would starve a COMPOSE rescue into a colour card. That reasoning holds where the
+     * clip goes straight into `validClips`. It does not hold here. This clip goes to `pushClip`,
+     * which is a `pushSceneClip` variant, and every one of those refuses on render-wide
+     * `usedContentKeys` before anything else. The render-wide rule is already being applied to this
+     * clip — just after it has been paid for. Passing the sets in changes nothing about which
+     * footage this beat may use; it moves the identical decision to before the download.
+     */
     const placeholder = await generateGuaranteedBeatClip(
       scene.index,
       beat.index + attempt * 100,
       holdSec,
       workDir,
       undefined,
-      undefined,
-      undefined,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
       tierOut,
       { dedup, scene, videoTitle, beatIndex: beat.index }
     );
@@ -30589,14 +30652,15 @@ async function ensureBeatVisualFilled(
   );
   for (let attempt = 0; attempt < 4; attempt++) {
     const tierOut: GuaranteedTierOut = {};
+    /** RONDE 88A — same loop, same push, same reason: see the note at the rescue site above. */
     const beatClip = await generateGuaranteedBeatClip(
       scene.index,
       beat.index + attempt * 100,
       holdSec,
       workDir,
       beat.text,
-      undefined,
-      undefined,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
       tierOut,
       { dedup, scene, videoTitle, beatIndex: beat.index }
     );
@@ -30999,8 +31063,15 @@ async function fillBeatVisual(
       }
       if (await raceFirstBeatAdopt(emergencyAdopters, 6_000)) return true;
       const guaranteedTierOut: GuaranteedTierOut = {};
+      /**
+       * RONDE 88A — the emergency-finish rung reaches `pushClip` too, so the same reasoning as the
+       * rescue site applies: the render-wide identity check will refuse a repeat regardless, and
+       * this is the one path where the render is already out of time to spend on a download it
+       * cannot use.
+       */
       const guaranteed = await generateGuaranteedBeatClip(
-        scene.index, beat.index, holdSec, workDir, beat.text, undefined, undefined, guaranteedTierOut,
+        scene.index, beat.index, holdSec, workDir, beat.text,
+        dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, guaranteedTierOut,
         { dedup, scene, videoTitle }
       );
       if (guaranteed && (await pushClip(guaranteed, holdSec))) {

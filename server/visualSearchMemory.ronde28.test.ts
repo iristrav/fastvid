@@ -390,7 +390,12 @@ describe("RONDE 28 — recording happens at every adoption, not just at archivin
     // `const mustFairUse`, and a snug slice would make an unrelated insertion look like the hook
     // had moved. The relationship being asserted — the hook is inside the acceptance block, before
     // the fair-use transform — is unchanged.
-    const after = pipelineSrc.slice(at, at + 6000);
+    // RONDE 88A: widened a fourth time, and this time the byte count is gone. The window now ends
+    // at the landmark the last assertion already needs — `const mustFairUse` — so an insertion in
+    // the acceptance block can never again push the hook out of view and report it as moved.
+    const fairUse = pipelineSrc.indexOf("const mustFairUse", at);
+    expect(fairUse, "the fair-use transform no longer follows the acceptance block").toBeGreaterThan(at);
+    const after = pipelineSrc.slice(at, fairUse + "const mustFairUse".length);
     expect(after).toContain("recordAdoptedClipSource(");
     expect(after).toContain("contentKey,");
     // The hook must still sit inside the acceptance block, not somewhere later in the file.

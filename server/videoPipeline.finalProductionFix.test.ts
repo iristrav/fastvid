@@ -97,7 +97,12 @@ describe("Final production fix — fillBeatVisual emergency-finish guaranteed cl
     // its distinctive generateGuaranteedBeatClip(scene.index, beat.index, ...) call.
     const idx = src.search(/generateGuaranteedBeatClip\(\s*\n?\s*scene\.index,\s*beat\.index,\s*holdSec,\s*workDir,\s*beat\.text,/);
     expect(idx).toBeGreaterThan(-1);
-    const scoped = src.slice(idx, idx + 900);
+    // Scoped to the branch itself — from the call to the `return true` that ends it — rather than
+    // a character count, which silently shrinks past the line it is watching the moment a comment
+    // is added above it and then passes for the wrong reason.
+    const end = src.indexOf("return true;", idx);
+    expect(end).toBeGreaterThan(idx);
+    const scoped = src.slice(idx, end);
     expect(scoped).toContain("pushClip(guaranteed, holdSec)");
     expect(scoped).toMatch(/recordClipAdopt\(\s*\n?\s*dedup\.clipAdoptAudit/);
     // RONDE 50: tier-aware source, see the note on the appendGuaranteedSceneClips test above.
