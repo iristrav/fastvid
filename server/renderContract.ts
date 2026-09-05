@@ -276,3 +276,98 @@ export function musicFeatureStatus(catalogueAvailable: boolean): FeatureStatus {
     reason: "musicSourceUnavailable — this build has no music catalogue, and a sine bed is not music",
   });
 }
+
+
+/* ═══════════════════════ §4 — the provider funnel, reconciled ═══════════════════════ */
+
+/**
+ * RONDE 97 §4 — ONE MEANING FOR `eligible`, AND ONE FOR `adopted`.
+ *
+ * The brief's rule is a single sentence: a provider may not report `eligible=0` while adopting
+ * assets through a normal REAL_FUNNEL route. Render 568 printed exactly that shape —
+ *
+ *     [VisualFunnel] wikimedia retrieved=400 eligible=0 adopted=2 finalVideo=1
+ *     [VisualFunnel] ww2       retrieved=0   eligible=0 adopted=6 finalVideo=1
+ *     [VisualFunnel] loc       retrieved=0   eligible=0 adopted=1
+ *
+ * — and each line was true in its own subsystem's vocabulary while being impossible taken
+ * together. That is what "reconciliation" means here: not new counters, but a check that the
+ * existing ones can all be true at once.
+ *
+ * Adoptions off the funnel are legitimate and expected, which is why the check is not "adopted
+ * implies eligible". A rescue, a subject fallback, a backfill, a generated card or a placeholder
+ * all adopt without eligibility BY DECLARATION — `adoptionPolicy` says so and RONDE 94 enforces
+ * it. So the reconciliation asks the only question that has no legitimate answer: were there more
+ * adoptions than the declared exceptions can account for?
+ */
+export type ProviderFunnelCounts = {
+  results: number;
+  eligible: number;
+  adopted: number;
+  rescue: number;
+  fallback: number;
+  backfill: number;
+  composed: number;
+  finalVideo: number;
+};
+
+export type FunnelFinding = { provider: string; code: string; message: string };
+
+/**
+ * The three impossibilities, per provider.
+ *
+ * ELIGIBLE_EXCEEDS_RESULTS and COMPOSED_EXCEEDS_ADOPTED are monotonicity: a stage cannot produce
+ * more than the stage before it fed it. UNEXPLAINED_FUNNEL_ADOPTION is the render-568 line — more
+ * adoptions than eligibility and the declared exceptions together can account for.
+ *
+ * A provider with `results=0` is deliberately NOT flagged for having adopted: several routes
+ * adopt an asset the render already holds (the curated pool, a local archive row) without ever
+ * issuing a search, and reporting those as broken would train the reader to scroll past the line
+ * that finally matters.
+ */
+export function reconcileProviderFunnel(
+  byProvider: Record<string, ProviderFunnelCounts>
+): FunnelFinding[] {
+  const out: FunnelFinding[] = [];
+  for (const [provider, c] of Object.entries(byProvider)) {
+    if (c.results > 0 && c.eligible > c.results) {
+      out.push({
+        provider,
+        code: "ELIGIBLE_EXCEEDS_RESULTS",
+        message: `eligible=${c.eligible} from results=${c.results}`,
+      });
+    }
+    if (c.composed > c.adopted) {
+      out.push({
+        provider,
+        code: "COMPOSED_EXCEEDS_ADOPTED",
+        message: `composed=${c.composed} from adopted=${c.adopted}`,
+      });
+    }
+    if (c.finalVideo > c.composed && c.composed > 0) {
+      out.push({
+        provider,
+        code: "DELIVERED_EXCEEDS_COMPOSED",
+        message: `finalVideo=${c.finalVideo} from composed=${c.composed}`,
+      });
+    }
+    /** The declared ways to adopt without eligibility. Anything beyond them is unexplained. */
+    const declaredExceptions = c.rescue + c.fallback + c.backfill;
+    const unexplained = c.adopted - c.eligible - declaredExceptions;
+    if (unexplained > 0) {
+      out.push({
+        provider,
+        code: "UNEXPLAINED_FUNNEL_ADOPTION",
+        message:
+          `adopted=${c.adopted} eligible=${c.eligible} rescue=${c.rescue} ` +
+          `fallback=${c.fallback} backfill=${c.backfill} — ${unexplained} adoption(s) claim the ` +
+          `funnel without eligibility and without a declared exception`,
+      });
+    }
+  }
+  return out;
+}
+
+export function formatFunnelReconciliation(findings: FunnelFinding[]): string[] {
+  return findings.map((f) => `[ProviderFunnelInvariant] ${f.provider} ${f.code} ${f.message}`);
+}

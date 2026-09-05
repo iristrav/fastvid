@@ -13,6 +13,8 @@ import {
   formatBeatCoverage,
   formatFeatureMatrix,
   musicFeatureStatus,
+  formatFunnelReconciliation,
+  reconcileProviderFunnel,
   rungForAdoptSource,
   rungRank,
 } from "./renderContract";
@@ -249,5 +251,87 @@ describe("music reports what it is, and is not faked", () => {
     const s = musicFeatureStatus(true);
     expect(s.planned).toBe(true);
     expect(s.reason).toBeUndefined();
+  });
+});
+
+
+/* ═══════════════ §4 — the provider funnel reconciles ═══════════════ */
+
+describe("a provider's counters must all be true at once", () => {
+  const counts = (over: Partial<Parameters<typeof reconcileProviderFunnel>[0][string]> = {}) => ({
+    results: 100, eligible: 40, adopted: 10, rescue: 0, fallback: 0,
+    backfill: 0, composed: 8, finalVideo: 6, ...over,
+  });
+
+  it("a healthy provider produces no finding", () => {
+    expect(reconcileProviderFunnel({ wikimedia: counts() })).toEqual([]);
+  });
+
+  /**
+   * RENDER 568'S LINE, AS A STANDING CHECK:
+   *   [VisualFunnel] wikimedia retrieved=400 eligible=0 adopted=2 finalVideo=1
+   * True in its own subsystem's vocabulary, impossible taken together.
+   */
+  it("catches adoptions the funnel cannot account for", () => {
+    const f = reconcileProviderFunnel({
+      wikimedia: counts({ results: 400, eligible: 0, adopted: 2, composed: 2, finalVideo: 1 }),
+    });
+    expect(f.map((x) => x.code)).toContain("UNEXPLAINED_FUNNEL_ADOPTION");
+    expect(f[0]!.message).toContain("without a declared exception");
+  });
+
+  /** Adoptions off the funnel are legitimate — by declaration, and RONDE 94 enforces it. */
+  it("a declared rescue explains an adoption without eligibility", () => {
+    expect(
+      reconcileProviderFunnel({
+        ww2: counts({ results: 0, eligible: 0, adopted: 6, rescue: 6, composed: 6, finalVideo: 1 }),
+      })
+    ).toEqual([]);
+  });
+
+  it("a subject fallback and a backfill explain it too", () => {
+    expect(
+      reconcileProviderFunnel({
+        loc: counts({ results: 0, eligible: 0, adopted: 3, fallback: 2, backfill: 1, composed: 3, finalVideo: 3 }),
+      })
+    ).toEqual([]);
+  });
+
+  /** Monotonicity: a stage cannot produce more than the one before it fed it. */
+  it("catches eligibility exceeding retrieval", () => {
+    const f = reconcileProviderFunnel({ pexels: counts({ results: 10, eligible: 40 }) });
+    expect(f.map((x) => x.code)).toContain("ELIGIBLE_EXCEEDS_RESULTS");
+  });
+
+  it("catches composition exceeding adoption", () => {
+    const f = reconcileProviderFunnel({ pexels: counts({ adopted: 2, composed: 9 }) });
+    expect(f.map((x) => x.code)).toContain("COMPOSED_EXCEEDS_ADOPTED");
+  });
+
+  it("catches delivery exceeding composition", () => {
+    const f = reconcileProviderFunnel({ pexels: counts({ composed: 2, finalVideo: 9, adopted: 9 }) });
+    expect(f.map((x) => x.code)).toContain("DELIVERED_EXCEEDS_COMPOSED");
+  });
+
+  /**
+   * A provider that never searched is not broken: several routes adopt an asset the render
+   * already holds. Flagging those would train the reader to scroll past the line that matters.
+   */
+  it("does not flag a provider that adopted without searching", () => {
+    expect(
+      reconcileProviderFunnel({
+        own_archive: counts({ results: 0, eligible: 4, adopted: 4, composed: 4, finalVideo: 4 }),
+      })
+    ).toEqual([]);
+  });
+
+  it("names the provider in every line", () => {
+    const lines = formatFunnelReconciliation(
+      reconcileProviderFunnel({
+        wikimedia: counts({ eligible: 0, adopted: 5, composed: 2, finalVideo: 1 }),
+      })
+    );
+    expect(lines[0]).toContain("[ProviderFunnelInvariant] wikimedia");
+    expect(lines[0]).toContain("UNEXPLAINED_FUNNEL_ADOPTION");
   });
 });
