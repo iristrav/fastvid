@@ -120,12 +120,20 @@ describe("RONDE 87 §A — a source is recorded only when it is proven", () => {
 /* ═════════════ §B — the full lifecycle, as events ═════════════ */
 
 describe("RONDE 87 §B — every stage of a clip's life is an event", () => {
-  it("TEST 5 — all sixteen stages exist and each event carries its full context", () => {
+  it("TEST 5 — all twenty stages exist and each event carries its full context", () => {
+    /**
+     * Widened, not loosened. The four cinematic/render stages were logged to the console and
+     * recorded nowhere, so no invariant could be computed over them — a grep is not a data
+     * structure. They are asserted here in the position they occupy, so a stage added or reordered
+     * without thought still fails.
+     */
     expect([...LINEAGE_STAGES]).toEqual([
       "FOUND", "ELIGIBLE", "RANKED", "SELECTED",
       "DOWNLOAD_STARTED", "DOWNLOAD_SUCCEEDED", "DOWNLOAD_FAILED",
       "ADOPTED", "TRANSFORMED", "TRIMMED", "PADDED", "OVERLAYED",
-      "COMPOSED", "REPLACED", "REMOVED", "FINAL_VIDEO",
+      "COMPOSED",
+      "CINEMATIC_SELECTED", "CINEMATIC_DROPPED", "RENDER_INPUT", "DELIVERED",
+      "REPLACED", "REMOVED", "FINAL_VIDEO",
     ]);
     const l = ledger();
     const r = provenCandidate(l);

@@ -322,6 +322,8 @@ import {
   formatFillerOverAdoptedAsset,
   formatFunnelReport,
   formatProviderFunnelInvariant,
+  lifecyclesOf,
+  formatLifecycleInvariants,
   formatLineageLine,
   formatSourceSummary,
   assertNoSelectedClipWithoutOutcome,
@@ -40994,6 +40996,38 @@ async function _runVideoPipelineInner(
         console.warn(pipelineReport.add("dropped", line));
       }
       /**
+       * §9/§10 — the six invariants, and the render summary that counts them.
+       *
+       * `renderSucceeded` and `deliveryHappened` are read from what this render actually did, not
+       * assumed: two of the six are only defects when the render was SUPPOSED to work. A cancelled
+       * or failed render legitimately leaves its inputs without an output, and calling that a
+       * lineage error would fire the alarm on every timeout — which is how an invariant stops being
+       * read.
+       */
+      {
+        const lifecycles = lifecyclesOf(allRecords, ledger.allEvents());
+        const errors = formatLifecycleInvariants(lifecycles, {
+          renderSucceeded: ledger.finalVideoWasVerified,
+          deliveryHappened: ledger.finalVideoWasVerified,
+        });
+        for (const line of errors) console.error(pipelineReport.add("dropped", line));
+        const count = (s: string) => lifecycles.filter((a) => a.terminalStatus === s).length;
+        console.log(
+          pipelineReport.add(
+            "summary",
+            `[FORENSIC_RENDER_SUMMARY] render=${videoId} assets=${lifecycles.length} ` +
+              `final=${count("FINAL")} renderInput=${count("DELIVERED_INPUT")} ` +
+              `droppedAtPush=${count("DROPPED_AT_PUSH")} ` +
+              `droppedAtCompose=${count("DROPPED_AT_COMPOSE")} ` +
+              `droppedAtCinematic=${count("DROPPED_AT_CINEMATIC")} ` +
+              `droppedAtDownload=${count("DROPPED_AT_DOWNLOAD")} ` +
+              `replaced=${count("REPLACED")} neverSelected=${count("NEVER_SELECTED")} ` +
+              `unexplained=${count("UNEXPLAINED")} lineageErrors=${errors.length} ` +
+              `finalOutputVerified=UNKNOWN`
+          )
+        );
+      }
+      /**
        * §17's invariant, checked by the render on itself.
        *
        * "An ADOPTED real asset + the same beat + a guaranteed filler + no ending on the asset" is
@@ -41908,6 +41942,24 @@ async function _runVideoPipelineInner(
                         `duration=${(c.timelineEnd - c.timelineStart).toFixed(2)} ` +
                         `origin=${originOf(c)} local=${existingByClipId.has(c.id)}`
                     );
+                    /**
+                     * §9 — AND ON THE LEDGER, NOT ONLY IN THE LOG.
+                     *
+                     * The line above is greppable; an invariant needs a data structure. A clip the
+                     * planner kept and the renderer was never handed is invariant C, and it can
+                     * only be computed if both facts are events on the same record.
+                     *
+                     * Resolved by the local file the render will actually read, so the event lands
+                     * on the asset rather than on a timeline id the ledger has never heard of. A
+                     * clip whose file this render does not hold records nothing — the ledger does
+                     * not invent a record to satisfy a report.
+                     */
+                    const localForClip = existingByClipId.get(c.id);
+                    if (localForClip) {
+                      visualDedup.sourcingCache?.lineage?.recordEventForPath(
+                        localForClip, "RENDER_INPUT", { status: "OK" }
+                      );
+                    }
                   }
                 }
                 /**

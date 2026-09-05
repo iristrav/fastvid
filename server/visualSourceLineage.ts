@@ -78,6 +78,21 @@ export const LINEAGE_STAGES = [
   "PADDED",
   "OVERLAYED",
   "COMPOSED",
+  /**
+   * The cinematic planner's two endings, and the renderer's two.
+   *
+   * These were logged to the console last round and recorded nowhere, which is why invariants over
+   * them could not be computed: `[CinematicDrop]` is greppable but a grep is not a data structure.
+   * They are written from `videoPipeline`, where the planner's result and the ledger are both in
+   * scope — the planner itself stays decoupled from the ledger and keeps working on plain
+   * `AdoptionFacts`.
+   *
+   * CINEMATIC_DROPPED is terminal; the other three are progress.
+   */
+  "CINEMATIC_SELECTED",
+  "CINEMATIC_DROPPED",
+  "RENDER_INPUT",
+  "DELIVERED",
   "REPLACED",
   "REMOVED",
   "FINAL_VIDEO",
@@ -1871,6 +1886,195 @@ export function formatFunnelReport(summary: VisualSourceSummary, finalVideoVerif
 }
 
 /**
+ * ONE TERMINAL STATUS PER ASSET, AND THE SIX INVARIANTS THAT SAY IT IS HONEST.
+ *
+ * ── What this replaces ──────────────────────────────────────────────────────────────────────
+ *
+ * Every stage of an asset's life is now an event, but "did this render lose anything" still meant
+ * reading five separate reports and holding them in your head. VID-0567 took a production log, a
+ * partial Railway log and three rounds to answer for ONE clip.
+ *
+ * `lifecycleOf` folds a derivation chain into a single verdict, and `formatLifecycleInvariants`
+ * states the six ways that verdict can be incoherent. An asset that ends anywhere other than the
+ * film must say where and why; an asset in the film must not also claim to have been dropped.
+ *
+ * ── Why the invariants are so careful about staying quiet ───────────────────────────────────
+ *
+ * Most of these paths are healthy. ADOPTED → PUSH_REFUSED is a picture editor doing its job.
+ * ADOPTED → CINEMATIC_DROPPED(reason) is the planner doing its job. A failed download never
+ * reaches the renderer and never should. An invariant that fires on those is worse than no
+ * invariant: it trains the reader to scroll past the line that finally matters. Every "does not
+ * fire" case below is a test.
+ */
+export type AssetTerminalStatus =
+  | "FINAL"
+  | "DELIVERED_INPUT"
+  | "DROPPED_AT_PUSH"
+  | "DROPPED_AT_COMPOSE"
+  | "DROPPED_AT_CINEMATIC"
+  | "DROPPED_AT_DOWNLOAD"
+  | "REPLACED"
+  | "NEVER_SELECTED"
+  | "UNEXPLAINED";
+
+export type AssetLifecycle = {
+  lineageId: string;
+  provider: string;
+  providerAssetId: string;
+  sceneIndex: number;
+  beatIndex: number;
+  selected: boolean;
+  adopted: boolean;
+  composed: boolean;
+  cinematicSelected: boolean;
+  cinematicDropped: boolean;
+  renderInput: boolean;
+  delivered: boolean;
+  finalVideo: boolean;
+  terminalStatus: AssetTerminalStatus;
+  terminalReason: string;
+  /**
+   * §14/§15 — never claimed true from a render-input list.
+   *
+   * Being handed to ffmpeg is not proof of being on screen, and nothing in this pipeline verifies a
+   * source clip frame by frame. UNKNOWN is the honest value and the only one this can produce.
+   */
+  finalOutputVerified: "UNKNOWN";
+};
+
+/** Every asset's life, one row per physical asset, folded across its derivation chain. */
+export function lifecyclesOf(
+  records: readonly VisualLineageRecord[],
+  events: readonly VisualLineageEvent[]
+): AssetLifecycle[] {
+  const byId = new Map<string, VisualLineageRecord>();
+  for (const r of records) byId.set(r.lineageId, r);
+  const rootIdOf = (r: VisualLineageRecord): string => {
+    let cur: VisualLineageRecord | undefined = r;
+    const seen = new Set<string>();
+    while (cur?.parentLineageId && !seen.has(cur.lineageId)) {
+      seen.add(cur.lineageId);
+      const parent = byId.get(cur.parentLineageId);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur?.lineageId ?? r.lineageId;
+  };
+
+  const stagesByRoot = new Map<string, Map<LineageStage, LineageEventStatus>>();
+  const reasonByRoot = new Map<string, string>();
+  for (const e of events) {
+    const rec = byId.get(e.lineageId);
+    if (!rec) continue;
+    const rootId = rootIdOf(rec);
+    let stages = stagesByRoot.get(rootId);
+    if (!stages) stagesByRoot.set(rootId, (stages = new Map()));
+    if (e.status !== "OK" || !stages.has(e.stage)) stages.set(e.stage, e.status);
+    if (e.reason && e.status !== "OK") reasonByRoot.set(rootId, e.reason);
+  }
+
+  const out: AssetLifecycle[] = [];
+  for (const r of records) {
+    if (r.parentLineageId) continue;
+    const stages = stagesByRoot.get(r.lineageId) ?? new Map<LineageStage, LineageEventStatus>();
+    const has = (s: LineageStage) => stages.has(s);
+    const rejected = [...stages.values()].some((st) => st.includes("REJECTED"));
+    const reason = reasonByRoot.get(r.lineageId) ?? "";
+
+    const finalVideo = has("FINAL_VIDEO");
+    const cinematicDropped = has("CINEMATIC_DROPPED");
+    const downloadDied = has("DOWNLOAD_FAILED") && !has("DOWNLOAD_SUCCEEDED");
+
+    /**
+     * Read in the order the asset actually travels, so the status names the LAST place it was and
+     * not the first thing that happened to be true about it.
+     */
+    let terminalStatus: AssetTerminalStatus;
+    if (finalVideo) terminalStatus = "FINAL";
+    else if (has("DELIVERED") || has("RENDER_INPUT")) terminalStatus = "DELIVERED_INPUT";
+    else if (cinematicDropped) terminalStatus = "DROPPED_AT_CINEMATIC";
+    else if (has("REPLACED") || has("REMOVED")) terminalStatus = "REPLACED";
+    else if (downloadDied) terminalStatus = "DROPPED_AT_DOWNLOAD";
+    else if (rejected) {
+      terminalStatus = r.composedAt != null ? "DROPPED_AT_COMPOSE" : "DROPPED_AT_PUSH";
+    } else if (r.adoptedAt == null && r.selectedAt == null) terminalStatus = "NEVER_SELECTED";
+    else terminalStatus = "UNEXPLAINED";
+
+    out.push({
+      lineageId: r.lineageId,
+      provider: r.provider ?? UNVERIFIED_PROVIDER,
+      providerAssetId:
+        r.providerAssetId ?? (r.archiveAssetId != null ? String(r.archiveAssetId) : "none"),
+      sceneIndex: r.sceneIndex,
+      beatIndex: r.beatIndex,
+      selected: r.selectedAt != null,
+      adopted: r.adoptedAt != null,
+      composed: r.composedAt != null,
+      cinematicSelected: has("CINEMATIC_SELECTED"),
+      cinematicDropped,
+      renderInput: has("RENDER_INPUT"),
+      delivered: has("DELIVERED"),
+      finalVideo,
+      terminalStatus,
+      terminalReason: reason || (terminalStatus === "FINAL" ? "in the delivered file" : "none recorded"),
+      finalOutputVerified: "UNKNOWN",
+    });
+  }
+  return out;
+}
+
+/**
+ * The six invariants, reported only when broken.
+ *
+ * `renderSucceeded` and `deliveryHappened` come from the render job, because two of the six are
+ * only defects when the render was supposed to work: a cancelled or failed render legitimately
+ * leaves its inputs without an output, and calling that a lineage error would fire the alarm on
+ * every timeout.
+ */
+export function formatLifecycleInvariants(
+  lifecycles: readonly AssetLifecycle[],
+  opts: { renderSucceeded: boolean; deliveryHappened: boolean }
+): string[] {
+  const out: string[] = [];
+  const say = (a: AssetLifecycle, reason: string) =>
+    out.push(
+      `[LINEAGE_ERROR] asset=${a.provider}:${a.providerAssetId} lineage=${a.lineageId} ` +
+        `scene=${a.sceneIndex} beat=${a.beatIndex} reason=${reason}`
+    );
+
+  for (const a of lifecycles) {
+    /** A — adopted, never reached the planner, and nothing says why. */
+    if (
+      a.adopted && !a.cinematicSelected && !a.cinematicDropped && !a.finalVideo &&
+      a.terminalStatus === "UNEXPLAINED"
+    ) {
+      say(a, "ADOPTED_ASSET_MISSING_CINEMATIC_TERMINAL_EVENT");
+    }
+    /** B — the planner saw it and neither kept nor refused it. */
+    if (a.cinematicSelected && a.cinematicDropped) {
+      say(a, "CINEMATIC_SELECTED_AND_DROPPED");
+    }
+    /** C — the planner kept it and the renderer was never handed it. */
+    if (a.cinematicSelected && !a.renderInput && !a.finalVideo) {
+      say(a, "CINEMATIC_SELECTED_WITHOUT_RENDER_INPUT");
+    }
+    /** D — handed to a render that succeeded, and absent from its output. */
+    if (a.renderInput && opts.renderSucceeded && !a.delivered && !a.finalVideo) {
+      say(a, "RENDER_INPUT_WITHOUT_OUTPUT");
+    }
+    /** E — in the rendered output of a render that never delivered. */
+    if (a.delivered && !opts.deliveryHappened) {
+      say(a, "RENDER_OUTPUT_WITHOUT_DELIVERY");
+    }
+    /** F — in the film and dropped at the same time. */
+    if (a.finalVideo && (a.cinematicDropped || a.terminalStatus.startsWith("DROPPED"))) {
+      say(a, "FINAL_ASSET_ALSO_MARKED_DROPPED");
+    }
+  }
+  return out;
+}
+
+/**
  * §12 — HOW MANY OF A PROVIDER'S CANDIDATES THIS RENDER CAN ACCOUNT FOR, ONE BY ONE.
  *
  * ── The gap this measures ───────────────────────────────────────────────────────────────────
@@ -2209,6 +2413,8 @@ function unaccountedRecords(ledger: VisualSourceLedger): VisualLineageRecord[] {
 /** The endings that account for an asset. Read by the vanished rule, the audit and the invariant. */
 function hasTerminalOutcome(stages: Map<LineageStage, LineageEventStatus>): boolean {
   if (stages.has("REPLACED") || stages.has("REMOVED")) return true;
+  /** The planner refusing a clip is an ending, and it names its own reason. */
+  if (stages.has("CINEMATIC_DROPPED")) return true;
   if ([...stages.values()].some((st) => st.includes("REJECTED"))) return true;
   /**
    * RONDE 167 F1 — a download that never finished is an ending, and the rule called it a
