@@ -215,6 +215,7 @@ import {
   type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
+import { censusAdoptionPolicies, formatAdoptionPolicyCensus } from "./adoptionPolicy";
 import {
   fileSizeVerdict,
   formatBelowQualityBar,
@@ -9283,8 +9284,25 @@ export function guaranteedAdoptSource(tier: GuaranteedClipTier | undefined): str
   switch (tier) {
     case "topical":
       return "rescue_archive";
+    /**
+     * RONDE 90 — the guaranteed ladder's Commons rung is a RESCUE, and now says so.
+     *
+     * This returned the bare string "wikimedia": the same label the real Wikimedia retrieval route
+     * uses. A last-resort image fetched after every other route had failed was therefore recorded
+     * as though it had come through retrieval, eligibility and ranking — and `adoptRouteForSource`
+     * classified it `primary`, meaning "a beat filled by the route that was supposed to fill it".
+     *
+     * That is precisely what render 568's funnel reported:
+     *
+     *     [VisualFunnel] wikimedia retrieved=400 eligible=0 adopted=2 finalVideo=1
+     *
+     * Zero eligible, two adopted. The adoptions were this rung, wearing the funnel's name.
+     * `rescue_wikimedia` is a label the pipeline already uses for exactly this picture, and
+     * `adoptionPolicy` declares it RESCUE_REAL: real footage, off the funnel, not a verified
+     * visual for the beat.
+     */
     case "wikimedia":
-      return "wikimedia";
+      return "rescue_wikimedia";
     default:
       return "fallback";
   }
@@ -41136,6 +41154,28 @@ async function _runVideoPipelineInner(
        */
       for (const line of formatUnjudgedAdoptions(visualDedup.clipAdoptAudit)) {
         console.warn(pipelineReport.add("summary", line));
+      }
+      /**
+       * RONDE 90 PHASE 2 — WHAT THIS FILM IS MADE OF, by declared category.
+       *
+       * `[VisualFunnel]` counts by PROVIDER, which is why render 568 could report
+       * `wikimedia adopted=2` for two last-resort rescue images and `UNVERIFIED adopted=23` for
+       * every route that never reached a provider at all. This counts by what each adoption is
+       * ALLOWED TO CLAIM — real funnel footage, a rescue, a subject fallback, held time, a drawn
+       * card, a placeholder — and names any route adopting under a label nobody declared, which
+       * the old string-shape classifier silently called `primary`.
+       */
+      {
+        const census = censusAdoptionPolicies(
+          visualDedup.clipAdoptAudit.map((e) => e.source)
+        );
+        for (const line of formatAdoptionPolicyCensus(census)) {
+          if (line.includes("UNDECLARED_ADOPT_SOURCE")) {
+            console.warn(pipelineReport.add("summary", line));
+          } else {
+            console.log(pipelineReport.add("summary", line));
+          }
+        }
       }
       /**
        * RONDE 95 (§5) — the manifest, and its counterpart.

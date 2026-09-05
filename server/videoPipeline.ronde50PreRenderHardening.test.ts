@@ -298,7 +298,18 @@ describe("RONDE 50 #2 — the guaranteed ladder reports which rung answered", ()
   it("maps each tier onto a source clipAdoptAudit already classifies", async () => {
     const { guaranteedAdoptSource, isPlaceholderGuaranteedTier } = await import("./videoPipeline");
     expect(guaranteedAdoptSource("topical")).toBe("rescue_archive");
-    expect(guaranteedAdoptSource("wikimedia")).toBe("wikimedia");
+    /**
+     * RONDE 90: this rung used to return the bare "wikimedia" — the same label the real Wikimedia
+     * RETRIEVAL route uses — so a last-resort rescue image and a retrieved, ranked, judged Commons
+     * asset were recorded identically, and adoptRouteForSource called both "primary". Render 568
+     * reported the consequence as `wikimedia retrieved=400 eligible=0 adopted=2 finalVideo=1`.
+     *
+     * RONDE 50's claim is unchanged and asserted below: the rung returns REAL media and must not
+     * count as a fallback beat. Only the route label is corrected, and it now matches the "rescue_"
+     * shape its sibling rung already had.
+     */
+    expect(guaranteedAdoptSource("wikimedia")).toBe("rescue_wikimedia");
+    expect(guaranteedAdoptSource("wikimedia")).not.toBe("wikimedia");
     expect(guaranteedAdoptSource("text_overlay")).toBe("fallback");
     expect(guaranteedAdoptSource("color_fallback")).toBe("fallback");
     // A caller that passes no out-parameter keeps the old answer exactly.
@@ -349,6 +360,8 @@ describe("RONDE 50 #2 — the guaranteed ladder reports which rung answered", ()
     expect(per("topical").fallbackBeats).toBe(0);
     expect(per("topical").archiveBeats).toBe(1);
     // B — the Wikimedia rung returned a Commons file: real media, counted as wiki.
+    //     RONDE 90 renamed the ROUTE to rescue_wikimedia; the MEDIA is still a Commons file, so
+    //     both of these still hold. That is the whole point of separating route from provider.
     expect(per("wikimedia").fallbackBeats).toBe(0);
     expect(per("wikimedia").wikiBeats).toBe(1);
     // C — a text-over-gradient card is a placeholder and must still count as one.

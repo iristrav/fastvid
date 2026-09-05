@@ -386,7 +386,23 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
   for (const source of finalSourceByBeat.values()) {
     if (source === "pexels" || source === "pixabay" || source === "stock" || source === "rescue_stock") {
       stockBeats += 1;
-    } else if (source === "wikimedia" || source === "wikimedia_video") {
+    } else if (
+      source === "wikimedia" || source === "wikimedia_video" ||
+      /**
+       * RONDE 90 — the guaranteed ladder's Commons rung, under its honest label.
+       *
+       * `guaranteedAdoptSource("wikimedia")` used to return the bare string "wikimedia", so a
+       * last-resort rescue image and a retrieved, ranked, judged Wikimedia asset were recorded as
+       * the same thing — which is how render 568 reported `wikimedia eligible=0 adopted=2`. It now
+       * returns `rescue_wikimedia`, and the ROUTE is honest.
+       *
+       * The MEDIA is still a Commons file, and RONDE 50's claim about it stands: a beat the ladder
+       * saved with real media is not a fallback beat and belongs in this bucket. Splitting the
+       * route label without splitting the provider count would have moved a real Commons picture
+       * into "no wiki, no archive" and made the sourcing hints below say the opposite of the truth.
+       */
+      source === "rescue_wikimedia"
+    ) {
       wikiBeats += 1;
     } else if (
       source === "archive" || source === "archive_fetch" ||
