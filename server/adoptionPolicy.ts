@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 /**
  * RONDE 90 PHASE 2 — WHAT EVERY ADOPTION ROUTE IS ALLOWED TO CLAIM.
  *
@@ -416,4 +418,104 @@ export function formatAdoptionPolicyCensus(census: AdoptionPolicyCensus): string
     );
   }
   return lines;
+}
+
+
+/* ═══════════════════════ RONDE 93 — enforcement at the montage boundary ═══════════════════════ */
+
+/**
+ * WHAT THIS ROUTE IS ABOUT TO ADOPT, in scope while it pushes.
+ *
+ * ── Why an ambient scope and not a parameter ────────────────────────────────────────────────
+ *
+ * RONDE 92 established where the guard has to live: `recordClipAdopt` runs AFTER
+ * `if (await pushClip(...))`, so by the time it sees the route label the clip is already in
+ * `clips[]` and on its way into the montage. Refusing there refuses a record, not a picture.
+ *
+ * The place a clip actually enters the film is `clips.push(clipPath)` inside the four
+ * `pushSceneClip` variants — and those take `(clipPath, holdSec, beatIndex)`. They do not know the
+ * adopt route, and threading it would mean changing the `pushClip` callback signature that dozens
+ * of call sites pass around.
+ *
+ * So the route states its intent the way this codebase already states a beat's provenance
+ * (`withBeatProvenance`), its query scope (`withQueryScope`) and its planned shot
+ * (`withPlannedShot`): ambiently, around the work. `pushSceneClip` reads it.
+ *
+ * ── Absent intent means "as before" ─────────────────────────────────────────────────────────
+ *
+ * A route that opens no scope yields `null`, and the guard passes. That is deliberate: it makes
+ * this incremental instead of a flag day, and it means no existing route can be broken by a rule
+ * it does not yet participate in. A route that DOES state its intent gets enforced, and the set of
+ * such routes can grow one at a time with a render between each.
+ */
+const adoptionIntentStorage = new AsyncLocalStorage<string>();
+
+/** The adopt-route label the current call is pushing under, or null outside any intent. */
+export function currentAdoptionIntent(): string | null {
+  return adoptionIntentStorage.getStore() ?? null;
+}
+
+/** Run `fn` while declaring that anything pushed inside it is being adopted as `source`. */
+export function withAdoptionIntent<T>(source: string | undefined, fn: () => T): T {
+  const label = (source ?? "").trim();
+  return label ? adoptionIntentStorage.run(label, fn) : fn();
+}
+
+export type AdoptionGuardVerdict =
+  | { allowed: true }
+  | { allowed: false; code: "UNDECLARED_ADOPT_ROUTE" | "FUNNEL_WITHOUT_EVIDENCE"; reason: string };
+
+/**
+ * RONDE 93 — may this clip enter the montage?
+ *
+ * Two refusals, and they are deliberately not the same kind of thing.
+ *
+ * UNDECLARED_ADOPT_ROUTE is unconditional. A route nobody has declared cannot be reasoned about,
+ * and every label the pipeline actually produces IS declared — a structural test walks the call
+ * sites and a behavioural one covers the runtime producers. So this refusal has no legitimate
+ * traffic to break, which is exactly why it can be switched on with no measurement first.
+ *
+ * FUNNEL_WITHOUT_EVIDENCE is the rule RONDE 93 is ultimately for: a REAL_FUNNEL route must have
+ * been found eligible and must have been judged. It is behind `ENFORCE_FUNNEL_ADOPTION` and OFF by
+ * default, and that is not timidity — RONDE 92 measured why. `ELIGIBLE` is written at two sites in
+ * the whole pipeline while 35 routes adopt, so switching this on today would refuse nearly every
+ * adoption, drive `verifiedOwnVisual` to zero and make RONDE 89's export gate reject every render.
+ * The flag exists so that one production render's `[AdoptionEvidence]` line decides when it is
+ * safe, rather than the first firing being in front of a user.
+ */
+export function adoptionGuardVerdict(input: {
+  source: string | null;
+  eligible: boolean;
+  judged: boolean;
+}): AdoptionGuardVerdict {
+  if (!input.source) return { allowed: true };
+  const policy = adoptionPolicyFor(input.source);
+
+  if (policy.category === "UNDECLARED") {
+    return {
+      allowed: false,
+      code: "UNDECLARED_ADOPT_ROUTE",
+      reason: `no adoption policy is declared for route "${normalise(input.source)}"`,
+    };
+  }
+
+  if (!funnelAdoptionEnforced()) return { allowed: true };
+
+  const missing: string[] = [];
+  if (policy.requiresEligibility && !input.eligible) missing.push("eligibility");
+  if (policy.requiresVision && !input.judged) missing.push("vision");
+  if (missing.length === 0) return { allowed: true };
+  return {
+    allowed: false,
+    code: "FUNNEL_WITHOUT_EVIDENCE",
+    reason: `route "${normalise(input.source)}" claims ${policy.category} without ${missing.join(" and ")}`,
+  };
+}
+
+/**
+ * Off by default. See `adoptionGuardVerdict` for the measurement that has to come first — this is
+ * a switch waiting on evidence, not a gate someone forgot to enable.
+ */
+export function funnelAdoptionEnforced(): boolean {
+  return process.env.ENFORCE_FUNNEL_ADOPTION === "true";
 }

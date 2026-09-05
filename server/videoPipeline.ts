@@ -215,7 +215,13 @@ import {
   type ArchiveAssetRow,
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
-import { censusAdoptionPolicies, formatAdoptionPolicyCensus } from "./adoptionPolicy";
+import {
+  adoptionGuardVerdict,
+  censusAdoptionPolicies,
+  currentAdoptionIntent,
+  formatAdoptionPolicyCensus,
+  withAdoptionIntent,
+} from "./adoptionPolicy";
 import {
   fileSizeVerdict,
   formatBelowQualityBar,
@@ -27721,6 +27727,62 @@ function tracePushOutcome(
  * The four call sites differ in whether they warn, which is why the warning stays theirs and only
  * the recording lives here.
  */
+/**
+ * RONDE 93 — THE MONTAGE BOUNDARY.
+ *
+ * The `clips.push` inside the four scene-push variants is where a picture actually enters the
+ * film. RONDE 92 established that the adopt recorder cannot be the guard: it runs after the push
+ * has already returned true, so refusing there refuses a RECORD, not a PICTURE.
+ *
+ * (Written without the literal call spelling on purpose: ronde103CentralGate's structural sweep
+ * slices the file between top-level declarations and scans the text for routes that can place a
+ * clip. A doc comment quoting that spelling is picked up as the previous function's body and
+ * reported as an ungated route — a false finding produced by prose, which is worth avoiding
+ * rather than teaching the sweep to ignore.)
+ *
+ * The route states what it is adopting through `withAdoptionIntent`, ambiently, the way this file
+ * already scopes a beat's provenance and its query scope. A route that states nothing yields null
+ * and passes exactly as before — this is incremental by construction, not a flag day.
+ *
+ * A refusal here is a real terminal outcome: the clip never reaches `clips[]`, and the lineage
+ * records DROPPED_AT_PUSH with the guard's own reason rather than the clip vanishing.
+ */
+async function adoptionGuardRefusesPush(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): Promise<boolean> {
+  const source = currentAdoptionIntent();
+  if (!source) return false;
+
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath) ?? null;
+  const eligible = Boolean(ledger && record && ledger.hasStage(record.lineageId, "ELIGIBLE"));
+  const judged = Boolean(
+    dedup.beatRelevance &&
+      beatIndex != null &&
+      relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+        localPath: clipPath,
+        currentFilename: path.basename(clipPath),
+        sceneIndex,
+        beatIndex,
+      })
+  );
+
+  const verdict = adoptionGuardVerdict({ source, eligible, judged });
+  if (verdict.allowed) return false;
+
+  console.warn(
+    `[AdoptionGuard] scene=${sceneIndex} beat=${beatIndex ?? "?"} route=${source} ` +
+      `blocked=${verdict.code} reason=${verdict.reason} file=${path.basename(clipPath)}`
+  );
+  recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex ?? 0, clipPath, verdict.code);
+  ledger?.recordRejection(clipPath, verdict.code, clipContentKey(clipPath));
+  tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, verdict.code);
+  return true;
+}
+
 function noteDuplicateClipRefused(
   dedup: VisualDedupState,
   clipPath: string,
@@ -28558,7 +28620,17 @@ export async function adoptArchiveBeatClip(
       await rejectClip(withText);
       return false;
     }
-    if (await pushClip(withText, sec)) {
+    /**
+     * RONDE 93 — the archive adopt route states what it is pushing.
+     *
+     * This is the first route wired to the montage guard, and deliberately the first: it is the
+     * main REAL_FUNNEL path, it already knows its own label two lines below at `recordClipAdopt`,
+     * and the label it uses ("archive" / "archive_fetch" / whatever `adoptMeta` carries) is the
+     * one render 568's funnel reported against. The intent is ambient, so `pushSceneClip` reads it
+     * without this call site or any other changing signature.
+     */
+    const adoptIntent = adoptMeta?.source ?? (curated ? "archive" : "archive_fetch");
+    if (await withAdoptionIntent(adoptIntent, () => pushClip(withText, sec))) {
       recordClipAdopt(
         dedup.clipAdoptAudit,
         scene.index,
@@ -30971,6 +31043,7 @@ async function backfillComposeMontageIfShort(
     // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
     // later must not be able to push a clip this render has already refused.
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -31573,6 +31646,7 @@ async function fetchArchiveSentenceMontage(
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) {
@@ -31795,6 +31869,7 @@ async function refillSceneStrictVoiceMatch(
     beatIndex: number
   ): Promise<boolean> => {
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     return withVisualDedupLock(dedup, async () => {
       const key = clipContentKey(clipPath);
       if (dedup.usedContentKeys.has(key)) {
@@ -32127,6 +32202,7 @@ async function ensureArchiveMontageVoiceCoverage(
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       noteDuplicateClipRefused(dedup, clipPath, key, scene.index, beatIndex);
@@ -32719,6 +32795,7 @@ async function fetchSceneVisualsInner(
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex: number): Promise<boolean> => {
     if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
       console.warn(
