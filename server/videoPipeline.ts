@@ -41410,6 +41410,34 @@ async function _runVideoPipelineInner(
     // (PIPELINE_ERROR.QUALITY_GATE) so the caller's existing outer catch (server/routers.ts)
     // marks the video "failed" with the concrete reason, exactly like the other
     // post-render pipelineError checks (e.g. "Final video not playable") already do.
+    /**
+     * EVERY GATE'S ANSWER, LOGGED BEFORE THE FIRST ONE THROWS.
+     *
+     * Three consecutive production renders were refused by three different gates, each of which
+     * had cleared the one before it, and the operator learned that one render at a time. The other
+     * answers existed the whole while; nobody asked for them. See `exportGateReadiness` — it
+     * decides nothing and every gate below still runs exactly as it did.
+     */
+    try {
+      const { exportGateReadiness, formatExportGateReadiness } = await import("./videoQualityReport");
+      const { qualityExportHardTierEnabled, blockExportOnVisualMismatch, strictQualityExportEnabled, minQualityExportScore } =
+        await import("./sourcingPolicy");
+      for (const line of formatExportGateReadiness(
+        videoId,
+        exportGateReadiness(qualityReport, visualDedup.sceneRescueColorFallbackCount, {
+          hardTier: qualityExportHardTierEnabled(),
+          blockVisualMismatch: blockExportOnVisualMismatch(),
+          strictQuality: strictQualityExportEnabled(),
+          minScore: minQualityExportScore(visualDedup.videoLength),
+        })
+      )) {
+        console.log(pipelineReport.add("summary", line));
+      }
+    } catch (err) {
+      /** A readiness REPORT must never be the reason a render fails. */
+      console.warn(`[ExportReadiness] could not be computed:`, (err as Error).message);
+    }
+
     assertVisualCoverageExportGate(qualityReport, visualDedup.sceneRescueColorFallbackCount);
 
     /**

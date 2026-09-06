@@ -807,6 +807,122 @@ export function indefensibleExportConditions(
   return out;
 }
 
+/**
+ * EVERY EXPORT GATE, ANSWERED AT ONCE, BEFORE ANY OF THEM THROWS.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────────────────────
+ *
+ * Five independent gates can refuse an export, each throwing at its own point in the sequence, so
+ * a render reports the FIRST one and stops. Three consecutive production renders were refused by
+ * three different gates:
+ *
+ *     14/14 filled beat(s) got ONLY the color/text fallback     (coverage)
+ *     NO_VERIFIED_OWN_VISUAL: 0 of 16 beat(s) approved          (indefensible)
+ *     MOSTLY_UNVERIFIED_CLIPS: 12 of 14 clip(s)                 (indefensible)
+ *
+ * Each of those was a real finding and each cleared the one before it. But the operator learned
+ * about them one render at a time, and a render is an hour. Nothing in the pipeline was hiding the
+ * other answers — they were simply never asked for.
+ *
+ * So they are all asked here, and the whole list is logged. The gates themselves are untouched:
+ * this decides nothing, blocks nothing and permits nothing. It reports.
+ *
+ * ── The list is derived, never restated ─────────────────────────────────────────────────────
+ *
+ * Each entry calls the same predicate the real gate calls, on the same report. A second copy of a
+ * threshold here would drift from the gate it claims to describe, and a readiness report that
+ * disagrees with the gate is worse than none — see this file's own history with `bySource`.
+ */
+export type ExportGateStatus = {
+  /** The gate's own name, as it appears when it throws. */
+  gate: string;
+  blocking: boolean;
+  detail: string;
+};
+
+export function exportGateReadiness(
+  report: VideoQualityReport,
+  sceneRescueColorFallbackCount: number,
+  policy: {
+    hardTier: boolean;
+    blockVisualMismatch: boolean;
+    strictQuality: boolean;
+    minScore: number;
+  }
+): ExportGateStatus[] {
+  const out: ExportGateStatus[] = [];
+
+  /** 1. Coverage — the same arithmetic assertVisualCoverageExportGate performs. */
+  const beatsFilled = report.adoptAuditSummary?.beatsFilled ?? 0;
+  const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
+  const majorityFallback = beatsFilled > 0 && fallbackBeats / beatsFilled > 0.5;
+  out.push({
+    gate: "visual_coverage",
+    blocking: sceneRescueColorFallbackCount > 0 || majorityFallback,
+    detail:
+      `${fallbackBeats}/${beatsFilled} beat(s) got ONLY a card, ` +
+      `${sceneRescueColorFallbackCount} scene(s) fell back entirely` +
+      (report.adoptAuditSummary?.mixedBeats
+        ? `, ${report.adoptAuditSummary.mixedBeats} beat(s) had footage AND a card`
+        : ""),
+  });
+
+  /** 2 and 3. The two indefensible conditions, from the one function that decides them. */
+  const indefensible = indefensibleExportConditions(report);
+  for (const code of ["NO_VERIFIED_OWN_VISUAL", "MOSTLY_UNVERIFIED_CLIPS"]) {
+    const hit = indefensible.find((c) => c.code === code);
+    out.push({
+      gate: code.toLowerCase(),
+      blocking: Boolean(hit),
+      detail:
+        hit?.detail ??
+        (code === "NO_VERIFIED_OWN_VISUAL"
+          ? `${report.beatVisuals?.verifiedOwnVisual ?? 0} of ${report.beatVisuals?.beats ?? 0} beat(s) hold an approved own picture`
+          : `${report.generatedClips ?? 0} drawn card(s) of ${report.totalClips} clip(s), the rest traced`),
+    });
+  }
+
+  /**
+   * 4. The tightest of them all, and the one an operator is least likely to expect: ANY beat
+   * filled only by a card blocks, not a majority — provided the policy flag is on.
+   */
+  const visualMismatch = Boolean(report.voiceVisualMatch && !report.voiceVisualMatch.ok);
+  out.push({
+    gate: "voice_visual_match",
+    blocking: (policy.hardTier || policy.blockVisualMismatch) && (fallbackBeats > 0 || visualMismatch),
+    detail:
+      `${fallbackBeats} card-only beat(s), voiceVisual ${visualMismatch ? "MISMATCH" : "ok"}` +
+      (policy.hardTier || policy.blockVisualMismatch
+        ? " — ANY card-only beat blocks while BLOCK_EXPORT_ON_VISUAL_MISMATCH is on"
+        : " — not enforced in this configuration"),
+  });
+
+  /** 5. The score floor, which only blocks on the hard tier; otherwise the score is healed. */
+  out.push({
+    gate: "quality_score",
+    blocking: policy.strictQuality && policy.hardTier && report.score < policy.minScore,
+    detail:
+      `score ${report.score}/100, minimum ${policy.minScore}` +
+      (policy.hardTier ? " (hard tier: blocks)" : " (soft tier: healed, does not block)"),
+  });
+
+  return out;
+}
+
+/** The readiness list as log lines — every gate, blocking or not, in one block. */
+export function formatExportGateReadiness(
+  videoId: number | string,
+  statuses: readonly ExportGateStatus[]
+): string[] {
+  const blocking = statuses.filter((s) => s.blocking).length;
+  return [
+    `[ExportReadiness] video=${videoId} ${blocking} of ${statuses.length} gate(s) would block`,
+    ...statuses.map(
+      (s) => `[ExportReadiness]   ${(s.blocking ? "BLOCKS" : "ok").padEnd(6)} ${s.gate.padEnd(24)} ${s.detail}`
+    ),
+  ];
+}
+
 /** Log geo export warnings when strict mode off. */
 export function assertQualityReportExportGate(report: VideoQualityReport): void {
   const violations = report.criticalGeoViolations ?? [];
