@@ -27810,7 +27810,33 @@ async function beatClipPassesVisionGate(
    * A candidate the ledger has never seen records nothing and stays ineligible. That is deliberate
    * and it is the honest direction: an asset with no provenance must not acquire one here.
    */
-  dedup.sourcingCache?.lineage?.markEligible(clipPath, clipContentKey(clipPath), `vision_gate:${queryLabel}`);
+  /**
+   * AND WHEN IT RECORDS NOTHING, SAY SO — the silence cost four renders.
+   *
+   * `markEligible` returns false when the ledger has never seen this file, which is the honest
+   * answer and was, until now, the whole of it. A production render then reported:
+   *
+   *     [AdoptionGuard] route=archive eligible=false vision=APPROVED  blocked=FUNNEL_WITHOUT_EVIDENCE
+   *     …nine times, and `stage=ELIGIBLE status=OK` appeared zero times in the entire render.
+   *
+   * Nine pictures the editor had APPROVED, refused for a registration nobody could see failing.
+   * REAL_FUNNEL needs eligibility AND an approval; the approval was there, and the other half
+   * returned false in silence — so the log named a missing verdict it did in fact have, and the
+   * route that never opened a lineage record stayed anonymous through four renders.
+   *
+   * One line, only on the false answer. It names the CLIP and the ROUTE, which together are the
+   * whole question: an asset with no provenance must not acquire one here, but the route that
+   * failed to give it any must be nameable.
+   */
+  /** One line on purpose: adoptionIsEnforced proves this exact call precedes the judgement. */
+  const eligibleRecorded = dedup.sourcingCache?.lineage?.markEligible(clipPath, clipContentKey(clipPath), `vision_gate:${queryLabel}`);
+  if (eligibleRecorded === false) {
+    console.warn(
+      `[EligibilityGap] scene=${scene.index} beat=${beat.index} route=${queryLabel} ` +
+        `file=${path.basename(clipPath)} contentKey=${clipContentKey(clipPath)} ` +
+        `— the lineage ledger has no record for this clip, so it can never satisfy REAL_FUNNEL`
+    );
+  }
   noteBeatShortlistEligible(dedup.beatShortlist, scene.index, beat.index);
 
   /**
