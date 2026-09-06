@@ -13333,6 +13333,49 @@ async function youtubeClipPassesImageGate(
 }
 
 /**
+ * RONDE 114 — A YOUTUBE CLIP REFUSED BY THE SCREENING GATE, FILED AS REFUSED.
+ *
+ * ── The black hole this closes ──────────────────────────────────────────────────────────────
+ *
+ * The gate above answers a question; its caller ACTS on the answer by deleting the file, and that
+ * deletion is what lost the asset. Render 568 downloaded four YouTube clips successfully, refused
+ * two of them here, and reported `rejected=0` for youtube_cc — with two of its lineage records
+ * ending nowhere at all (`unexplained=2 INVARIANT_BROKEN`). The refusal was real; only the record
+ * of it was missing.
+ *
+ * ── Why this is not a new lifecycle ─────────────────────────────────────────────────────────
+ *
+ * `recordAssetOutcome` is the pipeline's one terminal-outcome writer and `vision_rejected` is the
+ * reason the picture editor's refusals already use everywhere else — the adopt route files exactly
+ * this for a candidate the same gate turned down. Nothing new is introduced here: the same reason,
+ * the same ledger, the same record the download was filed on, reached by the same handles.
+ *
+ * ── Why a function and not four lines at the call site ──────────────────────────────────────
+ *
+ * Two structural tests slice that branch by byte count to prove the deletion and the `continue`
+ * are inside it. Four lines of call plus the explanation above would push them out and read as
+ * deleted — a false finding produced by prose, which this file has produced before. The name also
+ * gives the census one thing to look for if a second refusal branch is ever written.
+ */
+function recordYoutubeScreeningRefusal(
+  cache: SourcingCache | undefined,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): void {
+  recordAssetOutcome(
+    cache?.lineage,
+    clipPath,
+    "vision_rejected",
+    beatIndex != null
+      ? `s${sceneIndex}b${beatIndex}:youtube_screening`
+      : `s${sceneIndex}:youtube_screening`,
+    /** The second handle: correct if the record was opened under the content key rather than the path. */
+    clipContentKey(clipPath)
+  );
+}
+
+/**
  * FINAL VALIDATION §4 — every way a YouTube fetch can end, named.
  *
  * ── Why a vocabulary and not a boolean ──────────────────────────────────────────────────────
@@ -14649,7 +14692,21 @@ export async function fetchYouTubeCCClips(
               ok ? undefined : "youtube_download_failed"
             );
             if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
+            /**
+             * RONDE 114 — the refusal below is written down BEFORE the file is gone.
+             *
+             * Render 568 downloaded four YouTube clips and adopted none. RONDE 113 traced two of
+             * them to this branch: the picture editor refused them (`youtube_screening judged=2
+             * fits=0 refused=2`), the file was unlinked, and the loop moved on. The ledger held a
+             * DOWNLOAD_SUCCEEDED for each and then nothing — `rejected=0` in the youtube_cc row
+             * while two clips had just been rejected, and `unexplained=2 INVARIANT_BROKEN` where
+             * the record simply stopped. A refusal is not a missing outcome; it is an outcome.
+             *
+             * Nothing about the DECISION changes. A clip refused before this round is refused
+             * after it, by the same gate at the same threshold. The render can now say so.
+             */
             if (ok && !(await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided))) {
+              recordYoutubeScreeningRefusal(sourcingCache, outPath, sceneIndex, scriptGuided?.beatIndex);
               // Rejected on what it shows, not on what it is called. The file is removed so a
               // later beat cannot pick it up off disk, and the loop moves to the next candidate.
               try { fs.unlinkSync(outPath); } catch { /* ignore */ }
