@@ -2916,25 +2916,29 @@ export async function fetchBeatArchivalThenPexels(
   let ownArchiveClip: string | null = null;
   try {
     ownArchiveClip = await withSceneFetchTimeout(
-      () => fetchCuratedArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        sceneIndex,
-        beat.holdSec,
-        dedup.usedCuratedAssetIds,
-        dedup.usedCuratedStorageUrls,
-        videoTitle,
-        curatedInterviewBudget(dedup),
-        curatedImageBudget(dedup),
-        undefined,
-        {
-          varietySeed: dedup.varietySeed,
-          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-          assetsCache: dedup.archiveAssetsCache,
-          usedArchiveNames: dedup.usedArchiveNames,
-        }
-      ),
+      () =>
+        fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
+          fetchCuratedArchiveBeatClip(
+            beat,
+            scene,
+            workDir,
+            sceneIndex,
+            beat.holdSec,
+            dedup.usedCuratedAssetIds,
+            dedup.usedCuratedStorageUrls,
+            videoTitle,
+            curatedInterviewBudget(dedup),
+            curatedImageBudget(dedup),
+            undefined,
+            {
+              varietySeed: dedup.varietySeed,
+              crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+              assetsCache: dedup.archiveAssetsCache,
+              usedArchiveNames: dedup.usedArchiveNames,
+              pickedOut,
+            }
+          )
+        ),
       archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
       `archive s${sceneIndex} b${beat.index}`
     );
@@ -3305,19 +3309,26 @@ async function beatPrimaryFetchInner(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    const archiveClip = await fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds, assetsCache: dedup.archiveAssetsCache }
+    const archiveClip = await fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
+      fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        beat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        undefined,
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+          pickedOut,
+        }
+      )
     );
     if (archiveClip !== null) return archiveClip;
     // Try Wikimedia first (no API key needed — always available)
@@ -9123,6 +9134,15 @@ async function padShortClipWithNextInner(
       `[PadClip] s${scene.index}b${beat.index} attempt ${attempt}: filled ${filledSec.toFixed(2)}s / ${holdSec.toFixed(2)}s — fetching ${remaining.toFixed(2)}s more`
     );
 
+    /**
+     * NOT wrapped in `fetchCuratedArchiveBeatClipWithLineage`, deliberately.
+     *
+     * This fill is never adopted as a clip of its own — it is concatenated onto the beat's
+     * existing clip, and the concat output takes its provenance from that first clip through
+     * `linkDerivedPath(..., "TRANSFORMED")` below. Opening a lineage record for the fill asset
+     * would file a record for a path that never reaches an adoption, which is bookkeeping for
+     * something that does not happen.
+     */
     let fillPath = await fetchCuratedArchiveBeatClip(
       beat,
       scene,
@@ -9531,6 +9551,22 @@ async function generateGuaranteedBeatClipInner(
     new Set(tiers.map((q) => q.replace(/\s+/g, " ").trim()).filter((q) => q.length > 3))
   ).slice(0, 4);
 
+  /**
+   * The tier loop's curated fetch is NOT wrapped in `fetchCuratedArchiveBeatClipWithLineage`, for
+   * two reasons that agree.
+   *
+   * This function has no `dedup` in scope — it takes exclusion SETS, not the render's state — so
+   * the ledger is genuinely out of reach here rather than merely inconvenient. And its result is
+   * adopted through `guaranteedAdoptSource("topical")`, which is `rescue_archive`: RESCUE_REAL, a
+   * category that claims no verified own visual and so requires no eligibility. Threading the
+   * render state through this ladder to open a record nothing reads would be plumbing for its own
+   * sake. If this tier is ever re-labelled REAL_FUNNEL it needs the wrapper first, and
+   * `realFunnelRouteCensus` is where that would be caught.
+   *
+   * (Written above the loop on purpose: `visualEscalationLadder` slices 2600 bytes from the loop
+   * header to prove the tier ladder returns its hit, and a comment inside would push that return
+   * out of the window. The note belongs to the loop either way.)
+   */
   for (const query of searchTiers) {
     // RONDE 33: per-tier, so a failed tier cannot leave a previous tier's asset identity behind.
     const pickedOut: { assetId?: number; storageUrl?: string } = {};
@@ -23907,7 +23943,13 @@ async function recoverSceneClipsIfEmptyInner(
       stubBeat.searchQuery = enrichStockQuery(
         stubBeat.powerWord, scene, topicContext, scenePersons[0], stubBeat.text
       );
-      const clip = await fetchCuratedArchiveBeatClip(
+      const clip = await fetchCuratedArchiveBeatClipWithLineage(
+        dedup,
+        scene.index,
+        /** The scene-recovery loop has no narrative beat; its slot index is the honest answer. */
+        stubBeat.index,
+        (pickedOut) =>
+          fetchCuratedArchiveBeatClip(
         stubBeat,
         scene,
         workDir,
@@ -23919,7 +23961,10 @@ async function recoverSceneClipsIfEmptyInner(
         curatedInterviewBudget(dedup),
         curatedImageBudget(dedup),
         undefined,
-        { relaxed: fastShort || fi >= need, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache }
+        { relaxed: fastShort || fi >= need, videoLength: dedup.videoLength, assetsCache: dedup.archiveAssetsCache,
+          pickedOut,
+        }
+          )
       );
       if (!clip || isPipelineFallbackClip(clip)) continue;
       const key = clipContentKey(clip);
@@ -24321,19 +24366,27 @@ async function rescueFastShortComposeClips(
   }
 
   console.warn(`[Pipeline] Scene ${scene.index}: fast compose rescue — relaxed archive (CLIP ≥${rescueVision})`);
-  const archiveClip = await fetchCuratedArchiveBeatClip(
-    beat,
-    scene,
-    workDir,
-    scene.index,
-    holdSec,
-    dedup.usedCuratedAssetIds,
-    dedup.usedCuratedStorageUrls,
-    videoTitle,
-    curatedInterviewBudget(dedup),
-    curatedImageBudget(dedup),
-    undefined,
-    { relaxed: true, videoLength: dedup.videoLength, segmentLock: dedup.segmentGeoLock, assetsCache: dedup.archiveAssetsCache }
+  const archiveClip = await fetchCuratedArchiveBeatClipWithLineage(dedup, scene.index, beat.index, (pickedOut) =>
+    fetchCuratedArchiveBeatClip(
+      beat,
+      scene,
+      workDir,
+      scene.index,
+      holdSec,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      videoTitle,
+      curatedInterviewBudget(dedup),
+      curatedImageBudget(dedup),
+      undefined,
+      {
+        relaxed: true,
+        videoLength: dedup.videoLength,
+        segmentLock: dedup.segmentGeoLock,
+        assetsCache: dedup.archiveAssetsCache,
+        pickedOut,
+      }
+    )
   );
   if (archiveClip) {
     const vision = await beatClipPassesVisionGate(
@@ -24627,26 +24680,29 @@ async function polishWeakAdoptBeatsBeforeCompose(
     const clipIdx = vr.clipBeatIndices?.findIndex((bi) => bi === entry.beatIndex) ?? -1;
     if (clipIdx < 0 || !vr.clips[clipIdx]) continue;
 
-    const upgraded = await fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      scene.index,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      topicContext,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      {
-        relaxed: true,
-        varietySeed: dedup.varietySeed + entry.beatIndex * 17 + scene.index * 3,
-        crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-        assetsCache: dedup.archiveAssetsCache,
-        segmentLock: dedup.segmentGeoLock,
-        videoLength: dedup.videoLength,
-      }
+    const upgraded = await fetchCuratedArchiveBeatClipWithLineage(dedup, scene.index, beat.index, (pickedOut) =>
+      fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        scene.index,
+        beat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        topicContext,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        undefined,
+        {
+          relaxed: true,
+          varietySeed: dedup.varietySeed + entry.beatIndex * 17 + scene.index * 3,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+          segmentLock: dedup.segmentGeoLock,
+          videoLength: dedup.videoLength,
+          pickedOut,
+        }
+      )
     );
     if (!upgraded || isPipelineFallbackClip(upgraded)) continue;
     const vision = await beatClipPassesVisionGate(
@@ -24725,24 +24781,28 @@ async function fetchLastResortRealClipInner(
   let ownArchiveClip: string | null = null;
   try {
     ownArchiveClip = await withSceneFetchTimeout(
-      () => fetchCuratedArchiveBeatClip(
-        beat,
-        scene,
-        workDir,
-        sceneIndex,
-        beat.holdSec,
-        dedup.usedCuratedAssetIds,
-        dedup.usedCuratedStorageUrls,
-        videoTitle,
-        curatedInterviewBudget(dedup),
-        curatedImageBudget(dedup),
-        undefined,
-        {
-          varietySeed: dedup.varietySeed,
-          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
-          assetsCache: dedup.archiveAssetsCache,
-        }
-      ),
+      () =>
+        fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
+          fetchCuratedArchiveBeatClip(
+            beat,
+            scene,
+            workDir,
+            sceneIndex,
+            beat.holdSec,
+            dedup.usedCuratedAssetIds,
+            dedup.usedCuratedStorageUrls,
+            videoTitle,
+            curatedInterviewBudget(dedup),
+            curatedImageBudget(dedup),
+            undefined,
+            {
+              varietySeed: dedup.varietySeed,
+              crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+              assetsCache: dedup.archiveAssetsCache,
+              pickedOut,
+            }
+          )
+        ),
       archiveBeatBudgetMs(dedup.videoLength, get_activeBudgetTracker()?.remainingMs?.()),
       `archive s${sceneIndex} b${beat.index} (last resort)`
     );
@@ -26236,19 +26296,26 @@ async function fetchBeatClipInner(
   videoTitle?: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds, assetsCache: dedup.archiveAssetsCache }
+    return fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
+      fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        beat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        undefined,
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+          pickedOut,
+        }
+      )
     );
   }
   const tag = `b${beat.index}`;
@@ -27409,19 +27476,26 @@ async function resolveBeatClipForBeat(
   beatAdoptOpts: VisualAdoptOptions
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
-    return fetchCuratedArchiveBeatClip(
-      beat,
-      scene,
-      workDir,
-      sceneIndex,
-      beat.holdSec,
-      dedup.usedCuratedAssetIds,
-      dedup.usedCuratedStorageUrls,
-      videoTitle,
-      curatedInterviewBudget(dedup),
-      curatedImageBudget(dedup),
-      undefined,
-      { varietySeed: dedup.varietySeed, crossVideoExcludeIds: dedup.crossVideoExcludeIds, assetsCache: dedup.archiveAssetsCache }
+    return fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
+      fetchCuratedArchiveBeatClip(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        beat.holdSec,
+        dedup.usedCuratedAssetIds,
+        dedup.usedCuratedStorageUrls,
+        videoTitle,
+        curatedInterviewBudget(dedup),
+        curatedImageBudget(dedup),
+        undefined,
+        {
+          varietySeed: dedup.varietySeed,
+          crossVideoExcludeIds: dedup.crossVideoExcludeIds,
+          assetsCache: dedup.archiveAssetsCache,
+          pickedOut,
+        }
+      )
     );
   }
 
@@ -29074,6 +29148,63 @@ async function adoptBestSimilarBeatClip(
   return adoptSimilarExternal();
 }
 
+/**
+ * THE CONTRACT LAYER FOR A CURATED CLIP FETCHED OUTSIDE THE RANKED QUEUE.
+ *
+ * ── What render 570 proved ──────────────────────────────────────────────────────────────────
+ *
+ *     7x  route=archive  eligible=false  vision=APPROVED  blocked=FUNNEL_WITHOUT_EVIDENCE
+ *     [ExportReadiness] BLOCKS no_verified_own_visual   0 of 16 (never_asked=16, own_footage=2)
+ *     [ExportReadiness] BLOCKS mostly_unverified_clips  9 of 12 fetched clip(s)
+ *
+ * `adoptArchiveBeatClip` adopts curated clips on three paths. Its ranked queue opens the asset's
+ * lineage the moment the candidate is queued. The other two fetch through
+ * `fetchCuratedArchiveBeatClip` — which returns a prepared file path and cannot reach the ledger,
+ * since that lives on the render's dedup state — and then push under `{ source: "archive" }`,
+ * which is REAL_FUNNEL.
+ *
+ * So `markEligible` at the vision gate had nothing to resolve, `isEligible` answered false, and
+ * seven pictures the editor had APPROVED were refused. The beats fell through to
+ * `subject_fallback`, and both of render 570's blocking gates follow from that one gap.
+ *
+ * ── Why here, and not at the tryClip that failed ─────────────────────────────────────────────
+ *
+ * Putting `ensureCuratedAssetLineage` in front of one `tryClip` would fix one call site and leave
+ * the next fetch free to repeat it — this file's recurring seam, for the seventeenth time. The
+ * fetch is where the asset's identity is decided, so this wraps THE FETCH: every caller that
+ * obtains a curated clip this way gets its lineage opened, or gets null.
+ *
+ * It records identity and nothing else. Eligibility is still written in exactly one place, at the
+ * vision gate, for every route alike — this only gives that writer something to resolve. A clip
+ * that is refused later is refused on the same terms as before.
+ */
+async function fetchCuratedArchiveBeatClipWithLineage(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  fetch: (pickedOut: { assetId?: number; storageUrl?: string; pick?: CuratedCandidatePick }) => Promise<string | null>
+): Promise<string | null> {
+  const pickedOut: { assetId?: number; storageUrl?: string; pick?: CuratedCandidatePick } = {};
+  const clip = await fetch(pickedOut);
+  if (!clip) return clip;
+  if (pickedOut.pick) {
+    /** The same writer the ranked queue uses — one definition of what a curated record is. */
+    ensureCuratedAssetLineage(dedup, pickedOut.pick, sceneIndex, beatIndex);
+  } else {
+    /**
+     * A clip with no pick behind it. Nothing is invented — the honest outcome is that this asset
+     * has no provenance and REAL_FUNNEL will refuse it — but the render says so by name instead of
+     * leaving another anonymous `eligible=false` to be traced across four renders.
+     */
+    console.warn(
+      `[EligibilityGap] scene=${sceneIndex} beat=${beatIndex} route=curated_fetch ` +
+        `file=${path.basename(clip)} — the fetch returned a clip with no pick, so no lineage ` +
+        `record could be opened and this clip can never satisfy REAL_FUNNEL`
+    );
+  }
+  return clip;
+}
+
 export async function adoptArchiveBeatClip(
   beat: SceneBeat,
   scene: Scene,
@@ -29516,7 +29647,12 @@ export async function adoptArchiveBeatClip(
         used: dedup.motionGraphicsUsed,
         max: maxMotionGraphicsPerVideo(),
       };
-      const clip = await fetchCuratedArchiveBeatClip(
+      const clip = await fetchCuratedArchiveBeatClipWithLineage(
+        dedup,
+        scene.index,
+        beat.index,
+        (pickedOut) =>
+          fetchCuratedArchiveBeatClip(
         beat,
         scene,
         workDir,
@@ -29535,7 +29671,9 @@ export async function adoptArchiveBeatClip(
           assetsCache: dedup.archiveAssetsCache,
           segmentLock: dedup.segmentGeoLock,
           videoLength: dedup.videoLength,
+          pickedOut,
         }
+          )
       );
       dedup.motionGraphicsUsed = mgfxBudget.used;
       if (await tryClip(clip, holdSec, { source: "archive" })) return true;
@@ -29560,7 +29698,12 @@ export async function adoptArchiveBeatClip(
   };
 
   for (let attempt = 0; attempt < archiveBeatClipRetries(dedup.perf.fastStockMode); attempt++) {
-    const clip = await fetchCuratedArchiveBeatClip(
+    const clip = await fetchCuratedArchiveBeatClipWithLineage(
+      dedup,
+      scene.index,
+      beat.index,
+      (pickedOut) =>
+        fetchCuratedArchiveBeatClip(
       beat,
       scene,
       workDir,
@@ -29578,7 +29721,9 @@ export async function adoptArchiveBeatClip(
         crossVideoExcludeIds: dedup.crossVideoExcludeIds,
         assetsCache: dedup.archiveAssetsCache,
         videoLength: dedup.videoLength,
+        pickedOut,
       }
+        )
     );
     dedup.motionGraphicsUsed = mgfxBudget.used;
     if (await tryClip(clip, holdSec, { source: "archive" })) return true;
@@ -35128,19 +35273,25 @@ async function fetchSceneVisualsInner(
         extra = await withSceneFetchTimeout(
           async () => {
             if (archiveOnly) {
-              return fetchCuratedArchiveBeatClip(
-                stub,
-                scene,
-                workDir,
-                scene.index,
-                stub.holdSec,
-                dedup.usedCuratedAssetIds,
-                dedup.usedCuratedStorageUrls,
-                videoTitle,
-                curatedInterviewBudget(dedup),
-                curatedImageBudget(dedup),
-                undefined,
-                { relaxed: backfillAttempts >= Math.floor(maxBackfill / 2), assetsCache: dedup.archiveAssetsCache }
+              return fetchCuratedArchiveBeatClipWithLineage(dedup, scene.index, stub.index, (pickedOut) =>
+                fetchCuratedArchiveBeatClip(
+                  stub,
+                  scene,
+                  workDir,
+                  scene.index,
+                  stub.holdSec,
+                  dedup.usedCuratedAssetIds,
+                  dedup.usedCuratedStorageUrls,
+                  videoTitle,
+                  curatedInterviewBudget(dedup),
+                  curatedImageBudget(dedup),
+                  undefined,
+                  {
+                    relaxed: backfillAttempts >= Math.floor(maxBackfill / 2),
+                    assetsCache: dedup.archiveAssetsCache,
+                    pickedOut,
+                  }
+                )
               );
             }
             if (dedup.perf.fastStockMode) {
@@ -35247,19 +35398,21 @@ async function fetchSceneVisualsInner(
     if (archiveOnly) {
       for (let si = 0; si < 8; si++) {
         const stub = { ...beats[0], index: si };
-        const extra = await fetchCuratedArchiveBeatClip(
-          stub,
-          scene,
-          workDir,
-          scene.index,
-          stub.holdSec,
-          dedup.usedCuratedAssetIds,
-          dedup.usedCuratedStorageUrls,
-          videoTitle,
-          curatedInterviewBudget(dedup),
-          curatedImageBudget(dedup),
-          undefined,
-          { assetsCache: dedup.archiveAssetsCache }
+        const extra = await fetchCuratedArchiveBeatClipWithLineage(dedup, scene.index, stub.index, (pickedOut) =>
+          fetchCuratedArchiveBeatClip(
+            stub,
+            scene,
+            workDir,
+            scene.index,
+            stub.holdSec,
+            dedup.usedCuratedAssetIds,
+            dedup.usedCuratedStorageUrls,
+            videoTitle,
+            curatedInterviewBudget(dedup),
+            curatedImageBudget(dedup),
+            undefined,
+            { assetsCache: dedup.archiveAssetsCache, pickedOut }
+          )
         );
         if (extra && !isPipelineFallbackClip(extra) && (await pushSceneClip(extra, stub.holdSec, stub.index))) {
           break;
@@ -35352,19 +35505,21 @@ async function fetchSceneVisualsInner(
   if (usable.length === 0 && beats[0]) {
     let forced: string | null = null;
     if (archiveOnly) {
-      forced = await fetchCuratedArchiveBeatClip(
-        beats[0],
-        scene,
-        workDir,
-        scene.index,
-        beats[0].holdSec,
-        dedup.usedCuratedAssetIds,
-        dedup.usedCuratedStorageUrls,
-        videoTitle,
-        curatedInterviewBudget(dedup),
-        curatedImageBudget(dedup),
-        undefined,
-        { assetsCache: dedup.archiveAssetsCache }
+      forced = await fetchCuratedArchiveBeatClipWithLineage(dedup, scene.index, beats[0].index, (pickedOut) =>
+        fetchCuratedArchiveBeatClip(
+          beats[0]!,
+          scene,
+          workDir,
+          scene.index,
+          beats[0]!.holdSec,
+          dedup.usedCuratedAssetIds,
+          dedup.usedCuratedStorageUrls,
+          videoTitle,
+          curatedInterviewBudget(dedup),
+          curatedImageBudget(dedup),
+          undefined,
+          { assetsCache: dedup.archiveAssetsCache, pickedOut }
+        )
       );
     } else if (realOnly) {
       forced = await beatPrimaryFetch(

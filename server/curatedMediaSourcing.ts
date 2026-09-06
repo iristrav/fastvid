@@ -2929,7 +2929,31 @@ export async function fetchCuratedArchiveBeatClip(
      * two rows pointing at the same file both selectable. Handing the real values back through
      * an optional out-object keeps the return type and every existing caller untouched.
      */
-    pickedOut?: { assetId?: number; storageUrl?: string };
+    pickedOut?: {
+      assetId?: number;
+      storageUrl?: string;
+      /**
+       * RENDER 570 — the winning PICK, not only its two identifying fields.
+       *
+       * This function prepares a curated clip and returns a path. It never touches the lineage
+       * ledger, which lives on the render's dedup state and is not reachable from this module. So
+       * the two adopt sites in `adoptArchiveBeatClip` that fetch through here pushed a clip under
+       * `{ source: "archive" }` — REAL_FUNNEL — with no record opened for it anywhere:
+       *
+       *     7x  route=archive  eligible=false  vision=APPROVED  blocked=FUNNEL_WITHOUT_EVIDENCE
+       *
+       * Seven pictures the editor had APPROVED, refused because `markEligible` had nothing to
+       * resolve. The beats then fell through to `subject_fallback` and the film ended up carrying
+       * sixteen unjudged pictures — both of render 570's blocking gates, from this one gap.
+       *
+       * The ranked queue in the same function does it correctly, with
+       * `ensureCuratedAssetLineage(dedup, picked, …)`, and that needs the pick itself. Handing it
+       * back through the out-object this comment's predecessor already established is the smallest
+       * honest fix: the identity is known here, the ledger is reachable there, and neither module
+       * learns about the other.
+       */
+      pick?: CuratedCandidatePick;
+    };
   }
 ): Promise<string | null> {
   const relaxed = options?.relaxed === true;
@@ -3088,6 +3112,8 @@ export async function fetchCuratedArchiveBeatClip(
     if (clipPath && options?.pickedOut) {
       options.pickedOut.assetId = picked.asset.id;
       options.pickedOut.storageUrl = picked.asset.storageUrl;
+      /** The whole pick, so the caller can open this asset's lineage — see the field's note. */
+      options.pickedOut.pick = picked;
     }
     return clipPath;
   };
