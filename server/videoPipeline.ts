@@ -2729,6 +2729,7 @@ async function fetchBeatYoutubeOnly(
         adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : "",
         {
           beatText: beat.text,
+          beatIndex: beat.index,
           videoTitle,
           fastMode: dedup.perf.fastStockMode,
           imageGate: dedup.beatImageGate,
@@ -3796,6 +3797,7 @@ async function tryBeatRealYouTubeFootage(
               adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : "",
               {
                 beatText: beat.text,
+                beatIndex: beat.index,
                 videoTitle: adoptOpts.videoTitle,
                 fastMode: dedup.perf.fastStockMode,
                 imageGate: dedup.beatImageGate,
@@ -13232,7 +13234,8 @@ async function youtubeClipPassesImageGate(
     // bucket rather than sharing one with every beat that later judges the same video.
     beatIdentity: beatIdentityKey({
       sceneIndex,
-      beatIndex: -1,
+      /** Shares the beat's own cache bucket, so the beat gets this answer free. */
+      beatIndex: scriptGuided.beatIndex ?? -1,
       beatText: scriptGuided.beatText,
       videoTitle: scriptGuided.videoTitle,
     }),
@@ -13265,7 +13268,8 @@ async function youtubeClipPassesImageGate(
       clipContentKey(clipPath),
       {
         sceneIndex,
-        beatIndex: -1,
+        /** See `beatIndex` on ScriptGuidedBeatContext — this is what made an approval unusable. */
+        beatIndex: scriptGuided.beatIndex ?? -1,
         beatText: scriptGuided.beatText,
         videoTitle: scriptGuided.videoTitle,
       },
@@ -13274,6 +13278,19 @@ async function youtubeClipPassesImageGate(
     );
   }
   return judgement.verdict !== "does_not_fit";
+  /**
+   * DO NOT ADD PROSE ANYWHERE ABOVE — put it after this return, or in a test file.
+   *
+   * Two structural tests slice this function by byte count and prove a rule is inside the slice:
+   * ronde61GateRejectionSticks takes 2600 characters and looks for the cached-verdict line
+   * (~2410), ronde60YoutubeSegment takes 4200 and looks for the return above (~4130). A couple of
+   * hundred characters of comment anywhere earlier pushes one of them out, and the rule reads as
+   * deleted — a false finding produced by prose. This round produced both, in that order, from
+   * notes explaining the beatIndex fix. That explanation lives in
+   * youtubeApprovalIsNotThrownAway.test.ts, where it costs nothing.
+   *
+   * Below the return is free: no slice that must contain the return can be shortened by it.
+   */
 }
 
 /**
@@ -13960,6 +13977,28 @@ export async function probeStabilityAI(): Promise<{
 // CC first; then standard YouTube when fair-use is enabled (transform required on adopt).
 type ScriptGuidedBeatContext = {
   beatText: string;
+  /**
+   * WHICH BEAT'S NARRATION THIS SCREENING IS JUDGING — render 569's YouTube bottleneck.
+   *
+   * `youtubeClipPassesImageGate` shows the picture editor a downloaded YouTube clip and asks
+   * whether it fits `beatText`. That is the same question the beat gate asks later, about the same
+   * clip and the same sentence. The verdict was then filed under `beatIndex: -1`, because this
+   * check runs before the clip is in any beat's pool and the index was not to hand.
+   *
+   * `relevanceVerdictForRenderedAsset` only accepts a verdict whose beat matches — "a verdict
+   * earned elsewhere is not one", which is the right rule — so `-1` never matched, and the
+   * adoption guard saw NOT_ASKED. `youtube` and `youtube_cc` are REAL_FUNNEL, the one category
+   * that demands an explicit APPROVED, so a YouTube clip the editor had ALREADY approved arrived
+   * at adoption with no approval to show and was refused. Render 569: downloads=3, accepted=0.
+   *
+   * YouTube was the only source that had to be approved twice — once here, and again after
+   * winning one of the beat's eight shortlist slots. Passing the index files the verdict against
+   * the beat whose narration actually earned it. No policy is relaxed: the same editor, the same
+   * frames, the same sentence, recorded where the beat can find it instead of thrown away.
+   *
+   * Optional, and `-1` remains the honest answer when a caller genuinely has no beat.
+   */
+  beatIndex?: number;
   videoTitle?: string;
   fastMode?: boolean;
   /**
@@ -25105,7 +25144,7 @@ async function fetchHistoricalBeatVideoInner(
         if (!youtubeReady) return [];
         return fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
-          { beatText: beat.text, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate, relevanceLedger: dedup.beatRelevance },
+          { beatText: beat.text, beatIndex: beat.index, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate, relevanceLedger: dedup.beatRelevance },
           dedup.usedContentKeys,
           dedup.sourcingCache
         );
@@ -25461,6 +25500,7 @@ async function researchBeatClipUnifiedInner(
             primary ?? "",
             {
               beatText: beat.text,
+              beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
@@ -25491,6 +25531,7 @@ async function researchBeatClipUnifiedInner(
             primary ?? "",
             {
               beatText: beat.text,
+              beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
@@ -26334,6 +26375,7 @@ async function fetchBeatClipInner(
           fetch: () =>
             fetchYouTubeCCClips(HERO_YOUTUBE_QUERIES, clipFetchDur, workDir, sceneIndex, 1, heroKw, 2, "", {
               beatText: beat.text,
+              beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
@@ -26390,6 +26432,7 @@ async function fetchBeatClipInner(
         fetch: () =>
           fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1, "", {
             beatText: beat.text,
+            beatIndex: beat.index,
             videoTitle,
             fastMode: perf.fastStockMode,
             imageGate: dedup.beatImageGate,
@@ -26414,6 +26457,7 @@ async function fetchBeatClipInner(
           fetch: () =>
             fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
               beatText: beat.text,
+              beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
@@ -26501,6 +26545,7 @@ async function fetchBeatClipInner(
           fetch: () =>
             fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
               beatText: beat.text,
+              beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
               imageGate: dedup.beatImageGate,
