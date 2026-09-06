@@ -99,6 +99,10 @@ RUN apt-get update && apt-get install -y \
   libxrandr2 \
   libgbm1 \
   libasound2 \
+  `# @puppeteer/browsers ships the shell as a .zip and shells out to unzip to extract it.` \
+  `# node:22-slim has no archiver at all, so the download succeeded and the extraction did not:` \
+  `#   Extraction failed: no zip archiver is available. Install 'unzip' ...` \
+  unzip \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
@@ -106,11 +110,17 @@ RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
   && ln -sf "$(find /opt/browsers -name chrome-headless-shell -type f | head -1)" \
       /usr/bin/chrome-headless-shell
 
-# Fail the BUILD rather than the render. A missing shared library makes the
-# binary exit non-zero here; without this check the image ships happily and
-# every render quietly loses its graphics instead — which is exactly how this
-# went unnoticed until a production log was read line by line.
-RUN /usr/bin/chrome-headless-shell --version
+# Fail the BUILD rather than the render, and SAY WHY.
+#
+# Without this check a missing library ships happily and every render quietly
+# loses its graphics instead — exactly how this went unnoticed until a
+# production log was read line by line. And `exit code: 1` on its own costs a
+# whole deploy cycle to diagnose, so `ldd` names the missing library in the
+# build log itself: the difference between one more push and three.
+RUN /usr/bin/chrome-headless-shell --version \
+  || { echo "=== chrome-headless-shell will not start. Missing shared libraries: ==="; \
+       ldd /usr/bin/chrome-headless-shell | grep "not found" || echo "(none — see the error above)"; \
+       exit 1; }
 
 WORKDIR /app
 
