@@ -200,6 +200,68 @@ export const DATA_DRIVEN_GRAPHICS: ReadonlySet<string> = new Set([
   "percentage_ring", "map_point", "route", "multi_point",
 ]);
 
+/**
+ * The types Graphics.tsx gives a `case` of their own — a design, not just words on screen.
+ *
+ * ── Why this exists, and why it is not a second vocabulary ──────────────────────────────────
+ *
+ * `graphicIsRenderable` answers "will this build draw visible pixels for this graphic", and RONDE
+ * 160 §7 proved it does, for every member of RENDERABLE_GRAPHICS, by reading the alpha plane back.
+ * That predicate is correct and unchanged.
+ *
+ * What it cannot say is HOW. Eleven of the thirty-two names have no case of their own and reach
+ * the switch's `default:`, which draws the label as a bold text card — the same output `text`,
+ * `label` and `headline` get. So `rendered=6` can mean six graphics in their intended form, or six
+ * text cards, or any mix, and the render log could not tell them apart. Two rounds of this audit
+ * (107 and 108) drew wrong conclusions from exactly that ambiguity.
+ *
+ * This set names the twenty-one with their own case. It is a SECOND PLACE the switch's contents
+ * are written down, which is the kind of thing that drifts — so `ronde110GraphicsDesignClass`
+ * parses Graphics.tsx and fails the day a case is added or removed without updating this list.
+ * Declared here rather than in the .tsx because the reporting path must read it without pulling
+ * React into the worker, the same reason RENDERABLE_GRAPHICS lives here.
+ */
+export const EXPLICITLY_DESIGNED_GRAPHICS: ReadonlySet<string> = new Set([
+  "bar_chart",
+  "chapter_card",
+  "chapter_title",
+  "counter",
+  "donut_chart",
+  "horizontal_bar",
+  "icon",
+  "line_chart",
+  "location_card",
+  "lower_third",
+  "map_point",
+  "multi_point",
+  "name",
+  "percentage_ring",
+  "pie_chart",
+  "progress",
+  "quote",
+  "route",
+  "shape",
+  "stat",
+  "statistic",
+]);
+
+/** How one graphic will actually be drawn. */
+export type GraphicRendererClass = "explicit" | "generic" | "unsupported";
+
+/**
+ * Built ON TOP of `graphicIsRenderable` rather than beside it, so the two can never disagree about
+ * whether a graphic draws at all. This only refines a YES into "with its own design" or "as the
+ * generic text card"; a NO stays a NO on exactly the old terms.
+ */
+export function graphicRendererClass(
+  graphicType: string,
+  data: Record<string, unknown>,
+  label: string | null
+): GraphicRendererClass {
+  if (!graphicIsRenderable(graphicType, data, label)) return "unsupported";
+  return EXPLICITLY_DESIGNED_GRAPHICS.has(graphicType) ? "explicit" : "generic";
+}
+
 /** Graphic types drawn as a shape rather than as words. */
 export const SHAPE_GRAPHICS: ReadonlySet<string> = new Set(["shape", "icon"]);
 

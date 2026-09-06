@@ -136,13 +136,33 @@ export function formatGraphics(params: {
   rendered: number;
   skipped: readonly string[];
   renderer: string;
+  /**
+   * RONDE 110 — HOW the rendered ones were drawn, when the caller can say.
+   *
+   * `rendered` counts graphics that will put visible ink on screen, which RONDE 160 §7 verified by
+   * reading the alpha plane back for every renderable type. What it cannot say is whether each one
+   * got its own design or the switch's `default:` text card, and eleven of the thirty-two names
+   * reach that default. Two rounds of audit misread `rendered` for want of this split.
+   *
+   * Optional so the existing callers are untouched: without them the line reads exactly as before.
+   */
+  explicitRendered?: number;
+  genericRendered?: number;
 }): string {
+  const split =
+    params.explicitRendered != null && params.genericRendered != null
+      ? ([
+          ["explicitRendered", params.explicitRendered],
+          ["genericRendered", params.genericRendered],
+        ] as Array<[string, number]>)
+      : ([] as Array<[string, number]>);
   const head =
     `[Graphics] ` +
     kv([
       ["render", params.renderId],
       ["planned", params.planned],
       ["rendered", params.rendered],
+      ...split,
       ["skipped", params.skipped.length],
       ["renderer", params.renderer],
     ]);

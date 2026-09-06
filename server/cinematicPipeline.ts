@@ -46,6 +46,7 @@ import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
 import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
 import { formatGraphics, newRenderId } from "./renderCorrelation";
+import { graphicRendererClass } from "./graphicsVocabulary";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
@@ -508,13 +509,24 @@ export function lostEditorialIntent(edl: EDL, timeline: ProjectTimeline): string
 export function formatCinematicGraphics(result: CinematicPipelineResult): string {
   const track = result.timeline.tracks.find((t) => t.kind === "GRAPHICS");
   const graphics = track && track.kind === "GRAPHICS" ? track.graphics : [];
-  const rendered = graphics.filter((g) =>
-    graphicIsRenderable(g.graphicType, g.data, g.label ?? null)
-  ).length;
+  /**
+   * RONDE 110 — classified PER GRAPHIC, not derived from the 21/11 split of the vocabulary.
+   *
+   * A count taken from the vocabulary would say how many types have a design; this says how many
+   * of THIS render's graphics got one. `graphicRendererClass` is built on `graphicIsRenderable`,
+   * so `explicit + generic` is the same population `rendered` counted before — the total is
+   * unchanged and only gains a breakdown.
+   */
+  const classes = graphics.map((g) => graphicRendererClass(g.graphicType, g.data, g.label ?? null));
+  const explicitRendered = classes.filter((c) => c === "explicit").length;
+  const genericRendered = classes.filter((c) => c === "generic").length;
+  const rendered = explicitRendered + genericRendered;
   return formatGraphics({
     renderId: result.renderId,
     planned: result.edl.decisions.reduce((n, d) => n + d.motionGraphics.length, 0),
     rendered,
+    explicitRendered,
+    genericRendered,
     skipped: result.unsupported.filter((u) => u.startsWith("motion graphic ")),
     /** The hybrid architecture draws every graphic in Remotion; ffmpeg only composites the alpha. */
     renderer: "remotion",
