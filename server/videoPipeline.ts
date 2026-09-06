@@ -8196,6 +8196,21 @@ export async function fetchWikimediaImages(
           if (!dl || !dl.response.ok || dl.bytesWritten === null) continue;
           if (dl.bytesWritten < 10_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
           void reportToMediaCache(c.url, imgPath, c.contentType);
+          /**
+           * RENDER 569 — the one download that was reported on NEITHER channel.
+           *
+           * `[SourcingMetrics] wikimedia: results=257 downloads=0` while the beat ledger named two
+           * adopted Commons stills. Both were true: a download is recorded either by bumping
+           * `providerMetrics(...).downloadCount` (the direct fetchers) or by filing this event (the
+           * pool route), and Commons IMAGES did neither — only Commons VIDEOS, which barely exist,
+           * bumped the counter. So the provider that supplied real footage read as one that fetched
+           * nothing.
+           *
+           * The event channel rather than the counter, because `fetchWikimediaVideos` already owns
+           * the counter for this provider and the end-of-render fold ADDS the two: a second counter
+           * bump here would count the same download twice.
+           */
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
         }
         await stillImageToVideo(
           imgPath, outPath, duration,
@@ -8354,6 +8369,8 @@ export async function fetchWikimediaImages(
           if (!imgResp.ok || bytesWritten === null) continue;
           if (bytesWritten < 10_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
           void reportToMediaCache(imageInfo.url, imgPath, imageInfo.mime ?? "image/jpeg");
+          /** The live-search half of the same gap — see the cached-pool site above. */
+          recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
         }
 
         await stillImageToVideo(
@@ -19208,6 +19225,37 @@ export function logSourcingMetrics(cache: SourcingCache | undefined, videoId?: n
       downloadCount += m.downloadCount;
       assetCacheMisses += m.assetCacheMisses;
     }
+    /**
+     * RENDER 569 — `downloads=` WAS STRUCTURALLY ZERO FOR HALF THE PROVIDERS.
+     *
+     * The log read `pexels: results=3562 downloads=0` and `wikimedia: results=257 downloads=0`,
+     * which was the question the render forced: why did providers returning thousands of results
+     * fetch nothing? They had not. A completed download is recorded on one of TWO channels —
+     * `providerMetrics(...).downloadCount` for the direct fetchers, a DOWNLOAD_SUCCEEDED lineage
+     * event for the pool route — and this line only ever printed the first. Pexels files the event
+     * ALONE, on purpose, so that `[AssetUsageSummary]`'s fold does not count its downloads twice
+     * (see `recordProviderDownloadOutcome` at the Pexels site); SerpAPI and Openverse do the same.
+     * For those providers a zero here was arithmetic, not evidence.
+     *
+     * `[AssetUsageSummary]` has added the two channels since RONDE 106 and is right. This line is
+     * the one an operator reads first when asking what retrieval did, so it reads the same ledger
+     * rather than half of it: `downloads` is now the fold, and `downloadEvents` says how much of it
+     * came from the channel that used to be invisible.
+     */
+    const eventDownloads = new Map<string, number>();
+    try {
+      const byProvider = cache.lineage?.summary().byProvider ?? {};
+      for (const [provider, counts] of Object.entries(byProvider)) {
+        /** The fold's own guard: a provider on the counter channel never files these events. */
+        const viaCounter = cache.metrics.get(provider)?.downloadCount ?? 0;
+        const viaEvents = Math.max(0, (counts.downloadSucceeded ?? 0) - viaCounter);
+        if (viaEvents > 0) eventDownloads.set(provider, viaEvents);
+      }
+    } catch {
+      /* an unavailable ledger must not cost the render its metrics line */
+    }
+    for (const n of eventDownloads.values()) downloadCount += n;
+
     // Render-level rollup, section-10 log format: every field is either an existing tracked
     // total or a straightforward sum of the per-provider counters above — no new mutable state.
     const networkCallsAvoided = t.queryCacheHits + t.assetCacheHits + licenseRejectedCacheHits;
@@ -19229,7 +19277,10 @@ export function logSourcingMetrics(cache: SourcingCache | undefined, videoId?: n
         `results=${m.resultCount} queryCacheHits=${m.queryCacheHits} queryCacheMisses=${m.queryCacheMisses} ` +
         `metadata=${m.metadataCount} metadataCacheHits=${m.metadataCacheHits} assetCacheMisses=${m.assetCacheMisses} ` +
         `licenseCalls=${m.licenseCalls} licenseCacheHits=${m.licenseCacheHits} licenseRejectedCacheHits=${m.licenseRejectedCacheHits} ` +
-        `downloads=${m.downloadCount} duplicateSkipped=${m.duplicateSkipped} ` +
+        /** Both channels, and the second named — see the note above `eventDownloads`. */
+        `downloads=${m.downloadCount + (eventDownloads.get(provider) ?? 0)} ` +
+        `(counter=${m.downloadCount} events=${eventDownloads.get(provider) ?? 0}) ` +
+        `duplicateSkipped=${m.duplicateSkipped} ` +
         `accepted=${m.acceptedCount}`
       );
     }
