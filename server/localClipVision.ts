@@ -19,6 +19,7 @@ import { beatVisualDescriptionFromIntent } from "./scriptVisualKeywords";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
 import { recordGateVerdict } from "./gateFiringStats";
+import { clipModelCacheLocation } from "./clipModelCache";
 
 export { coerceVisionString, asVideoTitleString } from "./stringCoercion";
 
@@ -39,20 +40,14 @@ let imageLoadAttempts = 0;
 let textLoadAttempts = 0;
 const MAX_PIPELINE_LOAD_ATTEMPTS = 3;
 
-/** Writable cache dir for Hugging Face / ONNX model weights (Railway volume preferred). */
+/**
+ * Writable cache dir for Hugging Face / ONNX model weights (Railway volume preferred).
+ *
+ * The rule — and, just as importantly, whether the chosen directory survives the container — lives
+ * in `./clipModelCache`. See that module for what the worker log of 2026-09-05 proved about it.
+ */
 export function clipModelCacheDir(): string {
-  const explicit =
-    process.env.TRANSFORMERS_CACHE?.trim() ||
-    process.env.HF_HOME?.trim() ||
-    process.env.XDG_CACHE_HOME?.trim();
-  if (explicit) return explicit;
-  if (process.env.UPLOADS_DIR?.startsWith("/data")) {
-    return path.join(path.dirname(process.env.UPLOADS_DIR), "transformers-cache");
-  }
-  if (process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim()) {
-    return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH.trim(), "transformers-cache");
-  }
-  return path.join(os.tmpdir(), "fastvid-transformers-cache");
+  return clipModelCacheLocation().dir;
 }
 
 let transformersEnvConfigured = false;
@@ -91,11 +86,19 @@ async function importTransformersPipeline() {
   const cacheDir = configureTransformersEnv();
   const modelExists = clipModelExistsLocally(cacheDir);
   if (!modelExists) {
-    console.log(`[LocalVision] CLIP model not in cache (${cacheDir}) — will download now (one-time, ~350MB, persists to volume)`);
+    /** The claim about persistence is read from the location, never asserted — see the type. */
+    const where = clipModelCacheLocation();
+    console.log(
+      `[LocalVision] CLIP model not in cache (${cacheDir}) — downloading ~350MB now. ` +
+        (where.persists
+          ? `Kept: ${where.why}, so this is one-time.`
+          : `NOT KEPT: ${where.why}.`)
+    );
   }
   const { env, pipeline } = await import("@xenova/transformers");
   env.cacheDir = cacheDir;
-  // Allow download when model is missing — volume persists between deploys so this runs only once.
+  // Allow the download when the model is missing. Whether it has to happen again on the next boot
+  // depends on the cache location, which `clipModelCacheLocation()` reports rather than assumes.
   env.allowRemoteModels = !modelExists;
   env.useBrowserCache = false;
   env.backends.onnx.wasm.numThreads = 1;

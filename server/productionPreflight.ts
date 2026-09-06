@@ -32,6 +32,7 @@
  * database, a filesystem or a network — which is the property that makes a preflight testable.
  */
 import { getStorageBackend } from "./storageBackend";
+import { clipModelCacheLocation } from "./clipModelCache";
 
 /* ═══════════════════════ what production needs ═══════════════════════ */
 
@@ -408,6 +409,38 @@ export async function checkHost(probes: HostProbes, env: NodeJS.ProcessEnv = pro
         "and the export gate refuses the finished film",
   });
 
+  /**
+   * WHERE THAT MODEL IS KEPT — which the previous line cannot tell you.
+   *
+   * `clip_vision` above answers "does it load", and on 2026-09-05 it answered OK eleven times in
+   * fifty minutes — because eleven worker boots each downloaded 350MB again. The volume is mounted
+   * on the web service; the worker, which is the process that renders, has none, so its cache falls
+   * through to `os.tmpdir()` and is gone with the container.
+   *
+   * That is not a blocker: the model still loads and the render still runs. It is a cost that was
+   * invisible, paid on every deploy and by every replica, and a preflight is where it belongs.
+   *
+   * This is the one host entry that prints a value read from the environment, and deliberately: a
+   * directory is the thing an operator has to act on, and none of the variables it can come from
+   * (`TRANSFORMERS_CACHE`, `HF_HOME`, `XDG_CACHE_HOME`, `UPLOADS_DIR`, `RAILWAY_VOLUME_MOUNT_PATH`)
+   * is a credential. R191's leak test covers every variable that is one, and none of these is in it.
+   */
+  /**
+   * The real environment is passed as `undefined`, not as `process.env`: by the time a preflight
+   * runs, the warm-up has already written its chosen directory back into `TRANSFORMERS_CACHE`, and
+   * `clipModelCacheLocation` keeps a pre-warm-up snapshot precisely so this line reports the rule
+   * that CHOSE the directory rather than the process's own echo of it. A test naming its own
+   * environment gets that one used verbatim.
+   */
+  const cache = clipModelCacheLocation(env === process.env ? undefined : env);
+  out.push({
+    id: "clip_model_cache",
+    available: cache.persists,
+    detail: cache.persists
+      ? `${cache.dir} — ${cache.why}, downloaded once`
+      : `${cache.dir} — ${cache.why}`,
+  });
+
   /** Only probed when the configuration actually opens it — see the `queue` capability. */
   if ((env.QUEUE_BACKEND ?? "").trim() !== "bullmq") {
     out.push({ id: "redis", available: true, detail: "not required — QUEUE_BACKEND is not bullmq" });
@@ -481,6 +514,10 @@ export async function productionPreflight(
     }
     /** A missing browser is the textbook degradation: the render runs, graphics are not drawn. */
     if (!h.available && h.id === "chrome_headless_shell") {
+      degradations.push(`${h.id}: ${h.detail}`);
+    }
+    /** An unkept model cache costs time and bandwidth on every boot; it never costs a video. */
+    if (!h.available && h.id === "clip_model_cache") {
       degradations.push(`${h.id}: ${h.detail}`);
     }
     /**

@@ -57,6 +57,14 @@ function fullyConfigured(value: string): NodeJS.ProcessEnv {
    * probes are injected, so nothing here is ever dialled.
    */
   env.DATABASE_URL = "mysql://localhost:3306/fastvid";
+  /**
+   * A fully configured host also KEEPS the CLIP model between deploys — see `clipModelCache`, and
+   * the worker log of 2026-09-05 where it did not. Written as a literal rather than `value`
+   * because this one is printed: it is a directory an operator has to act on, not a credential,
+   * and the leak test above must stay able to prove that nothing carrying `value` reaches the
+   * output.
+   */
+  env.RAILWAY_VOLUME_MOUNT_PATH = "/data";
   for (const f of ROUTE_FLAGS) env[f] = "true";
   return env;
 }
