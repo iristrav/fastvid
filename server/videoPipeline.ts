@@ -8196,20 +8196,8 @@ export async function fetchWikimediaImages(
           if (!dl || !dl.response.ok || dl.bytesWritten === null) continue;
           if (dl.bytesWritten < 10_000) { try { fs.unlinkSync(imgPath); } catch { /* ignore */ } continue; }
           void reportToMediaCache(c.url, imgPath, c.contentType);
-          /**
-           * RENDER 569 — the one download that was reported on NEITHER channel.
-           *
-           * `[SourcingMetrics] wikimedia: results=257 downloads=0` while the beat ledger named two
-           * adopted Commons stills. Both were true: a download is recorded either by bumping
-           * `providerMetrics(...).downloadCount` (the direct fetchers) or by filing this event (the
-           * pool route), and Commons IMAGES did neither — only Commons VIDEOS, which barely exist,
-           * bumped the counter. So the provider that supplied real footage read as one that fetched
-           * nothing.
-           *
-           * The event channel rather than the counter, because `fetchWikimediaVideos` already owns
-           * the counter for this provider and the end-of-render fold ADDS the two: a second counter
-           * bump here would count the same download twice.
-           */
+          // Render 569: reported on neither download channel. Why the event and not the
+          // counter: downloadsAreCountedOnBothChannels.test.ts.
           recordProviderDownloadOutcome(opts.dedup?.sourcingCache, outPath, true);
         }
         await stillImageToVideo(
@@ -8243,6 +8231,17 @@ export async function fetchWikimediaImages(
       // A refused query means no live search — and the clips already adopted from the cached pool
       // are returned rather than discarded, which is what the RONDE 50 fall-through guarantees.
       if (admitProviderQuery("wikimedia", query, "fetchWikimediaImages") === null) return results;
+      /**
+       * DO NOT ADD PROSE ABOVE THIS LINE — put it here instead, or in a test file.
+       *
+       * ronde89ProviderGate's TEST 3 proves no search-shaped call escapes the gate by slicing
+       * 6000 characters from `function fetchWikimediaImages(` and looking for this call inside
+       * them. This function reaches it at ~5940, so roughly sixty characters of comment anywhere
+       * above pushes the gate out of the window and the live search below is reported as ungated
+       * — a false finding produced by prose, which a fourteen-line note added here duly produced.
+       *
+       * Everything below this line is outside the window and costs nothing.
+       */
     }
 
     // Cache miss — or a cache hit that exclusions left short (RONDE 50). Search Wikimedia Commons
