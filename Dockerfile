@@ -69,6 +69,49 @@ RUN ffmpeg -version | head -1
 # Verify fonts are installed
 RUN fc-list | grep -i noto | head -5 || echo "WARNING: Noto fonts not found"
 
+# ─── chrome-headless-shell, for Remotion ─────────────────────────────────────
+# Without this binary every graphic is silently absent. Render 569 shipped with
+#   [Preflight] NO chrome_headless_shell — absent, the render falls back to
+#               libass, and graphics are not drawn
+# and three [SceneCritical] overlay "HITLER" not planned lines: the director
+# planned a name overlay on three scenes and there was nothing to draw it with.
+#
+# It has to be chrome-headless-shell and NOT full Chrome or Chromium. Remotion
+# needs the OLD headless mode, which the full binary no longer provides — that
+# is measured, not assumed; see the doc comment in server/remotionRenderer.ts.
+#
+# The symlink lands on /usr/bin/chrome-headless-shell, which is already the
+# third path resolveRemotionBrowser() looks at, so no environment variable is
+# needed. A deployment that keeps its browser elsewhere can still point
+# REMOTION_BROWSER_EXECUTABLE at it and win — that path is checked first.
+RUN apt-get update && apt-get install -y \
+  libnss3 \
+  libnspr4 \
+  libatk1.0-0 \
+  libatk-bridge2.0-0 \
+  libatspi2.0-0 \
+  libcups2 \
+  libdrm2 \
+  libxkbcommon0 \
+  libxcomposite1 \
+  libxdamage1 \
+  libxfixes3 \
+  libxrandr2 \
+  libgbm1 \
+  libasound2 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
+      --path /opt/browsers \
+  && ln -sf "$(find /opt/browsers -name chrome-headless-shell -type f | head -1)" \
+      /usr/bin/chrome-headless-shell
+
+# Fail the BUILD rather than the render. A missing shared library makes the
+# binary exit non-zero here; without this check the image ships happily and
+# every render quietly loses its graphics instead — which is exactly how this
+# went unnoticed until a production log was read line by line.
+RUN /usr/bin/chrome-headless-shell --version
+
 WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules
