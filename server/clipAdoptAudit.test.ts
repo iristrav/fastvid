@@ -73,21 +73,45 @@ describe("summarizeAdoptAudit", () => {
     expect(summary.archiveBeats).toBe(1);
   });
 
-  // Final review round — explicit direction check requested alongside Test 5's fallback->real:
-  // a beat adopted for real FIRST and then overwritten by a later fallback attempt must count as
-  // its FINAL (fallback) status, not its first. This is the "real clip legitimately replaced
-  // because it stopped existing/being valid" case — as opposed to item 6's protected case, where
-  // the real clip still exists and must NOT be replaced. Coverage accounting always reflects
-  // whatever the last recorded entry says, regardless of direction.
-  it("real adopted first, then overwritten by a later fallback attempt for the same beat, counts as fallback (final status wins, not first)", () => {
-    const audit = [
+  /**
+   * RENDER 569 — THIS TEST USED TO ENCODE A PREMISE THE PRODUCTION LOG DISPROVED.
+   *
+   * It asserted that a real adoption followed by a later card counts as a fallback beat, on the
+   * stated reasoning that the card had "legitimately replaced" a real clip which "stopped
+   * existing/being valid". A card does not replace anything: `pushClip` APPENDS, which is why
+   * `resolveBeatCoverage` has carried REAL_PLUS_FILLER since render 562. Both are on screen.
+   *
+   * Render 569 is what that premise cost. Ten beats held archive, Wikimedia and SerpAPI footage
+   * with a card appended for the remainder of the narration; this rule discarded all ten, the
+   * summary read `beats=14 wiki=0 arch=0 stock=0`, and the export gate refused the film for
+   * "14/14 filled beat(s) used the color/text fallback".
+   *
+   * The direction check the test was written for is real and is kept — a beat's source must not
+   * depend on the order entries happen to arrive in. It is asserted here as the stronger property
+   * that survives the correction: the beat is counted under its real source EITHER WAY, and the
+   * card is reported rather than discarded.
+   */
+  it("a real adoption is not erased by a card recorded after it", () => {
+    const summary = summarizeAdoptAudit([
       { sceneIndex: 3, beatIndex: 2, beatText: "beat", basename: "real.mp4", source: "wikimedia" },
       { sceneIndex: 3, beatIndex: 2, beatText: "beat", basename: "fallback.mp4", source: "rescue_placeholder" },
-    ];
-    const summary = summarizeAdoptAudit(audit);
+    ]);
     expect(summary.beatsFilled).toBe(1);
-    expect(summary.fallbackBeats).toBe(1);
-    expect(summary.wikiBeats).toBe(0);
+    expect(summary.wikiBeats, "render 569 reported wiki=0 for exactly this shape").toBe(1);
+    expect(summary.fallbackBeats).toBe(0);
+    /** The card is not swept away either — it is named, in its own counter. */
+    expect(summary.mixedBeats).toBe(1);
+  });
+
+  /** And the answer must not depend on which order the two entries arrived in. */
+  it("gives the same answer when the card was recorded first", () => {
+    const summary = summarizeAdoptAudit([
+      { sceneIndex: 3, beatIndex: 2, beatText: "beat", basename: "fallback.mp4", source: "rescue_placeholder" },
+      { sceneIndex: 3, beatIndex: 2, beatText: "beat", basename: "real.mp4", source: "wikimedia" },
+    ]);
+    expect(summary.wikiBeats).toBe(1);
+    expect(summary.fallbackBeats).toBe(0);
+    expect(summary.mixedBeats).toBe(1);
   });
 
   // Multiple real clips across different beats in the SAME scene must each be preserved

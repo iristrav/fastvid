@@ -806,7 +806,15 @@ export function assertVisualCoverageExportGate(
     PIPELINE_ERROR.QUALITY_GATE,
     `Render rejected — insufficient real visual coverage: ` +
       `${sceneRescueColorFallbackCount} scene(s) fell back entirely to a static placeholder, ` +
-      `${fallbackBeats}/${beatsFilled} filled beat(s) used the color/text fallback, ` +
+      /**
+       * RENDER 569 — "used" was the wrong word, and it cost a film.
+       *
+       * `fallbackBeats` now counts beats whose ONLY adoption was a card; a beat holding real
+       * footage plus a card is counted under its real source and reported as mixed. Before that
+       * fix this line said "14/14 filled beat(s) used the color/text fallback" about a render
+       * whose per-beat ledger named ten adopted archive, Wikimedia and SerpAPI files.
+       */
+      `${fallbackBeats}/${beatsFilled} filled beat(s) got ONLY the color/text fallback, ` +
       `${report.totalClips} accepted candidate(s), ${totalRejected} rejected. ` +
       `Top reject reasons: ${topReasons}. Worst beats: ${worstBeats}.`
   );

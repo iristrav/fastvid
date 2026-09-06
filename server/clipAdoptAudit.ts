@@ -43,7 +43,13 @@ export type AdoptAuditSummary = {
   wikiBeats: number;
   archiveBeats: number;
   klingBeats: number;
+  /** Beats whose ONLY adoption was a colour/text card — see the rule in `summarizeAdoptAudit`. */
   fallbackBeats: number;
+  /**
+   * Beats that got real footage AND a card, because the footage was shorter than the narration.
+   * Counted under their real source above; here so the card is reported rather than dropped.
+   */
+  mixedBeats: number;
   /**
    * RONDE 177 — YouTube gets its own bucket, because it belongs in none of the others.
    *
@@ -526,10 +532,67 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
   const isSentinelBeatIndex = (beatIndex: number): boolean =>
     beatIndex >= 2000 || beatIndex === 999 || beatIndex === 1001 || beatIndex === 8888 || beatIndex === 9999;
 
-  const finalSourceByBeat = new Map<string, string>();
+  /**
+   * RENDER 569 — "LATER WINS" IS WRONG WHEN THE LATER ENTRY IS A FILLER.
+   *
+   * ── What the log showed ─────────────────────────────────────────────────────────────────────
+   *
+   * One render, two summaries of the same events, saying opposite things:
+   *
+   *     [VisualCoverageFinal] scene=1 beat=1 status=adopted coverage=REAL_PLUS_FILLER
+   *                           fillTier=color_fallback origin=archive selected=scene_1_b1_curated_a57649.mp4
+   *     …ten such beats: archive x6, wikimedia x2, serpapi x2…
+   *     [Quality] Video 569: adopt audit beats=14 wiki=0 arch=0 stock=0 kling=0
+   *
+   * The per-beat ledger named ten adopted files. This function reported none, and
+   * `assertVisualCoverageExportGate` — which decides on `fallbackBeats / beatsFilled` — refused the
+   * film for "14/14 filled beat(s) used the color/text fallback".
+   *
+   * ── Why both were reading the same events ───────────────────────────────────────────────────
+   *
+   * A beat is not one slot. `pushClip` APPENDS, so a colour card is added to whatever the beat
+   * already holds rather than replacing it — established by render 562 and encoded in
+   * `resolveBeatCoverage`, which is exactly why REAL_PLUS_FILLER exists as a category. Every one of
+   * the three per-beat guaranteed-fill sites therefore records a SECOND adopt entry, `fallback` or
+   * `rescue_placeholder`, under the beat's REAL index, after the real adoption.
+   *
+   * "Later wins" then discarded the archive clip and kept the card. The rule was written for a
+   * different problem — the same beat re-adopted by successive recovery layers, which produced an
+   * impossible "35/14" — and for real-to-real transitions it is still right. It was never true for
+   * real-to-filler, because that is not a re-adoption: both are on screen.
+   *
+   * ── The rule ────────────────────────────────────────────────────────────────────────────────
+   *
+   * A beat counts as a fallback beat only when a filler is ALL it ever got. Where real media and a
+   * filler both landed, the beat is counted under its real source and also counted in `mixedBeats`,
+   * so the filler is reported rather than dropped — losing it would trade one dishonest number for
+   * another.
+   *
+   * This does not open the export gate. Render 569 would still be refused, by RONDE 89's
+   * NO_VERIFIED_OWN_VISUAL block: `verifiedOwnVisual=0` is a fact about approvals, untouched here.
+   * What changes is that a film with real footage on most of its beats stops being described as a
+   * film of colour cards.
+   */
+  const isFillerSource = (source: string): boolean =>
+    source === "fallback" || source === "rescue_placeholder";
+
+  const sourcesByBeat = new Map<string, string[]>();
   for (const entry of audit) {
     if (isSentinelBeatIndex(entry.beatIndex)) continue;
-    finalSourceByBeat.set(`${entry.sceneIndex}:${entry.beatIndex}`, entry.source);
+    const key = `${entry.sceneIndex}:${entry.beatIndex}`;
+    const seen = sourcesByBeat.get(key);
+    if (seen) seen.push(entry.source);
+    else sourcesByBeat.set(key, [entry.source]);
+  }
+
+  const finalSourceByBeat = new Map<string, string>();
+  /** Beats the viewer saw real footage on AND a filler — counted as real, reported as mixed. */
+  let mixedBeats = 0;
+  for (const [key, sources] of sourcesByBeat) {
+    const real = sources.filter((s) => !isFillerSource(s));
+    /** Among real sources the newest still wins: that is the case the original rule was right about. */
+    finalSourceByBeat.set(key, real.length > 0 ? real[real.length - 1]! : sources[sources.length - 1]!);
+    if (real.length > 0 && real.length < sources.length) mixedBeats += 1;
   }
 
   let stockBeats = 0;
@@ -615,6 +678,16 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
   if (fallbackBeats > 0) {
     hints.push(`${fallbackBeats} kleur-fallback beat(s) — sourcing faalde op die zinnen.`);
   }
+  /**
+   * Named separately from `fallbackBeats`, because they are a different problem with a different
+   * fix: the beat DID find footage, and the footage was shorter than the narration it plays under.
+   * Folding these into the fallback count is what made render 569 read as fourteen colour cards.
+   */
+  if (mixedBeats > 0) {
+    hints.push(
+      `${mixedBeats} beat(s) met echt beeld én een kleurkaart — het beeld was korter dan de zin.`
+    );
+  }
 
   return {
     beatsFilled,
@@ -624,6 +697,7 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
     archiveBeats,
     klingBeats,
     fallbackBeats,
+    mixedBeats,
     youtubeBeats,
     hints,
   };
