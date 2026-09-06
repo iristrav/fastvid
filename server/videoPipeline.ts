@@ -13497,7 +13497,23 @@ export async function downloadYouTubeCCClip(
    * RONDE 64: true when clipStart was LOCATED (a transcript hit), false when it was guessed.
    * A guess is re-derived once the real source length is known; a located start is honoured.
    */
-  startIsExact = false
+  startIsExact = false,
+  /**
+   * RONDE 115 — WHERE THE SEVEN STATUSES GO WHEN THE CALLER ONLY GETS A BOOLEAN.
+   *
+   * Render 572 started 17 YouTube downloads and finished none, and its report could only say
+   * `failureReasons other=17`: the cascade files every failure under the single string
+   * `youtube_download_failed`, which `normalizeFailureReason` has no branch for. Seventeen
+   * timeouts, seventeen missing routes and seventeen dead transfers all print that same line —
+   * and they need three different answers.
+   *
+   * The status already exists. `summariseYoutubeDownloadAttempts` computes it, `reportDownload`
+   * logs it, and then the function returns a bare boolean and it is gone. Rather than change the
+   * return type — six test files assert `resolves.toBe(false)`, and a wider signature would put
+   * this round's blast radius in the wrong place — the caller may hand in a box for it. Optional,
+   * so every existing caller is untouched and no behaviour changes for any of them.
+   */
+  outcome?: { status?: YoutubeDownloadStatus; reason?: string }
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
   const hasCloudRoute = Boolean(cloudDlService);
@@ -13528,6 +13544,11 @@ export async function downloadYouTubeCCClip(
   let bytesTransferred: number | null = null;
   /** The single exit point for the line. Called on success and on every failure alike. */
   const reportDownload = (status: YoutubeDownloadStatus, reason: string): void => {
+    /** Filled at the one place that knows; see the `outcome` parameter above. */
+    if (outcome) {
+      outcome.status = status;
+      outcome.reason = reason;
+    }
     const line = formatYoutubeDownloadLine({
       videoId, sceneIndex, status, attempts, hasCloudRoute, hasRapidRoute, reason,
     });
@@ -14643,6 +14664,8 @@ export async function fetchYouTubeCCClips(
               );
               break;
             }
+            /** RONDE 115 — the box the fetcher drops its status into; see its `outcome` parameter. */
+            const dl: { status?: YoutubeDownloadStatus; reason?: string } = {};
             const ok = await downloadYouTubeCCClip(
               videoId,
               clipDur,
@@ -14653,7 +14676,8 @@ export async function fetchYouTubeCCClips(
               // RONDE 56: render-scoped, so the metadata for a video already looked up on an
               // earlier beat is reused instead of re-fetched and re-aborted.
               sourcingCache,
-              startIsExact
+              startIsExact,
+              dl
             );
             /**
              * THE DOWNLOAD RECORD THIS ROUTE OPENED, CLOSED.
@@ -14689,7 +14713,14 @@ export async function fetchYouTubeCCClips(
               sourcingCache,
               outPath,
               ok,
-              ok ? undefined : "youtube_download_failed"
+              /**
+               * RONDE 115 — the specific status when the fetcher reported one, and the generic
+               * string only when it did not. Render 572 filed all seventeen failures under
+               * `youtube_download_failed` and the histogram collapsed them to `other=17`; a
+               * DOWNLOAD_TIMEOUT before any transfer and a route that was never configured are
+               * different problems with different fixes, and they now read differently.
+               */
+              ok ? undefined : (dl.status ?? "youtube_download_failed")
             );
             if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
             /**
@@ -28780,6 +28811,16 @@ export { ensureCuratedAssetLineageOn };
 export function normalizeFailureReason(message: string | undefined): string {
   const m = (message ?? "").toLowerCase();
   if (!m.trim()) return "unspecified";
+  /**
+   * RONDE 115 — a status the fetcher already decided is kept, not re-derived from its spelling.
+   *
+   * The seven YouTube download statuses are a closed vocabulary produced by
+   * `summariseYoutubeDownloadAttempts`. Passing one through the guesswork below would bucket
+   * DOWNLOAD_TIMEOUT under the generic `timeout` alongside every provider's socket timeout, and
+   * DOWNLOAD_UNAVAILABLE — which means "no route is configured", an operator action — under
+   * `other`. This branch is first so a decided answer is never overwritten by a keyword match.
+   */
+  if (/^download_[a-z_]+$/.test(m.trim())) return m.trim();
   if (m.includes("source video too short")) return "source_video_too_short";
   if (m.includes("trimmed clip too short")) return "trimmed_clip_too_short";
   if (m.includes("ken burns clip too short")) return "ken_burns_clip_too_short";
