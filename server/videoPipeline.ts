@@ -37,6 +37,7 @@ import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
 import { formatPreparationCache, resetPreparationScope } from "./preparationCache";
 import {
+  BUDGETS,
   budgetAllows,
   createRetrievalBudgetState,
   formatRetrievalBudgets,
@@ -7365,6 +7366,8 @@ export async function fetchPexelsClips(
 
           while (retries > 0 && !downloaded) {
             try {
+              /** Charged before the bytes are asked for — see `maxLicensedStockAttempts`. */
+              markLicensedStockAttempt(sourcingCache, "pexels");
               // P0 audit fix: maxBytes matches the existing 80MB ceiling already used by 7 of
               // the other 10 external video providers in this file (Wikimedia/Flickr/Europeana/
               // Vimeo/NASA/NARA/YouTube CC) — same established value, not a newly invented one.
@@ -7771,6 +7774,8 @@ export async function fetchPixabayClips(
           let downloaded = false;
           for (let attempt = 0; attempt < 3 && !downloaded; attempt++) {
             try {
+              /** Charged before the bytes are asked for — see `maxLicensedStockAttempts`. */
+              markLicensedStockAttempt(sourcingCache, "pixabay");
               // P0 audit fix: maxBytes matches the existing 80MB ceiling already used by 7 of
               // the other 10 external video providers in this file — same established value.
               const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
@@ -17536,16 +17541,85 @@ export interface VisualDedupState {
 }
 
 /**
+ * RENDER 569 — A CEILING THAT COUNTS SUCCESSES IS A CEILING THAT DOES NOT HOLD.
+ *
+ * ── What the render did ─────────────────────────────────────────────────────────────────────
+ *
+ *     [SourcingMetrics] pixabay: searches=18 results=750 downloads=65 accepted=0
+ *     [Quality] bron unverified leverde 21 beoordeelde kandidaten en geen enkele bruikbare
+ *               (meestal MODERN_FOOTAGE)
+ *
+ * A documentary about 1945 sent eighteen searches to a modern stock library and pulled down
+ * sixty-five files. Every one of the twenty-one that reached the picture editor was refused, with
+ * reasons like "The clip shows a modern dining area which does not relate to the line about
+ * Hitler's belief in victory". The editor was right; the fetching should never have happened.
+ *
+ * ── Why the budget that exists did not stop it ──────────────────────────────────────────────
+ *
+ * `maxStockBeatsPerVideo` was set (2 for this length) and `minimizeStockFootage` was on. It never
+ * bound, because `stockBeatsUsed` is incremented by `markLicensedStockBeatUsed` — on ADOPTION.
+ * Stock was adopted zero times, so the counter stayed at zero, so the ceiling read "still room"
+ * sixty-five times in a row. The worse a source performs, the longer the render keeps paying it.
+ *
+ * This is not a new observation in this file. RONDE 69 found the identical shape in the YouTube
+ * download ceiling and its note is still a few hundred lines up: "a ceiling counting only
+ * successes is the ceiling that does not hold, because the render whose 134 downloads were nearly
+ * all failures never reached it." That ceiling was given `downloadSlotsClaimed` — attempts, on
+ * purpose. This one never learned the lesson. Same seam, one budget short.
+ *
+ * ── The attempt ceiling, derived rather than chosen ─────────────────────────────────────────
+ *
+ * A beat may fail at stock and try again; a render may not do so indefinitely. The allowance is
+ * `maxStockBeatsPerVideo × BUDGETS.downloads()` — the beats stock is allowed to fill, times the
+ * downloads RONDE 97 already says one beat may spend. Both numbers exist and were argued for
+ * elsewhere; nothing here invents a threshold. For render 569 that is 2 × 12 = 24 attempts
+ * against the 65 it made.
+ *
+ * It bounds ATTEMPTS and leaves ADOPTION exactly as it was: a stock clip that clears every gate
+ * is adopted on the same terms as before, and no gate, floor or verdict is touched.
+ */
+function maxLicensedStockAttempts(dedup: VisualDedupState): number {
+  return Math.max(0, dedup.perf.maxStockBeatsPerVideo) * BUDGETS.downloads();
+}
+
+/**
  * Whether we can spend a licensed stock (Pexels/Pixabay) clip on this beat.
  */
 function canUseLicensedStockBeat(dedup: VisualDedupState): boolean {
   if (!dedup.perf.minimizeStockFootage) return true;
   if (dedup.perf.maxStockBeatsPerVideo <= 0) return false;
-  return dedup.stockBeatsUsed < dedup.perf.maxStockBeatsPerVideo;
+  if (dedup.stockBeatsUsed >= dedup.perf.maxStockBeatsPerVideo) return false;
+  /** The half render 569 was missing: what this render has already SPENT looking. */
+  const limit = maxLicensedStockAttempts(dedup);
+  const spent = dedup.sourcingCache.totals.stockDownloadAttempts;
+  if (spent < limit) return true;
+  /** Said once, not once per refusal: a spent budget is a fact, not a stream of events. */
+  if (!dedup.sourcingCache.totals.stockBudgetReported) {
+    dedup.sourcingCache.totals.stockBudgetReported = true;
+    console.log(
+      `[StockBudget] stopped asking stock — ${spent} download attempts spent ` +
+        `(${dedup.perf.maxStockBeatsPerVideo} beat(s) x ${BUDGETS.downloads()} downloads), ` +
+        `${dedup.stockBeatsUsed} adopted`
+    );
+  }
+  return false;
 }
 
 function markLicensedStockBeatUsed(dedup: VisualDedupState): void {
   if (dedup.perf.minimizeStockFootage) dedup.stockBeatsUsed++;
+}
+
+/**
+ * One stock download attempted, whether or not it arrives, is judged, or is adopted.
+ *
+ * Called from the two stock fetchers at the point bytes are requested. Deliberately NOT from the
+ * point one is accepted — that is `markLicensedStockBeatUsed`, and conflating the two is the
+ * defect this exists to close.
+ */
+function markLicensedStockAttempt(cache: SourcingCache | undefined, provider: string): void {
+  if (!cache) return;
+  cache.totals.stockDownloadAttempts++;
+  void provider;
 }
 
 const MAX_CURATED_INTERVIEW_CLIPS_PER_VIDEO = 2;
@@ -18811,6 +18885,17 @@ export interface SourcingCache {
     visionCacheHits: number;
     assetCacheHits: number;
     queryCacheHits: number;
+    /**
+     * Licensed-stock downloads this render has ASKED FOR, adopted or not.
+     *
+     * Here rather than on VisualDedupState because the two stock fetchers are handed the sourcing
+     * cache and not the dedup state, and threading a second object through them would be the
+     * fifteenth instance of this file's recurring seam. `dedup.sourcingCache` is the same object,
+     * so the ceiling reads it without either side learning about the other.
+     */
+    stockDownloadAttempts: number;
+    /** So the "budget spent" line is printed once per render rather than once per refusal. */
+    stockBudgetReported: boolean;
   };
   /**
    * RONDE 86: where every clip this render downloads actually came from, and how many candidates
@@ -18838,6 +18923,8 @@ export function createSourcingCache(videoId?: number): SourcingCache {
     totals: {
       duplicateCandidatesSkipped: 0,
       duplicateDownloadsPrevented: 0,
+      stockDownloadAttempts: 0,
+      stockBudgetReported: false,
       visionCacheHits: 0,
       assetCacheHits: 0,
       queryCacheHits: 0,
