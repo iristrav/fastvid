@@ -45,6 +45,14 @@ export type VideoQualityReport = {
    */
   bySource: Record<string, number>;
   /**
+   * Delivered clips the render DREW rather than fetched — colour and text cards.
+   *
+   * Kept beside `bySource` rather than folded into it: they are counted as UNVERIFIED there, which
+   * is right (they have no provider), and misleading as a provenance FAILURE, which is what
+   * MOSTLY_UNVERIFIED_CLIPS reads. Absent when no ledger could answer.
+   */
+  generatedClips?: number;
+  /**
    * The filename reading, for debugging only. Never an official statistic: a filename says what a
    * file was named, not where its content came from, and the two stopped agreeing the first time
    * the compose path renamed a clip.
@@ -388,6 +396,8 @@ export function buildVideoQualityReport(
     pipelineSec?: number;
     stockBeatsUsed?: number;
     rejectAudit?: ClipRejectEntry[];
+    /** Did the render DRAW this clip? See `generatedClips` — absent means "no ledger to ask". */
+    isGeneratedClip?: (clipPath: string) => boolean;
     /**
      * RENDER 569 — THE SAME AUDIT, UNCAPPED.
      *
@@ -441,6 +451,7 @@ export function buildVideoQualityReport(
    * exactly the counts it read before while the official report reads the ledger.
    */
   const diagnosticBySource: Record<string, number> = {};
+  let generatedClips = 0;
   const byMixKind = emptyMixCounts();
   const warnings: string[] = [];
   const offTopicSuspects: Array<{ basename: string; reason: string }> = [];
@@ -462,6 +473,8 @@ export function buildVideoQualityReport(
       const recorded = opts.resolveSource(clipPath)?.trim().toLowerCase();
       const source = recorded && recorded !== "unknown" ? recorded : UNVERIFIED_SOURCE;
       bySource[source] = (bySource[source] ?? 0) + 1;
+      /** Counted here too, and kept apart — a drawn card has no provider to have lost. */
+      if (source === UNVERIFIED_SOURCE && opts.isGeneratedClip?.(clipPath)) generatedClips += 1;
     } else {
       // No ledger supplied (tests, tools, callers outside a render). The filename reading is all
       // there is, and it is reported as-is rather than pretending to a certainty it does not have.
@@ -630,6 +643,7 @@ export function buildVideoQualityReport(
     warnings,
     offTopicSuspects,
     criticalGeoViolations: criticalGeoViolations.length > 0 ? criticalGeoViolations : undefined,
+    generatedClips,
     rejectSummary,
     topRejects,
     pipelineSec: opts?.pipelineSec,
@@ -756,15 +770,37 @@ export function indefensibleExportConditions(
     });
   }
 
+  /**
+   * "NO PROVIDER TO PROVE" AND "A PROVIDER WE COULD NOT PROVE" ARE OPPOSITE FINDINGS.
+   *
+   * This gate's own sentence is "the lineage cannot say where most of this film came from". That
+   * is a true and serious statement about a clip fetched from somewhere whose record broke. It is
+   * false about a colour card the render drew itself: nothing was lost, because there was never a
+   * provider to lose. Both answered null from `providerFor`, so both landed in one bucket, and a
+   * film was refused for losing provenance it never had.
+   *
+   * The ledger has always kept the two apart — `summary()` counts `route === "fallback"` in its
+   * own column — so this reads that distinction rather than inventing one.
+   *
+   * NOT a relaxation, for a reason worth stating: a film that really is mostly drawn cards is
+   * refused by `assertVisualCoverageExportGate`, whose fallbackBeats/beatsFilled majority test is
+   * about exactly that and is untouched. This gate goes back to guarding the one thing its message
+   * describes. Both counts are printed either way, so a render can never again hide one behind the
+   * other.
+   */
   const unverified = report.bySource[UNVERIFIED_SOURCE] ?? 0;
-  if (report.totalClips > 0 && unverified / report.totalClips > UNVERIFIED_CLIP_SHARE_LIMIT) {
-    const pct = Math.round((unverified / report.totalClips) * 100);
+  const drawn = report.generatedClips ?? 0;
+  const unprovable = Math.max(0, unverified - drawn);
+  const measured = Math.max(0, report.totalClips - drawn);
+  if (measured > 0 && unprovable / measured > UNVERIFIED_CLIP_SHARE_LIMIT) {
+    const pct = Math.round((unprovable / measured) * 100);
     out.push({
       code: "MOSTLY_UNVERIFIED_CLIPS",
       detail:
-        `${unverified} of ${report.totalClips} delivered clip(s) have no proven source ` +
+        `${unprovable} of ${measured} fetched clip(s) have no proven source ` +
         `(${pct}%, limit ${Math.round(UNVERIFIED_CLIP_SHARE_LIMIT * 100)}%) — ` +
-        `the lineage cannot say where most of this film came from`,
+        `the lineage cannot say where most of this film came from` +
+        (drawn > 0 ? ` (${drawn} drawn card(s) excluded — they have no provider to lose)` : ""),
     });
   }
 

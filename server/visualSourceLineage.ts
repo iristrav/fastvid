@@ -815,6 +815,19 @@ export class VisualSourceLedger {
     return this.resolve(clipPath, contentKey)?.provider ?? null;
   }
 
+  /**
+   * Did the render DRAW this clip, rather than fetch it from anywhere?
+   *
+   * A colour or text card has no provider by construction — there is nothing to prove and nothing
+   * was lost. `providerFor` answers null for it, exactly as it answers null for a real clip whose
+   * lineage broke, and those are opposite findings. The route has always distinguished them (see
+   * `summary()`, which counts `route === "fallback"` separately); only the per-clip question had
+   * no way to ask.
+   */
+  isGeneratedFallback(clipPath: string, contentKey?: string): boolean {
+    return this.resolve(clipPath, contentKey)?.route === "fallback";
+  }
+
   /** The provider bucket for a clip: its proven provider, or the UNVERIFIED bucket. */
   providerBucketFor(clipPath: string, contentKey?: string): string {
     const record = this.resolve(clipPath, contentKey);

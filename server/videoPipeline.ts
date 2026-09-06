@@ -40993,6 +40993,8 @@ async function _runVideoPipelineInner(
       // RONDE 86/87: the report reads the ledger and nothing else. A clip whose origin cannot be
       // proven comes back null here and is counted as UNVERIFIED — never re-derived from its name.
       resolveSource: (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
+      /** The same ledger, asked the question `providerFor` cannot express — see generatedClips. */
+      isGeneratedClip: (clipPath) => visualDedup.sourcingCache.lineage.isGeneratedFallback(clipPath),
       // RONDE 105: the relevance ledger, so the report can tell a beat whose picture was approved
       // from one whose picture nobody looked at. Without it every beat reads as never_asked.
       relevanceLedger: visualDedup.beatRelevance,
