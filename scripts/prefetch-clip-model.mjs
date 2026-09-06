@@ -68,13 +68,26 @@ console.log("[PrefetchCLIP] text tower cached");
 const fs = await import("fs");
 const path = await import("path");
 const modelDir = path.join(cacheDir, ...CLIP_MODEL.split("/"));
+/**
+ * RECURSIVELY, which the first attempt was not — and the build said so:
+ *
+ *     [PrefetchCLIP] image tower cached
+ *     [PrefetchCLIP] text tower cached
+ *     [PrefetchCLIP] FAILED: no .onnx
+ *
+ * Both towers were cached correctly. @xenova/transformers writes the weights to
+ * `<model>/onnx/model_quantized.onnx` and leaves only JSON config in the model directory, so a
+ * flat listing finds nothing. `clipModelExistsLocally` asked the same question the same wrong
+ * way and has answered false for every cached model it was ever given; this build is what
+ * surfaced it, and both are fixed together.
+ */
 const onnx = fs.existsSync(modelDir)
-  ? fs.readdirSync(modelDir).filter((f) => f.endsWith(".onnx"))
+  ? fs.readdirSync(modelDir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".onnx"))
   : [];
 if (onnx.length === 0) {
   console.error(
-    `[PrefetchCLIP] FAILED: no .onnx files under ${modelDir} — runtime would download anyway`
+    `[PrefetchCLIP] FAILED: no .onnx anywhere under ${modelDir} — runtime would download anyway`
   );
   process.exit(1);
 }
-console.log(`[PrefetchCLIP] done — ${onnx.length} onnx file(s) under ${modelDir}`);
+console.log(`[PrefetchCLIP] done — ${onnx.length} onnx file(s): ${onnx.join(", ")}`);

@@ -75,7 +75,23 @@ function clipModelExistsLocally(cacheDir: string): boolean {
     const modelSlug = CLIP_MODEL.replace("/", path.sep);
     const modelDir = path.join(cacheDir, modelSlug);
     if (!fs.existsSync(modelDir)) return false;
-    const onnxFiles = fs.readdirSync(modelDir).filter(f => f.endsWith(".onnx"));
+    /**
+     * RECURSIVELY — the weights are one directory down, and this never found them.
+     *
+     * @xenova/transformers writes `<model>/onnx/model_quantized.onnx`; the model directory itself
+     * holds only JSON config. A flat `readdirSync(modelDir)` therefore returned no `.onnx` for a
+     * model that was fully present, so this function has answered false for every cached model it
+     * has ever been asked about.
+     *
+     * Two consequences, both invisible: `[LocalVision] CLIP model not in cache` printed on boots
+     * where the cache was intact, and `env.allowRemoteModels = !modelExists` stayed permanently
+     * true, so the loader was never told it could work offline. The prebaked image build is what
+     * exposed it — the prefetch cached both towers, asked this same question about its own work,
+     * and reported FAILED.
+     */
+    const onnxFiles = fs
+      .readdirSync(modelDir, { recursive: true, encoding: "utf8" })
+      .filter((f) => f.endsWith(".onnx"));
     return onnxFiles.length > 0;
   } catch {
     return false;
