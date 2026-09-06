@@ -13467,6 +13467,22 @@ export async function downloadYouTubeCCClip(
   const note = (route: YoutubeDownloadAttempt["route"], status: YoutubeDownloadStatus, detail: string) => {
     attempts.push({ route, status, detail });
   };
+  /**
+   * RENDER 571 — WHETHER ANY BYTES ACTUALLY MOVED.
+   *
+   * `claimDownloadSlot()` runs before this function is called, so an "attempt" is counted before a
+   * transfer begins. Render 571's `14 attempts / 0 successful` is therefore equally consistent
+   * with fourteen failed transfers and with fourteen decisions to stand aside for a scene budget
+   * with under twelve seconds left — opposite problems, identical number, and no way to tell them
+   * apart afterwards.
+   *
+   * These two locals are the whole fix: set where the transfer really starts and where the budget
+   * is really read, and handed to the replay bundle at the exit point below. Nothing about the
+   * download's behaviour changes.
+   */
+  let transferStarted = false;
+  let remainingAtCheckMs: number | null = null;
+  let bytesTransferred: number | null = null;
   /** The single exit point for the line. Called on success and on every failure alike. */
   const reportDownload = (status: YoutubeDownloadStatus, reason: string): void => {
     const line = formatYoutubeDownloadLine({
@@ -13474,6 +13490,25 @@ export async function downloadYouTubeCCClip(
     });
     if (status === "DOWNLOAD_SUCCESS") console.log(line);
     else console.warn(line);
+    /**
+     * The same facts into the bundle, so the next capture can be counted rather than read. The
+     * video id is an identity and is public; the signed format URL the transfer uses never
+     * reaches here and is never recorded.
+     */
+    if (replayRecordingActive()) {
+      recordReplayFact({
+        kind: "download",
+        provider: "youtube_cc",
+        videoId,
+        scene: sceneIndex,
+        route: attempts.length > 0 ? attempts[attempts.length - 1]!.route : null,
+        status,
+        reason,
+        transferStarted,
+        remainingMs: remainingAtCheckMs,
+        bytes: bytesTransferred,
+      });
+    }
   };
 
   // F3-41: cloud/yt-dlp service tried FIRST — this is the intended primary route (see the F3-40
@@ -13611,6 +13646,7 @@ export async function downloadYouTubeCCClip(
           // results it downloaded none of. A whole video is the most expensive thing this
           // pipeline fetches; it should be the first thing to stand aside, not the last.
           const remainingMs = remainingScopeMs();
+          remainingAtCheckMs = remainingMs;
           if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
             console.log(
               `[Pipeline] Scene ${sceneIndex}: skipping YouTube download of ${videoId} — ` +
@@ -13625,6 +13661,8 @@ export async function downloadYouTubeCCClip(
             reportDownload("DOWNLOAD_TIMEOUT", "scene_budget_too_short_to_start");
             return false;
           }
+          /** Past every guard: this is the line where bytes begin to move. */
+          transferStarted = true;
           const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
             format.url,
             tmpPath,
@@ -13641,6 +13679,7 @@ export async function downloadYouTubeCCClip(
             },
             80 * 1024 * 1024
           );
+          bytesTransferred = bytesWritten;
           if (!dlResp.ok) {
             note("rapidapi", "DOWNLOAD_FAILED", `http_${dlResp.status}`);
           } else if (bytesWritten === null) {

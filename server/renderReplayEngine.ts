@@ -30,6 +30,9 @@ import { ensureCuratedAssetLineageOn } from "./visualSourceLineage";
 import type { ReplayAdoptionFact, ReplayBundle } from "./renderReplay";
 import { VisualSourceLedger } from "./visualSourceLineage";
 
+/** The floor the render applies before starting a YouTube transfer — quoted, not enforced here. */
+export const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS_FOR_REPORT = 12_000;
+
 export const REPLAY_SCOPE_NOTE =
   "REPLAY — lineage, eligibility, vision requirement and the adoption guard, recomputed from " +
   "recorded facts. No fetching, no decoding, no compose. Says what would be ADOPTED, not what " +
@@ -215,6 +218,40 @@ export function formatReplayReport(bundle: ReplayBundle, result: ReplayResult): 
       lines.push(
         `  scene=${d.scene} beat=${d.beat} route=${d.route} vision=${d.vision} ` +
           `now ${d.after.code ?? "?"} (eligible=${d.after.eligible})`
+      );
+    }
+    lines.push("");
+  }
+
+  /**
+   * RENDER 571's UNANSWERABLE QUESTION, ANSWERED BY COUNTING.
+   *
+   * `attempts` was the only number that render could report, and it is the one that cannot
+   * distinguish a failed transfer from a transfer that never began — the slot is claimed before
+   * the download starts. Splitting on `transferStarted` is the whole point of the section: above
+   * the line the routes were tried, below it they were not.
+   */
+  /**
+   * `?? []` is backward compatibility, not defensiveness for its own sake: bundles captured before
+   * this round are format version 1 with no `downloads` array, and a report must still read them.
+   */
+  const downloads = bundle.downloads ?? [];
+  if (downloads.length > 0) {
+    const d = downloads;
+    const started = d.filter((x) => x.transferStarted);
+    const byStatus = new Map<string, number>();
+    for (const x of d) byStatus.set(x.status, (byStatus.get(x.status) ?? 0) + 1);
+    lines.push(`[Replay] YouTube downloads: attempts=${d.length} transferStarted=${started.length}`);
+    for (const [status, n] of [...byStatus.entries()].sort()) {
+      lines.push(`  ${status.padEnd(26)} ${n}`);
+    }
+    /** When the budget refused them, the margin it refused them by is the actionable number. */
+    const budgetBlocked = d.filter((x) => !x.transferStarted && x.remainingMs != null);
+    if (budgetBlocked.length > 0) {
+      const ms = budgetBlocked.map((x) => x.remainingMs!).sort((a, b) => a - b);
+      lines.push(
+        `  blocked before transfer with budget left: min=${ms[0]}ms max=${ms[ms.length - 1]}ms ` +
+          `(floor=${YOUTUBE_MIN_DOWNLOAD_WINDOW_MS_FOR_REPORT}ms)`
       );
     }
     lines.push("");

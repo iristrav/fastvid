@@ -88,6 +88,47 @@ export type ReplayAdoptionFact = {
   code: string | null;
 };
 
+/**
+ * ONE YOUTUBE DOWNLOAD ATTEMPT, AND WHETHER ANY BYTES ACTUALLY MOVED.
+ *
+ * ── The question render 571 could not answer ────────────────────────────────────────────────
+ *
+ *     YouTube results 55, download attempts 14, successful 0
+ *
+ * and nothing to say which of the seven download statuses those fourteen were. The distinction
+ * that matters most is not in the status at all: `claimDownloadSlot()` runs BEFORE the download,
+ * so an "attempt" is counted before a single byte moves. Fourteen attempts is equally consistent
+ * with fourteen failed transfers and with fourteen decisions to stand aside for a scene budget
+ * that had less than twelve seconds left — opposite problems, identical number.
+ *
+ * `transferStarted` is therefore the field this fact exists for. Everything else is context.
+ *
+ * ── What is deliberately NOT here ───────────────────────────────────────────────────────────
+ *
+ * No download URL, no headers, no response body, no cookies. The YouTube video id is recorded
+ * because it identifies the asset and is public; the signed format URL that the transfer actually
+ * uses never enters the bundle. Same principle as the fetch fact: identity, not payload.
+ */
+export type ReplayDownloadFact = {
+  kind: "download";
+  provider: "youtube_cc";
+  /** The public YouTube video id — an identity, never a URL. */
+  videoId: string;
+  scene: number;
+  /** The route the attempt ended on: "cloud", "rapidapi", or none if it never chose one. */
+  route: string | null;
+  /** One of the seven YoutubeDownloadStatus values. */
+  status: string;
+  /** The reporter's own reason string, e.g. `scene_budget_too_short_to_start`. */
+  reason: string;
+  /** False when the attempt was refused before any transfer began. THE decisive field. */
+  transferStarted: boolean;
+  /** Milliseconds left in the scene budget when the attempt was considered, when known. */
+  remainingMs: number | null;
+  /** Bytes actually written, when a transfer ran. */
+  bytes: number | null;
+};
+
 export type ReplayMetaFact = {
   kind: "meta";
   formatVersion: typeof REPLAY_FORMAT_VERSION;
@@ -96,13 +137,19 @@ export type ReplayMetaFact = {
   recordedAt: string;
 };
 
-export type ReplayFact = ReplayFetchFact | ReplayVisionFact | ReplayAdoptionFact | ReplayMetaFact;
+export type ReplayFact =
+  | ReplayFetchFact
+  | ReplayVisionFact
+  | ReplayAdoptionFact
+  | ReplayDownloadFact
+  | ReplayMetaFact;
 
 export type ReplayBundle = {
   meta: ReplayMetaFact | null;
   fetches: ReplayFetchFact[];
   visions: ReplayVisionFact[];
   adoptions: ReplayAdoptionFact[];
+  downloads: ReplayDownloadFact[];
 };
 
 /* ═══════════════════════════ recording ═══════════════════════════ */
@@ -183,7 +230,7 @@ export function resetReplayRecordingForTest(): void {
  * that was killed mid-write ends in half a line, and that bundle is still worth reading.
  */
 export function parseReplayBundle(text: string): { bundle: ReplayBundle; skipped: number } {
-  const bundle: ReplayBundle = { meta: null, fetches: [], visions: [], adoptions: [] };
+  const bundle: ReplayBundle = { meta: null, fetches: [], visions: [], adoptions: [], downloads: [] };
   let skipped = 0;
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -207,6 +254,9 @@ export function parseReplayBundle(text: string): { bundle: ReplayBundle; skipped
         break;
       case "adoption":
         bundle.adoptions.push(fact);
+        break;
+      case "download":
+        bundle.downloads.push(fact);
         break;
       default:
         skipped += 1;
