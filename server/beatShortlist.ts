@@ -130,6 +130,28 @@ export type BeatFunnel = {
   /** Candidates turned away because the bound was already reached. */
   refusedForCap: number;
   notAskedReasons: Map<NotAskedReason, number>;
+  /**
+   * RENDER 571 — WHY `visionAsked` CAN EXCEED `shortlisted`, SPLIT INTO ITS TWO POSSIBLE CAUSES.
+   *
+   * The render printed beats like `s0b3 shortlisted=8/8 visionAsked=14`, and across the film
+   * `shortlisted=117 visionAsked=128`. Two different things produce that shape and they call for
+   * opposite fixes, so the record now tells them apart instead of leaving it to be assumed:
+   *
+   *   · a MEMBER asked more than once — `admitToShortlist` returns `alreadyOnList` for a content
+   *     key it has already admitted and, correctly, does not spend a second slot; the ask is then
+   *     counted anyway. Wasted work, no integrity breach.
+   *
+   *   · an OUTSIDER asked at all — a candidate reaching the editor without passing admission.
+   *     That is the real breach, and on this codebase it should be impossible: one admission site
+   *     guards the one vision site. `visionOutsideShortlist` stays 0 or the claim is false.
+   *
+   * `visionAsked` keeps counting every ask, because that is what it says it counts. These two say
+   * which asks they were.
+   */
+  visionRepeatAsks: number;
+  visionOutsideShortlist: number;
+  /** Content keys actually put to the editor — never larger than `admitted`. */
+  askedKeys: Set<string>;
 };
 
 export type BeatShortlistState = {
@@ -168,6 +190,9 @@ export function beatFunnel(
     admitted: new Set<string>(),
     refusedForCap: 0,
     notAskedReasons: new Map<NotAskedReason, number>(),
+    visionRepeatAsks: 0,
+    visionOutsideShortlist: 0,
+    askedKeys: new Set<string>(),
   };
   state.beats.set(k, fresh);
   return fresh;
@@ -293,10 +318,32 @@ export function isShortlisted(
 export function noteVisionAsked(
   state: BeatShortlistState | undefined,
   sceneIndex: number,
-  beatIndex: number
+  beatIndex: number,
+  /**
+   * RENDER 571 — the content key this ask is FOR, so the record can say whether the editor was
+   * shown a shortlist member or something that never passed admission. Optional because a clip
+   * without a content key has no identity to check; such an ask is counted and not classified,
+   * which is the honest answer rather than a guess in either direction.
+   */
+  contentKey?: string
 ): void {
   if (!state) return;
-  beatFunnel(state, sceneIndex, beatIndex).visionAsked += 1;
+  const f = beatFunnel(state, sceneIndex, beatIndex);
+  f.visionAsked += 1;
+  const id = (contentKey ?? "").trim();
+  if (!id) return;
+  if (!f.admitted.has(id)) {
+    /** The breach the whole shortlist exists to prevent. Named, never inferred from a total. */
+    f.visionOutsideShortlist += 1;
+    console.warn(
+      `[BeatShortlist] VISION_OUTSIDE_SHORTLIST s${sceneIndex}b${beatIndex} key=${id} — ` +
+        `the editor was asked about a candidate that never passed admission ` +
+        `(admitted=${f.admitted.size})`
+    );
+    return;
+  }
+  if (f.askedKeys.has(id)) f.visionRepeatAsks += 1;
+  f.askedKeys.add(id);
 }
 
 /**
@@ -404,6 +451,9 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
         `approved=${f.approved} rejected=${f.rejected} unclear=${f.unclear} ` +
         `unavailable=${f.unavailable} notAsked=${f.notAsked}` +
         (f.refusedForCap > 0 ? ` cappedOut=${f.refusedForCap}` : "") +
+        /** Only when non-zero: on a healthy beat these add nothing but noise. */
+        (f.visionRepeatAsks > 0 ? ` repeatAsks=${f.visionRepeatAsks}` : "") +
+        (f.visionOutsideShortlist > 0 ? ` OUTSIDE_SHORTLIST=${f.visionOutsideShortlist}` : "") +
         (reasons.length > 0 ? ` reasons=${reasons.join(",")}` : "")
     );
   }
@@ -431,9 +481,37 @@ export function beatShortlistViolations(state: BeatShortlistState | undefined): 
     if (f.shortlisted > cap) {
       out.push(`[BeatFunnelInvariant] ${at} SHORTLIST_OVER_CAP shortlisted=${f.shortlisted} cap=${cap}`);
     }
-    if (f.visionAsked > f.shortlisted) {
+    /**
+     * RENDER 571 — THIS CHECK WAS RIGHT TO FIRE AND WRONG ABOUT WHY.
+     *
+     * `visionAsked > shortlisted` was reported as VISION_OUTSIDE_SHORTLIST, and render 571 printed
+     * it on five beats (`s0b3 shortlisted=8/8 visionAsked=14`). But two different things produce
+     * that inequality, and only one of them is a breach:
+     *
+     *   · `admitToShortlist` returns `alreadyOnList` for a content key it has already admitted and
+     *     does not spend a second slot — correctly, it is the same picture. The ask is counted
+     *     anyway, so a member asked twice lifts `visionAsked` above `shortlisted` while nothing
+     *     has got past the bound.
+     *
+     *   · a candidate reaches the editor without passing admission at all. THAT is the breach the
+     *     shortlist exists to prevent, and it is now detected where it happens, by content key,
+     *     rather than inferred from a total that cannot tell the two apart.
+     *
+     * The old name is kept for the real thing and the arithmetic case is reported as what it is.
+     * Neither check was removed and neither threshold moved: one line became two that disagree
+     * with each other, which is the only way the next render can say which it had.
+     */
+    if (f.visionOutsideShortlist > 0) {
       out.push(
-        `[BeatFunnelInvariant] ${at} VISION_OUTSIDE_SHORTLIST asked=${f.visionAsked} shortlisted=${f.shortlisted}`
+        `[BeatFunnelInvariant] ${at} VISION_OUTSIDE_SHORTLIST count=${f.visionOutsideShortlist} ` +
+          `admitted=${f.admitted.size} — asked about a candidate that never passed admission`
+      );
+    }
+    if (f.visionAsked > f.shortlisted && f.visionOutsideShortlist === 0) {
+      out.push(
+        `[BeatFunnelInvariant] ${at} VISION_REPEAT_ASKS asked=${f.visionAsked} ` +
+          `shortlisted=${f.shortlisted} repeats=${f.visionRepeatAsks} — ` +
+          `shortlist members put to the editor more than once; no candidate escaped the bound`
       );
     }
     if (f.approved > f.visionAsked) {

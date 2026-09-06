@@ -356,12 +356,29 @@ describe("the per-beat funnel is reported and checked", () => {
     expect(beatShortlistViolations(state)).toEqual([]);
   });
 
-  /** Vision asked more often than the beat had shortlist slots means a route went round the bound. */
-  it("catches a judgement spent outside the shortlist", () => {
+  /**
+   * RENDER 571 CORRECTED THIS TEST'S PREMISE, NOT ITS COVERAGE.
+   *
+   * It used to read "vision asked more often than the beat had shortlist slots means a route went
+   * round the bound", and that inference is what render 571 disproved: `admitToShortlist` returns
+   * `alreadyOnList` for a key it has already admitted and spends no second slot, so a MEMBER asked
+   * twice produces the same inequality as an outsider would. The anomaly is still caught — under
+   * the name of what it actually is, with the genuine bypass now checked separately below.
+   */
+  it("catches an extra judgement, and calls it a repeat rather than a bypass", () => {
     const state = createBeatShortlistState();
     admitToShortlist(state, 0, 0, "k");
     noteVisionAsked(state, 0, 0);
     noteVisionAsked(state, 0, 0);
+    noteVisionOutcome(state, 0, 0, "APPROVED");
+    expect(beatShortlistViolations(state).join(" ")).toContain("VISION_REPEAT_ASKS");
+  });
+
+  /** And the real thing, which the old check could not tell apart from the case above. */
+  it("catches a judgement spent on a candidate that never passed admission", () => {
+    const state = createBeatShortlistState();
+    admitToShortlist(state, 0, 0, "k");
+    noteVisionAsked(state, 0, 0, "never-admitted");
     noteVisionOutcome(state, 0, 0, "APPROVED");
     expect(beatShortlistViolations(state).join(" ")).toContain("VISION_OUTSIDE_SHORTLIST");
   });

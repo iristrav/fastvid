@@ -152,6 +152,62 @@ export function bindRelevanceLedger(audit: ClipAdoptEntry[], ledger: BeatRelevan
   relevanceByAudit.set(audit, ledger);
 }
 
+/**
+ * RENDER 571 / INVARIANT_H — HOW THE EVIDENCE LINE CAME TO ACCUSE THE GUARD OF A BYPASS.
+ *
+ * ── The two questions ───────────────────────────────────────────────────────────────────────
+ *
+ * The montage guard, which DECIDES:
+ *
+ *     const eligible = Boolean(ledger?.isEligible(clipPath, clipContentKey(clipPath)));
+ *
+ * This file, which REPORTS:
+ *
+ *     const eligible = Boolean(ledger?.isEligible(clipPath));
+ *
+ * Same helper, different question. `resolve()` tries byPath, then the derivedFrom chain, then
+ * byContentKey — and a curated asset's record is opened against `archive-asset:<id>` with content
+ * key `curated:asset:<id>`, never against the prepared clip's path. Measured directly on a ledger
+ * in RONDE 98:
+ *
+ *     isEligible(clip, key) = true
+ *     isEligible(clip)      = false
+ *
+ * So render 571's `INVARIANT_H count=4` reports adoptions the guard had every right to allow. The
+ * comment two functions down promises the evidence line and the refusal "can never disagree"; the
+ * missing argument is exactly how they did.
+ *
+ * ── Why a resolver and not a parameter ──────────────────────────────────────────────────────
+ *
+ * `clipContentKey` lives in videoPipeline, which this module cannot import without a cycle, and
+ * `recordClipAdopt` has thirty-six call sites. So the render hands its key function in once, the
+ * same way it already hands in its two ledgers. Unbound, every answer is exactly what it was
+ * before this change — a caller outside a render loses nothing.
+ *
+ * This makes the report TRUER, not kinder: an adoption the guard would refuse still shows up as
+ * unbacked, because it is now asked the same question the guard asked.
+ */
+const contentKeyByAudit = new WeakMap<ClipAdoptEntry[], (clipPath: string) => string>();
+
+export function bindContentKeyResolver(
+  audit: ClipAdoptEntry[],
+  resolver: (clipPath: string) => string
+): void {
+  contentKeyByAudit.set(audit, resolver);
+}
+
+/** The render's own key for this clip, or nothing — never a guess assembled here. */
+function contentKeyFor(audit: ClipAdoptEntry[], clipPath: string): string | undefined {
+  const resolver = contentKeyByAudit.get(audit);
+  if (!resolver) return undefined;
+  try {
+    return resolver(clipPath).trim() || undefined;
+  } catch {
+    /** A key that cannot be computed is an absent key, never a thrown render. */
+    return undefined;
+  }
+}
+
 export function unjudgedAdoptions(audit: ClipAdoptEntry[]): readonly UnjudgedAdoption[] {
   return unjudgedByAudit.get(audit) ?? [];
 }
@@ -285,11 +341,13 @@ function noteAdoptionEvidence(
    * RONDE 94: the same central helper the montage guard asks, so the evidence line and the
    * refusal can never disagree about whether a clip was eligible.
    */
-  const eligible = Boolean(ledger?.isEligible(clipPath));
+  const contentKey = contentKeyFor(audit, clipPath);
+  const eligible = Boolean(ledger?.isEligible(clipPath, contentKey));
   const judgement = relevance
     ? relevanceVerdictForRenderedAsset(relevance, {
         localPath: clipPath,
         currentFilename: path.basename(clipPath),
+        ...(contentKey ? { contentKey } : {}),
         sceneIndex,
         beatIndex,
       })
@@ -386,7 +444,8 @@ export function recordClipAdopt(
    * reasoning as the MAX_ENTRIES note above: this is the record of what went into the video, and
    * it must not stop at clip 120 either.
    */
-  noteIfUnjudged(audit, sceneIndex, beatIndex, clipPath, source);
+  /** Both take the render's own content key now — see bindContentKeyResolver for why. */
+  noteIfUnjudged(audit, sceneIndex, beatIndex, clipPath, source, contentKeyFor(audit, clipPath));
   noteAdoptionEvidence(audit, sceneIndex, beatIndex, clipPath, source);
   if (ledger) {
     const record = ledger.resolve(clipPath);

@@ -352,6 +352,7 @@ import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import {
   bindLineageLedger,
   bindRelevanceLedger,
+  bindContentKeyResolver,
   createClipAdoptAudit,
   formatUnjudgedAdoptions,
   formatAdoptionEvidence,
@@ -17895,6 +17896,16 @@ export function createVisualDedupState(
    * footage instead of anyone reading 35 call sites and deciding which look risky.
    */
   bindRelevanceLedger(state.clipAdoptAudit, state.beatRelevance);
+  /**
+   * RENDER 571 / INVARIANT_H — the third binding, so the evidence line asks the guard's question.
+   *
+   * The montage guard resolves eligibility with the clip's content key; the audit resolved without
+   * one and reported four adoptions as REAL_FUNNEL_ADOPTION_WITHOUT_ELIGIBILITY that the guard had
+   * allowed on the same ledger. A curated record is keyed by `curated:asset:<id>`, never by the
+   * prepared clip's path, so the two spellings genuinely answer differently. One function, handed
+   * over once, in the same place and for the same reason as the two ledgers above.
+   */
+  bindContentKeyResolver(state.clipAdoptAudit, clipContentKey);
   // Same reasoning on the refusal side: recordClipReject is the one point every gate reports to.
   state.clipRejectAudit.lineage = state.sourcingCache.lineage;
   return state;
@@ -28032,7 +28043,8 @@ async function beatClipPassesVisionGate(
         `the beat relevance gate decides`
     );
   }
-  noteVisionAsked(dedup.beatShortlist, scene.index, beat.index);
+  /** The key admission was granted on, so a repeat and a bypass cannot be confused for each other. */
+  noteVisionAsked(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
   const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
     clipPath,
     contentKey: clipContentKey(clipPath),
