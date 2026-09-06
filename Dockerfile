@@ -85,24 +85,41 @@ RUN fc-list | grep -i noto | head -5 || echo "WARNING: Noto fonts not found"
 # needed. A deployment that keeps its browser elsewhere can still point
 # REMOTION_BROWSER_EXECUTABLE at it and win — that path is checked first.
 RUN apt-get update && apt-get install -y \
-  libnss3 \
-  libnspr4 \
-  libatk1.0-0 \
+  `# The Debian dependency set Chrome is documented to need. The first attempt` \
+  `# carried a shortened version of it; a slim image guarantees none of these` \
+  `# transitively, and each one missing costs a deploy cycle to discover.` \
+  ca-certificates \
+  fonts-liberation \
   libatk-bridge2.0-0 \
+  libatk1.0-0 \
   libatspi2.0-0 \
-  libcups2 \
+  libcairo2 \
+  libdbus-1-3 \
   libdrm2 \
-  libxkbcommon0 \
+  libexpat1 \
+  libgbm1 \
+  libnspr4 \
+  libnss3 \
+  libpango-1.0-0 \
+  libx11-6 \
+  libxcb1 \
   libxcomposite1 \
   libxdamage1 \
+  libxext6 \
   libxfixes3 \
+  libxkbcommon0 \
   libxrandr2 \
-  libgbm1 \
-  libasound2 \
-  `# @puppeteer/browsers ships the shell as a .zip and shells out to unzip to extract it.` \
-  `# node:22-slim has no archiver at all, so the download succeeded and the extraction did not:` \
-  `#   Extraction failed: no zip archiver is available. Install 'unzip' ...` \
+  `# @puppeteer/browsers ships the shell as a .zip and shells out to unzip.` \
+  `# node:22-slim has no archiver at all, so the download succeeded and the` \
+  `# extraction did not: "no zip archiver is available. Install 'unzip'".` \
   unzip \
+  `# Three names Debian changed in the time_t (t64) transition. The old names` \
+  `# resolve on bookworm and the new ones on trixie, and this image's base can` \
+  `# move under us; asking for either is what makes the build survive that.` \
+  && for p in libasound2 libcups2 libglib2.0-0; do \
+       apt-get install -y --no-install-recommends "${p}t64" \
+       || apt-get install -y --no-install-recommends "$p"; \
+     done \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npx --yes @puppeteer/browsers install chrome-headless-shell@stable \
