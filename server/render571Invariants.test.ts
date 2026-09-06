@@ -330,3 +330,107 @@ describe("P0-C: a refused push is an ending on the asset, not only on the beat",
     expect(assertNoSelectedClipWithoutOutcome(ledger).ok, "accounted after").toBe(true);
   });
 });
+
+/* ═════════ P0-C — "became that file" is an ending, and the ledger already recorded it ═════════ */
+
+/**
+ * RENDER 571: `selectedWithoutOutcome=3` — two serpapi on s1b1, one openverse on s0b3, all
+ * `route=primary`.
+ *
+ * A CORRECTION FIRST. The opening guess here was that the barrier push refusal filed no rejection;
+ * a grep of the twelve lines above its `tracePushOutcome` found none. Widening the window
+ * disproved it — the write is there, at the seam all four `pushSceneClip` definitions pass
+ * through. That "fix" was a duplicate and was removed before it reached a commit.
+ *
+ * The real cause is one level down. SELECTED is filed on the candidate that cleared the adopt
+ * gates. If that clip then goes through the fair-use transform, `linkDerivedPath` creates a
+ * SEPARATE record carrying `parentLineageId`, and `markAdopted` files ADOPTED — and later
+ * FINAL_VIDEO — against the CHILD. `supersedesParent` renames the parent's display name; it does
+ * not merge the records. So the parent ends holding SELECTED and nothing terminal, and a rule that
+ * read one record's own events called that a disappearance.
+ *
+ * Three of two hundred and three, on exactly the providers whose stills need that transform, is
+ * the shape this predicts.
+ */
+describe("P0-C: a parent accounted for by its transformed child", () => {
+  const ledgerWithTransform = () => {
+    const ledger = new VisualSourceLedger({ renderId: "571" });
+    const parent = ledger.createLineage({
+      sceneIndex: 1,
+      beatIndex: 1,
+      provider: "serpapi",
+      providerAssetId: "abc123",
+      route: "primary",
+      localPath: "/w/scene_1_b1__pid_serpapi-0011223344556677.mp4",
+    });
+    ledger.recordEvent(parent.lineageId, "SELECTED", { status: "OK" });
+    const child = ledger.linkDerivedPath(
+      "/w/scene_1_b1__pid_serpapi-0011223344556677_transformed.mp4",
+      "/w/scene_1_b1__pid_serpapi-0011223344556677.mp4",
+      "TRANSFORMED"
+    );
+    return { ledger, parent, child: child! };
+  };
+
+  it("render 571's shape reproduces: a separate child record, not a merge", () => {
+    const { parent, child } = ledgerWithTransform();
+    expect(child.lineageId).not.toBe(parent.lineageId);
+    expect(child.parentLineageId).toBe(parent.lineageId);
+  });
+
+  it("the parent is accounted once the child reaches the finished film", () => {
+    const { ledger, child } = ledgerWithTransform();
+    expect(
+      assertNoSelectedClipWithoutOutcome(ledger).offenders.length,
+      "before the child is delivered nothing is settled"
+    ).toBe(1);
+    ledger.recordEvent(child.lineageId, "FINAL_VIDEO", { status: "OK" });
+    expect(assertNoSelectedClipWithoutOutcome(ledger).ok, "the parent became that file").toBe(true);
+  });
+
+  it("and equally when the child ends in a refusal rather than the film", () => {
+    const { ledger, child } = ledgerWithTransform();
+    ledger.recordEvent(child.lineageId, "COMPOSE_DROPPED", { status: "OK" });
+    expect(assertNoSelectedClipWithoutOutcome(ledger).ok).toBe(true);
+  });
+
+  /**
+   * THE TEST THAT KEEPS THIS HONEST. Walking the chain must not become a way of calling every
+   * parent explained. A parent whose child ALSO vanished is still unaccounted.
+   */
+  it("a parent whose child also vanished stays unaccounted", () => {
+    const { ledger, child } = ledgerWithTransform();
+    ledger.recordEvent(child.lineageId, "SELECTED", { status: "OK" });
+    const offenders = assertNoSelectedClipWithoutOutcome(ledger).offenders;
+    expect(offenders.length, "both records are still open").toBe(2);
+  });
+
+  it("an asset with no child at all is untouched by this", () => {
+    const ledger = new VisualSourceLedger({ renderId: "571" });
+    const rec = ledger.createLineage({
+      sceneIndex: 0,
+      beatIndex: 3,
+      provider: "openverse",
+      providerAssetId: "ov-9",
+      route: "primary",
+      localPath: "/w/scene_0_b3__pid_openverse-8899aabbccddeeff.mp4",
+    });
+    ledger.recordEvent(rec.lineageId, "SELECTED", { status: "OK" });
+    expect(assertNoSelectedClipWithoutOutcome(ledger).offenders.length).toBe(1);
+  });
+
+  /** A record nobody ever selected is not this rule's business, child or no child. */
+  it("an unselected record is still not counted", () => {
+    const { ledger } = ledgerWithTransform();
+    const spare = ledger.createLineage({
+      sceneIndex: 2,
+      beatIndex: 0,
+      provider: "pexels",
+      providerAssetId: "px-1",
+      route: "primary",
+      localPath: "/w/never_chosen.mp4",
+    });
+    const before = assertNoSelectedClipWithoutOutcome(ledger).offenders;
+    expect(before.some((o) => o.lineageId === spare.lineageId)).toBe(false);
+  });
+});

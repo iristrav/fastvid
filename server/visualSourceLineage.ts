@@ -2589,12 +2589,57 @@ function unaccountedRecords(ledger: VisualSourceLedger): VisualLineageRecord[] {
     if (!stages) stagesByLineage.set(event.lineageId, (stages = new Map()));
     if (event.status !== "OK" || !stages.has(event.stage)) stages.set(event.stage, event.status);
   }
+
+  /**
+   * RENDER 571 / P0-C — "BECAME THAT FILE" IS AN ENDING, AND THE LEDGER ALREADY RECORDED IT.
+   *
+   *     [OutcomeInvariant] FAILED selectedWithoutOutcome=3
+   *       scene=1 beat=1 route=primary provider=serpapi
+   *       scene=1 beat=1 route=primary provider=serpapi
+   *       scene=0 beat=3 route=primary provider=openverse
+   *
+   * SELECTED is filed on the candidate that cleared the adopt gates. If that clip then goes
+   * through the fair-use transform, `linkDerivedPath` creates a SEPARATE record carrying
+   * `parentLineageId`, and `markAdopted` files ADOPTED — and later FINAL_VIDEO — against the
+   * CHILD. `supersedesParent` renames the parent's `currentFilename`; it does not merge the two.
+   *
+   * So the parent ended the render holding SELECTED and nothing terminal, and this rule, which
+   * reads one record's own events, called it a disappearance. It had not disappeared: it had
+   * become the file directly below it in the ledger. Three of two hundred and three, all on the
+   * providers whose stills need that transform, is exactly the shape that predicts.
+   *
+   * Walking the chain is not a softer test. A parent whose child ALSO vanished is still
+   * unaccounted, because the child is still unaccounted — the question is simply asked of the
+   * record that carries the answer. Nothing is recomputed and no ending is invented; the
+   * derivation link the transform already wrote is now read.
+   */
+  const childrenOf = new Map<string, string[]>();
+  for (const r of ledger.allRecords()) {
+    if (!r.parentLineageId) continue;
+    const list = childrenOf.get(r.parentLineageId);
+    if (list) list.push(r.lineageId);
+    else childrenOf.set(r.parentLineageId, [r.lineageId]);
+  }
+
+  /** Depth-bounded and cycle-safe: a malformed chain must not hang a render's own audit. */
+  const accountedThroughDescendant = (lineageId: string, seen = new Set<string>()): boolean => {
+    if (seen.has(lineageId) || seen.size > 64) return false;
+    seen.add(lineageId);
+    for (const child of childrenOf.get(lineageId) ?? []) {
+      const stages = stagesByLineage.get(child);
+      if (stages && (stages.has("FINAL_VIDEO") || hasTerminalOutcome(stages))) return true;
+      if (accountedThroughDescendant(child, seen)) return true;
+    }
+    return false;
+  };
+
   return ledger.allRecords().filter((record) => {
     const stages = stagesByLineage.get(record.lineageId);
     if (!stages) return false;
     if (stages.has("FINAL_VIDEO")) return false;
     if (!stages.has("SELECTED") && !stages.has("ADOPTED")) return false;
-    return !hasTerminalOutcome(stages);
+    if (hasTerminalOutcome(stages)) return false;
+    return !accountedThroughDescendant(record.lineageId);
   });
 }
 
