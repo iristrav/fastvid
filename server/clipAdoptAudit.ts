@@ -507,6 +507,62 @@ export function adoptRouteForSource(source: string): "primary" | "fallback" | "r
 }
 
 /** Summarize adopt audit for qualityReport — sourcing mix per beat. */
+/**
+ * A colour or text card, as opposed to media something chose.
+ *
+ * The two labels every per-beat guaranteed-fill site records — see `guaranteedAdoptSource` and the
+ * placeholder rung beside it.
+ */
+export function isFillerAdoptSource(source: string): boolean {
+  return source === "fallback" || source === "rescue_placeholder";
+}
+
+/**
+ * WHICH ENTRY SPEAKS FOR A BEAT — one definition, because two summarisers needed it and only one
+ * had it.
+ *
+ * `pushClip` APPENDS, so a beat can hold real footage AND a card. "The last entry wins" then keeps
+ * the card and discards the footage. `summarizeAdoptAudit` was fixed for that; `buildBeatVisualStatuses`
+ * was not, and it is the one RONDE 89's export gate reads:
+ *
+ *     NO_VERIFIED_OWN_VISUAL: 0 of 16 beat(s) got an approved picture of their own
+ *     (never_asked=15, own_footage=3)
+ *
+ * Fifteen of sixteen beats reported "nothing to judge — placeholder" while their real clips sat in
+ * the same audit, one entry earlier. A beat cannot earn a verified visual for a picture the
+ * bookkeeping threw away, so the gate refused a film that had footage.
+ *
+ * Sentinel indices (scene padding, never a narrative beat) are excluded here so both callers agree
+ * about what a beat even is.
+ */
+export function representativeAdoptEntryPerBeat(audit: readonly ClipAdoptEntry[]): {
+  entries: Map<string, ClipAdoptEntry>;
+  /** Beats that held real footage AND a card. Counted as real; reported so the card is not lost. */
+  mixedBeats: number;
+} {
+  const isSentinel = (beatIndex: number): boolean =>
+    beatIndex >= 2000 || beatIndex === 999 || beatIndex === 1001 || beatIndex === 8888 || beatIndex === 9999;
+
+  const perBeat = new Map<string, ClipAdoptEntry[]>();
+  for (const entry of audit) {
+    if (isSentinel(entry.beatIndex)) continue;
+    const key = `${entry.sceneIndex}:${entry.beatIndex}`;
+    const seen = perBeat.get(key);
+    if (seen) seen.push(entry);
+    else perBeat.set(key, [entry]);
+  }
+
+  const entries = new Map<string, ClipAdoptEntry>();
+  let mixedBeats = 0;
+  for (const [key, all] of perBeat) {
+    const real = all.filter((e) => !isFillerAdoptSource(e.source));
+    /** Among real adoptions the newest still wins — the case the old rule was right about. */
+    entries.set(key, real.length > 0 ? real[real.length - 1]! : all[all.length - 1]!);
+    if (real.length > 0 && real.length < all.length) mixedBeats += 1;
+  }
+  return { entries, mixedBeats };
+}
+
 export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary {
   const bySource: Record<string, number> = {};
   for (const entry of audit) {
@@ -573,27 +629,11 @@ export function summarizeAdoptAudit(audit: ClipAdoptEntry[]): AdoptAuditSummary 
    * What changes is that a film with real footage on most of its beats stops being described as a
    * film of colour cards.
    */
-  const isFillerSource = (source: string): boolean =>
-    source === "fallback" || source === "rescue_placeholder";
-
-  const sourcesByBeat = new Map<string, string[]>();
-  for (const entry of audit) {
-    if (isSentinelBeatIndex(entry.beatIndex)) continue;
-    const key = `${entry.sceneIndex}:${entry.beatIndex}`;
-    const seen = sourcesByBeat.get(key);
-    if (seen) seen.push(entry.source);
-    else sourcesByBeat.set(key, [entry.source]);
-  }
-
+  const representative = representativeAdoptEntryPerBeat(audit);
   const finalSourceByBeat = new Map<string, string>();
+  for (const [key, entry] of representative.entries) finalSourceByBeat.set(key, entry.source);
   /** Beats the viewer saw real footage on AND a filler — counted as real, reported as mixed. */
-  let mixedBeats = 0;
-  for (const [key, sources] of sourcesByBeat) {
-    const real = sources.filter((s) => !isFillerSource(s));
-    /** Among real sources the newest still wins: that is the case the original rule was right about. */
-    finalSourceByBeat.set(key, real.length > 0 ? real[real.length - 1]! : sources[sources.length - 1]!);
-    if (real.length > 0 && real.length < sources.length) mixedBeats += 1;
-  }
+  const mixedBeats = representative.mixedBeats;
 
   let stockBeats = 0;
   let wikiBeats = 0;

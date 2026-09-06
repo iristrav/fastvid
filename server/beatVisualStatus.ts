@@ -37,6 +37,7 @@ import { coverageForAdoptSource } from "./adoptionPolicy";
 import * as path from "path";
 
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
+import { representativeAdoptEntryPerBeat } from "./clipAdoptAudit";
 import type { BeatRelevanceLedger } from "./beatVisualRelevance";
 
 /**
@@ -264,17 +265,29 @@ export function neverAskedReason(coverage: BeatCoverage): string {
 /**
  * The status of every beat this render filled, from the two records that already exist.
  *
- * Later entries for the same beat win, matching the assumption clipAdoptAudit already makes: a
- * recovery layer that re-adopts a beat is describing that beat's more current state.
+ * ── Why the choice of entry is not made here ────────────────────────────────────────────────
+ *
+ * This used to keep the LAST entry per beat, "matching the assumption clipAdoptAudit already
+ * makes". That assumption was disproved and clipAdoptAudit was fixed; this function was not, and
+ * it is the one RONDE 89's export gate reads. The next production render said so exactly:
+ *
+ *     NO_VERIFIED_OWN_VISUAL: 0 of 16 beat(s) got an approved picture of their own
+ *     (never_asked=15, own_footage=3)
+ *
+ * `pushClip` APPENDS, so a beat holding real footage and a colour card records both. Keeping the
+ * last entry made fifteen of sixteen beats read as "placeholder — nothing to judge" while their
+ * real clips sat one entry earlier in the same audit. A beat cannot earn a verified visual for a
+ * picture the bookkeeping discarded, so the gate refused a film that had footage.
+ *
+ * The rule now lives once, in `representativeAdoptEntryPerBeat`, and both summarisers ask it.
+ * Sharing the definition is the point: this is the second time the same seam has cost a render,
+ * and a rule two callers must remember is a rule one of them will forget.
  */
 export function buildBeatVisualStatuses(
   adoptAudit: readonly ClipAdoptEntry[] | undefined,
   ledger: BeatRelevanceLedger | undefined
 ): BeatVisualStatus[] {
-  const byBeat = new Map<string, ClipAdoptEntry>();
-  for (const e of adoptAudit ?? []) {
-    byBeat.set(`${e.sceneIndex}:${e.beatIndex}`, e);
-  }
+  const byBeat = representativeAdoptEntryPerBeat(adoptAudit ?? []).entries;
   const out: BeatVisualStatus[] = [];
   for (const entry of byBeat.values()) {
     const coverage = coverageOfAdoptEntry(entry);
