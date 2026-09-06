@@ -347,6 +347,7 @@ import {
   renderBeatFunnelReport,
   formatEligibleNotAdoptedByProvider,
 } from "./beatOutcomeAudit";
+import { beginReplayRecording, recordReplayFact, replayRecordingActive } from "./renderReplay";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import {
   bindLineageLedger,
@@ -374,6 +375,7 @@ import {
   formatSourceSummary,
   assertNoSelectedClipWithoutOutcome,
   recordAssetOutcome,
+  ensureCuratedAssetLineageOn,
   type AssetOutcomeReason,
   type VisualLineageRecord,
 } from "./visualSourceLineage";
@@ -28395,6 +28397,31 @@ async function adoptionGuardRefusesPush(
   const visionAvailable = !visionPipelineIsUnavailable();
 
   const verdict = adoptionGuardVerdict({ source, eligible, vision, visionAvailable });
+  /**
+   * Two facts for the replay bundle, recorded on EVERY adoption — allowed or refused, since a
+   * bundle that only kept the refusals could never show a fix turning one into an adoption.
+   *
+   * The vision verdict is a fact about the world (what the editor said) and is replayed as input.
+   * The guard's own outcome is a decision, kept only so a replay can be diffed against the render
+   * it came from — it is never fed back in.
+   */
+  if (replayRecordingActive()) {
+    const beat = beatIndex ?? 0;
+    const file = path.basename(clipPath);
+    const contentKey = clipContentKey(clipPath) || null;
+    recordReplayFact({ kind: "vision", scene: sceneIndex, beat, file, contentKey, verdict: vision, visionAvailable });
+    recordReplayFact({
+      kind: "adoption",
+      scene: sceneIndex,
+      beat,
+      route: source,
+      eligible,
+      vision,
+      visionAvailable,
+      allowed: verdict.allowed,
+      code: verdict.allowed ? null : verdict.code,
+    });
+  }
   if (verdict.allowed) return false;
 
   console.warn(
@@ -28627,32 +28654,12 @@ export function ensureCuratedAssetLineage(
  * lineage at all and its clips reported UNVERIFIED. Same body, one fewer thing required of the
  * caller; the wrapper keeps every existing call site unchanged.
  */
-export function ensureCuratedAssetLineageOn(
-  ledger: VisualSourceLedger,
-  picked: CuratedCandidatePick,
-  sceneIndex: number,
-  beatIndex: number
-): VisualLineageRecord {
-  const contentKey = curatedAssetContentKey(picked.asset.id);
-  const placeholder = `archive-asset:${picked.asset.id}`;
-  const existing = ledger.resolve(placeholder, contentKey);
-  if (existing) return existing;
-  return ledger.createLineage({
-    sceneIndex,
-    beatIndex,
-    candidateId: `archive:${picked.asset.id}`,
-    contentKey,
-    provider: picked.archiveName?.trim() || "own_archive",
-    providerAssetId: String(picked.asset.id),
-    sourceUrl: picked.asset.storageUrl ?? undefined,
-    localPath: placeholder,
-    mediaType: picked.asset.mediaType === "video" ? "video" : "image",
-    candidateScore: picked.score,
-    archiveAssetId: picked.asset.id,
-    assetTitle: picked.asset.title ?? undefined,
-    route: "primary",
-  });
-}
+/**
+ * Moved to `visualSourceLineage`, where the ledger it writes into lives — the replay engine has to
+ * call the SAME writer, and could not import this module to reach it. Re-exported so that every
+ * existing caller, and the structural tests that look for it here, are unaffected.
+ */
+export { ensureCuratedAssetLineageOn };
 
 /**
  * RONDE 87 — a stable, groupable reason string from a thrown error message.
@@ -29187,6 +29194,30 @@ async function fetchCuratedArchiveBeatClipWithLineage(
   const pickedOut: { assetId?: number; storageUrl?: string; pick?: CuratedCandidatePick } = {};
   const clip = await fetch(pickedOut);
   if (!clip) return clip;
+  /**
+   * The replay bundle's fetch fact. Recorded HERE because this is the one place that holds both
+   * the resulting clip and the pick behind it — the two halves a ledger record needs. A bundle
+   * records what the fetch FOUND, never what the render then decided about it.
+   */
+  if (replayRecordingActive()) {
+    recordReplayFact({
+      kind: "fetch",
+      scene: sceneIndex,
+      beat: beatIndex,
+      route: "curated_fetch",
+      file: path.basename(clip),
+      contentKey: clipContentKey(clip) || null,
+      pick: pickedOut.pick
+        ? {
+            assetId: pickedOut.pick.asset.id,
+            archiveName: pickedOut.pick.archiveName,
+            mediaType: pickedOut.pick.asset.mediaType ?? undefined,
+            durationSec: pickedOut.pick.asset.durationSec ?? undefined,
+            score: pickedOut.pick.score,
+          }
+        : null,
+    });
+  }
   if (pickedOut.pick) {
     /** The same writer the ranked queue uses — one definition of what a curated record is. */
     ensureCuratedAssetLineage(dedup, pickedOut.pick, sceneIndex, beatIndex);
@@ -38498,6 +38529,12 @@ export async function runVideoPipeline(
   // per LLM call) to resolve the owning userId for per-user LLM spend attribution.
   const ownerRow = await getVideoById(videoId);
   const ownerUserId = ownerRow?.userId ?? null;
+  /**
+   * Open the replay bundle for this render, when one was asked for. Off unless
+   * RENDER_REPLAY_RECORD=true, and a failure to open it stands the recorder down rather than
+   * failing the render — see renderReplay.ts.
+   */
+  beginReplayRecording(videoId, process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? null);
   // RONDE 29: per-gate ask/fire counters for this render. Its own storage rather than a
   // RenderCtx field because gates live in modules that must not import this one (see
   // gateFiringStats.ts). Same per-render isolation, for the same concurrency reason.

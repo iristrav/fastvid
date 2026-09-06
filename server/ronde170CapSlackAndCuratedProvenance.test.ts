@@ -185,23 +185,33 @@ describe("RONDE 170 #2 — the funnel's curated clips carry their provenance", (
     expect(block).toContain("curated_clip_not_produced");
   });
 
+  /**
+   * THE WRITER MOVED, THE RULE DID NOT.
+   *
+   * `ensureCuratedAssetLineageOn` now lives in `visualSourceLineage.ts`, beside the ledger it
+   * writes into, because the replay engine has to call THE SAME writer and cannot import a
+   * 41,000-line pipeline to reach it. `videoPipeline` re-exports it, so every caller is unchanged
+   * and the invariants below are unchanged too — they are simply read at the writer's new address.
+   */
+  const LEDGER = readFileSync(join(__dirname, "visualSourceLineage.ts"), "utf8");
+
   it("the ledger-only entry point exists because the funnel has no VisualDedupState", () => {
-    /**
-     * `downloadFunnelCandidate` is handed a SourcingCache, not the whole render state, which is a
-     * large part of why it could not call `ensureCuratedAssetLineage` and opened no lineage at all.
-     * The wrapper keeps every existing caller unchanged.
-     */
-    expect(PIPE).toContain("export function ensureCuratedAssetLineageOn(");
-    expect(PIPE).toContain("ledger: VisualSourceLedger,");
+    expect(LEDGER).toContain("export function ensureCuratedAssetLineageOn(");
+    expect(LEDGER).toContain("ledger: VisualSourceLedger,");
     expect(PIPE).toContain(
       "return ensureCuratedAssetLineageOn(dedup.sourcingCache.lineage, picked, sceneIndex, beatIndex);"
     );
   });
 
+  /** And it is still reachable under its old name, or every existing call site would have broken. */
+  it("videoPipeline still exports it", () => {
+    expect(PIPE).toContain("export { ensureCuratedAssetLineageOn };");
+  });
+
   it("the provider is the archive the row names, never a route label", () => {
     // RONDE 87's rule, unchanged: `own_archive` only when the row itself carries no archive name.
-    const idx = PIPE.indexOf("export function ensureCuratedAssetLineageOn(");
-    const block = PIPE.slice(idx, idx + 1200);
+    const idx = LEDGER.indexOf("export function ensureCuratedAssetLineageOn(");
+    const block = LEDGER.slice(idx, idx + 1600);
     expect(block).toContain('provider: picked.archiveName?.trim() || "own_archive"');
     expect(block).toContain("archiveAssetId: picked.asset.id");
   });

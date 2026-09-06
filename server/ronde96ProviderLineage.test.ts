@@ -19,6 +19,8 @@ import { VisualSourceLedger, UNVERIFIED_PROVIDER } from "./visualSourceLineage";
 import { tagPathWithProviderAsset, recordProviderDownloadOutcome } from "./videoPipeline";
 
 const PIPELINE_SRC = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+/** The ledger module — the curated writer's home since the replay engine had to reach it. */
+const LEDGER_SRC = fs.readFileSync(path.join(__dirname, "visualSourceLineage.ts"), "utf8");
 
 /** The five fetchers this round is about, and the id each one keeps. */
 const NEW_PROVIDERS = [
@@ -290,10 +292,12 @@ describe("RONDE 96 §8 — every downloading provider is lineage-capable", () =>
 
   it("TEST 32 — the curated archive is exempt, and says why", () => {
     // Curated assets come from the database, not from a search, so there is no route to record.
-    // RONDE 170 split the body out so the funnel, which holds only a ledger, can call it too.
-    const idx = PIPELINE_SRC.indexOf("export function ensureCuratedAssetLineageOn(");
+    // RONDE 170 split the body out so the funnel, which holds only a ledger, can call it too, and
+    // the writer has since moved to the ledger's own module so the replay engine can call THE SAME
+    // one without importing the pipeline. Same body, read at its new address.
+    const idx = LEDGER_SRC.indexOf("export function ensureCuratedAssetLineageOn(");
     expect(idx).toBeGreaterThan(-1);
-    const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
+    const body = LEDGER_SRC.slice(idx, LEDGER_SRC.indexOf("\n}", idx));
     expect(body).toContain("createLineage({");
     expect(body).not.toContain("searchRoute:");
   });
@@ -315,11 +319,22 @@ describe("RONDE 96 §10 — nothing writes a provider asset outside the ledger",
   });
 
   it("TEST 34 — there is still exactly one place a provider lineage is opened", () => {
-    // Two openers in this file and no more: tagPathWithProviderAsset for everything a provider
-    // downloads, ensureCuratedAssetLineage for the database archive. A third would be a second
-    // entry point, and two entry points drift — which is how the five got left behind in the
-    // first place.
-    expect((PIPELINE_SRC.match(/createLineage\(\{/g) ?? []).length).toBe(2);
+    // Two openers and no more: tagPathWithProviderAsset for everything a provider downloads,
+    // ensureCuratedAssetLineageOn for the database archive. A third would be a second entry point,
+    // and two entry points drift — which is how the five got left behind in the first place.
+    //
+    // Counted across BOTH files since the curated writer moved next to the ledger. Summing them is
+    // stricter than the old per-file count, not looser: a third opener in either file still fails,
+    // and one that migrated between them can no longer go unnoticed by leaving a file.
+    //
+    // `this.createLineage(...)` is excluded, and only that: it is the ledger using itself from
+    // inside — `linkDerivedPath` opening the record for a derived copy — which is not an entry
+    // point into the ledger and never was. It sat unread in the old count only because the count
+    // looked at one file. What this measures is what it always meant: how many places OUTSIDE the
+    // ledger may open a record.
+    const externalOpeners = (src: string) =>
+      (src.match(/(?<!this\.)createLineage\(\{/g) ?? []).length;
+    expect(externalOpeners(PIPELINE_SRC) + externalOpeners(LEDGER_SRC)).toBe(2);
     const idx = PIPELINE_SRC.indexOf("export function tagPathWithProviderAsset(");
     const body = PIPELINE_SRC.slice(idx, PIPELINE_SRC.indexOf("\n}", idx));
     expect(body).toContain("provider,");

@@ -2714,3 +2714,79 @@ export function formatLineageLine(record: VisualLineageRecord | null, clipPath: 
   ].filter(Boolean);
   return `[SourceLineage] ${parts.join(" ")}`;
 }
+
+/* ═══════════════════════ curated archive assets ═══════════════════════ */
+
+/**
+ * Exactly what the ledger reads off a curated pick, and nothing else.
+ *
+ * Stated structurally rather than by importing `CuratedCandidatePick`, so this module keeps no
+ * dependency on the sourcing layer and the list of fields a record is built from is legible in one
+ * place. The real pick satisfies it by shape; so does a pick reconstituted from a replay bundle,
+ * which is how a replay drives this writer instead of imitating it.
+ */
+export type CuratedCandidatePickForLineage = {
+  asset: {
+    id: number;
+    mediaType?: string | null;
+    storageUrl?: string | null;
+    title?: string | null;
+  };
+  archiveName?: string;
+  score?: number;
+};
+
+/**
+ * The stable identity of one curated archive asset.
+ *
+ * It lives here rather than in the sourcing module because it is a LEDGER key: it is what
+ * `resolve` matches on, what survives every rename the compose path performs, and the only thing
+ * tying a renamed clip back to the row it came from. `curatedMediaSourcing` re-exports it so its
+ * own callers are unaffected — one definition, two doors.
+ */
+export function curatedAssetContentKey(assetId: number): string {
+  return `curated:asset:${assetId}`;
+}
+
+/**
+ * Open the lineage record for a curated archive pick — THE writer, for every route.
+ *
+ * This used to live in `videoPipeline.ts`, which made it unreachable from anywhere that could not
+ * afford to import a 41,000-line module: the replay engine could not call it, and would have had
+ * to keep a second copy of what a curated record is. A second copy is how the two halves drift
+ * until one of them is wrong, so the function moved to the ledger it writes into instead.
+ * `videoPipeline` re-exports it and every existing call site is untouched.
+ *
+ * Idempotent by content key: a pick already recorded returns its existing record rather than a
+ * second one for the same asset.
+ */
+export function ensureCuratedAssetLineageOn(
+  ledger: VisualSourceLedger,
+  picked: CuratedCandidatePickForLineage,
+  sceneIndex: number,
+  beatIndex: number
+): VisualLineageRecord {
+  const contentKey = curatedAssetContentKey(picked.asset.id);
+  const placeholder = `archive-asset:${picked.asset.id}`;
+  const existing = ledger.resolve(placeholder, contentKey);
+  if (existing) return existing;
+  return ledger.createLineage({
+    sceneIndex,
+    beatIndex,
+    candidateId: `archive:${picked.asset.id}`,
+    contentKey,
+    /**
+     * The archive's own name is the provider. `own_archive` only when the row carries none, and
+     * that is a real answer — the asset came from the customer's own uploaded archive.
+     */
+    provider: picked.archiveName?.trim() || "own_archive",
+    providerAssetId: String(picked.asset.id),
+    sourceUrl: picked.asset.storageUrl ?? undefined,
+    localPath: placeholder,
+    mediaType: picked.asset.mediaType === "video" ? "video" : "image",
+    candidateScore: picked.score,
+    archiveAssetId: picked.asset.id,
+    assetTitle: picked.asset.title ?? undefined,
+    route: "primary",
+  });
+}

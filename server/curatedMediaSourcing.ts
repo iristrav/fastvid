@@ -261,10 +261,14 @@ export type CuratedSceneContext = {
   pexelsQuery?: string;
 };
 
-/** Stable dedup key for compose + cross-beat checks. */
-export function curatedAssetContentKey(assetId: number): string {
-  return `curated:asset:${assetId}`;
-}
+/**
+ * Stable dedup key for compose + cross-beat checks.
+ *
+ * Defined in `visualSourceLineage` — it is a ledger key before it is a sourcing detail, and the
+ * replay engine needs it without dragging this module's graph along. Re-exported here so every
+ * existing caller keeps importing it from where it has always lived.
+ */
+export { curatedAssetContentKey } from "./visualSourceLineage";
 
 export function curatedClipPathAssetId(filePath: string): number | null {
   const m = path.basename(filePath).match(/_curated_a(\d+)(?:_still)?\.mp4$/i);
