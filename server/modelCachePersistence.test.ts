@@ -158,6 +158,45 @@ describe("a model baked into the image", () => {
   });
 });
 
+describe("the build asks what the runtime asks", () => {
+  /**
+   * The first prebaked build cached both towers and then failed its own check, because both the
+   * check and `clipModelExistsLocally` read the model directory FLATLY while
+   * @xenova/transformers writes `<model>/onnx/model_quantized.onnx`.
+   *
+   * A build check with its own opinion can pass while the runtime still downloads, so the two
+   * rules are pinned together here rather than left to agree by accident.
+   */
+  const script = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "prefetch-clip-model.mjs"),
+    "utf8"
+  );
+  const vision = fs.readFileSync(path.join(__dirname, "localClipVision.ts"), "utf8");
+
+  it.each([
+    ["the build check", () => script],
+    ["clipModelExistsLocally", () => vision.slice(vision.indexOf("function clipModelExistsLocally"))],
+  ])("%s lists the model directory recursively", (_label, read) => {
+    expect(read()).toContain("recursive: true");
+  });
+
+  /** Both look under the same directory: cacheDir + the model id, not a path of their own. */
+  it("both derive the directory from the model id", () => {
+    expect(script).toContain("path.join(cacheDir, ...CLIP_MODEL.split(\"/\"))");
+    expect(vision).toContain("path.join(cacheDir, modelSlug)");
+  });
+
+  /**
+   * And when it fails it says WHERE the files went. "FAILED: no .onnx" cannot tell "nothing was
+   * written" from "written somewhere else", and those need different fixes — a distinction that
+   * cost a deploy cycle.
+   */
+  it("a failing build prints the real location", () => {
+    expect(script).toContain("DID land under");
+    expect(script).toContain("Tree:");
+  });
+});
+
 describe("the preflight says it out loud", () => {
   it("reports the cache as a host entry, naming the directory", async () => {
     const entry = await cacheEntry({});

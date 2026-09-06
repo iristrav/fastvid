@@ -67,27 +67,77 @@ console.log("[PrefetchCLIP] text tower cached");
  */
 const fs = await import("fs");
 const path = await import("path");
-const modelDir = path.join(cacheDir, ...CLIP_MODEL.split("/"));
+
+const listOnnx = (dir) => {
+  try {
+    if (!fs.existsSync(dir)) return [];
+    return fs
+      .readdirSync(dir, { recursive: true, encoding: "utf8" })
+      .filter((f) => f.endsWith(".onnx"));
+  } catch {
+    return [];
+  }
+};
+
 /**
- * RECURSIVELY, which the first attempt was not — and the build said so:
+ * THE BUILD ASSERTS THE QUESTION THE RUNTIME WILL ASK, NOT A QUESTION OF ITS OWN.
+ *
+ * The first attempt checked its own idea of where the weights go, flatly, and failed on a cache
+ * that was in fact complete:
  *
  *     [PrefetchCLIP] image tower cached
  *     [PrefetchCLIP] text tower cached
  *     [PrefetchCLIP] FAILED: no .onnx
  *
- * Both towers were cached correctly. @xenova/transformers writes the weights to
- * `<model>/onnx/model_quantized.onnx` and leaves only JSON config in the model directory, so a
- * flat listing finds nothing. `clipModelExistsLocally` asked the same question the same wrong
- * way and has answered false for every cached model it was ever given; this build is what
- * surfaced it, and both are fixed together.
+ * @xenova/transformers writes `<model>/onnx/model_quantized.onnx` and leaves only JSON config in
+ * the model directory. `clipModelExistsLocally` asked the same question the same wrong way, so it
+ * has answered false for every cached model it was ever given — printing "not in cache" on intact
+ * caches and never letting the loader work offline.
+ *
+ * Mirroring the runtime rule exactly — same directory, same recursion — is what makes a green
+ * build mean "the worker will find this". A check with its own opinion can pass while the runtime
+ * still downloads, which is the failure this whole layer exists to prevent.
  */
-const onnx = fs.existsSync(modelDir)
-  ? fs.readdirSync(modelDir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".onnx"))
-  : [];
-if (onnx.length === 0) {
-  console.error(
-    `[PrefetchCLIP] FAILED: no .onnx anywhere under ${modelDir} — runtime would download anyway`
+const modelDir = path.join(cacheDir, ...CLIP_MODEL.split("/"));
+const asRuntimeSeesIt = listOnnx(modelDir);
+
+if (asRuntimeSeesIt.length > 0) {
+  console.log(
+    `[PrefetchCLIP] done — ${asRuntimeSeesIt.length} onnx file(s) where the runtime looks: ` +
+      asRuntimeSeesIt.join(", ")
   );
-  process.exit(1);
+  process.exit(0);
 }
-console.log(`[PrefetchCLIP] done — ${onnx.length} onnx file(s): ${onnx.join(", ")}`);
+
+/**
+ * FAILING LOUDLY, AND WITH THE ANSWER IN IT.
+ *
+ * Two different problems produce an empty result: nothing was written at all, or it was written
+ * somewhere this build did not expect. They need different fixes and `FAILED: no .onnx` cannot
+ * tell them apart — which cost a deploy cycle already. So the cache is searched whole, and when
+ * files exist elsewhere their real location is printed: the next build log then names the path to
+ * align the runtime with, instead of inviting another guess.
+ */
+console.error(`[PrefetchCLIP] FAILED: no .onnx under ${modelDir}, where the runtime looks.`);
+const anywhere = listOnnx(cacheDir);
+if (anywhere.length > 0) {
+  console.error(
+    `[PrefetchCLIP] but ${anywhere.length} .onnx file(s) DID land under ${cacheDir}:`
+  );
+  for (const f of anywhere.slice(0, 20)) console.error(`[PrefetchCLIP]   ${f}`);
+  console.error(
+    "[PrefetchCLIP] the weights are cached; clipModelExistsLocally must be pointed at that path."
+  );
+} else {
+  console.error(`[PrefetchCLIP] and none anywhere under ${cacheDir} either. Tree:`);
+  try {
+    for (const f of fs
+      .readdirSync(cacheDir, { recursive: true, encoding: "utf8" })
+      .slice(0, 40)) {
+      console.error(`[PrefetchCLIP]   ${f}`);
+    }
+  } catch (err) {
+    console.error(`[PrefetchCLIP]   (${cacheDir} is not readable: ${err.message})`);
+  }
+}
+process.exit(1);
