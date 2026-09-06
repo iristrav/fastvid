@@ -12,7 +12,7 @@ import {
   resolveBeatRegionLock,
 } from "./vidrushQuality";
 
-import type { ClipRejectEntry } from "./clipRejectAudit";
+import type { ClipRejectAudit, ClipRejectEntry } from "./clipRejectAudit";
 import { summarizeClipRejectAudit } from "./clipRejectAudit";
 import type { ClipAdoptEntry, AdoptAuditSummary } from "./clipAdoptAudit";
 import { summarizeAdoptAudit } from "./clipAdoptAudit";
@@ -388,6 +388,24 @@ export function buildVideoQualityReport(
     pipelineSec?: number;
     stockBeatsUsed?: number;
     rejectAudit?: ClipRejectEntry[];
+    /**
+     * RENDER 569 — THE SAME AUDIT, UNCAPPED.
+     *
+     * `rejectAudit` above is the BOUNDED detail: named examples, capped at 400 entries and filled
+     * chronologically. Passing it to `summarizeClipRejectAudit` takes that function's array
+     * branch, which counts entries — so the render-wide breakdown was a count of the first 400
+     * refusals, not of all of them.
+     *
+     * Render 569 recorded 515 and dropped 115, and its export-gate message read
+     * "400 rejected. Top reject reasons: shortlist_full=179, FUNNEL_WITHOUT_EVIDENCE=162, …" —
+     * numbers summing exactly to the cap, which is what a truncated tally looks like.
+     *
+     * RONDE 70 built the uncapped per-beat tally precisely because a chronological cap made late
+     * beats report refusals they had earned as zero, and `summarizeClipRejectAudit`'s object
+     * branch reads it. The per-beat counts were moved over; this report was not. Same seam,
+     * one route short.
+     */
+    rejectTally?: ClipRejectAudit;
     adoptAudit?: ClipAdoptEntry[];
     archiveOnly?: boolean;
     fastShort?: boolean;
@@ -550,9 +568,12 @@ export function buildVideoQualityReport(
     warnings.push(`${criticalGeoViolations.length} kritieke geo-fout(en).`);
   }
 
-  const rejectSummary = opts?.rejectAudit?.length
-    ? summarizeClipRejectAudit(opts.rejectAudit)
-    : undefined;
+  /** The complete tally when it was handed over; the bounded entries only as a fallback. */
+  const rejectSummary = opts?.rejectTally
+    ? summarizeClipRejectAudit(opts.rejectTally)
+    : opts?.rejectAudit?.length
+      ? summarizeClipRejectAudit(opts.rejectAudit)
+      : undefined;
   const topRejects = opts?.rejectAudit?.slice(0, 12);
 
   /**

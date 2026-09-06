@@ -40853,6 +40853,8 @@ async function _runVideoPipelineInner(
       pipelineSec: Math.round((Date.now() - t0) / 1000),
       stockBeatsUsed: visualDedup.stockBeatsUsed,
       rejectAudit: visualDedup.clipRejectAudit.entries,
+      /** The uncapped tally beside the bounded examples — see `rejectTally` in the report. */
+      rejectTally: visualDedup.clipRejectAudit,
       adoptAudit: visualDedup.clipAdoptAudit,
       archiveOnly: curatedArchiveOnlyVisuals(),
       fastShort: isFastShortVideoLength(videoLength),
