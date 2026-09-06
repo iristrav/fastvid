@@ -58,6 +58,7 @@ import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./ti
 import { rehydrateTimelineAssets, formatRehydrationSummary } from "./assetRehydrator";
 import { productionRehydrateDeps } from "./rehydrationDeps";
 import { renderTimeline, checkRenderedFile, type GraphicsOverlayFile } from "./timelineRenderer";
+import { formatOverlayInk } from "./graphicsOverlayInk";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { storagePutFromFile } from "./storage";
 import { checkFileAvSync, formatAvSync, type AvSyncResult } from "./avSyncCheck";
@@ -517,6 +518,19 @@ export async function runRenderJob(params: {
           ? " (the overlay route was available but did not produce a file — see skipped)"
           : "")
     );
+    /**
+     * RONDE 112 — the one graphics number that is an OBSERVATION rather than a prediction.
+     *
+     * `planned` and `rendered` both come from asking the vocabulary what it can draw. This line
+     * comes from reading the alpha channel of the file that was composited. It is printed only on
+     * the route that composites one, because on the libass route there is no overlay to read and a
+     * line saying so would be noise pretending to be a measurement.
+     */
+    if (rendered.graphicsOverlayInk) {
+      console.log(
+        `[RenderJob] job=${job.id} ${formatOverlayInk(rendered.graphicsOverlayInk)}`
+      );
+    }
     /**
      * WHAT THIS RENDER ACTUALLY EXECUTED — one line, everything the renderer measured.
      *

@@ -47,6 +47,7 @@ import {
   type TimelineVideoClip,
 } from "./projectTimeline";
 import { docGradeSourceKindForProvider } from "./documentaryStyle";
+import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import {
   buildAudioGraph,
   buildTransitionGraph,
@@ -136,6 +137,18 @@ export type RenderedTimeline = {
    * an operator looking at a video that suddenly lost its lower thirds needs to know which one ran.
    */
   graphicsRenderer: GraphicsRenderer;
+  /**
+   * RONDE 112 — whether the composited overlay actually carried visible alpha.
+   *
+   * Null on every route that composites no overlay, which is not the same as an overlay with no
+   * ink: `graphicsRenderer` already says which route ran, and this field only ever describes the
+   * `remotion` one. `status: "unknown"` means the probe could not read the file — a measurement
+   * that did not happen, never a measurement that came back empty.
+   *
+   * It says the OVERLAY has ink. It does not say any particular graphic is in it, and it does not
+   * say the composite kept it: the overlay is one file with no per-graphic markers.
+   */
+  graphicsOverlayInk: OverlayInkResult | null;
   skipped: string[];
   ffmpegCommands: number;
   /**
@@ -863,6 +876,7 @@ export async function renderTimeline(params: {
   let withText = silent;
   let graphicsRenderer: GraphicsRenderer = elements.length > 0 ? "ffmpeg_ass" : "none";
   let overlay: GraphicsOverlayFile | null = null;
+  let overlayInk: OverlayInkResult | null = null;
   if (params.graphicsOverlay) {
     try {
       overlay = await params.graphicsOverlay(timeline);
@@ -883,6 +897,34 @@ export async function renderTimeline(params: {
 
   if (overlay && fs.existsSync(overlay.overlayPath)) {
     skipped.push(...overlay.skipped);
+    /**
+     * ── RONDE 112 — does this overlay carry any ink? ────────────────────────────────────────
+     *
+     * The gate above is `existsSync`. A written, entirely transparent overlay passes it, gets
+     * composited, contributes nothing, and every count upstream still reports the graphics as
+     * rendered — because those counts are predicates over the plan, not observations of a file.
+     *
+     * The probe runs BEFORE the composite so its answer describes the input the composite was
+     * given. It cannot fail the render: `probeOverlayInk` never throws, and a probe that could not
+     * read the file answers `unknown` rather than inventing a "no".
+     */
+    overlayInk = await probeOverlayInk(overlay.overlayPath, ffmpeg(), (bin, args) =>
+      execFileAsync(bin, args as string[], { maxBuffer: 1024 * 1024 * 16 })
+    );
+    /**
+     * §2 again: a graphics layer that drew nothing is exactly the kind of thing `skipped` exists to
+     * carry, so it reaches the render log and the job record instead of only this return value.
+     * `unknown` is reported too, and worded as an unread measurement — not as an absence of ink.
+     */
+    if (overlayInk.status === "transparent") {
+      skipped.push(
+        `graphics overlay was composited but contains no visible ink in ${overlayInk.framesSampled} sampled frame(s)`
+      );
+    } else if (overlayInk.status === "unknown") {
+      skipped.push(
+        `graphics overlay ink could not be measured — ${overlayInk.reason ?? "no reason recorded"}`
+      );
+    }
     withText = path.join(workDir, "with_graphics.mp4");
     await execFileAsync(
       ffmpeg(),
@@ -1046,6 +1088,7 @@ export async function renderTimeline(params: {
       c.camera ?? { type: "camera_hold" }, fmt, Math.max(0.04, c.timelineEnd - c.timelineStart)
     ) !== null).length,
     graphicsRenderer,
+    graphicsOverlayInk: overlayInk,
     skipped,
     ffmpegCommands: commands,
     /**
