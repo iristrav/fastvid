@@ -59,6 +59,26 @@ const AT_IMPORT: NodeJS.ProcessEnv = {
 export function clipModelCacheLocation(explicitEnv?: NodeJS.ProcessEnv): ClipModelCacheLocation {
   /** A caller that names an environment gets exactly that one; the default is the real one, unedited. */
   const env: NodeJS.ProcessEnv = explicitEnv ?? { ...process.env, ...AT_IMPORT };
+
+  /**
+   * THE THIRD WAY A CACHE CAN BE PERMANENT: it was fetched into the image at build time.
+   *
+   * A mounted volume is not the only durable answer, and on this deployment it is the worse one —
+   * a Railway service with a volume is capped at one replica, and the worker runs three. The
+   * Dockerfile fetches the weights during the build instead, so every replica of every deploy
+   * starts with them on disk and no volume is involved at all.
+   *
+   * Declared by the image rather than guessed from the path, because "under /opt" is not a fact
+   * about durability and a rule that pretended otherwise would be the same kind of unchecked claim
+   * this module exists to stop. The env var is set in the same layer that does the fetching.
+   */
+  if (env.CLIP_MODEL_PREBAKED?.trim().toLowerCase() === "true") {
+    const dir = env.TRANSFORMERS_CACHE?.trim() || AT_IMPORT.TRANSFORMERS_CACHE?.trim();
+    if (dir) {
+      return { dir, persists: true, why: "baked into the image at build time — no volume needed" };
+    }
+  }
+
   const volume = env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
   /**
    * A path is persistent only if it sits inside the volume THIS host actually has mounted.

@@ -146,8 +146,28 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/package.json ./package.json
 COPY start.sh worker-start.sh ./
+COPY scripts/prefetch-clip-model.mjs ./scripts/
 
 RUN chmod +x start.sh worker-start.sh
+
+# ─── the CLIP model, baked in ────────────────────────────────────────────────
+# The worker log of 2026-09-05 shows eleven boots in fifty minutes and eleven
+# 350MB downloads of the same model, because the cache fell through to
+# os.tmpdir() and the container discards it.
+#
+# A Railway volume is the obvious remedy and the wrong one: a service with a
+# volume is capped at ONE replica, and this worker runs three. Trading two
+# thirds of the render capacity to avoid a download is a bad exchange, and the
+# delivered MP4 already goes to S3/R2, so the volume buys little else.
+#
+# Fetched once here instead. Every replica of every deploy starts with the
+# weights already on disk, no volume is needed, and the deployment's
+# configuration does not change. CLIP_MODEL_PREBAKED is what tells the preflight
+# this directory is permanent by construction rather than by a mount — see
+# clipModelCacheLocation.
+ENV TRANSFORMERS_CACHE=/opt/models/transformers-cache
+ENV CLIP_MODEL_PREBAKED=true
+RUN node scripts/prefetch-clip-model.mjs
 
 # Create uploads directory for local storage fallback
 RUN mkdir -p /app/uploads

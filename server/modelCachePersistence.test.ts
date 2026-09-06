@@ -26,6 +26,8 @@
  * hold that the code never CLAIMS persistence it has not checked, and that the preflight reports
  * the true answer where an operator is already looking.
  */
+import * as fs from "fs";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
 
 import { clipModelCacheLocation } from "./clipModelCache";
@@ -101,6 +103,58 @@ describe("where the model is kept", () => {
         RAILWAY_VOLUME_MOUNT_PATH: "/mnt/vol",
       }).persists
     ).toBe(false);
+  });
+});
+
+describe("a model baked into the image", () => {
+  /**
+   * The remedy this deployment actually took. A Railway volume caps the service at one replica and
+   * the worker runs three, so the weights are fetched during the image build instead — see the
+   * Dockerfile layer that sets both of these variables.
+   */
+  it("is permanent without any volume", () => {
+    const where = clipModelCacheLocation({
+      CLIP_MODEL_PREBAKED: "true",
+      TRANSFORMERS_CACHE: "/opt/models/transformers-cache",
+    });
+    expect(where.persists).toBe(true);
+    expect(where.dir).toBe("/opt/models/transformers-cache");
+    expect(where.why).toMatch(/baked into the image/);
+  });
+
+  it("does not need a volume variable to say so", () => {
+    expect(
+      clipModelCacheLocation({
+        CLIP_MODEL_PREBAKED: "true",
+        TRANSFORMERS_CACHE: "/opt/models/transformers-cache",
+      }).persists
+    ).toBe(true);
+  });
+
+  /**
+   * The claim needs BOTH halves. A marker with no directory names nothing, and this module's whole
+   * rule is that persistence is never asserted without something to point at.
+   */
+  it("a marker with no directory falls through to the normal rules", () => {
+    const where = clipModelCacheLocation({ CLIP_MODEL_PREBAKED: "true" });
+    expect(where.persists).toBe(false);
+    expect(where.why).toMatch(/no volume is mounted/);
+  });
+
+  it.each(["false", "", "1", "yes"])("is not claimed for a marker of %j", (value) => {
+    const where = clipModelCacheLocation({
+      CLIP_MODEL_PREBAKED: value,
+      TRANSFORMERS_CACHE: "/opt/models/transformers-cache",
+    });
+    expect(where.persists).toBe(false);
+  });
+
+  /** The build layer and the runtime claim have to name the same directory. */
+  it("the Dockerfile sets both variables in one place", () => {
+    const df = fs.readFileSync(path.join(__dirname, "..", "Dockerfile"), "utf8");
+    expect(df).toContain("ENV TRANSFORMERS_CACHE=/opt/models/transformers-cache");
+    expect(df).toContain("ENV CLIP_MODEL_PREBAKED=true");
+    expect(df).toContain("RUN node scripts/prefetch-clip-model.mjs");
   });
 });
 
