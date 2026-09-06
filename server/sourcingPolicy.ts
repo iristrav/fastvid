@@ -1450,15 +1450,13 @@ export function minQualityExportScore(videoLength?: string | null): number {
  * must read the same as "true"; otherwise a stray capital silently disables a whole source.
  * RONDE 18: ENABLE_YOUTUBE_SOURCING="TRUE" fails a bare `=== "true"` and turns YouTube fully off,
  * even though the operator clearly meant to enable it.
+ *
+ * Re-exported from ./envFlag rather than defined here since render 569, where the preflight's own
+ * route table read the same variable with a bare `=== "true"` and reported OFF for a source the
+ * pipeline had switched on. One definition, so a report cannot contradict the code it describes.
  */
-export function envFlagIsOn(name: string): boolean {
-  return (process.env[name] ?? "").trim().toLowerCase() === "true";
-}
-
-/** Opt-out flag: on unless explicitly set to "false" (case/whitespace-tolerant). */
-export function envFlagIsNotOff(name: string): boolean {
-  return (process.env[name] ?? "").trim().toLowerCase() !== "false";
-}
+export { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
+import { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
 
 /** YouTube Creative Commons clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
 export function youtubeSourcingEnabled(): boolean {

@@ -33,6 +33,7 @@
  */
 import { getStorageBackend } from "./storageBackend";
 import { clipModelCacheLocation } from "./clipModelCache";
+import { envFlagIsOn } from "./envFlag";
 
 /* ═══════════════════════ what production needs ═══════════════════════ */
 
@@ -497,7 +498,21 @@ export async function productionPreflight(
 ): Promise<PreflightReport> {
   const capabilities = CAPABILITIES.map((c) => checkCapability(c, env));
   const host = await checkHost(probes, env);
-  const routes = ROUTE_FLAGS.map((flag) => ({ flag, on: (env[flag] ?? "") === "true" }));
+  /**
+   * RENDER 569 — THE REPORT AND THE PIPELINE READ THE SAME VARIABLE DIFFERENTLY.
+   *
+   * Six boots of that worker printed `[Preflight] OFF ENABLE_YOUTUBE_SOURCING`, and the same log
+   * printed `[Fastvid] YouTube clip sourcing: enabled youtube=ready`. Both were right about their
+   * own reading: `youtubeSourcingEnabled()` goes through `envFlagIsOn`, which trims and
+   * lowercases, while this line did a bare `=== "true"`. A variable set to `TRUE`, or with a
+   * trailing space, is ON for the pipeline and OFF in the report describing it.
+   *
+   * RONDE 18 already learned this — "a stray capital silently disables a whole source" — and
+   * fixed the pipeline's reader. The preflight kept its own, which makes it the one place an
+   * operator looks that could tell them the opposite of the truth. Same reader now, from
+   * ./envFlag, which is import-free precisely so this module's CLI can still run from anywhere.
+   */
+  const routes = ROUTE_FLAGS.map((flag) => ({ flag, on: envFlagIsOn(flag, env) }));
 
   const blockers: string[] = [];
   const degradations: string[] = [];
