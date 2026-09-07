@@ -35,6 +35,22 @@ import {
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
 import { bindContentKeyResolver, type ClipAdoptEntry } from "./clipAdoptAudit";
+
+/**
+ * THIS FILE STUBS THE RESOLVER ON PURPOSE — AND THAT IS WHY IT COULD NOT SEE THE 573 DEFECT.
+ *
+ * The stub below (`(clipPath) => clipPath === CLIP ? KEY : ""`) is the right tool for what these
+ * tests assert: that the LOOKUP finds a verdict filed under a slot number once the asset identity
+ * matches. Holding the identity constant is what isolates the lookup.
+ *
+ * But it also meant nothing here ever ran the production `clipContentKey`, whose answer depends on
+ * the path it is handed — so a reader computing the key from a bare basename, and a writer
+ * computing it from a full path, disagreed in production while every test here stayed green.
+ *
+ * `visionVerificationIdentity.test.ts` covers that half with the real resolver and real files on
+ * disk. The two are deliberately separate: this file must keep its stub, or it stops testing the
+ * lookup in isolation.
+ */
 import { buildBeatVisualStatuses, formatBeatVisualProblems } from "./beatVisualStatus";
 
 const KEY = "ww2:57364";

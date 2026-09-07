@@ -19739,9 +19739,22 @@ export function logSourcingMetrics(cache: SourcingCache | undefined, videoId?: n
 const PROVIDER_ASSET_TAG_RE = /__pid_([a-z_]+)-([0-9a-f]{16})(?=\.[A-Za-z0-9]+$)/;
 
 export function clipContentKey(filePath: string): string {
-  const curatedId = curatedClipPathAssetId(filePath);
-  if (curatedId != null) return curatedAssetContentKey(curatedId);
+  /**
+   * THE `_transformed` STRIP HAS TO HAPPEN BEFORE THE CURATED CHECK, NOT AFTER IT.
+   *
+   * `curatedClipPathAssetId` anchors on `_curated_a<id>[_still].mp4$`, so it does not match
+   * `..._curated_a900_transformed.mp4` — and the strip that exists for exactly that suffix ran on
+   * the NEXT line, one step too late. A transformed curated clip therefore missed the top rung and
+   * fell all the way to `file:<size>:<basename>`: the derived copy lost its parent's identity, and
+   * with it every verdict, eligibility record and dedup entry filed under `curated:asset:900`.
+   *
+   * Stripping first restores the rule this ladder is built on — a derived asset keeps its parent's
+   * identity — and changes nothing for a clip that was never transformed, where the two spellings
+   * are the same string.
+   */
   const base = path.basename(filePath).replace(/_transformed(?=\.mp4)/, "");
+  const curatedId = curatedClipPathAssetId(base);
+  if (curatedId != null) return curatedAssetContentKey(curatedId);
   const providerTag = base.match(PROVIDER_ASSET_TAG_RE);
   if (providerTag) return `${providerTag[1]}:${providerTag[2]}`;
   const vidMatch = base.match(/_vid(\d+)/);
@@ -37263,11 +37276,25 @@ export async function composeSceneVideoInner(
       // been recorded. clipContentKey already normalises those renames for dedup; using it here
       // makes the manifest and the audit agree on what a clip is.
       const key = clipContentKey(clipPath);
+      /**
+       * THE SECOND PLACE A KEY WAS RE-DERIVED FROM A BASENAME — found by the census this round.
+       *
+       * `clipContentKey(e.basename)` asks a different question than `clipContentKey(clipPath)`
+       * above: three of the resolver's rungs read the file, and a bare filename resolves to
+       * nothing on disk. So for exactly the clips this fallback exists to rescue — stills, and
+       * anything with no curated or provider tag — the two sides could not match, and the RONDE 51
+       * repair silently did not apply. `entry.contentKey` is the answer adoption already recorded
+       * with the full path in hand, so both sides now hold the same string.
+       *
+       * The basename spelling stays last, so an audit built before that field existed keeps the
+       * behaviour it had.
+       */
+      const keyOf = (e: ClipAdoptEntry): string => e.contentKey ?? clipContentKey(e.basename);
       const entry =
         audit.find((e) => e.sceneIndex === scene.index && e.basename === basename) ??
         audit.find((e) => e.basename === basename) ??
-        audit.find((e) => e.sceneIndex === scene.index && clipContentKey(e.basename) === key) ??
-        audit.find((e) => clipContentKey(e.basename) === key);
+        audit.find((e) => e.sceneIndex === scene.index && keyOf(e) === key) ??
+        audit.find((e) => keyOf(e) === key);
       /**
        * RONDE 87 — the manifest reports the LEDGER, and the filename guess is diagnostic only.
        *

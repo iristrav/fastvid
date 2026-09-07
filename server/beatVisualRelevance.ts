@@ -197,6 +197,40 @@ export function beatSlotKey(ctx: BeatVisualContext): string {
  */
 export type BeatRelevanceEntry = { ctx: BeatVisualContext; decision: BeatRelevanceDecision };
 
+/**
+ * IS THIS KEY AN ASSET IDENTITY, OR ONLY A FINGERPRINT OF ONE FILE?
+ *
+ * The render's key function returns a ladder. Its upper rungs — `curated:asset:<id>`,
+ * `<provider>:<id>`, `stock:vid:<n>`, `still:<sha256>` — name the ASSET, and survive a rename, a
+ * re-trim, a copy into another directory. Its lower rungs do not: `file:<size>:<basename>` is
+ * built from the file's own size and name, and the bare-basename rung below it is just a filename.
+ * Either one changes the moment the same asset is written somewhere else.
+ *
+ * `record()` has always refused to index the `file:` family for exactly that reason — indexing a
+ * key that cannot survive a copy would put a promise in the asset index that the index cannot
+ * keep. That refusal is correct and stays.
+ *
+ * What was missing is that the READER could not see the refusal. It received a non-empty `file:`
+ * string, concluded "this asset has an identity", found nothing under it, and reported
+ * `never_judged` — "the identity is known and the ledger holds no verdict for it". The truthful
+ * answer is `no_asset_key`: there was never an identity to file a verdict under. Two different
+ * findings, needing two different fixes, and the diagnostic built to separate them could not.
+ *
+ * So the rule lives here, once, next to the write that obeys it, and the reader asks it rather
+ * than re-deriving it from the string's shape. Nothing about what gets indexed changes.
+ */
+export function isCanonicalAssetKey(contentKey: string | null | undefined): boolean {
+  const key = contentKey?.trim();
+  if (!key) return false;
+  if (key.startsWith("file:")) return false;
+  /**
+   * A key with no scheme is the key function's last rung: `statSync` threw and it returned the
+   * bare basename. That is a filename, not an identity, and it is the shape the verification
+   * reader used to be handed for every clip whose path it did not have.
+   */
+  return key.includes(":");
+}
+
 export type BeatRelevanceLedger = {
   /** clip path -> the decision that let it through, so a later stage can ask what was decided. */
   byClipPath: Map<string, BeatRelevanceEntry>;
@@ -306,9 +340,9 @@ export async function checkBeatRelevance(
   const record = (decision: BeatRelevanceDecision): BeatRelevanceDecision => {
     const entry: BeatRelevanceEntry = { ctx, decision };
     ledger.byClipPath.set(clipPath, entry);
-    // A `file:`-family key is derived from the file's own size and name, so it does not survive a
-    // rename and indexing it would be a lie. Everything else identifies the asset, not the file.
-    if (contentKey && !contentKey.startsWith("file:")) ledger.byContentKey.set(contentKey, entry);
+    // Only an ASSET identity goes in the asset index — see `isCanonicalAssetKey`, which is the
+    // same rule the verification reader asks before it calls a missing verdict `never_judged`.
+    if (isCanonicalAssetKey(contentKey)) ledger.byContentKey.set(contentKey, entry);
     return decision;
   };
   /**

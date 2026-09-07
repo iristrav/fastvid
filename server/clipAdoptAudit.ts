@@ -27,6 +27,25 @@ export type ClipAdoptEntry = {
   visionScore10?: number;
   /** DB asset ID — only set for own_archive clips, used for editorial score feedback. */
   assetId?: number;
+  /**
+   * THE RENDER'S OWN KEY FOR THIS CLIP, TAKEN WHILE THE FULL PATH WAS STILL IN HAND.
+   *
+   * `basename` above is a filename with no directory, and the render's key function is
+   * path-dependent on three of its six rungs: a still hashes the file's bytes, the `file:` rung
+   * stats it, and the last rung is reached only when both of those throw. Recomputing the key from
+   * `basename` therefore answers a different question than the one vision asked — the two agree on
+   * a curated or provider-tagged clip and diverge on every other kind.
+   *
+   * That divergence is what `verificationForBeat` walked into: vision filed its verdict under
+   * `still:<sha>` and verification looked it up under `scene_1_b4_wiki_2.mp4`. This field closes it
+   * by recording the answer instead of re-deriving it — the same correction RENDER 571 made one
+   * function up, where the evidence line asked `isEligible(clipPath)` and the guard asked
+   * `isEligible(clipPath, key)`.
+   *
+   * Optional because it is only knowable inside a render that bound a resolver. Absent means the
+   * reader falls back to exactly what it did before, so no caller outside a render changes.
+   */
+  contentKey?: string;
 };
 
 export type AdoptAuditSummary = {
@@ -545,6 +564,8 @@ export function recordClipAdopt(
     visionScore10:
       typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
     assetId: typeof assetId === "number" ? assetId : undefined,
+    /** Resolved from the FULL path, which is the only place it is knowable. See the field's note. */
+    contentKey: contentKeyFor(audit, clipPath),
   };
   audit.push(entry);
   recordGoodClipAdoption(entry, assetId);

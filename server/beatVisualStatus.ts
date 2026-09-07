@@ -39,6 +39,7 @@ import * as path from "path";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import { contentKeyFor, representativeAdoptEntryPerBeat } from "./clipAdoptAudit";
 import type { BeatRelevanceLedger } from "./beatVisualRelevance";
+import { isCanonicalAssetKey } from "./beatVisualRelevance";
 
 /**
  * What kind of picture this beat ended up with.
@@ -364,8 +365,18 @@ export function buildBeatVisualStatuses(
   const out: BeatVisualStatus[] = [];
   for (const entry of byBeat.values()) {
     const coverage = coverageOfAdoptEntry(entry);
-    /** The render's own key for this file, from the resolver the audit was bound to. */
-    const assetKey = contentKeyFor(adoptAudit ?? [], entry.basename);
+    /**
+     * The render's own key for this file — the one adoption recorded, not one re-derived here.
+     *
+     * `entry.basename` carries no directory, and the resolver is path-dependent on its still,
+     * `file:` and last rungs, so re-deriving asks a different question than vision answered.
+     * `entry.contentKey` was taken at adoption time with the full path in hand and is the same
+     * string vision indexed under.
+     *
+     * The basename call stays as the second choice, so an audit built before this field existed —
+     * a test, a tool, a replay of an older render — keeps exactly the behaviour it had.
+     */
+    const assetKey = entry.contentKey ?? contentKeyFor(adoptAudit ?? [], entry.basename);
     const verification = verificationForBeat(
       ledger,
       entry.sceneIndex,
@@ -400,9 +411,15 @@ export function buildBeatVisualStatuses(
        * Two causes remain there and they need different fixes; see the note in
        * `formatBeatVisualProblems`.
        */
+      /**
+       * `isCanonicalAssetKey` rather than a bare truthiness test, so the two causes are actually
+       * told apart. A `file:` key and a bare basename are both non-empty strings and neither can
+       * be in the asset index — the write side refuses them — so calling them "the identity is
+       * known" made every such beat read `never_judged`, which is the answer for the OTHER cause.
+       */
       verdictGap:
         verification === "never_asked" && (coverage === "own_footage" || coverage === "subject_only")
-          ? assetKey
+          ? isCanonicalAssetKey(assetKey)
             ? "never_judged"
             : "no_asset_key"
           : undefined,
