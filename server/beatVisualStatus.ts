@@ -105,6 +105,14 @@ export type BeatVisualStatus = {
   verifiedOwnVisual: boolean;
   /** Short machine-readable reason when `verifiedOwnVisual` is false. */
   reason: string;
+  /**
+   * RONDE 117 — why no verdict was found, when a real picture ends up unjudged.
+   *
+   * Present only on a beat holding real footage whose verification came back `never_asked` after
+   * BOTH lookups failed. `no_asset_key` means nothing could have been looked up; `never_judged`
+   * means the identity is known and the ledger holds no verdict for it. Absent everywhere else.
+   */
+  verdictGap?: "no_asset_key" | "never_judged";
 };
 
 /**
@@ -329,13 +337,14 @@ export function buildBeatVisualStatuses(
   const out: BeatVisualStatus[] = [];
   for (const entry of byBeat.values()) {
     const coverage = coverageOfAdoptEntry(entry);
+    /** The render's own key for this file, from the resolver the audit was bound to. */
+    const assetKey = contentKeyFor(adoptAudit ?? [], entry.basename);
     const verification = verificationForBeat(
       ledger,
       entry.sceneIndex,
       entry.beatIndex,
       entry.basename,
-      /** The render's own key for this file, from the resolver the audit was bound to. */
-      contentKeyFor(adoptAudit ?? [], entry.basename)
+      assetKey
     );
     const verifiedOwnVisual = coverage === "own_footage" && verification === "verified_fit";
     out.push({
@@ -357,6 +366,17 @@ export function buildBeatVisualStatuses(
        * `neverAskedReason` was written for exactly this in RONDE 166 §9 and had no caller — the
        * warning built its own reason string and used the bare verification. It is the caller now.
        */
+      /**
+       * RONDE 117 — set only where a real picture came back unjudged after BOTH lookups failed.
+       * Two causes remain there and they need different fixes; see the note in
+       * `formatBeatVisualProblems`.
+       */
+      verdictGap:
+        verification === "never_asked" && (coverage === "own_footage" || coverage === "subject_only")
+          ? assetKey
+            ? "never_judged"
+            : "no_asset_key"
+          : undefined,
       reason: verifiedOwnVisual
         ? ""
         : verification === "never_asked"
@@ -574,6 +594,22 @@ export function formatBeatVisualProblems(statuses: readonly BeatVisualStatus[]):
       (s) =>
         `[BeatVisual] scene=${s.sceneIndex} beat=${s.beatIndex} ` +
         `visual_status=no_verified_visual coverage=${s.coverage} ` +
-        `verification=${s.verification} reason=${s.reason} source=${s.source}`
+        `verification=${s.verification} reason=${s.reason} source=${s.source}` +
+        /**
+         * RONDE 117 — WHICH OF THE TWO REMAINING CAUSES IT WAS.
+         *
+         * `real_footage_never_judged` on fifteen beats out of fifteen is the shape both VID-0572
+         * and VID-0573 reported, and it has exactly two causes left once the beat scan and the
+         * asset index have both come back empty. They need different fixes and the word cannot
+         * tell them apart, so the render now says which:
+         *
+         *   no_asset_key   the file has no identity the ledger can index — nothing could have
+         *                  been looked up, whatever was judged
+         *   never_judged   the identity is known and the ledger holds no verdict for it, so this
+         *                  picture really was never put to the editor
+         *
+         * Appended only where it applies, so every other line is byte-for-byte what it was.
+         */
+        (s.verdictGap ? ` gap=${s.verdictGap}` : "")
     );
 }

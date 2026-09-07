@@ -34,7 +34,7 @@ import {
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
 import { bindContentKeyResolver, type ClipAdoptEntry } from "./clipAdoptAudit";
-import { buildBeatVisualStatuses } from "./beatVisualStatus";
+import { buildBeatVisualStatuses, formatBeatVisualProblems } from "./beatVisualStatus";
 
 const KEY = "ww2:57364";
 const CLIP = "scene_0_b0_curated_a57364.mp4";
@@ -157,5 +157,44 @@ describe("what the fix does not change", () => {
     /** `verifiedOwnVisual` is coverage AND verification; a subject card fails the first half. */
     expect(status!.coverage).toBe("subject_only");
     expect(status!.verifiedOwnVisual).toBe(false);
+  });
+});
+
+/* ═══════════════ which of the two remaining causes it was ═══════════════ */
+
+describe("an unjudged real picture says which lookup came up empty", () => {
+  it("names never_judged when the asset is known and the ledger holds nothing for it", () => {
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), createBeatRelevanceLedger());
+    expect(status!.verification).toBe("never_asked");
+    expect(status!.verdictGap).toBe("never_judged");
+    expect(formatBeatVisualProblems([status!])[0]).toContain("gap=never_judged");
+  });
+
+  it("names no_asset_key when nothing could have been looked up at all", () => {
+    /** No resolver bound: the render cannot name this file's asset, so no lookup was possible. */
+    const audit: ClipAdoptEntry[] = [
+      { sceneIndex: 0, beatIndex: 0, source: "archive", basename: CLIP, beatText: "x" },
+    ];
+    const [status] = buildBeatVisualStatuses(audit, createBeatRelevanceLedger());
+    expect(status!.verdictGap).toBe("no_asset_key");
+    expect(formatBeatVisualProblems([status!])[0]).toContain("gap=no_asset_key");
+  });
+
+  it("says nothing at all when a verdict was found", () => {
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), judgedUnderSlot("fits"));
+    expect(status!.verdictGap).toBeUndefined();
+    /** Every line that was not about this gap is byte-for-byte what it was. */
+    const [refused] = buildBeatVisualStatuses(adoptedOnBeat0(), judgedUnderSlot("does_not_fit"));
+    expect(formatBeatVisualProblems([refused!])[0]).not.toContain("gap=");
+  });
+
+  it("stays off beats that had no picture to judge", () => {
+    const audit: ClipAdoptEntry[] = [
+      { sceneIndex: 0, beatIndex: 0, source: "rescue_placeholder", basename: "card.mp4", beatText: "x" },
+    ];
+    bindContentKeyResolver(audit, () => KEY);
+    const [status] = buildBeatVisualStatuses(audit, createBeatRelevanceLedger());
+    expect(status!.coverage).toBe("placeholder");
+    expect(status!.verdictGap).toBeUndefined();
   });
 });
