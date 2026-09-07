@@ -233,7 +233,15 @@ function verificationForBeat(
    * Optional so every existing caller keeps its exact behaviour; absent means the beat scan is
    * still the whole answer.
    */
-  adoptedContentKey?: string
+  adoptedContentKey?: string,
+  /**
+   * RONDE 118 — the narration this beat plays, which is what makes the borrow safe.
+   *
+   * See the note at the asset lookup below. Absent disables the lookup entirely: without it there
+   * is no way to tell a slot-numbered verdict about THIS beat from one earned under another
+   * beat's words, and the rule at a tie is to keep `never_asked`.
+   */
+  beatText?: string
 ): BeatVerification {
   if (!ledger) return "never_asked";
   let onThisBeat: BeatVerification | null = null;
@@ -275,7 +283,26 @@ function verificationForBeat(
    * a verdict that does not exist still reads `never_asked`.
    */
   const byAsset = adoptedContentKey ? ledger.byContentKey.get(adoptedContentKey) : undefined;
-  if (byAsset) return verificationOf(byAsset.decision);
+  /**
+   * ── RONDE 118: AND THE NARRATION HAS TO MATCH ───────────────────────────────────────────
+   *
+   * RONDE 117 shipped this lookup keyed on the asset alone, and that was too loose. A verdict is
+   * an answer to "does this picture belong under THESE WORDS", so the same picture can honestly
+   * be `fits` under one beat and `does_not_fit` under the next. Borrowing by asset identity alone
+   * would let beat 9's answer settle beat 3 — the cross-beat contamination this round forbids,
+   * and my own fix opened the door to it.
+   *
+   * The beat's TEXT closes it. The offset routes file the verdict under a technical index but
+   * under the beat's real words — `beatText: beatText ?? ""` at the guaranteed route,
+   * `beat.text` through `beatVisualContext` — so a slot-numbered verdict about this beat still
+   * matches here, while a verdict earned under different narration cannot.
+   *
+   * Exact string equality after trimming. No fuzzy matching, no prefix, no similarity: if the
+   * words are not the same words, the answer is not about this beat, and `never_asked` stands.
+   */
+  const wanted = (beatText ?? "").trim();
+  const recorded = (byAsset?.ctx.beatText ?? "").trim();
+  if (byAsset && wanted && recorded === wanted) return verificationOf(byAsset.decision);
   return "never_asked";
 }
 
@@ -344,7 +371,9 @@ export function buildBeatVisualStatuses(
       entry.sceneIndex,
       entry.beatIndex,
       entry.basename,
-      assetKey
+      assetKey,
+      /** The words this beat plays — the guard that keeps another beat's answer out. */
+      entry.beatText
     );
     const verifiedOwnVisual = coverage === "own_footage" && verification === "verified_fit";
     out.push({

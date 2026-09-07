@@ -30,6 +30,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBeatRelevanceLedger,
+  inheritBeatRelevance,
   recordExternalRelevanceVerdict,
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
@@ -196,5 +197,94 @@ describe("an unjudged real picture says which lookup came up empty", () => {
     const [status] = buildBeatVisualStatuses(audit, createBeatRelevanceLedger());
     expect(status!.coverage).toBe("placeholder");
     expect(status!.verdictGap).toBeUndefined();
+  });
+});
+
+/* ═══════════════ RONDE 118 — the narration has to match too ═══════════════ */
+
+/**
+ * A verdict answers "does this picture belong under THESE WORDS". RONDE 117 shipped the asset
+ * lookup keyed on identity alone, which would let one beat's answer settle another's — the
+ * contamination this round forbids. The beat's TEXT is the guard, and these are its tests.
+ */
+describe("a verdict earned under different narration is never borrowed", () => {
+  const judgedUnderOtherNarration = (): BeatRelevanceLedger => {
+    const ledger = createBeatRelevanceLedger();
+    recordExternalRelevanceVerdict(
+      ledger,
+      `/w/${CLIP}`,
+      KEY,
+      /** Same asset, same slot-shaped index — but a different beat's words. */
+      { sceneIndex: 0, beatIndex: 2000, beatText: "he dictated his final will" },
+      { verdict: "fits", depicts: "", reason: "test" }
+    );
+    return ledger;
+  };
+
+  it("keeps never_asked when the same asset was approved under another beat's words", () => {
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), judgedUnderOtherNarration());
+    expect(status!.verification).toBe("never_asked");
+    expect(status!.verifiedOwnVisual).toBe(false);
+  });
+
+  it("borrows it when the words are this beat's own, whatever index it was filed under", () => {
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), judgedUnderSlot("fits"));
+    expect(status!.verification).toBe("verified_fit");
+  });
+
+  it("will not match on a prefix, a substring or a near miss", () => {
+    const ledger = createBeatRelevanceLedger();
+    recordExternalRelevanceVerdict(
+      ledger, `/w/${CLIP}`, KEY,
+      { sceneIndex: 0, beatIndex: 2000, beatText: "berlin, april" },
+      { verdict: "fits", depicts: "", reason: "test" }
+    );
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), ledger);
+    expect(status!.verification).toBe("never_asked");
+  });
+
+  it("refuses to borrow when either side has no narration to compare", () => {
+    const ledger = createBeatRelevanceLedger();
+    recordExternalRelevanceVerdict(
+      ledger, `/w/${CLIP}`, KEY,
+      { sceneIndex: 0, beatIndex: 2000, beatText: "" },
+      { verdict: "fits", depicts: "", reason: "test" }
+    );
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), ledger);
+    expect(status!.verification).toBe("never_asked");
+  });
+});
+
+/* ═══════════════ H — the same asset after a rename or a trim ═══════════════ */
+
+describe("H — a derived copy carries the verdict its source earned", () => {
+  it("finds it through the real rename writer, under this beat's words", () => {
+    const ledger = createBeatRelevanceLedger();
+    /** Judged as downloaded, under a slot index — the shape the offset routes produce. */
+    recordExternalRelevanceVerdict(
+      ledger,
+      "/w/raw_download.mp4",
+      KEY,
+      { sceneIndex: 0, beatIndex: 2000, beatText: "berlin, april 1945" },
+      { verdict: "fits", depicts: "", reason: "test" }
+    );
+    /** Trimmed, and the pipeline's own writer carries the decision across the rename. */
+    inheritBeatRelevance(ledger, "/w/raw_download.mp4", `/w/${CLIP}`);
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), ledger);
+    expect(status!.verification).toBe("verified_fit");
+    expect(status!.verifiedOwnVisual).toBe(true);
+  });
+
+  it("and a refusal survives the same rename — a trim cannot launder it", () => {
+    const ledger = createBeatRelevanceLedger();
+    recordExternalRelevanceVerdict(
+      ledger, "/w/raw_download.mp4", KEY,
+      { sceneIndex: 0, beatIndex: 2000, beatText: "berlin, april 1945" },
+      { verdict: "does_not_fit", depicts: "", reason: "test" }
+    );
+    inheritBeatRelevance(ledger, "/w/raw_download.mp4", `/w/${CLIP}`);
+    const [status] = buildBeatVisualStatuses(adoptedOnBeat0(), ledger);
+    expect(status!.verification).toBe("verified_mismatch");
+    expect(status!.verifiedOwnVisual).toBe(false);
   });
 });
