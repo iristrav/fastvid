@@ -25,6 +25,7 @@
 import {
   buildCinematicSceneInputs,
   formatCinematicInputs,
+  type CinematicBeatOutcome,
   type EntityExtractors,
   type SceneFacts,
 } from "./cinematicPipelineInputs";
@@ -142,6 +143,11 @@ export type CinematicPlanParams = {
   scenes: SceneFacts[];
   extractors?: EntityExtractors;
   sceneOffsetsSec?: number[];
+  /**
+   * RONDE 121 — forwarded straight to the planner, so the caller that owns the lineage ledger can
+   * write `CINEMATIC_SELECTED` / `CINEMATIC_DROPPED`. This module decides nothing about it.
+   */
+  onBeatOutcome?: (outcome: CinematicBeatOutcome) => void;
   /** The persisted narration. RONDE 146 stores it; this never regenerates it. */
   voice?: { url: string; durationSec: number } | null;
   /** The measured TTS word boundaries, so captions land where the words are. §12. */
@@ -199,6 +205,7 @@ export async function planAndStoreCinematicTimeline(
       scenes: params.scenes,
       extractors: params.extractors,
       sceneOffsetsSec: params.sceneOffsetsSec,
+      onBeatOutcome: params.onBeatOutcome,
     });
     log.push(formatCinematicInputs(built));
     /**

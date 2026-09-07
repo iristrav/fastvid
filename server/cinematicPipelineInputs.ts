@@ -610,11 +610,46 @@ export function localFilesForTimelineClips(params: {
  * offset per scene, added to beat times that are already scene-relative. The RONDE 150 double-count
  * cannot recur here because a per-beat offset is not expressible in this shape.
  */
+/**
+ * RONDE 121 — THE TWO ENDINGS THIS PLANNER DECIDES, HANDED TO WHOEVER KEEPS THE RECORD.
+ *
+ * ── What was measured ───────────────────────────────────────────────────────────────────────
+ *
+ * `CINEMATIC_SELECTED` and `CINEMATIC_DROPPED` are declared stages of a clip's life and RONDE
+ * 120's census found that production writes NEITHER, in any render. So `lifecyclesOf` reports
+ * `cinematicSelected: false, cinematicDropped: false` for every asset ever — while render 572
+ * dropped six beats at exactly this step and said so on the console. The ledger's own note claims
+ * these "are written from `videoPipeline`", and that never happened.
+ *
+ * A clip the planner drops therefore reaches the audit with no cinematic ending at all, and lands
+ * among the `unexplained` nobody has been able to name.
+ *
+ * ── Why a sink and not the ledger ───────────────────────────────────────────────────────────
+ *
+ * This module is deliberately decoupled from the ledger — it works on plain `AdoptionFacts`, and
+ * three rounds of notes say to keep it that way. So it does not learn about lineage; it announces
+ * what it decided, the way `resolveMedia` and `graphicsOverlay` are injected elsewhere in this
+ * codebase. The caller that owns the ledger writes the stage.
+ *
+ * Optional, so every existing caller — and every test — behaves exactly as before.
+ */
+export type CinematicBeatOutcome = {
+  stage: "CINEMATIC_SELECTED" | "CINEMATIC_DROPPED";
+  /** The file the beat was planned around, or null when no clip was adopted at all. */
+  clipPath: string | null;
+  sceneIndex: number;
+  beatIndex: number;
+  /** Present on a drop: the same reason the log line and the `dropped` list carry. */
+  reason?: string;
+};
+
 export function buildCinematicSceneInputs(params: {
   scenes: SceneFacts[];
   extractors?: EntityExtractors;
   /** The scene's start on the whole video's clock, when the render measured it from the TTS. */
   sceneOffsetsSec?: number[];
+  /** See `CinematicBeatOutcome`. Never throws into the planner: the caller wraps its own writer. */
+  onBeatOutcome?: (outcome: CinematicBeatOutcome) => void;
 }): CinematicInputsResult {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
@@ -669,6 +704,10 @@ export function buildCinematicSceneInputs(params: {
       const adopted = sceneFacts.clips[beatIndex] ?? null;
       if (!adopted) {
         dropped.push(`${beatId}: no clip was adopted for this beat`);
+        params.onBeatOutcome?.({
+          stage: "CINEMATIC_DROPPED", clipPath: null,
+          sceneIndex: scene.index, beatIndex, reason: "NO_ADOPTED_CLIP",
+        });
         /** No asset to name: there was nothing here to lose. */
         console.log(
           `[CinematicDrop] scene=${scene.index} beat=${beatIndex} asset=none ` +
@@ -693,12 +732,20 @@ export function buildCinematicSceneInputs(params: {
           `[CinematicDrop] scene=${scene.index} beat=${beatIndex} ` +
             `${assetLabel(adopted.adoption)} reason=NOT_REHYDRATABLE`
         );
+        params.onBeatOutcome?.({
+          stage: "CINEMATIC_DROPPED", clipPath: adopted.facts.localPath,
+          sceneIndex: scene.index, beatIndex, reason: "NOT_REHYDRATABLE",
+        });
         return;
       }
 
       const durationSec = Math.max(0, end - start);
       if (durationSec <= 0) {
         dropped.push(`${beatId}: the beat has no voice window and no hold length`);
+        params.onBeatOutcome?.({
+          stage: "CINEMATIC_DROPPED", clipPath: adopted.facts.localPath,
+          sceneIndex: scene.index, beatIndex, reason: "NO_DURATION",
+        });
         console.log(
           `[CinematicDrop] scene=${scene.index} beat=${beatIndex} ` +
             `${assetLabel(adopted.adoption)} reason=NO_VOICE_WINDOW`
@@ -717,6 +764,11 @@ export function buildCinematicSceneInputs(params: {
         `[CinematicSelected] scene=${scene.index} beat=${beatIndex} ` +
           `${assetLabel(adopted.adoption)} start=${start.toFixed(2)} duration=${durationSec.toFixed(2)}`
       );
+
+      params.onBeatOutcome?.({
+        stage: "CINEMATIC_SELECTED", clipPath: adopted.facts.localPath,
+        sceneIndex: scene.index, beatIndex,
+      });
 
       if (adopted.facts.durationSec != null) stats.withProbe++;
       if (adopted.adoption?.sourceInSec != null) stats.withTrim++;

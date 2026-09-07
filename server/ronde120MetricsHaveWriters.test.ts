@@ -141,7 +141,17 @@ function stageIsWritten(stage: string): boolean {
 /**
  * The stages no production code writes, as measured today.
  *
- * These three are a REAL defect, not an accepted state. `lifecyclesOf` reports
+ * ── RONDE 121 shrank this list from three to one ────────────────────────────────────────────
+ *
+ * `CINEMATIC_SELECTED` and `CINEMATIC_DROPPED` now have a writer: the planner announces each
+ * beat's ending through an injected sink and `videoPipeline` files the stage, where the ledger is
+ * in scope. `hasTerminalOutcome` already treated CINEMATIC_DROPPED as an ending — the rule had
+ * been written and was waiting for a caller that never came — so a planner-dropped clip now
+ * leaves the audit explained instead of unexplained.
+ *
+ * `DELIVERED` remains. It belongs to the render side, not the planner, and nothing writes it.
+ *
+ * What follows describes the defect as it was found, and is kept because the list may only shrink. `lifecyclesOf` reports
  * `cinematicSelected`, `cinematicDropped` and `delivered` for every asset of every render, and
  * all three are permanently false — while render 572 dropped six beats at exactly that step and
  * said so on the console:
@@ -157,7 +167,7 @@ function stageIsWritten(stage: string): boolean {
  * The list is an exact equality on purpose: a fourth stage joining it fails here, and repairing
  * one of these fails here too until the list is shortened. It may only ever shrink.
  */
-const STAGES_WITH_NO_PRODUCTION_WRITER = ["CINEMATIC_SELECTED", "CINEMATIC_DROPPED", "DELIVERED"];
+const STAGES_WITH_NO_PRODUCTION_WRITER = ["DELIVERED"];
 
 describe("the lineage stages production actually writes", () => {
   it("is exactly the vocabulary minus the three known gaps", () => {

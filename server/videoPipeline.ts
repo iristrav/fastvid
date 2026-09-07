@@ -43225,6 +43225,30 @@ async function _runVideoPipelineInner(
               }),
             };
           }),
+          /**
+           * RONDE 121 — THE PLANNER'S TWO ENDINGS, WRITTEN DOWN AT LAST.
+           *
+           * `CINEMATIC_SELECTED` and `CINEMATIC_DROPPED` have been declared stages of a clip's
+           * life for rounds, and RONDE 120's census found that production wrote NEITHER — so
+           * `lifecyclesOf` reported both as false for every asset of every render, while render
+           * 572 dropped six beats at that exact step and said so only on the console. A clip the
+           * planner dropped therefore reached the audit with no cinematic ending at all, which is
+           * one source of the `unexplained` assets nobody could name.
+           *
+           * This is the caller the ledger's own note said existed. The planner announces what it
+           * decided; the writing happens here, where the ledger is in scope — the planner stays
+           * decoupled from lineage, as three rounds of its notes ask.
+           *
+           * A path the ledger never saw resolves to nothing and writes nothing, which is the
+           * honest outcome: a beat planned around a file with no record cannot gain one here.
+           */
+          onBeatOutcome: (o) => {
+            if (!o.clipPath) return;
+            visualDedup.sourcingCache?.lineage?.recordEventForPath(o.clipPath, o.stage, {
+              status: "OK",
+              reason: o.reason,
+            });
+          },
           /** The pipeline's OWN extractors, injected — never a second copy (§28). */
           extractors: {
             people: (text) => extractPersonNamesFromText(text),
