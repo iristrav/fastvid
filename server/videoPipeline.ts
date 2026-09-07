@@ -246,6 +246,7 @@ import {
   isShortlisted,
   noteEligible as noteBeatShortlistEligible,
   noteNotAsked,
+  noteRanked,
   noteRetrieved,
   noteVisionAsked,
   noteVisionOutcome,
@@ -23281,6 +23282,29 @@ async function adoptClip(
   );
   // RONDE 67: a working copy, because the loop below appends to it — see the reprieve.
   const finalPaths = [...tasteResult.rankedPaths];
+  /**
+   * RONDE 119 — THE COUNTER THAT SAID ZERO BECAUSE NOBODY CALLED IT.
+   *
+   * ── What it cost ────────────────────────────────────────────────────────────────────────
+   *
+   * Every beat of render 572 reported `ranked=0` beside `eligible=40` and `shortlisted=8/8`, and
+   * that zero was read — by me, in RONDE 117 — as "the shortlist admits whatever arrives first,
+   * so the eight questions are spent on the first eight candidates". It is the wrong reading.
+   * `noteRanked` was written for this, exported, documented, and never called once: the number
+   * was not measuring an unranked funnel, it was measuring nothing at all.
+   *
+   * `finalPaths` here IS the ranked order — `applyDocumentaryTasteModel` over the asset
+   * director's `rankedPaths` — and the loop below walks it from the top. So on this route the
+   * eight candidates put to the editor are the top eight, not the first eight to arrive.
+   *
+   * ── Why the number still matters ────────────────────────────────────────────────────────
+   *
+   * Because this is one route of several, and the shortlist is shared across all of them. A
+   * rescue ladder that spends slots before this loop runs would leave `shortlisted=8` with
+   * `ranked` far below it — and that gap, which nothing could previously show, is the whole
+   * question of whether the editor is being asked about the best pictures or merely the earliest.
+   */
+  noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length);
   /**
    * Candidates the picture gate refused, which get one more turn at the very end.
    *
