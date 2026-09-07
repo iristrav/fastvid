@@ -42858,6 +42858,8 @@ async function _runVideoPipelineInner(
       const verdict = checkStillnessLimit(stillness, stillImageMaxSec());
       console.log(formatStillnessReport(`video ${videoId} final.mp4`, stillness, verdict));
       qualityReport.stillness = {
+        // True until the cutover block flips it — see `measuredOn` in videoQualityReport.ts.
+        measuredOn: "delivered_file",
         durationSec: stillness.durationSec,
         longestStillSec: stillness.longestStillSec,
         longestStillStartSec: stillness.longestStillStartSec,
@@ -42903,6 +42905,7 @@ async function _runVideoPipelineInner(
       const repeatVerdict = checkRepeatLimit(repeats);
       console.log(formatRepeatReport(`video ${videoId} final.mp4`, repeats, repeatVerdict));
       qualityReport.repeats = {
+        measuredOn: "delivered_file",
         distinctPictures: repeats.distinctPictures,
         repeatedPictures: repeats.repeats.length,
         repeatedSec: repeats.repeatedSec,
@@ -43710,6 +43713,34 @@ async function _runVideoPipelineInner(
                     for (const w of spot.warnings) {
                       qualityReport.warnings.push(`Delivered file: ${w}`);
                     }
+                  }
+                  /**
+                   * AND THE TWO AUDITS THAT CANNOT FOLLOW IT WITHDRAW THEIR CLAIM.
+                   *
+                   * The stillness and repetition audits ran at stage 6 on the compose montage. The
+                   * render job returns a spot check and its rendered clip ids; it does not re-run
+                   * either of these, and re-running them here would cost two more multi-minute
+                   * ffmpeg passes to re-measure something that, by its own doc comment, decides
+                   * nothing.
+                   *
+                   * The spot check above could be corrected, so it is. These two cannot be, so they
+                   * say which file they describe instead of quietly describing the wrong one. Both
+                   * remain measurement-only and neither gates anything, so nothing is loosened
+                   * here — the numbers are unchanged and still printed; only the claim about WHICH
+                   * video they belong to is corrected.
+                   */
+                  if (qualityReport.stillness) {
+                    qualityReport.stillness.measuredOn = "compose_montage";
+                  }
+                  if (qualityReport.repeats) {
+                    qualityReport.repeats.measuredOn = "compose_montage";
+                  }
+                  if (qualityReport.stillness || qualityReport.repeats) {
+                    qualityReport.warnings.push(
+                      `stillness/repetition were measured on the compose montage, not on the ` +
+                        `delivered cinematic render — those two figures do not describe the file ` +
+                        `the viewer receives`
+                    );
                   }
                   /**
                    * AND SO DOES THE SOURCE AUDIT — FINAL_VIDEO IS PROVEN FROM THE DELIVERED FILE.

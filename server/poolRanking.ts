@@ -123,7 +123,27 @@ export function poolCandidateToAsset(
     clipEmbeddingVersion: null,
     clipLatencyMs: null,
     editorialScore: null,
-    motionLevel: null,
+    /**
+     * A STILL IS NOT UNKNOWN MOTION. IT IS ZERO MOTION.
+     *
+     * This was `null` for every candidate, and that made `targetMotionLevel` inert on the only path
+     * that passes it: the Director's rhythm target is threaded from `videoPipeline` through
+     * `assetDirector` and `scenePool` into `rankCandidates`, where `motionMatchScore` returns null
+     * the moment EITHER side is null. Four modules carried a number to a comparison that could
+     * never happen — the same shape as `other=17`, `ranked=0`, `cinematicDropped=false` and
+     * `youtubeLicenseMode`, and the fifth time this codebase has found it.
+     *
+     * The rule above — "an unknown value is absent, never zero" — is why the null was right for
+     * video and wrong for stills. A video's motion genuinely cannot be known from a search result;
+     * it needs the file. A photograph's can: it does not move. Writing 0 there is reporting a fact
+     * the provider already told us, not fabricating a measurement, so the rule is upheld rather
+     * than bent.
+     *
+     * Videos therefore stay null and keep redistributing the weight exactly as before. The only
+     * behaviour that changes is the one the Director asked for: when a beat wants movement, a still
+     * now scores badly for it instead of scoring nothing at all.
+     */
+    motionLevel: c.mediaType === "image" ? 0 : null,
     rankingScore: null,
     rankingBreakdown: null,
   };

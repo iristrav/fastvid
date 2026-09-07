@@ -91,6 +91,24 @@ export type VideoQualityReport = {
    * reported as absent, never as a pass.
    */
   stillness?: {
+    /**
+     * WHICH FILE THIS BLOCK DESCRIBES.
+     *
+     * The stillness and repetition audits run at stage 6, on the compose montage, because that is
+     * the first point a finished MP4 exists. After the delivery cutover the viewer may instead
+     * receive the cinematic timeline render, produced eight hundred lines later by a different
+     * renderer from its own clip list — and neither audit is re-run on it.
+     *
+     * `postRenderSpotCheck` solved the same problem by overwriting itself with the render job's own
+     * check on the delivered file. These two cannot: each is a multi-minute ffmpeg pass, and paying
+     * for it twice per render to re-measure something that decides nothing is the wrong trade.
+     *
+     * So the claim is withdrawn rather than restated. `compose_montage` means: these numbers are
+     * real, they were measured, and they are about a file this viewer did not receive. That is the
+     * honest reading, and it is the one the render log already applies to the spot check — a report
+     * about a different video is worse than no report, because it reads as reassurance.
+     */
+    measuredOn: "delivered_file" | "compose_montage";
     durationSec: number;
     /** Longest stretch of unchanging picture. The number the no-frozen-frame chain exists for. */
     longestStillSec: number;
@@ -119,6 +137,8 @@ export type VideoQualityReport = {
    * absent, never as a pass.
    */
   repeats?: {
+    /** Which file this block describes — see the note on `stillness.measuredOn`. */
+    measuredOn: "delivered_file" | "compose_montage";
     /** How many visually distinct pictures the film contains. */
     distinctPictures: number;
     /** How many of them appear more than once, with a real gap in between. */
