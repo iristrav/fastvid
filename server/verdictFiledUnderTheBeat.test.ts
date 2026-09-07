@@ -198,9 +198,30 @@ describe("the lookup that reported never_asked", () => {
     );
   });
 
-  /** And still says never_asked when there genuinely is nothing — that answer stays available. */
+  /**
+   * And still says never_asked when there genuinely is nothing — that answer stays available.
+   *
+   * ── Why this assertion changed shape in RONDE 117 ───────────────────────────────────────
+   *
+   * It used to match the literal `return onThisBeat ?? "never_asked";`. RONDE 117 added a third
+   * step after the beat scan — the ledger's `byContentKey` index, for a verdict filed under a
+   * FETCH SLOT rather than a beat — so that one line became two returns. Keeping the old string
+   * alive would have meant writing an unreachable statement to satisfy a match, which is the
+   * test-shaping this file exists to prevent.
+   *
+   * The PROPERTY is unchanged and is asserted twice over: the beat scan still runs first and its
+   * answer still wins (the ordering below), and `never_asked` is still what comes back when
+   * nothing was recorded — proven behaviourally, not by spelling, in
+   * `ronde117VerdictFiledUnderASlot.test.ts` ("no verdict anywhere is still never_asked").
+   */
   it("still reports never_asked when no verdict exists at all", () => {
     const at = STATUS.indexOf("function verificationForBeat(");
-    expect(STATUS.slice(at, at + 900)).toContain('return onThisBeat ?? "never_asked";');
+    const body = STATUS.slice(at, at + 900);
+    expect(body).toContain('return "never_asked";');
+    /** The beat's own answer is returned BEFORE the asset index is consulted. */
+    const beatAnswer = body.indexOf("if (onThisBeat) return onThisBeat;");
+    const assetLookup = body.indexOf("ledger.byContentKey.get(");
+    expect(beatAnswer).toBeGreaterThan(-1);
+    expect(assetLookup).toBeGreaterThan(beatAnswer);
   });
 });

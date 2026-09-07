@@ -187,7 +187,7 @@ export function bindRelevanceLedger(audit: ClipAdoptEntry[], ledger: BeatRelevan
  * This makes the report TRUER, not kinder: an adoption the guard would refuse still shows up as
  * unbacked, because it is now asked the same question the guard asked.
  */
-const contentKeyByAudit = new WeakMap<ClipAdoptEntry[], (clipPath: string) => string>();
+const contentKeyByAudit = new WeakMap<readonly ClipAdoptEntry[], (clipPath: string) => string>();
 
 export function bindContentKeyResolver(
   audit: ClipAdoptEntry[],
@@ -196,8 +196,17 @@ export function bindContentKeyResolver(
   contentKeyByAudit.set(audit, resolver);
 }
 
-/** The render's own key for this clip, or nothing — never a guess assembled here. */
-function contentKeyFor(audit: ClipAdoptEntry[], clipPath: string): string | undefined {
+/**
+ * The render's own key for this clip, or nothing — never a guess assembled here.
+ *
+ * Exported since RONDE 117: `buildBeatVisualStatuses` needs the same answer to find a verdict that
+ * was filed under a fetch slot rather than a beat, and the resolver is bound to the audit array
+ * rather than imported, so this is the only way to reach it from another module.
+ */
+export function contentKeyFor(
+  audit: readonly ClipAdoptEntry[],
+  clipPath: string
+): string | undefined {
   const resolver = contentKeyByAudit.get(audit);
   if (!resolver) return undefined;
   try {

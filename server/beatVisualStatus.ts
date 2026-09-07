@@ -37,7 +37,7 @@ import { coverageForAdoptSource } from "./adoptionPolicy";
 import * as path from "path";
 
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
-import { representativeAdoptEntryPerBeat } from "./clipAdoptAudit";
+import { contentKeyFor, representativeAdoptEntryPerBeat } from "./clipAdoptAudit";
 import type { BeatRelevanceLedger } from "./beatVisualRelevance";
 
 /**
@@ -218,7 +218,14 @@ function verificationForBeat(
   ledger: BeatRelevanceLedger | undefined,
   sceneIndex: number,
   beatIndex: number,
-  adoptedBasename: string
+  adoptedBasename: string,
+  /**
+   * RONDE 117 — the asset's own identity, for the drawer the beat scan cannot open.
+   *
+   * Optional so every existing caller keeps its exact behaviour; absent means the beat scan is
+   * still the whole answer.
+   */
+  adoptedContentKey?: string
 ): BeatVerification {
   if (!ledger) return "never_asked";
   let onThisBeat: BeatVerification | null = null;
@@ -230,7 +237,38 @@ function verificationForBeat(
     }
     onThisBeat ??= verificationOf(decision);
   }
-  return onThisBeat ?? "never_asked";
+  if (onThisBeat) return onThisBeat;
+  /**
+   * ── RONDE 117: THE VERDICT THAT WAS FILED UNDER A SLOT NUMBER ────────────────────────────
+   *
+   * Render 572 contradicts itself, in one report, about the same beat:
+   *
+   *     [BeatFunnel]  s0b0 visionAsked=8 approved=0 rejected=3 unclear=5
+   *     [BeatVisual]  scene=0 beat=0 verification=never_asked
+   *                   reason=real_footage_never_judged
+   *
+   * Eight judgements on that beat, and the reader above found none — because the loop can only
+   * see entries whose `ctx` NAMES this beat, and several fetch routes deliberately offset the
+   * slot away from it: `2000 + slot`, `beat.index + attempt * 100`, `si`. Each of those records
+   * the ADOPTION under the real beat and leaves the VERDICT behind on the slot number. The note
+   * at `generateGuaranteedBeatClip` calls that "a drawer `verificationForBeat` never opens" and
+   * hands one route a `beatIndex` override; the drawer itself stayed shut.
+   *
+   * The ledger has always kept a second index for exactly this — `byContentKey`, an ASSET
+   * identity that survives a rename, a re-trim and a slot number. Asking it is the same
+   * correction RONDE 167 made on the lineage ledger for the same reason.
+   *
+   * ── Why this cannot flatter a render ────────────────────────────────────────────────────
+   *
+   * It runs ONLY where the answer would otherwise be `never_asked`, so it can never overrule a
+   * verdict this beat recorded. It returns whatever the gate actually said about THIS asset: a
+   * refusal filed under a slot now reads as `verified_mismatch` and keeps the beat out of
+   * `verifiedOwnVisual` — which is the stricter answer, and the honest one. Nothing is invented;
+   * a verdict that does not exist still reads `never_asked`.
+   */
+  const byAsset = adoptedContentKey ? ledger.byContentKey.get(adoptedContentKey) : undefined;
+  if (byAsset) return verificationOf(byAsset.decision);
+  return "never_asked";
 }
 
 /**
@@ -292,7 +330,12 @@ export function buildBeatVisualStatuses(
   for (const entry of byBeat.values()) {
     const coverage = coverageOfAdoptEntry(entry);
     const verification = verificationForBeat(
-      ledger, entry.sceneIndex, entry.beatIndex, entry.basename
+      ledger,
+      entry.sceneIndex,
+      entry.beatIndex,
+      entry.basename,
+      /** The render's own key for this file, from the resolver the audit was bound to. */
+      contentKeyFor(adoptAudit ?? [], entry.basename)
     );
     const verifiedOwnVisual = coverage === "own_footage" && verification === "verified_fit";
     out.push({
