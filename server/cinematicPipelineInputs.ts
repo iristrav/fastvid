@@ -53,6 +53,8 @@ import {
 import type { Scene } from "./pipeline/types";
 import type { AssetSourceIdentity } from "./projectTimeline";
 import { identityFromAdoption, identityIsRehydratable } from "./assetIdentity";
+/** F-1 — the local-file check below asks the filesystem rather than trusting a name. */
+import fs from "node:fs";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
 
 /* ═══════════════════════ what the production pipeline supplies ═══════════════════════ */
@@ -181,6 +183,15 @@ export type CinematicInputsResult = {
      * has to be visible in the log rather than inferred from a validator failure.
      */
     laidOut: number;
+    /**
+     * F-1 — beats kept on a file this render holds, whose asset nothing could fetch again.
+     *
+     * A number worth seeing rather than inferring: `localOnlyIdentity=0` is the healthy render and
+     * reads as such, while a render with twelve of them is delivering a film whose timeline the
+     * editor may not be able to reopen. Both are legitimate outcomes; only one of them is a
+     * surprise, and it should not be one.
+     */
+    localOnlyIdentity: number;
   };
 };
 
@@ -294,6 +305,49 @@ export function identityFrom(adoption: AdoptionFacts | null): AssetSourceIdentit
   if (!adoption) return null;
   const identity = identityFromAdoption(adoption);
   return identity && identityIsRehydratable(identity) ? identity : null;
+}
+
+/**
+ * F-1 — A FILE THIS RENDER IS HOLDING IS NOT A FILE THIS RENDER HAS LOST.
+ *
+ * ── The two questions that had become one ───────────────────────────────────────────────────
+ *
+ * "Can this asset be fetched again later?" and "can this render put it on screen now?" are
+ * different questions, and the planner asked only the first. `identityFrom` returns null for a
+ * clip that is not REHYDRATABLE, the beat is dropped, and the beat's picture — real, on-subject,
+ * approved by the editor and recorded `verified_fit` — never reaches the viewer.
+ *
+ * ── Why keeping it is safe, and not a relaxation ────────────────────────────────────────────
+ *
+ * The rehydrator already prefers a local file over a download: given `existingLocalPath` that
+ * exists and is non-empty it returns that path and fetches nothing (assetRehydrator.ts:388-391),
+ * and `videoPipeline` hands it exactly that map for the render it is about to run
+ * (`localFilesForTimelineClips`, :43587). So for the render that delivers, the file being here IS
+ * the recovery path; the planner was refusing a beat over a download that was never going to
+ * happen.
+ *
+ * The check is deliberately narrow — the file must exist and hold bytes, verified now, not
+ * inferred from a name. A missing or empty file still drops, with the same reason it always had.
+ *
+ * ── What the future re-render loses, and why that is the right trade ────────────────────────
+ *
+ * A timeline the editor reopens tomorrow may find this clip gone; then the rehydrator fails with
+ * its own REHYDRATION_DOWNLOAD_FAILED, which is a reported failure of one clip rather than a
+ * silent deletion of a verified beat today. Trading a certain loss now for a possible loss later
+ * is the trade this function had backwards.
+ */
+export function localOnlyIdentityFor(
+  adoption: AdoptionFacts | null,
+  localPath: string | null | undefined
+): AssetSourceIdentity | null {
+  if (!adoption || !localPath) return null;
+  try {
+    if (!fs.existsSync(localPath) || fs.statSync(localPath).size <= 0) return null;
+  } catch {
+    /** An unreadable path is not a usable one. Same answer as a missing file. */
+    return null;
+  }
+  return identityFromAdoption(adoption);
 }
 
 /**
@@ -654,7 +708,7 @@ export function buildCinematicSceneInputs(params: {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
   const out: CinematicSceneInput[] = [];
-  const stats = { scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0, laidOut: 0 };
+  const stats = { scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0, laidOut: 0, localOnlyIdentity: 0 };
 
   let cursorSec = 0;
   params.scenes.forEach((sceneFacts, sceneOrder) => {
@@ -715,7 +769,22 @@ export function buildCinematicSceneInputs(params: {
         );
         return;
       }
-      const identity = identityFrom(adopted.adoption);
+      const rehydratable = identityFrom(adopted.adoption);
+      /**
+       * F-1 — the beat is kept when this render is holding the file, even if nothing could fetch
+       * it again. `localOnly` is null unless the path exists and has bytes, so a missing file
+       * still falls through to the drop below with the reason it always had.
+       */
+      const localOnly = rehydratable
+        ? null
+        : localOnlyIdentityFor(adopted.adoption, adopted.facts.localPath);
+      const identity = rehydratable ?? localOnly;
+      /**
+       * Counted and logged where the beat is actually KEPT, not here — a beat that clears the
+       * identity check can still fall to the duration check below, and announcing "selected"
+       * before every drop has run is exactly what `cinematicTraceIsComplete` forbids. It caught
+       * this on the first run.
+       */
       if (!identity) {
         /**
          * §6/§28 — a clip whose source cannot be proven is DROPPED, with its provider named.
@@ -760,9 +829,17 @@ export function buildCinematicSceneInputs(params: {
        * removes. With both lines, `ADOPTED → CINEMATIC_SELECTED` and `ADOPTED → CINEMATIC_DROPPED`
        * are the only two endings, and neither is silent.
        */
+      if (localOnly) stats.localOnlyIdentity++;
       console.log(
         `[CinematicSelected] scene=${scene.index} beat=${beatIndex} ` +
-          `${assetLabel(adopted.adoption)} start=${start.toFixed(2)} duration=${durationSec.toFixed(2)}`
+          `${assetLabel(adopted.adoption)} start=${start.toFixed(2)} duration=${durationSec.toFixed(2)}` +
+          /**
+           * F-1 — named on the line that keeps the beat, so the two facts arrive together: this
+           * beat IS in the film, and the timeline it is in may not survive being reopened later.
+           */
+          (localOnly
+            ? ` source=local_only (not rehydratable — kept on the file this render holds)`
+            : "")
       );
 
       params.onBeatOutcome?.({
@@ -827,6 +904,7 @@ export function formatCinematicInputs(result: CinematicInputsResult): string {
     `[CinematicPipeline] inputs scenes=${result.stats.scenes} beats=${result.stats.beats} ` +
     `planned=${result.stats.planned} probed=${result.stats.withProbe} ` +
     `trimmed=${result.stats.withTrim} laidOut=${result.stats.laidOut} ` +
+    `localOnly=${result.stats.localOnlyIdentity} ` +
     `dropped=${result.dropped.length}`
   );
 }

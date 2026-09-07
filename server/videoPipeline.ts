@@ -167,7 +167,7 @@ import {
   resolveBeatScriptVisualAnchor,
   resolveBeatVisualIntent,
 } from "./scriptVisualKeywords";
-import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, visionPipelineIsUnavailable, type VisionGateResult } from "./visualQualityGate";
+import { clipVisionGateEnabled, effectiveMinClipQualityScore, evaluateClipVisionGate, minClipQualityScore, resetVisionPipelineAvailability, sceneCriticalReviewEnabled, targetClipVisionScore, visionGateCacheHits, visionPipelineIsUnavailable, type VisionGateResult } from "./visualQualityGate";
 import {
   beatVisionContextFromProfile,
   clipEmbeddingIndexEnabled,
@@ -18051,6 +18051,16 @@ export function createVisualDedupState(
   perf: PipelinePerfProfile,
   topic?: { primaryPerson?: string; personTopicLock?: boolean; videoId?: number }
 ): VisualDedupState {
+  /**
+   * F-2 — "could not ask" is a fact about THIS render, so it starts false for every render.
+   *
+   * The flag is process-level and was one-way: set by the CLIP fail-open branch, cleared by
+   * nothing. One transient model-load failure therefore suspended the adoption guard's vision
+   * requirement for every later render in the same worker process. Clearing here is the safe
+   * direction — the latch only ever EXCUSES a missing verdict, so starting clear means the guard
+   * starts strict, and a model that is still broken re-arms it on this render's first vision call.
+   */
+  resetVisionPipelineAvailability();
   const state: VisualDedupState = {
     usedPaths: new Set(),
     searchMemoryMetrics: createSearchMemoryRecallMetrics(),

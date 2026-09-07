@@ -65,6 +65,8 @@ export type RankablePoolCandidate = {
   clipSimilarity: number | null;
   embeddingSimilarity: number | null;
   rankingScore: number | null;
+  /** The query this candidate came back for, when the retrieval route recorded one. */
+  searchQuery?: string;
 };
 
 /**
@@ -97,7 +99,16 @@ export function poolCandidateToAsset(
     localPath: null,
     remoteUrl: c.remoteUrl,
     metadata: null,
-    searchQuery: "",
+    /**
+     * F-3 — CARRIED, NOT BLANKED.
+     *
+     * This was the literal `""`. The engine reads `searchQuery` as the string the candidate came
+     * back for, and an empty string is not "unknown" to it — it is an answer, and a useless one.
+     * Every provider search already held the query at construction; `PoolCandidate.searchQuery`
+     * now carries it out. A candidate that genuinely has no single query behind it (a cache hit, a
+     * route that fanned several queries into one result) keeps `""`, which is what it was before.
+     */
+    searchQuery: c.searchQuery ?? "",
     retrievalMethod: "search",
     fetchedAt: new Date(0).toISOString(),
     language: null,
@@ -116,8 +127,26 @@ export function poolCandidateToAsset(
      * two scales — and the engine already reads title, tags and description itself.
      */
     keywordScore: Number.isFinite(keywordScore as number) ? (keywordScore as number) : null,
-    retrievalReasons: [],
-    retrievalSources: [],
+    /**
+     * F-3 — WHICH RETRIEVAL PATHS FOUND THIS, READ OFF THE MECHANISM RATHER THAN GUESSED.
+     *
+     * The pool reaches every provider by handing it a query STRING, so "keyword" is a fact about
+     * how this candidate was found, not an inference about it. "semantic" is added only when the
+     * candidate actually carries an embedding score, because that is the only evidence a semantic
+     * path contributed. Neither is invented; a candidate with no embedding gets one entry.
+     */
+    retrievalReasons: c.embeddingSimilarity != null ? ["keyword", "semantic"] : ["keyword"],
+    /**
+     * The provenance trail — one entry per path, carrying THAT PATH'S OWN SCORE on its own scale.
+     *
+     * Emitted only when this path has a score to report. The keyword score is the pool's own, and
+     * it arrives from the caller's scorer; when the caller passes none there is no number to put
+     * here, and the rule this file already states — "an unknown value is absent, never zero" —
+     * makes an empty trail the correct answer rather than a zero-scored one.
+     */
+    retrievalSources: Number.isFinite(keywordScore as number)
+      ? [{ source: engineSourceFor(c.source), score: keywordScore as number }]
+      : [],
     clipSimilarity: c.clipSimilarity,
     clipModel: null,
     clipEmbeddingVersion: null,

@@ -329,12 +329,25 @@ describe("FIX A — filters, dedup and error isolation are unchanged", () => {
   });
 
   it("the candidate object itself is byte-for-byte the pre-fix shape", async () => {
+    /**
+     * F-3 added ONE field to this shape, deliberately: `searchQuery`.
+     *
+     * The ranking engine reads it, and the adapter used to hand it the literal `""` — which the
+     * engine cannot tell apart from "asked, and the answer was empty". Every provider search
+     * already held the query at construction (this one builds its candidates inside
+     * `for (const query of queries)`); it was simply never carried out of the loop.
+     *
+     * The assertion stays exhaustive on purpose. Its job is to catch shape drift nobody intended,
+     * and it did exactly that on this change — so the new field is written in rather than the
+     * check being loosened to allow unknown extras.
+     */
     installLocFetch({ searchPayload: locSearchPayload(1) });
     const { candidates } = await searchLibraryOfCongressCandidates(["berlin"], 10);
     expect(candidates[0]).toEqual({
       id: "loc:https://www.loc.gov/item/0/",
       assetId: "https://www.loc.gov/item/0/",
       source: "loc",
+      searchQuery: "berlin",
       remoteUrl: "https://tile.loc.gov/x.jpg",
       thumbnailUrl: "https://www.loc.gov/item/0/thumb.jpg",
       title: "item 0",

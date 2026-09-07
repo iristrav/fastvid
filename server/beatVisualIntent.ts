@@ -189,6 +189,25 @@ export function intentMatchScore(
   score += hit(intent.objects, 2);
   score += hit(intent.action, 1);
   score -= hit(intent.forbidden, 5);
+  /**
+   * `evidenceRequirement` FINALLY DECIDES SOMETHING.
+   *
+   * The field is produced by `ensureBeatVisualIntent`, printed by `formatVisualIntent`, and until
+   * now read by nothing that orders candidates — so a beat whose planner said the picture MUST
+   * contain named entities ranked its candidates exactly like a beat that asked for nothing.
+   * "hard" is the closest thing this codebase has to §11's requiredElements, and it was inert.
+   *
+   * A candidate that matched NOTHING the beat named scores 0 above, which places it level with a
+   * candidate the beat has no opinion about. On a `hard` beat that is wrong: the planner made a
+   * statement, and a picture answering none of it is worse than neutral. The penalty is one step
+   * below a forbidden hit, because "contains nothing we asked for" is a weaker complaint than
+   * "contains something we ruled out".
+   *
+   * Only on `hard`, and only at zero. A beat with a soft or absent requirement is untouched, and a
+   * candidate that matched anything at all keeps the score it earned — so this reorders the
+   * bottom of the list and can never demote a candidate that is genuinely on target.
+   */
+  if (score === 0 && intent.evidenceRequirement === "hard") return -4;
   return score;
 }
 

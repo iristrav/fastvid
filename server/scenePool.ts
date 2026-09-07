@@ -161,6 +161,19 @@ export type PoolCandidate = {
   /** A real license deed/rights URL, when the provider exposes one (distinct from
    *  `license`, which is a label like "pexels-free" or "CC BY-SA 4.0", not a URL). */
   licenseUrl: string | null;
+  /**
+   * THE QUERY THIS CANDIDATE CAME BACK FOR.
+   *
+   * The pool records `queries` for the whole scene, but the ranking engine's `keywordScore`
+   * normaliser wants the string THIS candidate answered — and every provider search already holds
+   * it: each builds its candidates inside `for (const query of queries)`. It was simply never
+   * carried out of that loop, so `poolCandidateToAsset` had nothing to pass and set `searchQuery`
+   * to `""`, which reads to the engine as "asked, and the answer was empty".
+   *
+   * Optional because a candidate can reach the pool from a cache or a route with no single query
+   * behind it. Absent stays absent — the adapter passes null rather than inventing one.
+   */
+  searchQuery?: string;
 
   // ── Ranking score slots (filled by P2 / V2 — null until then) ───────────────
   clipSimilarity: number | null;
@@ -326,6 +339,7 @@ async function searchPexelsCandidates(
           id: `pexels:${v.id}`,
           assetId: String(v.id),
           source: "pexels",
+          searchQuery: query,
           remoteUrl: bestFile.link,
           thumbnailUrl: v.image ?? null,
           title: v.url ?? query,
@@ -399,6 +413,7 @@ async function searchPixabayCandidates(
           id: `pixabay:${v.id}`,
           assetId: String(v.id),
           source: "pixabay",
+          searchQuery: query,
           remoteUrl: file.url,
           thumbnailUrl: null,
           title: (v.tags ?? query).split(",")[0].trim() || query,
@@ -549,6 +564,7 @@ async function searchWikimediaCandidates(
             id: `wikimedia:${encodeURIComponent(title)}`,
             assetId: title,
             source: "wikimedia",
+            searchQuery: query,
             remoteUrl: info.url,
             thumbnailUrl: thumbUrl,
             title,
@@ -702,6 +718,7 @@ async function searchInternetArchiveCandidates(
             id: `internet_archive:${doc.identifier}`,
             assetId: doc.identifier,
             source: "internet_archive",
+            searchQuery: query,
             remoteUrl: `https://archive.org/download/${doc.identifier}/${encodeURIComponent(videoFile.name)}`,
             // Stable, documented archive.org thumbnail convention — no extra API call needed.
             thumbnailUrl: `https://archive.org/services/img/${doc.identifier}`,
@@ -819,6 +836,7 @@ async function searchEuropeanaCandidates(
             id: `europeana:${recordId}`,
             assetId: recordId,
             source: "europeana",
+            searchQuery: query,
             remoteUrl: mediaUrl,
             thumbnailUrl: item.edmPreview ?? null,
             title: (item.title ?? []).join(" ").trim() || query,
@@ -895,6 +913,7 @@ export async function searchOpenverseCandidates(
           id: `openverse:${item.id}`,
           assetId: item.id,
           source: "openverse",
+          searchQuery: query,
           remoteUrl: item.url,
           thumbnailUrl: item.url,
           title: item.title || query,
@@ -998,6 +1017,7 @@ export async function searchNasaCandidates(
             id: `nasa:${nasaId}`,
             assetId: nasaId,
             source: "nasa",
+            searchQuery: query,
             remoteUrl: mp4Url,
             thumbnailUrl: null,
             title: title ?? nasaId,
@@ -1078,6 +1098,7 @@ export async function searchNaraCandidates(
           id: `nara:${videoUrl}`,
           assetId: videoUrl,
           source: "nara",
+          searchQuery: query,
           remoteUrl: videoUrl,
           thumbnailUrl: null,
           title: record?.title || query,
@@ -1274,6 +1295,7 @@ export async function searchLibraryOfCongressCandidates(
             id: `loc:${itemUrl}`,
             assetId: itemUrl,
             source: "loc",
+            searchQuery: query,
             remoteUrl: mediaFile.url,
             thumbnailUrl: Array.isArray(result.image_url) ? (result.image_url[0] ?? null) : (result.image_url ?? null),
             title: result.title || query,

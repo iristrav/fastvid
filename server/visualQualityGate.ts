@@ -36,7 +36,32 @@ export function visionPipelineIsUnavailable(): boolean {
   return visionPipelineUnavailable;
 }
 
-/** Test-only reset, so one suite's unavailable model does not leak into the next. */
+/**
+ * CLEAR THE LATCH. CALLED ONCE PER RENDER, AND BY THE SUITES BETWEEN CASES.
+ *
+ * ── Why this had to acquire a production caller ─────────────────────────────────────────────
+ *
+ * The flag above is a one-way switch: `beatClipPassesVisionGate` sets it true when the CLIP model
+ * will not load, and nothing ever set it back. Its own comment called it "a property of the
+ * environment", which is true of the model and NOT true of a failure to load one — the loader
+ * clears `pipelineLoadFailed` on any later success (localClipVision.ts:757, :802), so the model
+ * recovers while the pipeline's belief about it does not.
+ *
+ * The worker serves many renders from one process. So a single transient failure — a memory spike
+ * during one render's ffmpeg work is enough — left `visionAvailable` false for every render after
+ * it, until the next deploy. `adoptionGuardVerdict` then suspends the vision requirement
+ * render-wide, for every route including REAL_FUNNEL, and nothing in the log says why.
+ *
+ * ── Why clearing at render start is the SAFE direction ──────────────────────────────────────
+ *
+ * Clearing cannot make the guard permissive. The latch's only effect is to EXCUSE a missing
+ * verdict; starting each render with it clear means the guard begins by DEMANDING one. If the
+ * model is genuinely still broken, the render's first vision call re-arms the latch immediately
+ * and RONDE 94's distinction is restored within that render, where it belongs.
+ *
+ * So the flag keeps meaning exactly what it says — "this render could not ask" — instead of
+ * quietly becoming "some render, at some point in this process's life, could not ask".
+ */
 export function resetVisionPipelineAvailability(): void {
   visionPipelineUnavailable = false;
 }
