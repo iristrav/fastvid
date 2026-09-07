@@ -89,15 +89,38 @@ describe("R207 — every motion-graphic type the planner can emit is accounted f
    * must not happen to collide with a component the renderer has, which would quietly hand a
    * chart's payload to whatever component shares its name.
    */
-  it("the five with no component are honestly undrawable, not accidentally drawable", () => {
-    /** Unchanged: these five still have no component and must not appear to have one. */
-    for (const t of ["chart", "comparison", "animated_icon", "highlight_box", "arrow"] as const) {
+  it("the four with no component are honestly undrawable, not accidentally drawable", () => {
+    /**
+     * RONDE 124 removed `highlight_box` from this list, by writing the component rather than by
+     * relaxing the rule. It is now in `RENDERABLE_GRAPHICS` with a payload rule of its own — a
+     * region, not words — and the next test holds it to the same bar as every other drawable type.
+     * The remaining four still have no component and must not appear to have one.
+     */
+    for (const t of ["chart", "comparison", "animated_icon", "arrow"] as const) {
       expect(RENDERER_GRAPHIC_TYPE[t], `${t} gained a translation — update this test`).toBeUndefined();
       const rendered = rendererGraphicType(t);
       expect(RENDERABLE_GRAPHICS.has(rendered), `${t} collides with a component name`).toBe(false);
       /** And the full check agrees, for any payload at all. */
       expect(graphicIsRenderable(rendered, {}, "a label"), `${t} draws by accident`).toBe(false);
     }
+  });
+
+  /**
+   * RONDE 124 — highlight_box draws, and draws only when it knows WHERE.
+   *
+   * It is the first region-positioned graphic in the vocabulary, so its renderability is a
+   * question about geometry rather than about words. A label alone is NOT enough — that is the
+   * payload the planner emits today, and calling it drawable would put a rectangle around a
+   * guessed part of the frame.
+   */
+  it("highlight_box is drawable with a region and refused without one", () => {
+    expect(RENDERABLE_GRAPHICS.has("highlight_box")).toBe(true);
+    expect(RENDERER_GRAPHIC_TYPE["highlight_box"], "it needs no translation").toBeUndefined();
+    expect(
+      graphicIsRenderable("highlight_box", { normX: 0.1, normY: 0.2, normW: 0.3, normH: 0.4 }, null)
+    ).toBe(true);
+    expect(graphicIsRenderable("highlight_box", { label: "the pistol" }, "the pistol")).toBe(false);
+    expect(graphicIsRenderable("highlight_box", {}, "a label")).toBe(false);
   });
 
   /** No member of the union is missing from the two groups above. */

@@ -35,7 +35,7 @@ import {
   readNumber,
   readText,
 } from "./Charts";
-import { graphicIsRenderable } from "../../graphicsVocabulary";
+import { graphicIsRenderable, readRegion } from "../../graphicsVocabulary";
 
 export type GraphicSpec = {
   id: string;
@@ -196,6 +196,29 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
    */
   if (!graphicIsRenderable(g.graphicType, g.data, g.label)) return null;
 
+  /**
+   * RONDE 124 — a highlight box is placed by its REGION, so it never reaches `GraphicBody`.
+   *
+   * Every other graphic is positioned by a named anchor — bottom, lower_third, centre — and
+   * `GraphicBody` turns that name into a flex alignment over the whole frame. A box drawn around a
+   * part of the picture has no anchor: its position IS its content. Routing it through the anchor
+   * layout would centre it and it would stop being a highlight of anything, which is why this
+   * returns before that layout rather than adding a case to the switch inside it.
+   *
+   * `graphicIsRenderable` above has already established the region exists and has area, so
+   * `readRegion` cannot be null here; the guard is kept because a component that trusts an
+   * invariant it does not check is one refactor away from drawing at NaN.
+   */
+  if (g.graphicType === "highlight_box") {
+    const region = readRegion(g.data);
+    if (!region) return null;
+    return (
+      <Sequence from={g.fromFrame} durationInFrames={g.durationInFrames} name={`highlight_box ${g.id}`}>
+        <HighlightBox region={region} durationInFrames={g.durationInFrames} colour={g.style?.color} />
+      </Sequence>
+    );
+  }
+
   const fontSizePx = g.style?.fontSizePx ?? 46;
   const position = g.style?.position ?? (g.graphicType === "lower_third" ? "lower_third" : "bottom");
 
@@ -298,6 +321,59 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
         {body}
       </GraphicBody>
     </Sequence>
+  );
+};
+
+/**
+ * RONDE 124 — the rectangle the planner asked to draw the eye to, over the region it named.
+ *
+ * ── Why it is percentages and not pixels ────────────────────────────────────────────────────
+ *
+ * The payload is in fractions of the frame, and the composition's dimensions are the composition's
+ * business. Expressing the box as CSS percentages means it lands in the right place at 1920x1080,
+ * at 1080x1920 and at any square the format list gains later, with no dimension read here and no
+ * aspect-ratio arithmetic to get wrong. `readRegion` has already clamped the far edge into the
+ * frame, so the box cannot run off it whatever the source's own dimensions were.
+ *
+ * ── What it draws ───────────────────────────────────────────────────────────────────────────
+ *
+ * An outline and nothing else. The picture underneath is the point — a filled box would hide the
+ * thing it exists to point at — so the fill stays transparent and only the border carries ink,
+ * with a soft outer shadow so the line reads against both a bright and a dark shot.
+ *
+ * The border animates in by drawing its opacity up over the first third of the graphic's life,
+ * matching the `fade_rise` timing every other graphic uses, and never moves after that: a box that
+ * drifts is a box that stops framing what it framed.
+ */
+export const HighlightBox: React.FC<{
+  region: { x: number; y: number; width: number; height: number };
+  durationInFrames: number;
+  colour?: string;
+}> = ({ region, durationInFrames, colour }) => {
+  const frame = useCurrentFrame();
+  const fadeFrames = Math.max(1, Math.round(durationInFrames / 3));
+  const opacity = interpolate(frame, [0, fadeFrames], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const stroke = colour ?? "#ffd166";
+  return (
+    <AbsoluteFill>
+      <div
+        style={{
+          position: "absolute",
+          left: `${(region.x * 100).toFixed(3)}%`,
+          top: `${(region.y * 100).toFixed(3)}%`,
+          width: `${(region.width * 100).toFixed(3)}%`,
+          height: `${(region.height * 100).toFixed(3)}%`,
+          border: `4px solid ${stroke}`,
+          borderRadius: 6,
+          boxShadow: `0 0 0 2px rgba(0,0,0,0.45), 0 0 18px ${stroke}55`,
+          background: "transparent",
+          opacity,
+        }}
+      />
+    </AbsoluteFill>
   );
 };
 

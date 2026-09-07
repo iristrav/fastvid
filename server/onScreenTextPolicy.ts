@@ -1,3 +1,4 @@
+
 /**
  * RONDE 113 — one rule: the render burns no text into the picture.
  *
@@ -43,6 +44,15 @@
  * reversible without a redeploy — and so that reversing it is a deliberate act with a name.
  */
 export function burnedInTextAllowed(): boolean {
+  /**
+   * RONDE 124 — deliberately NOT `envFlagIsOn`, and this is the one place that is right.
+   *
+   * Every deployment ROUTE flag reads case- and whitespace-tolerantly, because a stray capital
+   * silently disabling a source is a worse failure than a typo being ignored. This is not a route
+   * flag: it is a content policy, and its direction of risk is the opposite one. R113's test pins
+   * `TRUE`, `1`, `yes` and `on` as OFF on purpose — an accidental value must not start burning
+   * text into customers' pictures. Making it tolerant here would be loosening a gate.
+   */
   return process.env.ALLOW_BURNED_IN_TEXT === "true";
 }
 

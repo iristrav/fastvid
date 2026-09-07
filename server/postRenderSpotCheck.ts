@@ -2,6 +2,7 @@
  * Post-render quality spot-check — ffprobe + 4-frame luma + FFmpeg blackdetect/freezedetect/silencedetect.
  */
 import fs from "fs";
+import { envFlagIsNotOff, envFlagIsOn } from "./envFlag";
 import path from "path";
 import { spawn } from "child_process";
 import { promisify } from "util";
@@ -235,7 +236,7 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
   let blackSegments = 0;
   let freezeSegments = 0;
   let silentSegments = 0;
-  if (process.env.ENABLE_POST_RENDER_FFMPEG_DETECT !== "false") {
+  if (envFlagIsNotOff("ENABLE_POST_RENDER_FFMPEG_DETECT")) {
     const det = await runFfmpegQualityFilters(filePath, durationSec);
     blackSegments = det.blackSegments;
     freezeSegments = det.freezeSegments;
@@ -271,12 +272,12 @@ export async function spotCheckFinalVideo(filePath: string): Promise<PostRenderS
 }
 
 export function postRenderSpotCheckEnabled(): boolean {
-  return process.env.ENABLE_POST_RENDER_SPOT_CHECK !== "false";
+  return envFlagIsNotOff("ENABLE_POST_RENDER_SPOT_CHECK");
 }
 
 /** Per-video gate — fast 1-min Railway skips by default (see sourcingPolicy). */
 export function postRenderSpotCheckEnabledForVideo(videoLength?: string | null): boolean {
-  if (process.env.ENABLE_POST_RENDER_SPOT_CHECK === "false") return false;
-  if (process.env.ENABLE_POST_RENDER_SPOT_CHECK === "true") return true;
+  if (!envFlagIsNotOff("ENABLE_POST_RENDER_SPOT_CHECK")) return false;
+  if (envFlagIsOn("ENABLE_POST_RENDER_SPOT_CHECK")) return true;
   return !isFastShortVideoLength(videoLength);
 }

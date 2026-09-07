@@ -51,8 +51,34 @@ const switchCases = (): Set<string> => {
 /* ═════════ 1 — the list cannot drift from the switch ═════════ */
 
 describe("the design list is the switch, written down", () => {
-  it("names exactly the types that have their own case", () => {
-    expect([...EXPLICITLY_DESIGNED_GRAPHICS].sort()).toEqual([...switchCases()].sort());
+  /**
+   * RONDE 124 — the switch, PLUS the one type that is drawn before it.
+   *
+   * `highlight_box` is positioned by a region of the frame rather than by a named anchor, so
+   * `Graphic` returns it early instead of routing it through `GraphicBody`'s anchor layout. It has
+   * a real design and no `case`. Naming the exception here — rather than dropping the equality —
+   * keeps the guard exact: a second such type has to be added deliberately, and a `case` that
+   * disappears still fails.
+   */
+  const DESIGNED_OUTSIDE_THE_SWITCH = ["highlight_box"];
+
+  it("names exactly the types that have their own case, plus the region graphics", () => {
+    expect([...EXPLICITLY_DESIGNED_GRAPHICS].sort()).toEqual(
+      [...switchCases(), ...DESIGNED_OUTSIDE_THE_SWITCH].sort()
+    );
+  });
+
+  it("the exception really is drawn outside the switch, not merely claimed to be", () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, "remotion", "components", "Graphics.tsx"),
+      "utf8"
+    );
+    const at = src.indexOf("switch (g.graphicType)");
+    for (const type of DESIGNED_OUTSIDE_THE_SWITCH) {
+      expect(src.indexOf(`g.graphicType === "${type}"`), type).toBeGreaterThan(-1);
+      expect(src.indexOf(`g.graphicType === "${type}"`), `${type} is not before the switch`).toBeLessThan(at);
+      expect(src, `${type} has a case as well as an early return`).not.toContain(`case "${type}":`);
+    }
   });
 
   it("every case is also a renderable name — no orphan branches", () => {
@@ -61,9 +87,10 @@ describe("the design list is the switch, written down", () => {
   });
 
   /** The measured 21/11 split, pinned so a change to either side is deliberate. */
-  it("the distribution is 21 designed and 11 generic", () => {
+  it("the distribution is 22 designed and 11 generic", () => {
     const generic = [...RENDERABLE_GRAPHICS].filter((t) => !EXPLICITLY_DESIGNED_GRAPHICS.has(t));
-    expect(EXPLICITLY_DESIGNED_GRAPHICS.size).toBe(21);
+    /** RONDE 124 added `highlight_box`: a real design, drawn before the switch. */
+    expect(EXPLICITLY_DESIGNED_GRAPHICS.size).toBe(22);
     expect(generic.length).toBe(11);
     expect(generic.sort()).toEqual([
       "badge", "callout", "date_card", "emphasis", "headline", "label",

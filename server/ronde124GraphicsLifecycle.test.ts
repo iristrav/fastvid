@@ -152,7 +152,7 @@ describe("A — every graphic type the planner can emit has an explicit renderer
      * That is a fact about the vocabulary, and it must not read as a payload problem — the two
      * have completely different fixes.
      */
-    for (const type of ["chart", "comparison", "animated_icon", "highlight_box", "arrow"]) {
+    for (const type of ["chart", "comparison", "animated_icon", "arrow"]) {
       const { lifecycle } = lifecycleFor([
         decision(`b_${type}`, [graphic(type as MotionGraphicType, { label: "a named thing" })]),
       ]);
@@ -211,15 +211,33 @@ describe("B — highlight_box, and why it cannot simply be pointed at a componen
     }
   });
 
-  it("so it is recorded as an unsupported TYPE, with the planner's own name in the reason", () => {
+  it("the RENDERER now supports it — the gap that remains is the payload, not the type", () => {
+    /**
+     * RONDE 124 wrote the component. `highlight_box` is in RENDERABLE_GRAPHICS, needs no
+     * translation, and draws an outlined rectangle over the region it is given; R160 §7's pixel
+     * test renders it and reads its alpha back like every other drawable type.
+     *
+     * So a planner-emitted box — label, no region — is now DROPPED_INVALID_PAYLOAD rather than
+     * DROPPED_UNSUPPORTED, and that is the whole point of keeping the two apart: the first says
+     * "give this graphic coordinates", the second says "write a component". Only the first is
+     * still open.
+     */
     const { lifecycle } = lifecycleFor([
       decision("b0", [graphic("highlight_box", { label: "the pistol" })]),
     ]);
     expect(lifecycle.lives[0]).toMatchObject({
       plannedType: "highlight_box",
-      outcome: "DROPPED_UNSUPPORTED",
+      outcome: "DROPPED_INVALID_PAYLOAD",
     });
-    expect(lifecycle.lives[0]!.detail).toContain('"highlight_box"');
+  });
+
+  it("with a real region it reaches the timeline like any other graphic", () => {
+    const { lifecycle } = lifecycleFor([
+      decision("b0", [
+        graphic("highlight_box", { normX: 0.1, normY: 0.2, normW: 0.3, normH: 0.4 }),
+      ]),
+    ]);
+    expect(lifecycle.lives[0]!.outcome).toBe("TRANSLATED");
   });
 });
 

@@ -179,6 +179,21 @@ export const RENDERABLE_GRAPHICS: ReadonlySet<string> = new Set([
   "multi_point",
   "shape",
   "icon",
+  /**
+   * RONDE 124 — a rectangle drawn over a REGION of the picture, not an anchored card.
+   *
+   * The planner has emitted `highlight_box` since the cinematic engine existed and no component
+   * drew it, so every one was reported "kept on the GRAPHICS track, not drawn by this renderer" —
+   * in renders 568 and 571 by name. Adding the name here means writing the component, which is
+   * what `HighlightBox` in Graphics.tsx is; the pixel test in RONDE 160 §7 covers every member of
+   * this set, so it covers this one too.
+   *
+   * It is region-driven rather than text-driven, which is why it needs its own payload rule below
+   * rather than the "does it have words" default: a highlight box with a label and no region has
+   * nothing to draw a box around, and drawing one at a chosen position would point confidently at
+   * the wrong part of the frame.
+   */
+  "highlight_box",
 ]);
 
 /**
@@ -243,6 +258,17 @@ export const EXPLICITLY_DESIGNED_GRAPHICS: ReadonlySet<string> = new Set([
   "shape",
   "stat",
   "statistic",
+  /**
+   * RONDE 124 — designed, and drawn BEFORE the switch rather than inside it.
+   *
+   * `highlight_box` is the vocabulary's first region-positioned graphic: its position is its
+   * content, so it cannot go through `GraphicBody`'s anchor layout, and `Graphic` returns it
+   * early. That makes it the one designed type with no `case` of its own, and leaving it out of
+   * this set would classify it as `generic` — the switch's default text card — which is a false
+   * statement about what the viewer sees. `ronde110`'s switch-parse test knows about the
+   * exception by name for the same reason.
+   */
+  "highlight_box",
 ]);
 
 /** How one graphic will actually be drawn. */
@@ -266,6 +292,15 @@ export function graphicRendererClass(
 export const SHAPE_GRAPHICS: ReadonlySet<string> = new Set(["shape", "icon"]);
 
 /**
+ * Graphics positioned by a REGION of the frame rather than by a named anchor.
+ *
+ * Their renderability is a question about geometry, not about words, so they are asked
+ * `chartPayloadIsRenderable` like the data-driven ones rather than the "does it have a label"
+ * default — a highlight box with a caption and no coordinates is not drawable.
+ */
+export const REGION_GRAPHICS: ReadonlySet<string> = new Set(["highlight_box"]);
+
+/**
  * Does this graphic have the data its type needs?
  *
  * One function, so the renderer's "can I draw this" answer and the component's "should I draw
@@ -274,6 +309,16 @@ export const SHAPE_GRAPHICS: ReadonlySet<string> = new Set(["shape", "icon"]);
  */
 export function chartPayloadIsRenderable(graphicType: string, data: Record<string, unknown>): boolean {
   switch (graphicType) {
+    /**
+     * RONDE 124 — a highlight box is drawable exactly when it knows WHERE to draw.
+     *
+     * All four numbers are required and each is a fraction of the frame. A width or height of zero
+     * draws nothing, and a box that starts outside the frame is not a box over the picture — both
+     * are payload faults and both are reported as such, which is a different finding from "this
+     * build has no component for that type".
+     */
+    case "highlight_box":
+      return readRegion(data) != null;
     case "bar_chart":
     case "horizontal_bar":
     case "line_chart":
@@ -295,6 +340,31 @@ export function chartPayloadIsRenderable(graphicType: string, data: Record<strin
 }
 
 /**
+ * RONDE 124 — the rectangle a `highlight_box` covers, in fractions of the frame.
+ *
+ * Returns null unless all four numbers are present and describe a rectangle with area that starts
+ * inside the frame. Clamped to the frame on the far edge only: a box that runs off the right or
+ * bottom is a real intent that the frame cuts short, while one whose ORIGIN is outside the picture
+ * is a payload this build cannot honour, and the two deserve different answers.
+ *
+ * `normW`/`normH` are read under their `width`/`height` spellings too, because the ffmpeg engine in
+ * `professionalRenderEngine` names them that way and a payload written for one renderer should not
+ * be undrawable by the other. Nothing is defaulted — a missing field is null, never 0 or 1.
+ */
+export type GraphicRegion = { x: number; y: number; width: number; height: number };
+
+export function readRegion(data: Record<string, unknown>): GraphicRegion | null {
+  const x = readNumber(data, "normX", "x");
+  const y = readNumber(data, "normY", "y");
+  const w = readNumber(data, "normW", "width", "w");
+  const h = readNumber(data, "normH", "height", "h");
+  if (x == null || y == null || w == null || h == null) return null;
+  if (!(w > 0) || !(h > 0)) return null;
+  if (x < 0 || y < 0 || x >= 1 || y >= 1) return null;
+  return { x, y, width: Math.min(w, 1 - x), height: Math.min(h, 1 - y) };
+}
+
+/**
  * Can this specific graphic be drawn, payload and all?
  *
  * The single answer. The component asks it to decide whether to render, the Remotion renderer asks
@@ -308,6 +378,7 @@ export function graphicIsRenderable(
   label: string | null
 ): boolean {
   if (!RENDERABLE_GRAPHICS.has(graphicType)) return false;
+  if (REGION_GRAPHICS.has(graphicType)) return chartPayloadIsRenderable(graphicType, data);
   if (DATA_DRIVEN_GRAPHICS.has(graphicType)) return chartPayloadIsRenderable(graphicType, data);
   if (SHAPE_GRAPHICS.has(graphicType)) {
     const name = readText(data, "shape", "icon", "name") ?? label ?? "";

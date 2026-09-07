@@ -3,6 +3,7 @@
  * Years appear bottom-left in a documentary date-card style.
  */
 import { burnedInTextAllowed } from "./onScreenTextPolicy";
+import { envFlagIsNotOff, envFlagIsOn } from "./envFlag";
 import * as fs from "fs";
 import * as path from "path";
 import { sanitizeForDrawtext, isCaptionTextCorrupt } from "./ffmpegSanitize";
@@ -47,12 +48,12 @@ const YEAR_RE = /\b(?:1[0-9]{3}|20[0-9]{2})\b/g;
 
 /** On by default; set ENABLE_CINEMATIC_EFFECTS=false to disable. */
 export function cinematicEffectsEnabled(): boolean {
-  return process.env.ENABLE_CINEMATIC_EFFECTS !== "false";
+  return envFlagIsNotOff("ENABLE_CINEMATIC_EFFECTS");
 }
 
 /** Full-frame particle layer — off by default (can look like a dirty overlay). */
 export function cinematicParticlesEnabled(): boolean {
-  return process.env.ENABLE_CINEMATIC_PARTICLES === "true";
+  return envFlagIsOn("ENABLE_CINEMATIC_PARTICLES");
 }
 
 export function extractYearsFromText(text: string): string[] {
@@ -701,7 +702,7 @@ export type TtsMontagePlan = {
 
 /** Hard cuts on TTS voiceStartSec — no xfade drift (default on). */
 export function ttsHardCutMontageEnabled(): boolean {
-  if (process.env.ENABLE_TTS_HARD_CUT_MONTAGE === "false") return false;
+  if (!envFlagIsNotOff("ENABLE_TTS_HARD_CUT_MONTAGE")) return false;
   return true;
 }
 

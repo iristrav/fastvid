@@ -265,7 +265,16 @@ export function graphicsLifecycle(input: GraphicsLifecycleInput): GraphicsLifecy
 function RENDERER_KNOWS(graphicType: string): boolean {
   return graphicIsRenderable(
     graphicType,
-    { label: "probe", series: [{ label: "a", value: 1 }], normX: 0.5, normY: 0.5, shape: "circle" },
+    {
+      label: "probe",
+      series: [{ label: "a", value: 1 }],
+      normX: 0.5,
+      normY: 0.5,
+      /** RONDE 124 — the region rule too, or `highlight_box` probes as a type nobody can draw. */
+      normW: 0.2,
+      normH: 0.2,
+      shape: "circle",
+    },
     "probe"
   );
 }

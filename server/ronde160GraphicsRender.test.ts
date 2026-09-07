@@ -89,6 +89,14 @@ const PAYLOADS: Readonly<Record<string, { label: string | null; data: Record<str
   multi_point: { label: "Sites", data: ROUTE },
   shape: { label: null, data: { shape: "circle" } },
   icon: { label: null, data: { icon: "camera" } },
+  /**
+   * RONDE 124 — the region a highlight box frames, in fractions of the composition.
+   *
+   * Its ink is an outline rather than a filled card, which is exactly the case worth having in
+   * this suite: §7's alpha read is what proves a four-pixel border actually lands on screen, and
+   * no unit test can.
+   */
+  highlight_box: { label: null, data: { normX: 0.12, normY: 0.2, normW: 0.4, normH: 0.35 } },
 };
 
 /** Every type in the Set, in a stable order, so a failure names the same slot every run. */
