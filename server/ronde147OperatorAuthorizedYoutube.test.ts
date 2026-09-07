@@ -50,6 +50,7 @@ import {
   youtubeLicenseDecision,
   youtubeVideoIdFromIdentifier,
 } from "./youtubeLicenseStatus";
+import { youtubeOperatorAuthorized } from "./sourcingPolicy";
 
 const NC = "https://creativecommons.org/licenses/by-nc-nd/4.0/";
 const CC_BY = "https://creativecommons.org/licenses/by/4.0/";
@@ -346,8 +347,39 @@ describe("RONDE 147 — one decision, no second engine", () => {
     const pool = fs.readFileSync(path.join(__dirname, "scenePool.ts"), "utf8");
     expect(pipe).toContain("if (!licenseDecision.allowed) {");
     expect(pool).toContain("if (!poolLicense.allowed) continue;");
+    /**
+     * The rule is that neither sourcing route READS the variable — it asks for a decision.
+     *
+     * Asserted on `process.env.<name>`, which is what reading it looks like, rather than on the
+     * bare name: both files now explain in prose which variable withdraws the authorisation and
+     * what happens then, and a rule that forbids naming a flag in a comment stops being a rule
+     * about the code. The two doc mentions are the reason this became specific.
+     */
     for (const src of [pipe, pool]) {
-      expect(src).not.toContain("ALLOW_OPERATOR_LICENSED_YOUTUBE");
+      expect(src).not.toContain("process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE");
+    }
+  });
+
+  it("P1b. the archive gate and the live-retrieval policy read the one flag the same way", () => {
+    /**
+     * The authorisation is one fact about the project, and it is asked about on two paths: the
+     * archive.org `youtube-*` gate (`allowOperatorLicensedYoutube`) and the live YouTube retrieval
+     * policy (`youtubeOperatorAuthorized`). They parse the same variable in two modules, so a
+     * change to one that is not made to the other would let the pipeline hold two opinions about
+     * whether it may use YouTube. Pinned by behaviour, on every value that matters.
+     */
+    const before = process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+    try {
+      for (const value of [undefined, "", "true", "false", "FALSE", " false ", "no", "1"]) {
+        if (value === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+        else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = value;
+        expect(youtubeOperatorAuthorized(), `value=${String(value)}`).toBe(
+          allowOperatorLicensedYoutube()
+        );
+      }
+    } finally {
+      if (before === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+      else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = before;
     }
   });
 

@@ -1458,9 +1458,69 @@ export function minQualityExportScore(videoLength?: string | null): number {
 export { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
 import { envFlagIsOn, envFlagIsNotOff } from "./envFlag";
 
-/** YouTube Creative Commons clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
+/** YouTube clips — off unless ENABLE_YOUTUBE_SOURCING=true and keys set. */
 export function youtubeSourcingEnabled(): boolean {
   return envFlagIsOn("ENABLE_YOUTUBE_SOURCING");
+}
+
+/* ═══════════════ YouTube: which licence question retrieval asks ═══════════════ */
+
+/** The three retrieval modes, as the YouTube Data API's own `videoLicense` parameter takes them. */
+export type YoutubeLicenseMode = "creative_common" | "youtube" | "any";
+
+/**
+ * IS THE PROJECT'S YOUTUBE SOURCING AUTHORISATION IN FORCE?
+ *
+ * The FastVid owner holds authorisation to use YouTube as a production footage source and has
+ * stated it for YouTube as a whole rather than clip by clip. `allowOperatorLicensedYoutube` in
+ * `youtubeLicenseStatus` is that same switch on the archive.org `youtube-*` path, and this is the
+ * same authorisation asked about on the LIVE retrieval path — one authorisation, one variable, two
+ * doors. Duplicating the parse rather than importing keeps this module free of a dependency it
+ * otherwise has no reason to carry, and a test pins the two to the same answer.
+ *
+ *     ALLOW_OPERATOR_LICENSED_YOUTUBE=false        CC-only retrieval, RONDE 160's behaviour exactly
+ *     anything else, including unset (default)     YouTube is a full source
+ *
+ * Only the literal `false` switches it off: a typo must not silently withdraw an authorisation the
+ * owner has given.
+ */
+export function youtubeOperatorAuthorized(): boolean {
+  return process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";
+}
+
+/**
+ * WHICH LICENCE QUESTION THE POOL ASKS YOUTUBE — and the reason it is no longer `creative_common`.
+ *
+ * ── The setting that had no caller ───────────────────────────────────────────────────────────
+ *
+ * `PoolRequest.youtubeLicenseMode` was built, typed and documented, and NOTHING in production ever
+ * set it. `scenePool` fell through to its hardcoded `?? "creative_common"` on every render, so the
+ * ranked retrieval path RONDE 175 wired up specifically so YouTube could compete as a source asked
+ * YouTube for Creative Commons material and nothing else — in every render, silently. Same shape
+ * as the counters of RONDE 115, 119 and 120: something exists, nothing calls it, and its default
+ * quietly governs the system.
+ *
+ * ── What the answer is now ───────────────────────────────────────────────────────────────────
+ *
+ * `any` — no `videoLicense` filter at all — under the project's YouTube sourcing authorisation.
+ * That is the highest-recall question the Data API takes: CC and standard-licence material ranked
+ * together by YouTube's own relevance, which is precisely the objective. `creative_common` narrows
+ * a search to a small and largely modern slice of the platform, and under an authorisation that
+ * covers YouTube generally there is no reason for retrieval to carry that narrowing.
+ *
+ * ── What did NOT change ──────────────────────────────────────────────────────────────────────
+ *
+ * Everything a candidate has to survive after retrieval. The relevance score, the person gate, the
+ * historical anchoring, the vision judgement, the image gate that screens a downloaded clip on what
+ * it SHOWS, adoption, deduplication, the lineage ledger and the delivery proof are all untouched —
+ * a wider net is not a lower bar. Nothing here claims a licence either: `any` sends no filter, so
+ * `youtubeLicenseMetadata` records `retrievedUnder: any` and reports NO licence, which is the
+ * honest description of an unfiltered search.
+ */
+export function youtubeRetrievalMode(): YoutubeLicenseMode {
+  const forced = process.env.YOUTUBE_LICENSE_MODE?.trim().toLowerCase();
+  if (forced === "creative_common" || forced === "youtube" || forced === "any") return forced;
+  return youtubeOperatorAuthorized() ? "any" : "creative_common";
 }
 
 /**

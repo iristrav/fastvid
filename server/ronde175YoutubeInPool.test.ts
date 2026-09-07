@@ -96,11 +96,37 @@ describe("R175 — buildSceneCandidatePool actually invokes the YouTube search",
     expect(sceneIndex).toBe(0);
   });
 
-  /** The pool must not invent a licence question — CC is the default, and it is passed through. */
-  it("asks under the CC licence by default", async () => {
-    const search = vi.fn(async () => [ytRow("a1")]);
-    await buildSceneCandidatePool(poolRequest(search as never));
-    expect(search.mock.calls[0]![2]).toBe("creative_common");
+  /**
+   * The pool must not invent a licence question — it asks the one the sourcing policy names.
+   *
+   * ── Why this assertion changed ────────────────────────────────────────────────────────────
+   *
+   * It used to read `expect(...).toBe("creative_common")`, and that was a fact about a HARDCODED
+   * fallback rather than about a decision: `youtubeLicenseMode` had no production caller, so the
+   * fallback governed every render and the ranked YouTube retrieval was Creative Commons only —
+   * silently, in a pipeline whose project holds authorisation to use YouTube as a whole.
+   *
+   * The default now comes from `youtubeRetrievalMode`, so the test asks about the rule instead of
+   * about a literal: the authorised project gets the unfiltered question, and withdrawing the
+   * authorisation restores CC exactly. Both directions, because a default that only moves one way
+   * is not a policy.
+   */
+  it("asks the licence question the project's sourcing policy names", async () => {
+    const before = process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+    try {
+      delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+      const authorised = vi.fn(async () => [ytRow("a1")]);
+      await buildSceneCandidatePool(poolRequest(authorised as never));
+      expect(authorised.mock.calls[0]![2]).toBe("any");
+
+      process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = "false";
+      const withdrawn = vi.fn(async () => [ytRow("a1")]);
+      await buildSceneCandidatePool(poolRequest(withdrawn as never));
+      expect(withdrawn.mock.calls[0]![2]).toBe("creative_common");
+    } finally {
+      if (before === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+      else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = before;
+    }
   });
 
   it("passes a caller's licence mode through unchanged", async () => {

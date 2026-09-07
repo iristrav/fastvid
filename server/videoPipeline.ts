@@ -193,7 +193,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -2625,15 +2625,32 @@ function youtubeFairUseEnabled(): boolean {
  * deliberately outside CC, and — because the mode is now recorded on the lineage — being able to
  * answer afterwards WHICH licence a clip in a finished video was retrieved under.
  *
- * Off by default. It is the one pass that can only ever return non-CC material, so switching it on
- * is a licensing decision the operator makes deliberately, not something a deploy inherits.
+ * ── It used to be off by default, and the reason for that has been withdrawn ────────────────
+ *
+ * RONDE 160 left it off because it "can only ever return non-CC material, so switching it on is a
+ * licensing decision the operator makes deliberately". The operator has since made that decision,
+ * for YouTube as a whole, and `youtubeOperatorAuthorized` is where it is recorded. Under that
+ * authorisation this pass is a retrieval question rather than a licensing one, and leaving it off
+ * would mean the pipeline kept declining to look at material the project is permitted to use.
+ *
+ * `ENABLE_YOUTUBE_STANDARD_LICENSE=false` still switches it back off. With the authorisation
+ * withdrawn (`ALLOW_OPERATOR_LICENSED_YOUTUBE=false`) it returns to opt-in, exactly as RONDE 160
+ * left it.
  */
 function youtubeStandardLicenseEnabled(): boolean {
-  return envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE");
+  return youtubeOperatorAuthorized()
+    ? envFlagIsNotOff("ENABLE_YOUTUBE_STANDARD_LICENSE")
+    : envFlagIsOn("ENABLE_YOUTUBE_STANDARD_LICENSE");
 }
 
-/** The three retrieval modes, in this codebase's own words. */
-export type YoutubeLicenseMode = "creative_common" | "youtube" | "any";
+/**
+ * The three retrieval modes, in this codebase's own words.
+ *
+ * Declared in `sourcingPolicy` beside the function that CHOOSES between them, and re-exported here
+ * so every existing importer is untouched. Two declarations of one union is how the two halves
+ * drift until a mode exists on one side and not the other.
+ */
+export type { YoutubeLicenseMode } from "./sourcingPolicy";
 
 /**
  * RONDE 160 (FASE 4) — the mode, as the YouTube Data API's `videoLicense` parameter.
@@ -2692,9 +2709,29 @@ function youtubeFairUseMaxClipSec(): number {
   return 5;
 }
 
+/**
+ * The five-second ceiling on unfiltered-pass clips, and when it still applies.
+ *
+ * It exists as a fair-use mitigation: a short transformative excerpt is a much easier claim than a
+ * long one, so material retrieved WITHOUT a licence assertion was cut to five seconds whatever the
+ * beat asked for. That reasoning is about relying on fair use. Under the project's YouTube
+ * sourcing authorisation the material is not being used under fair use, and a ceiling shorter than
+ * the narration it plays under is then simply a worse edit — the unfiltered pass is now the main
+ * retrieval route, so the cap would have applied to most of the footage in the video.
+ *
+ * `FAIR_USE_YT_MAX_SEC` still binds when the operator sets it, and the cap returns in full with
+ * the authorisation withdrawn. Nothing else about the clip changes: the transform on adopt, the
+ * minimum source length and every gate after it are untouched.
+ */
+export function capYoutubeClipDurationForTest(duration: number, fileTag: string): number {
+  return capYoutubeClipDuration(duration, fileTag);
+}
+
 function capYoutubeClipDuration(duration: number, fileTag: string): number {
-  if (fileTag === "ytfu") return Math.min(duration, youtubeFairUseMaxClipSec());
-  return duration;
+  if (fileTag !== "ytfu") return duration;
+  const explicit = process.env.FAIR_USE_YT_MAX_SEC?.trim();
+  if (!explicit && youtubeOperatorAuthorized()) return duration;
+  return Math.min(duration, youtubeFairUseMaxClipSec());
 }
 
 /** Clips that must receive fair-use transform before adoption (never raw). */
@@ -14571,22 +14608,42 @@ export async function fetchYouTubeCCClips(
       : ytDeadline;
 
   /**
-   * RONDE 160 — the licence passes, most permissive LAST.
+   * The licence passes, ordered by what the project is allowed to use.
    *
-   * CC first because it is the only material whose reuse the licence itself grants. The explicit
-   * standard-licence pass sits before the unfiltered one so that, when it is switched on, a clip
-   * that IS standard-licensed is retrieved under a mode that says so rather than arriving
-   * anonymously through `any`.
+   * ── Why the order is now a policy question ──────────────────────────────────────────────────
+   *
+   * RONDE 160 ran CC first "because it is the only material whose reuse the licence itself
+   * grants", with the unfiltered pass last. That ordering is not neutral: every pass breaks on
+   * `fetched >= count` and on the render's download ceiling, so a CC pass that fills the beat
+   * means the later passes never run. Under an authorisation covering YouTube generally, an
+   * ordering built around a licence distinction that no longer decides anything spends the whole
+   * budget on the platform's narrowest and most modern slice — CC-only in practice, from an
+   * ordering rather than from a rule.
+   *
+   * So when the authorisation is in force the widest question is asked FIRST: `any` sends no
+   * `videoLicense` filter and gets YouTube's own best-ranked results for the query, which is what
+   * "maximize the probability of finding relevant footage" means at the retrieval layer. The two
+   * licence-specific passes follow, and they still earn their place — a clip they return is
+   * recorded as retrieved under a mode that names a licence, which the unfiltered pass can never
+   * honestly claim.
+   *
+   * With the authorisation withdrawn (`ALLOW_OPERATOR_LICENSED_YOUTUBE=false`) the order is RONDE
+   * 160's exactly: CC, then standard if opted in, then fair-use if enabled.
+   *
+   * The passes themselves are unchanged, and so is everything downstream of them. Widening which
+   * question is asked first does not touch the relevance score, the person gate, the vision
+   * judgement, the image gate, adoption, dedup or lineage — a candidate still has to survive all
+   * of them, and the ones that do not are still refused with a reason.
    */
-  const licensePasses: Array<{ license: YoutubeLicenseMode; tag: string; fileTag: string }> = [
-    { license: "creative_common", tag: "YouTube CC", fileTag: "ytcc" },
-  ];
-  if (youtubeStandardLicenseEnabled()) {
-    licensePasses.push({ license: "youtube", tag: "YouTube standard", fileTag: "ytstd" });
-  }
-  if (youtubeFairUseEnabled()) {
-    licensePasses.push({ license: "any", tag: "YouTube fair-use", fileTag: "ytfu" });
-  }
+  const ccPass = { license: "creative_common" as YoutubeLicenseMode, tag: "YouTube CC", fileTag: "ytcc" };
+  const stdPass = { license: "youtube" as YoutubeLicenseMode, tag: "YouTube standard", fileTag: "ytstd" };
+  const anyPass = { license: "any" as YoutubeLicenseMode, tag: "YouTube fair-use", fileTag: "ytfu" };
+  const licensePasses: Array<{ license: YoutubeLicenseMode; tag: string; fileTag: string }> = [];
+  const recallFirst = youtubeOperatorAuthorized();
+  if (recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);
+  licensePasses.push(ccPass);
+  if (youtubeStandardLicenseEnabled()) licensePasses.push(stdPass);
+  if (!recallFirst && youtubeFairUseEnabled()) licensePasses.push(anyPass);
 
   for (const query of uniqueQueries.slice(0, 2)) {
     if (fetched >= count) break;

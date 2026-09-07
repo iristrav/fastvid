@@ -2,6 +2,9 @@ import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
+/** Statically imported so the module's load does not count against a test timeout. */
+import { capYoutubeClipDurationForTest } from "./videoPipeline";
+
 // RONDE 10 — quota-free YouTube search fallback.
 //
 // The official YouTube Data API search costs 100 quota units per call (~100/day), so it 429s
@@ -117,11 +120,43 @@ describe("RONDE 10b — the cloud ytdlp-service download sends the bearer token"
   });
 });
 
-describe("RONDE 10 — fair-use excerpts stay short (pre-existing cap, unchanged)", () => {
-  it("the fair-use clip cap still exists and is bounded to <= 8s", () => {
+describe("RONDE 10 — fair-use excerpts stay short, where fair use is what is relied on", () => {
+  /**
+   * ── Why this assertion moved from a string to a behaviour ─────────────────────────────────
+   *
+   * It used to match `if (fileTag === "ytfu") return Math.min(...)` literally, under the heading
+   * "pre-existing cap, unchanged". The cap's PURPOSE is a fair-use mitigation: a short
+   * transformative excerpt is a far easier claim than a long one. The project has since stated an
+   * authorisation to use YouTube as a production source, and under it the material is not being
+   * used under fair use — so a ceiling shorter than the narration the clip plays under is just a
+   * worse edit, and it now applies where its reasoning applies.
+   *
+   * Everything the cap guaranteed is still asserted, and now against the real function rather
+   * than against its source text: it is bounded to 8s, it is settable, it binds whenever fair use
+   * is being relied on, and it has never touched the licence-named passes.
+   */
+  it("the cap still exists, is still bounded to <= 8s, and is still settable", () => {
     expect(pipelineSrc).toContain("function youtubeFairUseMaxClipSec()");
-    // The existing cap: default 5s, env-tunable within [2, 8].
     expect(pipelineSrc).toContain("if (!isNaN(n) && n >= 2 && n <= 8) return n;");
-    expect(pipelineSrc).toContain('if (fileTag === "ytfu") return Math.min(duration, youtubeFairUseMaxClipSec());');
+    expect(pipelineSrc).toContain('if (fileTag !== "ytfu") return duration;');
+  });
+
+  it("it binds on the unfiltered pass whenever fair use is what is being relied on", () => {
+    const before = process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+    const beforeMax = process.env.FAIR_USE_YT_MAX_SEC;
+    try {
+      delete process.env.FAIR_USE_YT_MAX_SEC;
+      process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = "false";
+      expect(capYoutubeClipDurationForTest(7.5, "ytfu")).toBe(5);
+      /** And an explicit ceiling binds regardless of the authorisation. */
+      process.env.FAIR_USE_YT_MAX_SEC = "3";
+      delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+      expect(capYoutubeClipDurationForTest(7.5, "ytfu")).toBe(3);
+    } finally {
+      if (before === undefined) delete process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE;
+      else process.env.ALLOW_OPERATOR_LICENSED_YOUTUBE = before;
+      if (beforeMax === undefined) delete process.env.FAIR_USE_YT_MAX_SEC;
+      else process.env.FAIR_USE_YT_MAX_SEC = beforeMax;
+    }
   });
 });

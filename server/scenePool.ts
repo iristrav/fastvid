@@ -33,6 +33,7 @@ import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicen
 import { rankedPool } from "./poolRanking";
 import { penaliseDuplicates, type UsageLedger } from "./duplicateGuard";
 import { youtubePoolCandidates, type YoutubeRowLike } from "./youtubePoolSource";
+import { youtubeRetrievalMode } from "./sourcingPolicy";
 
 /**
  * RONDE 175 — the shape of the EXISTING YouTube search, as this module needs it.
@@ -1549,7 +1550,15 @@ async function buildSceneCandidatePoolInner(
    * duplicate penalty and the same download and rehydration as everything else.
    */
   if (req.youtubeSearch) {
-    const mode = req.youtubeLicenseMode ?? "creative_common";
+    /**
+     * The licence question this pool asks YouTube.
+     *
+     * The fallback used to be a hardcoded `"creative_common"`, and `youtubeLicenseMode` had NO
+     * production caller — so every render's ranked YouTube retrieval was Creative Commons only,
+     * from a default nobody had chosen. It now falls through to the project's sourcing policy, so
+     * a caller that does not name a mode gets the authorised one rather than the narrowest one.
+     */
+    const mode = req.youtubeLicenseMode ?? youtubeRetrievalMode();
     /**
      * Built with `.then` rather than an async IIFE, like every other task above.
      *
