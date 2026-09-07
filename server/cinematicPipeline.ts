@@ -47,7 +47,11 @@ import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cin
 import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
 import { formatGraphics, newRenderId } from "./renderCorrelation";
 import { graphicRendererClass } from "./graphicsVocabulary";
-import { graphicIsRenderable } from "./graphicsVocabulary";
+import {
+  effectsLifecycle,
+  formatGraphicsLifecycle,
+  graphicsLifecycle,
+} from "./graphicsLifecycle";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import {
@@ -531,6 +535,47 @@ export function formatCinematicGraphics(result: CinematicPipelineResult): string
     /** The hybrid architecture draws every graphic in Remotion; ffmpeg only composites the alpha. */
     renderer: "remotion",
   });
+}
+
+/**
+ * RONDE 124 — the same graphics, added up until they account for the plan.
+ *
+ * `formatCinematicGraphics` above reports three counts that cannot be reconciled with each other:
+ * `planned` comes from the EDL, `rendered` from a predicate over the track, and `skipped` from
+ * matching the prefix `"motion graphic "` on free text in `unsupported`. Render 572 printed
+ * planned=5 rendered=5 skipped=0 while its EDL separately named an unsupported `highlight_box` —
+ * two statements that cannot both describe the same five graphics, and no structure in which to
+ * notice it.
+ *
+ * This joins the plan to the timeline by the id `translateEdl` itself computes, so every planned
+ * graphic comes out with exactly one outcome and the outcomes add up to the plan. The older line
+ * is kept beside it, unchanged: it is what four rounds of reports are written in, and replacing a
+ * number people read with a differently-defined number of the same name is how a metric starts
+ * lying.
+ *
+ * The renderer's report is optional here because the pipeline has no render yet at this point —
+ * see `graphicsLifecycle`'s note on why an absent report must not become a fabricated ending.
+ */
+export function formatCinematicGraphicsLifecycle(result: CinematicPipelineResult): string[] {
+  const track = result.timeline.tracks.find((t) => t.kind === "GRAPHICS");
+  const lifecycle = graphicsLifecycle({
+    planned: result.edl.decisions.flatMap((d) =>
+      d.motionGraphics.map((g) => ({
+        beatId: d.beatId,
+        graphicType: g.graphicType,
+        data: g.data,
+        startSec: g.startSec,
+        reason: g.reason,
+      }))
+    ),
+    onTrack: track && track.kind === "GRAPHICS" ? track.graphics : [],
+  });
+  const effects = effectsLifecycle(
+    result.edl.decisions.flatMap((d) =>
+      d.effects.map((e) => ({ beatId: d.beatId, effectType: e.effectType, reason: e.reason }))
+    )
+  );
+  return formatGraphicsLifecycle(result.renderId, lifecycle, effects);
 }
 
 /** One line per planned video, for the render log. Never a payload, never a URL. */

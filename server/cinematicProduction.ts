@@ -32,6 +32,7 @@ import {
 import {
   cinematicRouteEnabled,
   formatCinematicGraphics,
+  formatCinematicGraphicsLifecycle,
   formatCinematicPlan,
   lostEditorialIntent,
   runCinematicPipeline,
@@ -275,6 +276,8 @@ export async function planAndStoreCinematicTimeline(
    * render's correlation id so it joins the rest of that render's log.
    */
   log.push(formatCinematicGraphics(result));
+  /** RONDE 124 — and the same graphics again, as endings that add up to the plan. */
+  for (const line of formatCinematicGraphicsLifecycle(result)) log.push(line);
   /**
    * RONDE 189 — the audio verdict, including the one thing this build cannot do.
    *
