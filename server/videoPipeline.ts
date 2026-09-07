@@ -382,6 +382,12 @@ import {
   type VisualLineageRecord,
 } from "./visualSourceLineage";
 import {
+  LINEAGE_SNAPSHOT_METADATA_KEY,
+  formatDeliveryRecord,
+  snapshotComposeDelivery,
+  snapshotLineage,
+} from "./visualLineageSnapshot";
+import {
   formatGlobalBudget,
   withGlobalMediaFetch,
   withGlobalVisionGate,
@@ -589,6 +595,7 @@ import {
 import {
   createPipelineReportCollector,
   type PipelineGlance,
+  type PipelineReportCollector,
 } from "./renderPipelineReport";
 import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIONS } from "./beatSegmentChoice";
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
@@ -1077,6 +1084,87 @@ import type { RenderWatchdog } from "./renderWatchdog";
 import type { RenderBudget } from "./renderBudget";
 import type { BudgetTracker } from "./renderBudgetTracker";
 import { AsyncLocalStorage } from "async_hooks";
+
+/**
+ * RONDE 122 §2 — DELIVERED, written at the one moment the video has a viewer-facing file.
+ *
+ * ── Why this is the only honest place for it ─────────────────────────────────────────────────
+ *
+ * The stage means "the file the viewer receives contains this asset", and nothing before
+ * `updateVideoStatus(..., videoUrl)` can say that. The render can still fail, the upload can still
+ * be refused, the cinematic job can still lose its claim and fall back to compose. Called from
+ * immediately after that write, every one of those paths has already returned or been resolved.
+ *
+ * ── It takes no clip list, on purpose ────────────────────────────────────────────────────────
+ *
+ * `markDelivered` marks exactly the records FINAL_VIDEO was proven for — the compose route proves
+ * them from the concat input list, and the cinematic route re-proves them with
+ * `replaceFinalVideo` against the delivered file's own clip list. A second list passed in here
+ * could disagree with both, and a delivery claim that disagrees with the proof is the fake
+ * delivery event this round exists to make impossible. A ledger whose final video was never
+ * verified writes nothing and says so.
+ *
+ * ── Who persists what ────────────────────────────────────────────────────────────────────────
+ *
+ * On the cinematic route the render job has ALREADY written the authoritative snapshot, including
+ * a delivery record built from its own output; re-writing it from here would replace measured
+ * facts with inferred ones, so this route only writes the in-memory ledger. The compose route has
+ * no render job, so the pipeline records its own delivery — labelled `compose_montage`, never as a
+ * render job that mislaid its id.
+ */
+/**
+ * Store this render's lineage beside the qualityReport and the render report.
+ *
+ * One writer, two callers: the snapshot taken before the render, and the compose route's delivery
+ * record afterwards. It is a merge, so nothing else in `videos.metadata` is touched.
+ */
+async function persistVisualLineage(
+  videoId: number,
+  snapshot: import("./visualLineageSnapshot").VisualLineageSnapshot
+): Promise<void> {
+  const patch: Record<string, unknown> = { [LINEAGE_SNAPSHOT_METADATA_KEY]: snapshot };
+  await mergeVideoMetadata(videoId, patch);
+}
+
+export async function writeDeliveredLineage(params: {
+  videoId: number;
+  ledger: VisualSourceLedger | null | undefined;
+  route: "cinematic_timeline" | "legacy_compose";
+  report?: PipelineReportCollector;
+  timelineVersion?: number;
+}): Promise<{ written: number; persisted: boolean; refused?: string }> {
+  const { videoId, ledger, route } = params;
+  const say = (line: string) => console.log(params.report ? params.report.add("sourcing", line) : line);
+  if (!ledger) return { written: 0, persisted: false, refused: "NO_LEDGER" };
+  try {
+    const marked = ledger.markDelivered(route);
+    if (marked.refused) {
+      console.warn(
+        `[VisualDelivery] video=${videoId} route=${route} NOT_DELIVERED=${marked.refused} — this ` +
+          "render never proved which clips reached the delivered file, so none are claimed"
+      );
+      return { written: 0, persisted: false, refused: marked.refused };
+    }
+    say(`[VisualDelivery] video=${videoId} route=${route} deliveredAssets=${marked.written}`);
+    if (route === "cinematic_timeline") return { written: marked.written, persisted: false };
+
+    const outcome = snapshotComposeDelivery(ledger, {
+      videoId,
+      timelineVersion: params.timelineVersion ?? 0,
+      published: true,
+    });
+    if (!outcome) return { written: marked.written, persisted: false, refused: "NOTHING_DELIVERED" };
+    await persistVisualLineage(videoId, outcome.snapshot);
+    say(formatDeliveryRecord(videoId, outcome.record));
+    return { written: marked.written, persisted: true };
+  } catch (err) {
+    console.warn(
+      `[VisualDelivery] video=${videoId} could not record the delivery — the video is unaffected: ` +
+        `${(err as Error).message.slice(0, 200)}`
+    );
+    return { written: 0, persisted: false, refused: "WRITE_FAILED" };
+  }
+}
 
 type RenderCtx = {
   watchdog: RenderWatchdog | null;
@@ -43289,6 +43377,48 @@ async function _runVideoPipelineInner(
           );
         }
         /**
+         * RONDE 122 §2 — THE LINEAGE IS WRITTEN DOWN BEFORE ANYTHING RENDERS IT.
+         *
+         * The ledger has always been an in-memory object created per render, so the moment this
+         * process ended, every asset's history ended with it — which is why `DELIVERED` had no
+         * writer for rounds: the code that uploads the file and learns its URL runs in a render
+         * job that may start minutes later, in a different process, holding only a timeline.
+         *
+         * A timeline knows identities and no histories. So the histories are persisted HERE, at
+         * the last moment both the ledger and the stored timeline's version are in scope, keyed by
+         * canonical asset identity so the render job can join its own output against them. It is
+         * stored beside the qualityReport and the render report in `videos.metadata`, which is
+         * where this pipeline's per-render evidence already lives.
+         *
+         * Written whether or not the cinematic route is taken, and before the claim: a job the
+         * poll loop takes must find the same lineage the in-process render would have found.
+         */
+        if (outcome.ok) {
+          try {
+            const ledger = visualDedup.sourcingCache?.lineage;
+            if (ledger) {
+              const snapshot = snapshotLineage(ledger, {
+                videoId,
+                timelineVersion: outcome.timelineVersion,
+              });
+              await persistVisualLineage(videoId, snapshot);
+              console.log(
+                pipelineReport.add(
+                  "sourcing",
+                  `[VisualLineage] video=${videoId} persisted assets=${snapshot.assets.length} ` +
+                    `unidentifiedRecords=${snapshot.unidentifiedRecords} ` +
+                    `truncated=${snapshot.truncated ?? 0} timelineVersion=${snapshot.timelineVersion}`
+                )
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `[VisualLineage] video=${videoId} could not persist the lineage — the render is ` +
+                `unaffected and its delivery cannot be attributed: ${(err as Error).message.slice(0, 200)}`
+            );
+          }
+        }
+        /**
          * R159 §24 — when the flag is on and the plan is good, the timeline RENDERS the video.
          *
          * A render job is queued from the stored timeline and the same worker that renders a
@@ -43699,6 +43829,13 @@ async function _runVideoPipelineInner(
       progressStep: STAGE_LABELS.complete,
       progressPercent: 100,
     }).catch((err) => console.warn(`[Pipeline] Failed to persist videoUrl for ${videoId}:`, err));
+
+    await writeDeliveredLineage({
+      videoId,
+      ledger: visualDedup.sourcingCache?.lineage ?? null,
+      route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose",
+      report: pipelineReport,
+    });
 
     onProgress?.({ stage: STAGE_LABELS.complete, percent: 100 });
     const totalMs = Date.now() - t0;

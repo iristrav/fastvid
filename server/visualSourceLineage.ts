@@ -89,23 +89,28 @@ export const LINEAGE_STAGES = [
    * the ledger and keeps working on plain `AdoptionFacts`. CINEMATIC_DROPPED is terminal; the
    * other three are progress.
    *
-   * ── DELIVERED IS NOT WRITTEN, AND THIS SAYS WHY ─────────────────────────────────────────
+   * ── DELIVERED, AND WHAT IT COST TO BE ABLE TO WRITE IT ──────────────────────────────────
    *
-   * This note used to claim all four "are written from videoPipeline". None of them were, for
+   * This note once claimed all four "are written from videoPipeline". None of them were, for
    * rounds, and that sentence sent two investigations down the wrong path — a stage that reads
    * false in every render looks exactly like a stage nothing ever reaches. So the state is
-   * recorded here rather than assumed:
+   * recorded here rather than assumed.
    *
-   *   RONDE 122 measured it. `renderJobWorker` — the only place that uploads the output and
-   *   learns its viewer-facing URL, which is what DELIVERED means — contains ZERO references to
-   *   the ledger, and the ledger is created per render inside `createSourcingCache` and is never
-   *   persisted. The render job runs after the pipeline process is gone. So there is no missing
-   *   call site to add: writing DELIVERED honestly needs lineage that outlives the render, and
-   *   that is a design decision, not a patch.
+   * RONDE 122 measured the obstacle: `renderJobWorker` — the only place that uploads the output
+   * and learns its viewer-facing URL, which is what DELIVERED means — contained ZERO references
+   * to the ledger, and the ledger is created per render inside `createSourcingCache` and was
+   * never persisted, while the render job may run after the pipeline process is gone. There was
+   * no missing call site to add; writing DELIVERED honestly needed lineage that outlives the
+   * render.
    *
-   * Until then `formatProviderFunnelInvariant` and `lifecyclesOf` report `delivered: false` for
-   * every asset, and RONDE 120's structural test holds DELIVERED as the one known gap so nobody
-   * reads that false as a fact about the video.
+   * That is what `visualLineageSnapshot` is. The pipeline persists its lineage, keyed by canonical
+   * asset identity, before anything renders it; the render job joins its own output list against
+   * that snapshot after its upload succeeds; and `markDelivered` writes the stage in memory for
+   * exactly the records FINAL_VIDEO was proven for — never for a clip list a caller supplies.
+   *
+   * `markDelivered` refuses outright on a ledger whose final video was never verified. A render
+   * that failed, was cancelled, or never got as far as checking claims nothing, which is what
+   * kept this stage unwritten rather than wrongly written for so long.
    */
   "COMPOSE_INPUT",
   "COMPOSE_SELECTED",
@@ -1293,6 +1298,32 @@ export class VisualSourceLedger {
   /** True once the pipeline has actually checked which clips reached the delivered file. */
   get finalVideoWasVerified(): boolean {
     return this.finalVideoProven;
+  }
+
+  /**
+   * RONDE 122 §2 — THE VIEWER HAS THE FILE. Written once, from the proof, never from intent.
+   *
+   * FINAL_VIDEO says "this clip is in the file that was produced and validated". DELIVERED says
+   * "that file is the one the video now points at" — it is knowable only after the render has
+   * produced a file, the upload has returned a URL and the row has been written to name it. So
+   * this takes no clip list: the set is exactly the records FINAL_VIDEO was proven for, and
+   * passing a second list here would let a caller claim delivery for a clip the delivered file
+   * does not contain.
+   *
+   * A ledger whose final video was never verified writes NOTHING and says why. That is the case
+   * for a render that failed, was cancelled, or never got as far as checking — and inventing a
+   * delivery for it is the exact defect this stage was left unwritten to avoid.
+   */
+  markDelivered(reason?: string): { written: number; refused?: "FINAL_VIDEO_NOT_PROVEN" } {
+    if (!this.finalVideoProven) return { written: 0, refused: "FINAL_VIDEO_NOT_PROVEN" };
+    let written = 0;
+    for (const record of this.records.values()) {
+      if (record.finalVideoAt == null) continue;
+      if (this.hasStage(record.lineageId, "DELIVERED")) continue;
+      this.recordEvent(record.lineageId, "DELIVERED", { status: "OK", reason });
+      written += 1;
+    }
+    return { written };
   }
 
   // ── Summaries ──────────────────────────────────────────────────────────────

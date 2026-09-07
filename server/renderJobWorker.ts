@@ -41,9 +41,16 @@ import {
   getStoredTimeline,
   getVideoScenes,
   listQueuedRenderJobs,
+  mergeVideoMetadata,
   publishEditedVideo,
+  readVideoMetadataObject,
   updateRenderJobProgress,
 } from "./db";
+import {
+  LINEAGE_SNAPSHOT_METADATA_KEY,
+  recordDeliveredLineage,
+  type LineageStore,
+} from "./visualLineageSnapshot";
 import {
   RENDER_ERROR,
   formatRenderJob,
@@ -70,7 +77,7 @@ import {
 import { resolveLocalStorageFilePath } from "./storageLocal";
 import { downloadToFileStreaming } from "./videoPipeline";
 import type { ProjectTimeline } from "./projectTimeline";
-import { audioTrackOf } from "./projectTimeline";
+import { audioTrackOf, videoTrack } from "./projectTimeline";
 
 /* ═══════════════════════ the outcome of one job ═══════════════════════ */
 
@@ -134,6 +141,15 @@ export type RenderWorkerDeps = {
   graphicsOverlay: (params: {
     workDir: string;
   }) => ((timeline: ProjectTimeline) => Promise<GraphicsOverlayFile | null>) | null;
+  /**
+   * RONDE 122 §2 — the persisted lineage of the render this job is finishing.
+   *
+   * A dependency for the same reason every other one here is: the job's delivery accounting is a
+   * pure join between a snapshot and a clip list, and a test must be able to drive it without a
+   * database. `read` returns whatever the metadata bag holds — parsing and judging it is
+   * `parseLineageSnapshot`'s job, so a missing or unreadable snapshot arrives here as data.
+   */
+  lineage: LineageStore;
 };
 
 export function defaultRenderWorkerDeps(): RenderWorkerDeps {
@@ -172,6 +188,17 @@ export function defaultRenderWorkerDeps(): RenderWorkerDeps {
       return fs.existsSync(destPath) && fs.statSync(destPath).size > 0;
     },
     workRoot: () => os.tmpdir(),
+    /**
+     * `videos.metadata` is where the pipeline already stores its qualityReport and its render
+     * report, so the lineage snapshot lives beside them rather than in a table of its own. The
+     * merge is additive — nothing else in the bag is touched by writing this key.
+     */
+    lineage: {
+      read: async (videoId) =>
+        readVideoMetadataObject(await getVideoById(videoId))[LINEAGE_SNAPSHOT_METADATA_KEY],
+      write: async (videoId, snapshot) =>
+        mergeVideoMetadata(videoId, { [LINEAGE_SNAPSHOT_METADATA_KEY]: snapshot }),
+    },
   };
 }
 
@@ -744,6 +771,23 @@ export async function runRenderJob(params: {
         ` renderer=timelineRenderer published=${published} clips=${rendered.clipsRendered} ` +
         `duration=${check.durationSec?.toFixed(2) ?? "null"}s`
     );
+
+    /**
+     * RONDE 122 §2 — the delivery, written where every failure path has already returned.
+     *
+     * The upload has a URL, the publish verdict is in and the job row says completed. Nothing
+     * below this point can turn the render back into a failure, and nothing above it can reach
+     * here without having succeeded — which is what makes DELIVERED a fact rather than an
+     * intention.
+     */
+    await recordDeliveredLineage({
+      store: deps.lineage,
+      job,
+      clips: videoTrack(timeline),
+      renderedClipIds: rendered.renderedClipIds,
+      published,
+    });
+
     return {
       ok: true,
       outputUrl,

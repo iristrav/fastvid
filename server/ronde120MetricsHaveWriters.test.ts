@@ -139,38 +139,43 @@ function stageIsWritten(stage: string): boolean {
 }
 
 /**
- * The stages no production code writes, as measured today.
+ * The stages no production code writes, as measured today. IT IS NOW EMPTY.
  *
- * ── RONDE 121 shrank this list from three to one ────────────────────────────────────────────
+ * ── How it got from three to zero ───────────────────────────────────────────────────────────
  *
- * `CINEMATIC_SELECTED` and `CINEMATIC_DROPPED` now have a writer: the planner announces each
+ * RONDE 121 gave `CINEMATIC_SELECTED` and `CINEMATIC_DROPPED` a writer: the planner announces each
  * beat's ending through an injected sink and `videoPipeline` files the stage, where the ledger is
  * in scope. `hasTerminalOutcome` already treated CINEMATIC_DROPPED as an ending — the rule had
  * been written and was waiting for a caller that never came — so a planner-dropped clip now
  * leaves the audit explained instead of unexplained.
  *
- * `DELIVERED` remains. It belongs to the render side, not the planner, and nothing writes it.
+ * RONDE 122 gave `DELIVERED` one. It could not simply be filed from `videoPipeline` like the other
+ * two: the code that uploads the file and learns its URL runs in a render job that may start in
+ * another process, and the ledger was an in-memory object that died with the render. So the
+ * lineage is persisted before anything renders it, the render job joins its own output against it
+ * by canonical asset identity, and the stage is written from the proof rather than the intent —
+ * see `visualLineageSnapshot` and RONDE 122's own test file.
  *
- * What follows describes the defect as it was found, and is kept because the list may only shrink. `lifecyclesOf` reports
- * `cinematicSelected`, `cinematicDropped` and `delivered` for every asset of every render, and
- * all three are permanently false — while render 572 dropped six beats at exactly that step and
- * said so on the console:
+ * What follows describes the defect as it was found, and is kept because the list may only shrink.
+ * `lifecyclesOf` reported `cinematicSelected`, `cinematicDropped` and `delivered` for every asset
+ * of every render, and all three were permanently false — while render 572 dropped six beats at
+ * exactly that step and said so on the console:
  *
  *     [CinematicPipeline] dropped s1b0: adopted clip has no rehydratable identity
  *     [CinematicDrop] scene=1 beat=0 ... reason=NOT_REHYDRATABLE
  *
- * The ledger's own note claims otherwise — "They are written from `videoPipeline`, where the
+ * The ledger's own note claimed otherwise — "They are written from `videoPipeline`, where the
  * planner's result and the ledger are in scope" — and that never happened. A clip dropped by the
- * planner therefore reaches the audit with no cinematic ending at all, which is one plausible
- * source of the `unexplained` assets nobody has been able to name.
+ * planner therefore reached the audit with no cinematic ending at all, which was one source of the
+ * `unexplained` assets nobody had been able to name.
  *
- * The list is an exact equality on purpose: a fourth stage joining it fails here, and repairing
- * one of these fails here too until the list is shortened. It may only ever shrink.
+ * The list is an exact equality on purpose: a stage joining it fails here, and repairing one fails
+ * here too until the list is shortened. It may only ever shrink, and it has reached the floor.
  */
-const STAGES_WITH_NO_PRODUCTION_WRITER = ["DELIVERED"];
+const STAGES_WITH_NO_PRODUCTION_WRITER: string[] = [];
 
 describe("the lineage stages production actually writes", () => {
-  it("is exactly the vocabulary minus the three known gaps", () => {
+  it("is exactly the vocabulary minus the known gaps", () => {
     const unwritten = lineageStages().filter((s) => !stageIsWritten(s));
     expect(unwritten.sort()).toEqual([...STAGES_WITH_NO_PRODUCTION_WRITER].sort());
   });
