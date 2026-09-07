@@ -81,13 +81,31 @@ export const LINEAGE_STAGES = [
   /**
    * The cinematic planner's two endings, and the renderer's two.
    *
-   * These were logged to the console last round and recorded nowhere, which is why invariants over
-   * them could not be computed: `[CinematicDrop]` is greppable but a grep is not a data structure.
-   * They are written from `videoPipeline`, where the planner's result and the ledger are both in
-   * scope — the planner itself stays decoupled from the ledger and keeps working on plain
-   * `AdoptionFacts`.
+   * These were logged to the console and recorded nowhere, which is why invariants over them could
+   * not be computed: `[CinematicDrop]` is greppable but a grep is not a data structure.
    *
-   * CINEMATIC_DROPPED is terminal; the other three are progress.
+   * CINEMATIC_SELECTED and CINEMATIC_DROPPED are written from `videoPipeline` since RONDE 121, off
+   * the sink the planner announces its outcomes through — the planner itself stays decoupled from
+   * the ledger and keeps working on plain `AdoptionFacts`. CINEMATIC_DROPPED is terminal; the
+   * other three are progress.
+   *
+   * ── DELIVERED IS NOT WRITTEN, AND THIS SAYS WHY ─────────────────────────────────────────
+   *
+   * This note used to claim all four "are written from videoPipeline". None of them were, for
+   * rounds, and that sentence sent two investigations down the wrong path — a stage that reads
+   * false in every render looks exactly like a stage nothing ever reaches. So the state is
+   * recorded here rather than assumed:
+   *
+   *   RONDE 122 measured it. `renderJobWorker` — the only place that uploads the output and
+   *   learns its viewer-facing URL, which is what DELIVERED means — contains ZERO references to
+   *   the ledger, and the ledger is created per render inside `createSourcingCache` and is never
+   *   persisted. The render job runs after the pipeline process is gone. So there is no missing
+   *   call site to add: writing DELIVERED honestly needs lineage that outlives the render, and
+   *   that is a design decision, not a patch.
+   *
+   * Until then `formatProviderFunnelInvariant` and `lifecyclesOf` report `delivered: false` for
+   * every asset, and RONDE 120's structural test holds DELIVERED as the one known gap so nobody
+   * reads that false as a fact about the video.
    */
   "COMPOSE_INPUT",
   "COMPOSE_SELECTED",
