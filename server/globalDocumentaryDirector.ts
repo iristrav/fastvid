@@ -58,6 +58,13 @@ export type SceneVisualProfile = {
   /** Shot type variety: unique shot categories / total clips */
   shotVariety: number;
   /** Whether wide / establishing shots are present */
+  /**
+   * Which of the two readings produced `hasWideShots`/`hasCloseUps` for this scene: the framings a
+   * model observed in the clips, or — when no clip here was ever judged — the narration's own
+   * words. A finding built on the second is about the script, not the film, and must be readable
+   * as such rather than inferred from its absence.
+   */
+  shotEvidence: "observed_frames" | "narration_text";
   hasWideShots: boolean;
   /** Whether close-up shots are present */
   hasCloseUps: boolean;
@@ -129,7 +136,29 @@ function profileScene(
   sceneIndex: number,
   sceneText: string,
   clips: string[],
-  beats: Array<{ index: number; text: string }> = []
+  beats: Array<{ index: number; text: string }> = [],
+  /**
+   * THE FRAMING A MODEL ACTUALLY SAW — RENDER 573 REPORTED ON THE NARRATION INSTEAD.
+   *
+   * `hasWideShots` and `hasCloseUps` were `WIDE_TEXT_TOKENS.test(allText)` over the beat and scene
+   * TEXT. So the director's two variety findings —
+   *
+   *     quality=poor issues=3 fallback_scene, no_wide_shots, no_close_ups
+   *
+   * — say only that the narration never used wide-shot or close-up vocabulary. They are silent
+   * about the pictures, which is the one thing they claim to be about, and a documentary about a
+   * bunker will essentially never say "establishing shot" in its script.
+   *
+   * The observed framing exists: the beat image judge names it for every candidate it looks at,
+   * `assetDirector` reads it through `shotTypeOf`, and RONDE 174's D1 established the rule for this
+   * exact question — shot type comes from real frames, not from a filename or a sentence. Same
+   * resolver, passed in rather than reimplemented.
+   *
+   * Optional, and the text reading stays as the fallback: a render where no model looked at
+   * anything keeps precisely the answer it had, and `shotEvidence` says which of the two produced
+   * it so a reader is never left guessing.
+   */
+  shotTypeOf?: (clipPath: string) => string | null | undefined
 ): SceneVisualProfile {
   if (clips.length === 0) {
     return {
@@ -137,6 +166,8 @@ function profileScene(
       archivalFraction: 0, fallbackFraction: 0,
       dominantSource: "other", shotVariety: 0,
       hasWideShots: false, hasCloseUps: false,
+      /** No clips at all: nothing was observed, and nothing was read either. */
+      shotEvidence: "narration_text",
     };
   }
 
@@ -156,8 +187,23 @@ function profileScene(
   });
 
   const allText = clips.map((_, i) => beatTexts[i]).join(" ") + " " + sceneText;
-  const hasWideShots = WIDE_TEXT_TOKENS.test(allText);
-  const hasCloseUps = CLOSE_TEXT_TOKENS.test(allText);
+  /**
+   * Observed framings first. A clip nobody judged returns null and contributes nothing either way,
+   * which is why `observed.length` decides whether this scene was measured at all.
+   */
+  const observed = clips
+    .map((c) => shotTypeOf?.(c)?.trim().toLowerCase())
+    .filter((s): s is string => Boolean(s));
+  const shotEvidence: SceneVisualProfile["shotEvidence"] =
+    observed.length > 0 ? "observed_frames" : "narration_text";
+  const hasWideShots =
+    observed.length > 0
+      ? observed.some((s) => WIDE_TEXT_TOKENS.test(s))
+      : WIDE_TEXT_TOKENS.test(allText);
+  const hasCloseUps =
+    observed.length > 0
+      ? observed.some((s) => CLOSE_TEXT_TOKENS.test(s))
+      : CLOSE_TEXT_TOKENS.test(allText);
 
   const uniqueSources = sourceCounts.size;
   const shotVariety = Math.min(1, uniqueSources / Math.max(1, clips.length));
@@ -167,7 +213,7 @@ function profileScene(
     archivalFraction: archival / clips.length,
     fallbackFraction: fallback / clips.length,
     dominantSource, shotVariety,
-    hasWideShots, hasCloseUps,
+    hasWideShots, hasCloseUps, shotEvidence,
   };
 }
 
@@ -244,12 +290,22 @@ function detectMissingVariety(profiles: SceneVisualProfile[]): DirectorIssue[] {
   const issues: DirectorIssue[] = [];
   const anyWide = profiles.some((p) => p.hasWideShots);
   const anyClose = profiles.some((p) => p.hasCloseUps);
+  /**
+   * The finding names its own basis. "No wide shots anywhere" is a claim about the film when a
+   * model looked at the clips, and a claim about the script when none did — render 573 published
+   * the second while reading as the first.
+   */
+  const observedScenes = profiles.filter((p) => p.shotEvidence === "observed_frames").length;
+  const basis =
+    observedScenes > 0
+      ? `observed framings in ${observedScenes}/${profiles.length} scene(s)`
+      : "no clip was judged — read from the narration's own words";
 
   if (!anyWide && profiles.length >= 3) {
     issues.push({
       type: "no_wide_shots",
       sceneIndices: profiles.map((p) => p.sceneIndex),
-      description: "No establishing / wide shots detected anywhere in the video.",
+      description: `No establishing / wide shots detected anywhere in the video (${basis}).`,
       severity: "warning",
     });
   }
@@ -257,7 +313,7 @@ function detectMissingVariety(profiles: SceneVisualProfile[]): DirectorIssue[] {
     issues.push({
       type: "no_close_ups",
       sceneIndices: profiles.map((p) => p.sceneIndex),
-      description: "No close-up shots detected anywhere in the video.",
+      description: `No close-up shots detected anywhere in the video (${basis}).`,
       severity: "warning",
     });
   }
@@ -358,7 +414,9 @@ export async function analyzeVideoStructure(
   videoTitle: string,
   sceneTexts: string[],
   sceneClips: string[][],
-  sceneBeats?: Array<Array<{ index: number; text: string }>>
+  sceneBeats?: Array<Array<{ index: number; text: string }>>,
+  /** The render's observed-framing resolver — see profileScene. Absent keeps the text reading. */
+  shotTypeOf?: (clipPath: string) => string | null | undefined
 ): Promise<GlobalDirectorReport> {
   if (!globalDocumentaryDirectorEnabled()) {
     return { sceneProfiles: [], issues: [], recommendations: [], overallQuality: "good" };
@@ -366,7 +424,7 @@ export async function analyzeVideoStructure(
 
   try {
     const sceneProfiles = sceneTexts.map((text, i) =>
-      profileScene(i, text, sceneClips[i] ?? [], sceneBeats?.[i] ?? [])
+      profileScene(i, text, sceneClips[i] ?? [], sceneBeats?.[i] ?? [], shotTypeOf)
     );
 
     const issues: DirectorIssue[] = [

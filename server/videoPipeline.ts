@@ -192,7 +192,7 @@ import {
   summarizeArchiveSourcing,
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
-import { cachedClipHasBakedEditText, resetOverlayBudget } from "./archiveClipFilter";
+import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
 import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
@@ -7556,7 +7556,11 @@ export async function fetchPexelsClips(
                */
               recordProviderDownloadOutcome(sourcingCache, outPath, true);
             } catch (err) {
-              console.warn(`[Pipeline] Download attempt failed for Pexels clip ${idx}:`, err);
+              /** The message, not the Error — see the Pixabay branch for what the stack cost. */
+              console.warn(
+                `[Pipeline] Download attempt failed for Pexels clip ${idx}:`,
+                (err as Error)?.message?.slice(0, 200) ?? String(err)
+              );
               try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
               retries--;
               if (retries > 0) await new Promise(r => setTimeout(r, 1000));
@@ -7940,7 +7944,23 @@ export async function fetchPixabayClips(
               downloaded = true;
               providerMetrics(sourcingCache, "pixabay").downloadCount++;
             } catch (dlErr) {
-              console.warn(`[Pipeline] Pixabay download attempt ${attempt + 1} failed:`, dlErr);
+              /**
+               * The MESSAGE, not the Error object. Passing the object makes console print the
+               * stack, and render 573 filled its log with fifteen of these:
+               *
+               *     [error] [Pipeline] Pixabay download attempt 1 failed: Error: … exceeds
+               *             maximum size of 83886080 bytes (Content-Length: …)
+               *     [error]     at downloadToFileStreamingInner (file:///app/dist/worker.js:59990)
+               *     [error]     at process.processTicksAndRejections (node:internal/…)
+               *
+               * A file over the size cap is an ordinary, expected refusal with a complete
+               * explanation in its own sentence — the two frames of bundled worker stack add
+               * nothing and bury the lines that do need reading.
+               */
+              console.warn(
+                `[Pipeline] Pixabay download attempt ${attempt + 1} failed:`,
+                (dlErr as Error)?.message?.slice(0, 200) ?? String(dlErr)
+              );
               try { fs.unlinkSync(rawPath); } catch { /* ignore */ }
               await new Promise(r => setTimeout(r, 1000));
             }
@@ -28370,8 +28390,18 @@ async function beatClipPassesVisionGate(
   // This function is the right place precisely because of the comment below it: every rescue and
   // adoption route funnels through here, so one hook covers them all. It runs first so a clip with
   // unusable text never costs a CLIP evaluation.
+  /**
+   * ARMED means the detector actually looked. Past the overlay budget it does not, and returns
+   * false so the cascade is not starved — a deliberate fail-open. Recording that as an ordinary
+   * "asked and cleared" is what made render 573 report `baked_text=6/267` with 75 of the 267
+   * never examined. The skip counter moving across this call is the only thing that can tell the
+   * two apart, and `notArmed` is the bucket the gate stats already keep for it.
+   */
+  const skipsBefore = overlayBudgetSkipCount();
   const hasBakedText = await beatClipHasBakedText(clipPath);
-  recordGateVerdict("baked_text", hasBakedText);
+  recordGateVerdict("baked_text", hasBakedText, {
+    armed: overlayBudgetSkipCount() === skipsBefore,
+  });
   if (hasBakedText) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text", queryLabel);
     console.warn(
@@ -41670,7 +41700,21 @@ async function _runVideoPipelineInner(
       setImmediate(() => {
         const sceneClips = sceneVisualResults.map((vr) => vr?.clips ?? []);
         const sceneBeats = sceneVisualResults.map((vr) => vr?.beats ?? []);
-        analyzeVideoStructure(topicContext ?? "documentary", scenes.map((s) => s.text), sceneClips, sceneBeats).catch(() => {});
+        /**
+         * The same observed-framing resolver `assetDirector` is handed — see `shotTypeOf` there.
+         * Without it the director's variety findings were read off the narration, so render 573
+         * reported "no wide shots anywhere in the video" about a script, not about a film.
+         */
+        analyzeVideoStructure(
+          topicContext ?? "documentary",
+          scenes.map((s) => s.text),
+          sceneClips,
+          sceneBeats,
+          (clipPath) =>
+            visualDedup.clipAnnotationMeta.get(clipPath)?.observedShotType ??
+            visualDedup.clipAnnotationMeta.get(clipPath)?.annotation?.cinematography?.shotType ??
+            null
+        ).catch(() => {});
       });
     }
 

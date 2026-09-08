@@ -1489,9 +1489,21 @@ export class VisualSourceLedger {
        * silently absorbed into a total.
        */
       if (has(id, "ADOPTED") && !has(id, "SELECTED")) {
+        /**
+         * The ROUTE, because without it 26 of these lines cannot be triaged.
+         *
+         * The comment above says a rescue clip legitimately skips SELECTED, having been chosen by
+         * a route that does no ranking — that is the design and it stands. Render 573 printed 26
+         * of these against 4 selected assets, and the only question a reader has is whether those
+         * 26 are the routes that are ALLOWED to skip. The record already knows; the message did
+         * not say. Naming it turns a wall of filenames into "backfill ×22, rescue ×4", which is
+         * either fine or a finding, and readable either way.
+         */
         warnings.push({
           code: "ADOPTED_WITHOUT_SELECTED",
-          message: `${record.currentFilename} was adopted with no SELECTED event`,
+          message:
+            `${record.currentFilename} was adopted with no SELECTED event ` +
+            `(route=${record.route} — routes that do no ranking legitimately skip it)`,
           lineageId: id,
         });
       }

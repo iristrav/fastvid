@@ -407,6 +407,9 @@ const overlayVerdictCache = new Map<string, boolean>();
  */
 let overlayChecksPerformed = 0;
 
+/** Cache misses turned away because the budget was spent — clips allowed without being looked at. */
+let overlayBudgetSkips = 0;
+
 /**
  * Start a fresh overlay budget. Called once per render so one expensive render cannot spend the
  * next one's allowance, and so the memo does not grow without bound across a long-lived worker.
@@ -414,6 +417,7 @@ let overlayChecksPerformed = 0;
 export function resetOverlayBudget(): void {
   overlayVerdictCache.clear();
   overlayChecksPerformed = 0;
+  overlayBudgetSkips = 0;
 }
 
 /** Test seam: clear the shared overlay memo between cases. */
@@ -424,6 +428,18 @@ export function __resetOverlayVerdictCacheForTest(): void {
 /** Vision calls actually spent since the last reset — for logging and tests. */
 export function overlayChecksSpent(): number {
   return overlayChecksPerformed;
+}
+
+/**
+ * Was the last answer a real look, or a budget skip?
+ *
+ * Read immediately after `cachedClipHasBakedEditText` by the one caller that reports this gate's
+ * verdict, so an unchecked clip is recorded as NOT ARMED instead of as a clean one. A counter
+ * rather than a changed return type: the boolean means "does this clip carry text", and widening
+ * it to a tri-state would touch every call site to answer a question only one of them asks.
+ */
+export function overlayBudgetSkipCount(): number {
+  return overlayBudgetSkips;
 }
 
 /**
@@ -445,9 +461,27 @@ export async function cachedClipHasBakedEditText(
   // cascade far more destructively than the text this guards against. Not cached, so a later
   // reset (next render) re-evaluates this clip properly instead of inheriting a budget artefact.
   if (maxChecks !== undefined && overlayChecksPerformed >= maxChecks) {
+    /**
+     * AN UNCHECKED CLIP IS NOT A CLEAN CLIP, AND THE GATE STATS SAID IT WAS.
+     *
+     * Failing open here is deliberate and stays — see the note above: an exhausted budget must not
+     * become "reject everything". What was wrong is what the render then reported. The caller does
+     * `recordGateVerdict("baked_text", false)` on this answer, so render 573 published
+     *
+     *     [GateFiring] baked_text=6/267
+     *
+     * while 75 of those 267 were these lines: the detector never ran, no frames were extracted,
+     * nothing looked at the picture. Seventy-five candidates counted as asked-and-cleared.
+     *
+     * `budgetSpent` lets the caller record them as NOT ARMED — the bucket `recordGateVerdict`
+     * already has for "the gate did not judge this candidate", and the one `findOutOfScopeGates`
+     * and the silent-gate detector both subtract before drawing any conclusion. No clip's fate
+     * changes; the count stops claiming a judgement that was never made.
+     */
+    overlayBudgetSkips++;
     console.warn(
       `[ArchiveFilter] overlay budget spent (${overlayChecksPerformed}/${maxChecks}) — ` +
-        `skipping text check for ${cacheKey}, clip allowed unchecked`
+        `skipping text check for ${cacheKey}, clip allowed unchecked (skipped=${overlayBudgetSkips})`
     );
     return false;
   }

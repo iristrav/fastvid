@@ -155,7 +155,16 @@ describe("RONDE 114 — the demote list matches reality", () => {
 describe("RONDE 114 — the checks that read PIXELS keep their veto", () => {
   it("baked_text still refuses", () => {
     // A burnt-in chyron is a defect in the file, not a claim about the subject.
-    expect(PIPELINE).toContain('recordGateVerdict("baked_text", hasBakedText);');
+    //
+    // The call gained a third argument — `{ armed }` — after render 573 reported
+    // `[GateFiring] baked_text=6/267` while 75 of those 267 were overlay-budget skips where the
+    // detector never ran. The verdict passed is still `hasBakedText` and the veto below is
+    // untouched; only the honesty of the COUNT changed. Anchored on the two arguments that carry
+    // the decision rather than on the semicolon, so the shape is pinned and the evidence field is
+    // free to grow.
+    expect(PIPELINE).toContain('recordGateVerdict("baked_text", hasBakedText, {');
+    // NOT ARMED is the bucket for "the gate did not judge this candidate" — never a silent pass.
+    expect(PIPELINE).toContain("armed: overlayBudgetSkipCount() === skipsBefore,");
     // Unlike the three demoted gates, this one still refuses — it reads the pixels.
     expect(PIPELINE).toContain(
       'recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text", queryLabel);'

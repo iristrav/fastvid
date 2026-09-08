@@ -7,6 +7,7 @@ import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getCachedBeatProfile, putCachedBeatProfile } from "./beatSemanticCache";
 import { ENV } from "./_core/env";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
+import { hasContentAnchor } from "./searchQueryContract";
 import {
   beatMentionsWwiiContent,
   extractEntitySearchTags,
@@ -41,6 +42,21 @@ export type BeatSemanticProfile = {
   /** Each inner array is one priority tier (index 0 = exact match). */
   searchTiers: string[][];
   topicDomain: string;
+  /**
+   * WHO WROTE THE SUMMARY — the model, or the beat.
+   *
+   * `summary` is `literalViewerVisual || parsed.summary || beatText.slice(0,120)` on the LLM path
+   * and `anchor ?? cleaned.slice(0,120)` on the fallback, and nothing downstream could tell the two
+   * apart. `buildSemanticPexelsQueries` pushes it as a search query, so on the LLM path a sentence
+   * the model wrote became a content query — which RONDE 91 §3 forbids ("the LLM/director route
+   * must not introduce content") and which the gate then refuses as UNVERIFIED_TERM with
+   * `termSource=unknown`, because a bare string carries no source for the log to name.
+   *
+   * Optional so a profile built before this field existed behaves exactly as it did.
+   */
+  summarySource?: "llm" | "beat";
+  /** Same question for the tiers, which the LLM also authors. Recorded, not yet acted on. */
+  searchTiersSource?: "llm" | "beat";
 };
 
 export type SemanticMatchResult = {
@@ -278,6 +294,9 @@ export function analyzeBeatSemanticsFallback(beatText: string, videoTitle?: stri
     entities,
     searchTiers: dedupedTiers.length > 0 ? dedupedTiers : [[...salient.slice(0, 3)]],
     topicDomain: inferTopicDomain(cleaned, videoTitle),
+    /** No model ran on this path: every string here was read out of the beat. */
+    summarySource: "beat",
+    searchTiersSource: "beat",
   };
 }
 
@@ -388,6 +407,16 @@ Do NOT include generic tiers like "soldiers" or "technology" before specific tie
           ? searchTiers
           : analyzeBeatSemanticsFallback(beatText, videoTitle).searchTiers,
       topicDomain: slug(parsed.topicDomain) || inferTopicDomain(beatText, videoTitle),
+      /**
+       * `literalViewerVisual` is the caller's own literal on-screen text, not model output; only
+       * `parsed.summary` is the model's. The third branch is the beat itself.
+       */
+      summarySource: literalViewerVisual?.trim()
+        ? "beat"
+        : parsed.summary?.trim()
+          ? "llm"
+          : "beat",
+      searchTiersSource: searchTiers.length > 0 ? "llm" : "beat",
     };
   } catch (err) {
     // RENDER 562: the reason used to be cut off before the provider's own message.
@@ -867,9 +896,30 @@ export function buildSemanticPexelsQueries(
   literalSearchQuery?: string
 ): string[] {
   const ordered: string[] = [];
+  /**
+   * BUILT AND THEN REFUSED — RENDER 573 SPENT 978 QUERIES THAT WAY.
+   *
+   *     [SearchGate] route=fetchPexelsClips  built=693 validated=236 rejected=457
+   *     [SearchGate] route=fetchPixabayClips built=693 validated=236 rejected=457
+   *     [SearchGate] rejectReasons UNVERIFIED_TERM=622 NO_CONTENT_ANCHOR=356
+   *
+   * Two thirds of every query the pipeline built was refused by its own gate. `establishing` ×32,
+   * `documentary` ×30, `historical` ×4 came back `NO_CONTENT_ANCHOR` — production vocabulary with
+   * no subject in it, which check H refuses by name and `hasContentAnchor` answers false for
+   * without needing a context at all.
+   *
+   * RONDE 95 put that rule in the gate under a note saying the anchor helper and the validator had
+   * been disagreeing, and that they must not. This is the generator side of the same single
+   * definition: a query whose own words are nothing but camera and production vocabulary cannot
+   * pass, so it is not built. No gate is relaxed and no verdict changes — the same queries are
+   * refused, they simply stop being assembled, logged, counted and thrown away first.
+   *
+   * The filter runs on the assembled query, not on its parts: "berlin 1945 documentary footage"
+   * keeps its anchor and is built exactly as before.
+   */
   const push = (q: string) => {
     const v = slug(q);
-    if (v.length >= 3 && !ordered.includes(v)) ordered.push(v);
+    if (v.length >= 3 && !ordered.includes(v) && hasContentAnchor(v)) ordered.push(v);
   };
 
   if (literalSearchQuery?.trim()) push(literalSearchQuery);
@@ -911,7 +961,18 @@ export function buildSemanticPexelsQueries(
   for (const tier of profile.searchTiers) {
     for (const term of tier) push(term);
   }
-  push(profile.summary);
+  /**
+   * A SENTENCE THE MODEL WROTE IS NOT A THING THE SCRIPT SAYS.
+   *
+   * RONDE 91 §3: the LLM/director route may not introduce content. This push handed
+   * `parsed.summary` — free text the model produced — to every stock provider as a search query.
+   * The gate refuses it (`UNVERIFIED_TERM`, `termSource=unknown`, because a bare string names no
+   * source), so it was built, sent to the gate, refused and logged, once per beat per provider.
+   *
+   * The other two spellings of `summary` are kept exactly as before: the caller's literal
+   * on-screen visual, and the beat's own opening words. Both are the script.
+   */
+  if (profile.summarySource !== "llm") push(profile.summary);
   if (!literalViewerVisual?.trim() && !literalSearchQuery?.trim()) {
     for (const t of extractVisualSearchTags(beatText, videoTitle).slice(0, 6)) push(t);
   }
