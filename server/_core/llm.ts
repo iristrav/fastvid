@@ -1132,6 +1132,34 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       console.warn("[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown.");
       groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["groq"];
+    } else if (hasVision && groqKey) {
+      /**
+       * RONDE 119'S BRANCH, HOISTED — GROQ'S TOKEN BUDGET IS NOT WHY AN IMAGE CALL FAILED.
+       *
+       * Line 1116 removes Groq from every vision chain, because its vision models 404. So for an
+       * image call Groq is not a candidate at all, and whether its daily budget happens to be spent
+       * says nothing about why the call could not be made.
+       *
+       * The daily-budget branch below used to come first, and it fires on `groqKey &&
+       * isGroqDailyExhausted()` without asking whether this was a vision call. A production render
+       * refused 102 judgements and reported
+       *
+       *     [BeatImageGate] no verdict: 102x gate could not ask: Groq's daily token budget is
+       *     spent and no other provider is available
+       *
+       * — sending the reader to a Groq quota page when the actual condition was that no
+       * vision-capable provider is configured, and would have been the same with a full Groq
+       * budget. That is the wrong signpost RONDE 117 removed from the text-call path, still
+       * standing on the path the picture editor uses.
+       *
+       * The daily-budget message stays exactly as it is for text calls, where it is the truth.
+       */
+      throw new LlmUnavailableError(
+        "No vision-capable provider is available: Groq is excluded from image calls and no other " +
+        "provider is usable right now. Set GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY " +
+        "(OpenAI) so image judgements can be made." +
+        (isGroqDailyExhausted() ? " (Groq's daily budget is also spent, which does not affect image calls.)" : "")
+      );
     } else if (groqKey && isGroqDailyExhausted()) {
       // Say what is actually wrong. "API key is not configured" sent the last investigation to
       // the wrong place, and the key is plainly set.
@@ -1139,20 +1167,6 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         "Groq's daily token budget is spent and no other provider is available. Set " +
         "GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY (OpenAI) so calls can fall " +
         "through, or wait for Groq's daily quota to reset."
-      );
-    } else if (hasVision && groqKey) {
-      /**
-       * RONDE 119 — say what is actually missing.
-       *
-       * Groq is removed from every vision chain a few lines above (its vision models 404), so a
-       * vision call with only a Groq key configured arrives here with the key plainly set and got
-       * told "LLM API key is not configured". That is the same wrong signpost RONDE 117 removed
-       * from the daily-quota branch, on the route the picture editor actually uses.
-       */
-      throw new LlmUnavailableError(
-        "No vision-capable provider is available: Groq is excluded from image calls and no other " +
-        "provider is usable right now. Set GEMINI_API_KEY (free, Google AI Studio) or LLM_API_KEY " +
-        "(OpenAI) so image judgements can be made."
       );
     } else {
       // Every provider is keyless, cooled down or quota-exhausted — again, nothing is sent.
