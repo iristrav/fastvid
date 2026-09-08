@@ -699,6 +699,7 @@ import { yearsIn } from "./candidatePeriodMatch";
 import type { CachedCandidate } from "./sceneCandidateCache";
 import {
   buildVideoQualityReport,
+  recountQualityReportForDeliveredClips,
   computeMeritQualityScore,
   formatMontageShortfallWarning,
   logVideoQualityReport,
@@ -44294,6 +44295,38 @@ async function _runVideoPipelineInner(
                       if (line.startsWith("[AssetUsageInconsistency]")) console.warn(`${line} (delivered)`);
                       else console.log(`${line} (delivered)`);
                     }
+                    /**
+                     * AND THE CLIP FIGURES, AGAINST THE SAME LIST.
+                     *
+                     * `deliveredPaths` was built four lines up, spent on `replaceFinalVideo`, and
+                     * dropped. Meanwhile `bySource`, `byMixKind`, `totalClips` and the score they
+                     * feed had been computed at stage 6 from the COMPOSE montage — a file this
+                     * viewer did not receive. Render 574's report answered "where did my footage
+                     * come from" about nineteen clips while the delivered file carried twelve.
+                     *
+                     * The same list now answers both questions. See
+                     * `recountQualityReportForDeliveredClips` for what it does and does not redo.
+                     */
+                    const recount = recountQualityReportForDeliveredClips(
+                      qualityReport,
+                      deliveredPaths,
+                      {
+                        resolveSource: (clipPath) => ledger.providerFor(clipPath),
+                        /** The same two resolvers stage 6 used — one rule, asked about a second list. */
+                        isGeneratedClip: (clipPath) => ledger.isGeneratedFallback(clipPath),
+                        adoptAudit: visualDedup.clipAdoptAudit,
+                        archiveOnly: curatedArchiveOnlyVisuals(),
+                        fastShort: isFastShortVideoLength(videoLength),
+                      }
+                    );
+                    console.log(
+                      pipelineReport.add(
+                        "sourcing",
+                        `[Quality] figures re-counted against the delivered file: ` +
+                          `clips ${recount.clipsBefore}→${recount.clipsAfter}, ` +
+                          `score ${recount.scoreBefore}→${recount.scoreAfter}`
+                      )
+                    );
                   } catch (err) {
                     console.warn(
                       `[VisualAudit] video=${videoId} could not re-prove FINAL_VIDEO against the ` +

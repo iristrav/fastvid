@@ -62,6 +62,18 @@ export type VideoQualityReport = {
   wikimediaCount: number;
   archiveCount: number;
   stockCount: number;
+  /**
+   * WHICH FILE THE CLIP FIGURES ABOVE DESCRIBE — and the score, which is computed from four of them.
+   *
+   * `compose_montage` is where every report starts, because at stage 6 that is the only finished
+   * film there is. `delivered_render` means the cinematic timeline render produced the file the
+   * viewer received and the figures were re-counted against ITS clip list — see
+   * `recountQualityReportForDeliveredClips`.
+   *
+   * Absent on a record written before this field existed. Absent is not `compose_montage`: an old
+   * report cannot say which it was, and guessing on its behalf is how a report starts lying.
+   */
+  clipsMeasuredOn?: "compose_montage" | "delivered_render";
   warnings: string[];
   offTopicSuspects: Array<{ basename: string; reason: string }>;
   rejectSummary?: Record<string, number>;
@@ -660,6 +672,8 @@ export function buildVideoQualityReport(
     wikimediaCount,
     archiveCount,
     stockCount,
+    /** Stage 6's montage is the only finished film that exists here. See the field's own note. */
+    clipsMeasuredOn: "compose_montage",
     warnings,
     offTopicSuspects,
     criticalGeoViolations: criticalGeoViolations.length > 0 ? criticalGeoViolations : undefined,
@@ -677,6 +691,117 @@ export function buildVideoQualityReport(
     beatVisualProblems: beatVisualProblems.length > 0 ? beatVisualProblems : undefined,
     beatVisualStatuses: beatStatuses.length > 0 ? beatStatuses : undefined,
   };
+}
+
+/**
+ * RE-COUNT THE CLIP FIGURES AGAINST THE FILE THE VIEWER ACTUALLY RECEIVES.
+ *
+ * ── The number that described the wrong video ────────────────────────────────────────────────
+ *
+ * `buildVideoQualityReport` runs at stage 6, on `composedUsedClips` — the compose montage's own
+ * clip list, which is the only finished film that exists at that point. Since the delivery cutover
+ * the viewer may instead receive the cinematic timeline render, produced eight hundred lines later
+ * by a different renderer from its own list. `bySource`, `byMixKind` and `totalClips` then answer
+ * "where did the footage come from" about a file nobody got.
+ *
+ * The report already handles this honestly for two of its blocks: `postRenderSpotCheck` is
+ * overwritten from the render job's own check, and `stillness`/`repeats` say `measuredOn:
+ * "compose_montage"` because they cannot be re-run cheaply. The clip figures could always have
+ * been corrected — `deliveredPaths` is built a few lines away, handed to `replaceFinalVideo`, and
+ * then dropped. This is the reader it never had.
+ *
+ * ── What is recomputed, and what deliberately is not ─────────────────────────────────────────
+ *
+ * Everything derived from the clip list: the official attribution, the diagnostic filename
+ * reading, the mix, the three source tallies, and the score — which reads four of those. The
+ * score is recomputed rather than left alone, because a score built on the montage's counts
+ * beside tables built on the delivered file's is exactly the pair of contradictory numbers this
+ * report keeps having to apologise for.
+ *
+ * The named suspects are FILTERED rather than re-derived: a clip that is not in the delivered file
+ * cannot be an off-topic shot in it, and re-running the geo rules here would be a second copy of a
+ * decision the builder already made. Everything else on the report — the reject audit, the beat
+ * coverage, the voice/visual match — describes the RENDER rather than a file, and is untouched.
+ *
+ * Nothing is loosened: the same functions, the same weights, a different clip list. A render that
+ * delivers its compose montage never calls this.
+ */
+export function recountQualityReportForDeliveredClips(
+  report: VideoQualityReport,
+  clipPaths: readonly string[],
+  opts?: {
+    resolveSource?: (clipPath: string) => string | null;
+    isGeneratedClip?: (clipPath: string) => boolean;
+    adoptAudit?: ClipAdoptEntry[];
+    archiveOnly?: boolean;
+    fastShort?: boolean;
+  }
+): { clipsBefore: number; clipsAfter: number; scoreBefore: number; scoreAfter: number } {
+  const clipsBefore = report.totalClips;
+  const scoreBefore = report.score;
+
+  const bySource: Record<string, number> = {};
+  const diagnosticBySource: Record<string, number> = {};
+  const byMixKind = emptyMixCounts();
+  let generatedClips = 0;
+  const unique = [...new Set(clipPaths.filter(Boolean))];
+
+  for (const clipPath of unique) {
+    const nameHint = inferClipSourceFromPath(clipPath);
+    diagnosticBySource[nameHint] = (diagnosticBySource[nameHint] ?? 0) + 1;
+    if (opts?.resolveSource) {
+      const recorded = opts.resolveSource(clipPath)?.trim().toLowerCase();
+      const source = recorded && recorded !== "unknown" ? recorded : UNVERIFIED_SOURCE;
+      bySource[source] = (bySource[source] ?? 0) + 1;
+      if (source === UNVERIFIED_SOURCE && opts.isGeneratedClip?.(clipPath)) generatedClips += 1;
+    } else {
+      bySource[nameHint] = (bySource[nameHint] ?? 0) + 1;
+    }
+    byMixKind[classifyClipMixKind(clipPath)]++;
+  }
+
+  const delivered = new Set(unique.map((p) => path.basename(p)));
+  const offTopicSuspects = report.offTopicSuspects.filter((s) => delivered.has(s.basename));
+  const criticalGeoViolations = (report.criticalGeoViolations ?? []).filter((v) =>
+    delivered.has(v.basename)
+  );
+
+  const wikimediaCount = (diagnosticBySource.wikimedia ?? 0) + (diagnosticBySource.openverse ?? 0);
+  const archiveCount = diagnosticBySource.archive ?? 0;
+  const stockCount = (diagnosticBySource.pexels ?? 0) + (diagnosticBySource.pixabay ?? 0);
+
+  const verdict = computeMeritQualityScore({
+    beatVisuals: report.beatVisuals,
+    totalClips: unique.length,
+    archiveCount,
+    stockCount,
+    fallbackBeats: report.adoptAuditSummary?.fallbackBeats ?? 0,
+    offTopicCount: offTopicSuspects.length,
+    geoViolationCount: criticalGeoViolations.length,
+    adoptAudit: opts?.adoptAudit,
+    archiveOnly: opts?.archiveOnly === true,
+    fastShort: opts?.fastShort === true,
+    byMixKind,
+    postRenderOk: report.postRenderSpotCheck?.ok,
+  });
+
+  report.totalClips = unique.length;
+  report.bySource = bySource;
+  report.diagnosticBySource = diagnosticBySource;
+  report.byMixKind = byMixKind;
+  report.generatedClips = opts?.resolveSource ? generatedClips : report.generatedClips;
+  report.wikimediaCount = wikimediaCount;
+  report.archiveCount = archiveCount;
+  report.stockCount = stockCount;
+  report.offTopicSuspects = offTopicSuspects;
+  report.criticalGeoViolations =
+    criticalGeoViolations.length > 0 ? criticalGeoViolations : undefined;
+  report.score = verdict.score;
+  report.qualityStatus = verdict.status;
+  report.qualityReason = verdict.reason;
+  report.clipsMeasuredOn = "delivered_render";
+
+  return { clipsBefore, clipsAfter: unique.length, scoreBefore, scoreAfter: verdict.score };
 }
 
 export function logVideoQualityReport(videoId: number, report: VideoQualityReport): void {
