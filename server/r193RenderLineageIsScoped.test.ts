@@ -160,12 +160,17 @@ describe("the remaining gaps are named, not quietly closed", () => {
     expect(PIPELINE).not.toContain("composeInputsWithoutOutcome");
   });
 
-  it("the bounded vision review pool has not been built", () => {
-    /**
-     * §18-§34. The shortlist still admits on arrival order — R191 made the cost measurable
-     * (`eligible`, `ranked`, `unreviewed` travel with SHORTLIST_FULL) and did not change the
-     * ordering. Vision evidence does not yet re-order the final shortlist.
-     */
-    expect(PIPELINE).not.toContain("visionReviewPool");
+  /**
+   * R194 BUILT IT — and this is the expectation R193 said to invert when it did.
+   *
+   * The original text read `expect(PIPELINE).not.toContain("visionReviewPool")`, with a comment
+   * naming §18-§34 as the work and this line as the one to turn round. Inverted rather than
+   * deleted, so the file that said "not built" is the file that now says what was built.
+   */
+  it("the bounded vision review pool has been built", () => {
+    expect(PIPELINE).toContain("visionReviewPool: createVisionReviewPoolState(),");
+    expect(PIPELINE).toContain("declareVisionReviewPool(");
+    /** And it decides something: the adoption loop reads the verdict, not `allowed` alone. */
+    expect(PIPELINE).toContain("const beatEvidence: VisionEvidence");
   });
 });

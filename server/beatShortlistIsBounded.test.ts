@@ -153,12 +153,39 @@ describe("the gate is where the boundary is drawn", () => {
    * One place, for the reason the gate's own doc gives: every rescue and adoption route funnels
    * through it. A bound enforced anywhere else would be a bound some routes do not have.
    */
-  it("admission is decided in the one function every route passes through", () => {
+  /**
+   * R194 — THE CLAIM WAS "ONE PLACE"; THE PROPERTY IS "EVERY ADOPTING ROUTE".
+   *
+   * This asserted a single `admitToShortlist` call site, on the argument that the shared vision
+   * gate is the one function every route funnels through. That argument was true of the rescue
+   * side and false of the main one: `adoptClip` reaches the picture editor through
+   * `beatClipPassesImageGate`, which admitted nothing — so it consulted `beatShortlistExhausted`
+   * at the top of its loop while never contributing to the counter it read, and its questions to
+   * the editor were invisible to the funnel that reports how many were asked.
+   *
+   * So the count moves from one to two and the assertion moves from spelling to property: BOTH
+   * boundaries that decide an adoption admit, and at each the admission precedes the judgement. A
+   * third site is still a deliberate change and still fails this test — the bound is not weaker,
+   * it now covers the route that was outside it.
+   */
+  it("every route that puts a candidate to the editor admits it first", () => {
     const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
     expect(at).toBeGreaterThan(-1);
     const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
     expect(body).toContain("admitToShortlist(dedup.beatShortlist, scene.index, beat.index");
-    expect([...PIPE.matchAll(/admitToShortlist\(/g)].length, "a second route admits its own").toBe(1);
+
+    const adoptAt = PIPE.indexOf("async function adoptClip(");
+    const adopt = PIPE.slice(adoptAt, PIPE.indexOf("\n}\n", adoptAt));
+    expect(adopt).toContain("admitToShortlist(dedup.beatShortlist, sceneIndex, beatIndex");
+    expect(
+      adopt.indexOf("admitToShortlist("),
+      "the adoption route asks the editor before admitting the candidate"
+    ).toBeLessThan(adopt.indexOf("beatClipPassesImageGate(p, contentKey"));
+
+    expect(
+      [...PIPE.matchAll(/admitToShortlist\(/g)].length,
+      "a third route admits its own"
+    ).toBe(2);
   });
 
   /** THE PROPERTY. Refused admission returns BEFORE the editor is asked, not after. */

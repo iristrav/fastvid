@@ -168,10 +168,19 @@ describe("compose is instrumented at its one exit", () => {
     expect(b.indexOf("hasOutcomeFor")).toBeLessThan(b.indexOf('"COMPOSE_DROPPED"'));
   });
 
-  /** No invented reasons — UNKNOWN is the only one this site may write. */
-  it("writes UNKNOWN rather than guessing", () => {
+  /**
+   * No invented reasons. R194 added the one reason this site can ESTABLISH rather than guess — a
+   * content key already accounted for in this same call is a duplicate, with certainty — and
+   * UNKNOWN remains the answer for everything else. Two spellings, both true; the assertion is
+   * that there is no third.
+   */
+  it("writes UNKNOWN unless it can establish the reason", () => {
     const at = PIPE.indexOf('"COMPOSE_DROPPED"');
-    expect(PIPE.slice(at, at + 200)).toContain('reason: "UNKNOWN"');
+    const block = PIPE.slice(at, at + 300);
+    expect(block).toContain('reason: duplicate ? "duplicate_content" : "UNKNOWN"');
+    expect(block).not.toMatch(/reason: "(?!UNKNOWN)/);
+    /** And `duplicate` is read off real state, not assumed from a position in the list. */
+    expect(PIPE).toContain("const duplicate = seenContentKeys.has(contentKey);");
   });
 
   it("emits a per-scene compose summary", () => {

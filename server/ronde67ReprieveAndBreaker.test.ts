@@ -137,7 +137,14 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
     const src = PIPELINE();
     const idx = src.indexOf("const requeuedAfterRefusal = new Set<string>();");
-    const block = src.slice(idx, idx + 15500);
+    /**
+     * Bounded by the containing function rather than by a byte count — the same correction the
+     * sibling test above already carries, and for the same reason: R194 added the vision-evidence
+     * hold between the refusal and the reprieve, and a fixed +15500 stopped reaching the line, so a
+     * green test turned red on a change that did not touch the rule.
+     */
+    const fnAt = src.indexOf("async function adoptClip(");
+    const block = src.slice(idx, src.indexOf("\n}\n", fnAt));
     expect(block).toContain('recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);');
   });
 

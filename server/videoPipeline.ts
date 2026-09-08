@@ -253,6 +253,23 @@ import {
   type BeatShortlistState,
 } from "./beatShortlist";
 import {
+  createVisionReviewPoolState,
+  declareVisionReviewPool,
+  evidenceFromVerdict,
+  evidenceTier,
+  formatVisionSelection,
+  noteVisionAdopted,
+  noteVisionReviewed,
+  visionSelectionViolations,
+  type VisionEvidence,
+  type VisionReviewPoolState,
+} from "./visionAwareSelection";
+import {
+  composeCensusOf,
+  composeCensusViolations,
+  formatComposeCensus,
+} from "./composeCensus";
+import {
   adoptionGuardVerdict,
   censusAdoptionPolicies,
   currentAdoptionIntent,
@@ -13534,6 +13551,35 @@ async function beatClipPassesImageGate(
   return decision.allowed;
 }
 
+/**
+ * R194 — WHAT THE PICTURE EDITOR ESTABLISHED ABOUT THIS CLIP ON THIS BEAT.
+ *
+ * Reads the relevance ledger, which is where every route's verdict is already written and the only
+ * place that holds `evaluated` — the field that separates "a model looked and could not tell" from
+ * "nothing ever looked". Both were spelled `unknown`, and both were folded into `allowed: true`,
+ * which is how an unreadable picture at cheap rank 2 ended a search before a fit at rank 5.
+ *
+ * No judgement is made here and none is asked for. A clip with no entry is UNREVIEWED, which is
+ * the honest answer: absent evidence is not evidence of a fit, and it is not evidence of a
+ * mismatch either.
+ */
+function beatVisionEvidenceFor(
+  dedup: VisualDedupState,
+  clipPath: string,
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number
+): VisionEvidence {
+  const found = relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+    localPath: clipPath,
+    currentFilename: path.basename(clipPath),
+    contentKey,
+    sceneIndex,
+    beatIndex,
+  });
+  return found ? evidenceFromVerdict(found) : "UNREVIEWED";
+}
+
 async function youtubeClipPassesImageGate(
   clipPath: string,
   workDir: string,
@@ -17960,6 +18006,14 @@ export interface VisualDedupState {
    */
   beatShortlist: BeatShortlistState;
   /**
+   * R194: which candidates each beat put to the picture editor, and what the editor answered.
+   *
+   * Render-scoped and beat-scoped for the same reason the shortlist is: the pool is bounded by the
+   * beat's own budget, and two renders sharing it would be two renders sharing one budget. See
+   * ./visionAwareSelection.
+   */
+  visionReviewPool: VisionReviewPoolState;
+  /**
    * RONDE 96: what each beat is looking for, joined once from the three subsystems that each
    * held a third of the answer. Render-scoped like every other per-beat ledger.
    */
@@ -18355,6 +18409,7 @@ export function createVisualDedupState(
     beatImageGate: createBeatImageGateState(),
     beatRelevance: createBeatRelevanceLedger(),
     beatShortlist: createBeatShortlistState(),
+    visionReviewPool: createVisionReviewPoolState(),
     beatIntent: createBeatVisualIntentState(),
     beatBudget: createRetrievalBudgetState(),
     beatIntentLogged: new Set<string>(),
@@ -23809,6 +23864,57 @@ async function adoptClip(
    */
   noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length);
   /**
+   * R194 §18/§21 — THE BOUNDED REVIEW POOL, DECLARED BEFORE ANYTHING IS ASKED.
+   *
+   * `finalPaths` IS the cheap ranking — the asset director's order, re-ranked by the taste model —
+   * and the loop below walks it from the top. So the candidates this beat will spend the editor's
+   * attention on are already the best-ranked ones; what did not exist was any statement of WHICH
+   * they were meant to be, which is the difference between a pool and a coincidence.
+   *
+   * Declared with the beat's existing shortlist cap. Nothing here raises a budget, and a pool
+   * larger than the budget would promise looks the render cannot pay for.
+   */
+  const cheapRankOf = new Map<string, number>();
+  finalPaths.forEach((p, i) => { if (!cheapRankOf.has(p)) cheapRankOf.set(p, i); });
+  declareVisionReviewPool(
+    dedup.visionReviewPool,
+    sceneIndex,
+    beatIndex,
+    finalPaths.map((p, i) => ({ contentKey: clipContentKey(p), cheapRank: i })),
+    maxShortlistPerBeat()
+  );
+  /**
+   * R194 §24/§27 — the candidates this beat has seen and is holding, and what the editor said.
+   *
+   * The loop below no longer stops at the first candidate the editor merely FAILED TO REFUSE. A
+   * candidate whose evidence is weaker than FIT goes to the back of the queue and the search
+   * continues, so a picture the editor calls a fit at cheap rank 5 can still beat one it could not
+   * read at cheap rank 2. `pendingEvidence` is what makes the ordering between the weak tiers
+   * decidable at the moment it matters: a held candidate is passed over once more while something
+   * strictly better is still waiting.
+   */
+  const pendingEvidence = new Map<string, VisionEvidence>();
+  const heldForWeakEvidence = new Set<string>();
+  const postponedForBetterEvidence = new Set<string>();
+  /** One candidate's answer, filed on the pool and held pending until the beat resolves it. */
+  const noteReviewedCandidate = (clipPath: string, evidence: VisionEvidence): void => {
+    noteVisionReviewed(dedup.visionReviewPool, sceneIndex, beatIndex, {
+      contentKey: clipContentKey(clipPath),
+      cheapRank: cheapRankOf.get(clipPath) ?? finalPaths.length,
+      evidence,
+      clipPath,
+    });
+    pendingEvidence.set(clipPath, evidence);
+  };
+  /** True while a candidate with strictly better evidence than `own` is still unresolved. */
+  const betterEvidencePending = (self: string, own: VisionEvidence): boolean => {
+    for (const [otherPath, otherEvidence] of pendingEvidence) {
+      if (otherPath === self) continue;
+      if (evidenceTier(otherEvidence) < evidenceTier(own)) return true;
+    }
+    return false;
+  };
+  /**
    * Candidates the picture gate refused, which get one more turn at the very end.
    *
    * Render 533 rejected 34 clips on this gate and put PLACEHOLDERS on eight beats:
@@ -24079,11 +24185,46 @@ async function adoptClip(
       // other route passes through: curated archive, rescue, Wikimedia, Openverse, stock, the
       // lot. Verdicts are cached by content identity, so a clip the funnel already judged is
       // free here, and the render-wide budget still bounds the total.
+      /**
+       * R194 §19/§32 — THE BEAT'S OWN VISION BUDGET, APPLIED ON THE ROUTE THAT ADOPTS.
+       *
+       * The top of this loop already asks `beatShortlistExhausted` — RONDE 97 put it there so a
+       * beat that has asked enough stops paying. It reads a counter this route never wrote: every
+       * `admitToShortlist` call in the file sits in `beatClipPassesVisionGate`, which is the RESCUE
+       * side. So the main adoption route consulted a bound it never fed, and its questions to the
+       * editor were invisible to the funnel that reports how many were asked.
+       *
+       * Admitting here fixes both halves at once and raises nothing: the cap is
+       * `maxShortlistPerBeat()`, unchanged, and it is now what actually bounds this route's asks —
+       * which is also what bounds the extra looking the vision-aware search below does.
+       */
+      const firstLookAtCandidate =
+        !requeuedAfterRefusal.has(p) && !heldForWeakEvidence.has(p);
+      if (firstLookAtCandidate) {
+        noteBeatShortlistEligible(dedup.beatShortlist, sceneIndex, beatIndex);
+        const admission = admitToShortlist(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
+        if (!admission.admitted) {
+          noteNotAsked(dedup.beatShortlist, sceneIndex, beatIndex, admission.reason);
+          console.log(
+            `[BeatShortlist] s${sceneIndex}b${beatIndex} not asked — ${admission.reason} ` +
+              `(${admission.slotsUsed}/${admission.cap}) route=adopt file=${path.basename(p)}` +
+              (admission.eligible != null
+                ? ` eligible=${admission.eligible} ranked=${admission.ranked ?? 0}` +
+                  ` unreviewed=${admission.unreviewed ?? 0}`
+                : "")
+          );
+          recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "shortlist_full", sourceQuery);
+          continue;
+        }
+      }
       if (
         !requeuedAfterRefusal.has(p) &&
         !(await beatClipPassesImageGate(p, contentKey, beatText, opts, workDir, sceneIndex, beatIndex, dedup))
       ) {
         recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, p, "beat_image_gate", sourceQuery);
+        noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
+        noteVisionOutcome(dedup.beatShortlist, sceneIndex, beatIndex, "REJECTED");
+        noteReviewedCandidate(p, "MISMATCH");
         // Not discarded — moved to the back of the queue. for...of reads the array by index, so
         // an append is visited after every candidate that has not been refused. If one of those
         // is adopted this is never reached again; if none is, this clip gets its turn rather
@@ -24092,6 +24233,64 @@ async function adoptClip(
         finalPaths.push(p);
         continue;
       }
+      /**
+       * R194 §24/§27 — THE EDITOR'S ANSWER, READ BACK AND ACTED ON.
+       *
+       * `beatClipPassesImageGate` returns `decision.allowed`, and `allowed` is built as
+       * `verdict !== "does_not_fit"` — it folds "this fits" together with "I cannot tell". Until
+       * now that boolean was the whole decision, so this loop stopped at the first candidate the
+       * editor merely failed to refuse, and a picture it would have called a fit further down the
+       * ranked list was never reached.
+       *
+       * The verdict itself is on the relevance ledger, where `judgeBeatClipRelevance` just wrote
+       * it, and `evaluated` separates "looked and could not tell" from "never looked". Read from
+       * there rather than re-judged: no second question, no second cost, no second answer that
+       * could disagree with the one on the record.
+       */
+      const beatEvidence: VisionEvidence = requeuedAfterRefusal.has(p)
+        ? "MISMATCH"
+        : beatVisionEvidenceFor(dedup, p, contentKey, sceneIndex, beatIndex);
+      if (firstLookAtCandidate) {
+        /** A decline costs no judgement, so it is not counted as one. */
+        if (beatEvidence !== "UNREVIEWED") {
+          noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
+        }
+        noteVisionOutcome(
+          dedup.beatShortlist,
+          sceneIndex,
+          beatIndex,
+          beatEvidence === "FIT" ? "APPROVED" : beatEvidence === "UNCLEAR" ? "UNCLEAR" : "NOT_ASKED"
+        );
+        noteReviewedCandidate(p, beatEvidence);
+      }
+      /**
+       * Weaker than FIT: hold it and keep looking. Same mechanism as the refusal above — the back
+       * of this beat's own queue — so there is one deferral idiom in this loop rather than two.
+       */
+      if (beatEvidence !== "FIT" && firstLookAtCandidate) {
+        heldForWeakEvidence.add(p);
+        console.log(
+          `[VisionSelection] s${sceneIndex}b${beatIndex} holding ${beatEvidence} ` +
+            `rank=${cheapRankOf.get(p) ?? "?"} ${path.basename(p)} — looking for a FIT first`
+        );
+        finalPaths.push(p);
+        continue;
+      }
+      /**
+       * A held candidate has come round again. It waits once more while something strictly better
+       * is still unresolved, which is what puts UNREVIEWED ahead of UNCLEAR and both ahead of a
+       * refused picture. Once per candidate: a second postponement could not change the answer and
+       * would only walk the queue again.
+       */
+      if (
+        !postponedForBetterEvidence.has(p) &&
+        betterEvidencePending(p, beatEvidence)
+      ) {
+        postponedForBetterEvidence.add(p);
+        finalPaths.push(p);
+        continue;
+      }
+      pendingEvidence.delete(p);
       if (requeuedAfterRefusal.has(p)) {
         // RONDE 103 phase 15: recorded as an override, not relabelled as a pass. The verdict on
         // the ledger stays `does_not_fit` so the render can be asked how many of its shots were
@@ -24178,6 +24377,14 @@ async function adoptClip(
       /** The single point at which a candidate really becomes this beat's clip. */
       const markAdopted = (finalPath: string): string => {
         providerMetrics(dedup.sourcingCache, providerOfKey).adoptedCount++;
+        /**
+         * R194 §29 — the beat's choice, filed beside the evidence it was made on.
+         *
+         * This is what makes the selection checkable rather than merely instrumented:
+         * `visionSelectionViolations` compares this against the pool and reports a beat that
+         * passed over a FIT, or used a refused picture while something unrefused was available.
+         */
+        noteVisionAdopted(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey);
         noteBeatAdopted(dedup.beatOutcomeAudit, sceneIndex, beatIndex, providerOfKey, path.basename(finalPath));
         // RONDE 86/87: `finalPath` is `p` after the segment trim and/or the fair-use transform
         // have renamed it. The derived file gets its OWN record carrying parentLineageId, so the
@@ -37207,18 +37414,32 @@ export async function composeSceneVideoInner(
     const composeLedger = composeOptions?.dedup?.sourcingCache?.lineage;
     if (composeLedger) {
       const kept = new Set(pendingUsedClips);
+      /**
+       * R194 §12 — the same picture offered twice is not two mysteries.
+       *
+       * Compose is regularly handed one asset under two paths (a trim, a text overlay, a padded
+       * copy) or the same path twice by two routes that both filled a slot. The second occurrence
+       * can only ever be dropped, and the reason is known here with certainty rather than guessed:
+       * this content key was already accounted for in this same call. `duplicate_content` is the
+       * existing reason for exactly that, so this adds a spelling to nothing.
+       */
+      const seenContentKeys = new Set<string>();
       for (const clipPath of clips) {
         const contentKey = clipContentKey(clipPath);
         composeLedger.recordEventForPath(clipPath, "COMPOSE_INPUT", { status: "OK", contentKey });
         if (kept.has(clipPath)) {
+          seenContentKeys.add(contentKey);
           composeLedger.recordEventForPath(clipPath, "COMPOSE_SELECTED", { status: "OK", contentKey });
           continue;
         }
         /** Already explained by whoever refused it — that reason is better than anything here. */
         if (composeLedger.hasOutcomeFor(clipPath, contentKey)) continue;
+        const duplicate = seenContentKeys.has(contentKey);
+        seenContentKeys.add(contentKey);
         composeLedger.recordEventForPath(clipPath, "COMPOSE_DROPPED", {
           status: "REJECTED",
-          reason: "UNKNOWN",
+          /** UNKNOWN only where it is true. A reason the code can establish is never guessed. */
+          reason: duplicate ? "duplicate_content" : "UNKNOWN",
           contentKey,
         });
       }
@@ -43001,6 +43222,18 @@ async function _runVideoPipelineInner(
       for (const line of beatShortlistViolations(visualDedup.beatShortlist)) {
         console.warn(pipelineReport.add("summary", line));
       }
+      /**
+       * R194 §30/§31 — what each beat put to the picture editor, what it answered, and what the
+       * beat did with the answer. `SHORTLIST_FULL (8/8)` says the bound fired; these lines say
+       * whether the eight the editor saw were the best eight, and whether its verdicts decided
+       * anything.
+       */
+      for (const line of formatVisionSelection(visualDedup.visionReviewPool)) {
+        console.log(pipelineReport.add("summary", line));
+      }
+      for (const line of visionSelectionViolations(visualDedup.visionReviewPool)) {
+        console.warn(pipelineReport.add("summary", line));
+      }
       for (const line of formatUnjudgedAdoptions(visualDedup.clipAdoptAudit)) {
         console.warn(pipelineReport.add("summary", line));
       }
@@ -43168,6 +43401,28 @@ async function _runVideoPipelineInner(
           deliveryHappened: ledger.finalVideoWasVerified,
         });
         for (const line of errors) console.error(pipelineReport.add("dropped", line));
+        /**
+         * R194 §11 — THE COMPOSE ARITHMETIC, STATED ONCE FOR THE WHOLE RENDER.
+         *
+         * The three events have existed for several rounds and a per-scene line printed the three
+         * numbers. Nobody added them up, so the statement that matters —
+         * `composeInputs = composeSelected + composeDropped` with `unresolved = 0` — was never made
+         * and could not fail. Counted off the lifecycles rather than the raw events, so a clip that
+         * reached compose as `_transformed` and `_padded` is one picture and not three.
+         *
+         * `composeCompleted` is the render's own verification: an abandoned compose legitimately
+         * leaves its inputs unaccounted for, and reporting that as a defect would fire the alarm on
+         * every timeout. §11's rule — no fake DROPPED for a compose crash — lives in that flag.
+         */
+        const composeCensus = composeCensusOf(lifecycles);
+        for (const line of formatComposeCensus(composeCensus)) {
+          console.log(pipelineReport.add("summary", line));
+        }
+        for (const line of composeCensusViolations(composeCensus, {
+          composeCompleted: ledger.finalVideoWasVerified,
+        })) {
+          console.error(pipelineReport.add("dropped", line));
+        }
         const count = (s: string) => lifecycles.filter((a) => a.terminalStatus === s).length;
         console.log(
           pipelineReport.add(

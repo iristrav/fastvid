@@ -622,7 +622,13 @@ export function relevanceVerdictForRenderedAsset(
     sceneIndex: number;
     beatIndex: number;
   }
-): { verdict: BeatImageVerdict; cached: boolean; reprieved: boolean; matchedBy: string } | null {
+): {
+  verdict: BeatImageVerdict;
+  cached: boolean;
+  reprieved: boolean;
+  evaluated: boolean;
+  matchedBy: string;
+} | null {
   if (!ledger) return null;
 
   /** The verdict must belong to this beat's narration — a verdict earned elsewhere is not one. */
@@ -637,6 +643,17 @@ export function relevanceVerdictForRenderedAsset(
     verdict: entry.decision.verdict,
     cached: entry.decision.cached,
     reprieved: entry.decision.reprieved,
+    /**
+     * R194 — DID A MODEL ACTUALLY LOOK?
+     *
+     * `verdict: "unknown"` is written for two opposite events: a model looked and could not tell,
+     * and the gate never looked at all. `evaluated` is the field that tells them apart and it was
+     * already on the decision — it simply stopped here, so every reader of this function had to
+     * treat the two the same. The selection tiers need them separated (an UNCLEAR is weak negative
+     * evidence; an unreviewed candidate carries none), so the fact travels with the verdict it
+     * qualifies rather than being re-derived from a counter somewhere else.
+     */
+    evaluated: entry.decision.evaluated,
     matchedBy,
   });
 
