@@ -1198,6 +1198,51 @@ export class VisualSourceLedger {
     return true;
   }
 
+  /**
+   * A RECORD WITH NO PROVIDER MUST NOT BLOCK ONE THAT HAS A PROOF.
+   *
+   * ── The export this exists to stop ──────────────────────────────────────────────────────────
+   *
+   *     Export blocked — MOSTLY_UNVERIFIED_CLIPS: 10 of 18 fetched clip(s) have no proven source
+   *     (56%, limit 50%) — the lineage cannot say where most of this film came from
+   *
+   * Introduced by the round that gave `recordClipAdopt`'s hole-filling branch a real content key.
+   * That branch opens a record with NO provider on purpose (RONDE 87: a route label is not a
+   * provider). While its key was `""` the record stayed out of `byContentKey`, so the two functions
+   * that open an ATTRIBUTED record for the same asset —
+   *
+   *     ensureCuratedAssetLineageOn   `const existing = resolve(...); if (existing) return existing;`
+   *     tagPathWithProviderAsset      `if (!resolve(...)) createLineage(...)`
+   *
+   * — missed it and created theirs, provider and all. With a real key they find the anonymous one
+   * first, return early, and the asset never acquires the provider it can prove. Two curated clips
+   * flipping from VERIFIED to UNVERIFIED is the difference between 47% and 56%.
+   *
+   * ── Why upgrading is right and not a relaxation ─────────────────────────────────────────────
+   *
+   * Nothing is invented: the caller is holding provider data straight from the archive row or the
+   * provider's own API response, which is exactly what it would have written into a fresh record a
+   * moment later. This fills a gap; it never overwrites. A record that already names a provider is
+   * returned untouched, INCLUDING when the caller offers a different one — two providers claiming
+   * one content key is a finding, not something to resolve silently by taking the newer.
+   *
+   * `providerStatus` moves with the provider, because "VERIFIED with no provider" and "UNVERIFIED
+   * with one" are both states this ledger must never hold.
+   */
+  attributeProvider(
+    record: VisualLineageRecord,
+    input: { provider?: string; providerAssetId?: string; archiveAssetId?: number; sourceUrl?: string }
+  ): VisualLineageRecord {
+    const provider = normalizeProvider(input.provider);
+    if (!provider || record.provider) return record;
+    record.provider = provider;
+    record.providerStatus = "VERIFIED";
+    record.providerAssetId ??= input.providerAssetId;
+    record.archiveAssetId ??= input.archiveAssetId;
+    record.sourceUrl ??= input.sourceUrl;
+    return record;
+  }
+
   /** Every event, in the order it happened. */
   allEvents(): readonly VisualLineageEvent[] {
     return this.events;
@@ -2884,7 +2929,20 @@ export function ensureCuratedAssetLineageOn(
   const contentKey = curatedAssetContentKey(picked.asset.id);
   const placeholder = `archive-asset:${picked.asset.id}`;
   const existing = ledger.resolve(placeholder, contentKey);
-  if (existing) return existing;
+  /**
+   * Idempotent, and no longer silent about a record that has no provider yet — see
+   * `attributeProvider`. An adoption may have opened an anonymous record for this asset before we
+   * got here; the archive row is the proof it was missing, and returning it unattributed is what
+   * put two curated clips into the UNVERIFIED bucket and blocked an export.
+   */
+  if (existing) {
+    return ledger.attributeProvider(existing, {
+      provider: picked.archiveName?.trim() || "own_archive",
+      providerAssetId: String(picked.asset.id),
+      archiveAssetId: picked.asset.id,
+      sourceUrl: picked.asset.storageUrl ?? undefined,
+    });
+  }
   return ledger.createLineage({
     sceneIndex,
     beatIndex,

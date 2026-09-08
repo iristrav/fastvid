@@ -19237,7 +19237,16 @@ export function tagPathWithProviderAsset(
   const ledgerCache = cache ?? get_activeSourcingCache() ?? undefined;
   if (ledgerCache?.lineage) {
     const contentKey = providerAssetKey(provider, id);
-    if (!ledgerCache.lineage.resolve(tagged, contentKey)) {
+    const existing = ledgerCache.lineage.resolve(tagged, contentKey);
+    /**
+     * An existing record with no provider gets this one — see `attributeProvider`. The same shape
+     * as the curated route: an anonymous record opened earlier for this content key used to make
+     * the download's own provider unreachable, and the asset stayed UNVERIFIED for the render.
+     */
+    if (existing) {
+      ledgerCache.lineage.attributeProvider(existing, { provider, providerAssetId: id, sourceUrl: meta?.sourceUrl });
+    }
+    if (!existing) {
       const record = ledgerCache.lineage.createLineage({
         videoId: ledgerCache.lineage.videoId,
         sceneIndex: meta?.sceneIndex ?? -1,
