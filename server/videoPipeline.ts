@@ -739,6 +739,7 @@ import {
   assertVisionCoverageExportGate,
 } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
+import { avSyncFindingCodes, checkFileAvSync, formatAvSync } from "./avSyncCheck";
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
 import {
   auditSceneVoiceMontageSync,
@@ -23811,6 +23812,29 @@ async function adoptClip(
       null,
     callbacksPlaced: dedup.assetDirectorCallbacksPlaced,
     retrievalContract: _contract,
+    /**
+     * R195 — HOW LONG THIS BEAT IS ON SCREEN, WHICH TWO RANKING READERS ASKED FOR AND NEVER GOT.
+     *
+     * `beatDurationSec` is documented on AssetDirectorContext as "used for temporal best-window
+     * selection", and two things read it:
+     *
+     *   · `computeArchiveMetadataScores` → `selectBestWindowForBeat`, the temporal bonus;
+     *   · `computeTrimHint` → the trim hint `adoptClip` applies through
+     *     `applySegmentTrimIfNeeded`, which is how a long archive clip is cut down to the window
+     *     that actually matches this beat.
+     *
+     * Both are gated `beatDurationSec && beatDurationSec > 0`, both flags default ON
+     * (TEMPORAL_SCENE_INTELLIGENCE_ENABLED, ARCHIVE_V4_METADATA_SCORING_ENABLED) — and the one
+     * production call site never set the field. So the whole temporal-window path was switched on
+     * in configuration and dead in fact, and the scorer's `else if (… no beat duration …)` branch,
+     * written as the exceptional case, was the only branch that ever ran.
+     *
+     * Read from `sceneBeatsBySceneIndex`, which is documented as "the one function every
+     * beat-resolving route calls" and stores the array BY REFERENCE — so when the TTS alignment
+     * later writes a measured hold onto the beat, this reads the measured one rather than a copy
+     * of the estimate. No new store, no threading through twenty-nine call sites.
+     */
+    beatDurationSec: dedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.holdSec,
   };
   const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx, dedup.clipAnnotationMeta);
   if (adResult.reordered && adResult.topScore) {
@@ -43649,6 +43673,39 @@ async function _runVideoPipelineInner(
     const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
 
     /**
+     * R195 — DOES THE PICTURE COVER THE NARRATION?
+     *
+     * The check that answers it has existed, been tested and been wired into the render-job route
+     * for several rounds. This route — the one that delivers whenever the cinematic render is not
+     * used — never took the measurement, which is why video 574 shipped 68.04s of picture under
+     * 69.88s of audio and no line anywhere said so.
+     *
+     * Two ffprobe reads and one silencedetect pass, so it is cheap enough to run unconditionally.
+     * It reports and does not gate, exactly as the spot check beside it does. When the cinematic
+     * render delivers instead, the block at the cutover replaces this with the render job's own
+     * verdict on the file the viewer actually received.
+     */
+    {
+      const avSync = await checkFileAvSync(finalVideoPath).catch(() => null);
+      if (avSync) {
+        for (const line of formatAvSync(avSync)) {
+          if (avSync.ok) console.log(pipelineReport.add("summary", line));
+          else console.warn(pipelineReport.add("summary", line));
+        }
+        qualityReport.avSync = {
+          /** True until the cutover block flips it — same rule as `stillness.measuredOn`. */
+          measuredOn: "compose_montage",
+          ok: avSync.ok,
+          videoSec: avSync.envelope.videoSec,
+          audioSec: avSync.envelope.audioSec,
+          findings: avSyncFindingCodes(avSync),
+        };
+        for (const f of avSync.findings) {
+          qualityReport.warnings.push(`AV envelope: ${f.reason}`);
+        }
+      }
+    }
+    /**
      * RONDE 133 — measure the finished file, on every render.
      *
      * RONDE 130 built `videoStillnessAudit` to answer the one question the whole no-frozen-frame
@@ -44565,6 +44622,33 @@ async function _runVideoPipelineInner(
                         `delivered cinematic render — those two figures do not describe the file ` +
                         `the viewer receives`
                     );
+                  }
+                  /**
+                   * R195 — AND THE AV ENVELOPE OF THE FILE THE VIEWER RECEIVED.
+                   *
+                   * The render job already measured this and returned it with a doc comment saying
+                   * "Returned rather than only logged so the caller can put it in the quality
+                   * report". This is that caller, and it read `outputUrl`, `durationSec`,
+                   * `spotCheck`, `renderedClipIds`, `code` and `message` — never `avSync`. So the
+                   * one check that names narration running past the picture was computed on the
+                   * delivered file and then dropped on the floor.
+                   *
+                   * Same treatment as the spot check above, for the same reason: this CAN follow
+                   * the delivery, so it does, and the compose montage's verdict is replaced rather
+                   * than left standing as a claim about a file nobody received.
+                   */
+                  if (jobOutcome.avSync) {
+                    const av = jobOutcome.avSync;
+                    qualityReport.avSync = {
+                      measuredOn: "delivered_render",
+                      ok: av.ok,
+                      videoSec: av.envelope.videoSec,
+                      audioSec: av.envelope.audioSec,
+                      findings: avSyncFindingCodes(av),
+                    };
+                    for (const f of av.findings) {
+                      qualityReport.warnings.push(`Delivered file AV envelope: ${f.reason}`);
+                    }
                   }
                   /**
                    * AND SO DOES THE SOURCE AUDIT — FINAL_VIDEO IS PROVEN FROM THE DELIVERED FILE.

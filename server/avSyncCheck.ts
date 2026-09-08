@@ -304,6 +304,18 @@ async function soundWindow(
   };
 }
 
+/**
+ * The findings as short codes, each carrying how far out it was.
+ *
+ * One spelling, used by both routes that store this on the quality report, so a reader comparing a
+ * compose delivery with a cinematic one is comparing the same strings.
+ */
+export function avSyncFindingCodes(result: AvSyncResult): string[] {
+  return result.findings.map((f) =>
+    f.deltaSec > 0 ? `${f.code}(+${f.deltaSec.toFixed(2)}s)` : f.code
+  );
+}
+
 /** Measure one rendered file and judge its envelope. Never throws. */
 export async function checkFileAvSync(filePath: string): Promise<AvSyncResult> {
   const [videoSec, audioSec] = await Promise.all([

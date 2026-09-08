@@ -176,6 +176,37 @@ export type VideoQualityReport = {
     warnings: string[];
   };
   /**
+   * R195 — DOES THE PICTURE COVER THE NARRATION, IN THE FILE THE VIEWER RECEIVED?
+   *
+   * ── The one defect a viewer notices first, and the only check that sees it ──────────────────
+   *
+   * `checkFileAvSync` measures both stream lengths and the sound envelope of a finished MP4 and
+   * names `audio_past_picture` — narration still running after the picture has ended. Video 574's
+   * delivered file measured 68.04s of video against 69.88s of audio and shipped without a word,
+   * because:
+   *
+   *   · on the render-job route the check RAN, was returned in the outcome with a doc comment
+   *     saying "Returned rather than only logged so the caller can put it in the quality report",
+   *     and the caller read `outputUrl`, `durationSec`, `spotCheck`, `renderedClipIds`, `code` and
+   *     `message` — never `avSync`;
+   *   · on the compose route it was never computed at all.
+   *
+   * Both halves are the same gap: the measurement existed, and the route that delivers never took
+   * it. It reports and does not gate, the same policy `postRenderSpotCheck` has always had.
+   *
+   * `measuredOn` follows the rule the spot check and the stillness audit already use: a number
+   * about a file the viewer did not receive is worse than no number, because it reads as
+   * reassurance. Absent means the probe could not run — never a pass.
+   */
+  avSync?: {
+    measuredOn: "delivered_render" | "compose_montage";
+    ok: boolean;
+    videoSec: number | null;
+    audioSec: number | null;
+    /** Findings as `code(+deltaSec)`, so the report says what was wrong and by how much. */
+    findings: string[];
+  };
+  /**
    * RONDE 133 — what the finished MP4 actually looks like, measured frame by frame.
    *
    * Every other number in this report is derived from what the pipeline BELIEVED it did. This one

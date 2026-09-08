@@ -698,7 +698,20 @@ export function computeTrimHint(
     const win = selectBestWindowForBeat(annotation.temporalProfile, beatDurationSec);
     if (win) {
       const dur = win.endSec - win.startSec;
-      if (dur >= MIN_SEGMENT_DURATION) {
+      /**
+       * R195 — A WINDOW SHORTER THAN THE BEAT IS NOT AN IMPROVEMENT.
+       *
+       * `selectBestWindowForBeat` bounds a window from ABOVE (`durationSec <= beat + 1.5`) and not
+       * from below, so on a clip whose only entry points are brief it can return a window of
+       * `MIN_SEGMENT_DURATION` for a beat several times as long. Trimming to it would replace one
+       * continuous shot with a fragment the montage then has to hold or loop under the narration —
+       * a worse picture than the untrimmed clip, chosen by a scoring bonus.
+       *
+       * This is the guard the caller could not apply: by the time `adoptClip` has a hint, the
+       * window is already chosen. It only ever REFUSES this trim — the segment-similarity branch
+       * below still gets its turn — so no candidate is admitted that was not admitted before.
+       */
+      if (dur >= beatDurationSec - 0.001 && dur >= MIN_SEGMENT_DURATION) {
         return {
           startSec: win.startSec,
           endSec: win.endSec,
