@@ -800,11 +800,18 @@ export type ComposeJudgeScope = {
   state: BeatImageGateState;
   ledger: BeatRelevanceLedger;
   /**
-   * Which beat a clip was adopted for, by basename, from the render's own adopt audit. The
-   * compose barrier knows a scene and a clip INDEX; the beat is what the narration hangs on, and
-   * the adopt audit is the record that already maps the two.
+   * Which beat a clip was adopted for, from the render's own adopt audit. The compose barrier
+   * knows a scene and a clip INDEX; the beat is what the narration hangs on, and the adopt audit
+   * is the record that already maps the two.
+   *
+   * Takes the FULL PATH, not a basename. A padded or overlaid file reaches compose under a name
+   * adoption never saw — `pad_combined_sNbM_<ts>.mp4` — and the two things that can still identify
+   * it both need the path: the lineage ledger's derivation link, and a content key whose resolver
+   * reads the file. With only a basename to go on, render 573 answered `beat_unknown` for every
+   * padded clip and reported `nothing has looked at this picture and nothing can` about pictures
+   * whose origin had in fact been judged.
    */
-  beatForClip: (basename: string) => { sceneIndex: number; beatIndex: number } | undefined;
+  beatForClip: (clipPath: string) => { sceneIndex: number; beatIndex: number } | undefined;
   contextFor: (sceneIndex: number, beatIndex: number) => BeatVisualContext | undefined;
   /**
    * Is this file a card rather than a picture?
@@ -873,7 +880,7 @@ export async function ensureVerdictBeforeCompose(params: {
   const at =
     params.sceneIndex != null && params.beatIndex != null
       ? { sceneIndex: params.sceneIndex, beatIndex: params.beatIndex }
-      : scope.beatForClip(path.basename(params.clipPath));
+      : scope.beatForClip(params.clipPath);
   if (!at) return { outcome: "beat_unknown" };
 
   const ctx = scope.contextFor(at.sceneIndex, at.beatIndex);

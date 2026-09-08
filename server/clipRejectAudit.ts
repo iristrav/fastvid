@@ -58,7 +58,42 @@ export type ClipRejectAudit = {
    * audit created outside a render (tests, tools) behaves exactly as before.
    */
   lineage?: VisualSourceLedger;
+  /**
+   * HOW OFTEN THE SAME ASSET WAS REFUSED FOR THE SAME REASON ON THE SAME BEAT.
+   *
+   * Render 573 printed one `[AdoptionGuard]` line nine times, word for word:
+   *
+   *     scene=2 beat=2 route=archive eligible=true vision=UNCLEAR blocked=FUNNEL_WITHOUT_EVIDENCE
+   *     file=scene_2_b2_curated_a57465.mp4                                                    ×9
+   *
+   * Nine reads of an unchanged decision — the guard is a pure function of four inputs, none of
+   * which moved between calls. The retry loop above it re-offered the same picture, and the log
+   * showed nine refusals where a reader needed to see one refusal and a loop.
+   *
+   * This counts; it does not suppress. The per-beat and per-reason tallies above are untouched and
+   * still record every call, so nothing here can make a failure look smaller than it was. What it
+   * buys is a log that names the repetition instead of performing it.
+   */
+  repeats: Map<string, number>;
 };
+
+/**
+ * Has this exact refusal already been reported? Returns how many times it had been seen BEFORE
+ * this call, so a caller logs on 0 and counts thereafter.
+ */
+export function noteRepeatedRefusal(
+  audit: ClipRejectAudit | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  identity: string,
+  reason: string
+): number {
+  if (!audit) return 0;
+  const key = `${beatRejectKey(sceneIndex, beatIndex)}|${identity}|${reason}`;
+  const seen = audit.repeats.get(key) ?? 0;
+  audit.repeats.set(key, seen + 1);
+  return seen;
+}
 
 /** Detail entries kept. Counting is unbounded; only the named examples are limited. */
 export const CLIP_REJECT_DETAIL_CAPACITY = 400;
@@ -68,7 +103,7 @@ export function beatRejectKey(sceneIndex: number, beatIndex: number): string {
 }
 
 export function createClipRejectAudit(capacity = CLIP_REJECT_DETAIL_CAPACITY): ClipRejectAudit {
-  return { entries: [], capacity, recorded: 0, dropped: 0, perBeat: new Map() };
+  return { entries: [], capacity, recorded: 0, dropped: 0, perBeat: new Map(), repeats: new Map() };
 }
 
 export function recordClipReject(

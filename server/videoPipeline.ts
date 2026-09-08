@@ -331,6 +331,7 @@ import {
   createClipRejectAudit,
   beatRejectCount,
   beatRejectReasons,
+  noteRepeatedRefusal,
 } from "./clipRejectAudit";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
 import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
@@ -7365,11 +7366,12 @@ export async function fetchPexelsClips(
   //      becomes a single generic word.
   // With strictQueries=false nothing changes: same inputs, same filter, same simplification.
   const rawQueries = strictQueries ? [query] : [query, ...(extraQueries ?? [])];
+  /** A sentence that yielded no searchable subject is dropped, not sent as an empty search. */
   const queryList = Array.from(
     new Set(
-      filterQueryStrings(rawQueries, 3, (q) => !isBlockedStockQuery(q)).map((q) =>
-        strictQueries ? q : simplifyStockSearchWord(q, q, true)
-      )
+      filterQueryStrings(rawQueries, 3, (q) => !isBlockedStockQuery(q))
+        .map((q) => (strictQueries ? q : simplifyStockSearchWord(q, q, true)))
+        .filter((q) => q.trim().length > 0)
     )
   );
   if (queryList.length === 0) return [];
@@ -7800,11 +7802,12 @@ export async function fetchPixabayClips(
   // `strictQueries` is now honoured — see the note in fetchPexelsClips. This function never
   // took extraQueries, so the only broadening here is simplifyStockSearchWord collapsing the
   // phrase to a single token; strict mode keeps the caller's query as given. Unchanged when false.
+  /** A sentence that yielded no searchable subject is dropped, not sent as an empty search. */
   const queryList = Array.from(
     new Set(
-      filterQueryStrings([query], 3, (q) => !isBlockedStockQuery(q)).map((q) =>
-        strictQueries ? q : simplifyStockSearchWord(q, q, true)
-      )
+      filterQueryStrings([query], 3, (q) => !isBlockedStockQuery(q))
+        .map((q) => (strictQueries ? q : simplifyStockSearchWord(q, q, true)))
+        .filter((q) => q.trim().length > 0)
     )
   );
   if (queryList.length === 0) return [];
@@ -13147,6 +13150,19 @@ export async function fetchInternetArchiveClips(
  * title cards/leader footage. Returns false on ANY failure so the caller can fall back to the
  * old skip behavior; never throws.
  */
+/**
+ * ffmpeg's diagnosis, which is always its last non-empty stderr line.
+ *
+ * Everything above it is the build banner, the input's stream layout and progress. Slicing N
+ * characters off either end of the whole buffer lands in the middle of that noise; taking the last
+ * line lands on the sentence that says why it stopped. Capped so a stack-like tail cannot flood a
+ * log line, and it carries no path we did not already print ourselves.
+ */
+export function lastFfmpegErrorLine(stderr: string): string {
+  const lines = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return (lines[lines.length - 1] ?? "no stderr").slice(0, 200);
+}
+
 async function fetchArchiveSegmentViaFfmpeg(
   videoUrl: string,
   outPath: string,
@@ -13156,6 +13172,23 @@ async function fetchArchiveSegmentViaFfmpeg(
   try {
     const { spawn: spawnChild } = await import("child_process");
     await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
+      /**
+       * `-f mp4`, BECAUSE THE DESTINATION HAS NO EXTENSION AND FFMPEG GUESSES FROM ONE.
+       *
+       * The caller hands this function `..._archive_0_tmp` — a scratch name with no suffix, on
+       * purpose, since `trimRemoteVideoToClip` produces the real `.mp4` afterwards. With `-c copy`
+       * and no `-f`, ffmpeg has nothing to infer a muxer from and refuses before it reads a byte.
+       * Render 573's own log carries the tail of that refusal, cut off mid-sentence by the two
+       * truncations below:
+       *
+       *     ffmpeg exit 1: r '/var/tmp/fastvid_573_…/scene_2_rescue_hist_archive_0_tmp'
+       *                    └── the end of "…suitable output format for '…'"
+       *
+       * So every large archive.org item failed for the container, not for its size or its bytes —
+       * `Archive clip too large (90.8MB per metadata) and segment fetch failed, skipping`, and the
+       * beat fell through to the stock ladder. This is the route RONDE 8 added to unlock exactly
+       * those full-length historical films; it has been refusing all of them at the first argument.
+       */
       const args = [
         "-y",
         "-ss", "90",
@@ -13163,6 +13196,7 @@ async function fetchArchiveSegmentViaFfmpeg(
         "-t", String(segmentSec),
         "-c", "copy",
         "-movflags", "+faststart",
+        "-f", "mp4",
         outPath,
       ];
       const child = spawnChild(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -13175,7 +13209,13 @@ async function fetchArchiveSegmentViaFfmpeg(
       child.on("close", (code: number | null) => {
         clearTimeout(timer);
         if (code === 0) resolve();
-        else reject(pipelineError(PIPELINE_ERROR.FFMPEG, `ffmpeg exit ${code}: ${stderr.slice(-160)}`));
+        /**
+         * ffmpeg's real complaint is its LAST line; everything before it is banner and stream
+         * detail. Taking the last non-empty line beats slicing 160 characters off the tail, which
+         * on render 573 cut "Unable to find a suitable output format for" down to a bare `r` and a
+         * path — an error message that named nothing.
+         */
+        else reject(pipelineError(PIPELINE_ERROR.FFMPEG, `ffmpeg exit ${code}: ${lastFfmpegErrorLine(stderr)}`));
       });
       child.on("error", (err: Error) => { clearTimeout(timer); reject(err); });
     }));
@@ -13185,9 +13225,15 @@ async function fetchArchiveSegmentViaFfmpeg(
     try { fs.unlinkSync(outPath); } catch { /* ignore */ }
     return false;
   } catch (err) {
+    /**
+     * One truncation, not two. The old pair sliced the tail off ffmpeg's stderr and then the head
+     * off the resulting message, so the surviving fragment came from the middle of a sentence and
+     * said nothing a reader could act on. 240 characters from the front of a message that now
+     * begins at ffmpeg's own last line.
+     */
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: archive segment fetch failed:`,
-      (err as Error).message?.slice(0, 120)
+      (err as Error).message?.slice(0, 240)
     );
     try { fs.unlinkSync(outPath); } catch { /* ignore */ }
     return false;
@@ -18532,7 +18578,9 @@ export function clipSatisfiesRealEntities(
 function realEntityStockQueriesForBeat(beatText: string, sceneText: string, videoTitle?: string): string[] {
   const rules = extractBeatRealEntities(beatText, sceneText, videoTitle ?? "");
   return [...new Set(
-    rules.flatMap((r) => r.stockQueries.map((q) => simplifyStockSearchWord(q, beatText, true)))
+    rules
+      .flatMap((r) => r.stockQueries.map((q) => simplifyStockSearchWord(q, beatText, true)))
+      .filter((q) => q.trim().length > 0)
   )];
 }
 
@@ -18660,7 +18708,8 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
       return "rocket";
     }
     if (isAmbiguousRocketQuery(trimmed)) return fallback;
-    return simplifyStockSearchWord(trimmed, scene.text);
+    /** No searchable subject falls to this scene's own golden query, never to an empty string. */
+    return simplifyStockSearchWord(trimmed, scene.text) || fallback;
   };
   if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
   scene.pexelsQuery = safe(scene.pexelsQuery);
@@ -18693,7 +18742,8 @@ function sanitizeSceneForPersonTopic(scene: Scene, primaryPerson: string): void 
     if (!lower.includes(first.toLowerCase()) && !/\b(celebrity|interview|fashion|makeup|red carpet)\b/i.test(lower)) {
       return anchor;
     }
-    return simplifyStockSearchWord(trimmed, `${anchor} ${scene.text}`, true);
+    /** No searchable subject falls back to the person the scene is about, never to an empty string. */
+    return simplifyStockSearchWord(trimmed, `${anchor} ${scene.text}`, true) || anchor;
   };
   if (scene.literalVisualCue) scene.literalVisualCue = safe(scene.literalVisualCue);
   scene.pexelsQuery = anchor;
@@ -19064,11 +19114,37 @@ export function tagPathWithProviderAsset(
   const key = providerAssetKey(provider, id).replace(":", "-");
   const ext = path.extname(outPath);
   const tagged = `${outPath.slice(0, -ext.length)}__pid_${key}${ext}`;
-  if (cache?.lineage) {
+  /**
+   * THE CACHE IS THE THIRTEENTH ARGUMENT, AND ALMOST NOBODY GOT THAT FAR.
+   *
+   * The doc above says this function "is called by every downloader at the one instant the provider
+   * NAME, the provider's own ASSET ID and the destination PATH are all in hand". True — but it can
+   * only open a record when a caller hands it the render's cache, and on `fetchPexelsClips` the
+   * cache is parameter thirteen behind `count`, `extraQueries`, `strictQueries`, `fileTag`,
+   * `excludeVideoIds`, `candidateOffset`, `downloadRetries` and `stockBeatCtx`. Fifteen call sites
+   * stop at eleven or twelve. Same shape on pixabay, internet_archive and sepiasearch.
+   *
+   * So the file got its `__pid_` tag — the pure-string half needs no cache — and no lineage record.
+   * Render 573 is what that costs: `markEligible` finds nothing to mark, `[EligibilityGap]` fires,
+   * and REAL_FUNNEL is unreachable for the asset for the rest of the render. Pexels 2818 found,
+   * 0 rendered; internet_archive 527 found, 49 downloaded, 0 rendered; 3976 candidates unused. On
+   * s2b3 the editor APPROVED seven pictures that had already been made unadoptable here.
+   *
+   * Threading a thirteenth argument through fifteen call sites is how this happened once already.
+   * RONDE 173 built the ambient reader for exactly this — its own comment says "for the provider
+   * fetchers that were never handed one" — and `providerMetrics` two hundred lines down uses this
+   * identical `cache ?? get_activeSourcingCache()` line. Same render context, same lifetime, no
+   * second registry, and a caller that passes a cache still wins.
+   *
+   * Outside a render there is no context and no record, which stays correct: a tool or a test must
+   * not acquire provenance it did not earn.
+   */
+  const ledgerCache = cache ?? get_activeSourcingCache() ?? undefined;
+  if (ledgerCache?.lineage) {
     const contentKey = providerAssetKey(provider, id);
-    if (!cache.lineage.resolve(tagged, contentKey)) {
-      const record = cache.lineage.createLineage({
-        videoId: cache.lineage.videoId,
+    if (!ledgerCache.lineage.resolve(tagged, contentKey)) {
+      const record = ledgerCache.lineage.createLineage({
+        videoId: ledgerCache.lineage.videoId,
         sceneIndex: meta?.sceneIndex ?? -1,
         beatIndex: meta?.beatIndex ?? -1,
         beatText: meta?.beatText,
@@ -19084,7 +19160,7 @@ export function tagPathWithProviderAsset(
         assetTitle: meta?.title,
         route: "primary",
       });
-      cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
+      ledgerCache.lineage.recordEvent(record.lineageId, "DOWNLOAD_STARTED", { status: "OK" });
     }
   }
   return tagged;
@@ -19103,13 +19179,15 @@ export function recordProviderDownloadOutcome(
   ok: boolean,
   reason?: string
 ): void {
-  if (!cache?.lineage) return;
-  const record = cache.lineage.resolve(taggedPath);
+  /** Same ambient fallback as the record's opening — the outcome must reach the same ledger. */
+  const active = cache ?? get_activeSourcingCache() ?? undefined;
+  if (!active?.lineage) return;
+  const record = active.lineage.resolve(taggedPath);
   if (!record) return;
   if (ok) {
-    cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
+    active.lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK" });
   } else {
-    cache.lineage.recordEvent(record.lineageId, "DOWNLOAD_FAILED", {
+    active.lineage.recordEvent(record.lineageId, "DOWNLOAD_FAILED", {
       status: "FAILED",
       reason: normalizeFailureReason(reason),
     });
@@ -22043,7 +22121,27 @@ function simplifyStockSearchWord(input: string, hintText = "", scriptOnly = fals
     seen.add(t);
     return true;
   });
-  unique.sort((a, b) => b.length - a.length);
+  /**
+   * THE SAME RULE RONDE 97 ALREADY WROTE, ON THE SECOND PLACE THAT NEEDED IT.
+   *
+   * `extractPowerWordFromSentence` ranks with `NON_PICTORIAL_WORD_FORM` under a comment that says
+   * "LENGTH IS NOT A MEASURE OF WHAT CAN BE PHOTOGRAPHED". This function was the other half of the
+   * same job and still sorted by `b.length - a.length` alone, so render 573 asked stock libraries
+   * for `"shaped"` eleven times and `"evidence"` ten times — both past participles and
+   * abstractions of the narration, both longer than the words that name a thing:
+   *
+   *     "This act was shaped by new evidence…"  →  shaped(6) / evidence(8)  beat  act(3)
+   *
+   * Those searches were ALLOWED by the query gate (the beat does contain the word) and returned
+   * modern stock: a 3D diagram of shale-gas geology arrived on a beat about the Führerbunker.
+   *
+   * Not a new rule and not a new list — the existing regex, applied where the same decision is
+   * made. A sentence that genuinely holds nothing concrete still yields its best available word,
+   * because the form only demotes and never removes.
+   */
+  const pictorialRank = (w: string): number =>
+    NON_PICTORIAL_WORD_FORM.test(w) ? -1 : w.length;
+  unique.sort((a, b) => pictorialRank(b) - pictorialRank(a));
   for (const t of unique) {
     if (DUTCH_STOCK_WORD_MAP[t]) return DUTCH_STOCK_WORD_MAP[t];
     if (t.length >= 4 && !RELEVANCE_STOP_WORDS.has(t)) return t.slice(0, 24);
@@ -22052,7 +22150,21 @@ function simplifyStockSearchWord(input: string, hintText = "", scriptOnly = fals
     if (t.length >= 3 && !RELEVANCE_STOP_WORDS.has(t)) return t.slice(0, 24);
   }
   if (/\bmodel\s*3\b/.test(combined)) return "tesla";
-  return "documentary";
+  /**
+   * NOTHING SURVIVED, AND "documentary" IS A WORD THE GATE REFUSES BY NAME.
+   *
+   * This used to return the literal string `"documentary"`. `hasContentAnchor` answers false for
+   * it — it is production vocabulary, which is precisely what check H exists to refuse — so every
+   * one of those searches was rejected before it left the building:
+   *
+   *     [SearchQueryRejected] query="documentary" reason=NO_CONTENT_ANCHOR   ×30
+   *
+   * Thirty refusals, and a `route=documentary` label on the rejects that made the beat look as
+   * though it had asked a real question. Returning nothing says the true thing — this sentence
+   * yielded no searchable subject — and the callers below already drop an empty query rather than
+   * send it. No gate is relaxed: the same searches are refused, just not attempted.
+   */
+  return "";
 }
 
 function enrichStockQuery(
@@ -28789,10 +28901,24 @@ async function adoptionGuardRefusesPush(
   }
   if (verdict.allowed) return false;
 
+  /**
+   * The decision is a pure function of (source, eligible, vision, visionAvailable). Re-offering the
+   * same asset cannot change it, so the second and later refusals say the same words — nine of them
+   * for one file on render 573. Counted every time, printed on the first, and named as a repeat
+   * after that so the loop is visible instead of the transcript of it.
+   */
+  const refusalRepeats = noteRepeatedRefusal(
+    dedup.clipRejectAudit,
+    sceneIndex,
+    beatIndex ?? 0,
+    clipContentKey(clipPath) || path.basename(clipPath),
+    verdict.code
+  );
   console.warn(
     `[AdoptionGuard] scene=${sceneIndex} beat=${beatIndex ?? "?"} route=${source} ` +
       `eligible=${eligible} vision=${vision}${visionAvailable ? "" : " visionUnavailable"} blocked=${verdict.code} reason=${verdict.reason} ` +
-      `file=${path.basename(clipPath)}`
+      `file=${path.basename(clipPath)}` +
+      (refusalRepeats > 0 ? ` REPEAT=${refusalRepeats + 1} — re-offered after an unchanged refusal` : "")
   );
   recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex ?? 0, clipPath, verdict.code);
   ledger?.recordRejection(clipPath, verdict.code, clipContentKey(clipPath));
@@ -31138,6 +31264,8 @@ async function adoptStockBeatClipFallbackInner(
       ]
         .filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)))
         .map((q) => simplifyStockSearchWord(toQueryString(q), beat.text, true))
+        /** An unsearchable sentence yields no query; it must not become an empty one. */
+        .filter((q) => q.trim().length > 0)
     ),
   ].slice(0, queryCap);
 
@@ -39527,12 +39655,59 @@ async function _runVideoPipelineInner(
       composeJudgeScope.workDir = workDir;
       composeJudgeScope.state = visualDedup.beatImageGate;
       composeJudgeScope.ledger = visualDedup.beatRelevance;
-      composeJudgeScope.beatForClip = (basename) => {
-        for (let i = visualDedup.clipAdoptAudit.length - 1; i >= 0; i--) {
-          const entry = visualDedup.clipAdoptAudit[i]!;
-          if (entry.basename === basename) {
-            return { sceneIndex: entry.sceneIndex, beatIndex: entry.beatIndex };
+      /**
+       * THE SAME LADDER THE MANIFEST ALREADY CLIMBS — RONDE 51's, on the third place that needed it.
+       *
+       * This lookup matched the exact basename and stopped. A clip is renamed after it is adopted:
+       * "_still" by the still-to-video step, "_transformed" by the transform step, and a padded
+       * clip is republished as `pad_combined_sNbM_<ts>.mp4`. RONDE 51 fixed exactly this for the
+       * final manifest and RONDE 133 added `entry.contentKey` to it; the compose barrier kept the
+       * bare-basename version, so render 573 reported:
+       *
+       *     [ComposeBarrier] s2 clip 3: UNJUDGED pad_combined_s2b3_1788851180446.mp4 — beat_unknown;
+       *                                 nothing has looked at this picture and nothing can        ×4
+       *
+       * The origin of every one of those pads HAD been adopted and judged. `linkDerivedPath(...,
+       * "PADDED")` records the derivation at the moment the pad is written, so the ledger can walk
+       * back to the file adoption knows — one step at a time, bounded, and never in a cycle.
+       *
+       * A clip that is genuinely unknown still answers undefined. The point is not to find a beat
+       * for everything; it is to stop reporting one as missing when the render recorded it.
+       */
+      composeJudgeScope.beatForClip = (clipPath) => {
+        const audit = visualDedup.clipAdoptAudit;
+        const at = (basename: string) => {
+          for (let i = audit.length - 1; i >= 0; i--) {
+            const entry = audit[i]!;
+            if (entry.basename === basename) {
+              return { sceneIndex: entry.sceneIndex, beatIndex: entry.beatIndex };
+            }
           }
+          return undefined;
+        };
+        const direct = at(path.basename(clipPath));
+        if (direct) return direct;
+
+        /** The key adoption recorded with the full path in hand, on both sides of the comparison. */
+        const key = clipContentKey(clipPath);
+        if (key && !key.startsWith("file:")) {
+          for (let i = audit.length - 1; i >= 0; i--) {
+            const entry = audit[i]!;
+            if ((entry.contentKey ?? clipContentKey(entry.basename)) === key) {
+              return { sceneIndex: entry.sceneIndex, beatIndex: entry.beatIndex };
+            }
+          }
+        }
+
+        const lineage = visualDedup.sourcingCache?.lineage;
+        if (!lineage) return undefined;
+        const seen = new Set<string>([clipPath]);
+        let origin = lineage.derivationOriginOf(clipPath);
+        while (origin && !seen.has(origin)) {
+          seen.add(origin);
+          const found = at(path.basename(origin));
+          if (found) return found;
+          origin = lineage.derivationOriginOf(origin);
         }
         return undefined;
       };
@@ -43414,7 +43589,13 @@ async function _runVideoPipelineInner(
               clips: beats.map((_, beatIndex) => {
                 const clipPath = clipForBeat[beatIndex];
                 if (!clipPath) return null;
-                const record = lineage.resolve(clipPath);
+                /**
+                 * With the content key, like every other resolve in this file — `resolve` reaches
+                 * its third rung only when one is supplied. Twenty-six lines above, the divergence
+                 * report already calls `lineage.resolve(p, clipContentKey(p))`; this call, which
+                 * decides whether a beat survives into the cinematic plan at all, did not.
+                 */
+                const record = lineage.resolve(clipPath, clipContentKey(clipPath));
                 const meta = memoisedVideoStreamMeta(clipPath);
                 return {
                   facts: {

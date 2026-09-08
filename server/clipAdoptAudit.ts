@@ -472,11 +472,24 @@ export function recordClipAdopt(
    * reasoning as the MAX_ENTRIES note above: this is the record of what went into the video, and
    * it must not stop at clip 120 either.
    */
+  /**
+   * Resolved once, with the FULL path in hand, and used everywhere this call needs an identity.
+   * Three of the resolver's rungs read the file, so this is the only place in the call where the
+   * question can be answered at all — and it was being asked three separate times and thrown away
+   * twice.
+   */
+  const adoptedContentKey = contentKeyFor(audit, clipPath);
   /** Both take the render's own content key now — see bindContentKeyResolver for why. */
-  noteIfUnjudged(audit, sceneIndex, beatIndex, clipPath, source, contentKeyFor(audit, clipPath));
+  noteIfUnjudged(audit, sceneIndex, beatIndex, clipPath, source, adoptedContentKey);
   noteAdoptionEvidence(audit, sceneIndex, beatIndex, clipPath, source);
   if (ledger) {
-    const record = ledger.resolve(clipPath);
+    /**
+     * With the key, not without it. `resolve` tries the exact path, then the derivation chain, then
+     * the content key — and the third rung is unreachable unless the key is supplied or a resolver
+     * was bound. A record that exists under a canonical key was therefore missed, and the branch
+     * below opened a second, anonymous record for the same asset.
+     */
+    const record = ledger.resolve(clipPath, adoptedContentKey || undefined);
     if (record) {
       // The route and the beat identity are facts this call carries; the PROVIDER is not. It
       // stays whatever the record was opened with, because `source` here is an adopt-route label
@@ -534,17 +547,51 @@ export function recordClipAdopt(
             "See the UNVERIFIED bucket in [AssetLifecycleAudit] for the total."
         );
       }
+      /**
+       * THE KEY THIS FUNCTION ALREADY COMPUTES, CARRIED INSTEAD OF DISCARDED.
+       *
+       * `contentKey: ""` opened an anonymous record — no key to resolve it by later, no handle for
+       * anything downstream to plan around. Sixty lines below, the audit entry this same call
+       * builds sets `contentKey: contentKeyFor(audit, clipPath)`. One call, the value computed once
+       * and written to one of the two places that needed it.
+       *
+       * What that cost on render 573: six beats reached the cinematic planner as
+       *
+       *     [CinematicDrop] scene=1 beat=0 asset=unknown:none provider=unknown sourceId=none
+       *                     reason=NOT_REHYDRATABLE
+       *
+       * — and `localOnly=0`, because `identityFromAdoption` had nothing to build a handle from
+       * either. `scene_1_b6_curated_a57392.mp4` was among them: a clip out of FastVid's OWN curated
+       * archive, whose asset id 57392 the resolver's first rung reads straight from the path.
+       * Seven of fifteen beats dropped, and the film fell back to compose.
+       *
+       * This invents no provenance. The key comes from the same resolver every other consumer uses,
+       * the provider stays unset (RONDE 87's rule — a route label is not a provider), and a clip the
+       * resolver cannot key still gets "" and is still UNVERIFIED.
+       */
+      /**
+       * A curated key names an asset FastVid stores itself, so the archive id in it is a durable
+       * handle, not a guess. Read only when the caller supplied none, and only from the canonical
+       * `curated:asset:<id>` form the key resolver produces — never from the raw filename.
+       */
+      const curatedIdFromKey = /^curated:asset:(\d+)$/.exec(adoptedContentKey ?? "")?.[1];
       const created = ledger.createLineage({
         sceneIndex,
         beatIndex,
         beatText: beatText?.slice(0, 240) || undefined,
-        candidateId: path.basename(clipPath),
-        contentKey: "",
+        candidateId: adoptedContentKey || path.basename(clipPath),
+        /** "" when the resolver could not key this file — the same honest gap it recorded before. */
+        contentKey: adoptedContentKey ?? "",
         localPath: clipPath,
         route,
         sourceLabel: source,
         assetTitle: assetTitle?.trim() || undefined,
-        archiveAssetId: typeof assetId === "number" ? assetId : undefined,
+        archiveAssetId:
+          typeof assetId === "number"
+            ? assetId
+            : curatedIdFromKey != null
+              ? Number(curatedIdFromKey)
+              : undefined,
         visionScore:
           typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
       });
@@ -565,7 +612,7 @@ export function recordClipAdopt(
       typeof visionScore10 === "number" && visionScore10 > 0 ? Math.round(visionScore10) : undefined,
     assetId: typeof assetId === "number" ? assetId : undefined,
     /** Resolved from the FULL path, which is the only place it is knowable. See the field's note. */
-    contentKey: contentKeyFor(audit, clipPath),
+    contentKey: adoptedContentKey,
   };
   audit.push(entry);
   recordGoodClipAdoption(entry, assetId);
