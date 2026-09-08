@@ -163,6 +163,20 @@ export type LineageDeliveryRecord = {
   unidentifiedClips: number;
   /** Set when the snapshot was written for a different timeline version than the job rendered. */
   timelineVersionAtDelivery?: number;
+  /**
+   * THE RENDER THE SNAPSHOT CAME FROM, WHEN IT IS NOT THE ONE BEING DELIVERED.
+   *
+   * `videos.metadata.visualLineage` holds ONE snapshot per video, so a later render overwrites an
+   * earlier one. The version check beside this catches the ordinary case, because a new render
+   * produces a new timeline version — but two renders can carry the same version (a re-render of
+   * an unchanged timeline is exactly that), and then the version alone says nothing.
+   *
+   * The snapshot has always carried `renderId` and nobody compared it. Set here when they differ,
+   * so a delivery attributed to the wrong run says so instead of reading as a clean join. Absent
+   * is the healthy case and absent is not "unknown": a snapshot with no renderId at all is
+   * reported separately, as `NO_SNAPSHOT_RENDER`.
+   */
+  snapshotRenderId?: string;
 };
 
 export type VisualLineageSnapshot = {
@@ -401,6 +415,12 @@ export type DeliveryInput = {
   published: boolean;
   /** The version the job actually rendered, so a snapshot from another version is visible. */
   timelineVersion: number;
+  /**
+   * The render this delivery belongs to, when the caller knows it. Compared with the snapshot's
+   * own `renderId`; a mismatch is recorded, never repaired and never a reason to refuse — the file
+   * is already delivered, and refusing to account for it would lose the only record of that.
+   */
+  expectedRenderId?: string;
   now?: number;
 };
 
@@ -455,6 +475,9 @@ export function recordDelivery(
     delivered,
     unmatchedKeys: unmatched,
     unidentifiedClips: input.unidentifiedClips,
+    ...(input.expectedRenderId && snapshot.renderId && input.expectedRenderId !== snapshot.renderId
+      ? { snapshotRenderId: snapshot.renderId }
+      : {}),
     ...(input.timelineVersion !== snapshot.timelineVersion
       ? { timelineVersionAtDelivery: input.timelineVersion }
       : {}),
@@ -536,7 +559,21 @@ export type LineageStore = {
  */
 export async function recordDeliveredLineage(params: {
   store: LineageStore;
-  job: { id: number; videoId: number; attempt: number; timelineVersion: number };
+  job: {
+    id: number;
+    videoId: number;
+    attempt: number;
+    timelineVersion: number;
+    /**
+     * The production render this job belongs to, when it is known.
+     *
+     * One video holds ONE stored snapshot, so a later render overwrites an earlier one. The
+     * version check below catches the ordinary case; two renders of an unchanged timeline carry
+     * the same version and it catches nothing. Passing the id lets the join say which run it
+     * actually read.
+     */
+    productionRenderId?: string;
+  };
   /** The video-track clips of the timeline that was rendered. */
   clips: ReadonlyArray<{ id: string; source: AssetSourceIdentity }>;
   renderedClipIds: readonly string[];
@@ -559,6 +596,7 @@ export async function recordDeliveredLineage(params: {
       attempt: job.attempt,
       published: params.published,
       timelineVersion: job.timelineVersion,
+      ...(job.productionRenderId ? { expectedRenderId: job.productionRenderId } : {}),
       now: params.now,
     });
     await params.store.write(job.videoId, outcome.snapshot);
@@ -587,11 +625,16 @@ export function formatDeliveryRecord(videoId: number, record: LineageDeliveryRec
     record.timelineVersionAtDelivery != null
       ? ` STALE_LINEAGE(renderedVersion=${record.timelineVersionAtDelivery})`
       : "";
+  /** A delivery joined against another run's lineage. Named, because the numbers beside it are its. */
+  const crossRender =
+    record.snapshotRenderId != null
+      ? ` RENDER_ID_MISMATCH(snapshotRender=${record.snapshotRenderId})`
+      : "";
   return (
     `[VisualDelivery] video=${videoId} route=${record.route} job=${record.jobId ?? "none"} ` +
     `attempt=${record.attempt ?? "none"} ` +
     `published=${record.published} deliveredAssets=${record.delivered} ` +
-    `unmatched=${record.unmatchedKeys.length} unidentifiedClips=${record.unidentifiedClips}${stale}`
+    `unmatched=${record.unmatchedKeys.length} unidentifiedClips=${record.unidentifiedClips}${stale}${crossRender}`
   );
 }
 
