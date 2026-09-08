@@ -177,6 +177,27 @@ export type RemotionOverlayResult = {
   textsDrawn: number;
   captionsDrawn: number;
   graphicsDrawn: number;
+  /**
+   * WHICH GRAPHICS, NOT HOW MANY — the two stages `graphicsLifecycle` could never reach.
+   *
+   * That module joins the plan to the renderer by the id `translateEdl` computes, and declares four
+   * stages: PLANNED → TRANSLATED → RENDER_INPUT → DRAWN. It takes `inputIds` and `drawnIds` to make
+   * the join. This result carried `graphicsDrawn: number` and nothing else, so no caller could
+   * supply either list, and `RENDER_INPUT` and `DRAWN` were two declared stages with no possible
+   * writer. Render 573's sibling published the consequence:
+   *
+   *     [Graphics] lifecycle planned=6 translated=5 renderInput=0 drawn=0
+   *
+   * Five graphics reaching the timeline and stopping there — not because the renderer refused them,
+   * but because nothing ever asked it. The renderer holds both answers in `props.graphics` and threw
+   * the ids away to keep a length.
+   *
+   * `graphicDrawnIds` is the same predicate `graphicsDrawn` counts, so the number and the list can
+   * never disagree; it remains the renderer's own count and not a frame inspection, exactly as
+   * `graphicsLifecycle` says. `graphicsOverlayInk` is still the only thing that reads pixels back.
+   */
+  graphicInputIds: string[];
+  graphicDrawnIds: string[];
   /** §34 — everything the plan asked for that this layer did not draw, with the planner's reason. */
   skipped: string[];
   browserExecutable: string;
@@ -290,6 +311,11 @@ export async function renderGraphicsOverlay(
     graphicsDrawn: props.graphics.filter((g) =>
       graphicIsRenderable(g.graphicType, g.data, g.label)
     ).length,
+    /** Every graphic the props carried, and the subset the predicate passed — see the type's note. */
+    graphicInputIds: props.graphics.map((g) => g.id),
+    graphicDrawnIds: props.graphics
+      .filter((g) => graphicIsRenderable(g.graphicType, g.data, g.label))
+      .map((g) => g.id),
     skipped,
     browserExecutable,
   };

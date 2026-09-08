@@ -112,6 +112,20 @@ export type GraphicsOverlayFile = {
   overlayPath: string;
   /** Anything the overlay renderer was asked for and did not draw, with the planner's reason. */
   skipped: string[];
+  /**
+   * The graphics the overlay renderer received, and the subset its predicate passed — by id.
+   *
+   * `graphicsLifecycle` declares RENDER_INPUT and DRAWN and takes `inputIds`/`drawnIds` to reach
+   * them. Nothing could supply either: the renderer returned `graphicsDrawn: number`, and this type
+   * kept only `overlayPath` and `skipped`, so the ids were dropped twice on the way out. Both
+   * stages therefore had no possible writer and every render stopped at TRANSLATED —
+   * `planned=6 translated=5 renderInput=0 drawn=0`, which reads as a renderer that refused five
+   * graphics and was in fact a question nobody asked it.
+   *
+   * Optional so a deployment that supplies its own overlay function keeps working unchanged.
+   */
+  graphicInputIds?: string[];
+  graphicDrawnIds?: string[];
 };
 
 /** Which engine actually drew this video's text and graphics. */
@@ -149,6 +163,13 @@ export type RenderedTimeline = {
    * say the composite kept it: the overlay is one file with no per-graphic markers.
    */
   graphicsOverlayInk: OverlayInkResult | null;
+  /**
+   * The two lists `graphicsLifecycle` needs to reach RENDER_INPUT and DRAWN, carried out of the
+   * overlay renderer. Null when no overlay ran — which is a different fact from an empty list, and
+   * `graphicsLifecycle` already treats an absent report as "stop at TRANSLATED" rather than as a
+   * refusal. Per-graphic ids; the ink probe above still answers only for the overlay as a whole.
+   */
+  graphicRenderIds: { input: string[]; drawn: string[] } | null;
   skipped: string[];
   ffmpegCommands: number;
   /**
@@ -1089,6 +1110,11 @@ export async function renderTimeline(params: {
     ) !== null).length,
     graphicsRenderer,
     graphicsOverlayInk: overlayInk,
+    /** Null when no overlay ran; see the field's note on why that differs from an empty list. */
+    graphicRenderIds:
+      overlay?.graphicInputIds || overlay?.graphicDrawnIds
+        ? { input: overlay.graphicInputIds ?? [], drawn: overlay.graphicDrawnIds ?? [] }
+        : null,
     skipped,
     ffmpegCommands: commands,
     /**

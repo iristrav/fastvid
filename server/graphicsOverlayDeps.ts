@@ -75,6 +75,12 @@ export function productionGraphicsOverlay(
         `skipped=${result.skipped.length}`
     );
 
-    return { overlayPath: result.overlayPath, skipped: result.skipped };
+    /** The ids travel with the file — see `GraphicsOverlayFile` for the two stages they unlock. */
+    return {
+      overlayPath: result.overlayPath,
+      skipped: result.skipped,
+      graphicInputIds: result.graphicInputIds,
+      graphicDrawnIds: result.graphicDrawnIds,
+    };
   };
 }

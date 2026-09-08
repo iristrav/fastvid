@@ -559,6 +559,35 @@ export async function runRenderJob(params: {
       );
     }
     /**
+     * THE TWO STAGES `graphicsLifecycle` DECLARED AND NOTHING COULD EVER WRITE.
+     *
+     * That module joins the plan to the renderer over four stages — PLANNED, TRANSLATED,
+     * RENDER_INPUT, DRAWN — and takes `inputIds`/`drawnIds` to reach the last two. It never got
+     * them: `renderGraphicsOverlay` returned `graphicsDrawn: number`, `GraphicsOverlayFile` kept
+     * only a path and a skip list, and `RenderedTimeline` carried neither. So every render stopped
+     * at TRANSLATED and published
+     *
+     *     [Graphics] lifecycle planned=6 translated=5 renderInput=0 drawn=0
+     *
+     * which reads as a renderer that refused five graphics and was in fact a question nobody put to
+     * it. The plan-time line above is printed before any render exists and is right to say nothing;
+     * this is the other half, printed where the answer finally exists.
+     *
+     * Counts and the ids, because the ids are what the plan can be joined against. Still the
+     * renderer's own predicate rather than a frame inspection — `[OverlayInk]` above is the only
+     * line here that read pixels, and it answers for the whole overlay.
+     */
+    if (rendered.graphicRenderIds) {
+      const { input, drawn } = rendered.graphicRenderIds;
+      const notDrawn = input.filter((id) => !drawn.includes(id));
+      console.log(
+        `[Graphics] job=${job.id} renderInput=${input.length} drawn=${drawn.length}` +
+          (notDrawn.length > 0
+            ? ` receivedNotDrawn=${notDrawn.length} e.g. ${notDrawn.slice(0, 3).join(",")}`
+            : "")
+      );
+    }
+    /**
      * WHAT THIS RENDER ACTUALLY EXECUTED — one line, everything the renderer measured.
      *
      * ── Why this was missing ────────────────────────────────────────────────────────────────

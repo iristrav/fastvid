@@ -13732,6 +13732,23 @@ export function formatYoutubeDownloadLine(params: {
   );
 }
 
+/**
+ * One classified download outcome onto the render's tally.
+ *
+ * A helper rather than three lines at the call site: `reportDownload` is the single exit point that
+ * `youtubeDownloadIsRecordable` measures by byte offset, and a block inserted there pushes the
+ * replay-fact write out of its window. The rationale for the tally itself lives on the
+ * `downloadOutcomes` field.
+ */
+function countDownloadOutcome(
+  cache: SourcingCache | undefined,
+  provider: string,
+  status: string
+): void {
+  const m = providerMetrics(cache, provider);
+  m.downloadOutcomes[status] = (m.downloadOutcomes[status] ?? 0) + 1;
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -13802,6 +13819,8 @@ export async function downloadYouTubeCCClip(
     });
     if (status === "DOWNLOAD_SUCCESS") console.log(line);
     else console.warn(line);
+    /** And onto the render's tally, which carries it to the summary — see `downloadOutcomes`. */
+    countDownloadOutcome(sourcingCache, "youtube_cc", status);
     /**
      * The same facts into the bundle, so the next capture can be counted rather than read. The
      * video id is an identity and is public; the signed format URL the transfer uses never
@@ -19404,6 +19423,24 @@ export interface ProviderSourcingMetrics {
   duplicateSkipped: number;
   acceptedCount: number;
   /**
+   * WHY THE DOWNLOADS FAILED, WHERE THE SUMMARIES ARE.
+   *
+   * Render 573: `[VisualFunnel] youtube_cc downloadStarted=17 downloadSucceeded=2`. Twelve percent,
+   * and the reason for the other fifteen was knowable — `[YouTubeDownload]` already prints a
+   * classified status and a per-route trail for every attempt. It prints it where the attempt
+   * happens, in the retrieval phase, which is thousands of lines before the summary block a reader
+   * opens; a log captured from the end of a render shows the failure and not the cause.
+   *
+   * A tally, so the classification survives to the summary. `DOWNLOAD_UNAVAILABLE` (no route
+   * configured), `DOWNLOAD_TIMEOUT` and `DOWNLOAD_UNSUPPORTED` are three completely different
+   * operator actions and were indistinguishable from `downloadSucceeded=2`.
+   *
+   * Keyed by `YoutubeDownloadStatus` today and typed as a plain record so any provider that gains a
+   * classified outcome can use it without a second structure. Absent keys mean it never happened —
+   * a zero nobody wrote is not a measurement.
+   */
+  downloadOutcomes: Record<string, number>;
+  /**
    * RONDE 70 — categories D and E, told apart at last.
    *
    * eligibleCount is bumped where a candidate has passed EVERY gate; adoptedCount only where it
@@ -19530,6 +19567,7 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
     downloadCount: 0, downloadSlotsClaimed: 0, downloadCacheHits: 0,
     duplicateSkipped: 0, acceptedCount: 0,
     eligibleCount: 0, adoptedCount: 0,
+    downloadOutcomes: {},
   };
 }
 
@@ -19928,6 +19966,19 @@ export function logSourcingMetrics(cache: SourcingCache | undefined, videoId?: n
         `duplicateSkipped=${m.duplicateSkipped} ` +
         `accepted=${m.acceptedCount}`
       );
+      /**
+       * And WHY the downloads that failed did — on its own line, only for a provider that
+       * classifies them. `downloadStarted=17 downloadSucceeded=2` names a problem; this names the
+       * operator's action. Most frequent first, and absent entirely when nothing was classified,
+       * so a provider without this instrumentation adds no empty line.
+       */
+      const outcomes = Object.entries(m.downloadOutcomes).sort((a, b) => b[1] - a[1]);
+      if (outcomes.length > 0) {
+        console.log(
+          `[SourcingMetrics]   ${provider}: downloadOutcomes ` +
+            outcomes.map(([status, n]) => `${status}=${n}`).join(" ")
+        );
+      }
     }
   } catch {
     /* metrics must never affect a render */
