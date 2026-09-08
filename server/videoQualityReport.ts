@@ -32,6 +32,70 @@ import type { BeatRelevanceLedger } from "./beatVisualRelevance";
 
 export type { VoiceVisualMatchSummary };
 
+/**
+ * THE ONE DEFINITION OF "THIS DELIVERED CLIP IS WORTH A SECOND LOOK".
+ *
+ * Only reasons the pipeline can actually establish. A doubt it cannot prove is not a doubt, it is
+ * a guess, and a report full of guesses trains a reader to ignore it.
+ *
+ *   unproven_source        the lineage ledger could not name where the bytes came from. This is the
+ *                          same fact `bySource[UNVERIFIED]` counts and the export gate refuses a
+ *                          majority of; here it is attached to the clip rather than to a total.
+ *   drawn_not_fetched      the render drew this frame itself — a colour or text card. Real, and not
+ *                          footage, which is a different claim from "we lost its provenance".
+ *   no_content_identity    nothing about the file resolves to a content key, so it cannot be
+ *                          matched against anything the render recorded.
+ */
+export type SuspiciousClipReason =
+  | "unproven_source"
+  | "drawn_not_fetched"
+  | "no_content_identity";
+
+/**
+ * Why this clip is worth a second look, or null when there is nothing to say about it.
+ *
+ * Pure, and it EXCLUDES NOTHING. Callers count and list what it returns; no caller may use it to
+ * drop a clip from a measurement — see `clipAccounting` for why that would be the wrong repair.
+ */
+export function suspiciousDeliveredClip(
+  clipPath: string,
+  opts?: {
+    resolveSource?: (clipPath: string) => string | null | undefined;
+    isGeneratedClip?: (clipPath: string) => boolean;
+    contentKeyOf?: (clipPath: string) => string | undefined;
+  }
+): SuspiciousClipReason | null {
+  if (opts?.isGeneratedClip?.(clipPath)) return "drawn_not_fetched";
+  if (opts?.resolveSource) {
+    const recorded = opts.resolveSource(clipPath)?.trim().toLowerCase();
+    if (!recorded || recorded === "unknown") return "unproven_source";
+  }
+  if (opts?.contentKeyOf && !opts.contentKeyOf(clipPath)) return "no_content_identity";
+  return null;
+}
+
+/**
+ * The three numbers and the named doubts, built where the clip list is known.
+ *
+ * `measured` equals `delivered` and `excluded` is 0 — by construction, not by coincidence. If a
+ * future round ever wants to exclude a clip from the score, it will have to change this function,
+ * and this comment is where it will find out why that is the wrong instinct.
+ */
+function clipAccountingFor(
+  unique: readonly string[],
+  opts?: {
+    resolveSource?: (clipPath: string) => string | null | undefined;
+    isGeneratedClip?: (clipPath: string) => boolean;
+  }
+): NonNullable<VideoQualityReport["clipAccounting"]> {
+  const suspicious: Array<{ basename: string; reason: SuspiciousClipReason }> = [];
+  for (const clipPath of unique) {
+    const reason = suspiciousDeliveredClip(clipPath, opts);
+    if (reason) suspicious.push({ basename: path.basename(clipPath), reason });
+  }
+  return { delivered: unique.length, measured: unique.length, excluded: 0, suspicious };
+}
+
 export type VideoQualityReport = {
   generatedAt: string;
   videoTitle: string;
@@ -74,6 +138,24 @@ export type VideoQualityReport = {
    * report cannot say which it was, and guessing on its behalf is how a report starts lying.
    */
   clipsMeasuredOn?: "compose_montage" | "delivered_render";
+  /**
+   * DELIVERED, MEASURED, EXCLUDED — so an invisible exclusion cannot exist.
+   *
+   * A report that silently measured sixteen of twenty delivered clips would read as a twenty-clip
+   * film that happened to score well. These three numbers make that impossible to hide, and today
+   * they make something else plain: `excluded` is ZERO, always, because nothing is dropped from
+   * the measurement. `suspicious` counts clips the pipeline can name a doubt about (see
+   * `suspiciousDeliveredClip`) and they are counted, listed and still measured.
+   *
+   * The doubt is worth reporting; acting on it by removing the clip from the score would improve
+   * the number by deleting the evidence, which is the one thing a quality report must never do.
+   */
+  clipAccounting?: {
+    delivered: number;
+    measured: number;
+    excluded: number;
+    suspicious: Array<{ basename: string; reason: SuspiciousClipReason }>;
+  };
   warnings: string[];
   offTopicSuspects: Array<{ basename: string; reason: string }>;
   rejectSummary?: Record<string, number>;
@@ -674,6 +756,7 @@ export function buildVideoQualityReport(
     stockCount,
     /** Stage 6's montage is the only finished film that exists here. See the field's own note. */
     clipsMeasuredOn: "compose_montage",
+    clipAccounting: clipAccountingFor(unique, opts),
     warnings,
     offTopicSuspects,
     criticalGeoViolations: criticalGeoViolations.length > 0 ? criticalGeoViolations : undefined,
@@ -800,6 +883,8 @@ export function recountQualityReportForDeliveredClips(
   report.qualityStatus = verdict.status;
   report.qualityReason = verdict.reason;
   report.clipsMeasuredOn = "delivered_render";
+  /** The accounting follows the list it accounts for. Still nothing excluded. */
+  report.clipAccounting = clipAccountingFor(unique, opts);
 
   return { clipsBefore, clipsAfter: unique.length, scoreBefore, scoreAfter: verdict.score };
 }

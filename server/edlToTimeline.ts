@@ -494,6 +494,29 @@ export function translateEdl(params: {
       );
     }
 
+    /**
+     * THE ONE PLACE THE TWO TRIMS BECOME ONE RANGE — AND THEREFORE THE PLACE TO CHECK IT.
+     *
+     * `sourceIn`/`sourceOut` below are an ADDITION: the render's own cut into the provider's
+     * original, plus the planner's cut into what that produced. The adapter can check the first
+     * half and does; the planner's half does not exist until here. Nothing checked the sum, and a
+     * sum of two individually valid numbers is not automatically valid — `trimEndSec` landing at
+     * or before `trimStartSec` gives a range that runs backwards, which the global validator
+     * refuses as `invalid_source_range` and pays for with the whole plan.
+     *
+     * Reported, never corrected. Moving one end to make the range legal would show frames nobody
+     * picked, under narration that was written for the frames they did.
+     */
+    const composedIn = sourceTrim ? Number((sourceTrim.inSec + clip.trimStartSec).toFixed(3)) : clip.trimStartSec;
+    const composedOut = sourceTrim ? Number((sourceTrim.inSec + clip.trimEndSec).toFixed(3)) : clip.trimEndSec;
+    if (Number.isFinite(composedIn) && Number.isFinite(composedOut) && composedOut <= composedIn) {
+      unsupported.push(
+        `INVALID_SOURCE_RANGE ${decision.beatId}: the render's cut (${(sourceTrim?.inSec ?? 0).toFixed(3)}s) ` +
+          `composed with the planner's (${clip.trimStartSec.toFixed(3)}s → ${clip.trimEndSec.toFixed(3)}s) ` +
+          `gives in=${composedIn.toFixed(3)}s out=${composedOut.toFixed(3)}s, which runs backwards`
+      );
+    }
+
     clips.push({
       id: timelineElementId("vc", decision.beatId, clip.candidateId, clip.startSec),
       kind: clip.assetType === "image" ? "image" : "video",
@@ -515,8 +538,8 @@ export function translateEdl(params: {
        * clip that was never pre-trimmed, and is not a guess about one that was: an unmeasured trim
        * leaves the record's field absent, and absent reaches here as `undefined`.
        */
-      sourceIn: sourceTrim ? Number((sourceTrim.inSec + clip.trimStartSec).toFixed(3)) : clip.trimStartSec,
-      sourceOut: sourceTrim ? Number((sourceTrim.inSec + clip.trimEndSec).toFixed(3)) : clip.trimEndSec,
+      sourceIn: composedIn,
+      sourceOut: composedOut,
       timelineStart: Number(start.toFixed(3)),
       timelineEnd: Number(end.toFixed(3)),
       motion: CAMERA_MAP[decision.camera.movement] ?? "none",

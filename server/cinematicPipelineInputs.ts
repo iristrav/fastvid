@@ -162,8 +162,50 @@ export type SceneFacts = {
 
 /* ═══════════════════════ what comes out ═══════════════════════ */
 
+/**
+ * ONE THING THE ADAPTER GOT WRONG, NAMED BEFORE IT COSTS THE WHOLE PLAN.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────────────────────
+ *
+ * The global validator is the only thing standing between an impossible plan and a render, and it
+ * refuses ALL OR NOTHING: render 574's two overlapping seconds threw away a timeline carrying
+ * eleven graphics, and the viewer got the compose montage instead. The validator is right to be
+ * absolute — two clips cannot both be on screen — but it is the wrong place to find out.
+ *
+ * This is the adapter checking its own output against the rules it is itself responsible for,
+ * before anything downstream sees it. A plan that fails here is refused with the beat, the check,
+ * the value it had and the value it needed. It is NOT repaired: dropping the offending element and
+ * revalidating would produce a green plan that quietly misses a shot, which is worse than a refusal
+ * because nobody would ever know to look.
+ */
+export type AdapterCheck =
+  | "scene_boundary"
+  | "positive_duration"
+  | "beat_overlap"
+  | "source_range"
+  | "duplicate_identity"
+  | "renderable_input";
+
+export type AdapterIssue = {
+  check: AdapterCheck;
+  sceneIndex: number;
+  beatIndex: number;
+  /** The identity the timeline element will be built from, when there is one. */
+  elementKey: string | null;
+  actual: string;
+  expected: string;
+  reason: string;
+};
+
 export type CinematicInputsResult = {
   scenes: CinematicSceneInput[];
+  /**
+   * What the adapter found wrong with its OWN output. Empty on a healthy render.
+   *
+   * A non-empty list means the plan must not be handed on — see `formatAdapterIssues` for the
+   * lines it produces and `CINEMATIC_ADAPTER_INVALID` for what the caller does with it.
+   */
+  adapterIssues: AdapterIssue[];
   /**
    * Every beat that could not be planned, and why. §2/§6 — a beat that drops out of the edit must
    * say so; it must never be quietly filled with another beat's clip.
@@ -972,7 +1014,163 @@ export function buildCinematicSceneInputs(params: {
     stats.scenes++;
   });
 
-  return { scenes: out, dropped, stats };
+  /**
+   * The adapter's last act is to read back what it built. See `checkCinematicSceneInputs`.
+   *
+   * Run over `out` rather than over the beats it started with: the drops above are legitimate and
+   * already named, and a check that judged the input would report faults in beats that are not in
+   * the plan. What has to hold is that the SURVIVING set is internally possible.
+   */
+  return { scenes: out, dropped, adapterIssues: checkCinematicSceneInputs(out), stats };
+}
+
+/* ═══════════════════════ the adapter checks its own work ═══════════════════════ */
+
+/** Below this, a difference is floating-point noise from three additions, not a fault. */
+const ADAPTER_EPS = 0.001;
+const s3 = (n: number) => `${n.toFixed(3)}s`;
+
+/**
+ * Every rule this adapter is responsible for, asked of the plan it just built.
+ *
+ * Exported and pure so a test can put a broken plan in front of it without running a render. It
+ * NEVER modifies the plan: its whole job is to say what is wrong, and a function that could also
+ * repair would make "the plan was refused" and "the plan was silently altered" the same event.
+ *
+ * The source-range rule is deliberately partial here and says so: the adapter holds the render's
+ * own cut (`sourceTrim`), not the planner's trim, which is composed onto it two modules later. The
+ * composed value is checked where it is composed — see `edlToTimeline`. Checking half of it here is
+ * not a claim to have checked all of it.
+ */
+export function checkCinematicSceneInputs(scenes: CinematicSceneInput[]): AdapterIssue[] {
+  const issues: AdapterIssue[] = [];
+  /** Element identities are hashed from these three; a collision here IS a duplicate element id. */
+  const seenKeys = new Map<string, string>();
+
+  scenes.forEach((scene) => {
+    const sceneLen = Math.max(0, scene.director.durationSec);
+    const sceneIndex = scene.director.scene.index;
+    /** Beat index inside the scene, so a report names the beat a reader can find. */
+    const placed: Array<{ beatIndex: number; start: number; end: number }> = [];
+
+    scene.beats.forEach((beat, position) => {
+      const input = beat.input;
+      const beatId = input.intent?.beatId ?? "";
+      /** The id's own inverse, not a second reading of the format. */
+      const beatIndex = beatIndexFromBeatId(beatId)?.beatIndex ?? position;
+      const start = input.beatVoiceStartSec;
+      const dur = input.beatVoiceDurationSec;
+      const end = start + dur;
+      /**
+       * The three parts `timelineElementId` hashes for a video clip, in its order.
+       *
+       * Read from the same fields `edlToTimeline` reads — a second spelling of the identity would
+       * make this check pass on a tuple the renderer never builds.
+       */
+      const key = `${beatId || `s${sceneIndex}b${beatIndex}`}|${input.bestCandidate?.candidateId ?? "none"}|${start}`;
+      const add = (
+        check: AdapterCheck,
+        actual: string,
+        expected: string,
+        reason: string
+      ): void => {
+        issues.push({ check, sceneIndex, beatIndex, elementKey: key, actual, expected, reason });
+      };
+
+      if (!Number.isFinite(start) || !Number.isFinite(dur)) {
+        add("positive_duration", `start=${String(start)} duration=${String(dur)}`, "two finite numbers",
+          "a shot whose place on the clock is not a number cannot be rendered");
+        return;
+      }
+      if (dur <= ADAPTER_EPS) {
+        add("positive_duration", s3(dur), "> 0s",
+          "a zero-length shot is an invisible frame, not a shot");
+      }
+      if (start < -ADAPTER_EPS) {
+        add("scene_boundary", s3(start), ">= 0s", "a shot cannot begin before its own scene");
+      }
+      if (sceneLen > 0 && end > sceneLen + ADAPTER_EPS) {
+        add("scene_boundary", s3(end), `<= ${s3(sceneLen)}`,
+          "the next scene starts where this one ends, so a shot reaching past it claims time that " +
+            "belongs to another scene — this is render 574's video_overlap, one step earlier");
+      }
+
+      const trim = beat.sourceTrim;
+      if (trim) {
+        if (trim.inSec < -ADAPTER_EPS) {
+          add("source_range", s3(trim.inSec), ">= 0s", "the cut into the source starts before the file does");
+        }
+        if (trim.outSec != null && trim.outSec <= trim.inSec + ADAPTER_EPS) {
+          add("source_range", `in=${s3(trim.inSec)} out=${s3(trim.outSec)}`, "out > in",
+            "the cut into the source ends at or before it starts");
+        }
+      }
+
+      if (!beat.identity) {
+        add("renderable_input", "no identity", "a rehydratable or local identity",
+          "a shot nothing can fetch again is a timeline that cannot be reopened");
+      }
+
+      const previousOwner = seenKeys.get(key);
+      if (previousOwner) {
+        add("duplicate_identity", key, "unique per element",
+          `the timeline element id is hashed from this, so it would collide with ${previousOwner}`);
+      } else {
+        seenKeys.set(key, `s${sceneIndex}b${beatIndex}`);
+      }
+
+      placed.push({ beatIndex, start, end });
+    });
+
+    /**
+     * Overlap WITHIN a scene. Between scenes is the boundary rule above: two scenes cannot be
+     * compared here without re-deriving the offsets, and the boundary check makes the comparison
+     * unnecessary — a beat inside its own scene cannot reach into the next one.
+     */
+    placed.sort((a, b) => a.start - b.start);
+    for (let i = 1; i < placed.length; i++) {
+      const prev = placed[i - 1]!;
+      const cur = placed[i]!;
+      if (cur.start < prev.end - ADAPTER_EPS) {
+        issues.push({
+          check: "beat_overlap",
+          sceneIndex,
+          beatIndex: cur.beatIndex,
+          elementKey: null,
+          actual: `starts ${s3(cur.start)} while b${prev.beatIndex} runs to ${s3(prev.end)}`,
+          expected: `starts >= ${s3(prev.end)}`,
+          reason: "two clips cannot both be on screen on a concatenated track",
+        });
+      }
+    }
+  });
+
+  return issues;
+}
+
+/**
+ * The refusal, in the render log and the report — one line per fault, never a summary alone.
+ *
+ * `CINEMATIC_ADAPTER_INVALID` is greppable, and every line carries the render, the beat and both
+ * values, so the next round starts from the fault rather than from a count of faults.
+ */
+export function formatAdapterIssues(
+  videoId: number,
+  renderId: string | undefined,
+  issues: readonly AdapterIssue[]
+): string[] {
+  if (issues.length === 0) return [];
+  const head =
+    `[CinematicAdapter] video=${videoId} render=${renderId ?? "unknown"} ` +
+    `CINEMATIC_ADAPTER_INVALID issues=${issues.length}`;
+  return [
+    head,
+    ...issues.map(
+      (i) =>
+        `[CinematicAdapter] scene=${i.sceneIndex} beat=${i.beatIndex} check=${i.check} ` +
+        `element=${i.elementKey ?? "none"} actual=${i.actual} expected=${i.expected} — ${i.reason}`
+    ),
+  ];
 }
 
 /** One line for the render log. Counts and ids only — never a URL, never a payload. */

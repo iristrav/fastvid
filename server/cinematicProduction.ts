@@ -24,6 +24,7 @@
  */
 import {
   buildCinematicSceneInputs,
+  formatAdapterIssues,
   formatCinematicInputs,
   type CinematicBeatOutcome,
   type EntityExtractors,
@@ -139,6 +140,15 @@ export const CINEMATIC_PLAN_ERROR = {
   ROUTE_DISABLED: "CINEMATIC_ROUTE_DISABLED",
   NO_PLANNABLE_BEATS: "CINEMATIC_NO_PLANNABLE_BEATS",
   TIMELINE_INVALID: "CINEMATIC_TIMELINE_INVALID",
+  /**
+   * The adapter read back its own output and found it impossible — see `checkCinematicSceneInputs`.
+   *
+   * Distinct from TIMELINE_INVALID on purpose. That one means the global validator refused a
+   * finished timeline, which is a fault somewhere between the adapter and the renderer. This one
+   * means the fault was in the plan's own inputs and was caught before anything was built from
+   * them, so a reader knows which half to look at.
+   */
+  ADAPTER_INVALID: "CINEMATIC_ADAPTER_INVALID",
   PERSIST_FAILED: "CINEMATIC_PERSIST_FAILED",
   PLANNER_THREW: "CINEMATIC_PLANNER_THREW",
 } as const;
@@ -172,6 +182,13 @@ export type CinematicPlanParams = {
   scenes: SceneFacts[];
   extractors?: EntityExtractors;
   sceneOffsetsSec?: number[];
+  /**
+   * The render this plan belongs to, so a refusal names it.
+   *
+   * Optional because the id is the CALLER's — this module mints nothing. A plan report that could
+   * not say which run produced it is the fault R190 spent a commit on; see `PipelineGlance.renderId`.
+   */
+  renderId?: string;
   /**
    * RONDE 121 — forwarded straight to the planner, so the caller that owns the lineage ledger can
    * write `CINEMATIC_SELECTED` / `CINEMATIC_DROPPED`. This module decides nothing about it.
@@ -242,6 +259,32 @@ export async function planAndStoreCinematicTimeline(
      * difference between "the edit is shorter than the script" and a silence.
      */
     for (const reason of built.dropped) log.push(`[CinematicPipeline] dropped ${reason}`);
+
+    /**
+     * THE ADAPTER'S OWN VERDICT, ASKED BEFORE ANYTHING IS BUILT FROM ITS OUTPUT.
+     *
+     * Render 574's whole plan — eleven graphics included — was lost to two overlapping seconds that
+     * the adapter itself produced and could have named. The global validator is the right authority
+     * and it stays absolute; it is simply the wrong place to LEARN this, because by then a timeline
+     * exists and refusing it costs everything on it.
+     *
+     * Refused, not repaired. Dropping the offending beat here and carrying on would deliver a film
+     * with a shot missing and a green report — the one outcome §26 forbids by name.
+     */
+    if (built.adapterIssues.length > 0) {
+      const lines = formatAdapterIssues(params.videoId, params.renderId, built.adapterIssues);
+      for (const line of lines) log.push(line);
+      const worst = built.adapterIssues[0]!;
+      return {
+        ok: false,
+        code: CINEMATIC_PLAN_ERROR.ADAPTER_INVALID,
+        reason:
+          `${built.adapterIssues.length} adapter check(s) failed, first: ` +
+          `s${worst.sceneIndex}b${worst.beatIndex} ${worst.check} ` +
+          `(actual ${worst.actual}, expected ${worst.expected})`,
+        log,
+      };
+    }
 
     if (built.scenes.length === 0) {
       /**

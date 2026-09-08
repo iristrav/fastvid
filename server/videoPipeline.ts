@@ -28601,7 +28601,18 @@ async function beatClipPassesVisionGate(
     noteNotAsked(dedup.beatShortlist, scene.index, beat.index, admission.reason);
     console.log(
       `[BeatShortlist] s${scene.index}b${beat.index} not asked — ${admission.reason} ` +
-        `(${admission.slotsUsed}/${admission.cap}) route=${queryLabel} file=${path.basename(clipPath)}`
+        `(${admission.slotsUsed}/${admission.cap}) route=${queryLabel} file=${path.basename(clipPath)}` +
+        /**
+         * §19 — a bare `8/8` says the bound fired, not whether it cost anything.
+         *
+         * Render 574: `eligible=43 ranked=2 shortlisted=8/8`. Six of eight slots went to
+         * candidates nothing had ranked. Whether the editor saw the best eight or the first eight
+         * is the whole question, and it is answerable right here from numbers already in hand.
+         */
+        (admission.eligible != null
+          ? ` eligible=${admission.eligible} ranked=${admission.ranked ?? 0}` +
+            ` unreviewed=${admission.unreviewed ?? 0}`
+          : "")
     );
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "shortlist_full", queryLabel);
     return { pass: false, worstScore10: null, skipped: true, fromCache: false };
@@ -43719,6 +43730,8 @@ async function _runVideoPipelineInner(
         const localFileByBeat = new Map<string, string>();
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
+          /** The render's own id, so an adapter refusal names the run that produced it. */
+          renderId: lineage.renderId,
           scenes: scenes.map((scene, i) => {
             /**
              * RENDER 562 — from the render's own record, not from the clip list.

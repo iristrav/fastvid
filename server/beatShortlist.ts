@@ -236,7 +236,16 @@ export function noteRanked(
 
 export type ShortlistAdmission =
   | { admitted: true; alreadyOnList: boolean; slotsUsed: number; cap: number }
-  | { admitted: false; reason: NotAskedReason; slotsUsed: number; cap: number };
+  | {
+      admitted: false;
+      reason: NotAskedReason;
+      slotsUsed: number;
+      cap: number;
+      /** Present on SHORTLIST_FULL — the three numbers that say whether the bound cost anything. */
+      eligible?: number;
+      ranked?: number;
+      unreviewed?: number;
+    };
 
 /**
  * THE BOUNDARY. May this candidate be put to the picture editor for this beat?
@@ -266,7 +275,27 @@ export function admitToShortlist(
   }
   if (f.shortlisted >= cap) {
     f.refusedForCap += 1;
-    return { admitted: false, reason: "SHORTLIST_FULL", slotsUsed: f.shortlisted, cap };
+    return {
+      admitted: false,
+      reason: "SHORTLIST_FULL",
+      slotsUsed: f.shortlisted,
+      cap,
+      /**
+       * WHY THE BOUND BOUND, not just that it did.
+       *
+       * `SHORTLIST_FULL (8/8)` is a true statement that answers nothing. The question a reader has
+       * is whether the eight the editor saw were the best eight or the first eight, and render
+       * 574's own funnel lines hold the answer: `eligible=43 ranked=2 shortlisted=8/8`. Six of
+       * that beat's eight slots went to candidates nothing had ranked, while thirty-five eligible
+       * ones were never asked about.
+       *
+       * These three numbers travel with the refusal so the per-candidate line can say it too,
+       * rather than leaving a reader to join it to a summary printed hundreds of lines later.
+       */
+      eligible: f.eligible,
+      ranked: f.ranked,
+      unreviewed: Math.max(0, f.eligible - f.visionAsked),
+    };
   }
   f.shortlisted += 1;
   if (id) f.admitted.add(id);
