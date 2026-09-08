@@ -122,6 +122,23 @@ export function formatPipelineExport(input: PipelineExportInput): string {
 
   if (input.pipelineGlance) {
     out.push(...heading("KERNCIJFERS"));
+    /**
+     * A reader is told when the two halves of this file describe different renders.
+     *
+     * Video 574's export carried a report from one render beside numbers from another — a 147 ms
+     * run that had judged no pictures, while the render that made the delivered film had judged
+     * fifty-four. Both halves looked like one record and neither named its render, so the only
+     * way to notice was to hold the file against the render's own log, which is exactly the
+     * guesswork this export exists to remove. See `PipelineGlance.renderId`.
+     */
+    const glanceRender = input.pipelineGlance.renderId;
+    if (report?.renderId && glanceRender && glanceRender !== report.renderId) {
+      out.push(
+        "",
+        `LET OP: deze cijfers komen uit render ${glanceRender}, het rapport hieronder uit`,
+        `${report.renderId}. Twee verschillende renders van dezelfde video — vergelijk ze niet.`
+      );
+    }
     out.push(...structured(input.pipelineGlance));
   }
 

@@ -41873,14 +41873,37 @@ async function _runVideoPipelineInner(
     } // end else (sequential Stage 3 + Stage 4)
 
     // ── Stage 5: Critical scene review — multi-frame vision QA ─────────────────
+    /**
+     * WHAT A SCENE IS MADE OF, WITHOUT NEEDING COMPOSE TO HAVE RUN — one rule, one spelling.
+     *
+     * §19 established that the compose stage must be a fallback the cinematic route can live
+     * without, not an axle it hangs from. Three readers had already been given this rule inline —
+     * the critical review, the review inputs and the planner — each writing it out again. One had
+     * not: `buildEditorScenesFromPipeline`, which reads `composedUsedClips` raw. A scene that
+     * composed nothing therefore reaches the editor with no footage at all, and the comment at the
+     * salvage path above says exactly that, as a hazard it has to work around rather than a rule
+     * it can rely on.
+     *
+     * Compose's list stays PREFERRED and that is deliberate: it has had unusable files filtered
+     * out of it, so it is the more accurate of the two whenever it exists. This is about what
+     * happens when it does not.
+     *
+     * `allClipPaths` deliberately does NOT use this. It feeds the quality report's "clips in the
+     * video", and a scene that composed nothing put no picture in the compose montage — reporting
+     * its selected clips there would turn a missing scene into a full one. That number needs to
+     * come from the DELIVERED file, which is a larger change than this one and not a fallback.
+     */
+    const clipsForScene = (i: number): string[] => {
+      const composed = composedUsedClips[i] ?? [];
+      return composed.length > 0 ? composed : (sceneVisualResults[i]?.clips ?? []);
+    };
     onProgress?.({ stage: STAGE_LABELS.visualReview, percent: 66 });
     const sceneCriticalFailed: number[] = [];
     if (sceneCriticalReviewEnabled(videoLength)) {
     for (let i = 0; i < scenes.length; i++) {
       const vr = sceneVisualResults[i];
       if (!vr?.beats?.length) continue;
-      const clipsToReview =
-        composedUsedClips[i]!.length > 0 ? composedUsedClips[i]! : (vr.clips ?? []);
+      const clipsToReview = clipsForScene(i);
       const beatIndices = vr.clipBeatIndices ?? clipsToReview.map((_, ci) => ci);
       const adoptVisionByBeat = new Map<number, number>();
       for (const entry of visualDedup.clipAdoptAudit) {
@@ -41929,12 +41952,7 @@ async function _runVideoPipelineInner(
     let composeReviewPromise: Promise<PipelineReviewResult> | null = null;
     let finalReviewPromise: Promise<PipelineReviewResult> | null = null;
     if (!isFastShortVideoLength(videoLength)) {
-    const reviewInputs = sceneReviewInputs(
-      scenes,
-      composedUsedClips.map((clips, i) =>
-        clips.length > 0 ? clips : (sceneVisualResults[i]?.clips ?? [])
-      )
-    );
+    const reviewInputs = sceneReviewInputs(scenes, scenes.map((_, i) => clipsForScene(i)));
     if (asyncQaEnabled()) {
       // Fire both reviews concurrently; they complete during concat (free headroom)
       const skipResult: PipelineReviewResult = { ok: true, summary: "async (running during concat)", issues: [] };
@@ -42381,21 +42399,30 @@ async function _runVideoPipelineInner(
         ([step, ms]) => `[Step] ${step}=${typeof ms === "number" ? `${Math.round(ms)}ms` : String(ms)}`
       )
     );
+    /**
+     * The glance, built where it is stored, so both writes state the same facts about one render.
+     *
+     * Read at call time rather than captured: the second write happens minutes later, past the
+     * cinematic block, and must report the counters as they stand THEN. See `PipelineGlance.renderId`
+     * for what a stale glance beside a fresh report cost.
+     */
+    const glanceNow = (): PipelineGlance => ({
+      renderId: visualDedup.sourcingCache.lineage.renderId,
+      qualityStatus: qualityReport.qualityStatus,
+      score: qualityReport.score,
+      beats: qualityReport.beatVisuals?.beats,
+      verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual,
+      uniqueClips: qualityReport.totalClips,
+      unverifiedClips: qualityReport.bySource?.[UNVERIFIED_PROVIDER] ?? 0,
+      gateAttempts: judgementTally(visualDedup.beatImageGate).attempts,
+      gateAnswered: judgementTally(visualDedup.beatImageGate).answered,
+      warnings: qualityReport.warnings.length,
+    });
     await mergeVideoMetadata(videoId, {
       qualityReport,
       pipelineStepTiming: pipelineStepTiming.toReport(),
       pipelineReport: pipelineReport.build(),
-      pipelineGlance: {
-        qualityStatus: qualityReport.qualityStatus,
-        score: qualityReport.score,
-        beats: qualityReport.beatVisuals?.beats,
-        verifiedOwnVisual: qualityReport.beatVisuals?.verifiedOwnVisual,
-        uniqueClips: qualityReport.totalClips,
-        unverifiedClips: qualityReport.bySource?.[UNVERIFIED_PROVIDER] ?? 0,
-        gateAttempts: judgementTally(visualDedup.beatImageGate).attempts,
-        gateAnswered: judgementTally(visualDedup.beatImageGate).answered,
-        warnings: qualityReport.warnings.length,
-      } satisfies PipelineGlance,
+      pipelineGlance: glanceNow(),
     }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport for ${videoId}:`, err)
     );
@@ -43522,7 +43549,8 @@ async function _runVideoPipelineInner(
        */
       editorScenes = await buildEditorScenesFromPipeline(
         scenes,
-        composedUsedClips,
+        /** The one rule, not a fourth spelling of it — see `clipsForScene`. */
+        scenes.map((_, i) => clipsForScene(i)),
         (clipPath) => visualDedup.sourcingCache.lineage.providerFor(clipPath),
         (clipPath) => {
           const record = visualDedup.sourcingCache.lineage.resolve(clipPath);
@@ -44353,6 +44381,19 @@ async function _runVideoPipelineInner(
        * complete one, written on the path where there is more to say.
        */
       pipelineReport: pipelineReport.build(),
+      /**
+       * AND THE GLANCE BESIDE IT, FROM THE SAME RENDER AT THE SAME MOMENT.
+       *
+       * The glance used to be written ONLY at the early merge, while `pipelineReport` was written
+       * at both. So the two halves of one stored record could come from different renders, and
+       * video 574's did: a report from `rmtsu22cb-1` beside `gateAttempts=0` from a 147 ms render
+       * that never judged a picture, while `rmtsu22cb-1`'s own log said `attempts=54 answered=54`.
+       * Nothing in the export could say so, because neither half named its render.
+       *
+       * Written here as well — not instead — for the same reason the early one is kept: a render
+       * that dies before this point still leaves the early numbers rather than none.
+       */
+      pipelineGlance: glanceNow(),
     }).catch((err) =>
       console.warn(`[Pipeline] Failed to persist qualityReport on complete for ${videoId}:`, err)
     );

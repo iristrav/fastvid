@@ -130,6 +130,28 @@ export const PIPELINE_SECTION_TITLES: Record<PipelineSection, string> = {
  * point of the list is to spot the render worth opening. Everything else lives in the detail view.
  */
 export type PipelineGlance = {
+  /**
+   * WHICH RENDER THESE NUMBERS CAME FROM.
+   *
+   * ── The report that described a different film ──────────────────────────────────────────
+   *
+   * Video 574's stored record read `gateAnswered=0 gateAttempts=0` — nobody judged a single
+   * picture — while that render's own log said, in the same words the same counter produces:
+   *
+   *     [Quality] Video 574: beat image gate — attempts=54 answered=54 (fits=12 does_not_fit=42)
+   *     [BeatImageGate] verdicts by provider: 54x openai
+   *
+   * Both read `judgementTally(visualDedup.beatImageGate)`, so they cannot disagree within one
+   * render. They came from two: the stored report carried `renderId=rmtspxhka-1` over a window
+   * of 147 ms, and the render that produced the delivered file was `rmtsu22cb-1` and ran for
+   * twenty-one minutes. The glance had exactly one writer, at the EARLY merge, and the final
+   * merge rewrote `pipelineReport` without it — so a later render could leave its report beside
+   * an older render's numbers, and the export had no field with which to say so.
+   *
+   * That is not a reporting detail. Two rounds of analysis on this video compared a log against
+   * a report of another render and drew conclusions from the difference.
+   */
+  renderId?: string;
   qualityStatus?: string;
   score?: number;
   beats?: number;

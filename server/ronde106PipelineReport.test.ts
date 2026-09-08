@@ -170,10 +170,20 @@ describe("RONDE 106 — the render collects what it already prints", () => {
     const block = PIPELINE.slice(idx, idx + 1400);
     expect(block).toContain("qualityReport,");
     expect(block).toContain("pipelineReport: pipelineReport.build(),");
-    expect(block).toContain("pipelineGlance: {");
-    // The glance carries what the "all videos" table shows, and nothing heavy.
+    expect(block).toContain("pipelineGlance:");
+    /**
+     * The glance carries what the "all videos" table shows, and nothing heavy.
+     *
+     * RENDER 574 moved the object literal out of this block into `glanceNow()`, because the glance
+     * is now stored at BOTH merges and a captured object would carry the early counters into the
+     * late store. The keys are asserted where they are now written; the property — this merge
+     * stores the report and the glance together — is unchanged and asserted above.
+     */
+    const at = PIPELINE.indexOf("const glanceNow = (): PipelineGlance =>");
+    expect(at, "the glance builder is gone").toBeGreaterThan(-1);
+    const builder = PIPELINE.slice(at, at + 700);
     for (const key of ["qualityStatus", "score", "beats", "verifiedOwnVisual", "gateAttempts"]) {
-      expect(block, key).toContain(`${key}:`);
+      expect(builder, key).toContain(`${key}:`);
     }
   });
 

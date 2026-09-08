@@ -78,10 +78,20 @@ describe("the cinematic plan can be built without the compose stage", () => {
    * same two sources by different rules is the seam this codebase keeps rediscovering.
    */
   it("uses the same preference the critical review already used", () => {
+    /**
+     * RENDER 574 made this stronger than the assertion that stood here.
+     *
+     * It pinned the critical review's INLINE copy of the preference — which was the third of four
+     * hand-written copies, and the fourth reader (`buildEditorScenesFromPipeline`) had none at all,
+     * so a scene that composed nothing reached the editor empty. There is one rule now, named
+     * once, and every reader that can fall back reads it. That is what this test was protecting;
+     * the literal was only where it happened to live.
+     */
     const src = pipeline();
-    expect(src).toContain(
-      "composedUsedClips[i]!.length > 0 ? composedUsedClips[i]! : (vr.clips ?? [])"
-    );
+    expect(src).toContain("const clipsForScene = (i: number): string[] =>");
+    expect(src).toContain("composedUsedClips[i] ?? []");
+    expect(src).toContain("sceneVisualResults[i]?.clips ?? []");
+    expect(src).toContain("const clipsToReview = clipsForScene(i);");
   });
 
   it("records why the compose render cannot simply be deleted", () => {
