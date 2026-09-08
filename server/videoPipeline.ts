@@ -13754,6 +13754,40 @@ export async function downloadYouTubeCCClip(
           console.log(
             `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
           );
+          /**
+           * THE SECOND THE TRANSCRIPT FOUND, WRITTEN DOWN — THIS ROUTE WAS DISCARDING IT.
+           *
+           * Two download branches, and only one of them recorded where in the source it cut.
+           *
+           *   RapidAPI (the FALLBACK)  downloads the whole video, then trims it through
+           *                            `trimRemoteVideoToClip`, which calls `recordSourceTrim`.
+           *   cloud yt-dlp (the PRIMARY, tried first)  asks the service for the window directly
+           *                            — `/download?id=&duration=&start=` — so the file arrives
+           *                            already cut and never passes through that helper.
+           *
+           * `recordSourceTrim` has exactly one other caller in the codebase, inside that helper.
+           * So on the route that runs FIRST, `sourceInSec`/`sourceOutSec` stayed absent: the
+           * timeline carried no `sourceTrim`, `stats.withTrim` under-counted, and nothing recorded
+           * which second of the source the film actually used.
+           *
+           * That is precisely the failure the helper's own note warns about — "becomes a wrong
+           * shot the moment a re-render rehydrates the FULL asset from the provider and starts at
+           * second 0" — and RONDE 64's whole point is that `clipStart` here may be a second a
+           * transcript LOCATED. Throwing that away is throwing away the evidence for the one
+           * decision this route exists to make.
+           *
+           * The window is what was requested of the service and what it returns, so it is a fact
+           * about the file on disk, not a guess. Wrapped because provenance bookkeeping must never
+           * fail a clip that downloaded correctly — the same rule the other caller follows.
+           */
+          try {
+            get_activeSourcingCache()?.lineage.recordSourceTrim(outPath, {
+              inSec: clipStart,
+              outSec: clipStart + duration,
+            });
+          } catch {
+            /* a clip that arrived correctly is never lost to its own bookkeeping */
+          }
           reportDownload("DOWNLOAD_SUCCESS", "cloud_service");
           return true;
         } else {
