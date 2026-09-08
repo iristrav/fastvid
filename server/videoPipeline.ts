@@ -492,6 +492,21 @@ import {
   persistVoiceover,
 } from "./renderPersistence";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
+/**
+ * RONDE 192 — the lock, and the id that names the render holding it.
+ *
+ * `newRenderId` is the pipeline's own minter, already used for the lineage ledger and the graphics
+ * correlation id. The lock uses the SAME function so a production render's id is one vocabulary,
+ * not a fourth.
+ */
+import {
+  acquireRenderLock,
+  formatRenderLock,
+  formatRenderLockRelease,
+  releaseRenderLock,
+} from "./renderLock";
+import { dbRenderLockStore } from "./db";
+import { newRenderId } from "./renderCorrelation";
 import {
   judgeBeatImage,
   createBeatImageGateState,
@@ -39329,22 +39344,67 @@ export async function runVideoPipeline(
    * module-level counter would each report the other's spend. See `visionCensus.ts`.
    */
   const visionCensus = newVisionCensus();
-  return withVisionCensus(visionCensus, () =>
-    withSourceFloorMemo(sourceFloorMemo, () =>
-    withSubjectGateScope(subjectGateScope, () =>
-      withComposeJudgeScope(composeJudgeScope, () =>
-        withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
-          runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
-            runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
-              videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
-              sourceFloorMemo, subjectGateScope, composeJudgeScope
-            ))
-          ), ownerUserId)
+  /**
+   * ONE PRODUCTION RENDER PER VIDEO — the guard this function never had.
+   *
+   * Nothing between the request and twenty-one minutes of work asked whether this video was
+   * already being rendered. Video 574 has two runs in its own record, and two rounds of analysis
+   * reasoned about the difference between their numbers before anyone noticed they were different
+   * runs. See `server/renderLock.ts` for where the atomicity actually lives — the unique key, not
+   * this call.
+   *
+   * The lock is taken here rather than deeper in because this is the outermost thing that knows a
+   * production render is starting, and because the release has to survive every ending. The
+   * `finally` is the whole point: success, a throw, a cancellation and an export refusal all give
+   * the lock back. A render that finishes while its lock stays held would make that video
+   * unrenderable until the lease ran out.
+   */
+  const productionRenderId = newRenderId();
+  const lock = await acquireRenderLock(dbRenderLockStore, {
+    videoId,
+    productionRenderId,
+    holderLabel: `pid:${process.pid}`,
+  });
+  console.log(formatRenderLock(lock));
+  if (!lock.acquired) {
+    /**
+     * The second render does not start, and — deliberately — has not touched anything. Every
+     * scope above is opened below this point, so a refused request writes no ledger, no report and
+     * no lineage. §9: it may not mutate pipeline state, and the way to guarantee that is to refuse
+     * before any of it exists.
+     */
+    throw pipelineError(
+      PIPELINE_ERROR.RENDER_ALREADY_RUNNING,
+      `A production render is already running for video ${videoId} ` +
+        `(render ${lock.existingRenderId}). This request was refused rather than started ` +
+        `alongside it.`
+    );
+  }
+
+  try {
+    return await withVisionCensus(visionCensus, () =>
+      withSourceFloorMemo(sourceFloorMemo, () =>
+      withSubjectGateScope(subjectGateScope, () =>
+        withComposeJudgeScope(composeJudgeScope, () =>
+          withRenderTopic(userPrompt ?? ownerRow?.prompt, () =>
+            runWithActiveVideoId(videoId, () => renderCtxStorage.run(renderCtx, () =>
+              runWithGateFiringStats(gateStats, () => _runVideoPipelineInner(
+                videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
+                sourceFloorMemo, subjectGateScope, composeJudgeScope
+              ))
+            ), ownerUserId)
+          )
         )
       )
     )
-  )
-  );
+    );
+  } finally {
+    /** Every ending, holder-scoped. An overrun render cannot take its successor's lock away. */
+    const removed = await releaseRenderLock(dbRenderLockStore, videoId, productionRenderId).catch(
+      () => false
+    );
+    console.log(formatRenderLockRelease(videoId, productionRenderId, removed));
+  }
 }
 
 async function _runVideoPipelineInner(

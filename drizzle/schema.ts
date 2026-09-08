@@ -841,3 +841,53 @@ export const renderJobs = mysqlTable(
 
 export type RenderJob = typeof renderJobs.$inferSelect;
 export type InsertRenderJob = typeof renderJobs.$inferInsert;
+
+/**
+ * ONE PRODUCTION RENDER PER VIDEO, ENFORCED WHERE TWO WORKERS CANNOT BOTH BE RIGHT.
+ *
+ * ── Why a table and not a variable ──────────────────────────────────────────────────────────
+ *
+ * `runVideoPipeline` had no concurrency guard of any kind. A module-level boolean would not have
+ * been one either: FastVid can run more than one worker, Railway can hold two instances through a
+ * deploy, and a process restart forgets everything a variable knew. The only place two workers can
+ * be made to disagree in a way they both accept is the database.
+ *
+ * ── Where the atomicity actually comes from ─────────────────────────────────────────────────
+ *
+ * `videoId` is UNIQUE, and a row exists only while a render holds the lock. So the acquire is an
+ * INSERT that either succeeds or fails on the key — the database decides the race, not the order
+ * two `SELECT`s happened to run in. Taking over an expired lease is a conditional UPDATE whose
+ * WHERE clause names the expiry it saw; exactly one racer can match it and change a row.
+ *
+ * Release is `DELETE WHERE videoId AND productionRenderId`, so a slow render that wakes up after
+ * its lease expired cannot delete the lock its successor now holds.
+ *
+ * ── The lease ───────────────────────────────────────────────────────────────────────────────
+ *
+ * A crashed worker leaves its row behind, and without an expiry that video would be unrenderable
+ * for ever — a far worse failure than the one this table prevents. `expiresAt` is extended while
+ * the render is alive and is the only thing that lets a successor in.
+ */
+export const renderLocks = mysqlTable(
+  "render_locks",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** UNIQUE: the whole mechanism. One row per video means one render per video. */
+    videoId: int("videoId").notNull().references(() => videos.id).unique(),
+    /** The canonical id of the render that holds this lock. Never a job or provider id. */
+    productionRenderId: varchar("productionRenderId", { length: 64 }).notNull(),
+    /** Which worker holds it, for the audit trail. Never for authorisation. */
+    holderLabel: varchar("holderLabel", { length: 128 }),
+    acquiredAt: timestamp("acquiredAt").defaultNow().notNull(),
+    /** Past this, a successor may take the lock over. Extended while the render is alive. */
+    expiresAt: timestamp("expiresAt").notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    /** "may this render start" — the only query on the hot path. */
+    expiryIdx: index("render_locks_expires_idx").on(t.expiresAt),
+  })
+);
+
+export type RenderLock = typeof renderLocks.$inferSelect;
+export type InsertRenderLock = typeof renderLocks.$inferInsert;

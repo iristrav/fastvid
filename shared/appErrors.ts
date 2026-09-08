@@ -55,6 +55,13 @@ export const PIPELINE_ERROR = {
   GENERIC: 10199,
   QUALITY_GATE: 10115,
   DISK_SPACE: 10116,
+  /**
+   * A second production render was asked for on a video that is already rendering.
+   *
+   * Refused rather than queued, and refused BEFORE any pipeline scope is opened, so the request
+   * leaves no ledger, no report and no lineage behind. See `server/renderLock.ts`.
+   */
+  RENDER_ALREADY_RUNNING: 10117,
 } as const;
 
 export type AppErrorCode = (typeof APP_ERROR)[keyof typeof APP_ERROR];

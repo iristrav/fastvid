@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from "drizzle-orm";
+import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
@@ -12,7 +13,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, type RenderJob } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, renderLocks, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { AssetSourceIdentity } from "./projectTimeline";
 
@@ -2177,4 +2178,134 @@ export async function deleteDiscountCodeRow(id: number) {
   const db = await getDb();
   if (!db) return;
   await db.delete(discountCodes).where(eq(discountCodes.id, id));
+}
+
+/* ═══════════════════════ RONDE 192 — one production render per video ═══════════════════════ */
+
+/**
+ * The `RenderLockStore` backed by MySQL. See `server/renderLock.ts` for the contract and for why
+ * these five operations, and no others, are what a lock needs.
+ *
+ * Every one of them is a single statement whose own WHERE clause carries the condition. Nothing
+ * here reads a row and then decides what to do with it: that shape is a check-then-act race, and
+ * it is precisely what a lock exists to make impossible.
+ *
+ * With no database configured every operation reports failure rather than success. A render that
+ * cannot take a lock does not run — see `acquireRenderLock`'s caller — which is the safe direction:
+ * refusing a render is recoverable, two renders writing over each other is not.
+ */
+let noDatabaseLockWarned = false;
+
+/**
+ * NO DATABASE MEANS NO SHARED STATE TO PROTECT — and the render says so.
+ *
+ * With `DATABASE_URL` unset the pipeline already persists nothing: no metadata, no report, no
+ * lineage row. Two such runs cannot overwrite each other's record because neither writes one, so
+ * refusing them would stop every development and test render to prevent a collision that cannot
+ * happen.
+ *
+ * The lock is therefore vacuously held, and the line says PLAINLY that isolation is not being
+ * enforced. Silence here would be the worst of both: an operator on a misconfigured worker would
+ * see renders succeed and assume they were isolated.
+ */
+function lockIsVacuous(): true {
+  if (!noDatabaseLockWarned) {
+    noDatabaseLockWarned = true;
+    console.warn(
+      "[RenderLock] no database configured — render isolation is NOT enforced. " +
+        "Two renders of one video would not be stopped, and neither would persist anything."
+    );
+  }
+  return true;
+}
+
+export const dbRenderLockStore: RenderLockStore = {
+  async insertIfAbsent(row) {
+    const db = await getDb();
+    if (!db) return lockIsVacuous();
+    try {
+      /** The unique key on `videoId` decides this, not any read this process did. */
+      await db.insert(renderLocks).values({
+        videoId: row.videoId,
+        productionRenderId: row.productionRenderId,
+        expiresAt: row.expiresAt,
+        ...(row.holderLabel ? { holderLabel: row.holderLabel } : {}),
+      });
+      return true;
+    } catch {
+      /** Duplicate key: somebody holds it. Any other error is also "not acquired", which is safe. */
+      return false;
+    }
+  },
+
+  async read(videoId) {
+    const db = await getDb();
+    if (!db) return null;
+    const rows = await db
+      .select({
+        videoId: renderLocks.videoId,
+        productionRenderId: renderLocks.productionRenderId,
+        expiresAt: renderLocks.expiresAt,
+      })
+      .from(renderLocks)
+      .where(eq(renderLocks.videoId, videoId))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
+  async takeOverIfExpired(row, seenExpiry) {
+    const db = await getDb();
+    if (!db) return false;
+    /**
+     * Conditional on the expiry the caller SAW. Two workers looking at the same dead lease both
+     * send this; the second matches no row because the first already moved `expiresAt`.
+     */
+    const result = await db
+      .update(renderLocks)
+      .set({
+        productionRenderId: row.productionRenderId,
+        expiresAt: row.expiresAt,
+        acquiredAt: new Date(),
+        ...(row.holderLabel ? { holderLabel: row.holderLabel } : {}),
+      })
+      .where(and(eq(renderLocks.videoId, row.videoId), eq(renderLocks.expiresAt, seenExpiry)));
+    return affectedOne(result);
+  },
+
+  async releaseOwn(videoId, productionRenderId) {
+    const db = await getDb();
+    if (!db) return false;
+    /** Holder-scoped: an overrun render cannot delete its successor's lock on the way out. */
+    const result = await db
+      .delete(renderLocks)
+      .where(
+        and(eq(renderLocks.videoId, videoId), eq(renderLocks.productionRenderId, productionRenderId))
+      );
+    return affectedOne(result);
+  },
+
+  async extendOwn(videoId, productionRenderId, expiresAt) {
+    const db = await getDb();
+    if (!db) return false;
+    const result = await db
+      .update(renderLocks)
+      .set({ expiresAt })
+      .where(
+        and(eq(renderLocks.videoId, videoId), eq(renderLocks.productionRenderId, productionRenderId))
+      );
+    return affectedOne(result);
+  },
+};
+
+/**
+ * Did that statement change exactly one row?
+ *
+ * mysql2 reports it as `affectedRows` on the first element of the driver's result tuple. Read
+ * defensively rather than cast: a conditional write whose result is misread is a lock that
+ * silently stops locking, and this is the value the whole mechanism turns on.
+ */
+function affectedOne(result: unknown): boolean {
+  const head = Array.isArray(result) ? result[0] : result;
+  const affected = (head as { affectedRows?: number } | undefined)?.affectedRows;
+  return typeof affected === "number" && affected > 0;
 }
