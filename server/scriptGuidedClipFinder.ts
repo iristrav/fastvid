@@ -5,6 +5,7 @@
 import { foldSearchText } from "./searchTextNormalize";
 import { localVisionEnabled, scoreUrlImageAgainstBeat } from "./localClipVision";
 import { pickLongVideoStartSec } from "./beatSegmentChoice";
+import { envFlagIsNotOff } from "./envFlag";
 import {
   fetchYoutubeVideoContext,
   youtubeVideoContextTimeoutMs,
@@ -242,7 +243,15 @@ export async function scoreThumbnailRelevance(
 const LEGACY_FALLBACK_START_SEC = 12;
 
 export function scriptGuidedClipsEnabled(): boolean {
-  return process.env.ENABLE_SCRIPT_GUIDED_CLIPS !== "false";
+  /**
+   * RONDE 18's rule, on the flag that decides whether a transcript is consulted at all.
+   *
+   * A bare `!== "false"` reads `"FALSE"`, `" false"` and `"0"` as ON, so an operator who meant to
+   * turn this off would find it still running and no line anywhere saying why. `envFlagIsNotOff` is
+   * the opt-out helper this codebase already uses for exactly this shape; same default (on), same
+   * single spelling that turns it off, and now tolerant of case and whitespace.
+   */
+  return envFlagIsNotOff("ENABLE_SCRIPT_GUIDED_CLIPS");
 }
 
 /** Per-beat time budget for script-guided planning (keeps generation fast). */

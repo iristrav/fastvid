@@ -13093,6 +13093,28 @@ export async function fetchInternetArchiveClips(
           const segmentSec = Math.max(20, Math.ceil(duration) + 8);
           if (!(await fetchArchiveSegmentViaFfmpeg(videoUrl, tmpPath, segmentSec, sceneIndex))) {
             console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata) and segment fetch failed, skipping`);
+            /**
+             * EVERY `continue` PAST AN OPENED RECORD IS AN ASSET THAT VANISHES.
+             *
+             * `tagPathWithProviderAsset` opened a lineage record and filed DOWNLOAD_STARTED before
+             * any of these three exits. Each one then abandoned it: no DOWNLOAD_FAILED, no
+             * rejection, nothing. The ledger held a candidate that started a download and never
+             * ended, which `hasTerminalOutcome` correctly refuses to explain away —
+             *
+             *     [ProviderFunnelInvariant] provider=internet_archive candidates=527 tracked=33
+             *                               terminalOutcomes=0 untracked=494 unexplained=33
+             *                               INVARIANT_BROKEN
+             *
+             * — thirty-three of thirty-three, on the one provider whose failures all leave through
+             * these lines.
+             *
+             * Filed as a REJECTION, not a download outcome. This fetcher owns the counter channel
+             * (`downloadCount++` below) and `[AssetUsageSummary]` ADDS the two channels, so a
+             * download event from here would report each archive fetch twice —
+             * `downloadsAreCountedOnBothChannels` holds that line and is right to. A refusal is
+             * also the truer word: nothing arrived, so nothing "downloaded" either way.
+             */
+            sourcingCache?.lineage?.recordRejection(outPath, "archive_segment_fetch_failed");
             continue;
           }
           console.log(
@@ -13112,11 +13134,18 @@ export async function fetchInternetArchiveClips(
           { headers: { 'User-Agent': 'Fastvid/1.0 (video generation)' } },
           MAX_ARCHIVE_SIZE
         );
-        if (!dlResp.ok || bytesWritten === null) continue;
+        if (!dlResp.ok || bytesWritten === null) {
+          /** See the note on the segment branch: an opened record must not be left without an end. */
+          sourcingCache?.lineage?.recordRejection(
+            outPath, `archive_http_${dlResp.status || "no_bytes"}`
+          );
+          continue;
+        }
 
         if (bytesWritten > MAX_ARCHIVE_SIZE) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(bytesWritten / 1024 / 1024).toFixed(1)}MB), skipping`);
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+          sourcingCache?.lineage?.recordRejection(outPath, "archive_over_size_cap");
           continue;
         }
         }
@@ -13126,6 +13155,18 @@ export async function fetchInternetArchiveClips(
           results.push({ path: outPath, query, title: doc.title });
           fetched++;
           console.log(`[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}`);
+        } else {
+          /**
+           * The bytes arrived and the trim produced nothing — an ending, filed on the REJECTION
+           * channel rather than the download one.
+           *
+           * `downloadCount++` on the line above is this provider's counter channel, and `summary()`
+           * ADDS the counter to the events rather than choosing between them (see the note on the
+           * Pexels branch). A `DOWNLOAD_SUCCEEDED` or `DOWNLOAD_FAILED` event here would therefore
+           * count the same arrival twice. A rejection is the honest shape anyway: the download
+           * succeeded and the clip did not survive the trim, which is a different fact.
+           */
+          sourcingCache?.lineage?.recordRejection(outPath, "archive_trim_produced_no_clip");
         }
         try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
       } catch (err) {
@@ -13225,12 +13266,7 @@ async function fetchArchiveSegmentViaFfmpeg(
     try { fs.unlinkSync(outPath); } catch { /* ignore */ }
     return false;
   } catch (err) {
-    /**
-     * One truncation, not two. The old pair sliced the tail off ffmpeg's stderr and then the head
-     * off the resulting message, so the surviving fragment came from the middle of a sentence and
-     * said nothing a reader could act on. 240 characters from the front of a message that now
-     * begins at ffmpeg's own last line.
-     */
+    /** One truncation, not two: the old pair left a fragment from the middle of a sentence. */
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: archive segment fetch failed:`,
       (err as Error).message?.slice(0, 240)

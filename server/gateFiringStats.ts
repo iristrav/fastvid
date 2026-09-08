@@ -218,7 +218,17 @@ export function describeSilentGate(row: GateFiringRow): string {
   if (row.closestShortfall != null) {
     parts.push(
       row.closestShortfall <= 0
-        ? ", cleared its threshold but did not fire"
+        /**
+         * The clause after it, because render 573 read the first half as a malfunction.
+         *
+         * `[GateSilent] modern_mismatch (152×, cleared its threshold but did not fire)` describes a
+         * gate working exactly as designed: `closestShortfall` is the distance of the single
+         * closest PROBE, and firing needs a quorum of them to agree on a frame — see RONDE 174's
+         * own test, "a shortfall of zero does NOT mean the gate fired". Both halves of the
+         * diagnosis now appear, so a reader can tell the quorum refusing from the veto being
+         * unreachable, which is RONDE 26's bug and the reason this case exists at all.
+         */
+        ? ", cleared its threshold but did not fire — one probe qualified, the frame/probe quorum did not"
         : `, closest ${row.closestShortfall.toFixed(3)} short of firing`
     );
   }
