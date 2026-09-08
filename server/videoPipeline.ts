@@ -3649,9 +3649,18 @@ async function fetchBeatAuthenticStillsInner(
 
   if (trySerp) {
     for (let qi = 0; qi < Math.min(unique.length, historicalDoc ? 3 : 1); qi++) {
+      /**
+       * `||`, NOT `??` — an unsearchable beat now yields "" rather than a word.
+       *
+       * `simplifyStockSearchWord` returns the empty string where it used to return the literal
+       * "documentary" that the query gate refuses by name. `??` only steps aside for null and
+       * undefined, so an empty entry in `unique` would have gone to SerpAPI as an empty search
+       * instead of falling through to the beat's own query. The two lines below already used the
+       * right operator; this one did not.
+       */
       const serpQ = personPortrait && coercePersonName(personName)
         ? buildPersonSerpQuery(personName, sceneIndex, beat.index, beat.text)
-        : (unique[qi] ?? beat.searchQuery);
+        : (unique[qi] || beat.searchQuery || beat.text.slice(0, 60));
       const serpPaths = await fetchSerpAPIImages(
         serpQ,
         clipFetchDur,
@@ -3682,9 +3691,10 @@ async function fetchBeatAuthenticStillsInner(
     }
   }
 
+  /** Same operator, same reason — and the length guard below already refuses an empty query. */
   const ovQ = personPortrait && coercePersonName(personName)
     ? `${personName} ${unique[0] ?? ""}`.trim()
-    : (unique[0] ?? beat.searchQuery);
+    : (unique[0] || beat.searchQuery || "");
   if (!pool.some(strongEnoughToStopPooling) && (historicalDoc || !dedup.perf.fastStockMode) && ovQ.length > 3) {
     const ovPaths = await fetchOpenverseImages(
       ovQ,
@@ -13234,7 +13244,7 @@ async function fetchArchiveSegmentViaFfmpeg(
     const { spawn: spawnChild } = await import("child_process");
     await ffmpegSemaphore.run(() => new Promise<void>((resolve, reject) => {
       /**
-       * `-f mp4`, BECAUSE THE DESTINATION HAS NO EXTENSION AND FFMPEG GUESSES FROM ONE.
+       * NAME THE CONTAINER, BECAUSE THE DESTINATION HAS NO EXTENSION TO GUESS ONE FROM.
        *
        * The caller hands this function `..._archive_0_tmp` — a scratch name with no suffix, on
        * purpose, since `trimRemoteVideoToClip` produces the real `.mp4` afterwards. With `-c copy`
@@ -13249,6 +13259,17 @@ async function fetchArchiveSegmentViaFfmpeg(
        * `Archive clip too large (90.8MB per metadata) and segment fetch failed, skipping`, and the
        * beat fell through to the stock ladder. This is the route RONDE 8 added to unlock exactly
        * those full-length historical films; it has been refusing all of them at the first argument.
+       *
+       * ── Matroska, not MP4 ────────────────────────────────────────────────────────────────────
+       *
+       * The item filter above accepts `['h.264','MPEG4','MP4','Ogg Video','WebM']`. MP4 cannot
+       * carry Theora, Vorbis, VP8 or VP9, so `-f mp4` would have fixed h.264 and left Ogg and WebM
+       * failing — the same skip as before, with a better error message. Matroska takes all of them
+       * and h.264 too, so one muxer covers the whole accepted set.
+       *
+       * Nothing downstream reads the container from this path: it has no extension, and
+       * `trimRemoteVideoToClip` probes the file rather than trusting a name. `-movflags` was an
+       * MP4-only flag and goes with it.
        */
       const args = [
         "-y",
@@ -13256,8 +13277,7 @@ async function fetchArchiveSegmentViaFfmpeg(
         "-i", videoUrl,
         "-t", String(segmentSec),
         "-c", "copy",
-        "-movflags", "+faststart",
-        "-f", "mp4",
+        "-f", "matroska",
         outPath,
       ];
       const child = spawnChild(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -31335,7 +31355,25 @@ async function adoptStockBeatClipFallbackInner(
     ),
   ].slice(0, queryCap);
 
-  if (queries.length === 0) return false;
+  if (queries.length === 0) {
+    /**
+     * A STATE THAT USED TO BE UNREACHABLE, AND WOULD HAVE ARRIVED IN SILENCE.
+     *
+     * Before this round `simplifyStockSearchWord` always returned something — at worst the literal
+     * "documentary", which the query gate refuses by name. So this list was effectively never
+     * empty and `return false` was a formality. It now genuinely empties for a beat whose sentence
+     * names nothing that can be photographed, and returning false without a word would make the
+     * stock ladder skip that beat with nothing in the log to say why.
+     *
+     * The ladder is unchanged: false still means "this route found nothing" and the caller goes on
+     * to the next one. What is added is the sentence — see the round's rule on silent fallbacks.
+     */
+    console.warn(
+      `[Pipeline] Scene ${scene.index} zin ${beat.index}: no stock query — the beat names ` +
+        `nothing searchable (${beat.text.slice(0, 60).trim()}…); stock ladder skipped for this beat`
+    );
+    return false;
+  }
 
   console.warn(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: stock fallback (${queries.slice(0, 3).join(", ")})`

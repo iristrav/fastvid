@@ -411,6 +411,15 @@ export type VisualLineageRecord = {
   route: VisualLineageRoute;
   /** The adopt-audit source label. A ROUTE LABEL, never a provider. */
   sourceLabel?: string;
+  /**
+   * How many FURTHER beats adopted this same asset after the one this record names.
+   *
+   * One asset really can be offered to several beats — render 573 selected archive asset 57364 for
+   * four of them. The record names the beat that opened it and this counts the rest, so the sharing
+   * is a stated fact rather than something inferred from a scene/beat number that moved. Absent
+   * (not 0) when the asset was adopted once: a number nobody wrote is not a measurement.
+   */
+  reusedOnBeats?: number;
   /** The record this one was derived from — set on every trim, pad, overlay and transform. */
   parentLineageId?: string;
   createdAt: number;

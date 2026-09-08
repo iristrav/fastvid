@@ -189,7 +189,11 @@ describe("the archive segment fetch names a container, and its failure names its
     const at = SRC.indexOf("async function fetchArchiveSegmentViaFfmpeg");
     expect(at).toBeGreaterThan(-1);
     const body = SRC.slice(at, at + 3_000);
-    expect(body).toContain('"-f", "mp4",');
+    /**
+     * Matroska rather than mp4 — the item filter also admits Ogg Video and WebM, which MP4 cannot
+     * carry. Measured on this machine's ffmpeg; see render573FollowUpRisks for the table.
+     */
+    expect(body).toContain('"-f", "matroska",');
     expect(body).toContain('"-c", "copy",');
     expect(SRC).toContain("archive_${fetched}_tmp");
   });

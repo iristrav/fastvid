@@ -484,10 +484,18 @@ export function recordClipAdopt(
   noteAdoptionEvidence(audit, sceneIndex, beatIndex, clipPath, source);
   if (ledger) {
     /**
-     * With the key, not without it. `resolve` tries the exact path, then the derivation chain, then
-     * the content key — and the third rung is unreachable unless the key is supplied or a resolver
-     * was bound. A record that exists under a canonical key was therefore missed, and the branch
-     * below opened a second, anonymous record for the same asset.
+     * The key explicitly, which changes nothing in a render and everything outside one.
+     *
+     * `resolve` tries the exact path, then the derivation chain, then the content key — and reaches
+     * that third rung either from this argument or from a resolver bound on the ledger. Production
+     * binds one (`setContentKeyResolver(clipContentKey)` at cache creation), so in a render the two
+     * routes compute the identical string and passing it is redundant. It is passed anyway for the
+     * callers that bind nothing — tools and tests — where the rung was genuinely unreachable, and
+     * because a call that states its own key cannot be broken by a resolver being unbound later.
+     *
+     * An earlier version of this note claimed the lookup had been MISSING records in production.
+     * It had not; the resolver was already bound. The real repair in this function is below: the
+     * record it opens now carries the content key this call computes, instead of "".
      */
     const record = ledger.resolve(clipPath, adoptedContentKey || undefined);
     if (record) {
@@ -496,8 +504,31 @@ export function recordClipAdopt(
       // ("archive", "rescue_wikimedia", "fallback") and treating a route label as a provider is
       // the specific mistake RONDE 87 exists to make impossible.
       record.route = route;
-      record.sceneIndex = sceneIndex;
-      record.beatIndex = beatIndex;
+      /**
+       * ONE ASSET, MANY BEATS — AND THE RECORD USED TO END UP ON WHICHEVER CAME LAST.
+       *
+       * These two were plain assignments. For a provider asset that was mostly harmless: one
+       * download, one beat. It stopped being harmless once a curated clip's record became findable
+       * by content key, because the same archive asset really is offered to several beats — render
+       * 573 selected `a57364` for four of them (s0b0, s1b0, s1b4, s2b0). Under a plain assignment
+       * all four adoptions land on one record and it ends up naming the LAST beat, so
+       * `[SourceLineage] scene= beat=`, `[AssetTrace]` and anything else reading scene/beat off the
+       * record describe a beat this copy was not adopted for.
+       *
+       * First adoption wins, and the later ones are counted rather than silently overwritten. That
+       * keeps the record pointing at the beat that actually opened it, and `reusedOnBeats` makes
+       * the sharing itself visible instead of leaving it to be inferred from a number that moved.
+       * Per-copy detail is not lost either way: `clipAdoptAudit` already holds one entry per
+       * adoption, with its own scene and beat.
+       */
+      const unplaced = record.sceneIndex < 0 || record.beatIndex < 0;
+      if (unplaced) {
+        /** `tagPathWithProviderAsset` opens a record at -1/-1 when the downloader knew no beat. */
+        record.sceneIndex = sceneIndex;
+        record.beatIndex = beatIndex;
+      } else if (record.sceneIndex !== sceneIndex || record.beatIndex !== beatIndex) {
+        record.reusedOnBeats = (record.reusedOnBeats ?? 0) + 1;
+      }
       record.sourceLabel = source;
       record.beatText ??= beatText?.slice(0, 240) || undefined;
       record.assetTitle ??= assetTitle?.trim() || undefined;
