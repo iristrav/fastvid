@@ -184,6 +184,13 @@ export type CinematicInputsResult = {
      */
     laidOut: number;
     /**
+     * Beats whose end was pulled back to the end of their own scene — see the clamp in
+     * `buildCinematicSceneInputs`. Zero on a healthy render; anything else says shots were
+     * claiming time the next scene had already been given, which is what render 574's two
+     * `video_overlap` refusals were.
+     */
+    clampedToScene: number;
+    /**
      * F-1 — beats kept on a file this render holds, whose asset nothing could fetch again.
      *
      * A number worth seeing rather than inferring: `localOnlyIdentity=0` is the healthy render and
@@ -708,7 +715,10 @@ export function buildCinematicSceneInputs(params: {
   const extractors = params.extractors ?? {};
   const dropped: string[] = [];
   const out: CinematicSceneInput[] = [];
-  const stats = { scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0, laidOut: 0, localOnlyIdentity: 0 };
+  const stats = {
+    scenes: 0, beats: 0, planned: 0, withTrim: 0, withProbe: 0,
+    laidOut: 0, clampedToScene: 0, localOnlyIdentity: 0,
+  };
 
   let cursorSec = 0;
   params.scenes.forEach((sceneFacts, sceneOrder) => {
@@ -718,7 +728,12 @@ export function buildCinematicSceneInputs(params: {
      * pipeline's numbers; neither is invented here.
      */
     const sceneOffsetSec = params.sceneOffsetsSec?.[sceneOrder] ?? cursorSec;
-    cursorSec = sceneOffsetSec + Math.max(0, scene.duration);
+    /**
+     * How much room this scene has, and therefore where the NEXT one begins. One name for one
+     * number, because the beats below have to be held inside the very boundary it sets.
+     */
+    const sceneLengthSec = Math.max(0, scene.duration);
+    cursorSec = sceneOffsetSec + sceneLengthSec;
 
     const beats: CinematicBeatInput[] = [];
     /**
@@ -751,8 +766,58 @@ export function buildCinematicSceneInputs(params: {
 
       const measured = beat.voiceStartSec != null;
       const start = beat.voiceStartSec ?? beatCursorSec;
-      const end = beat.voiceEndSec ?? start + (beat.holdSec ?? 0);
+      const rawEnd = beat.voiceEndSec ?? start + (beat.holdSec ?? 0);
       if (!measured) stats.laidOut++;
+      /**
+       * RENDER 574 — A SHOT MAY NOT CLAIM TIME THE NEXT SCENE HAS ALREADY BEEN GIVEN.
+       *
+       * ── The overlap this ends ──────────────────────────────────────────────────────────
+       *
+       * `cursorSec` above puts the next scene at `sceneOffsetSec + sceneLengthSec`. Nothing
+       * held the beats inside that same boundary, and a laid-out beat's end is `start + holdSec`
+       * — a per-shot budget, clamped to [minClipSec, maxClipSec] long before it reaches here.
+       * Four such budgets do not add up to their scene's narration, and on 574 they overshot it:
+       *
+       *     scene 0   beats at 0/5/10/15, each 5.000s   → 20.000s   audio 16.677s
+       *     scene 1   beats to 34.665s                              audio 33.760s
+       *
+       *     [Validator] BLOCKING VIDEO/vc_70fbcd27ae [16.677s → 21.677s] video_overlap:
+       *       overlaps vc_42d8ac831e by 3.323s
+       *     [Validator] BLOCKING VIDEO/vc_97f5fc740a [50.437s → 55.437s] … by 0.905s
+       *     [RenderJob] video=574 route=legacy_compose RENDER_FALLBACK_USED
+       *
+       * Both refusals are the same shape: the first shot of a scene landing inside the last shot
+       * of the one before. Four seconds of arithmetic threw away a plan carrying eleven graphics,
+       * and the viewer got the compose montage, which knows none of them.
+       *
+       * ── Why a clamp and not a wider validator ──────────────────────────────────────────
+       *
+       * The validator is right and is not touched: two clips cannot both be on screen on a
+       * concatenated track. What was wrong is that this function handed it a plan that was
+       * impossible on its own terms — it placed the next scene at a boundary its own beats were
+       * free to cross. This is not an estimate of anything and it does not shorten the film: on
+       * this timeline the scene genuinely ends there, so a beat reaching past it is describing
+       * time that belongs to another scene.
+       *
+       * `holdPictureUnderVoice` cannot repair it afterwards — it closes gaps and skips overlaps
+       * by design — so the boundary has to hold where the boundary is known, which is here.
+       *
+       * The measured case is clamped too, and for the same reason rather than out of distrust:
+       * whatever `scene.duration` is, it is where the next scene starts on THIS timeline. A
+       * clamp is counted and reported (`clampedToScene`), never silent: zero is the healthy
+       * render, and a number is a prompt to look at why the beats and the audio disagree.
+       *
+       * A scene with no length recorded is left exactly as it was — clamping to zero would
+       * collapse every beat in it, which is a far worse answer than the overlap.
+       */
+      const clamped = sceneLengthSec > 0 && rawEnd > sceneLengthSec + 0.001;
+      if (clamped) stats.clampedToScene++;
+      /**
+       * `start` is left exactly where it was — render 563's line, unchanged. A beat that begins
+       * past its own scene has no room at all rather than a shorter shot, and `Math.max` gives it
+       * a zero-length window so the drop below can say that in those words.
+       */
+      const end = clamped ? Math.max(start, sceneLengthSec) : rawEnd;
       beatCursorSec = Math.max(beatCursorSec, end);
 
       const adopted = sceneFacts.clips[beatIndex] ?? null;
@@ -808,6 +873,18 @@ export function buildCinematicSceneInputs(params: {
         return;
       }
 
+      if (clamped && end - start <= 0) {
+        dropped.push(`${beatId}: no scene time was left for this beat`);
+        params.onBeatOutcome?.({
+          stage: "CINEMATIC_DROPPED", clipPath: adopted.facts.localPath,
+          sceneIndex: scene.index, beatIndex, reason: "SCENE_TIME_EXHAUSTED",
+        });
+        console.log(
+          `[CinematicDrop] scene=${scene.index} beat=${beatIndex} ` +
+            `${assetLabel(adopted.adoption)} reason=SCENE_TIME_EXHAUSTED`
+        );
+        return;
+      }
       const durationSec = Math.max(0, end - start);
       if (durationSec <= 0) {
         dropped.push(`${beatId}: the beat has no voice window and no hold length`);
@@ -904,6 +981,7 @@ export function formatCinematicInputs(result: CinematicInputsResult): string {
     `[CinematicPipeline] inputs scenes=${result.stats.scenes} beats=${result.stats.beats} ` +
     `planned=${result.stats.planned} probed=${result.stats.withProbe} ` +
     `trimmed=${result.stats.withTrim} laidOut=${result.stats.laidOut} ` +
+    `clampedToScene=${result.stats.clampedToScene} ` +
     `localOnly=${result.stats.localOnlyIdentity} ` +
     `dropped=${result.dropped.length}`
   );

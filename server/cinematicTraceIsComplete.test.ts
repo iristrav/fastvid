@@ -88,9 +88,19 @@ describe("every adopted clip gets a cinematic ending", () => {
       expect(d, `a [CinematicDrop] line has no beat: ${d.slice(0, 60)}`).toContain("beat=");
       expect(d, `a [CinematicDrop] line has no reason: ${d.slice(0, 60)}`).toContain("reason=");
     }
-    // Two of the three name an asset; the "no clip was adopted" case has none to name.
-    expect(drops.filter((d) => d.includes("${assetLabel(")).length).toBe(2);
+    /**
+     * Every drop names its asset, except the one that has none to name.
+     *
+     * This was `toBe(2)` against the three drop paths that existed. RENDER 574 added a fourth
+     * (SCENE_TIME_EXHAUSTED, a beat the scene had no room left for), which names its asset like
+     * the others — so the count moved while the property did not. Stated as the property, a
+     * future drop path is held to the same rule instead of failing this test for existing.
+     * `asset=none` stays pinned at exactly one: only "no clip was adopted" may say it.
+     */
     expect(drops.filter((d) => d.includes("asset=none")).length).toBe(1);
+    expect(
+      drops.filter((d) => d.includes("${assetLabel(") || d.includes("asset=none")).length
+    ).toBe(drops.length);
   });
 
   /**

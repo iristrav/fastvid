@@ -214,8 +214,21 @@ export function alignBeatTextsToSegments(
   return results;
 }
 
+/**
+ * A beat that can also carry WHERE it is spoken, not only how long a shot on it may run.
+ *
+ * `BeatHoldInput` is `{ text, holdSec }` — the two fields the hold-length maths needs. Every real
+ * caller passes a `SceneBeat`, which has carried `voiceStartSec`/`voiceEndSec` all along; this type
+ * is what lets `applyBeatVoiceAlignments` write into them without widening the hold-length module's
+ * own contract.
+ */
+export type AlignableBeat = BeatHoldInput & {
+  voiceStartSec?: number;
+  voiceEndSec?: number;
+};
+
 export function applyBeatVoiceAlignments(
-  beats: BeatHoldInput[],
+  beats: AlignableBeat[],
   alignments: BeatVoiceAlignment[],
   voiceSec: number,
   xfadeSec = 0.35
@@ -230,6 +243,54 @@ export function applyBeatVoiceAlignments(
     const a = alignments.find((x) => x.beatIndex === i) ?? alignments[i];
     const dur = a?.durationSec ?? beats[i]!.holdSec;
     beats[i]!.holdSec = Math.max(minHold, Math.min(maxHold, dur));
+    /**
+     * RENDER 574 — THE MEASUREMENT WAS TAKEN AND THEN THROWN AWAY.
+     *
+     * ── What the loss cost ────────────────────────────────────────────────────────────────
+     *
+     * Whisper had just told this function where every beat is spoken. Only `durationSec` was
+     * read out of that, and only as a LENGTH — clamped to [minHold, maxHold] on the line above
+     * and then redistributed again by `syncBeatHoldSecToVoiceTimeline`. `startSec`/`endSec`, the
+     * two numbers that say WHERE, were dropped on the floor with nobody else to take them.
+     *
+     * The cinematic planner reads exactly those two fields. Without them it cannot place a beat,
+     * so it lays every beat out end to end along the clamped hold instead — render 574 reported
+     * `inputs scenes=3 beats=13 laidOut=13`: not one beat in the plan sat where the narration
+     * actually is, in a render whose narration had been measured beat by beat.
+     *
+     * Laid-out lengths do not add up to the scene's own audio, and the scene after it starts
+     * where that audio ends. Scene 0's four beats claimed 20.000s against 16.677s of voice, so
+     * scene 1's first shot began 3.323s inside scene 0's last one:
+     *
+     *     [VoiceAlign] 3 beats aligned to 14.1s VO (windows: 5.3s, 6.1s, 2.7s)
+     *     [CinematicSelected] scene=2 beat=0 start=0.00 duration=5.00   ← the windows, gone
+     *     [Validator] BLOCKING VIDEO/vc_70fbcd27ae video_overlap: overlaps … by 3.323s
+     *     [CinematicPipeline] video=574 plan NOT stored code=CINEMATIC_TIMELINE_INVALID
+     *     [RenderJob] video=574 route=legacy_compose RENDER_FALLBACK_USED
+     *
+     * Two clips that could not both be on screen threw away the whole plan — and with it the
+     * eleven graphics that plan carried, which is why the delivered film has none.
+     *
+     * ── Why here ──────────────────────────────────────────────────────────────────────────
+     *
+     * This is the one place that holds the alignment and the beat at the same time. Nothing is
+     * computed, estimated or widened: two numbers already in hand are written to the two fields
+     * that were built to receive them.
+     *
+     * Only a window that is genuinely THIS beat's is stamped. The positional fallback above is
+     * left exactly as it was for the hold length — it may be a neighbour's window, and a length
+     * borrowed from a neighbour is a rough number where a POSITION borrowed from a neighbour is
+     * a wrong claim about where the voice is.
+     *
+     * The montage reads these fields too (`computeTtsHardCutMontagePlan`), so the compose route
+     * now cuts on the measured narration rather than on word-weighted shares of the budget. That
+     * is what `voiceStartSec`'s own comment says it is for, and it is a deliberate consequence of
+     * this line, not a side effect of it.
+     */
+    if (a && a.beatIndex === i) {
+      beats[i]!.voiceStartSec = a.startSec;
+      beats[i]!.voiceEndSec = a.endSec;
+    }
     weights.push(Math.max(0.35, dur));
   }
 
@@ -238,7 +299,7 @@ export function applyBeatVoiceAlignments(
 
 /** Align scene beats to per-scene voiceover MP3 via Whisper. Returns false when skipped/failed. */
 export async function alignSceneBeatsToVoiceAudio(
-  beats: BeatHoldInput[],
+  beats: AlignableBeat[],
   sceneAudioPath: string,
   voiceSec: number,
   xfadeSec = 0.35

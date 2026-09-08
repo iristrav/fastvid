@@ -29,13 +29,26 @@ afterEach(() => {
   else process.env.CINEMATIC_EDITING_ENGINE = ORIGINAL;
 });
 
-function scene(index: number, text: string): Scene {
-  return { index, text, visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration: 8 };
+function scene(index: number, text: string, duration: number): Scene {
+  return { index, text, visualCue: "", pexelsQuery: "", aiImagePrompt: "", duration };
 }
 
 function facts(index: number, texts: string[]): SceneFacts {
   return {
-    scene: scene(index, texts.join(" ")),
+    /**
+     * The scene is as long as the beats it declares.
+     *
+     * This fixture said `duration: 8` while handing the planner up to five four-second beats —
+     * twenty seconds of narration inside an eight-second scene, which no render produces:
+     * `scenes[i].duration` is set from the MEASURED scene audio (plus the 0.35s tail) and the
+     * beat windows are cut out of that same audio. RENDER 574 made the planner hold beats inside
+     * their own scene, so the contradiction now shows up here as missing beats.
+     *
+     * Nothing this file asserts changes — every expectation below is about which MOMENT a
+     * sentence is, and none of them is about duration. Only the fixture stops describing a scene
+     * that cannot exist.
+     */
+    scene: scene(index, texts.join(" "), texts.length * 4),
     beats: texts.map((t, i) => ({
       index: i, text: t, searchQuery: "apple park", powerWord: "Apple",
       holdSec: 4, voiceStartSec: i * 4, voiceEndSec: i * 4 + 4,

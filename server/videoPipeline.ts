@@ -9898,6 +9898,43 @@ function noteSceneClipsResourced(
     // Already explained by whoever dropped it — a compose gate, a duplicate, a validation swap.
     if (lineage.hasOutcomeFor(clip, contentKey)) continue;
     recordAssetOutcome(lineage, clip, "scene_resourced", context, contentKey);
+    /**
+     * RENDER 574 — A FETCHED, PROVEN ASSET LEAVING BY THE BACK DOOR SAYS SO OUT LOUD.
+     *
+     * ── The two clips this is about ───────────────────────────────────────────────────────
+     *
+     * That render made YouTube work for the first time: `downloadOutcomes DOWNLOAD_SUCCESS=2`
+     * against eighteen timeouts, both clips fair-use transformed, both adopted onto a beat. Then:
+     *
+     *     stage=REPLACED reason=scene_resourced:scene_1_resourced  …_youtube_cc-…_transformed.mp4
+     *     stage=REPLACED reason=scene_resourced:scene_2_resourced  …_youtube_cc-…_transformed.mp4
+     *     [AssetUsageSummary] provider=youtube_cc … downloaded=4 assigned=2 rendered=0
+     *
+     * No gate refused them. A refill rebuilt its scene's clip list and the two most expensive
+     * assets of the whole render simply stopped being referenced.
+     *
+     * ── Why a line and not a rule that keeps them ─────────────────────────────────────────
+     *
+     * The rebuild routes are repairing something real — a starved scene, a coverage hole — and
+     * forcing them to carry the old list would override a judgement this change has no evidence
+     * to override. What was missing is not a rule, it is the FACT: the ledger event above is
+     * filed correctly and is invisible until someone reads a lineage dump asset by asset, so a
+     * render could spend its entire YouTube budget, land two clips, throw both away, and read as
+     * a quiet success in every line an operator actually looks at.
+     *
+     * Only proven-provider assets, because those are the ones that cost a download and a licence
+     * decision; a rebuild dropping an unattributed local derivative is ordinary housekeeping and
+     * would bury this in noise. `console.warn` for the same reason `[ArchiveFilter]`'s budget line
+     * is a warning: nothing is broken, and somebody should still see it.
+     */
+    const record = lineage.resolve(clip, contentKey);
+    if (record?.provider && record.providerStatus === "VERIFIED") {
+      console.warn(
+        `[SceneResourced] ${context} dropped a fetched asset nothing refused: ` +
+          `provider=${record.provider}:${record.providerAssetId ?? record.archiveAssetId ?? "none"} ` +
+          `scene=${record.sceneIndex} beat=${record.beatIndex} file=${path.basename(clip)}`
+      );
+    }
   }
 }
 
