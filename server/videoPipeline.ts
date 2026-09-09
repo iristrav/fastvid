@@ -29600,6 +29600,71 @@ async function adoptionGuardRefusesPush(
   const source = currentAdoptionIntent();
   if (!source) return false;
 
+  /**
+   * RONDE 215 — THE GUARD ASKS FOR ITSELF, BECAUSE 12 OF ITS 17 CALLERS NEVER DID.
+   *
+   * ── What render 575 measured ────────────────────────────────────────────────────────────────
+   *
+   *     [AdoptionGuard] scene=0 beat=1 route=rescue_wikimedia eligible=true vision=NOT_ASKED
+   *         blocked=FUNNEL_WITHOUT_EVIDENCE reason=route "rescue_wikimedia" claims RESCUE_REAL
+   *         without vision (NOT_ASKED)
+   *     [AdoptionGuard] scene=0 beat=1 route=fallback           ... (28×)
+   *     [AdoptionGuard] scene=0 beat=1 route=rescue_placeholder ... (24×)
+   *
+   * Scene 0 finished with no picture at all and the export gate refused the film. Real Wikimedia
+   * footage, already ELIGIBLE, was thrown away — not because the editor disliked it, but because
+   * nobody had asked.
+   *
+   * RONDE 199 made this function REQUIRE a verdict. The asking lives in
+   * `beatClipRefusedByRelevanceGate`, which is called at 5 of this guard's 17 call sites. At the
+   * other 12 the answer was NOT_ASKED by construction, and after RONDE 199 that is a refusal. A
+   * reader tightened without its writer — this codebase's signature defect, and this time I wrote
+   * it.
+   *
+   * The rule moves into the one place all 17 pass through, so a route can no longer demand evidence
+   * it never gathered. The five that already ask are unaffected: `ensureVerdictBeforeCompose`
+   * returns `already_judged` for a clip on the ledger and costs nothing.
+   *
+   * ── The half that is NOT a missing call ─────────────────────────────────────────────────────
+   *
+   * Some callers pass a SYNTHETIC beat index. `fillSceneToMinimumClips` passes `2000 + slot` and
+   * its own comment says so: "`slot` is this array's own position counter — NOT a real narrative
+   * beat index". There is no sentence behind such an index, so there is nothing to judge the
+   * picture AGAINST, and no amount of asking can produce a verdict.
+   *
+   * Demanding one there is demanding the impossible, which is the RONDE 199b `askImpossible`
+   * lesson in a second form: a requirement that cannot be met does not raise the standard, it
+   * empties the film. So the two outcomes that mean "there was nothing to ask against" suspend the
+   * vision requirement for THIS adoption — named and logged, never silent — while "nobody tried"
+   * keeps refusing exactly as RONDE 199 intended.
+   */
+  let askWasPossible = true;
+  if (beatIndex == null) {
+    askWasPossible = false;
+  } else if (dedup.beatRelevance) {
+    const ensured = await ensureVerdictBeforeCompose({
+      clipPath,
+      contentKey: clipContentKey(clipPath),
+      sceneIndex,
+      beatIndex,
+      route: "adoption_guard",
+      /** The picture is about to be used, so it is judged — see `BeatRelevanceParams.finalSay`. */
+      finalSay: true,
+    });
+    if (
+      ensured.outcome === "no_scope" ||
+      ensured.outcome === "beat_unknown" ||
+      ensured.outcome === "no_narration"
+    ) {
+      askWasPossible = false;
+      console.warn(
+        `[AdoptionGuard] s${sceneIndex}b${beatIndex}: nothing to judge against ` +
+          `(${ensured.outcome}) file=${path.basename(clipPath)} route=${source} — ` +
+          `the vision requirement is suspended for this adoption, not waived for the render`
+      );
+    }
+  }
+
   const ledger = dedup.sourcingCache?.lineage;
   /** RONDE 94: the single central read — same helper the adopt audit and every route now use. */
   const eligible = Boolean(ledger?.isEligible(clipPath, clipContentKey(clipPath)));
@@ -29637,7 +29702,10 @@ async function adoptionGuardRefusesPush(
    * Both are the same statement: this render has no picture editor. See `askImpossible`.
    */
   const visionAvailable =
-    !visionPipelineIsUnavailable() && !dedup.beatImageGate?.askImpossible;
+    !visionPipelineIsUnavailable() &&
+    !dedup.beatImageGate?.askImpossible &&
+    /** RONDE 215: and there was a sentence to judge this picture against. See above. */
+    askWasPossible;
 
   const verdict = adoptionGuardVerdict({ source, eligible, vision, visionAvailable });
   /**
