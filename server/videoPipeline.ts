@@ -490,6 +490,7 @@ import {
   resetTasteModelScene,
   type TasteModelContext,
 } from "./documentaryTasteModel";
+import { montageTransitionCount } from "./renderContract";
 import {
   writeSceneCaptionFilter,
   type CaptionBeat,
@@ -552,6 +553,7 @@ import {
   inheritBeatRelevance,
   reprieveBeatClip,
   beatClipSeverity,
+  barrierCoverage,
   ensureVerdictBeforeCompose,
   maxComposePhaseJudgements,
   relevanceVerdictForRenderedAsset,
@@ -1236,6 +1238,33 @@ type RenderCtx = {
    *  renders sharing one process. */
   elevenLabsQuotaExhausted: boolean;
   /**
+   * RONDE 203 — HOW MANY TRANSITIONS THIS RENDER ACTUALLY APPLIED.
+   *
+   * The feature matrix used to read `executed` off `planned`, and `planned` was one per scene
+   * join — transitions the compose route never makes, since it joins scenes with `-f concat`.
+   * This is counted where they are emitted instead, by the two functions that emit them.
+   *
+   * On the render context rather than threaded: `buildMontageXfadeFilter` has eight call sites and
+   * `xfadeMergeTwoVideos` is called from several more. A rule eight call sites must remember is
+   * the seam this file has already lost four times; the ambient context is how the sourcing cache
+   * and the adoption intent solved the same problem.
+   */
+  transitionsApplied: number;
+  /**
+   * RONDE 203 — HOW MUCH OF ITS OWN MONTAGE THE BARRIER COULD NOT JUDGE.
+   *
+   * `montageClipPassesComposeGate` refuses only a `does_not_fit` nobody reprieved; a clip the gate
+   * has never seen passes, deliberately, because this cannot judge and pretending otherwise would
+   * empty montages on the routes that build their own files. Its comment then says: "That gap is
+   * counted rather than assumed away — see barrierCoverage."
+   *
+   * It was not counted. `barrierCoverage` is defined, exported, and was called by nothing, so a
+   * render could not answer how much of its montage went past unjudged. The claim in the comment
+   * is now true.
+   */
+  barrierPassedUnjudged: number;
+  barrierChecked: number;
+  /**
    * RONDE 173 — this render's sourcing cache, reachable without threading it through every call.
    *
    * ── What render 555 measured ─────────────────────────────────────────────────────────────
@@ -1277,6 +1306,9 @@ function getRenderCtx(): RenderCtx {
       videoVisualContext: null,
       voiceoverSilentFallbackNotes: [],
       elevenLabsQuotaExhausted: false,
+      transitionsApplied: 0,
+      barrierPassedUnjudged: 0,
+      barrierChecked: 0,
       sourcingCache: null,
     }
   );
@@ -1304,6 +1336,44 @@ function activeMemoryEntity(): string | undefined {
 
 /** RONDE 173: the render's sourcing cache, for the provider fetchers that were never handed one. */
 function get_activeSourcingCache(): SourcingCache | null { return getRenderCtx().sourcingCache; }
+
+/**
+ * RONDE 203 — one writer for the transition tally. See `transitionsApplied`.
+ *
+ * Writes to the STORED context, never to the fallback literal `getRenderCtx` returns outside a
+ * render: a caller with no render scope records nothing, which is the honest outcome and the same
+ * rule every other ambient fact in this file follows.
+ */
+function noteTransitionsApplied(n: number): void {
+  if (!(n > 0)) return;
+  const ctx = renderCtxStorage.getStore();
+  if (ctx) ctx.transitionsApplied += n;
+}
+
+/** RONDE 203 — one clip past the compose barrier, and whether it had been judged at all. */
+function noteBarrierOutcome(judged: boolean): void {
+  const ctx = renderCtxStorage.getStore();
+  if (!ctx) return;
+  ctx.barrierChecked += 1;
+  if (!judged) ctx.barrierPassedUnjudged += 1;
+}
+
+/**
+ * One line, at the end of a render: how much of its own montage the barrier was able to judge.
+ *
+ * Printed whether the news is good or bad — "every clip in this film had a verdict" and "eleven
+ * did not" look identical in a log that only prints problems, and the first is the claim the
+ * export gate rests on.
+ */
+export function formatComposeBarrierCoverage(
+  checked: number,
+  passedUnjudged: number
+): string {
+  return (
+    `[ComposeBarrier] coverage checked=${checked} ` +
+    `passedUnjudged=${passedUnjudged} judged=${Math.max(0, checked - passedUnjudged)}`
+  );
+}
 function set_activeSourcingCache(v: SourcingCache | null) { const c = getRenderCtx(); c.sourcingCache = v; }
 /**
  * RONDE 173 — run inside a render context publishing this sourcing cache.
@@ -20717,6 +20787,15 @@ async function montageClipPassesComposeGate(
       );
     }
     const barrier = composeBarrierAllows(relevance, clipPath, clipContentKey(clipPath));
+    /**
+     * RONDE 203 — the gap this function's own comment says is counted.
+     *
+     * `composeBarrierAllows` answers "never judged — no beat context at this path" for a clip
+     * nothing looked at, and passes it on purpose. That pass was invisible: `barrierCoverage`
+     * existed for exactly this and had no caller, so no render could say how much of its montage
+     * the barrier had been unable to judge. Counted here, where the answer is in hand.
+     */
+    noteBarrierOutcome(!barrier.reason.startsWith("never judged"));
     if (!barrier.allow) {
       console.warn(
         `[ComposeBarrier] s${sceneIndex} clip ${clipIndex}: BLOCKED ${base} — ${barrier.reason}`
@@ -21246,6 +21325,14 @@ async function xfadeMergeTwoVideos(
     return;
   }
   const offset = Math.max(0, leftDur - xfade);
+  /**
+   * RONDE 203 — the second, and the reason the count lives in one shared function.
+   *
+   * A tally that only watched `buildMontageXfadeFilter` would have replaced one wrong number with
+   * another: this merger joins two montage SEGMENTS, and the branch above it cuts hard. Two
+   * inputs, so one transition — the same arithmetic, asked of the same function.
+   */
+  noteTransitionsApplied(montageTransitionCount(2, xfade));
   try {
     await withSceneFetchTimeout(
       () => exec(
@@ -22083,6 +22170,14 @@ function buildMontageXfadeFilter(
     prevDur = prevDur + durs[i]! - xfade;
     offset += durs[i]! - xfade;
   }
+  /**
+   * RONDE 203 — counted here, where the xfades are actually written into the filter graph.
+   *
+   * The loop above emitted one per join, so this is a record of work done rather than a plan. A
+   * montage with `xfade` at zero never enters the loop and counts nothing, which is right: a hard
+   * cut is not a transition.
+   */
+  noteTransitionsApplied(montageTransitionCount(n, xfade));
   return { scaleFilters, mergeFilter, montageLabel: "montage" };
 }
 
@@ -39821,6 +39916,10 @@ export async function runVideoPipeline(
     watchdog: null,
     renderBudget: null,
     budgetTracker: null,
+    /** RONDE 203: counted by the two functions that emit a transition — see `transitionsApplied`. */
+    transitionsApplied: 0,
+    barrierPassedUnjudged: 0,
+    barrierChecked: 0,
     videoTopic: null,
     videoVisualContext: null,
     voiceoverSilentFallbackNotes: [],
@@ -42842,6 +42941,26 @@ async function _runVideoPipelineInner(
           `[Quality] Video ${videoId}: ${formatRelevanceSummary(g, visualDedup.beatRelevance)}`
         );
         /**
+         * RONDE 203 — the barrier's own coverage, which its comment promised and nothing produced.
+         *
+         * `barrierCoverage` reports what the ledger holds; the two counters report what the
+         * barrier was ASKED. Both, because they answer different questions: how many verdicts this
+         * render owns, and how many of the clips that reached compose had one. Printed on a clean
+         * render too — "every clip had a verdict" is the claim the export gate rests on, and a
+         * line that only appears when something is wrong cannot make it.
+         */
+        {
+          const ctx = getRenderCtx();
+          const ledgerCoverage = barrierCoverage(visualDedup.beatRelevance);
+          console.log(
+            pipelineReport.add(
+              "summary",
+              `${formatComposeBarrierCoverage(ctx.barrierChecked, ctx.barrierPassedUnjudged)} ` +
+                `judgedPaths=${ledgerCoverage.judgedPaths} judgedAssets=${ledgerCoverage.judgedAssets}`
+            )
+          );
+        }
+        /**
          * RONDE 103 phase 15 — a shot used over the picture editor's objection is reported as
          * exactly that. The reprieve is a deliberate product choice (a real picture beats a grey
          * card), but a render that had to make it eight times is telling you its sourcing failed,
@@ -45295,7 +45414,12 @@ async function _runVideoPipelineInner(
         captionsPlanned: enableSubtitles ? allBeats.length : 0,
         graphicsEnabled: visualDedup.graphicClips.size > 0,
         graphicsPlanned: visualDedup.graphicClips.size,
-        transitionsPlanned: Math.max(0, scenes.length - 1),
+        /**
+         * RONDE 203 — counted by the two functions that emit them, not derived from a scene count.
+         * `scenes.length - 1` described transitions between scenes, and the concat that joins them
+         * is `-f concat`, which cannot make one. See `montageTransitionCount`.
+         */
+        transitionsApplied: getRenderCtx().transitionsApplied,
         /** No catalogue is registered in this build — `musicFeatureStatus` states the consequence. */
         musicCatalogueAvailable: false,
         /**

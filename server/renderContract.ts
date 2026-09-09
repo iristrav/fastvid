@@ -253,6 +253,25 @@ export function featureMatrixViolations(matrix: FeatureMatrix): string[] {
  * this render genuinely cannot speak about is left out of the matrix rather than guessed at, which
  * is what `Partial` is for.
  */
+/**
+ * RONDE 203 — HOW MANY TRANSITIONS A MONTAGE ACTUALLY APPLIES.
+ *
+ * One function, because two places emit them and a count that saw only one of them would be a new
+ * wrong number in place of the old one:
+ *
+ *     buildMontageXfadeFilter   n clips in one filter graph → n-1 xfades
+ *     xfadeMergeTwoVideos       two montage segments → one xfade, or an explicit hard cut
+ *
+ * A hard cut is not a transition. `ttsHardCut` and the segment merger's hard-cut branch both pass
+ * an xfade of zero, and both must count nothing — otherwise the report would credit the render
+ * with dissolves a viewer never sees.
+ */
+export function montageTransitionCount(clipCount: number, xfadeSec: number): number {
+  if (!Number.isFinite(clipCount) || !Number.isFinite(xfadeSec)) return 0;
+  if (xfadeSec <= 0) return 0;
+  return Math.max(0, Math.floor(clipCount) - 1);
+}
+
 export type RenderFeatureFacts = {
   // ── RUNTIME FACTS — what the render DID ───────────────────────────────────────────────────
   //
@@ -285,7 +304,19 @@ export type RenderFeatureFacts = {
   captionsPlanned: number;
   graphicsEnabled: boolean;
   graphicsPlanned: number;
-  transitionsPlanned: number;
+  /**
+   * RONDE 203 — MEASURED, and no longer a count of scene joins.
+   *
+   * This was `transitionsPlanned`, set to `scenes.length - 1`. Two faults: it described
+   * transitions BETWEEN scenes, which the compose route never makes — `concatenateScenesWithMusic`
+   * joins them with `-f concat`, a plain concatenation and a hard cut by definition — and the
+   * matrix then read `executed` off it, so "executed" could not disagree with "planned" and
+   * therefore measured nothing.
+   *
+   * This is the number the two emitters counted while they were emitting. See
+   * `montageTransitionCount`.
+   */
+  transitionsApplied: number;
   /** `musicCatalogueAvailable` is the honest external blocker, not a code state. */
   musicCatalogueAvailable: boolean;
   ambiencePlanned: number;
@@ -519,18 +550,33 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
   });
 
   /**
-   * TRANSITIONS — planned, and nothing can say whether they are in the file.
+   * TRANSITIONS — counted where they are emitted, and still not provable in the file.
    *
-   * No probe reads a dissolve back off an MP4, and neither renderer reports the transitions it
-   * applied. `delivered: false` with the reason is the honest answer; claiming it from a scene
-   * count would be the captions mistake in a second place.
+   * RONDE 203: `executed` used to be `planned`, and `planned` was one per scene join — transitions
+   * the compose route does not make. Both halves were wrong in the same direction, which is why a
+   * film of hard cuts reported a full set of dissolves.
+   *
+   * `planned` and `executed` are the same number here, and that is the truth about this route
+   * rather than a derivation: the montage filter decides and emits in one breath, so there is no
+   * separate plan to compare against. What the two emitters counted is what the render did.
+   *
+   * `delivered` stays false. No probe reads a dissolve back off an MP4, so the honest answer is
+   * that nothing inspected the file — claiming it from the count would be the captions mistake in
+   * a second place. The reason now also states the one thing that IS known about the delivered
+   * file: its scene joins are hard cuts, because the concat that made it cannot do anything else.
    */
   put("transitions", {
     enabled: true,
-    planned: f.transitionsPlanned > 0,
-    executed: f.transitionsPlanned > 0,
-    ...deliveredWhen(false, "nothing inspects the delivered file for transitions"),
-    ...(f.transitionsPlanned === 0 ? { reason: "this film is cut, with no transitions" } : {}),
+    planned: f.transitionsApplied > 0,
+    executed: f.transitionsApplied > 0,
+    ...deliveredWhen(
+      false,
+      `nothing inspects the delivered file for transitions; its ${f.transitionsApplied} ` +
+        `transition(s) are inside scenes, and every scene join is a hard cut`
+    ),
+    ...(f.transitionsApplied === 0
+      ? { reason: "this film is cut, with no transitions at all" }
+      : {}),
   });
 
   /** The one feature whose gap is external rather than a defect. Its own helper states it. */

@@ -382,7 +382,13 @@ describe("delivered is built from evidence about the file, never from a plan", (
     captionsPlanned: 10,
     graphicsEnabled: true,
     graphicsPlanned: 3,
-    transitionsPlanned: 2,
+    /**
+     * RONDE 203 renamed this. It was `transitionsPlanned`, set to one per scene join — transitions
+     * the compose route never makes, since it joins scenes with `-f concat`. The matrix then read
+     * `executed` off it, so "executed" could not disagree with "planned". This is now the number
+     * the two emitters counted while emitting.
+     */
+    transitionsApplied: 2,
     musicCatalogueAvailable: false,
     ambiencePlanned: 2,
     ambienceUnavailable: 0,

@@ -228,7 +228,8 @@ function facts(over: Partial<RenderFeatureFacts> = {}): RenderFeatureFacts {
     captionsPlanned: 12,
     graphicsEnabled: true,
     graphicsPlanned: 4,
-    transitionsPlanned: 3,
+    /** RONDE 203: measured where they are emitted, not one per scene join. */
+    transitionsApplied: 3,
     musicCatalogueAvailable: false,
     ambiencePlanned: 3,
     ambienceUnavailable: 0,
