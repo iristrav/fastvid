@@ -272,8 +272,15 @@ describe("RONDE 94 — found is not rendered, and the report says which is which
      * downloaded — a curated clip is adopted without either) after them, so this finding is no
      * longer the first line. It is still reported, which is what the test is for; asserting
      * membership rather than position also stops the test breaking on the next ordering change.
+     *
+     * RONDE 198: the widening this fixture describes is still reported, on the pair the ledger
+     * actually orders. `selected` is no longer compared to `eligible` — SELECTED is written
+     * before the gates on the pooled archive route, so that inequality could not tell a fault
+     * from a normal curated render; see the note on PAIRS and R142's identical finding about
+     * `downloaded`. Nothing about the widening itself changed: six assets adopted where four
+     * cleared the gates is a fault and says so.
      */
-    expect(problems.some((p) => p.includes("selected=6 exceeds validated=4"))).toBe(true);
+    expect(problems.some((p) => p.includes("assigned=6 exceeds validated=4"))).toBe(true);
   });
 
   it("TEST 20 — a well-formed funnel reports nothing", () => {

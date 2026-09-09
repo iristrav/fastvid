@@ -237,15 +237,30 @@ describe("RONDE 142 §4 — downloaded is not between selected and validated", (
     expect(problems.some((p) => p.includes("rendered=7 exceeds assigned=3"))).toBe(true);
   });
 
-  it("A REAL miscount still reports: selected or ranked beyond validated", () => {
+  it("A REAL miscount still reports: ranked beyond validated", () => {
     /**
-     * These three are written on three consecutive lines of adoptClip, so any difference at all is
-     * an instrumentation fault rather than a route difference — the strictest pair in the set.
+     * RONDE 198 — THE THIRD OF THESE WAS THIS ROUND'S OWN FINDING, AND IT WAS NOT TRUE.
+     *
+     * The claim below used to include `selected`, on the grounds that eligible/ranked/selected are
+     * "written on three consecutive lines of adoptClip". Two of them are. SELECTED is also written
+     * by `preparePooledArchiveClip`, at the moment it starts preparing a pooled archive clip —
+     * BEFORE any gate has run, and on the two `adoptBestSimilarBeatClip` paths that never pass
+     * through the ranked queue and never call `markLineageEligible` at all. A candidate selected
+     * there and then refused by the picture editor is a CORRECT render with selected > eligible,
+     * which is this file's own `downloaded` finding with a different stage name.
+     *
+     * Removing the SELECTED event instead would be worse: the route really did choose that asset,
+     * and `VANISHED_WITHOUT_OUTCOME` needs to know it in order to notice that it never arrived.
+     * So the pair is gone from the count check and the question it was pretending to ask — did
+     * anything become a beat's picture without clearing the gates — is asked per asset, by
+     * `reconcile`, as ADOPTED_WITHOUT_ELIGIBLE, where the route can be named.
+     *
+     * `ranked` is unchanged and still the strictest pair in the set.
      */
     const broken = counts({ eligible: 4, ranked: 6, selected: 6, adopted: 1, finalVideo: 1 });
     const problems = formatUsageInconsistencies(summaryOf({ nasa: broken }, broken), true);
-    expect(problems.some((p) => p.includes("selected=6 exceeds validated=4"))).toBe(true);
     expect(problems.some((p) => p.includes("ranked=6 exceeds validated=4"))).toBe(true);
+    expect(problems.some((p) => p.includes("selected=6 exceeds validated=4"))).toBe(false);
   });
 
   it("`rendered` is only checked once the final video is verified", () => {

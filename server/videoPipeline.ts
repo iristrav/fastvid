@@ -4729,6 +4729,8 @@ async function resolveBeatClipFastInner(
         dedup.usedPaths.add(p);
         dedup.usedContentKeys.add(contentKey);
         dedup.lastMuskStockClip = p; dedup.lastRealClip = p;
+        // R198: adopted on file facts alone. Say so, so the beat is not silently "fine".
+        noteNotAsked(dedup.beatShortlist, sceneIndex, beat.index, "ADOPTED_WITHOUT_JUDGEMENT");
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast Pexels "${q}"`);
         return p;
       }
@@ -9971,6 +9973,33 @@ function noteSceneClipsResourced(
           `provider=${record.provider}:${record.providerAssetId ?? record.archiveAssetId ?? "none"} ` +
           `scene=${record.sceneIndex} beat=${record.beatIndex} file=${path.basename(clip)}`
       );
+      /**
+       * AND IT IS AVAILABLE AGAIN, BECAUSE NOTHING IS USING IT.
+       *
+       * ── The half of render 574 the warning above could only describe ────────────────────────
+       *
+       * `usedPaths` and `usedContentKeys` are what stop the same footage appearing twice, and they
+       * are written at adoption. Nothing has ever removed from them. So a clip a rebuild stopped
+       * referencing kept its entry for the rest of the render: it was not in the film, and every
+       * later route — the rescue ladder, the guaranteed ladder, the next scene — skipped it as
+       * "already used". Render 574's two YouTube clips were the whole render's YouTube budget, and
+       * they ended up in neither place. Stranded is the word for it.
+       *
+       * ── Why this does not overrule the rebuild ──────────────────────────────────────────────
+       *
+       * The comment above argues, correctly, that forcing a rebuild to carry its old list would
+       * override a judgement this code has no evidence to override. This does not do that. The
+       * rebuild's decision stands and the clip stays out of that scene; what changes is that the
+       * render stops claiming the asset is in use when it is not. Whether anything picks it up
+       * again is the ordinary ranking's business.
+       *
+       * Only for assets that reached here with no outcome and a VERIFIED provider — the ones that
+       * cost a download and a licence decision. The `scene_resourced` event stays on the ledger:
+       * a later adoption files its own, and `lifecyclesOf` reads FINAL_VIDEO ahead of REPLACED, so
+       * a clip that comes back and lands is reported as being in the film rather than as replaced.
+       */
+      dedup?.usedPaths?.delete(clip);
+      if (contentKey) dedup?.usedContentKeys?.delete(contentKey);
     }
   }
 }
@@ -15963,6 +15992,8 @@ async function fetchBeatScriptImageForcedInner(
           dedup.stillPhotosThisScene++;
           if (canUseGlobalStillPhoto(dedup)) markGlobalStillPhotoUsed(dedup);
         }
+        // R198: the forced-image last resort takes a picture nobody looked at. Record that.
+        noteNotAsked(dedup.beatShortlist, sceneIndex, beat.index, "ADOPTED_WITHOUT_JUDGEMENT");
         return p;
       }
       return null;
@@ -39202,13 +39233,15 @@ export async function repairShortSceneVideo(
   sceneIndex: number,
   workDir: string,
   composeTimeout: number,
-  threadFlag: string
+  threadFlag: string,
+  /** R198: the assembled film uses this too, and "Scene -1" would be a lie in the log. */
+  subject = `Scene ${sceneIndex}`
 ): Promise<string> {
   if (!(targetDur > 0) || !fs.existsSync(scenePath)) return scenePath;
   const videoDur = await probeVideoStreamDurationSec(scenePath);
   if (videoDur <= 0) {
     console.warn(
-      `[Pipeline] Scene ${sceneIndex}: could not read the picture's length — cannot tell whether ` +
+      `[Pipeline] ${subject}: could not read the picture's length — cannot tell whether ` +
         `it covers the voice`
     );
     return scenePath;
@@ -39218,14 +39251,18 @@ export async function repairShortSceneVideo(
   if (shortfall <= 0.12) return scenePath;
 
   console.warn(
-    `[Pipeline] Scene ${sceneIndex}: picture ends at ${videoDur.toFixed(2)}s but the scene runs ` +
+    `[Pipeline] ${subject}: picture ends at ${videoDur.toFixed(2)}s but must run ` +
       `${targetDur.toFixed(2)}s — ${shortfall.toFixed(2)}s would be a held frame; repairing`
   );
-  const repaired = path.join(workDir, `scene_${sceneIndex}_covered_${Date.now()}.mp4`);
+  // ascii-safe: a temp FILENAME, not search text — nothing is looked up by this string.
+  const repaired = path.join(
+    workDir,
+    `covered_${subject.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_${Date.now()}.mp4`
+  );
   const chain = montageTailPadFilterChain(
     videoDur,
     targetDur,
-    `Scene ${sceneIndex} finished picture ${videoDur.toFixed(1)}s vs scene ${targetDur.toFixed(1)}s`
+    `${subject} finished picture ${videoDur.toFixed(1)}s vs ${targetDur.toFixed(1)}s`
   );
   try {
     await withSceneFetchTimeout(
@@ -39237,23 +39274,23 @@ export async function repairShortSceneVideo(
           `-crf 20 -pix_fmt yuv420p "${repaired}"`
       ),
       composeTimeout,
-      `Scene ${sceneIndex} coverage repair`
+      `${subject} coverage repair`
     );
     const fixedDur = await probeVideoStreamDurationSec(repaired);
     if (fixedDur > videoDur + 0.05 && fs.statSync(repaired).size > 1000) {
       console.log(
-        `[Pipeline] Scene ${sceneIndex}: picture now runs ${fixedDur.toFixed(2)}s of ` +
+        `[Pipeline] ${subject}: picture now runs ${fixedDur.toFixed(2)}s of ` +
           `${targetDur.toFixed(2)}s`
       );
       return repaired;
     }
     console.warn(
-      `[Pipeline] Scene ${sceneIndex}: repair produced ${fixedDur.toFixed(2)}s — keeping the original`
+      `[Pipeline] ${subject}: repair produced ${fixedDur.toFixed(2)}s — keeping the original`
     );
   } catch (err) {
     // The scene itself is fine as footage; only its tail is short. Losing it would be worse.
     console.warn(
-      `[Pipeline] Scene ${sceneIndex}: coverage repair failed, the tail will hold a frame: ` +
+      `[Pipeline] ${subject}: coverage repair failed, the tail will hold a frame: ` +
         `${(err as Error)?.message?.slice(0, 140)}`
     );
   }
@@ -43137,6 +43174,75 @@ async function _runVideoPipelineInner(
     get_activeBudgetTracker()?.stageEnd("concat");
     profiler.recordStageEnd("concat", Date.now());
     console.log(`[Pipeline] Stage 5 (assemble+music): ${((Date.now()-t4)/1000).toFixed(1)}s`);
+
+    /**
+     * RONDE 198 — THE PICTURE MUST COVER THE VOICE IN THE FILM, NOT ONLY IN EACH SCENE.
+     *
+     * `repairShortSceneVideo` has held the last frame across a short scene for many rounds, and
+     * `composeReadySceneClips` calls it on every scene it builds. Nothing ever asked the same
+     * question of the assembled film. R195 wired the MEASUREMENT in — video 574's 68.04s of
+     * picture under 69.88s of audio is now printed at stage 6 — and printing is where it stopped:
+     * the render reported the fault and shipped it, which is the shape this project keeps finding.
+     *
+     * The concat can produce a film whose picture is short of its sound even when every scene
+     * covered its own: the music mix and the ambient bed are mixed against the full narration, and
+     * `ensureFinalVideoDuration` bounds the picture for the short formats. Measured here, before
+     * the export-ready pass, so a repaired file goes through the same faststart/validation gate as
+     * an unrepaired one and the stage-6 measurement below still reports the DELIVERED file.
+     *
+     * Measure → repair only when the sound really outlasts the picture → measure again at stage 6.
+     * No gate is relaxed and nothing is asserted about the result: if the repair fails or the
+     * probe cannot read the file, the render keeps the file it had and stage 6 says what shipped.
+     */
+    try {
+      const preExport = await checkFileAvSync(finalVideoPath);
+      const soundEnd = Math.max(
+        preExport.envelope.audioSec ?? 0,
+        preExport.envelope.lastSoundSec ?? 0
+      );
+      const pictureEnd = preExport.envelope.videoSec ?? 0;
+      const soundOutlastsPicture = preExport.findings.some(
+        (f) => f.code === "audio_past_picture" || (f.code === "stream_length_mismatch" && f.deltaSec > 0)
+      );
+      if (soundOutlastsPicture && soundEnd > pictureEnd) {
+        console.warn(
+          `[FinalCoverage] video ${videoId}: picture ends at ${pictureEnd.toFixed(2)}s under ` +
+            `${soundEnd.toFixed(2)}s of sound — repairing before export`
+        );
+        const covered = await repairShortSceneVideo(
+          finalVideoPath,
+          soundEnd,
+          -1,
+          workDir,
+          Math.max(120_000, Math.min(300_000, Math.round(soundEnd * 4_000))),
+          pipelineFfmpegThreadFlag(),
+          "the assembled film"
+        );
+        if (covered !== finalVideoPath) {
+          finalVideoPath = covered;
+          qualityReport.warnings.push(
+            `AV envelope: the picture was ${(soundEnd - pictureEnd).toFixed(2)}s short of the ` +
+              `sound and was extended before export`
+          );
+          console.log(
+            pipelineReport.add(
+              "summary",
+              `[FinalCoverage] video ${videoId}: picture extended to cover the narration`
+            )
+          );
+        } else {
+          console.warn(
+            `[FinalCoverage] video ${videoId}: repair did not produce a longer picture — ` +
+              `shipping as composed; stage 6 reports what the file actually is`
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[FinalCoverage] video ${videoId}: coverage check failed (non-fatal): ` +
+          `${(err as Error)?.message?.slice(0, 140)}`
+      );
+    }
 
     const { path: exportReadyPath, validation: finalValidation } = await ensureFinalVideoExportReady({
       filePath: finalVideoPath,

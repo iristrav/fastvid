@@ -444,7 +444,21 @@ describe("RONDE 159 §D — the funnel check no longer cries wolf", () => {
     expect(out[0]).toContain("rendered=5 exceeds assigned=3");
   });
 
-  it("an optional stage that exceeds what was validated still reports", async () => {
+  it("a stage that exceeds what was validated still reports", async () => {
+    /**
+     * RONDE 198 — `selected` LEFT THIS SET, AND FOR THIS FILE'S OWN REASON.
+     *
+     * This round's argument is R159's: a check that contradicts the code fires on every healthy
+     * render, and that is how a real finding gets ignored. `preparePooledArchiveClip` writes
+     * SELECTED before any gate runs, and two of its three call sites never mark eligibility at
+     * all — so `selected > eligible` is a normal curated render, exactly as `downloaded >
+     * selected` was in R159 and `downloaded > validated` in R142.
+     *
+     * The fixture keeps its shape and moves the widening to `adopted`, which the ledger really
+     * does order after eligibility: adoptClip writes both, one after the other. The per-asset
+     * version of the question this pair used to ask now lives in `reconcile`
+     * (ADOPTED_WITHOUT_ELIGIBLE), where the route is named instead of being averaged into a total.
+     */
     const { formatUsageInconsistencies } = await import("./visualSourceLineage");
     const out = formatUsageInconsistencies(
       summaryOf({
@@ -452,11 +466,12 @@ describe("RONDE 159 §D — the funnel check no longer cries wolf", () => {
         eligible: 2,
         selected: 7,
         downloadSucceeded: 1,
-        adopted: 2,
+        adopted: 7,
         finalVideo: 1,
       }),
       true
     );
-    expect(out.some((l) => l.includes("selected=7 exceeds validated=2"))).toBe(true);
+    expect(out.some((l) => l.includes("assigned=7 exceeds validated=2"))).toBe(true);
+    expect(out.some((l) => l.includes("selected=7 exceeds validated=2"))).toBe(false);
   });
 });

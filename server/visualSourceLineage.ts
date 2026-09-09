@@ -533,6 +533,27 @@ export function emptySummaryCounts(): SummaryCounts {
 export type VisualSourceSummary = {
   total: SummaryCounts;
   byProvider: Record<string, SummaryCounts>;
+  /**
+   * RONDE 198 — THE SAME STAGES, COUNTED IN ASSETS INSTEAD OF EVENTS.
+   *
+   * `total` and `byProvider` count EVENTS (deduplicated per lineage/stage/status/reason). That is
+   * the right count for a report of what the render did — one asset offered to two beats really
+   * did produce two SELECTED events, and hiding the second would hide work.
+   *
+   * It is the wrong count for a funnel comparison. `markLineageEligible` is idempotent, so an
+   * asset contributes exactly one ELIGIBLE event however often it is judged, while SELECTED has no
+   * such guard. Compare the two totals and a healthy render reports `selected=2 exceeds
+   * eligible=1` — an artefact of two counters with different rules, not of anything that happened.
+   *
+   * These are the per-ASSET counts: how many distinct lineage records ever reached each stage.
+   * Only stages that are written as lineage events appear here; `searches`, `results` and the
+   * provider-level download tallies are not per-asset facts and are deliberately left at zero
+   * rather than filled with a number that would mean something else.
+   */
+  assetsByStage: {
+    total: SummaryCounts;
+    byProvider: Record<string, SummaryCounts>;
+  };
   failureReasons: Record<string, number>;
   /** Records whose provider could not be proven. Reported, never redistributed. */
   unverifiedRecords: number;
@@ -1416,6 +1437,13 @@ export class VisualSourceLedger {
       total.downloadSucceeded += n;
     }
 
+    /** RONDE 198: the same stages counted per ASSET — see `assetsByStage`. */
+    const assetTotal = emptySummaryCounts();
+    const assetsByProvider: Record<string, SummaryCounts> = {};
+    const assetCounts = (bucket: string): SummaryCounts =>
+      (assetsByProvider[bucket] ??= emptySummaryCounts());
+    const reached = new Set<string>();
+
     const seen = new Set<string>();
     for (const event of this.events) {
       const dedupeKey = `${event.lineageId}|${event.stage}|${event.status}|${event.reason ?? ""}`;
@@ -1426,6 +1454,12 @@ export class VisualSourceLedger {
       const bump = (field: SummaryCounter) => {
         c[field] += 1;
         total[field] += 1;
+        // The asset side of the same fact: this record reached this stage, however many times.
+        const reachKey = `${event.lineageId}|${field}`;
+        if (reached.has(reachKey)) return;
+        reached.add(reachKey);
+        assetCounts(bucket)[field] += 1;
+        assetTotal[field] += 1;
       };
       if (event.status === "REJECTED") {
         bump("rejected");
@@ -1469,7 +1503,14 @@ export class VisualSourceLedger {
       else if (record.route === "backfill") { c.backfill += 1; total.backfill += 1; }
     }
 
-    return { total, byProvider, failureReasons, verifiedRecords, unverifiedRecords };
+    return {
+      total,
+      byProvider,
+      assetsByStage: { total: assetTotal, byProvider: assetsByProvider },
+      failureReasons,
+      verifiedRecords,
+      unverifiedRecords,
+    };
   }
 
   // ── Reconciliation ─────────────────────────────────────────────────────────
@@ -1558,6 +1599,30 @@ export class VisualSourceLedger {
           message:
             `${record.currentFilename} was adopted with no SELECTED event ` +
             `(route=${record.route} — routes that do no ranking legitimately skip it)`,
+          lineageId: id,
+        });
+      }
+      /**
+       * RONDE 198 — THE QUESTION THE TWO TOTALS WERE PRETENDING TO ASK.
+       *
+       * `formatUsageInconsistencies` compared `selected` against `eligible` and called the result
+       * "a later stage cannot count more assets than the one it follows". It could not tell a
+       * fault from a normal render, because SELECTED is written before the gates on the pooled
+       * archive route and ELIGIBLE is written once per asset while SELECTED is not (see the note
+       * there). The thing that was actually worth knowing is not about totals at all: did a clip
+       * get ADOPTED — become a beat's picture — without ever being recorded eligible?
+       *
+       * Asked of the asset, through the derivation chain, because eligibility belongs to the asset
+       * and not to the trimmed copy that reaches adoption. A warning and not an error: the routes
+       * that adopt without ranking exist by design, and the route is named so 26 of these can be
+       * triaged the way ADOPTED_WITHOUT_SELECTED's are, rather than counted.
+       */
+      if (has(id, "ADOPTED") && !this.hasStage(id, "ELIGIBLE")) {
+        warnings.push({
+          code: "ADOPTED_WITHOUT_ELIGIBLE",
+          message:
+            `${record.currentFilename} became a beat's picture with no ELIGIBLE event ` +
+            `(route=${record.route}) — nothing recorded that it cleared its route's gates`,
           lineageId: id,
         });
       }
@@ -2577,10 +2642,32 @@ export function formatUsageInconsistencies(
    * codebase does not guarantee the pair. Adding a check whose validity is not established would
    * have replaced one false alarm with another, which is the entire failure this round is undoing.
    */
+  /**
+   * RONDE 198 — TWO CORRECTIONS, BOTH OF THE SAME KIND RONDE 142 MADE AND DID NOT FINISH.
+   *
+   * (1) THE COUNTS COMPARED WERE NOT COMPARABLE. Every line below says "a later stage cannot count
+   * more ASSETS than the one it follows", and then compared EVENT counts. `markLineageEligible`
+   * begins `if (this.hasStage(lineageId, "ELIGIBLE")) return true;` — one event per asset, ever.
+   * `recordEvent(…, "SELECTED")` has no such guard and the summary's dedupe key includes the
+   * reason, so the same asset offered to two beats books two. One asset, `eligible=1 selected=2`,
+   * and a report that reads as a miscount on a render where nothing went wrong. The check now
+   * reads `summary.assetsByStage`, which counts distinct lineage records per stage, so the
+   * sentence and the arithmetic finally say the same thing.
+   *
+   * (2) `selected ≤ eligible` IS NOT AN ORDER THE CODE RECORDS. The note above claims all three of
+   * ranked/selected/eligible "are recorded on the same three lines of adoptClip". They are not:
+   * `preparePooledArchiveClip` writes SELECTED at the moment it starts preparing a pooled archive
+   * clip — BEFORE the gates run, and on two similar-match routes that never passed through the
+   * ranked queue at all. A candidate selected there and then refused by the picture editor is a
+   * correct render with `selected > eligible`, which is precisely RONDE 142's `downloaded` finding
+   * with a different stage name. So `selected` is compared to nothing here, exactly as `results`
+   * is, and the real question — did anything reach the FILM without clearing the gates — is asked
+   * per asset in `reconcile`, where the route can be named. Nothing was loosened: an inequality
+   * that could not distinguish a fault from a normal render was replaced by one that can.
+   */
   const PAIRS: Array<[SummaryCounter, string, SummaryCounter, string, boolean]> = [
     // [later, label, earlier, label, requiresFinalVideoVerified]
     ["ranked", "ranked", "eligible", "validated", false],
-    ["selected", "selected", "eligible", "validated", false],
     ["adopted", "assigned", "eligible", "validated", false],
     ["finalVideo", "rendered", "adopted", "assigned", true],
   ];
@@ -2596,8 +2683,20 @@ export function formatUsageInconsistencies(
       }
     }
   };
-  for (const [provider, counts] of Object.entries(summary.byProvider)) check(provider, counts);
-  check("TOTAL", summary.total);
+  /**
+   * The per-asset counts when the summary carries them, the event counts when it does not.
+   *
+   * A summary built by hand — every fixture that states a funnel as bare totals — has no asset
+   * side, and inventing one from the event totals would make the fallback silently agree with
+   * whatever it was handed. Reading the totals in that case says what those fixtures actually
+   * describe. `LineageLedger.summary()` always fills `assetsByStage`, so every render takes the
+   * per-asset path.
+   */
+  const assets = summary.assetsByStage;
+  for (const [provider, counts] of Object.entries(summary.byProvider)) {
+    check(provider, assets?.byProvider[provider] ?? counts);
+  }
+  check("TOTAL", assets?.total ?? summary.total);
   return out;
 }
 

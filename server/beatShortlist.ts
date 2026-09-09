@@ -92,7 +92,19 @@ export type NotAskedReason =
   /** The route that would have supplied this beat never ran. */
   | "NOT_REACHED"
   /** An adoption policy refused the route before any picture question arose. */
-  | "POLICY_BLOCKED";
+  | "POLICY_BLOCKED"
+  /**
+   * RONDE 198 — THE RESCUE ROUTES, WHICH TAKE A PICTURE WITHOUT ASKING.
+   *
+   * Two last-resort routes accept a clip on file facts alone (it decodes, it is not black, it is
+   * not a fallback) and never put it to the picture editor. That is a deliberate choice — they run
+   * when the beat would otherwise have nothing — but before this reason existed the funnel showed
+   * a beat with a picture and no account of it, which reads like a beat that was judged.
+   *
+   * This reason grants NOTHING. It is recorded on the not-asked side precisely so the clip cannot
+   * be counted as verified, and so the render's own numbers say how often the last resort ran.
+   */
+  | "ADOPTED_WITHOUT_JUDGEMENT";
 
 /** The five states a candidate's vision outcome can be in. Only APPROVED is a positive selection. */
 export type BeatVisionOutcome =
