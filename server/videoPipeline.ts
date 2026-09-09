@@ -260,6 +260,7 @@ import {
   formatVisionSelection,
   noteVisionAdopted,
   noteVisionReviewed,
+  noteVisionUnusable,
   visionSelectionViolations,
   type VisionEvidence,
   type VisionReviewPoolState,
@@ -24757,6 +24758,8 @@ async function adoptClip(
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         // RONDE 165: SELECTED was filed above; this exit is where that stopped being true.
         recordAssetOutcome(dedup.sourcingCache.lineage, p, "invalid_file", `s${sceneIndex}b${beatIndex}`, contentKey);
+        /** R204: reviewed, and then the file would not open. Not a verdict the beat overrode. */
+        noteVisionUnusable(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey, "invalid_file");
         continue;
       }
       const transformMs = mustFairUse
@@ -24772,6 +24775,7 @@ async function adoptClip(
         dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
         // RONDE 165: a clip that MUST be transformed and could not be is refused, not lost.
         recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey);
+        noteVisionUnusable(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey, "transform_failed");
         continue;
       }
       if (await isValidVideoFile(transformed)) {
@@ -24793,6 +24797,8 @@ async function adoptClip(
        * lastRealClip. Filed once, before either path leaves.
        */
       recordAssetOutcome(dedup.sourcingCache.lineage, p, "transform_failed", `s${sceneIndex}b${beatIndex}`, contentKey);
+      /** R204: filed at the same point and for the same reason as the outcome above. */
+      noteVisionUnusable(dedup.visionReviewPool, sceneIndex, beatIndex, contentKey, "transform_failed");
       if (mustFairUse) continue;
       if (await isValidVideoFile(p) && !isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) {
         dedup.lastMuskStockClip = p; dedup.lastRealClip = p;

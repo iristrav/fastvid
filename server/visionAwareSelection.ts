@@ -104,7 +104,28 @@ export type ReviewCandidate = {
 export type ReviewedCandidate = ReviewCandidate & {
   evidence: VisionEvidence;
   clipPath?: string;
+  /**
+   * R204 — WHY THE BEAT COULD NOT USE THIS ONE, WHATEVER THE EDITOR SAID ABOUT IT.
+   *
+   * A verdict and a usable file are two different facts, and the pool only ever held the first.
+   * Exits in the adoption loop file an answer here and then leave the candidate behind for a reason
+   * that has nothing to do with the picture: the file will not decode, or a clip that MUST be
+   * transformed for fair use produced nothing that could be. The candidate WAS reviewed, so it
+   * belongs on the record; it was never available to choose, so it must not be counted as one.
+   *
+   * This is not the place for a refusal. "The editor said no" is a VERDICT and lives in `evidence`,
+   * where MISMATCH already keeps it out of every selection. Writing it here too would give one fact
+   * two spellings and let them disagree.
+   *
+   * Absent means available. A candidate is only unusable once something has actually failed on it.
+   */
+  unusable?: string;
 };
+
+/** A reviewed candidate this beat could actually have adopted. */
+export function isAvailableCandidate(c: ReviewedCandidate): boolean {
+  return !c.unusable && isSelectableEvidence(c.evidence);
+}
 
 /**
  * THE BOUNDED REVIEW POOL — which candidates this beat may spend the editor's attention on.
@@ -147,14 +168,17 @@ export function visionAwareFinalShortlist<T extends ReviewedCandidate>(
   );
 }
 
-/** The candidate this beat should adopt, or null when every candidate was refused. */
+/**
+ * The candidate this beat should adopt, or null when nothing was both unrefused and usable.
+ *
+ * R204: usability is part of the question, not a separate one. Answering it on evidence alone
+ * named a best the beat could never have taken — a FIT whose file would not decode — and then the
+ * invariant below accused the render of passing over a picture that was not there to pass over.
+ */
 export function bestByVisionEvidence<T extends ReviewedCandidate>(
   reviewed: readonly T[]
 ): T | null {
-  const selectable = visionAwareFinalShortlist(reviewed).filter((c) =>
-    isSelectableEvidence(c.evidence)
-  );
-  return selectable[0] ?? null;
+  return visionAwareFinalShortlist(reviewed).find(isAvailableCandidate) ?? null;
 }
 
 /* ═══════════════════════ the render-scoped, beat-scoped record ═══════════════════════ */
@@ -242,6 +266,28 @@ export function noteVisionReviewed(
   else pool.reviewed.push(candidate);
 }
 
+/**
+ * R204 — a candidate that was reviewed and then turned out unusable.
+ *
+ * Marked on the existing row rather than removed from it: the editor's answer was earned and paid
+ * for, and deleting it would make the beat look as though it had asked fewer questions than it did.
+ * A candidate the pool never reviewed is not recorded here — there is no row to mark and nothing
+ * was passed over.
+ */
+export function noteVisionUnusable(
+  state: VisionReviewPoolState | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  contentKey: string,
+  reason: string
+): void {
+  if (!state) return;
+  const pool = beatReviewPool(state, sceneIndex, beatIndex);
+  const row = pool.reviewed.find((c) => c.contentKey === contentKey);
+  /** First reason wins: the failure that stopped this candidate is the one that explains it. */
+  if (row && !row.unusable) row.unusable = reason;
+}
+
 /** What the beat used in the end, so the selection can be checked against its own evidence. */
 export function noteVisionAdopted(
   state: VisionReviewPoolState | undefined,
@@ -273,27 +319,43 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
     (a, b) => a.sceneIndex - b.sceneIndex || a.beatIndex - b.beatIndex
   );
   const lines: string[] = [];
-  const total = { declared: 0, reviewed: 0, FIT: 0, UNREVIEWED: 0, UNCLEAR: 0, MISMATCH: 0 };
+  const total = {
+    declared: 0, reviewed: 0, unusable: 0,
+    FIT: 0, UNREVIEWED: 0, UNCLEAR: 0, MISMATCH: 0,
+  };
   for (const pool of beats) {
     const counts = evidenceCounts(pool);
+    /**
+     * R204: printed beside the verdicts rather than folded into them. A beat that reviewed eight
+     * pictures and could open three of them is a different render from one that reviewed three,
+     * and the old line could not tell them apart.
+     */
+    const unusable = pool.reviewed.filter((c) => c.unusable);
     total.declared += pool.declared.length;
     total.reviewed += pool.reviewed.length;
+    total.unusable += unusable.length;
     for (const e of VISION_EVIDENCE_ORDER) total[e] += counts[e];
     const best = bestByVisionEvidence(pool.reviewed);
     lines.push(
       `[VisionSelection] s${pool.sceneIndex}b${pool.beatIndex} cap=${pool.cap} ` +
         `reviewPool=${pool.declared.length} reviewed=${pool.reviewed.length} ` +
         `FIT=${counts.FIT} UNREVIEWED=${counts.UNREVIEWED} UNCLEAR=${counts.UNCLEAR} ` +
-        `MISMATCH=${counts.MISMATCH} finalShortlisted=${
-          pool.reviewed.filter((c) => isSelectableEvidence(c.evidence)).length
+        `MISMATCH=${counts.MISMATCH} unusable=${unusable.length} finalShortlisted=${
+          pool.reviewed.filter(isAvailableCandidate).length
         } best=${best ? `${best.evidence}@rank${best.cheapRank}` : "none"} ` +
         `adopted=${pool.adopted ?? "none"}`
     );
+    for (const c of unusable) {
+      lines.push(
+        `[VisionSelection] s${pool.sceneIndex}b${pool.beatIndex} unusable ${c.evidence}` +
+          `@rank${c.cheapRank} ${c.contentKey} — ${c.unusable}`
+      );
+    }
   }
   lines.push(
     `[VisionSelection] TOTAL beats=${beats.length} reviewPool=${total.declared} ` +
       `reviewed=${total.reviewed} FIT=${total.FIT} UNREVIEWED=${total.UNREVIEWED} ` +
-      `UNCLEAR=${total.UNCLEAR} MISMATCH=${total.MISMATCH}`
+      `UNCLEAR=${total.UNCLEAR} MISMATCH=${total.MISMATCH} unusable=${total.unusable}`
   );
   return lines;
 }
@@ -335,10 +397,20 @@ export function visionSelectionViolations(state: VisionReviewPoolState | undefin
           `adopted=${pool.adopted} available=${best.evidence}@${best.contentKey}`
       );
     }
-    /** §24 — a FIT was on the list and the beat used something weaker. */
+    /**
+     * §24 — a FIT was on the list, AVAILABLE, and the beat used something weaker.
+     *
+     * R204: `unusable` is what makes this statement true. Four exits in the adoption loop file a
+     * verdict and then leave the candidate behind because the file will not decode or the fair-use
+     * transform produced nothing. Counting those as passed over accused the render of ignoring its
+     * own picture editor on precisely the beats where the editor had been obeyed and the FILE had
+     * failed — a violation that named the wrong fault and hid the real one. The unusable ones are
+     * printed by `formatVisionSelection`, so nothing is quietly dropped: it is reported as what it
+     * is, a broken candidate, not as a disobeyed verdict.
+     */
     if (
       chosen.evidence !== "FIT" &&
-      pool.reviewed.some((c) => c.evidence === "FIT")
+      pool.reviewed.some((c) => c.evidence === "FIT" && isAvailableCandidate(c))
     ) {
       out.push(
         `[VisionSelectionInvariant] ${at} FIT_NOT_PREFERRED adopted=${chosen.evidence} ` +
