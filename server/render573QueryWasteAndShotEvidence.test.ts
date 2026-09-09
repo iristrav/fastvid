@@ -168,9 +168,24 @@ describe("an unchecked clip is not counted as a cleared one", () => {
   });
 
   it("the fail-open itself is untouched — an exhausted budget still allows the clip", () => {
+    /**
+     * RONDE 222 re-anchor. The property is exactly what this test names and it is unchanged: a
+     * spent budget allows the clip through. The branch now returns the skip by NAME — `not_asked`
+     * with the count in its reason — and the boolean the beat gate reads collapses that to `false`,
+     * which is the allowance this test guards. Asserting the old spelling would now assert against
+     * the very distinction R573 asked for two rounds ago.
+     */
     const at = FILTER.indexOf("overlayChecksPerformed >= maxChecks");
     const region = FILTER.slice(at, at + 1_600);
-    expect(region).toContain("return false;");
+    expect(region).toContain("NOT_ASKED(");
+    expect(region).toContain("the overlay budget was spent");
+    expect(region, "an exhausted budget started rejecting clips").not.toContain(`"has_text"`);
+    /** The collapse that makes it an allowance rather than a refusal. */
+    const boolWrapper = FILTER.slice(
+      FILTER.indexOf("export async function cachedClipHasBakedEditText("),
+      FILTER.indexOf("export async function cachedClipBakedEditTextVerdict(")
+    );
+    expect(boolWrapper).toContain(`return result.verdict === "has_text";`);
   });
 });
 

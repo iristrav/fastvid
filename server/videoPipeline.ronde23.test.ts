@@ -66,12 +66,21 @@ describe("RONDE 23 — external clips are checked, once per asset", () => {
     // A broken vision call must not reject every candidate — that would starve the render.
     // The fail-open behaviour now lives with the shared memo; assert it where it is implemented.
     const filterSrc = readFileSync(path.join(__dirname, "archiveClipFilter.ts"), "utf8");
+    // RONDE 222 re-anchor: the error is now NAMED `not_asked` and the boolean this gate reads
+    // collapses it to false, so the cascade behaves exactly as before.
     const cached = filterSrc.slice(
-      filterSrc.indexOf("export async function cachedClipHasBakedEditText("),
-      filterSrc.indexOf("export async function archiveClipHasBakedEditText("),
+      filterSrc.indexOf("export async function cachedClipBakedEditTextVerdict("),
+      filterSrc.indexOf("export async function archiveClipBakedEditTextVerdict("),
     );
     expect(cached).toContain("catch (err)");
-    expect(cached).toContain("verdict = false;");
+    expect(cached).toContain("NOT_ASKED(");
+    const boolWrapper = filterSrc.slice(
+      filterSrc.indexOf("export async function cachedClipHasBakedEditText("),
+      filterSrc.indexOf("export async function cachedClipBakedEditTextVerdict("),
+    );
+    expect(boolWrapper, "a detector error started rejecting candidates").toContain(
+      `return result.verdict === "has_text";`
+    );
   });
 });
 

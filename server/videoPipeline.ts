@@ -754,6 +754,13 @@ import {
 } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { avSyncFindingCodes, checkFileAvSync, formatAvSync } from "./avSyncCheck";
+import {
+  TARGET_LUFS,
+  formatLoudness,
+  loudnessNeedsAttention,
+  normaliseDeliveredLoudness,
+  type LoudnessResult,
+} from "./audioLoudness";
 import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
 import {
   auditSceneVoiceMontageSync,
@@ -44537,6 +44544,43 @@ async function _runVideoPipelineInner(
     // Final videos can be hundreds of MB to low-GB — storagePutFromFile streams directly from
     // disk (multipart upload for S3/R2) instead of reading the whole file into a single Buffer
     // first, which previously peaked at roughly 2x the file size in RAM for this one step.
+    /**
+     * RONDE 222 — IS THE FILM LOUD ENOUGH TO HEAR?
+     *
+     * Render 574 shipped at -41.2 LUFS against a -14 LUFS streaming target: twenty-seven decibels
+     * under, effectively inaudible at normal volume. Nothing measured it, because until this round
+     * nothing in the tree knew what LUFS was.
+     *
+     * Placed here, after `ensureFinalVideoExportReady` — which may REASSEMBLE the file — and before
+     * the size is taken and the envelope is measured, so the correction cannot be discarded by a
+     * later rebuild and every number stage 6 reports describes the file that is uploaded.
+     *
+     * Reports and never gates: a film that could not be levelled is still delivered, with the
+     * reason on the line. The pass replaces the file only when the corrected audio measures closer
+     * to target than the original.
+     */
+    {
+      const loudness = await normaliseDeliveredLoudness(finalVideoPath).catch(
+        (err): LoudnessResult => ({
+          outcome: "failed",
+          beforeLufs: null,
+          afterLufs: null,
+          targetLufs: TARGET_LUFS,
+          reason: `the loudness pass threw: ${(err as Error)?.message?.slice(0, 140)}`,
+        })
+      );
+      const line = formatLoudness(loudness);
+      if (loudnessNeedsAttention(loudness)) {
+        console.warn(pipelineReport.add("summary", line));
+        qualityReport.warnings.push(
+          `Loudness: delivered at ${loudness.beforeLufs?.toFixed(1) ?? "an unknown level"} ` +
+            `against a ${TARGET_LUFS} LUFS target — ${loudness.reason ?? loudness.outcome}`
+        );
+      } else {
+        console.log(pipelineReport.add("summary", line));
+      }
+    }
+
     const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
 
     /**

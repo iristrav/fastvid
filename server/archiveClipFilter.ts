@@ -266,8 +266,23 @@ En uiteraard false wanneer er helemaal geen tekst in beeld is.
 Bij twijfel over de herkomst: kijk of de tekst meebeweegt met het beeld (dan stond hij er echt)
 of vaststaat over een bewegend beeld heen (dan is hij toegevoegd).`;
 
-async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> {
-  if (dataUrls.length === 0) return false;
+/**
+ * RONDE 222 — `null` means NOBODY LOOKED, and it used to mean "clean".
+ *
+ * Every exit below that is not a real answer — no frames to send, an unreadable reply, a timeout,
+ * a transport error — returned `false`, which reads as "this clip carries no added text". The beat
+ * gate can live with that (failing open there is deliberate: an unchecked clip is allowed rather
+ * than starving the cascade). The ARCHIVE cannot: ingestion writes the verdict into a permanent
+ * row, and every later render short-circuits on it, so one unanswered call becomes a permanent
+ * claim that a clip was inspected and cleared.
+ *
+ * Measured: render 574 delivered 27 seconds of footage carrying a broadcaster's on-screen logo,
+ * and its log contains zero `hasBakedEditText` verdicts. Nothing looked, and the archive said clean.
+ *
+ * So the detector now says "I do not know" out loud, and each caller decides what that is worth.
+ */
+async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean | null> {
+  if (dataUrls.length === 0) return null;
   const timeoutMs = dataUrls.length > 1 ? 18_000 : 14_000;
 
   try {
@@ -304,12 +319,17 @@ async function detectOnScreenTextInImages(dataUrls: string[]): Promise<boolean> 
     ]);
 
     const content = response.choices[0]?.message?.content;
-    if (typeof content !== "string") return false;
+    if (typeof content !== "string") return null;
     const parsed = JSON.parse(content) as { hasBakedEditText?: boolean };
-    return Boolean(parsed.hasBakedEditText);
+    /**
+     * The schema makes the field required, so a reply without it is a reply that did not answer
+     * the question — not a reply that answered "no".
+     */
+    if (typeof parsed.hasBakedEditText !== "boolean") return null;
+    return parsed.hasBakedEditText;
   } catch (err) {
     console.warn("[ArchiveFilter] overlay check failed:", (err as Error).message?.slice(0, 120));
-    return false;
+    return null;
   }
 }
 
@@ -377,7 +397,15 @@ export async function archiveSegmentHasOnScreenText(
     );
     if (frames.length === 0) return false;
     const dataUrls = frames.map((buf) => imageMimeToDataUrl(buf, "image/jpeg"));
-    return detectOnScreenTextInImages(dataUrls);
+    /**
+     * RONDE 222 — this one keeps its fail-open, and keeps it explicitly.
+     *
+     * A segment check decides whether to trim around on-screen text before extracting. Nothing is
+     * written down and no permanent claim is made, so "nobody looked" behaving as "no text found"
+     * costs a trim that was not applied and nothing more. `=== true` says that in the code rather
+     * than relying on `null` being falsy.
+     */
+    return (await detectOnScreenTextInImages(dataUrls)) === true;
   } finally {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
@@ -401,6 +429,20 @@ export async function archiveSegmentHasOnScreenText(
 const overlayVerdictCache = new Map<string, boolean>();
 
 /**
+ * RONDE 222 — keys this render ASKED ABOUT and got no answer for, with the reason.
+ *
+ * Deliberately a second store rather than a third state in `overlayVerdictCache`, because it is not
+ * a verdict and must never be readable as one: `overlayVerdictCache` answers "what do the pixels
+ * show", and this answers "did anyone manage to look, this render".
+ *
+ * It exists for cost, not for correctness. Without it a deployment with no vision key re-attempts
+ * the same clip for every beat that considers it — the repeated identical work render 575 was full
+ * of — because a `not_asked` is (rightly) never cached as a verdict. Cleared with the budget, so
+ * the next render asks again, exactly as the budget skip below already promises.
+ */
+const overlayUnansweredThisRender = new Map<string, string>();
+
+/**
  * RONDE 25: how many cache MISSES (i.e. real vision calls) have been spent since the last reset.
  * Callers pass a ceiling; past it the check is skipped rather than run. Counting misses rather
  * than calls is what keeps re-offering the same asset to many beats free.
@@ -416,6 +458,7 @@ let overlayBudgetSkips = 0;
  */
 export function resetOverlayBudget(): void {
   overlayVerdictCache.clear();
+  overlayUnansweredThisRender.clear();
   overlayChecksPerformed = 0;
   overlayBudgetSkips = 0;
 }
@@ -453,8 +496,31 @@ export async function cachedClipHasBakedEditText(
   cacheKey: string,
   maxChecks?: number
 ): Promise<boolean> {
+  const result = await cachedClipBakedEditTextVerdict(media, mimeType, cacheKey, maxChecks);
+  return result.verdict === "has_text";
+}
+
+/**
+ * The same memo, answering with the verdict instead of collapsing it.
+ *
+ * Only a REAL verdict is cached. A `not_asked` is deliberately not remembered, for the same reason
+ * the budget skip below is not: it is an artefact of this render's conditions, not a fact about the
+ * clip, and the next render must be free to actually look.
+ */
+export async function cachedClipBakedEditTextVerdict(
+  media: string,
+  mimeType: string,
+  cacheKey: string,
+  maxChecks?: number
+): Promise<OverlayVerdictResult> {
   const cached = overlayVerdictCache.get(cacheKey);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return { verdict: cached ? "has_text" : "clean" };
+  /**
+   * Already asked this render and got nothing back. Still `not_asked` — the answer does not
+   * improve by being repeated — but the second attempt is not made.
+   */
+  const unanswered = overlayUnansweredThisRender.get(cacheKey);
+  if (unanswered !== undefined) return NOT_ASKED(unanswered);
   // RONDE 25: a miss is about to cost an ffprobe, two ffmpeg extractions and a vision call, so
   // the ceiling is enforced here — the one place that knows a miss is happening. Past it we allow
   // the clip: an exhausted budget must not turn into "reject everything", which would starve the
@@ -483,41 +549,88 @@ export async function cachedClipHasBakedEditText(
       `[ArchiveFilter] overlay budget spent (${overlayChecksPerformed}/${maxChecks}) — ` +
         `skipping text check for ${cacheKey}, clip allowed unchecked (skipped=${overlayBudgetSkips})`
     );
-    return false;
+    return NOT_ASKED(`the overlay budget was spent (${overlayChecksPerformed}/${maxChecks})`);
   }
   overlayChecksPerformed++;
-  let verdict = false;
+  let result: OverlayVerdictResult;
   try {
-    verdict = await archiveClipHasBakedEditText(media, mimeType);
+    result = await archiveClipBakedEditTextVerdict(media, mimeType);
   } catch (err) {
+    const why = (err as Error).message?.slice(0, 120);
     console.warn(
-      `[ArchiveFilter] overlay verdict failed for ${cacheKey} — treating as clean:`,
-      (err as Error).message?.slice(0, 120)
+      `[ArchiveFilter] overlay verdict failed for ${cacheKey} — nobody looked at this clip:`,
+      why
     );
-    verdict = false;
+    /**
+     * Still fail-open for the beat gate (the boolean wrapper turns this into `false`), but it is
+     * recorded as what it is. A thrown detector is not evidence that a clip is clean.
+     */
+    const reason = `the detector threw: ${why}`;
+    overlayUnansweredThisRender.set(cacheKey, reason);
+    return NOT_ASKED(reason);
   }
-  overlayVerdictCache.set(cacheKey, verdict);
-  return verdict;
+  if (result.verdict !== "not_asked") {
+    overlayVerdictCache.set(cacheKey, result.verdict === "has_text");
+  } else {
+    overlayUnansweredThisRender.set(
+      cacheKey,
+      result.reason ?? "the detector returned no answer for this clip"
+    );
+  }
+  return result;
 }
 
-export async function archiveClipHasBakedEditText(
+/**
+ * Three answers, because there have always been three.
+ *
+ * `has_text` and `clean` are judgements about the pixels. `not_asked` is the honest name for every
+ * path that reaches the end without one — the filter switched off, the sampling policy declining,
+ * an image the vision endpoint cannot read, a clip no frame could be extracted from, a timeout.
+ * The distinction is the same one this project has already drawn for vision verdicts (APPROVED /
+ * REJECTED / UNCLEAR / NOT_ASKED) and for the retrieval budget; it was missing only here.
+ */
+export type OverlayVerdict = "has_text" | "clean" | "not_asked";
+
+export type OverlayVerdictResult = {
+  verdict: OverlayVerdict;
+  /** Why nobody looked. Present exactly when the verdict is `not_asked`. */
+  reason?: string;
+};
+
+const NOT_ASKED = (reason: string): OverlayVerdictResult => ({ verdict: "not_asked", reason });
+
+/** Map a detector answer onto the vocabulary; `null` is the detector saying it does not know. */
+function overlayVerdictOf(answer: boolean | null, reason: string): OverlayVerdictResult {
+  if (answer === null) return NOT_ASKED(reason);
+  return { verdict: answer ? "has_text" : "clean" };
+}
+
+export async function archiveClipBakedEditTextVerdict(
   media: Buffer | string,
   mimeType: string,
   opts?: { clipCount?: number }
-): Promise<boolean> {
-  if (opts?.clipCount != null && !shouldRunArchiveOverlayFilter(opts.clipCount)) return false;
-  if (!archiveClipOverlayFilterEnabled()) return false;
+): Promise<OverlayVerdictResult> {
+  if (opts?.clipCount != null && !shouldRunArchiveOverlayFilter(opts.clipCount)) {
+    return NOT_ASKED("the overlay sampling policy skipped this clip");
+  }
+  if (!archiveClipOverlayFilterEnabled()) {
+    return NOT_ASKED("the overlay filter is switched off in this deployment");
+  }
 
   if (mimeType.startsWith("image/")) {
     const buf = typeof media === "string" ? fs.readFileSync(media) : media;
     const prepared = await prepareImageForVision(buf, mimeType);
-    // Unconvertible format: fail open exactly as an errored check does, but without spending a
-    // request the endpoint is certain to reject.
-    if (!prepared) return false;
-    return detectOnScreenTextInImages([imageMimeToDataUrl(prepared.buffer, prepared.mimeType)]);
+    // Unconvertible format: nobody looked, and without spending a request the endpoint would reject.
+    if (!prepared) return NOT_ASKED(`the image could not be prepared for vision (${mimeType})`);
+    return overlayVerdictOf(
+      await detectOnScreenTextInImages([imageMimeToDataUrl(prepared.buffer, prepared.mimeType)]),
+      "the detector returned no usable answer for this image"
+    );
   }
 
-  if (!mimeType.startsWith("video/")) return false;
+  if (!mimeType.startsWith("video/")) {
+    return NOT_ASKED(`nothing to sample frames from (${mimeType})`);
+  }
 
   const fastMode = opts?.clipCount != null && opts.clipCount > 40;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-overlay-"));
@@ -541,12 +654,31 @@ export async function archiveClipHasBakedEditText(
           ? [dur * 0.5]
           : [dur * 0.15, dur * 0.5, dur * 0.85];
     const frames = await extractVideoPreviewJpegs(videoPath, workDir, sampleSec);
-    if (frames.length === 0) return false;
+    if (frames.length === 0) return NOT_ASKED("no frame could be extracted from this clip");
     const dataUrls = frames.map((buf) => imageMimeToDataUrl(buf, "image/jpeg"));
-    return detectOnScreenTextInImages(dataUrls);
+    return overlayVerdictOf(
+      await detectOnScreenTextInImages(dataUrls),
+      "the detector returned no usable answer for these frames"
+    );
   } finally {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
+}
+
+/**
+ * The boolean the beat gate has always used: does this clip carry added text?
+ *
+ * `not_asked` collapses to `false` here, which is the fail-open the cascade depends on — an
+ * unchecked clip is allowed rather than starving a beat. Nothing about that behaviour changes.
+ * What changes is that a caller who cannot afford the collapse — ingestion, which writes the
+ * answer down forever — can now ask for the verdict instead.
+ */
+export async function archiveClipHasBakedEditText(
+  media: Buffer | string,
+  mimeType: string,
+  opts?: { clipCount?: number }
+): Promise<boolean> {
+  return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";
 }
 
 async function probeVideoDurationSec(filePath: string): Promise<number> {

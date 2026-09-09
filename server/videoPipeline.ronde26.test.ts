@@ -164,12 +164,21 @@ const relevanceSrc = readFileSync(path.join(__dirname, "archiveClipRelevance.ts"
 
 describe("RONDE 26b — both image call sites are guarded, and both still fail open", () => {
   it("the overlay filter prepares before it asks", () => {
+    /**
+     * RONDE 222 re-anchor: the body moved into `archiveClipBakedEditTextVerdict` and
+     * `archiveClipHasBakedEditText` is now a one-line boolean wrapper over it. Same two claims —
+     * it prepares first, and an unpreparable image does not become a judgement.
+     */
     const fn = filterSrc.slice(
-      filterSrc.indexOf("export async function archiveClipHasBakedEditText("),
+      filterSrc.indexOf("export async function archiveClipBakedEditTextVerdict("),
       filterSrc.indexOf("async function probeVideoDurationSec("),
     );
     expect(fn).toContain("prepareImageForVision(buf, mimeType)");
-    expect(fn).toContain("if (!prepared) return false;");
+    expect(fn).toContain("if (!prepared) return NOT_ASKED(");
+    /** And the boolean the callers use still collapses that to "no text found". */
+    expect(filterSrc).toContain(
+      `return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";`
+    );
   });
 
   it("the subject filter does too, degrading to keep-the-candidate", () => {

@@ -26,18 +26,21 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
   );
 
   it("checks for baked-in text before admitting the clip", () => {
-    expect(fn).toContain("cachedClipHasBakedEditText(localPath, metadata.mimeType");
+    /** RONDE 222 re-anchor: ingestion asks for the VERDICT now, not the collapsed boolean. */
+    expect(fn).toContain("cachedClipBakedEditTextVerdict(");
+    expect(fn).toContain("localPath");
     expect(fn).toContain("baked-in on-screen text");
   });
 
   it("rejects by returning null, like the other ingestion gates", () => {
-    const guardAt = fn.indexOf("cachedClipHasBakedEditText");
+    const guardAt = fn.indexOf(`if (overlay.verdict === "has_text")`);
+    expect(guardAt).toBeGreaterThan(-1);
     const after = fn.slice(guardAt, guardAt + 400);
     expect(after).toContain("return null;");
   });
 
   it("runs before the upload and the DB insert, so nothing is stored for a rejected clip", () => {
-    const guardAt = fn.indexOf("cachedClipHasBakedEditText");
+    const guardAt = fn.indexOf("cachedClipBakedEditTextVerdict(");
     const uploadAt = fn.indexOf("storagePut(");
     expect(guardAt).toBeGreaterThan(-1);
     expect(uploadAt).toBeGreaterThan(-1);
@@ -45,7 +48,18 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
   });
 
   it("records the cleared verdict on the new asset so it is never re-analysed", () => {
-    expect(ingestionSrc).toContain("hasBakedEditText: 0,");
+    /**
+     * RONDE 222 re-anchor, and the claim is now stronger rather than weaker.
+     *
+     * This used to assert a flat `hasBakedEditText: 0` — written for EVERY admitted clip, including
+     * the ones no detector ever looked at. The verdict is still recorded so a cleared clip is never
+     * re-analysed, which is what RONDE 24 was protecting; what it may no longer do is record a
+     * clearance that nobody issued.
+     */
+    expect(ingestionSrc).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : null,`);
+    expect(ingestionSrc, "a clip nobody judged is stored as cleared again").not.toContain(
+      "hasBakedEditText: 0,"
+    );
   });
 });
 
@@ -56,8 +70,15 @@ describe("RONDE 24 — the overlay memo is shared, not duplicated", () => {
   });
 
   it("is used by the beat gate and by ingestion", () => {
+    /**
+     * RONDE 222 re-anchor: one memo, two callers, still — but they now ask it different questions.
+     * The beat gate wants the boolean it can fail open on; ingestion, which writes the answer into
+     * a permanent row, wants the verdict.
+     */
     expect(pipelineSrc).toMatch(/cachedClipHasBakedEditText\(\s*clipPath/);
-    expect(ingestionSrc).toMatch(/cachedClipHasBakedEditText\(\s*localPath/);
+    expect(ingestionSrc).toMatch(/cachedClipBakedEditTextVerdict\(\s*localPath/);
+    /** Both resolve to the same cache in the same module. */
+    expect(filterSrc).toContain("export async function cachedClipBakedEditTextVerdict(");
   });
 
   it("no longer keeps a second private cache in videoPipeline", () => {
@@ -67,12 +88,29 @@ describe("RONDE 24 — the overlay memo is shared, not duplicated", () => {
   });
 
   it("fails OPEN so a broken detector cannot block every ingestion", () => {
+    /**
+     * RONDE 222 re-anchor. The property is unchanged and is what this test exists for: a thrown
+     * detector must not refuse the clip. What changed is that the failure is now NAMED rather than
+     * spelled `verdict = false` — the boolean the beat gate reads still collapses it to false, and
+     * ingestion admits the clip too (it only refuses on a real `has_text`).
+     */
     const cached = filterSrc.slice(
-      filterSrc.indexOf("export async function cachedClipHasBakedEditText("),
-      filterSrc.indexOf("export async function archiveClipHasBakedEditText("),
+      filterSrc.indexOf("export async function cachedClipBakedEditTextVerdict("),
+      filterSrc.indexOf("export async function archiveClipBakedEditTextVerdict("),
     );
     expect(cached).toContain("catch (err)");
-    expect(cached).toContain("verdict = false;");
+    /** Scoped to the catch itself: the surrounding function reads and writes the cache by verdict. */
+    const catchBlock = cached.slice(cached.indexOf("} catch (err) {"), cached.indexOf("\n  if (result.verdict"));
+    expect(catchBlock).toContain("NOT_ASKED(");
+    expect(catchBlock, "a thrown detector started refusing clips").not.toContain(`"has_text"`);
+    /** The collapse the cascade depends on, at the boolean the beat gate calls. */
+    const boolWrapper = filterSrc.slice(
+      filterSrc.indexOf("export async function cachedClipHasBakedEditText("),
+      filterSrc.indexOf("export async function cachedClipBakedEditTextVerdict("),
+    );
+    expect(boolWrapper).toContain(`=== "has_text"`);
+    /** And ingestion refuses on exactly one condition, which is not the failure. */
+    expect(ingestionSrc).toContain(`if (overlay.verdict === "has_text")`);
   });
 
   it("exposes a reset seam so tests do not leak verdicts between cases", () => {

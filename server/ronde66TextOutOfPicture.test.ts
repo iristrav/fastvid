@@ -96,11 +96,23 @@ describe("RONDE 66 — it looks where the text actually is", () => {
   });
 
   it("still fails open — a filter outage must not empty a montage", () => {
+    /**
+     * RONDE 222 re-anchor, same property. An outage returns `null` — "nobody looked" — and the
+     * boolean every montage path reads turns that into `false`, so a broken detector still cannot
+     * empty a montage. The `null` exists so the one caller that writes the answer into a permanent
+     * archive row can tell an outage from a clean clip; nothing about the montage changed.
+     */
     const src = FILTER();
     const idx = src.indexOf("async function detectOnScreenTextInImages(");
-    const block = src.slice(idx, idx + 1800);
+    /** Window sized to the whole function; RONDE 222's note pushed the catch past the old 1800. */
+    const block = src.slice(idx, src.indexOf("\nasync function extractVideoPreviewJpegs("));
     expect(block).toContain("catch (err)");
-    expect(block).toMatch(/catch \(err\)[\s\S]{0,220}return false;/);
+    expect(block).toMatch(/catch \(err\)[\s\S]{0,220}return null;/);
+    /** The collapse, at both booleans the montage routes actually call. */
+    expect(src).toContain(
+      `return (await archiveClipBakedEditTextVerdict(media, mimeType, opts)).verdict === "has_text";`
+    );
+    expect(src).toContain(`return (await detectOnScreenTextInImages(dataUrls)) === true;`);
   });
 
   it("one frame showing text condemns the clip", () => {

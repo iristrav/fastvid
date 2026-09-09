@@ -21,7 +21,7 @@ import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMe
 import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewCheck";
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
-import { cachedClipHasBakedEditText } from "./archiveClipFilter";
+import { cachedClipBakedEditTextVerdict } from "./archiveClipFilter";
 import { beatClipTextFilterMaxChecks } from "./sourcingPolicy";
 import { recordVisualSearchMemory, type ClassifiedEntity } from "./visualSearchMemory";
 import { Semaphore } from "./_core/semaphore";
@@ -195,11 +195,30 @@ async function ingestExternalClipToArchiveInner(
     // case: the beat gate (RONDE 23) has usually already judged this exact clip, and the shared
     // memo in archiveClipFilter returns that verdict instead of re-running the vision call.
     const overlayKey = metadata.sourceUrl || `${metadata.sourceNote}:${path.basename(localPath)}`;
-    if (await cachedClipHasBakedEditText(localPath, metadata.mimeType, overlayKey, beatClipTextFilterMaxChecks())) {
+    const overlay = await cachedClipBakedEditTextVerdict(
+      localPath,
+      metadata.mimeType,
+      overlayKey,
+      beatClipTextFilterMaxChecks()
+    );
+    if (overlay.verdict === "has_text") {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );
       return null;
+    }
+    /**
+     * RONDE 222 — a clip nobody looked at is not admitted as a clip that was cleared.
+     *
+     * It is still ADMITTED: refusing every unchecked clip would empty the archive whenever the
+     * vision path is slow, budgeted out or switched off, which is a far worse failure than the one
+     * this guards against. What changes is what gets written down. See the row below.
+     */
+    if (overlay.verdict === "not_asked") {
+      console.warn(
+        `[Ingestion] "${metadata.title.slice(0, 60)}" admitted WITHOUT an on-screen-text verdict — ` +
+          `${overlay.reason ?? "no reason recorded"}; stored as unjudged so a later render asks`
+      );
     }
 
     // F3-26: duplicate protection — the same web source URL must not be archived twice. Checked
@@ -297,10 +316,27 @@ async function ingestExternalClipToArchiveInner(
       matchedQuery: metadata.matchedQuery?.slice(0, 512),
       entities: metadata.entities?.map((e) => e.value),
       topics: metadata.topics,
-      // RONDE 24: we only get here because the overlay check above cleared this clip, so record
-      // that verdict now. Without it the asset lands with hasBakedEditText=null and the very first
-      // render that considers it pays a fresh vision call to rediscover what we already know.
-      hasBakedEditText: 0,
+      /**
+       * RONDE 24: record the overlay verdict so the first render that considers this asset does not
+       * pay a fresh vision call to rediscover what we already know.
+       *
+       * RONDE 222 — BUT ONLY WHEN THERE IS A VERDICT TO RECORD.
+       *
+       * This wrote a flat 0 — "inspected, carries no added text" — for every clip that reached this
+       * line, including the ones no detector ever looked at: a spent budget, a timeout, a vision
+       * path switched off, a clip no frame could be pulled from. All of those returned `false` and
+       * all of them were written down as cleared. The row is permanent and every later render
+       * short-circuits on it, so one unanswered call became a standing claim about the pixels.
+       *
+       * Measured: render 574 delivered 27 seconds of footage carrying a broadcaster's on-screen
+       * logo — roughly 40% of that film — and its log holds not one `hasBakedEditText` verdict.
+       *
+       * `null` is the value the schema already uses for "not judged yet", and the RONDE 24 comment
+       * above describes exactly what it causes: the next render that considers this asset asks the
+       * question properly. That is the correct cost for a clip nobody has looked at, and it is paid
+       * once rather than inherited forever.
+       */
+      hasBakedEditText: overlay.verdict === "clean" ? 0 : null,
       // RONDE 118: verified a few lines above, before the bytes were even stored.
       previewCheckedAt: new Date(),
     };

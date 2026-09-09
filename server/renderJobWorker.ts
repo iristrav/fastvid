@@ -70,6 +70,13 @@ import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsO
 import { storagePutFromFile } from "./storage";
 import { checkFileAvSync, formatAvSync, type AvSyncResult } from "./avSyncCheck";
 import {
+  TARGET_LUFS,
+  formatLoudness,
+  loudnessNeedsAttention,
+  normaliseDeliveredLoudness,
+  type LoudnessResult,
+} from "./audioLoudness";
+import {
   postRenderSpotCheckEnabled,
   spotCheckFinalVideo,
   type PostRenderSpotCheckResult,
@@ -703,6 +710,32 @@ export async function runRenderJob(params: {
      * Cheap enough to run unconditionally — two ffprobe reads and one silencedetect pass — and it
      * is the check whose absence a viewer notices first.
      */
+    /**
+     * RONDE 222 — IS IT LOUD ENOUGH TO HEAR?
+     *
+     * The sibling of 6b, and the same argument: the envelope check knows whether the sound lines up
+     * with the picture and has never known how loud it is. Render 574 delivered -41.2 LUFS against
+     * a -14 LUFS target.
+     *
+     * Before 6b deliberately, so the envelope is measured on the file that ships. The pass swaps
+     * the file only when the correction measures closer to target, and it never fails the job: an
+     * unlevelled film is still a film, and the reason goes on the line.
+     */
+    const loudness = await normaliseDeliveredLoudness(outputPath).catch(
+      (err): LoudnessResult => ({
+        outcome: "failed",
+        beforeLufs: null,
+        afterLufs: null,
+        targetLufs: TARGET_LUFS,
+        reason: `the loudness pass threw: ${(err as Error)?.message?.slice(0, 140)}`,
+      })
+    );
+    {
+      const line = formatLoudness(loudness);
+      if (loudnessNeedsAttention(loudness)) console.warn(`[RenderJob] job=${job.id} ${line}`);
+      else console.log(line);
+    }
+
     const avSync = await checkFileAvSync(outputPath).catch(() => null);
     if (avSync) {
       for (const line of formatAvSync(avSync)) {
