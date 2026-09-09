@@ -222,8 +222,77 @@ export const FORBIDDEN_PERSON_PRONOUNS: ReadonlySet<string> = new Set([
  * because content vocabulary is open. Function words are finite and do not grow. A person's name
  * never contains one, in any language that has them, which is what makes this a structural rule.
  */
+/**
+ * RONDE 214 — DUTCH GRAMMAR, BECAUSE THIS PIPELINE NARRATES IN DUTCH.
+ *
+ * ── What was measured ───────────────────────────────────────────────────────────────────────
+ *
+ * `FUNCTION_WORDS` was English-only, and said so. Everything that reads it therefore treated a
+ * Dutch function word as a SUBJECT. RONDE 213 turned that from a quiet inaccuracy into a broken
+ * query, because it caps a beat at its first four content words:
+ *
+ *     "Het was een van de grootste rampen uit de Nederlandse geschiedenis."
+ *         → "Het een van de"        four grammar words, nothing to search for
+ *     "De eerste bewoners van het eiland bouwden hun huizen op palen in het veen."
+ *         → "De eerste bewoners van"    two of four slots spent on grammar
+ *
+ * `hasContentAnchor` could not catch it either: "het", "een", "van" and "de" are in neither the
+ * English function set nor the production vocabulary, so the query read as having a subject and
+ * went out to the providers.
+ *
+ * ── Why it goes here and not in a second list ───────────────────────────────────────────────
+ *
+ * Function words are a closed grammatical class PER LANGUAGE. This set is that class; it was
+ * simply missing a language the product actually speaks. A separate Dutch stoplist beside it would
+ * be two spellings of one rule — and `visualBeatTags`'s LABEL_STOP already is a third, which is
+ * how this went unnoticed: the Dutch words were known in one corner of the codebase and absent in
+ * the one the gate reads.
+ *
+ * ── Checked against every consumer before adding ────────────────────────────────────────────
+ *
+ *   `blocksPersonName`     — the name particles ("de", "van", "den", "der", "ten", "ter") are
+ *                            matched by `isNameParticleToken` and `continue`d BEFORE this is
+ *                            reached, so "Vincent van Gogh" and "Charles de Gaulle" are unaffected.
+ *                            Every other word added here is lower case and already failed
+ *                            `isNameShapedToken`; only the stated reason changes.
+ *   `hasContentAnchor`     — Dutch-grammar-only queries are now refused. A tightening.
+ *   `provenToken`          — they become "technical" and need no evidence, exactly as their
+ *                            English counterparts do. A word that carries no claim cannot
+ *                            introduce content.
+ *   person extraction      — a Dutch function word is not a person. Correct to skip.
+ *
+ * `FORBIDDEN_PERSON_PRONOUNS` is deliberately NOT extended: that set drives an outright query
+ * REJECTION, and widening a rejection is a bigger change than this evidence supports.
+ *
+ * Like English "will" and "may", a few of these have a content sense ("haar" is also hair, "zijn"
+ * also a verb). The closed grammatical class wins, as it already does for English.
+ */
+export const DUTCH_FUNCTION_WORDS: readonly string[] = [
+  "de", "het", "een", "der", "des", "den", "ten", "ter",
+  "en", "of", "maar", "want", "dus", "omdat", "als", "dan", "toen", "terwijl", "hoewel", "zodat",
+  "van", "in", "op", "aan", "bij", "met", "voor", "naar", "uit", "over", "onder", "tussen",
+  "door", "tegen", "tot", "om", "na", "sinds", "zonder", "binnen", "buiten", "langs", "tijdens",
+  "dat", "die", "dit", "deze", "er", "hier", "daar", "wat", "wie", "welke", "zulke",
+  "ik", "jij", "hij", "zij", "wij", "jullie", "ze", "hem", "haar", "hun", "men", "u",
+  "is", "zijn", "was", "waren", "ben", "bent", "worden", "wordt", "werd", "werden",
+  "heeft", "hebben", "had", "hadden", "heb", "zal", "zou", "zouden",
+  "kan", "kunnen", "kon", "konden", "moet", "moeten", "moest", "mag", "mogen",
+  "wil", "willen", "doen", "doet", "deed",
+  "niet", "ook", "al", "nog", "wel", "te", "toch", "alleen", "zelfs", "heel", "zeer",
+  "meer", "meest", "echter", "daarom", "elke", "iedere", "sommige", "veel", "andere",
+  "zo", "geen", "zich", "waar", "hoe", "waarom", "iets", "niets", "alles",
+  "elk", "ieder", "eigen", "beide",
+  /**
+   * Deliberately NOT here: "weer". It is an adverb ("again") and a noun ("the weather"), and a
+   * documentary about a flood or a climate is exactly where the noun carries the subject. English
+   * "own" and "will" are admitted despite the same ambiguity because their content senses are
+   * marginal in narration; "het weer" is not.
+   */
+];
+
 export const FUNCTION_WORDS: ReadonlySet<string> = new Set([
   ...FORBIDDEN_PERSON_PRONOUNS,
+  ...DUTCH_FUNCTION_WORDS,
   "a", "an", "the",
   "and", "or", "but", "nor", "so", "yet",
   "of", "in", "on", "at", "to", "from", "by", "for", "with", "without",
