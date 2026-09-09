@@ -372,6 +372,7 @@ import {
 import { beginReplayRecording, recordReplayFact, replayRecordingActive } from "./renderReplay";
 import type { ClipAdoptEntry } from "./clipAdoptAudit";
 import {
+  bindTasteModelContext,
   bindLineageLedger,
   bindRelevanceLedger,
   bindContentKeyResolver,
@@ -486,10 +487,13 @@ import {
 } from "./archiveMetadataScorer";
 import {
   applyDocumentaryTasteModel,
-  recordTasteModelAdoption,
   resetTasteModelScene,
   type TasteModelContext,
 } from "./documentaryTasteModel";
+import {
+  writeSceneCaptionFilter,
+  type CaptionBeat,
+} from "./composeCaptions";
 import {
   editorialGraphicsEnabled,
   planVideoGraphics,
@@ -18586,6 +18590,15 @@ export function createVisualDedupState(
    */
   bindRelevanceLedger(state.clipAdoptAudit, state.beatRelevance);
   /**
+   * RONDE 201 — the fourth binding, for the question "does this shot work after the last one".
+   *
+   * Same argument, one more time: `documentaryTasteModel` scores shot progression, clip fatigue
+   * and the emotional arc across a scene, and it read a history two routes out of thirty-five
+   * bothered to write. Bound to the one array every adoption hands over, so the memory the model
+   * consults is the montage that was actually built rather than the part of it `adoptClip` made.
+   */
+  bindTasteModelContext(state.clipAdoptAudit, state.tasteModelCtx, state.clipAnnotationMeta);
+  /**
    * RENDER 571 / INVARIANT_H — the third binding, so the evidence line asks the guard's question.
    *
    * The montage guard resolves eligibility with the clip's content key; the audit resolved without
@@ -24633,7 +24646,11 @@ async function adoptClip(
           if (!isPipelineFallbackClip(p) && !(await isMostlyBlackClip(p))) { dedup.lastMuskStockClip = p; dedup.lastRealClip = p; }
           recordAdoptedClip(p, adCtx);
           dedup.assetDirectorSceneClips.push(p);
-          recordTasteModelAdoption(p, dedup.tasteModelCtx, dedup.clipAnnotationMeta.get(p));
+          /**
+           * RONDE 201: removed — `recordClipAdopt` now records this for EVERY route, so keeping it
+           * here would count this route's pictures twice in the fatigue and shot history that the
+           * next beat is scored against. See `bindTasteModelContext`.
+           */
           // Apply segment trim hint if this clip has a better temporal segment
           const trimHint = adResult.trimHints?.get(p);
           if (trimHint) {
@@ -24668,7 +24685,7 @@ async function adoptClip(
         }
         recordAdoptedClip(transformed, adCtx);
         dedup.assetDirectorSceneClips.push(transformed);
-        recordTasteModelAdoption(transformed, dedup.tasteModelCtx, dedup.clipAnnotationMeta.get(p));
+        /** RONDE 201: recorded centrally now — see the note on the sibling branch. */
         return markAdopted(transformed);
       }
       dedup.usedCategories.set(category, Math.max(0, (dedup.usedCategories.get(category) ?? 1) - 1));
@@ -37070,7 +37087,15 @@ async function prepareSceneEffectLayers(
   workDir: string,
   enableSubtitles: boolean,
   probedVoiceDur?: number,
-  sceneClips: string[] = []
+  sceneClips: string[] = [],
+  /**
+   * RONDE 201 — the scene's beats, so the subtitle switch can finally do something.
+   *
+   * Passed in rather than read from a global: this function is called from two places and neither
+   * owns the render's dedup state. The beats come from `sceneBeatsBySceneIndex`, the record RENDER
+   * 562 created precisely so a clip-list rebuild cannot lose them.
+   */
+  captionBeats: readonly CaptionBeat[] = []
 ): Promise<{
   kineticFrames: KineticFrame[];
   docOverlays: TimedOverlay[];
@@ -37131,8 +37156,41 @@ async function prepareSceneEffectLayers(
   const colorGrade = documentaryStyleEnabled()
     ? buildPostGradeVF()
     : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
-  const subtitleDrawtext = enableSubtitles ? "" : "";
-  const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
+  /**
+   * RONDE 201 — THE SWITCH THAT COULD NOT AFFECT A FRAME.
+   *
+   * This was `enableSubtitles ? "" : ""` — both branches the same empty string — and the line under
+   * it dropped the fragment again whenever the documentary look was on. Two dead ends in adjacent
+   * lines, for a switch stored per video and offered to the operator in the UI.
+   *
+   * RONDE 113's burned-in-text policy exempts subtitles in writing ("a per-video switch the
+   * operator ticks themselves"), so this is the one kind of text the render is meant to draw.
+   * `composeCaptions` builds the file from the beats' MEASURED voice windows; a beat the TTS
+   * alignment never measured gets no caption rather than a guessed one.
+   */
+  const captions = enableSubtitles
+    ? writeSceneCaptionFilter({
+        beats: captionBeats,
+        sceneOutSec: outDur,
+        sceneIndex: scene.index,
+        workDir,
+        frameHeight: VIDEO_HEIGHT,
+      })
+    : null;
+  if (enableSubtitles) {
+    console.log(
+      `[Captions] scene ${scene.index}: ${captions ? captions.plan.cues.length : 0} cue(s)` +
+        (captions
+          ? ` unmeasured=${captions.plan.skippedUnmeasured} outOfRange=${captions.plan.skippedOutOfRange}`
+          : " — no beat carried a measured voice window, so none was drawn")
+    );
+  }
+  const subtitleDrawtext = captions?.filter ?? "";
+  /**
+   * And the documentary look no longer swallows them. The grade and the subtitles are different
+   * things: one is how the picture is coloured, the other is what the viewer reads.
+   */
+  const fadeFilter = `${colorGrade}${subtitleDrawtext}`;
 
   return {
     kineticFrames,
@@ -37151,7 +37209,9 @@ async function applySceneEffectsPass(
   duration: number,
   workDir: string,
   enableSubtitles: boolean,
-  sceneClips: string[] = []
+  sceneClips: string[] = [],
+  /** RONDE 201: forwarded to the layer builder so this route draws subtitles too. */
+  captionBeats: readonly CaptionBeat[] = []
 ): Promise<string> {
   const outputPath = path.join(workDir, `scene_${scene.index}_composed.mp4`);
   if (!fs.existsSync(assemblyPath) || fs.statSync(assemblyPath).size < 1000) {
@@ -37165,7 +37225,8 @@ async function applySceneEffectsPass(
     workDir,
     enableSubtitles,
     probedDur || undefined,
-    sceneClips
+    sceneClips,
+    captionBeats
   );
   const threadFlag = pipelineFfmpegThreadFlag();
   const kineticY = 80;
@@ -37577,7 +37638,9 @@ export async function composeSceneVideoInner(
       duration,
       workDir,
       enableSubtitles,
-      clips
+      clips,
+      /** RONDE 201: the render's own beat record — see `sceneBeatsBySceneIndex`. */
+      composeOptions?.dedup?.sceneBeatsBySceneIndex?.get(scene.index) ?? []
     );
     console.log(`[Hang] composeSceneVideo EXIT s${scene.index} effects-pass total=${Date.now()-_csvT0}ms`);
     /** composeSceneVideo's own `finally` clears this scene's label — see the note there. */
@@ -38373,8 +38436,34 @@ export async function composeSceneVideoInner(
   const colorGrade = documentaryStyleEnabled()
     ? buildPostGradeVF()
     : `eq=contrast=1.12:saturation=0.92:brightness=-0.02:gamma=1.02,colorbalance=rs=-0.02:gs=0:bs=0.03:rm=-0.01:gm=0:bm=0.02:rh=-0.01:gh=0:bh=0.02,vignette=angle=0.6:mode=forward`;
-  const subtitleDrawtext = '';
-  const fadeFilter = documentaryStyleEnabled() ? colorGrade : `${colorGrade}${subtitleDrawtext}`;
+  /**
+   * RONDE 201 — the same switch, the same silence, on the full compose path.
+   *
+   * Here it was not even a ternary: an empty string with no branch at all, and the documentary
+   * look dropping it a second time. Both routes now draw the same subtitles from the same beats;
+   * they are mutually exclusive (`phase === "effects"` returns above), so a scene is never
+   * captioned twice.
+   */
+  const composeCaptions = enableSubtitles
+    ? writeSceneCaptionFilter({
+        beats: composeOptions?.dedup?.sceneBeatsBySceneIndex?.get(scene.index) ?? [],
+        sceneOutSec: outDurEarly,
+        sceneIndex: scene.index,
+        workDir,
+        frameHeight: VIDEO_HEIGHT,
+      })
+    : null;
+  if (enableSubtitles) {
+    console.log(
+      `[Captions] scene ${scene.index}: ${composeCaptions ? composeCaptions.plan.cues.length : 0} cue(s)` +
+        (composeCaptions
+          ? ` unmeasured=${composeCaptions.plan.skippedUnmeasured}` +
+            ` outOfRange=${composeCaptions.plan.skippedOutOfRange}`
+          : " — no beat carried a measured voice window, so none was drawn")
+    );
+  }
+  const subtitleDrawtext = composeCaptions?.filter ?? "";
+  const fadeFilter = `${colorGrade}${subtitleDrawtext}`;
 
   // Helper: build the full overlay chain (shared with effects pass)
   function buildKineticChain(

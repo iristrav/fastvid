@@ -8,6 +8,8 @@ import {
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
 import type { VisualSourceLedger } from "./visualSourceLineage";
+import { recordTasteModelAdoption, type TasteModelContext } from "./documentaryTasteModel";
+import type { CandidateMeta } from "./assetDirector";
 import {
   adoptionPolicyFor,
   visionRequirementMet,
@@ -166,6 +168,43 @@ export type UnjudgedAdoption = {
 };
 
 const relevanceByAudit = new WeakMap<ClipAdoptEntry[], BeatRelevanceLedger>();
+
+/**
+ * RONDE 201 — THE MONTAGE'S MEMORY, WRITTEN BY TWO ROUTES OUT OF THIRTY-FIVE.
+ *
+ * `documentaryTasteModel` is the one part of this pipeline that judges a picture against the ones
+ * BEFORE it: shot progression (four identical framings in a row is scored 10 out of 100), clip
+ * fatigue, an emotional arc across a scene. It is wired, it runs, and it reads its history from
+ * `recentShotHistory` and `clipUsageCount`.
+ *
+ * Those were written at exactly two call sites, both inside `adoptClip`. Every other route that
+ * puts a picture on a beat — the rescue ladder, the curated archive, the forced still, the
+ * guaranteed ladder, the AI tiers — adopted without saying so. Two consequences, and the second
+ * is the worse one:
+ *
+ *   · those routes' own pictures were never scored for how they sit after the previous shot;
+ *   · and the history the OTHER route compares against had holes in it, so a beat could be told
+ *     "nothing like this recently" about a framing that had just been on screen twice.
+ *
+ * This is RONDE 94's shape exactly — a rule 35 routes must follow, registered by two of them — and
+ * it gets RONDE 94's answer: record it at the one place every route already passes. Bound to the
+ * audit array, the same WeakMap discipline as the lineage ledger and the relevance ledger above,
+ * so the context's lifetime is the render's and two concurrent renders cannot share a memory.
+ */
+type TasteModelBinding = {
+  ctx: TasteModelContext;
+  /** Per-clip annotation, for the shot type and emotion the model reads. */
+  meta: Map<string, CandidateMeta>;
+};
+const tasteByAudit = new WeakMap<ClipAdoptEntry[], TasteModelBinding>();
+
+export function bindTasteModelContext(
+  audit: ClipAdoptEntry[],
+  ctx: TasteModelContext,
+  meta: Map<string, CandidateMeta>
+): void {
+  tasteByAudit.set(audit, { ctx, meta });
+}
 const unjudgedByAudit = new WeakMap<ClipAdoptEntry[], UnjudgedAdoption[]>();
 
 export function bindRelevanceLedger(audit: ClipAdoptEntry[], ledger: BeatRelevanceLedger): void {
@@ -473,6 +512,15 @@ export function recordClipAdopt(
   // long render must not stop recording provenance at clip 120.
   const ledger = ledgerByAudit.get(audit);
   const route = adoptRouteForSource(source);
+  /**
+   * RONDE 201 — every route's picture enters the montage's memory. See `tasteByAudit`.
+   *
+   * Here, and not in `noteAdoptionEvidence` below, because that runs inside a branch and this must
+   * run for every adoption this function is told about. Ordered before the MAX_ENTRIES guard for
+   * the same reason the lineage write is: a long render must not stop remembering at clip 120.
+   */
+  const taste = tasteByAudit.get(audit);
+  if (taste) recordTasteModelAdoption(clipPath, taste.ctx, taste.meta.get(clipPath));
   /**
    * RENDER 563 — before anything else, and outside the `if (ledger)` below.
    *

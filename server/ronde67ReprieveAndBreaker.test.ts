@@ -121,17 +121,31 @@ describe("RONDE 67 — a refused clip beats a placeholder", () => {
       },
       "funnel"
     );
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    /**
+     * RONDE 200 — the rule is unchanged and the outcome is the other one.
+     *
+     * The rule this test defends is that the decision is never silent and always names the verdict
+     * it concerns. RONDE 200 answered the owner's "er mag nooit een beeld in de video die er niet
+     * bij past" by refusing every override, so what has to be announced here is the DECLINE — and
+     * it is, on the same [VisualFitDecision] line, with the same verdict named and the kind that
+     * could not be lifted spelled out.
+     *
+     * The structural assertions above are untouched: the reprieve path still exists (the last-rung
+     * colour card reaches it) and still refuses to relabel a verdict as `fits`.
+     */
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(reprieveBeatClip(ledger, "/w/r67.mp4", "nothing else passed")).toBe(true);
-      const line = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes("decision=REPRIEVED"));
-      expect(line, "a reprieve must never be silent").toBeTruthy();
+      expect(reprieveBeatClip(ledger, "/w/r67.mp4", "nothing else passed")).toBe(false);
+      const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes("decision=REJECTED"));
+      expect(line, "declining an override must never be silent either").toBeTruthy();
       expect(line).toContain("verdict=does_not_fit");
+      expect(line).toContain("_may_not_be_reprieved");
       expect(line).not.toContain("verdict=fits");
     } finally {
-      log.mockRestore();
+      warn.mockRestore();
     }
     expect(ledger.byClipPath.get("/w/r67.mp4")!.decision.verdict).toBe("does_not_fit");
+    expect(ledger.byClipPath.get("/w/r67.mp4")!.decision.reprieved).toBe(false);
   });
 
   it("the rejection is still recorded — the reprieve does not hide it from the audit", () => {
