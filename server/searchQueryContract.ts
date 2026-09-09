@@ -1015,9 +1015,80 @@ export function hasContentAnchor(query: string): boolean {
     .split(/[^\p{L}\p{N}'’-]+/u)
     .filter(Boolean)
     .some((raw) => {
+      /**
+       * RONDE 213 — a token of pure punctuation is not a subject.
+       *
+       * The split keeps the apostrophe and the hyphen INSIDE a token, so "Churchill's" and
+       * "Marie-Curie" survive as one word each. The cost was that `"---"` survived as one word
+       * too, `foldSearchText` handed it back unchanged, and this answered TRUE: the gate's own
+       * subject check said a row of hyphens asks for something. `validateSearchQuery("---")`
+       * returned `ok` on the strength of it.
+       *
+       * This narrows what passes — a direction the brief permits, and the only honest reading of
+       * the question this function asks. A query with no letter and no digit anywhere in it names
+       * nothing that any provider could return.
+       */
+      if (!/[\p{L}\p{N}]/u.test(raw)) return false;
       const w = foldSearchText(raw);
       return Boolean(w) && !isProductionWord(w) && !isFunctionWord(w);
     });
+}
+
+/**
+ * RONDE 213 — A SENTENCE IS NOT A SEARCH QUERY.
+ *
+ * ── What was being sent ─────────────────────────────────────────────────────────────────────
+ *
+ * `visualSearchPlan` built its highest-confidence query as `beatText.slice(0, 80)`, and the
+ * Wikimedia rescue appended the same thing. Measured on three ordinary narration sentences from
+ * three unrelated subjects, all three produced a whole sentence cut mid-word:
+ *
+ *     "In the winter of 1953 the North Sea broke through the dikes and drowned more tha"
+ *     "The factory floor fell silent for the first time in forty years, and the town un"
+ *     "Researchers had been measuring the glacier since 1912, but nobody expected the r"
+ *
+ * And `validateSearchQuery` answered `ok: true` for them, correctly: without a proven context it
+ * can only ask whether a query contains a pronoun and whether it contains any subject at all, and
+ * a sentence contains plenty of subjects. The gate was never the problem. The gate is not being
+ * changed. What produced these was the builder, and that is what this repairs.
+ *
+ * ── What this does, and the line it does not cross ──────────────────────────────────────────
+ *
+ * It only ever REMOVES. The words come out in the order the sentence said them, so the result is
+ * a SUBSEQUENCE of the narration: nothing invented, nothing reordered, no term the script did not
+ * say. That is what keeps it on the right side of R91 §3 — a builder may not introduce content —
+ * and it is why this is not a second query generator.
+ *
+ * Only function words are dropped. They are a closed grammatical class carrying no subject, which
+ * is exactly why FUNCTION_WORDS exists and why it is safe to strip by. PRODUCTION_VOCABULARY is
+ * deliberately NOT used here: that set says which words need no evidence, not which words carry no
+ * meaning, and stripping by it would delete "black" from a black market and "period" from a period
+ * of famine.
+ *
+ * Cutting on whole words makes "more tha" structurally impossible rather than merely unlikely.
+ *
+ * ── Why it can return nothing ───────────────────────────────────────────────────────────────
+ *
+ * A sentence whose remaining words are all production vocabulary ("the archival footage was
+ * restored") describes the film and names no subject. `hasContentAnchor` — the same helper the
+ * gate uses, so the two cannot drift — refuses it, and the honest answer is an empty string. The
+ * caller must then emit NO query, not fall back to the raw sentence: that fallback is the defect.
+ */
+export function contentTermsFromText(text: string, maxTerms = 4): string {
+  if (maxTerms <= 0) return "";
+  const words = queryProper(text ?? "")
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    .filter(Boolean);
+  const kept: string[] = [];
+  for (const w of words) {
+    /** Same rule as `hasContentAnchor`: a token with no letter and no digit is not a term. */
+    if (!/[\p{L}\p{N}]/u.test(w)) continue;
+    if (isFunctionWord(w)) continue;
+    kept.push(w);
+    if (kept.length >= maxTerms) break;
+  }
+  const query = kept.join(" ");
+  return hasContentAnchor(query) ? query : "";
 }
 
 /**

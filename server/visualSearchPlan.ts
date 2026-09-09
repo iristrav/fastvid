@@ -12,6 +12,7 @@ import {
   analyzeBeatSemanticsFallback,
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
+import { contentTermsFromText } from "./searchQueryContract";
 import { invokeLLM } from "./_core/llm";
 import { getActiveVideoId } from "./videoGenerationCancel";
 
@@ -103,6 +104,17 @@ export function clearVisualSearchPlanCacheForVideo(videoId: number): void {
 export function visualSearchPlanEnabled(): boolean {
   return process.env.VISUAL_SEARCH_PLAN_ENABLED !== "false";
 }
+
+/**
+ * RONDE 213 — how many of the narration's own words become a query.
+ *
+ * Four is this codebase's existing answer to the same question, not a new number: both
+ * `curatedMediaSourcing` and `vidrushQuality` already take `extractSalientBeatTokens(...).slice(0, 4)`
+ * when they turn a spoken sentence into search terms. A neighbouring beat is weaker evidence about
+ * THIS shot, so it contributes fewer.
+ */
+const BEAT_QUERY_TERMS = 4;
+const ADJACENT_QUERY_TERMS = 3;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -236,10 +248,19 @@ function planFromProfile(
   const tier2 = dedupStrings(profile.searchTiers[2] ?? []);
   const restTiers = dedupStrings(profile.searchTiers.slice(3).flat());
 
-  // Primary: highest confidence — direct match from beat text + tier0
+  /**
+   * Primary: highest confidence — direct match from beat text + tier0.
+   *
+   * RONDE 213: the second entry used to be `input.beatText.slice(0, 80)` — the narration itself,
+   * cut mid-word, at confidence 0.85, which put a whole English sentence at the front of the round
+   * every provider is asked first. It is now the sentence's own content words, in the sentence's
+   * own order, capped at four. `contentTermsFromText` returns "" for a sentence that names no
+   * subject, and an empty query is dropped rather than replaced by the raw text.
+   */
+  const beatTerms = contentTermsFromText(input.beatText, BEAT_QUERY_TERMS);
   const primary = dedupScored([
     ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
-    scored(input.beatText.slice(0, 80), 0.85, "verbatim beat text"),
+    ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
   ]).slice(0, 6);
 
   // Secondary: synonyms/variations + named persons
@@ -255,14 +276,20 @@ function planFromProfile(
     ...e.objects.map((q) => scored(q, 0.55, "detected object")),
   ]).slice(0, 8);
 
-  // Context: adjacent beats + video-level context
+  /**
+   * Context: adjacent beats + video-level context.
+   *
+   * RONDE 213: the same two sentence fragments, cut at 60 characters instead of 80. A neighbouring
+   * beat is weaker evidence than this one, so it gets fewer terms — but it is reduced the same way,
+   * because a truncated sentence is no better a query at confidence 0.5 than at 0.85.
+   */
+  const adjacentTerms = (text: string | undefined): string =>
+    text ? contentTermsFromText(text, ADJACENT_QUERY_TERMS) : "";
+  const prevTerms = adjacentTerms(input.adjacentContext?.prevBeat);
+  const nextTerms = adjacentTerms(input.adjacentContext?.nextBeat);
   const contextQueries = dedupScored([
-    ...(input.adjacentContext?.prevBeat
-      ? [scored(input.adjacentContext.prevBeat.slice(0, 60), 0.5, "previous beat context")]
-      : []),
-    ...(input.adjacentContext?.nextBeat
-      ? [scored(input.adjacentContext.nextBeat.slice(0, 60), 0.45, "next beat context")]
-      : []),
+    ...(prevTerms ? [scored(prevTerms, 0.5, "previous beat context")] : []),
+    ...(nextTerms ? [scored(nextTerms, 0.45, "next beat context")] : []),
   ]).slice(0, 4);
 
   // Historical: era, period, locations, companies
@@ -425,10 +452,19 @@ export async function getOrGenerateSearchPlan(
   if (cached) return cached;
 
   if (!visualSearchPlanEnabled()) {
+    /**
+     * RONDE 213 — the worst case of the same defect: with the plan switched off this was the ONLY
+     * query the beat ever had, at confidence 1, and it was the raw sentence. A beat whose narration
+     * names no subject now searches for nothing here rather than for its own truncated grammar; the
+     * rescue ladder below it is what such a beat has always relied on.
+     *
+     * `intent` is a label for the log, not a query, so it keeps the readable sentence.
+     */
+    const planless = contentTermsFromText(input.beatText, BEAT_QUERY_TERMS);
     const empty: VisualSearchPlan = {
       intent: input.beatText.slice(0, 80),
       reasoning: "",
-      primary: [scored(input.beatText.slice(0, 80), 1, "verbatim beat text")],
+      primary: planless ? [scored(planless, 1, "content terms from narration")] : [],
       secondary: [],
       concepts: [],
       context: [],

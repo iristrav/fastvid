@@ -428,6 +428,7 @@ import {
   withRenderTopic,
   withSearchProvenance,
   withQueryScope,
+  contentTermsFromText,
   isFunctionWord,
   isPronounToken,
   provenToken,
@@ -32421,14 +32422,21 @@ async function rescueBeatVisualWhenEmptyInner(
 
   // Wikimedia rescue — try plan queries, then the P0 query-escalation tiers (entity+event,
   // entity+location, event+location+date, historical context, object context — see
-  // buildBeatQueryEscalationTiers), then the original truncated-beat-text query as the final,
-  // most generic attempt — a failed narrower query no longer ends the rescue early since each
-  // tier is tried in turn before falling through to color/placeholder.
+  // buildBeatQueryEscalationTiers), then the beat's own content words as the final, most generic
+  // attempt — a failed narrower query no longer ends the rescue early since each tier is tried in
+  // turn before falling through to color/placeholder.
+  //
+  // RONDE 213: that last entry used to be `beat.text.slice(0, 80)` — the narration itself, cut
+  // mid-word. Being the last resort made it defensible as a POSITION and never made it a usable
+  // query: a truncated sentence is no likelier to match a Wikimedia file than an untruncated one.
+  // It is now the same reduction the search plan uses, so the two cannot mean different things by
+  // "the beat's own words", and an empty result adds no query at all.
   try {
     const wikiQueries: string[] = [];
     if (scene.pexelsQueries?.length) wikiQueries.push(...scene.pexelsQueries.slice(0, 3));
     wikiQueries.push(...buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle));
-    wikiQueries.push(beat.text.slice(0, 80));
+    const beatTerms = contentTermsFromText(beat.text);
+    if (beatTerms) wikiQueries.push(beatTerms);
     for (const q of Array.from(new Set(wikiQueries))) {
       const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { dedup, beatIndex: beat.index });
       if (wikiClips.length > 0) {

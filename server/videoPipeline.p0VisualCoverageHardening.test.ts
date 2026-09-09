@@ -160,10 +160,22 @@ describe("Test 3/4/5/6 — a rejected/failed candidate only eliminates that cand
 });
 
 describe("Test 7 — contextual/escalated query is used before the blue fallback", () => {
-  it("rescueBeatVisualWhenEmpty's Wikimedia rescue tries the escalation tiers before the generic truncated-beat-text query, and every rescue tier runs before the placeholder loop", () => {
+  it("rescueBeatVisualWhenEmpty's Wikimedia rescue tries the escalation tiers before the generic beat-text query, and every rescue tier runs before the placeholder loop", () => {
+    /**
+     * RONDE 213 — the ordering this test guards is UNCHANGED and still the point: the narrow,
+     * escalated queries are tried first, the beat's own generic words last, and every rescue tier
+     * before the placeholder loop.
+     *
+     * What changed underneath it is only what that last query IS. It used to be
+     * `wikiQueries.push(beat.text.slice(0, 80))` — the narration sentence, cut mid-word — and this
+     * test named it "the truncated-beat-text query" because that is what it was. It is now the
+     * beat's content words via `contentTermsFromText`, so the anchor moves with it. Being last was
+     * always the right POSITION for the most generic attempt; it was never a reason for that
+     * attempt to be a broken sentence.
+     */
     const src = extractFunctionSource("rescueBeatVisualWhenEmpty");
     const escalationIdx = src.indexOf("buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle)");
-    const genericWikiIdx = src.indexOf("wikiQueries.push(beat.text.slice(0, 80))");
+    const genericWikiIdx = src.indexOf("if (beatTerms) wikiQueries.push(beatTerms)");
     const placeholderLoopIdx = src.indexOf("for (let attempt = 0; attempt < 4; attempt++)");
     expect(escalationIdx).toBeGreaterThan(-1);
     expect(genericWikiIdx).toBeGreaterThan(-1);
