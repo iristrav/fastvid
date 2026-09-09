@@ -289,7 +289,21 @@ export type AssetDirectorContext = {
   activeEntity?: string | null;
   activeLocation?: string | null;
   activeEra?: string | null;
-  targetMotionLevel?: number | null;
+  /**
+   * HOW MUCH MOVEMENT THIS BEAT WAS PLANNED FOR, as the band the planner actually produced.
+   *
+   * ── Why a range and not the level it used to be ─────────────────────────────────────────────
+   *
+   * Both producers give a band. `RetrievalContract.motionRange` is documented as "[min, max]
+   * motion level 0–100 for this beat"; `RhythmProfile.motionTargets` is "Desired motionLevel
+   * range per beat: [min, max] 0–100". The old field was a single number, so the pipeline took a
+   * midpoint of one of them and threw the width away — and then nothing read even that.
+   *
+   * A band is the right shape for the question. "This beat wants stillness" is 0–25, not 12, and a
+   * clip at 20 is exactly as correct as one at 5. Scoring against a midpoint would penalise both
+   * ends of a range the planner deliberately left wide.
+   */
+  targetMotionRange?: readonly [number, number] | null;
   plannedShotType?: string | null;
   callbacksPlaced: Map<string, number>;
   /**
@@ -351,6 +365,10 @@ export type AssetScore = {
     diversityModifier: number;
     budgetPenalty: number;
     editorialMemoryBonus: number;
+    /** R195 — planned movement band vs this clip's own level (+4 in band, down to −6 outside). */
+    motionModifier: number;
+    /** What `inferMotionLevel` read, or null when nothing could say. Never inferred from the score. */
+    motionLevel: number | null;
     // ── v4 Archive Metadata bonuses ───────────────────────────────────────────
     /** Best segment embedding similarity bonus (+0 to +6). */
     segmentBonus: number;
@@ -468,6 +486,61 @@ function inferMotionLevel(clipPath: string, meta?: CandidateMeta): number | null
   if (WIDE_RE.test(base)) return 50;
   if (CLOSE_RE.test(base)) return 30;
   return null;
+}
+
+/**
+ * R195 — DOES THIS CLIP MOVE THE WAY THE BEAT WAS PLANNED TO?
+ *
+ * ── Four parts of one feature, none of them joined up ────────────────────────────────────────
+ *
+ * Every piece of motion matching already existed and not one of them touched another:
+ *
+ *   · `RetrievalContract.motionRange` — computed by `motionRangeForAct`, printed in the plan log,
+ *     read by no scorer. `scoreRetrievalContract` weighs mustContain, shouldContain, targetEmotion
+ *     and forbiddenContent, and steps straight past the motion band.
+ *   · `RhythmProfile.motionTargets` — the second producer, written into `beatRhythmTargets` during
+ *     COMPOSE, with the comment "so AssetDirector can use them during retrieval". Retrieval for
+ *     that scene has finished by then, so the reader always saw an empty map.
+ *   · the context's own motion field — set from that empty map, read by nothing here.
+ *   · `inferMotionLevel` — declared in this file, never called once.
+ *
+ * A target with no reader, a second target that arrives too late, a context field nobody consults,
+ * and a candidate measurement nobody asks for. This joins them; it invents no measurement. Both
+ * sides are already 0–100 on the same scale — that is why `motionRange` was typed as a pair of
+ * them and `motionLevel` as one of them.
+ *
+ * ── The size of it ──────────────────────────────────────────────────────────────────────────
+ *
+ * Bounded and deliberately modest, in the family of the flat modifiers beside it (diversity
+ * +8…−12, budget −30, contract +5…−4). Movement is a real editorial signal and it is not the
+ * subject of the shot: a clip that matches the beat's meaning at the wrong pace should slip, not
+ * vanish.
+ *
+ * Silence when either side is unknown. A candidate nobody annotated and no filename cue describes
+ * returns null from `inferMotionLevel`, and a beat with no plan has no band — in both cases there
+ * is nothing to compare and the modifier is zero rather than a guess in either direction.
+ */
+function computeMotionModifier(
+  clipPath: string,
+  ctx: AssetDirectorContext,
+  meta?: CandidateMeta
+): { modifier: number; measured: number | null; detail: string } {
+  const band = ctx.targetMotionRange;
+  const measured = inferMotionLevel(clipPath, meta);
+  if (!band || measured == null) return { modifier: 0, measured, detail: "" };
+  const lo = Math.min(band[0], band[1]);
+  const hi = Math.max(band[0], band[1]);
+  if (measured >= lo && measured <= hi) {
+    return { modifier: 4, measured, detail: `motion ${measured} in plan [${lo},${hi}]` };
+  }
+  const miss = measured < lo ? lo - measured : measured - hi;
+  /** One step per twenty points outside the band, floored — a miss is a slip, not a veto. */
+  const modifier = -Math.min(6, Math.ceil(miss / 20) * 2);
+  return {
+    modifier,
+    measured,
+    detail: `motion ${measured} outside plan [${lo},${hi}] by ${miss}`,
+  };
 }
 
 // ─── Annotation fingerprint scorer (40%) ──────────────────────────────────────
@@ -971,6 +1044,8 @@ function scoreCandidate(
   const diversityModifier   = computeDiversityModifier(clipPath, ctx.usedCategories);
   const budgetPenalty       = computeBudgetPenalty(clipPath, ctx.budgetTracker);
   const editorialMemoryBonus = computeEditorialMemoryBonus(clipPath, meta, ctx.editorialMemory);
+  /** R195 — the planned movement band, against what this candidate actually does. See above. */
+  const motion = computeMotionModifier(clipPath, ctx, meta);
 
   // ── v4/v6/v7 Archive Metadata + Editorial Capability + Temporal bonuses ──
   const beatDecomposition = editorialIntentEnabled() ? decomposeQueryBeat(beatText) : undefined;
@@ -1013,7 +1088,8 @@ function scoreCandidate(
     blueprint  * WEIGHTS.blueprint;
 
   const finalScore = Math.max(0, Math.min(100, Math.round(
-    weighted + diversityModifier + budgetPenalty + editorialMemoryBonus + v4.total + contractBonus + contractPenalty
+    weighted + diversityModifier + budgetPenalty + editorialMemoryBonus + motion.modifier +
+      v4.total + contractBonus + contractPenalty
   )));
 
   // ── Reasons ───────────────────────────────────────────────────────────────
@@ -1026,6 +1102,7 @@ function scoreCandidate(
   if (shotVariety >= 95)     reasons.push("introduces new shot type");
   if (blueprint >= 90)       reasons.push(`matches blueprint type`);
   if (editorialMemoryBonus >= 6) reasons.push("continues previous scene style");
+  if (motion.detail) reasons.push(motion.detail);
   if (ctx.plannedShotType && shotType.includes(ctx.plannedShotType.split(" ")[0]!)) {
     reasons.push(`matches planned shot: ${ctx.plannedShotType}`);
   }
@@ -1060,6 +1137,8 @@ function scoreCandidate(
       diversityModifier,
       budgetPenalty,
       editorialMemoryBonus,
+      motionModifier:   motion.modifier,
+      motionLevel:      motion.measured,
       segmentBonus:     v4.segmentBonus,
       faceBonus:        v4.faceBonus,
       objectBonus:      v4.objectBonus,

@@ -265,73 +265,52 @@ describe("narration running past the picture is reported", () => {
 
 /* ═══════════════════ what the audit proved and did not repair ═══════════════════ */
 
-describe("the remaining findings are named, not quietly closed", () => {
+describe("the findings this round named have since been closed", () => {
   /**
-   * P2 — THE VISUAL RHYTHM ENGINE'S MOTION TARGET REACHES NOBODY.
+   * R196 INVERTED ALL THREE, and the correction on the first is worth stating.
    *
-   * Two breaks in one chain. `beatRhythmTargets` is written once, in the compose stage, with the
-   * comment "so AssetDirector can use them during retrieval" — and retrieval for that scene has
-   * already finished by then, so `_rhythmTarget` reads a key nothing has written yet. And even
-   * with a value, `targetMotionLevel` is declared on the context and read by no scorer at all.
+   * R195 reported the motion chain as needing a new scoring rule. Reading further found four
+   * existing parts of one feature with no joins between them — a target with no reader, a second
+   * target written after the read, a context field nobody consulted, and `inferMotionLevel`,
+   * declared and never called. Joining them is a carry, not an invention: both sides were already
+   * 0–100 on the same scale. The same held for the two expectation lists, whose producers
+   * (`shotSearchTerms`, `planSceneAudio`) already existed. Only the feature matrix genuinely
+   * needed the decision R195 described, and it got one.
    *
-   * Not repaired here: making it count means deciding how motion should weigh against the other
-   * signals, which is a new scoring rule, and this round may not invent one. Invert these two when
-   * that rule exists.
+   * The assertions below are the inverted ones. `r196MotionMatrixAndExpectations.test.ts` carries
+   * the behaviour; these keep the record of what was closed.
    */
-  it("targetMotionLevel is set on the context and read by no scorer", () => {
-    expect(DIRECTOR).toContain("targetMotionLevel?: number | null;");
-    expect(PIPE).toContain("targetMotionLevel: _rhythmTarget ?? null,");
+  it("the planned movement band now reaches a scorer", () => {
+    expect(DIRECTOR).toContain("targetMotionRange?: readonly [number, number] | null;");
+    expect(PIPE).toContain("targetMotionRange: _contract?.motionRange ?? _rhythmBand ?? null,");
     expect(
-      (DIRECTOR.match(/ctx\.targetMotionLevel/g) ?? []).length,
-      "a scorer now reads it — invert this test"
-    ).toBe(0);
+      (DIRECTOR.match(/ctx\.targetMotionRange/g) ?? []).length,
+      "the band lost its reader again"
+    ).toBeGreaterThan(0);
   });
 
-  it("the rhythm targets are written after the retrieval that reads them", () => {
-    const write = PIPE.indexOf("visualDedup.beatRhythmTargets.set(");
-    const read = PIPE.indexOf("dedup.beatRhythmTargets?.get(");
-    expect(write, "the only writer is gone").toBeGreaterThan(-1);
-    expect(read, "the only reader is gone").toBeGreaterThan(-1);
+  it("the band no longer waits for a write that comes after the read", () => {
+    const lazy = PIPE.indexOf("const _rhythmBand = ((): readonly [number, number] | null => {");
+    expect(lazy, "the read-time derivation is gone").toBeGreaterThan(-1);
     expect(
       (PIPE.match(/beatRhythmTargets\.set\(/g) ?? []).length,
-      "an earlier writer appeared — invert this test"
-    ).toBe(1);
+      "a third writer appeared — the record must stay one derivation plus one refresh"
+    ).toBe(2);
   });
 
-  /**
-   * P3 — THE FEATURE MATRIX IS AN INVARIANT NO RENDER CAN BREAK.
-   *
-   * `renderContract.ts` carries a full enabled → planned → executed → delivered → verified
-   * monotonicity check, an UNEXPLAINED_GAP rule, and `musicFeatureStatus`, which is the honest
-   * statement that this build has no music catalogue. Nothing in production builds a matrix, so
-   * none of it can fire. Not repaired here: filling it in means deciding, per feature, what each
-   * of the five states means, which is not a small change.
-   */
-  it("no production module builds a feature matrix", () => {
+  it("a render builds a feature matrix, so its invariant can fire", () => {
     const contract = readFileSync(path.join(__dirname, "renderContract.ts"), "utf8");
     expect(contract).toContain("export function featureMatrixViolations(");
     expect(contract).toContain("export function musicFeatureStatus(");
-    expect(
-      PIPE.includes("formatFeatureMatrix(") || PIPE.includes("featureMatrixViolations("),
-      "the pipeline now builds one — invert this test"
-    ).toBe(false);
+    expect(contract).toContain("export function buildRenderFeatureMatrix(");
+    expect(PIPE).toContain("const matrix = buildRenderFeatureMatrix({");
+    expect(PIPE).toContain("formatFeatureMatrix(matrix)");
   });
 
-  /**
-   * P3 — TWO RANKING INPUTS WITH READERS AND NO WRITER, LEFT ALONE ON PURPOSE.
-   *
-   * `expectedAudioTypes` and `expectedCinematicTags` are read by `computeArchiveMetadataScores`
-   * and set by nothing. Unlike `beatDurationSec`, the value does not already exist anywhere: the
-   * blueprint directive carries a `visualType`, not a list of cinematic tags, so supplying them
-   * means inventing a mapping — a new scoring rule, which this round may not add.
-   */
-  it("the two expectation lists still have no producer", () => {
+  it("both expectation lists have a producer", () => {
     expect(DIRECTOR).toContain("expectedAudioTypes?: string[];");
     expect(DIRECTOR).toContain("expectedCinematicTags?: string[];");
-    for (const field of ["expectedAudioTypes", "expectedCinematicTags"]) {
-      expect(PIPE.includes(`${field}:`), `${field} now has a producer — invert this test`).toBe(
-        false
-      );
-    }
+    expect(PIPE).toContain("expectedCinematicTags: [...shotSearchTerms(_plannedShot)],");
+    expect(PIPE).toContain("expectedAudioTypes: beatExpectedAudioTypes(");
   });
 });

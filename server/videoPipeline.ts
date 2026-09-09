@@ -303,7 +303,7 @@ import {
   clearVisualSearchPlanCacheForVideo,
   type VideoVisualContext,
 } from "./visualSearchPlan";
-import { normaliseShotType, withPlannedShot } from "./shotVocabulary";
+import { normaliseShotType, shotSearchTerms, withPlannedShot } from "./shotVocabulary";
 import { formatVisionCensus, getVisionCensus, newVisionCensus, withVisionCensus } from "./visionCensus";
 import { formatProviderFunnel, providerVisionFunnel } from "./providerFunnel";
 import {
@@ -318,7 +318,9 @@ import {
   editorialReorderEnabled,
 } from "./editorialReorder";
 import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequenceOptimizer";
-import { applyVisualRhythm, visualRhythmEngineEnabled } from "./visualRhythmEngine";
+import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
+import { planSceneAudio } from "./cinematicAudio/planner";
+import { buildRenderFeatureMatrix, formatFeatureMatrix } from "./renderContract";
 import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
@@ -13564,6 +13566,65 @@ async function beatClipPassesImageGate(
  * the honest answer: absent evidence is not evidence of a fit, and it is not evidence of a
  * mismatch either.
  */
+/**
+ * R195 — WHAT THIS BEAT WAS PLANNED TO SOUND LIKE, WHICH THE RANKING ASKED FOR AND NEVER GOT.
+ *
+ * `expectedAudioTypes` is documented on AssetDirectorContext as "Expected audio event types for
+ * this beat (e.g. ["crowd", "speech"]). Used by archiveMetadataScorer to boost clips with matching
+ * audio." `scoreAudioMatch` reads it and gives +3 per hit. Nothing ever set it, so that branch was
+ * dead and only the beat-text keyword fallback beside it ever ran.
+ *
+ * The producer already existed and was simply never asked at this point in the pipeline:
+ * `planSceneAudio` is the ambience planner's own classifier. It reads the scene's narration and
+ * the beats' own words and returns exactly this vocabulary — the sound categories that belong
+ * under this scene, plus the object sounds it placed on individual beats. Nothing here classifies
+ * anything; it asks the existing planner and hands the answer to the existing scorer.
+ *
+ * Memoised per scene on the render's own state, so a scene is classified once rather than once per
+ * candidate. A scene with nothing to read yields an empty list, which is the honest answer: no
+ * expectation is not a wrong expectation, and the scorer treats an empty list as nothing to say.
+ */
+function beatExpectedAudioTypes(
+  dedup: VisualDedupState,
+  sceneIndex: number,
+  beatIndex: number,
+  sceneText: string | undefined
+): string[] {
+  let plan = dedup.sceneSoundPlans.get(sceneIndex);
+  if (!plan) {
+    const beats = dedup.sceneBeatsBySceneIndex.get(sceneIndex) ?? [];
+    const text = (sceneText ?? "").trim();
+    if (!text && beats.length === 0) return [];
+    const sound = planSceneAudio({
+      index: sceneIndex,
+      text: text || beats.map((b) => b.text).join(" "),
+      duration: beats.reduce((sum, b) => sum + (b.holdSec ?? 0), 0),
+      beats: beats.map((b) => ({
+        text: b.text,
+        voiceStartSec: b.voiceStartSec,
+        voiceEndSec: b.voiceEndSec,
+        holdSec: b.holdSec,
+      })),
+    });
+    plan = { ambience: [...sound.ambience], objectSounds: [...sound.objectSounds] };
+    dedup.sceneSoundPlans.set(sceneIndex, plan);
+  }
+  /**
+   * The scene's room tone applies to every beat in it; an object sound applies to the beat it was
+   * scheduled on. Matched by the beat's own voice window, because that is the handle
+   * `planSceneAudio` placed them with — not by position, which a re-cut would silently shift.
+   */
+  const beat = dedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex];
+  const start = beat?.voiceStartSec ?? null;
+  const onThisBeat =
+    start == null
+      ? []
+      : plan.objectSounds
+          .filter((o) => Math.abs(o.startSec - start) < 0.001)
+          .map((o) => o.category);
+  return [...new Set([...plan.ambience, ...onThisBeat])];
+}
+
 function beatVisionEvidenceFor(
   dedup: VisualDedupState,
   clipPath: string,
@@ -18120,8 +18181,34 @@ export interface VisualDedupState {
   assetDirectorCallbacksPlaced: Map<string, number>;
   /** Annotation metadata keyed by local clip path — populated when archive clips are prepared. */
   clipAnnotationMeta: Map<string, CandidateMeta>;
-  /** Motion target (0–100) from VisualRhythmEngine, keyed by "s{si}b{bi}". */
-  beatRhythmTargets: Map<string, number>;
+  /**
+   * Planned movement band [min, max] 0–100 from VisualRhythmEngine, keyed by "s{si}b{bi}".
+   *
+   * R195 — the band, not a midpoint. `RhythmProfile.motionTargets` produces
+   * `Array<[number, number]>` and this map used to store `Math.round((min + max) / 2)`, throwing
+   * the width away before anything read it. "This beat wants stillness" is 0–25, not 12.
+   *
+   * Filled lazily by `adoptClip` when a beat is first ranked, because the compose-stage writer
+   * below runs AFTER the retrieval that reads it — its own comment says "so AssetDirector can use
+   * them during retrieval", and by then that scene's retrieval is over.
+   */
+  beatRhythmTargets: Map<string, readonly [number, number]>;
+  /**
+   * R195 — what each scene was planned to SOUND like, memoised per scene index.
+   *
+   * `planSceneAudio` is the existing classifier the ambience planner already uses; it reads the
+   * scene's own narration and returns the sound categories that belong under it. The ranking's
+   * `expectedAudioTypes` wanted exactly that and had no producer, so this is the producer — the
+   * same answer, asked once per scene instead of once per candidate.
+   */
+  sceneSoundPlans: Map<number, { ambience: string[]; objectSounds: Array<{ category: string; startSec: number; durationSec: number }> }>;
+  /**
+   * R195 — beats that were given a movement band, and beats where a candidate could be measured
+   * against it. Two numbers rather than one, because "nobody planned" and "nothing could be
+   * measured" are opposite findings and the feature matrix has to tell them apart.
+   */
+  motionBandBeats: Set<string>;
+  motionScoredBeats: Set<string>;
   /** Pre-generated graphic clips keyed by "s{sceneIndex}b{beatIndex}". */
   graphicClips: Map<string, string>;
   /** Aggregate usage stats for the editorial graphics engine. */
@@ -18430,6 +18517,9 @@ export function createVisualDedupState(
     assetDirectorCallbacksPlaced: new Map(),
     clipAnnotationMeta: new Map(),
     beatRhythmTargets: new Map(),
+    sceneSoundPlans: new Map(),
+    motionBandBeats: new Set<string>(),
+    motionScoredBeats: new Set<string>(),
     graphicClips: new Map(),
     graphicsUsageSummary: emptyUsageSummary(),
     consecutiveArchiveBeats: 0,
@@ -23758,7 +23848,29 @@ async function adoptClip(
 
   // Pull per-beat data from planning layers (storyboard + rhythm)
   const _shot = getShotForBeat(sceneIndex, beatIndex);
-  const _rhythmTarget = dedup.beatRhythmTargets?.get(`s${sceneIndex}b${beatIndex}`) ?? null;
+  /**
+   * R195 — THE PLANNED MOVEMENT BAND, READ WHERE IT IS ACTUALLY NEEDED.
+   *
+   * The rhythm engine's own writer runs in the COMPOSE stage, and its comment says the targets are
+   * stored "so AssetDirector can use them during retrieval" — which had already finished for that
+   * scene, so this lookup always missed. `buildRhythmProfile` is documented as "Pure analysis —
+   * does not modify any state" and needs nothing but the beat texts, which this render has had
+   * since `sceneBeatsBySceneIndex` was written. So the band is derived here on first use and
+   * memoised in the same map, rather than waiting for a write that comes too late.
+   */
+  const _rhythmBand = ((): readonly [number, number] | null => {
+    const key = `s${sceneIndex}b${beatIndex}`;
+    const known = dedup.beatRhythmTargets?.get(key);
+    if (known) return known;
+    if (!visualRhythmEngineEnabled()) return null;
+    const beats = dedup.sceneBeatsBySceneIndex.get(sceneIndex);
+    if (!beats?.length) return null;
+    const profile = buildRhythmProfile(beats.map((b) => b.text));
+    profile.motionTargets.forEach((band, bi) => {
+      dedup.beatRhythmTargets.set(`s${sceneIndex}b${bi}`, band);
+    });
+    return dedup.beatRhythmTargets.get(key) ?? null;
+  })();
   /**
    * The retrieval contract and the beat's intent are resolved ABOVE, before the sort, because
    * RONDE 96's ranking reads them. See the note there; `_contract` still answers the two
@@ -23797,8 +23909,33 @@ async function adoptClip(
     activeEntity: dedup.assetDirectorActiveEntity,
     activeLocation: dedup.assetDirectorActiveLocation,
     activeEra: dedup.assetDirectorActiveEra,
-    targetMotionLevel: _rhythmTarget ?? null,
+    /**
+     * R195 — THE PLANNED MOVEMENT BAND, FROM WHICHEVER PLANNER ACTUALLY PLANNED IT.
+     *
+     * Two producers, stated in precedence rather than merged. `RetrievalContract.motionRange` is
+     * the more specific: the Documentary Planning Engine derived it from this beat's narrative act
+     * and visual goal, and it is resolved before retrieval. `RhythmProfile.motionTargets` is the
+     * general one, read from the beat's own energy words, and it stands when there is no contract.
+     *
+     * Both are already `[min, max]` on a 0–100 scale, and so is the `motionLevel` the scorer reads
+     * off the candidate. Nothing is converted, weighted or invented on the way here.
+     */
+    targetMotionRange: _contract?.motionRange ?? _rhythmBand ?? null,
     plannedShotType: _plannedShot,
+    /**
+     * R195 — THE FRAMING THIS BEAT WAS PLANNED FOR, IN THE WORDS THE ANNOTATIONS USE.
+     *
+     * `expectedCinematicTags` is documented as "Set from blueprint visual type or editorial
+     * directive" and had no producer, so `scoreCinematicTags`' direct-match branch never fired.
+     * `shotSearchTerms` is the existing vocabulary for exactly this: the canonical phrasing of a
+     * framing ("establishing shot", "wide shot", "aerial", "archival footage"), already asserted
+     * to be gate-safe by `subjectSearchTerms.test.ts`, and already the words the scorer's own
+     * CINEMATIC_KEYWORD_MAP matches against. So this is the planned shot in the annotation's
+     * vocabulary, not a mapping invented here — and a framing with no phrasing returns an empty
+     * list, which the scorer reads as nothing to say.
+     */
+    expectedCinematicTags: [...shotSearchTerms(_plannedShot)],
+    expectedAudioTypes: beatExpectedAudioTypes(dedup, sceneIndex, beatIndex, opts.sceneText),
     /**
      * The framings of the shots already in this scene, as a model saw them.
      *
@@ -23837,6 +23974,18 @@ async function adoptClip(
     beatDurationSec: dedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex]?.holdSec,
   };
   const adResult = rankCandidatesWithContext(sortedPaths, beatText, sceneIndex, beatIndex, adCtx, dedup.clipAnnotationMeta);
+  /**
+   * R195 — whether the movement plan reached a candidate, recorded where the answer is known.
+   *
+   * `motionLevel` on the breakdown is what `inferMotionLevel` read, or null when neither an
+   * annotation nor a filename cue could say. Two sets rather than a single counter: a beat nobody
+   * planned a band for and a beat whose candidates could not be measured need opposite fixes, and
+   * the feature matrix reports them as different gaps.
+   */
+  if (adCtx.targetMotionRange) dedup.motionBandBeats.add(`s${sceneIndex}b${beatIndex}`);
+  if (adResult.topScore?.breakdown.motionLevel != null) {
+    dedup.motionScoredBeats.add(`s${sceneIndex}b${beatIndex}`);
+  }
   if (adResult.reordered && adResult.topScore) {
     logAssetDirectorChoice(adResult.rankedPaths[0]!, sceneIndex, beatIndex, beatText, adResult.topScore);
   }
@@ -40791,10 +40940,14 @@ async function _runVideoPipelineInner(
                   if (beatTexts.length > 0) {
                     const rr = applyVisualRhythm(scene.index, beatTexts, svr.beatDurations);
                     svr = { ...svr, beatDurations: rr.beatDurations };
-                    // Store per-beat motion targets so AssetDirector can use them during retrieval
-                    rr.profile.motionTargets.forEach(([min, max], bi) => {
-                      const mid = Math.round((min + max) / 2);
-                      visualDedup.beatRhythmTargets.set(`s${scene.index}b${bi}`, mid);
+                    /**
+                     * Store per-beat motion bands. R195: the whole band, not a midpoint — and
+                     * `adoptClip` no longer depends on this write, because it happens after that
+                     * scene's retrieval. It fills the map itself when a beat is first ranked; this
+                     * keeps the record in step for any re-source that follows a coverage repair.
+                     */
+                    rr.profile.motionTargets.forEach((band, bi) => {
+                      visualDedup.beatRhythmTargets.set(`s${scene.index}b${bi}`, band);
                     });
                   }
                 }
@@ -44079,6 +44232,14 @@ async function _runVideoPipelineInner(
      * decided rather than inferred from this being null.
      */
     let cinematicDeliveredUrl: string | null = null;
+    /**
+     * R195 — the two states between "the route is on" and "the viewer got its output".
+     *
+     * Recorded where they happen rather than inferred at the end from `cinematicDeliveredUrl`,
+     * because the whole point of the feature matrix is that a plan that was never rendered and a
+     * render that never delivered are different failures with different fixes.
+     */
+    const cinematicProgress = { enabled: false, planned: false, rendered: false };
     try {
       const {
         planAndStoreCinematicTimeline,
@@ -44335,6 +44496,8 @@ async function _runVideoPipelineInner(
          * poll loop takes must find the same lineage the in-process render would have found.
          */
         if (outcome.ok) {
+          /** R195 — a timeline exists. Whether anything renders from it is the next state. */
+          cinematicProgress.planned = true;
           try {
             const ledger = visualDedup.sourcingCache?.lineage;
             if (ledger) {
@@ -44374,7 +44537,9 @@ async function _runVideoPipelineInner(
         let cutover: Awaited<ReturnType<typeof enqueueCinematicRender>> | null = null;
         /** Why the delivered file is NOT the cinematic render, when it is not. Never left empty. */
         let cinematicRefusal: string | null = null;
-        if (outcome.ok && cinematicRenderPathEnabled()) {
+        /** R195 — read once, here, because the flag lives behind this block's dynamic import. */
+        cinematicProgress.enabled = cinematicRenderPathEnabled();
+        if (outcome.ok && cinematicProgress.enabled) {
           try {
             const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob } = await import("./db");
             cutover = await enqueueCinematicRender({
@@ -44545,6 +44710,8 @@ async function _runVideoPipelineInner(
                   });
                 } finally {
                   clearInterval(heartbeat);
+                  /** R195 — the renderer ran. Whether its output is delivered comes next. */
+                  cinematicProgress.rendered = true;
                 }
                 if (Date.now() - renderStartedAt > renderDeadlineMs && jobOutcome.ok) {
                   console.warn(
@@ -44803,6 +44970,76 @@ async function _runVideoPipelineInner(
       }
     } catch (err) {
       console.warn(`[Pipeline] BudgetTracker summary failed for ${videoId}:`, (err as Error).message);
+    }
+
+    /**
+     * R195 — WHAT THIS RENDER PROMISED, WHAT IT DID, AND WHAT REACHED THE VIEWER.
+     *
+     * ── An invariant that could not fire ────────────────────────────────────────────────────
+     *
+     * `renderContract.ts` has carried the enabled → planned → executed → delivered → verified
+     * monotonicity check, the UNEXPLAINED_GAP rule and `musicFeatureStatus` for several rounds,
+     * and nothing in production ever built a matrix for it to check. So DELIVERED_WITHOUT_EXECUTION
+     * could not be reported by any render, and the one statement the music blocker deserves —
+     * "this build has no catalogue, and a sine bed is not music" — never reached a report.
+     *
+     * ── Why here ────────────────────────────────────────────────────────────────────────────
+     *
+     * This is the last point where every state is settled: the cinematic cutover has decided, the
+     * delivered file has been measured, the quality report is final. Built earlier it would have to
+     * guess at `delivered`, which is the half the matrix exists for.
+     *
+     * Every fact below is read from something this render actually recorded. `verified` is false
+     * for all but `deliveredQC`, and that is the honest answer rather than a gap: nothing here
+     * reads the finished MP4 back and confirms a caption is on it.
+     */
+    try {
+      const funnel = [...visualDedup.beatShortlist.beats.values()];
+      const allBeats = [...visualDedup.sceneBeatsBySceneIndex.values()].flat();
+      const pools = [...visualDedup.visionReviewPool.beats.values()];
+      const soundPlans = [...visualDedup.sceneSoundPlans.values()];
+      const matrix = buildRenderFeatureMatrix({
+        beatsWithIntent: allBeats.filter((b) => (b.visualDescription ?? "").trim().length > 0).length,
+        beatsTotal: allBeats.length,
+        retrieved: funnel.reduce((n, f) => n + f.retrieved, 0),
+        eligible: funnel.reduce((n, f) => n + f.eligible, 0),
+        shortlisted: funnel.reduce((n, f) => n + f.shortlisted, 0),
+        visionEnabled: beatImageRelevanceGateEnabled(),
+        visionReviewPool: pools.reduce((n, p) => n + p.declared.length, 0),
+        visionAsked: funnel.reduce((n, f) => n + f.visionAsked, 0),
+        visionApproved: funnel.reduce((n, f) => n + f.approved, 0),
+        motionBandsPlanned: visualDedup.motionBandBeats.size,
+        motionScored: visualDedup.motionScoredBeats.size,
+        cinematicEnabled: cinematicProgress.enabled,
+        cinematicPlanned: cinematicProgress.planned,
+        cinematicRendered: cinematicProgress.rendered,
+        cinematicDelivered: cinematicDeliveredUrl != null,
+        captionsEnabled: enableSubtitles,
+        captionsPlanned: enableSubtitles ? allBeats.length : 0,
+        graphicsEnabled: visualDedup.graphicClips.size > 0,
+        graphicsPlanned: visualDedup.graphicClips.size,
+        graphicsDelivered: visualDedup.graphicsUsageSummary.total,
+        transitionsPlanned: Math.max(0, scenes.length - 1),
+        /** No catalogue is registered in this build — `musicFeatureStatus` states the consequence. */
+        musicCatalogueAvailable: false,
+        ambiencePlanned: soundPlans.filter((p) => p.ambience.length > 0).length,
+        ambienceUnavailable: 0,
+        sfxPlanned: soundPlans.reduce((n, p) => n + p.objectSounds.length, 0),
+        duckingApplied: soundPlans.some((p) => p.ambience.length > 0),
+        deliveredAvSyncMeasured: qualityReport.avSync != null,
+        deliveredSpotChecked: qualityReport.postRenderSpotCheck != null,
+        deliveredFileExists: Boolean(url),
+      });
+      for (const line of formatFeatureMatrix(matrix)) {
+        if (line.includes("WITHOUT") || line.includes("PLANNED_WHILE_DISABLED")) {
+          console.warn(pipelineReport.add("summary", line));
+        } else {
+          console.log(pipelineReport.add("summary", line));
+        }
+      }
+    } catch (err) {
+      /** A report that cannot be built must never cost a render that is otherwise complete. */
+      console.warn(`[FeatureMatrix] video=${videoId} not built: ${(err as Error).message}`);
     }
 
     await mergeVideoMetadata(videoId, {
