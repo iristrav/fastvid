@@ -50,8 +50,15 @@ describe("RONDE 20A — the compose-time rescue is wall-clock bounded", () => {
     );
     expect(fn).toContain("withSceneFetchTimeout");
     expect(fn).toContain("composeRescueWallClockMs(dedup.videoLength)");
-    // On timeout it returns the clips gathered so far rather than discarding them.
-    expect(fn).toContain("return { clips, beatDurations };");
+    /**
+     * On timeout it returns the clips gathered so far rather than discarding them.
+     *
+     * RONDE 217 wrapped this return in `record(...)`, which files what the pass yielded on the
+     * render's own state and returns its argument unchanged — so the guarantee this line exists
+     * for is untouched, and a capped pass is now remembered like any other. The anchor moves with
+     * the spelling; what it asserts does not.
+     */
+    expect(fn).toContain("return record({ clips, beatDurations });");
   });
 
   it("hands the wrapper's arrays to the inner so they can be filled in place", () => {
