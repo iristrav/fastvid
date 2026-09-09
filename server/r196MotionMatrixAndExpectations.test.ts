@@ -224,22 +224,33 @@ function facts(over: Partial<RenderFeatureFacts> = {}): RenderFeatureFacts {
     cinematicEnabled: true,
     cinematicPlanned: true,
     cinematicRendered: true,
-    cinematicDelivered: true,
     captionsEnabled: true,
     captionsPlanned: 12,
     graphicsEnabled: true,
     graphicsPlanned: 4,
-    graphicsDelivered: 4,
     transitionsPlanned: 3,
     musicCatalogueAvailable: false,
     ambiencePlanned: 3,
     ambienceUnavailable: 0,
     sfxPlanned: 2,
     duckingApplied: true,
-    deliveredAvSyncMeasured: true,
-    deliveredSpotChecked: true,
-    deliveredFileExists: true,
     ...over,
+    delivery: {
+      fileExists: true,
+      hasVideoStream: true,
+      hasAudioStream: true,
+      fromCinematicRender: true,
+      assetsInFinalVideo: 14,
+      captionsOnTimeline: 12,
+      graphicsOnTimeline: 4,
+      ambientClipsOnTimeline: 3,
+      sfxClipsOnTimeline: 2,
+      musicClipsOnTimeline: 0,
+      graphicsBurnedInByCompose: 0,
+      avSyncMeasured: true,
+      spotChecked: true,
+      ...(over.delivery ?? {}),
+    },
   };
 }
 
@@ -251,20 +262,20 @@ describe("the matrix says what was promised and what arrived", () => {
   /** The monotonicity the module was written for, now reachable from a real render. */
   it("a plan that never rendered is named, and says which half is missing", () => {
     const m = buildRenderFeatureMatrix(
-      facts({ cinematicPlanned: true, cinematicRendered: false, cinematicDelivered: false })
+      facts({ cinematicPlanned: true, cinematicRendered: false, delivery: { fromCinematicRender: false } as RenderFeatureFacts["delivery"] })
     );
     expect(m.cinematic?.reason).toContain("no render ran from it");
     expect(featureMatrixViolations(m)).toEqual([]);
   });
 
   it("a render that ran and did not deliver is a different sentence", () => {
-    const m = buildRenderFeatureMatrix(facts({ cinematicDelivered: false }));
+    const m = buildRenderFeatureMatrix(facts({ delivery: { fromCinematicRender: false } as RenderFeatureFacts["delivery"] }));
     expect(m.cinematic?.reason).toContain("its output was not the delivered file");
   });
 
   it("graphics that were made and never used are counted, not implied", () => {
-    const m = buildRenderFeatureMatrix(facts({ graphicsPlanned: 6, graphicsDelivered: 2 }));
-    expect(m.graphics?.reason).toContain("4 of 6 planned");
+    const m = buildRenderFeatureMatrix(facts({ graphicsPlanned: 6, delivery: { graphicsOnTimeline: 2 } as RenderFeatureFacts["delivery"] }));
+    expect(m.graphics?.reason).toContain("6 graphics were planned and 2 reached a render");
     expect(m.graphics?.delivered).toBe(true);
   });
 
@@ -283,7 +294,7 @@ describe("the matrix says what was promised and what arrived", () => {
     const m = buildRenderFeatureMatrix(facts());
     const verified = Object.entries(m).filter(([, s]) => s.verified).map(([n]) => n);
     expect(verified).toEqual(["deliveredQC"]);
-    const half = buildRenderFeatureMatrix(facts({ deliveredSpotChecked: false }));
+    const half = buildRenderFeatureMatrix(facts({ delivery: { spotChecked: false } as RenderFeatureFacts["delivery"] }));
     expect(half.deliveredQC?.verified).toBe(false);
     expect(half.deliveredQC?.reason).toContain("spotCheck=not run");
   });
@@ -304,7 +315,7 @@ describe("the matrix says what was promised and what arrived", () => {
   });
 
   it("a render that delivered nothing claims nothing delivered", () => {
-    const m = buildRenderFeatureMatrix(facts({ deliveredFileExists: false }));
+    const m = buildRenderFeatureMatrix(facts({ delivery: { fileExists: false } as RenderFeatureFacts["delivery"] }));
     for (const [name, s] of Object.entries(m)) {
       expect(s.delivered, `${name} claims delivery with no file`).toBe(false);
     }
@@ -330,9 +341,9 @@ describe("the matrix says what was promised and what arrived", () => {
 
   it("its facts come from what the render recorded, not from the flags", () => {
     const at = PIPE.indexOf("const matrix = buildRenderFeatureMatrix({");
-    const block = PIPE.slice(at, at + 2600);
-    expect(block).toContain("deliveredAvSyncMeasured: qualityReport.avSync != null,");
-    expect(block).toContain("cinematicDelivered: cinematicDeliveredUrl != null,");
+    const block = PIPE.slice(at, at + 3200);
+    expect(block).toContain("avSyncMeasured: qualityReport.avSync != null,");
+    expect(block).toContain("fromCinematicRender: cinematicDeliveredUrl != null,");
     expect(block).toContain("motionScored: visualDedup.motionScoredBeats.size,");
   });
 
@@ -340,6 +351,6 @@ describe("the matrix says what was promised and what arrived", () => {
   it("building it is wrapped", () => {
     const at = PIPE.indexOf("const matrix = buildRenderFeatureMatrix({");
     expect(PIPE.slice(at - 600, at)).toContain("try {");
-    expect(PIPE.slice(at, at + 3200)).toContain("[FeatureMatrix] video=${videoId} not built");
+    expect(PIPE.slice(at, at + 3800)).toContain("[FeatureMatrix] video=${videoId} not built");
   });
 });

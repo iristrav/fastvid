@@ -321,6 +321,7 @@ import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequen
 import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
 import { planSceneAudio } from "./cinematicAudio/planner";
 import { buildRenderFeatureMatrix, formatFeatureMatrix } from "./renderContract";
+import { audioTrackOf, captionTrack, graphicsTrack } from "./projectTimeline";
 import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
@@ -37597,9 +37598,13 @@ export async function composeSceneVideoInner(
        * existing reason for exactly that, so this adds a spelling to nothing.
        */
       const seenContentKeys = new Set<string>();
+      /** R197 — a clip the ledger never saw yields no COMPOSE_INPUT, so the sum below would hold
+       *  while a real picture went unaccounted. Counted, never repaired — see r197's own file. */
+      let unknownToLedger = 0;
       for (const clipPath of clips) {
         const contentKey = clipContentKey(clipPath);
-        composeLedger.recordEventForPath(clipPath, "COMPOSE_INPUT", { status: "OK", contentKey });
+        const opened = composeLedger.recordEventForPath(clipPath, "COMPOSE_INPUT", { status: "OK", contentKey });
+        if (!opened) unknownToLedger++;
         if (kept.has(clipPath)) {
           seenContentKeys.add(contentKey);
           composeLedger.recordEventForPath(clipPath, "COMPOSE_SELECTED", { status: "OK", contentKey });
@@ -37620,8 +37625,17 @@ export async function composeSceneVideoInner(
       console.log(
         `[ComposeBeatSummary] scene=${scene.index} composeInputs=${clips.length} ` +
           `composeSelected=${pendingUsedClips.length} composeDropped=${Math.max(0, dropped)} ` +
-          `phase=${phase}`
+          `phase=${phase}` +
+          /** Only when non-zero: on a healthy scene this adds nothing but noise. */
+          (unknownToLedger > 0 ? ` unknownToLedger=${unknownToLedger}` : "")
       );
+      if (unknownToLedger > 0) {
+        console.warn(
+          `[ComposeLifecycle] scene=${scene.index} UNKNOWN_TO_LEDGER=${unknownToLedger} — ` +
+            `these clips reached compose with no lineage record, so the render-level compose ` +
+            `invariant cannot account for them`
+        );
+      }
     }
     if (targetDur != null && targetDur > 0 && composedPath === outputPath) {
       const covered = await repairShortSceneVideo(
@@ -44239,7 +44253,27 @@ async function _runVideoPipelineInner(
      * because the whole point of the feature matrix is that a plan that was never rendered and a
      * render that never delivered are different failures with different fixes.
      */
-    const cinematicProgress = { enabled: false, planned: false, rendered: false };
+    const cinematicProgress = {
+      enabled: false,
+      planned: false,
+      rendered: false,
+      /**
+       * R197 §10/§12 — WHAT THE DOCUMENT THE RENDERER READS ACTUALLY CARRIES.
+       *
+       * Read off the stored timeline rather than off the plan that asked for it, for the reason
+       * `formatSfxPlan` already gives in cinematicProduction.ts: "The plan is what was asked for;
+       * the timeline is what will play. Reporting from the plan would let a render claim a sound
+       * that was dropped in translation."
+       *
+       * These are the feature matrix's only evidence that a caption, a graphic or a bed is in the
+       * delivered file, and they count for nothing unless the cinematic render is what delivered.
+       */
+      captionsOnTimeline: 0,
+      graphicsOnTimeline: 0,
+      ambientClipsOnTimeline: 0,
+      sfxClipsOnTimeline: 0,
+      musicClipsOnTimeline: 0,
+    };
     try {
       const {
         planAndStoreCinematicTimeline,
@@ -44498,6 +44532,24 @@ async function _runVideoPipelineInner(
         if (outcome.ok) {
           /** R195 — a timeline exists. Whether anything renders from it is the next state. */
           cinematicProgress.planned = true;
+          /**
+           * R197 — and WHAT it holds, counted off the document itself.
+           *
+           * This is the only evidence the feature matrix accepts for captions, graphics, ambience,
+           * sfx and music: the tracks on the timeline the renderer will read. Counting the plan
+           * instead would let a render claim a caption that was dropped in translation, which is
+           * exactly the false positive this round found in R196's first version.
+           */
+          try {
+            const t = outcome.timeline;
+            cinematicProgress.captionsOnTimeline = captionTrack(t).length;
+            cinematicProgress.graphicsOnTimeline = graphicsTrack(t).length;
+            cinematicProgress.ambientClipsOnTimeline = audioTrackOf(t, "AMBIENT").length;
+            cinematicProgress.sfxClipsOnTimeline = audioTrackOf(t, "SFX").length;
+            cinematicProgress.musicClipsOnTimeline = audioTrackOf(t, "MUSIC").length;
+          } catch {
+            /** A count that cannot be taken stays zero — absent, never assumed present. */
+          }
           try {
             const ledger = visualDedup.sourcingCache?.lineage;
             if (ledger) {
@@ -44998,6 +45050,12 @@ async function _runVideoPipelineInner(
       const allBeats = [...visualDedup.sceneBeatsBySceneIndex.values()].flat();
       const pools = [...visualDedup.visionReviewPool.beats.values()];
       const soundPlans = [...visualDedup.sceneSoundPlans.values()];
+      const ledgerForMatrix = visualDedup.sourcingCache?.lineage;
+      const assetsInFinalVideo = ledgerForMatrix
+        ? lifecyclesOf(ledgerForMatrix.allRecords(), ledgerForMatrix.allEvents()).filter(
+            (a) => a.finalVideo
+          ).length
+        : 0;
       const matrix = buildRenderFeatureMatrix({
         beatsWithIntent: allBeats.filter((b) => (b.visualDescription ?? "").trim().length > 0).length,
         beatsTotal: allBeats.length,
@@ -45013,22 +45071,39 @@ async function _runVideoPipelineInner(
         cinematicEnabled: cinematicProgress.enabled,
         cinematicPlanned: cinematicProgress.planned,
         cinematicRendered: cinematicProgress.rendered,
-        cinematicDelivered: cinematicDeliveredUrl != null,
         captionsEnabled: enableSubtitles,
         captionsPlanned: enableSubtitles ? allBeats.length : 0,
         graphicsEnabled: visualDedup.graphicClips.size > 0,
         graphicsPlanned: visualDedup.graphicClips.size,
-        graphicsDelivered: visualDedup.graphicsUsageSummary.total,
         transitionsPlanned: Math.max(0, scenes.length - 1),
         /** No catalogue is registered in this build — `musicFeatureStatus` states the consequence. */
         musicCatalogueAvailable: false,
+        /**
+         * The ranking-side sound classification, which is what this render actually planned per
+         * scene. R197: it is a PLAN and it is labelled as one — the delivery evidence below comes
+         * from the timeline, never from this.
+         */
         ambiencePlanned: soundPlans.filter((p) => p.ambience.length > 0).length,
         ambienceUnavailable: 0,
         sfxPlanned: soundPlans.reduce((n, p) => n + p.objectSounds.length, 0),
         duckingApplied: soundPlans.some((p) => p.ambience.length > 0),
-        deliveredAvSyncMeasured: qualityReport.avSync != null,
-        deliveredSpotChecked: qualityReport.postRenderSpotCheck != null,
-        deliveredFileExists: Boolean(url),
+        delivery: {
+          fileExists: Boolean(url),
+          /** FILE FACTS — the streams ffprobe actually found in the delivered container. */
+          hasVideoStream: (qualityReport.avSync?.videoSec ?? null) != null,
+          hasAudioStream: (qualityReport.avSync?.audioSec ?? null) != null,
+          /** ROUTE IDENTITY — this is set only where the cinematic render's URL was adopted. */
+          fromCinematicRender: cinematicDeliveredUrl != null,
+          assetsInFinalVideo,
+          captionsOnTimeline: cinematicProgress.captionsOnTimeline,
+          graphicsOnTimeline: cinematicProgress.graphicsOnTimeline,
+          ambientClipsOnTimeline: cinematicProgress.ambientClipsOnTimeline,
+          sfxClipsOnTimeline: cinematicProgress.sfxClipsOnTimeline,
+          musicClipsOnTimeline: cinematicProgress.musicClipsOnTimeline,
+          graphicsBurnedInByCompose: visualDedup.graphicsUsageSummary.total,
+          avSyncMeasured: qualityReport.avSync != null,
+          spotChecked: qualityReport.postRenderSpotCheck != null,
+        },
       });
       for (const line of formatFeatureMatrix(matrix)) {
         if (line.includes("WITHOUT") || line.includes("PLANNED_WHILE_DISABLED")) {

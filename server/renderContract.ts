@@ -254,6 +254,13 @@ export function featureMatrixViolations(matrix: FeatureMatrix): string[] {
  * is what `Partial` is for.
  */
 export type RenderFeatureFacts = {
+  // ── RUNTIME FACTS — what the render DID ───────────────────────────────────────────────────
+  //
+  // Everything in this half describes work that happened. None of it is evidence about the file
+  // the viewer receives, and `delivered` may never be built from it. R197 found that exact
+  // mistake in R196's first version of this builder: captions were reported as delivered because
+  // they had been ENABLED, on a route whose subtitle filter is the empty string either way.
+
   /** Beats that resolved a visual intent. */
   beatsWithIntent: number;
   beatsTotal: number;
@@ -269,28 +276,61 @@ export type RenderFeatureFacts = {
   /** Movement: whether a band was planned for any beat, and whether it moved any ranking. */
   motionBandsPlanned: number;
   motionScored: number;
-  /** The cinematic route: flag, a stored plan, a render that ran, a file that was delivered. */
+  /** The cinematic route: flag, a stored plan, a render that ran. */
   cinematicEnabled: boolean;
   cinematicPlanned: boolean;
   cinematicRendered: boolean;
-  cinematicDelivered: boolean;
-  /** Captions, graphics and transitions as the timeline actually carried them. */
+  /** Captions, graphics, transitions and audio AS THE PLAN HELD THEM — never as delivery. */
   captionsEnabled: boolean;
   captionsPlanned: number;
   graphicsEnabled: boolean;
   graphicsPlanned: number;
-  graphicsDelivered: number;
   transitionsPlanned: number;
-  /** Audio. `musicCatalogueAvailable` is the honest external blocker, not a code state. */
+  /** `musicCatalogueAvailable` is the honest external blocker, not a code state. */
   musicCatalogueAvailable: boolean;
   ambiencePlanned: number;
   ambienceUnavailable: number;
   sfxPlanned: number;
   duckingApplied: boolean;
-  /** What was measured ON the delivered file, which is the only thing `verified` may rest on. */
-  deliveredAvSyncMeasured: boolean;
-  deliveredSpotChecked: boolean;
-  deliveredFileExists: boolean;
+
+  // ── DELIVERY EVIDENCE — what can be established about the file the viewer receives ────────
+  //
+  // R197 §10/§12. Two kinds of thing live here and nothing else may:
+  //
+  //   FILE FACTS     measured on the delivered MP4 itself (ffprobe, the spot check)
+  //   ROUTE IDENTITY the delivered file provably came from the path that carries this feature,
+  //                  and the document that path rendered from says what it carried
+  //
+  // A feature with no entry here cannot be `delivered`. That is the point: the honest answer to
+  // "is this in the file" is often "nothing here can say", and a matrix that guesses instead is
+  // worse than one that admits it.
+  delivery: {
+    /** A file was produced and stored. */
+    fileExists: boolean;
+    /** FILE FACT — the delivered container really carries a video stream. */
+    hasVideoStream: boolean;
+    /** FILE FACT — and an audio stream. */
+    hasAudioStream: boolean;
+    /** ROUTE IDENTITY — the delivered file came from the cinematic render, not from compose. */
+    fromCinematicRender: boolean;
+    /**
+     * The assets this render's selection chain put in the delivered film, from the lineage's own
+     * FINAL_VIDEO stage. Not an inspection of pixels; the strongest statement this pipeline makes
+     * about what the delivered file is made of.
+     */
+    assetsInFinalVideo: number;
+    /** From the DOCUMENT the cinematic render was made from — what will play, not what was asked. */
+    captionsOnTimeline: number;
+    graphicsOnTimeline: number;
+    ambientClipsOnTimeline: number;
+    sfxClipsOnTimeline: number;
+    musicClipsOnTimeline: number;
+    /** Overlays the COMPOSE route burned into the file it produced. Irrelevant to a cinematic one. */
+    graphicsBurnedInByCompose: number;
+    /** Which measurements actually ran on the delivered file. */
+    avSyncMeasured: boolean;
+    spotChecked: boolean;
+  };
 };
 
 /**
@@ -321,15 +361,41 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
   const put = (name: FeatureName, s: Partial<FeatureStatus>) => {
     matrix[name] = featureStatus(s);
   };
-  const gap = (reason: string) => reason;
+  const d = f.delivery;
+
+  /**
+   * The one gate every `delivered` passes through.
+   *
+   * R197 §10 — a feature is delivered when a DELIVERY FACT says so, and never because a plan
+   * existed or a stage ran. `evidence` is that fact; `whenAbsent` is what the report says when
+   * there is none, which the UNEXPLAINED_GAP rule then requires rather than tolerates.
+   */
+  const deliveredWhen = (
+    evidence: boolean,
+    whenAbsent: string
+  ): { delivered: boolean; reason?: string } =>
+    d.fileExists && evidence
+      ? { delivered: true }
+      : { delivered: false, reason: d.fileExists ? whenAbsent : "no file was delivered" };
+
+  /**
+   * The selection chain's delivery fact, shared by the five stages that produce the picture.
+   *
+   * Not an inspection of pixels — nothing in this pipeline reads a frame back and recognises the
+   * clip it came from. It is the lineage's own FINAL_VIDEO stage: assets this render selected that
+   * the delivered film is made of. That is the strongest true statement available, and calling it
+   * anything stronger is the mistake this whole module exists to prevent.
+   */
+  const pictureLanded = d.assetsInFinalVideo > 0;
+  const noPicture = "no asset this render selected is recorded in the delivered film";
 
   put("visualIntent", {
     enabled: true,
     planned: f.beatsWithIntent > 0,
     executed: f.beatsWithIntent > 0,
-    delivered: f.deliveredFileExists && f.beatsWithIntent > 0,
+    ...deliveredWhen(pictureLanded, noPicture),
     ...(f.beatsWithIntent < f.beatsTotal
-      ? { reason: gap(`${f.beatsTotal - f.beatsWithIntent} beats resolved no visual intent`) }
+      ? { reason: `${f.beatsTotal - f.beatsWithIntent} beats resolved no visual intent` }
       : {}),
   });
 
@@ -337,17 +403,17 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
     enabled: true,
     planned: f.beatsTotal > 0,
     executed: f.retrieved > 0,
-    delivered: f.deliveredFileExists && f.retrieved > 0,
-    ...(f.retrieved === 0 ? { reason: gap("no candidate reached any beat") } : {}),
+    ...deliveredWhen(pictureLanded, noPicture),
+    ...(f.retrieved === 0 ? { reason: "no candidate reached any beat" } : {}),
   });
 
   put("eligibility", {
     enabled: true,
     planned: f.retrieved > 0,
     executed: f.eligible > 0,
-    delivered: f.deliveredFileExists && f.eligible > 0,
+    ...deliveredWhen(pictureLanded, noPicture),
     ...(f.retrieved > 0 && f.eligible === 0
-      ? { reason: gap("every retrieved candidate was refused before the editor saw it") }
+      ? { reason: "every retrieved candidate was refused before the editor saw it" }
       : {}),
   });
 
@@ -355,9 +421,9 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
     enabled: true,
     planned: f.eligible > 0,
     executed: f.shortlisted > 0,
-    delivered: f.deliveredFileExists && f.shortlisted > 0,
+    ...deliveredWhen(pictureLanded, noPicture),
     ...(f.eligible > 0 && f.shortlisted === 0
-      ? { reason: gap("eligible candidates existed and none was admitted") }
+      ? { reason: "eligible candidates existed and none was admitted" }
       : {}),
   });
 
@@ -365,12 +431,12 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
     enabled: f.visionEnabled,
     planned: f.visionEnabled && f.visionReviewPool > 0,
     executed: f.visionAsked > 0,
-    delivered: f.deliveredFileExists && f.visionApproved > 0,
-    /** A gate that was asked and approved nothing did not deliver a verdict to the film. */
+    /** A verdict reaches the film only through a picture the film is made of. */
+    ...deliveredWhen(pictureLanded && f.visionApproved > 0, noPicture),
     ...(f.visionEnabled && f.visionApproved === 0
-      ? { reason: gap(`asked=${f.visionAsked} approved=0 — no picture was called a fit`) }
+      ? { reason: `asked=${f.visionAsked} approved=0 — no picture was called a fit` }
       : !f.visionEnabled
-        ? { reason: gap("the beat image gate is switched off") }
+        ? { reason: "the beat image gate is switched off" }
         : {}),
   });
 
@@ -378,11 +444,11 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
     enabled: true,
     planned: f.motionBandsPlanned > 0,
     executed: f.motionScored > 0,
-    delivered: f.deliveredFileExists && f.motionScored > 0,
+    ...deliveredWhen(pictureLanded && f.motionScored > 0, noPicture),
     ...(f.motionBandsPlanned > 0 && f.motionScored === 0
-      ? { reason: gap("bands were planned and no candidate could be measured against them") }
+      ? { reason: "bands were planned and no candidate could be measured against them" }
       : f.motionBandsPlanned === 0
-        ? { reason: gap("no planner produced a movement band for any beat") }
+        ? { reason: "no planner produced a movement band for any beat" }
         : {}),
   });
 
@@ -390,91 +456,139 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
     enabled: f.cinematicEnabled,
     planned: f.cinematicPlanned,
     executed: f.cinematicRendered,
-    delivered: f.cinematicDelivered && f.deliveredFileExists,
-    ...(f.cinematicEnabled && !f.cinematicDelivered
+    /** ROUTE IDENTITY, and the cleanest delivery fact in the matrix. */
+    ...deliveredWhen(d.fromCinematicRender, "compose produced the delivered file, not this route"),
+    ...(f.cinematicEnabled && !d.fromCinematicRender
       ? {
-          reason: gap(
-            f.cinematicPlanned
-              ? f.cinematicRendered
-                ? "the render ran and its output was not the delivered file"
-                : "a plan was stored and no render ran from it"
-              : "the route is on and no timeline was planned"
-          ),
+          reason: f.cinematicPlanned
+            ? f.cinematicRendered
+              ? "the render ran and its output was not the delivered file"
+              : "a plan was stored and no render ran from it"
+            : "the route is on and no timeline was planned",
         }
       : !f.cinematicEnabled
-        ? { reason: gap("CINEMATIC_RENDER_PATH is off — compose delivered this film") }
+        ? { reason: "CINEMATIC_RENDER_PATH is off — compose delivered this film" }
         : {}),
   });
 
+  /**
+   * CAPTIONS — the false positive R197 was written to catch.
+   *
+   * R196 read `delivered` off `captionsEnabled`, and on the compose route that is always wrong:
+   * its subtitle filter is `enableSubtitles ? "" : ""` — the empty string either way, so compose
+   * burns in no captions at all. The only route that carries them is the cinematic one, and the
+   * only honest evidence is the caption track on the document it rendered from.
+   */
   put("captions", {
     enabled: f.captionsEnabled,
     planned: f.captionsPlanned > 0,
-    executed: f.captionsPlanned > 0,
-    delivered: f.deliveredFileExists && f.captionsPlanned > 0,
+    executed: d.captionsOnTimeline > 0,
+    ...deliveredWhen(
+      d.fromCinematicRender && d.captionsOnTimeline > 0,
+      d.fromCinematicRender
+        ? "the delivered timeline carries no caption track"
+        : "compose delivered this film and burns in no captions"
+    ),
     ...(f.captionsEnabled && f.captionsPlanned === 0
-      ? { reason: gap("captions are on and none was planned") }
+      ? { reason: "captions are on and none was planned" }
       : !f.captionsEnabled
-        ? { reason: gap("captions are switched off for this render") }
+        ? { reason: "captions are switched off for this render" }
         : {}),
   });
 
+  /** Two routes, two different pieces of evidence — a compose overlay is not on a cinematic file. */
   put("graphics", {
     enabled: f.graphicsEnabled,
     planned: f.graphicsPlanned > 0,
-    executed: f.graphicsDelivered > 0,
-    delivered: f.deliveredFileExists && f.graphicsDelivered > 0,
-    ...(f.graphicsPlanned > f.graphicsDelivered
+    executed: d.graphicsBurnedInByCompose > 0 || d.graphicsOnTimeline > 0,
+    ...deliveredWhen(
+      d.fromCinematicRender ? d.graphicsOnTimeline > 0 : d.graphicsBurnedInByCompose > 0,
+      d.fromCinematicRender
+        ? "the delivered timeline carries no graphics track"
+        : "compose burned no overlay into the delivered file"
+    ),
+    ...(f.graphicsPlanned > d.graphicsBurnedInByCompose + d.graphicsOnTimeline
       ? {
-          reason: gap(
-            `${f.graphicsPlanned - f.graphicsDelivered} of ${f.graphicsPlanned} planned ` +
-              "graphics never reached the render"
-          ),
+          reason:
+            `${f.graphicsPlanned} graphics were planned and ` +
+            `${d.graphicsBurnedInByCompose + d.graphicsOnTimeline} reached a render`,
         }
       : !f.graphicsEnabled
-        ? { reason: gap("the graphics overlay renderer is unavailable") }
+        ? { reason: "no graphic was generated for this render" }
         : {}),
   });
 
+  /**
+   * TRANSITIONS — planned, and nothing can say whether they are in the file.
+   *
+   * No probe reads a dissolve back off an MP4, and neither renderer reports the transitions it
+   * applied. `delivered: false` with the reason is the honest answer; claiming it from a scene
+   * count would be the captions mistake in a second place.
+   */
   put("transitions", {
     enabled: true,
     planned: f.transitionsPlanned > 0,
     executed: f.transitionsPlanned > 0,
-    delivered: f.deliveredFileExists && f.transitionsPlanned > 0,
-    ...(f.transitionsPlanned === 0 ? { reason: gap("this film is cut, with no transitions") } : {}),
+    ...deliveredWhen(false, "nothing inspects the delivered file for transitions"),
+    ...(f.transitionsPlanned === 0 ? { reason: "this film is cut, with no transitions" } : {}),
   });
 
   /** The one feature whose gap is external rather than a defect. Its own helper states it. */
   matrix.music = musicFeatureStatus(f.musicCatalogueAvailable);
+  if (d.fromCinematicRender && d.musicClipsOnTimeline > 0 && d.fileExists) {
+    /** A catalogue appeared and the document carries it — the only way this becomes delivered. */
+    matrix.music = featureStatus({ enabled: true, planned: true, executed: true, delivered: true });
+  }
 
   put("ambience", {
     enabled: true,
     planned: f.ambiencePlanned > 0,
-    executed: f.ambiencePlanned > f.ambienceUnavailable,
-    delivered: f.deliveredFileExists && f.ambiencePlanned > f.ambienceUnavailable,
+    executed: d.ambientClipsOnTimeline > 0,
+    ...deliveredWhen(
+      d.fromCinematicRender && d.ambientClipsOnTimeline > 0,
+      d.fromCinematicRender
+        ? "the delivered timeline carries no ambient clip"
+        : "compose delivered this film and lays no ambience bed"
+    ),
     ...(f.ambienceUnavailable > 0
-      ? { reason: gap(`${f.ambienceUnavailable} planned ambiences the catalogue could not supply`) }
+      ? { reason: `${f.ambienceUnavailable} planned ambiences the catalogue could not supply` }
       : f.ambiencePlanned === 0
-        ? { reason: gap("no scene was planned room tone") }
+        ? { reason: "no scene was planned room tone" }
         : {}),
   });
 
   put("sfx", {
     enabled: true,
     planned: f.sfxPlanned > 0,
-    executed: f.sfxPlanned > 0,
-    delivered: f.deliveredFileExists && f.sfxPlanned > 0,
-    ...(f.sfxPlanned === 0 ? { reason: gap("no beat was planned an object sound") } : {}),
+    executed: d.sfxClipsOnTimeline > 0,
+    ...deliveredWhen(
+      d.fromCinematicRender && d.sfxClipsOnTimeline > 0,
+      d.fromCinematicRender
+        ? "the delivered timeline carries no sfx clip"
+        : "compose delivered this film and places no sfx track"
+    ),
+    ...(f.sfxPlanned === 0 ? { reason: "no beat was planned an object sound" } : {}),
   });
 
+  /**
+   * DUCKING — only meaningful when there is something to duck, and only observable when the
+   * delivered file carries the bed that would be ducked.
+   */
+  const bedOnTimeline = d.ambientClipsOnTimeline + d.sfxClipsOnTimeline + d.musicClipsOnTimeline;
   put("ducking", {
     enabled: true,
     planned: f.ambiencePlanned > 0 || f.sfxPlanned > 0,
-    executed: f.duckingApplied,
-    delivered: f.deliveredFileExists && f.duckingApplied,
+    executed: f.duckingApplied && bedOnTimeline > 0,
+    ...deliveredWhen(
+      d.fromCinematicRender && bedOnTimeline > 0 && d.hasAudioStream && f.duckingApplied,
+      bedOnTimeline === 0
+        ? "nothing was laid under the narration to duck"
+        : "nothing inspects the delivered mix for ducking"
+    ),
     ...((f.ambiencePlanned > 0 || f.sfxPlanned > 0) && !f.duckingApplied
-      ? { reason: gap("a bed was laid under the narration and nothing ducked it") }
+      ? { reason: "a bed was planned under the narration and nothing ducked it" }
       : f.ambiencePlanned === 0 && f.sfxPlanned === 0
-        ? { reason: gap("nothing was laid under the narration to duck") }
+        ? { reason: "nothing was laid under the narration to duck" }
         : {}),
   });
 
@@ -483,21 +597,22 @@ export function buildRenderFeatureMatrix(f: RenderFeatureFacts): FeatureMatrix {
    * does. Both halves must have run: a spot check without an envelope measurement cannot see
    * narration running past the picture, and an envelope without a spot check cannot see black.
    */
-  const qcRan = f.deliveredFileExists && (f.deliveredAvSyncMeasured || f.deliveredSpotChecked);
+  const qcRan = d.fileExists && (d.avSyncMeasured || d.spotChecked);
   put("deliveredQC", {
     enabled: true,
-    planned: f.deliveredFileExists,
+    planned: d.fileExists,
     executed: qcRan,
     delivered: qcRan,
-    verified: f.deliveredFileExists && f.deliveredAvSyncMeasured && f.deliveredSpotChecked,
-    ...(!(f.deliveredAvSyncMeasured && f.deliveredSpotChecked)
-      ? {
-          reason: gap(
-            `avSync=${f.deliveredAvSyncMeasured ? "measured" : "not measured"} ` +
-              `spotCheck=${f.deliveredSpotChecked ? "run" : "not run"}`
-          ),
-        }
-      : {}),
+    verified: d.fileExists && d.avSyncMeasured && d.spotChecked,
+    ...(!d.fileExists
+      ? { reason: "no file was delivered, so there was nothing to inspect" }
+      : !(d.avSyncMeasured && d.spotChecked)
+        ? {
+            reason:
+              `avSync=${d.avSyncMeasured ? "measured" : "not measured"} ` +
+              `spotCheck=${d.spotChecked ? "run" : "not run"}`,
+          }
+        : {}),
   });
 
   return matrix;
