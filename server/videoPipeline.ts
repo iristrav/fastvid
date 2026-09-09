@@ -15723,14 +15723,43 @@ function textMentionsPersonName(haystack: string, personName: string): boolean {
 }
 
 /** Beat + person tokens for filtering celebrity search hits. */
+/**
+ * RONDE 219 — THE SAME GAP RONDE 218 CLOSED, ON THE ROUTE WHERE IT SHOWS MOST.
+ *
+ * RONDE 218 gave `buildRelevanceKeywords` the script's own statement of what to show, so the
+ * funnel scores candidates against what it actually asked for. This is the OTHER keyword list —
+ * the one a beat about a PERSON is scored with — and it was left as it was: the name, the
+ * sentence's words, and any inline cue.
+ *
+ * Which is precisely where the omission costs the most. A script that says
+ *
+ *     "Zhukov studies the map in the command post"
+ *
+ * scored candidates on "Zhukov" and the sentence's own words. A portrait of the man and the scene
+ * the script described both matched "Zhukov" and nothing separated them — the command post, the
+ * map, the thing that makes it THIS moment rather than any moment, carried no weight at all.
+ *
+ * Same resolver as RONDE 218 and as `beatVisualSearchSubjects`, so all three agree about one beat.
+ * `camera_shot` and `emotion` stay out for the reason given there: they describe the filming, not
+ * the subject.
+ *
+ * The person's own name still comes first. It is the strongest evidence on this route and nothing
+ * here displaces it; the cap rises from 18 to 22 to make room for the intent rather than pushing
+ * the sentence's words off the end — the smallest change that adds the new terms without taking
+ * existing ones away.
+ */
 function buildPersonBeatRelevanceKeywords(personName: string, beatText: string): string[] {
   const person = coercePersonName(personName);
   const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
+  const intent = resolveBeatVisualIntent(clean);
   return [
     ...person.split(/\s+/).filter((p) => p.length >= 3),
     ...tokenizeForRelevance(clean),
+    ...intentSearchQueries(intent).flatMap((q) => tokenizeForRelevance(q)),
+    ...tokenizeForRelevance(intent.visual_description ?? intent.visual_intent ?? ""),
+    ...tokenizeForRelevance(intent.priority_subject ?? ""),
     ...extractInlineVisualCues(clean).flatMap((c) => tokenizeForRelevance(c)),
-  ].filter((k, i, arr) => arr.indexOf(k) === i).slice(0, 18);
+  ].filter((k, i, arr) => arr.indexOf(k) === i).slice(0, 22);
 }
 
 /**
