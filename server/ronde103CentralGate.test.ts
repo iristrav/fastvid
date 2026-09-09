@@ -224,24 +224,50 @@ describe("RONDE 103 — one beat cannot spend the render's budget", () => {
 
 /* ═══════════ the reprieve ═══════════ */
 
-describe("RONDE 103 phase 15 — a reprieve overrules the judge, on the record", () => {
-  it("keeps the verdict and marks the override separately", async () => {
+/**
+ * RONDE 200 — PHASE 15 REVERSED BY THE OWNER'S RULE.
+ *
+ * Phase 15 did not decide that a refusal may be overruled; RONDE 67 did, and phase 15 made the
+ * override honest — the verdict stayed `does_not_fit` so a render could be asked how many of its
+ * shots went in over the editor's objection, and answer. That bookkeeping is exactly what makes
+ * this reversal cheap: the override was already a separate, recorded thing rather than a relabel.
+ *
+ * The rule now is "er mag nooit een beeld in de video die er niet bij past", so the answer to that
+ * question is zero, by construction. The attempt is still classified and still logged, so a render
+ * can say how many beats lost a picture to this rule — which is the number to look at if videos
+ * start arriving with more empty beats.
+ */
+describe("RONDE 200 — the override is refused, and the refusal is on the record", () => {
+  it("the verdict stands and nothing is marked as allowed", async () => {
     answers(false);
     await ask();
-    reprieveBeatClip(ledger, CLIP, "nothing else passed");
+    expect(reprieveBeatClip(ledger, CLIP, "nothing else passed")).toBe(false);
     const entry = ledger.byClipPath.get(CLIP)!;
     expect(entry.decision.verdict).toBe("does_not_fit");
-    expect(entry.decision.reprieved).toBe(true);
-    expect(entry.decision.allowed).toBe(true);
+    expect(entry.decision.reprieved).toBe(false);
+    expect(entry.decision.allowed).toBe(false);
   });
 
-  it("a reprieved clip is reported as reprieved, never folded into the pass count", async () => {
+  it("the declined attempt is announced, naming the kind that could not be lifted", async () => {
+    answers(false);
+    await ask();
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, "warn").mockImplementation((l) => void seen.push(String(l)));
+    try {
+      reprieveBeatClip(ledger, CLIP, "nothing else passed");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen.join("\n")).toContain("_may_not_be_reprieved");
+  });
+
+  it("the summary still keeps a refusal out of the pass count", async () => {
     answers(false);
     await ask();
     reprieveBeatClip(ledger, CLIP, "nothing else passed");
     const line = formatRelevanceSummary(state, ledger);
     expect(line).toContain("does_not_fit=1");
-    expect(line).toContain("(reprieved=1)");
+    expect(line).toContain("(reprieved=0)");
     expect(line).toContain("fits=0");
   });
 });
@@ -257,10 +283,16 @@ describe("RONDE 103 phase 17 — the barrier at compose", () => {
     expect(b.reason).toContain("s2b4");
   });
 
+  /**
+   * RONDE 200: the barrier's reprieve branch is kept and is still reachable — the last-rung colour
+   * card uses it, because refusing the only thing between a beat and an empty slot leaves no
+   * frames at all rather than a better picture. Real footage can no longer reach it.
+   */
   it("lets a deliberate reprieve through, and says that is what it is", async () => {
     answers(false);
     await ask();
-    reprieveBeatClip(ledger, CLIP, "nothing else passed");
+    const entry = ledger.byClipPath.get(CLIP)!;
+    entry.decision = { ...entry.decision, allowed: true, reprieved: true };
     const b = composeBarrierAllows(ledger, CLIP);
     expect(b.allow).toBe(true);
     expect(b.reason).toContain("reprieved");

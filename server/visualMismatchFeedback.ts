@@ -336,9 +336,46 @@ export function mismatchSeverity(kind: MismatchKind): MismatchSeverity {
  * severity for it would be the guess this module exists to avoid — RONDE 160 already tried acting
  * on UNCLEAR and had to be reverted.
  */
-export function reprieveAllowedFor(kind: MismatchKind): boolean {
-  const severity = mismatchSeverity(kind);
-  return severity === "SOFT_MISMATCH" || severity === "UNKNOWN";
+export function reprieveAllowedFor(_kind: MismatchKind): boolean {
+  /**
+   * RONDE 200 — NO REFUSAL MAY BE OVERRULED. THE OWNER'S RULE, IN THEIR WORDS:
+   *
+   *     "Er mag nooit een beeld in de video die er niet bij past."
+   *
+   * ── What this replaces, and why that reasoning is spent ─────────────────────────────────────
+   *
+   * RONDE 67 decided that an imperfect picture beats a grey card, so a refusal could be taken back
+   * when every alternative had failed too. RONDE 166 narrowed it: a refusal that puts a different
+   * topic, a title card or a blank frame on screen may not be lifted at any price, but one that is
+   * about the right thing and imperfectly so — a different decade, a different place, a different
+   * occasion, a talking head — could still be.
+   *
+   * Each of those four is a picture the editor looked at and said does not belong under this line.
+   * "About the right thing" is not "fits": a 1970s newsreel under 1945 narration is a documentary
+   * telling the viewer something untrue with its pictures, which is the fault this whole product
+   * is judged on. The narrowing was a compromise between two goods; the owner has now said which
+   * one wins, twice and without qualification.
+   *
+   * ── What it costs, stated rather than discovered later ──────────────────────────────────────
+   *
+   * A refused picture is no longer available anywhere: `composeBarrierAllows` refuses every
+   * `does_not_fit` nobody reprieved, and nothing can reprieve one now. Both call sites already
+   * handle the decline the right way — the beat keeps every remaining route, the rescue ladder,
+   * the curated archive and the research pass, exactly as a beat that found nothing would — so
+   * this is "look further", not "take the card". A colour card is what happens when all of those
+   * fail too, and RONDE 89's export gate refuses a film made mostly of those.
+   *
+   * So the direction of failure is: fewer wrong pictures, more beats that find nothing, and some
+   * renders that stop at the export gate instead of shipping a picture that does not belong.
+   *
+   * ── What is deliberately kept ───────────────────────────────────────────────────────────────
+   *
+   * The severity vocabulary stays and is still printed. It is what tells a reader whether a
+   * render's refusals were a sourcing problem or a catalogue problem, and that question did not
+   * go away — only the permission to overrule the answer did. And this stays the single choke
+   * point: one function decides, so there is no second way in.
+   */
+  return false;
 }
 
 /**

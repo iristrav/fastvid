@@ -142,10 +142,22 @@ describe("RONDE 166 — severity is read from the kind that already exists", () 
     expect(reprieveAllowedFor(classifyMismatch(REFUSALS.modernFootage))).toBe(false);
   });
 
-  it("the four kinds that are still ABOUT the beat are soft", () => {
+  /**
+   * RONDE 200 — the four are still soft, and soft no longer buys anything.
+   *
+   * The owner's rule: "er mag nooit een beeld in de video die er niet bij past." Each of these is
+   * a picture the editor looked at and said does not belong under this line. Being wrong about the
+   * decade rather than about the subject makes the fault smaller, not absent — a 1970s newsreel
+   * under 1945 narration is a documentary telling the viewer something untrue with its pictures.
+   *
+   * The severity itself is KEPT and still asserted: it is what tells a reader whether a render's
+   * refusals point at the questions it asked or at the catalogue it searched, and that question
+   * did not go away. Only the permission to overrule the answer did.
+   */
+  it("the four kinds that are still ABOUT the beat are soft, and still may not be used", () => {
     for (const kind of ["WRONG_PERIOD", "WRONG_PLACE", "WRONG_EVENT", "TALKING_HEAD"] as const) {
       expect(mismatchSeverity(kind), kind).toBe("SOFT_MISMATCH");
-      expect(reprieveAllowedFor(kind), kind).toBe(true);
+      expect(reprieveAllowedFor(kind), kind).toBe(false);
     }
   });
 
@@ -170,15 +182,22 @@ describe("RONDE 166 — severity is read from the kind that already exists", () 
      * written to avoid.
      */
     expect(mismatchSeverity("UNCLEAR")).toBe("UNKNOWN");
-    expect(reprieveAllowedFor("UNCLEAR")).toBe(true);
+    /**
+     * RONDE 200: and it buys nothing either. This is a refusal whose words do not say why — still
+     * a refusal. Note what is NOT affected: an UNCLEAR VERDICT (the editor looked and could not
+     * tell) is not a refusal at all and still adopts, which is render 569's finding and is
+     * asserted in r199EveryPictureIsLookedAt. This is the UNCLEAR KIND of a `does_not_fit`.
+     */
+    expect(reprieveAllowedFor("UNCLEAR")).toBe(false);
   });
 });
 
 describe("RONDE 166 — the reprieve is the single choke point, and it now refuses", () => {
-  it("a soft mismatch can still be taken back as a last resort", () => {
+  it("RONDE 200 — a soft mismatch may no longer be taken back either", () => {
     const ledger = judgedLedger("/w/newsreel.mp4", REFUSALS.wrongPeriod);
-    expect(reprieveBeatClip(ledger, "/w/newsreel.mp4", "nothing else passed")).toBe(true);
-    expect(composeBarrierAllows(ledger, "/w/newsreel.mp4").allow).toBe(true);
+    expect(reprieveBeatClip(ledger, "/w/newsreel.mp4", "nothing else passed")).toBe(false);
+    // And declining the override is enough on its own: the barrier keeps it out of the montage.
+    expect(composeBarrierAllows(ledger, "/w/newsreel.mp4").allow).toBe(false);
   });
 
   it("a hard mismatch is never taken back", () => {
@@ -199,9 +218,12 @@ describe("RONDE 166 — the reprieve is the single choke point, and it now refus
     expect(reprieveBeatClip(ledger, "/w/card.mp4", "nothing else passed")).toBe(false);
   });
 
-  it("an unclear refusal keeps the pre-existing reprieve", () => {
+  it("RONDE 200 — an unclear refusal is not taken back either", () => {
+    // A refusal whose words do not say what was wrong is still a refusal. (Not to be confused
+    // with an UNCLEAR VERDICT, which is not a refusal at all and still adopts.)
     const ledger = judgedLedger("/w/vague.mp4", REFUSALS.unclear);
-    expect(reprieveBeatClip(ledger, "/w/vague.mp4", "nothing else passed")).toBe(true);
+    expect(reprieveBeatClip(ledger, "/w/vague.mp4", "nothing else passed")).toBe(false);
+    expect(composeBarrierAllows(ledger, "/w/vague.mp4").allow).toBe(false);
   });
 
   it("a refused reprieve leaves the verdict exactly as the model gave it", () => {
@@ -242,12 +264,28 @@ describe("RONDE 166 — no route can bring a hard mismatch back", () => {
     });
   }
 
-  it("a soft mismatch that WAS reprieved survives the same renames", () => {
-    // The reprieve is still a real product decision; only its scope changed.
+  /**
+   * RONDE 200 — the same renames, and now the SOFT one is carried out too.
+   *
+   * This used to prove that a reprieve survives a rename, so a picture the render deliberately
+   * kept was not lost by the trim step. With no refusal reprievable, the property worth proving is
+   * the other half of the same mechanism: a soft refusal cannot walk back in under a new name
+   * either. Identity is what carries it, exactly as before — only the direction changed.
+   */
+  it("a soft mismatch cannot come back under a new name", () => {
     const ledger = judgedLedger("/w/newsreel.mp4", REFUSALS.wrongPeriod);
     reprieveBeatClip(ledger, "/w/newsreel.mp4", "nothing else passed");
     inheritBeatRelevance(ledger, "/w/newsreel.mp4", "/w/newsreel_transformed.mp4");
-    expect(composeBarrierAllows(ledger, "/w/newsreel_transformed.mp4").allow).toBe(true);
+    expect(composeBarrierAllows(ledger, "/w/newsreel_transformed.mp4").allow).toBe(false);
+  });
+
+  /** And a reprieve that IS granted — the last-rung card — still survives its renames. */
+  it("a deliberate reprieve still survives the same renames", () => {
+    const ledger = judgedLedger("/w/card.mp4", REFUSALS.wrongPeriod);
+    const entry = ledger.byClipPath.get("/w/card.mp4")!;
+    entry.decision = { ...entry.decision, allowed: true, reprieved: true };
+    inheritBeatRelevance(ledger, "/w/card.mp4", "/w/card_transformed.mp4");
+    expect(composeBarrierAllows(ledger, "/w/card_transformed.mp4").allow).toBe(true);
   });
 
   it("both call sites in the pipeline act on the refusal instead of ignoring it", () => {
@@ -346,13 +384,34 @@ describe("RONDE 166 — the render says why every picture is on screen", () => {
     expect(line).toContain("decision=ADOPTED");
   });
 
+  /**
+   * RONDE 200 — the line still says "reprieved" when a picture really was one, and a refused soft
+   * mismatch no longer produces that line at all, because it is no longer on screen to explain.
+   */
   it("a reprieved picture says so, and says it was a fallback", () => {
-    const ledger = judgedLedger("/w/newsreel.mp4", REFUSALS.wrongPeriod);
-    reprieveBeatClip(ledger, "/w/newsreel.mp4", "nothing else passed");
-    const line = formatAdoptedFitDecision(ledger, "/w/newsreel.mp4")!;
+    const ledger = judgedLedger("/w/card.mp4", REFUSALS.wrongPeriod);
+    const entry = ledger.byClipPath.get("/w/card.mp4")!;
+    entry.decision = { ...entry.decision, allowed: true, reprieved: true };
+    const line = formatAdoptedFitDecision(ledger, "/w/card.mp4")!;
     expect(line).toContain("severity=SOFT_MISMATCH");
     expect(line).toContain("reason=reprieved_soft_mismatch");
     expect(line).toContain("fallback=true");
+  });
+
+  it("a soft mismatch the render refused says REJECTED, not fallback", () => {
+    const ledger = judgedLedger("/w/newsreel.mp4", REFUSALS.wrongPeriod);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      reprieveBeatClip(ledger, "/w/newsreel.mp4", "nothing else passed");
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.includes("[VisualFitDecision]"))!;
+      expect(line).toContain("decision=REJECTED");
+      expect(line).toContain("severity=SOFT_MISMATCH");
+      expect(line).not.toContain("fallback=true");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("a refused reprieve is logged as REJECTED with its severity", () => {
