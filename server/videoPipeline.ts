@@ -17948,6 +17948,11 @@ export interface VisualDedupState {
   usedPexelsIds: Set<number>;
   usedPixabayIds: Set<number>;
   usedContentKeys: Set<string>;
+  /**
+   * RONDE 217: what the compose-time rescue already tried for each scene, and what the render had
+   * adopted at that moment. See `recoverSceneClipsIfEmpty`.
+   */
+  sceneRecoveryAttempts: Map<number, { yielded: number; usedKeysAt: number }>;
   /** FIX 1/2 — funnel candidate ids (`${source}:${assetId}`) already selected as a beat's
    *  winner in this render. Keyed on the candidate's own stable provider identity rather
    *  than clipContentKey, because a funnel clip's filename embeds `scene_N_bM_`, so
@@ -18575,6 +18580,7 @@ export function createVisualDedupState(
     usedPexelsIds: new Set(),
     usedPixabayIds: new Set(),
     usedContentKeys: new Set(),
+    sceneRecoveryAttempts: new Map(),
     usedFunnelCandidateIds: new Set(),
     usedCategories: new Map(),
     globalBeatIndex: 0,
@@ -25166,18 +25172,73 @@ export async function recoverSceneClipsIfEmpty(
 ): Promise<SceneVisualsResult> {
   const clips: string[] = [];
   const beatDurations: number[] = [];
+  /**
+   * RONDE 217 — NINE CALLERS, NO SHARED MEMORY, SIX IDENTICAL PASSES.
+   *
+   * ── What render 575 measured ────────────────────────────────────────────────────────────────
+   *
+   * In the ten minutes of log that survive, ONE scene ran this rescue six times:
+   *
+   *     [VisualCoverage] s0b1: rejected=132 … 140 … 148 … 156 … 167 … 175
+   *
+   * and those six passes account for 205 Pexels searches and 205 Pixabay searches. The searches
+   * themselves are fast — 49 seconds of the render's 4127. What cost the time was doing the whole
+   * pass again, five more times, into the same wall.
+   *
+   * Nine separate call sites reach this function, and not one of them could see that another had
+   * just run. That is RONDE 94's shape — a rule several routes must respect, respected by none —
+   * in its performance form.
+   *
+   * ── Why a repeat cannot do better, and when it can ──────────────────────────────────────────
+   *
+   * A pass that yielded nothing did so because every candidate it found was refused or unusable.
+   * Running it again asks the same providers the same questions about the same beats. The one
+   * thing that could legitimately change the answer is an ADOPTION somewhere else in the render:
+   * that alters `usedContentKeys`, which is what the dedup refuses on, so a beat blocked by a
+   * duplicate can become adoptable. `usedContentKeys.size` is therefore the discriminator — cheap,
+   * already maintained, and honest about what it claims.
+   *
+   * So: repeat freely while the render is still adopting; decline only when the previous pass
+   * yielded nothing AND nothing has been adopted since. Never silently — a skipped rescue says so.
+   *
+   * This is not a budget or a cap. Nothing is refused that could have succeeded, and a scene that
+   * has never been recovered is never skipped.
+   */
+  const prior = dedup.sceneRecoveryAttempts.get(scene.index);
+  if (prior && prior.yielded === 0 && prior.usedKeysAt === dedup.usedContentKeys.size) {
+    console.warn(
+      `[SceneRescue] scene ${scene.index}: skipped — the previous pass found nothing and the ` +
+        `render has adopted nothing since (usedKeys=${dedup.usedContentKeys.size}); ` +
+        `the same providers would be asked the same questions about the same beats`
+    );
+    return { clips: [], beatDurations: [] };
+  }
+  const record = (result: SceneVisualsResult): SceneVisualsResult => {
+    dedup.sceneRecoveryAttempts.set(scene.index, {
+      yielded: result.clips.length,
+      usedKeysAt: dedup.usedContentKeys.size,
+    });
+    return result;
+  };
   try {
-    return await withSceneFetchTimeout(
-      () => recoverSceneClipsIfEmptyInner(scene, workDir, topicContext, dedup, clips, beatDurations),
-      composeRescueWallClockMs(dedup.videoLength),
-      `compose-time rescue scene ${scene.index}`
+    return record(
+      await withSceneFetchTimeout(
+        () => recoverSceneClipsIfEmptyInner(scene, workDir, topicContext, dedup, clips, beatDurations),
+        composeRescueWallClockMs(dedup.videoLength),
+        `compose-time rescue scene ${scene.index}`
+      )
     );
   } catch (err) {
     console.warn(
       `[Pipeline] Scene ${scene.index}: compose-time rescue capped — keeping ${clips.length} clip(s) ` +
         `found so far: ${(err as Error).message?.slice(0, 120)}`
     );
-    return { clips, beatDurations };
+    /**
+     * RONDE 217: a capped pass is recorded too. It kept whatever it had found, and if that is
+     * nothing then the next pass faces the same wall as any other empty one — plus a clock that
+     * has already proven too short. Leaving this unrecorded is what let the loop run six times.
+     */
+    return record({ clips, beatDurations });
   }
 }
 
