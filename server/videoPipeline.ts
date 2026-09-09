@@ -162,6 +162,7 @@ import {
 } from "./scriptGuidedClipFinder";
 import {
   beatVisualDescriptionFromIntent,
+  intentSearchQueries,
   beatVisualSearchSubjects,
   hydrateBeatScriptVisuals,
   resolveBeatScriptVisualAnchor,
@@ -22774,9 +22775,53 @@ function tokenizeForRelevance(text: string): string[] {
     .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));
 }
 
+/**
+ * RONDE 218 — THE PIPELINE SEARCHED FOR ONE THING AND SCORED FOR ANOTHER.
+ *
+ * ── The gap ─────────────────────────────────────────────────────────────────────────────────
+ *
+ * The script says, per sentence, what the viewer should SEE: `visual_description`,
+ * `priority_subject`, and the search subjects derived from them. `beatVisualSearchSubjects` puts
+ * that into the QUERY, and it has done so for a long time.
+ *
+ * These keywords are the other half — `scoreVisualRelevance(hay, relevanceKeywords)` is what then
+ * decides whether a candidate the query returned is actually about this beat. And they were built
+ * from the beat text, the scene's cue, the scene's stock query, the person names and the video
+ * title. The script's own statement of what to show was not among them, and a grep for it finds no
+ * other route by which it arrives.
+ *
+ * So the render asked for "an abandoned factory floor" and then scored the results against a word
+ * list that never mentioned a factory. A perfect match scored no higher than the noise beside it.
+ *
+ * Two lines above one of the three call sites, `resolveBeatVisualIntent(text)` had already been
+ * called and its answer thrown away for this purpose. A value computed and not carried — this
+ * codebase's signature fault, at a distance of two lines.
+ *
+ * ── Why the resolver is called here and not passed in ───────────────────────────────────────
+ *
+ * The same function the SEARCH side uses, so the two cannot come to different conclusions about
+ * one beat. Threading a parameter through three call sites would let a future fourth forget it;
+ * asking the one resolver cannot. It is memo-free but cheap — rule-based over the sentence — and
+ * it is what `beatVisualSearchSubjects` already does internally on every beat.
+ *
+ * ── What is deliberately NOT taken from the intent ──────────────────────────────────────────
+ *
+ * `camera_shot` and `emotion`. The dead `buildRelevanceKeywordsFromIntent` included both; copying
+ * that would be a mistake. "wide", "close", "aerial" are production vocabulary — they describe the
+ * filming, not the subject — so scoring on them rewards any clip whose description happens to say
+ * "wide shot", which is most of them. That is noise dressed as evidence.
+ *
+ * The cap stays at 20. The list does not get longer, it gets more specific: the intent terms are
+ * placed after the beat's own words and before the video title, so what falls off the end is the
+ * least beat-specific material rather than anything the script actually asked for.
+ */
 function buildRelevanceKeywords(scene: Scene, beatText: string, videoTitle?: string): string[] {
+  const intent = resolveBeatVisualIntent(beatText);
   const parts = [
     ...tokenizeForRelevance(beatText),
+    ...intentSearchQueries(intent).flatMap((q) => tokenizeForRelevance(q)),
+    ...tokenizeForRelevance(intent.visual_description ?? intent.visual_intent ?? ""),
+    ...tokenizeForRelevance(intent.priority_subject ?? ""),
     ...tokenizeForRelevance(scene.visualCue),
     ...tokenizeForRelevance(scene.pexelsQuery),
     ...(scene.pexelsQueries ?? []).flatMap((q) => tokenizeForRelevance(q)),
