@@ -1161,6 +1161,49 @@ export function contentTermsFromText(text: string, maxTerms = 4): string {
 }
 
 /**
+ * RONDE 216 — ASK BEFORE YOU BUILD, WITH THE GATE'S OWN MEASURE.
+ *
+ * ── What render 575 measured ────────────────────────────────────────────────────────────────
+ *
+ *     query="germany" status=BLOCKED blockedTerms=["germany"] reason=UNVERIFIED_TERM
+ *     terms=["General Georgy Zhukov","General George","Adolf Hitler","Berlin","German"]
+ *
+ * 104 times. The script says "German"; a hardcoded anchor table turns that into "Germany", and
+ * "Germany" is a word the script never said. The gate refuses it — correctly, and this round does
+ * not touch that. What it stops is the BUILDING: a table that emits a term its own source cannot
+ * support has spent the render's clock on a query that could only be thrown away, which is RONDE
+ * 88 §P4's finding in a second table.
+ *
+ * The tempting wrong fix was a looser stemmer, so that "German" would prove "germany". That would
+ * open the gate rather than fix the builder, and it would let "arm" prove "army" — a different
+ * word, and exactly the kind of false match the evidence rule exists to stop.
+ *
+ * ── The measure ─────────────────────────────────────────────────────────────────────────────
+ *
+ * The same one `validateSearchQuery` applies: every CONTENT word must be traceable to the source
+ * by stem. Function words and production vocabulary are exempt here for the same reason they are
+ * exempt there — they carry no claim. An anchor with nothing but those in it is not provable by
+ * anything and is refused; `hasContentAnchor` says why.
+ */
+export function termProvableFrom(term: string, sourceText: string): boolean {
+  const q = queryProper(term ?? "").trim();
+  if (!q || !hasContentAnchor(q)) return false;
+  const sourceStems = new Set<string>();
+  for (const raw of (sourceText ?? "").split(/[^\p{L}\p{N}'’-]+/u)) {
+    if (!raw) continue;
+    for (const stem of evidenceStems(raw)) sourceStems.add(stem);
+  }
+  if (sourceStems.size === 0) return false;
+  for (const raw of q.split(/[^\p{L}\p{N}'’-]+/u)) {
+    if (!raw) continue;
+    const w = foldSearchText(raw);
+    if (!w || isFunctionWord(w) || isProductionWord(w)) continue;
+    if (!evidenceStems(raw).some((stem) => sourceStems.has(stem))) return false;
+  }
+  return true;
+}
+
+/**
  * The last gate before a query reaches a provider.
  *
  * `ctx` is the beat's proven context. Every CONTENT word in the query must be traceable to it;

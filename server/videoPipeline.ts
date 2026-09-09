@@ -432,6 +432,7 @@ import {
   isFunctionWord,
   isPronounToken,
   provenToken,
+  termProvableFrom,
   type VerifiedQueryContext,
 } from "./searchQueryContract";
 import { formatFallback, formatSelection } from "./renderCorrelation";
@@ -1425,6 +1426,11 @@ type SceneFetchScope = {
    * nine independent timeouts.
    */
   deadlineAtMs: number;
+  /**
+   * RONDE 216: whether this scope has already said its budget is gone. One line per scope, not one
+   * per refused search — see `cachedProviderSearch`.
+   */
+  budgetSpentReported?: boolean;
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
 
@@ -11671,11 +11677,31 @@ async function fetchSepiaSearchVideos(
   return results;
 }
 
-/** GDELT TV News queries — real US/UK broadcast mentions (Internet Archive TV). */
+/**
+ * GDELT TV News queries — real US/UK broadcast mentions (Internet Archive TV).
+ *
+ * RONDE 216 — A PAIR OF QUOTE MARKS AROUND NOTHING IS NOT A SEARCH.
+ *
+ * Render 575 built 48 of these:
+ *
+ *     [SearchQueryAudit] render=575 provider=gdelt_tv route=fetchGdeltTvNewsClips
+ *                        query="" status=ALLOWED
+ *
+ * `quoted` is `"${personName}"`, so a beat with no person produced `"" station:CNN` — a phrase
+ * search for the empty string, sent to a live provider 48 times, and waved through by the audit as
+ * ALLOWED because the only thing between the quotes was a station name the gate exempts by design.
+ *
+ * The gate is not what needs changing: `validateSearchQuery` answers EMPTY_QUERY for a bare `""`,
+ * and it is right that `station:CNN` alone carries no claim to refuse. What was wrong is that the
+ * BUILDER emitted a query naming nobody. This route exists to find broadcast footage OF A PERSON;
+ * with no person there is nothing for it to ask, and the honest number of queries is zero.
+ */
 function buildGdeltTvQueries(personName: string, beatText: string, beatIndex: number): string[] {
-  const quoted = `"${personName}"`;
+  const person = (personName ?? "").trim();
+  if (!person) return [];
+  const quoted = `"${person}"`;
   const clean = beatText.replace(/\[visual:[^\]]*\]/gi, " ").trim();
-  const eventQs = scriptEventSearchQueries(clean, [personName]);
+  const eventQs = scriptEventSearchQueries(clean, [person]);
   const out: string[] = [];
   for (let i = 0; i < GDELT_TV_STATIONS.length; i++) {
     const station = GDELT_TV_STATIONS[(beatIndex + i) % GDELT_TV_STATIONS.length];
@@ -20100,6 +20126,51 @@ export async function cachedProviderSearch<T>(
    * comes from and nothing about what a search returns — a hit replays the identical payload the
    * miss stored.
    */
+  /**
+   * RONDE 216 — A SEARCH ISSUED INTO AN ALREADY-CANCELLED SCENE HAS A KNOWN OUTCOME.
+   *
+   * ── What render 575 measured ────────────────────────────────────────────────────────────────
+   *
+   *     356x  "cancelled by the enclosing scene budget before its own timeout —
+   *            the request itself did not time out"
+   *
+   *     9x  Internet Archive search failed for title:(General George) AND mediatype:movies
+   *     9x  Internet Archive search failed for collection:tvnews AND General George
+   *     9x  Internet Archive search failed for "subject:"General George""
+   *
+   * Twenty-seven attempts at three queries, each cancelled by the SAME exhausted scene budget that
+   * had already cancelled the one before it. The scope's AbortController had fired; every request
+   * started after that point was dead on arrival, and the render still paid to build the query,
+   * run the gate audit, open the request and construct the error — 356 times, inside a render the
+   * watchdog stopped at 4127 seconds.
+   *
+   * ── Why this is not a budget change ─────────────────────────────────────────────────────────
+   *
+   * No timeout is lengthened, no budget is raised, and nothing that could still have succeeded is
+   * skipped: `signal.aborted` means the scope has ALREADY given up, so the only thing declined
+   * here is work whose outcome is settled before it starts. The scene ends at the same moment
+   * either way; it simply stops spending that moment on requests it will throw away.
+   *
+   * The provider is recorded in `budgetCancelledProviders` exactly as the catch below does, so the
+   * search memory still reads this as "cut off", never as "this source has nothing" — RONDE 100B's
+   * distinction survives. And it is said once per scope rather than once per refusal, because 356
+   * identical lines is how the real shape of this was hidden in the first place.
+   */
+  const sceneScope = sceneFetchScopeStorage.getStore();
+  if (sceneScope?.controller.signal.aborted) {
+    const activeForAbort = cache ?? get_activeSourcingCache() ?? undefined;
+    activeForAbort?.budgetCancelledProviders.add(provider.trim().toLowerCase());
+    if (!sceneScope.budgetSpentReported) {
+      sceneScope.budgetSpentReported = true;
+      console.warn(
+        `[ProviderSearch] scene budget already spent — no further searches will be issued in ` +
+          `this scope (first declined: provider=${provider} route=${route}); the requests that ` +
+          `would follow could only be cancelled on arrival`
+      );
+    }
+    return [] as unknown as T;
+  }
+
   const activeCache = cache ?? get_activeSourcingCache() ?? undefined;
   if (!activeCache) return search();
   const key = providerQueryCacheKey(provider, text);
@@ -22436,14 +22507,39 @@ function extractVideoTopicAnchorsWithKey(
   const override = detectBeatTopicOverride(beatText);
   const geo = detectGeoContext(videoTitle, beatText);
 
+  /**
+   * RONDE 216 — an anchor this text cannot support is not built.
+   *
+   * Both tables above map a MATCH to a fixed list of terms, and the terms need not appear in what
+   * matched: `/\b(germany|german|deutschland|duitsland)\b/` fires on a script that says "German"
+   * and emits "Germany". Render 575 built that query 104 times and the gate refused all 104 —
+   * correctly, because the script never said it.
+   *
+   * Filtered with the gate's own measure so the two cannot disagree, and the gate itself is
+   * unchanged. What survives here is what would have survived there; what does not is no longer
+   * paid for twice. An anchor still has to pass the real gate with the beat's full context — this
+   * only declines to spend a request on one that provably cannot.
+   */
+  const source = `${videoTitle ?? ""} ${beatText ?? ""}`;
+  const supported = (list: string[]): string[] => list.filter((a) => termProvableFrom(a, source));
+
   if (override && geo) {
-    const anchors = buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors);
-    return { anchors, topicKey: `${geo.geoName.toLowerCase().replace(/\s+/g, "_")}_${override.key}` };
+    const anchors = supported(
+      buildGeoEventComboAnchors(geo.geoName, geo.anchors, override.eventTerm, override.anchors)
+    );
+    if (anchors.length) {
+      return { anchors, topicKey: `${geo.geoName.toLowerCase().replace(/\s+/g, "_")}_${override.key}` };
+    }
   }
-  if (override) return { anchors: override.anchors, topicKey: override.key };
+  if (override) {
+    const anchors = supported(override.anchors);
+    if (anchors.length) return { anchors, topicKey: override.key };
+  }
   if (geo) {
-    const key = geo.geoName.toLowerCase().replace(/\s+/g, "_");
-    return { anchors: geo.anchors, topicKey: key };
+    const anchors = supported(geo.anchors);
+    if (anchors.length) {
+      return { anchors, topicKey: geo.geoName.toLowerCase().replace(/\s+/g, "_") };
+    }
   }
   return { anchors: [], topicKey: "none" };
 }
