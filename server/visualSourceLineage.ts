@@ -42,6 +42,16 @@
 
 import * as path from "path";
 
+/**
+ * RONDE 202 — the identity rule, asked rather than re-derived.
+ *
+ * `isCanonicalAssetKey` already decides, in one place, whether a content key names an ASSET or
+ * merely a file. The asset index in this file needs the same answer, and a second spelling of it
+ * here is how two structures come to disagree about one question — this codebase's most repeated
+ * failure. The import runs one way: nothing in that module's chain reaches back here.
+ */
+import { isCanonicalAssetKey } from "./beatVisualRelevance";
+
 /** How a clip reached the beat it fills. */
 export type VisualLineageRoute =
   | "primary"
@@ -674,6 +684,60 @@ export class VisualSourceLedger {
    */
   createLineage(input: CreateLineageInput): VisualLineageRecord {
     const parent = input.parentLineageId ? this.records.get(input.parentLineageId) : undefined;
+    /**
+     * RONDE 202 — ONE ASSET, ONE RECORD. THE GUARD THIS FUNCTION NEVER HAD.
+     *
+     * Every call opened a new record and then did `byContentKey.set(key, id)`, silently
+     * overwriting whatever was already indexed under that key. So a second sighting of one asset
+     * did not merely add a record — it took the index away from the first, leaving the earlier
+     * half of the clip's life reachable by nothing. That is the mechanism behind render 567's two
+     * mirror-image records; see the note in `linkDerivedPath` for the symptom.
+     *
+     * Two of the three routes that open records already resolve first and hand the existing one
+     * back (`ensureCuratedAssetLineage`, `putCachedProviderAsset`). Two out of three is this
+     * codebase's most repeated failure, and the answer is always the same: put the rule in the one
+     * place they all pass rather than in the callers.
+     *
+     * ── The two things this deliberately does NOT do ─────────────────────────────────────────
+     *
+     * A DERIVED file keeps its own record. A trim, a pad and an overlay are different files with a
+     * parent link, and collapsing them would lose the derivation chain the compose barrier walks.
+     * So a call carrying `parentLineageId` is never merged.
+     *
+     * And a `file:` key is not an identity. It is derived from a path and its size, so two
+     * genuinely different assets can share one; merging on it would join two clips that have
+     * nothing to do with each other. Only a canonical asset key — `provider:id`, `curated:asset:n`
+     * — is an identity, which is the same rule `isCanonicalAssetKey` already enforces for the
+     * relevance ledger's asset index.
+     */
+    if (!input.parentLineageId && isCanonicalAssetKey(input.contentKey)) {
+      const existingId = this.byContentKey.get(input.contentKey!);
+      const existing = existingId ? this.records.get(existingId) : undefined;
+      if (existing) {
+        /**
+         * The second sighting usually knows the real file; the first often held a placeholder.
+         * The path is bound so `resolve` finds this record either way. Nothing else is
+         * overwritten — the scene, the beat and the provider stay as first recorded, because a
+         * later sighting is not evidence that the earlier one was wrong.
+         */
+        if (input.localPath && input.localPath !== existing.localPath) {
+          this.byPath.set(input.localPath, existing.lineageId);
+          existing.currentFilename = path.basename(input.localPath);
+        }
+        if (!existing.provider && normalizeProvider(input.provider)) {
+          this.attributeProvider(existing, {
+            provider: input.provider!,
+            providerAssetId: input.providerAssetId,
+            sourceUrl: input.sourceUrl,
+          });
+        }
+        this.recordEvent(existing.lineageId, "FOUND", {
+          status: "OK",
+          reason: "same_asset_seen_again",
+        });
+        return existing;
+      }
+    }
     const provider = normalizeProvider(input.provider) ?? parent?.provider ?? null;
     const basename = path.basename(input.localPath);
     this.seq += 1;
@@ -1051,7 +1115,38 @@ export class VisualSourceLedger {
     if (!derivedPath || !originPath || derivedPath === originPath) return null;
     this.derivedFrom.set(derivedPath, originPath);
     const parent = this.resolve(originPath);
-    if (!parent) return null;
+    /**
+     * RONDE 202 — THE SILENT NULL THAT SPLITS A CLIP'S LIFE IN TWO.
+     *
+     * This returned null and said nothing. What follows from that silence is render 567's
+     * unexplained clip, whose two halves landed on two records that are each other's mirror image:
+     *
+     *     #18  reachedSelected=true   reachedAssigned=false  DROPPED_WITHOUT_EVENT
+     *     #30  reachedSelected=false  reachedAssigned=true   DROPPED_WITHOUT_EVENT
+     *     VANISHED_WITHOUT_OUTCOME  scene_0_ytcc_0__pid_youtube_cc-…_transformed.mp4
+     *
+     * When the origin cannot be resolved the derived file inherits NOTHING — no provider, no
+     * query, no SELECTED — and the next thing that adopts it opens a fresh record for what is
+     * physically the same asset. Neither record has a whole story, so the clip is reported as
+     * vanished by an audit that is looking at two halves of it.
+     *
+     * The `derivedFrom` mapping above is still written, deliberately: it is what lets a LATER
+     * resolve walk back once the origin does acquire a record. What changes is only that the gap
+     * is now named at the moment it opens, with both paths, so the next render says which
+     * derivation lost its parent instead of leaving it to be inferred from a vanished clip.
+     *
+     * This does not repair the split — repairing it needs the route that failed to register the
+     * origin, and that is not knowable from here. It makes it visible.
+     */
+    if (!parent) {
+      console.warn(
+        `[Lineage] DERIVATION_WITHOUT_ORIGIN stage=${stage} ` +
+          `derived=${path.basename(derivedPath)} origin=${path.basename(originPath)} — ` +
+          `the origin has no record, so this copy inherits no provider, no query and no history; ` +
+          `whatever adopts it will open a second record for the same asset`
+      );
+      return null;
+    }
 
     const existing = this.byPath.get(derivedPath);
     if (existing) {
@@ -2536,10 +2631,33 @@ export function formatProviderFunnelInvariant(
  *     rendered   = finalVideo         its scene video went into the concat that produced the
  *                                     delivered file — proven from finalConcatInputs, never
  *                                     assumed from having been adopted
- *     unused     = found - rendered
+ *
+ * ── RONDE 202 — `unused` WAS ONE NUMBER FOR TWO DIFFERENT COSTS, AND IT READ AS NEITHER ──────
+ *
+ * It was `found - rendered`, and render 573 printed:
+ *
+ *     [AssetUsageSummary] TOTAL found=3995 downloaded=140 rendered=19 unused=3976
+ *
+ * Arithmetically true, and it tells a reader that 3995 candidates were found and essentially none
+ * of them touched. A hundred and forty of them were DOWNLOADED — bandwidth, disk and wall-clock
+ * spent — and one line earlier the same block says so. Render 567's YouTube line is the same
+ * shape and is what put this on the list: `found=30 downloaded=10 assigned=1 unused=30`, where an
+ * asset that a beat actually took is inside the "unused" count.
+ *
+ * The two halves need opposite work, which is why one number could not carry them:
+ *
+ *     neverFetched   = found - downloaded    the SEARCH cost that produced nothing. Too many
+ *                                            results for the question asked; fix the query.
+ *     fetchedUnused  = downloaded - rendered the DOWNLOAD cost that produced nothing. Fetched,
+ *                                            then refused or lost; fix the filtering that runs
+ *                                            before the download, or the reason it was dropped.
+ *
+ * The name changed because the old one was the defect: this reports MORE than before and nothing
+ * smaller — 3855 and 121 in place of a single 3976 that hid the second one entirely.
  *
  * `rendered` prints NOT_VERIFIED, never 0, when the render could not reach the point where
- * FINAL_VIDEO is knowable. Zero would be a claim; NOT_VERIFIED is the truth.
+ * FINAL_VIDEO is knowable. Zero would be a claim; NOT_VERIFIED is the truth — and the two counts
+ * above depend on it, so they print NOT_VERIFIED with it rather than guessing.
  */
 export function formatAssetUsageSummary(
   summary: VisualSourceSummary,
@@ -2547,11 +2665,15 @@ export function formatAssetUsageSummary(
 ): string[] {
   const line = (provider: string, c: SummaryCounts): string => {
     const rendered = finalVideoVerified ? String(c.finalVideo) : NOT_VERIFIED;
-    const unused = finalVideoVerified ? String(Math.max(0, c.results - c.finalVideo)) : NOT_VERIFIED;
+    /** See the note above: two costs, two numbers, because they call for opposite work. */
+    const neverFetched = String(Math.max(0, c.results - c.downloadSucceeded));
+    const fetchedUnused = finalVideoVerified
+      ? String(Math.max(0, c.downloadSucceeded - c.finalVideo))
+      : NOT_VERIFIED;
     return (
       `[AssetUsageSummary] provider=${provider} found=${c.results} validated=${c.eligible} ` +
       `selected=${c.selected} downloaded=${c.downloadSucceeded} assigned=${c.adopted} ` +
-      `rendered=${rendered} unused=${unused}`
+      `rendered=${rendered} neverFetched=${neverFetched} fetchedUnused=${fetchedUnused}`
     );
   };
   const providers = Object.entries(summary.byProvider).sort((a, b) => {

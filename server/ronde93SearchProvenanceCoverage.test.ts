@@ -239,9 +239,17 @@ describe("RONDE 94 — found is not rendered, and the report says which is which
   it("TEST 16 — one line per provider, in found/validated/selected/downloaded/assigned/rendered", () => {
     const wikimedia = counts({ results: 235, eligible: 235, selected: 8, downloadSucceeded: 8, adopted: 8, finalVideo: 8 });
     const lines = formatAssetUsageSummary(summaryOf({ wikimedia }, wikimedia), true);
+    /**
+     * RONDE 202 — `unused=227` became two numbers, because it was one number for two costs.
+     *
+     * Here they are 227 found and never fetched (a search that returned too much for the question
+     * asked) and 0 fetched without reaching the film. Render 573 is where the old single number
+     * misled: `found=3995 downloaded=140 rendered=19 unused=3976` reads as "we touched none of
+     * them" while 140 downloads had been paid for.
+     */
     expect(lines[0]).toBe(
       "[AssetUsageSummary] provider=wikimedia found=235 validated=235 selected=8 " +
-        "downloaded=8 assigned=8 rendered=8 unused=227"
+        "downloaded=8 assigned=8 rendered=8 neverFetched=227 fetchedUnused=0"
     );
   });
 
@@ -249,8 +257,11 @@ describe("RONDE 94 — found is not rendered, and the report says which is which
     const youtube = counts({ results: 42, eligible: 16, selected: 5, downloadSucceeded: 5, adopted: 5, finalVideo: 0 });
     const line = formatAssetUsageSummary(summaryOf({ youtube }, youtube), false)[0]!;
     expect(line).toContain("rendered=NOT_VERIFIED");
-    expect(line).toContain("unused=NOT_VERIFIED");
+    /** It depends on `rendered`, so it cannot be more certain than `rendered` is. */
+    expect(line).toContain("fetchedUnused=NOT_VERIFIED");
     expect(line).not.toContain("rendered=0");
+    /** This one does NOT depend on the final video and stays a real number. */
+    expect(line).toContain("neverFetched=37");
   });
 
   it("TEST 18 — found is not used: a provider with results and no final clips shows it", () => {
@@ -259,7 +270,9 @@ describe("RONDE 94 — found is not rendered, and the report says which is which
     expect(line).toContain("found=120");
     expect(line).toContain("assigned=0");
     expect(line).toContain("rendered=0");
-    expect(line).toContain("unused=120");
+    /** 117 were never fetched at all; 3 were downloaded and still did not reach the film. */
+    expect(line).toContain("neverFetched=117");
+    expect(line).toContain("fetchedUnused=3");
   });
 
   it("TEST 19 — a funnel that widens is reported as an inconsistency", () => {
