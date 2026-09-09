@@ -10,6 +10,7 @@ import {
 import type { VisualSourceLedger } from "./visualSourceLineage";
 import {
   adoptionPolicyFor,
+  visionRequirementMet,
   visionVerdictFromGate,
   type AdoptCategory,
   type AdoptionVisionVerdict,
@@ -388,9 +389,16 @@ function noteAdoptionEvidence(
    * The two readings must agree, or the evidence line would report as backed exactly the
    * adoptions the montage guard refuses.
    */
+  /**
+   * RONDE 199 — through the guard's own rule, so the two readings cannot drift.
+   *
+   * This used to spell the vision half out here as `!requiresVision || vision === "APPROVED"`,
+   * which agreed with the guard only while every requirement was all-or-nothing. It stopped being
+   * that when a category could require a LOOK without requiring a yes, and a second spelling of a
+   * rule is how a render comes to refuse one thing and report another.
+   */
   const backed =
-    (!policy.requiresEligibility || eligible) &&
-    (!policy.requiresVision || vision === "APPROVED");
+    (!policy.requiresEligibility || eligible) && visionRequirementMet(policy, vision);
 
   const list = evidenceByAudit.get(audit) ?? [];
   list.push({

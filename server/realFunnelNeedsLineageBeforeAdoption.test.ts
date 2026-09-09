@@ -135,7 +135,15 @@ describe("a fallback never becomes a verified visual", () => {
       const policy = adoptionPolicyFor(route);
       expect(policy.countsAsVerifiedVisual, "this is the line that must not move").toBe(false);
       expect(policy.visionRequirement).not.toBe("approved");
-      expect(guard(route, false, "NOT_ASKED").allowed).toBe(true);
+      /**
+       * RONDE 199 — "without an approval" still means UNCLEAR, and no longer means unseen.
+       *
+       * The claim this test defends is unchanged: a fallback may put a picture on screen without
+       * the editor saying yes, and may never count as a verified visual for it. What no longer
+       * qualifies is a picture nobody looked at — see `visionRequirement`.
+       */
+      expect(guard(route, false, "UNCLEAR").allowed).toBe(true);
+      expect(guard(route, false, "NOT_ASKED").allowed).toBe(false);
     }
   );
 

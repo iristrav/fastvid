@@ -70,8 +70,25 @@ describe("render 569 replayed through the code as it stands", () => {
    * right: 47 + 1 subject fallbacks plus 2 Wikimedia rescues. Left recorded here because it is the
    * point of the file — a measurement that can correct its author is worth more than one that
    * confirms him.
+   *
+   * ── RONDE 199 — 50 became 48, and the two that moved are named ──────────────────────────────
+   *
+   * The owner's rule is that every picture is looked at, so NOT_ASKED stopped satisfying a rescue
+   * route's requirement. Exactly one group in this log has that verdict: the 2 Wikimedia rescues.
+   * The 48 that emptied the film were UNCLEAR — the editor looked and could not tell — and they
+   * still pass. That is the measurement, and it is the reason the tightening was affordable at
+   * all: had it moved the 48, it would have re-created render 569 and had to be abandoned.
+   *
+   * ── What this replay CANNOT show, stated so nobody reads it as a loss of 2 pictures ─────────
+   *
+   * It replays recorded verdicts as INPUT. It cannot replay the thing that changed alongside the
+   * rule: the push route now obtains a verdict before the guard is consulted (`finalSay`), past
+   * the per-beat look ceiling. Render 569's two Wikimedia rescues were NOT_ASKED because nobody
+   * asked; re-run today they would carry an answer, and which way that answer falls is not
+   * knowable from this log. So this file measures the rule, and only a real render measures the
+   * whole change.
    */
-  it("50 of the 52 refusals no longer happen", () => {
+  it("48 of the 52 refusals no longer happen", () => {
     let stillRefused = 0;
     let nowAllowed = 0;
     for (const r of RENDER_569_REFUSALS) {
@@ -79,8 +96,8 @@ describe("render 569 replayed through the code as it stands", () => {
       if (allowed) nowAllowed += r.count;
       else stillRefused += r.count;
     }
-    expect(nowAllowed).toBe(50);
-    expect(stillRefused).toBe(2);
+    expect(nowAllowed).toBe(48);
+    expect(stillRefused).toBe(4);
     expect(nowAllowed + stillRefused).toBe(TOTAL);
   });
 
@@ -89,8 +106,12 @@ describe("render 569 replayed through the code as it stands", () => {
     expect(replay(RENDER_569_REFUSALS[0]).allowed).toBe(true);
   });
 
-  it("the 2 Wikimedia rescues are adopted", () => {
-    expect(replay(RENDER_569_REFUSALS[1]).allowed).toBe(true);
+  /**
+   * RONDE 199: these two are the whole cost of the tightening, so they are asserted by name and in
+   * the direction they now go. Their verdict is NOT_ASKED — nobody had looked at either picture.
+   */
+  it("the 2 Wikimedia rescues nobody looked at are refused", () => {
+    expect(replay(RENDER_569_REFUSALS[1]).allowed).toBe(false);
   });
 
   it("the 1 eligible subject fallback is adopted", () => {

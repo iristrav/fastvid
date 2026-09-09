@@ -52,10 +52,23 @@ describe("render 569 defect 1 — an UNCLEAR verdict emptied the film", () => {
     }
   );
 
+  /**
+   * RONDE 199 — THIS HALF WAS DELIBERATELY TAKEN BACK, AND ONLY THIS HALF.
+   *
+   * The owner's rule: every picture is looked at, and looked at for whether it is good enough for
+   * the text it runs under. NOT_ASKED is a picture nobody looked at, so it can no longer stand in
+   * for "the editor did not object" — it never was that.
+   *
+   * The 48 refusals that actually emptied render 569 were UNCLEAR, and the block above still
+   * asserts every one of them passes. Of the 52 the replay file measures, exactly 2 change: the
+   * two Wikimedia rescues nobody had judged. And in a live render they would not be NOT_ASKED any
+   * more, because the push route now obtains a verdict before the guard is consulted — see
+   * `finalSay`. Nothing here relaxes a gate; one silence stopped counting as an answer.
+   */
   it.each(["subject_fallback", "rescue_wikimedia"])(
-    "%s is no longer refused for a NOT_ASKED verdict either",
+    "%s IS refused a picture nobody ever looked at",
     (source) => {
-      expect(guard(source, "NOT_ASKED").allowed).toBe(true);
+      expect(guard(source, "NOT_ASKED").allowed).toBe(false);
     }
   );
 
@@ -89,8 +102,14 @@ describe("render 569 defect 1 — an UNCLEAR verdict emptied the film", () => {
       expect(adoptionPolicyFor(source).visionRequirement).toBe("not_rejected");
       expect(adoptionPolicyFor(source).countsAsVerifiedVisual).toBe(false);
     }
-    for (const source of ["rescue_extend", "fallback", "motion_graphic"]) {
-      expect(adoptionPolicyFor(source).visionRequirement).toBe("none");
+    /**
+     * RONDE 199 — a card is a picture a viewer reads, so it is judged too. What differs is what a
+     * refusal may DO: a drawn graphic falls through like any other refused picture, and the last
+     * rung has nothing behind it, so its answer is recorded rather than obeyed.
+     */
+    expect(adoptionPolicyFor("motion_graphic").visionRequirement).toBe("not_rejected");
+    for (const source of ["rescue_extend", "fallback"]) {
+      expect(adoptionPolicyFor(source).visionRequirement).toBe("looked_at");
     }
   });
 });

@@ -158,11 +158,19 @@ describe("a funnel claim is recorded as backed only when the evidence exists", (
     expect(evidence.backed).toBe(true);
   });
 
-  /** A placeholder requires neither, and must never appear in the funnel warnings. */
-  it("a placeholder needs no evidence at all", () => {
-    const { evidence } = adoptWith({ source: "fallback", eligible: false, judged: false });
-    expect(evidence.category).toBe("PLACEHOLDER");
-    expect(evidence.backed).toBe(true);
+  /**
+   * A placeholder needs no eligibility and no approval, and must never appear in the funnel
+   * warnings. RONDE 199 added the one thing it does need: that somebody looked at it. `backed` and
+   * the montage guard read the same rule (`visionRequirementMet`), so this line and the refusal
+   * cannot disagree about the same card.
+   */
+  it("a placeholder needs no eligibility and no approval — only a look", () => {
+    const seen = adoptWith({ source: "fallback", eligible: false, judged: true });
+    expect(seen.evidence.category).toBe("PLACEHOLDER");
+    expect(seen.evidence.backed).toBe(true);
+
+    const unseen = adoptWith({ source: "fallback", eligible: false, judged: false });
+    expect(unseen.evidence.backed, "a card nobody looked at reads as backed").toBe(false);
   });
 });
 

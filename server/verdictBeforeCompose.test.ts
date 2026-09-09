@@ -178,25 +178,38 @@ describe("every way of not knowing leaves the clip as it was", () => {
 
 /* ═══════════════════════ a card is registered, never judged ═══════════════════════ */
 
-describe("a colour card is not put in front of a picture editor", () => {
+describe("a colour card is judged, and its answer cannot empty the beat", () => {
   /**
-   * THE HAZARD. A grey rectangle belongs under no narration, so judging one earns a refusal, and
-   * the barrier would then throw away the only thing keeping that beat from being empty.
+   * THE HAZARD, WHICH HAS NOT GONE AWAY — only moved to where it can be handled.
+   *
+   * A grey rectangle belongs under no narration, so judging one earns a refusal, and the barrier
+   * would then throw away the only thing keeping that beat from being empty. RONDE 199 stopped
+   * answering that by refusing to look: a card is a picture a viewer reads, and a map, a chart or
+   * a title card can be plainly wrong about the words underneath it. So the card IS judged, and
+   * `checkBeatRelevance` reprieves a refusal on a card instead of obeying it — the existing
+   * mechanism for "refused, and kept on purpose".
    */
-  it("marks a placeholder exempt instead of judging it", async () => {
+  it("judges the card and still names it as one", async () => {
     const s = scope({ isPlaceholder: () => true });
     const r = await ask(s, "/w/scene_1_slot2_guaranteed.mp4");
     expect(r.outcome).toBe("placeholder");
-    expect(s.spent, "a card was charged to the compose budget").toBe(0);
+    expect(s.spent, "the look a card costs is charged like any other").toBe(1);
   });
 
-  /** It is still WRITTEN DOWN — "deliberately not judged" and "nobody looked" are different. */
+  /**
+   * And it is written down. `evaluated` is the gate's own answer to "did a model look" — false
+   * here because this suite runs with no model behind it, which is the honest reading of a
+   * declined look and is exactly what that field is for. What is no longer written is the old
+   * exemption: the card is not recorded as something there was nothing to judge about.
+   */
   it("records the card so the beat does not read as unexamined", async () => {
     const s = scope({ isPlaceholder: () => true });
     await ask(s, "/w/scene_1_slot2_guaranteed.mp4");
     const entry = s.ledger.byClipPath.get("/w/scene_1_slot2_guaranteed.mp4");
     expect(entry, "the card left no trace, so the beat reads as never looked at").toBeDefined();
-    expect(entry!.decision.evaluated, "a card must not read as a real look").toBe(false);
+    expect(entry!.decision.reason, "the card was waved through as unjudgeable").not.toContain(
+      "nothing to judge"
+    );
   });
 });
 

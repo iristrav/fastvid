@@ -29316,6 +29316,16 @@ async function beatClipRefusedByRelevanceGate(
       sceneIndex,
       beatIndex,
       route: "push",
+      /**
+       * RONDE 199 — this is the picture, not a candidate.
+       *
+       * Every push closure calls this immediately before `adoptionGuardRefusesPush`, and the guard
+       * no longer accepts "nobody looked" as an answer. So the look has to be obtainable here even
+       * when the beat has spent its comparison budget: otherwise the tightening would not make the
+       * render judge more pictures, it would make it ship fewer — which is the render-569 failure
+       * this codebase has already paid for once.
+       */
+      finalSay: true,
     });
   }
   const contentKey = clipContentKey(clipPath);

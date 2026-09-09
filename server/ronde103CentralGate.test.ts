@@ -153,12 +153,20 @@ describe("RONDE 103 — what the central gate decides", () => {
     expect(invoke.fn).not.toHaveBeenCalled();
   });
 
-  it("phase 7 — a neutral placeholder is not sent to the model at all", async () => {
+  /**
+   * RONDE 199 reversed phase 7's answer, deliberately.
+   *
+   * Phase 7 exempted a card from the model on the argument that it depicts nothing. That is true
+   * of a colour field and false of a map, a chart or a title card, all of which travel under the
+   * same flag and can be plainly wrong about the narration under them. The owner's rule is that
+   * every picture is looked at. The hazard phase 7 existed for — a refused card being thrown away,
+   * leaving the beat empty — is handled where it belongs: the refusal is REPRIEVED, so the answer
+   * is recorded and the card stays.
+   */
+  it("phase 7 reversed — a card IS judged, and a refusal on one is kept", async () => {
     const d = await ask({ placeholder: true });
-    expect(d.allowed).toBe(true);
-    expect(d.reason).toContain("placeholder");
-    expect(invoke.fn).not.toHaveBeenCalled();
-    // ...and it does not burn a decline counter either: nothing was declined, nothing was asked.
+    expect(invoke.fn, "the card was never put to the model").toHaveBeenCalled();
+    expect(d.allowed, "a card must never be taken away by its own verdict").toBe(true);
     expect(state.judgementsSkipped).toBe(0);
   });
 

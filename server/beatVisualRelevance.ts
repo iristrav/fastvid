@@ -321,6 +321,19 @@ export type BeatRelevanceParams = {
    * exempt.
    */
   placeholder?: boolean;
+  /**
+   * RONDE 199 — THE PICTURE THAT IS ABOUT TO BECOME THE BEAT'S PICTURE.
+   *
+   * The per-beat look ceiling bounds COMPETITION: how many candidates a beat may pay to have
+   * compared. It was never meant to decide what ships unseen, and that is what it had become —
+   * a clip arriving after the ceiling went into the film with `evaluated: false` against it, and
+   * the adoption guard read that silence as "not rejected".
+   *
+   * The push routes set this. At that point the clip is not competing with anything; it is the
+   * picture, and a judgement there decides something rather than ranking something. It is the one
+   * exemption, it is named at the call site, and it is counted like every other look.
+   */
+  finalSay?: boolean;
   /** Called with the delta in judgement spend, so per-beat audits stay attributable. */
   onSpend?: (spent: { judged: number; failed: number; skipped: number }) => void;
 };
@@ -352,7 +365,23 @@ export async function checkBeatRelevance(
   const pass = (verdict: BeatImageVerdict, reason: string, cached = false): BeatRelevanceDecision =>
     record({ verdict, allowed: true, reprieved: false, cached, depicts: "", reason, route, evaluated: false });
 
-  if (params.placeholder) return pass("unknown", "neutral placeholder — nothing to judge");
+  /**
+   * RONDE 199 — A CARD IS LOOKED AT TOO. THE ANSWER JUST CANNOT EMPTY THE BEAT.
+   *
+   * This used to return before looking, on the argument that a card depicts nothing so there is
+   * nothing to judge. That is true of a colour field and false of everything else the flag covers:
+   * a map, a chart, a title card, an overlay carrying the beat's own words. The owner's rule is
+   * that every picture is looked at and checked against the text it runs under, and those cards
+   * are pictures a viewer reads.
+   *
+   * The hazard the old exemption existed for is real and is handled below instead of here: a model
+   * asked whether a colour field belongs under a line of narration will reasonably say no, and the
+   * compose barrier would then refuse the only thing standing between that beat and an empty slot.
+   * So a card is judged, its answer is recorded, and a refusal is REPRIEVED rather than obeyed —
+   * `reprieved` is the existing mechanism for exactly "refused, and kept deliberately". The render
+   * can now say which of its cards the editor thought did not belong; it simply does not act on it
+   * where acting means leaving a hole.
+   */
   if (!beatImageRelevanceGateEnabled()) return pass("unknown", "gate disabled");
   if (!ctx.beatText?.trim()) return pass("unknown", "no narration to judge against");
 
@@ -364,9 +393,17 @@ export async function checkBeatRelevance(
   // ceiling first would make a beat that has already looked twice adopt a clip it KNOWS does not
   // fit — the budget exists to bound spending, not to launder verdicts already earned.
   const alreadyKnown = state.seen.get(cacheKey);
-  if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat()) {
+  if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {
     state.judgementsSkipped++;
     return pass("unknown", `per-beat look ceiling reached (${spentOnBeat})`);
+  }
+  if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat()) {
+    // RONDE 199: past the ceiling, deliberately, because this one is the beat's picture. See
+    // `finalSay`. Printed so the extra spend is visible rather than inferred from a total.
+    console.log(
+      `[BeatRelevance] ${slot} final say past the look ceiling (${spentOnBeat}) — ` +
+        `this picture is about to be used, so it is judged`
+    );
   }
 
   const framePaths = alreadyKnown ? [] : await sampleFrames(clipPath, workDir, ctx, route);
@@ -397,10 +434,25 @@ export async function checkBeatRelevance(
   if (spent.judged > 0) ledger.spendByBeat.set(slot, spentOnBeat + spent.judged);
   params.onSpend?.(spent);
 
+  /**
+   * RONDE 199 — a card's refusal is kept as a fact and not obeyed as a decision.
+   *
+   * See the note where the placeholder exemption used to return before looking. The verdict below
+   * is the editor's real answer about this card and it goes to the ledger unchanged; `reprieved`
+   * is what stops the compose barrier acting on it, and `reprieved` is already this module's word
+   * for "refused, and kept on purpose".
+   */
+  const cardRefusalKept = Boolean(params.placeholder) && judgement.verdict === "does_not_fit";
+  if (cardRefusalKept) {
+    console.log(
+      `[BeatRelevance] ${slot} card refused and kept: ${path.basename(clipPath)} — ` +
+        `nothing stands behind it, so the answer is recorded rather than acted on`
+    );
+  }
   const decision: BeatRelevanceDecision = {
     verdict: judgement.verdict,
-    allowed: judgement.verdict !== "does_not_fit",
-    reprieved: false,
+    allowed: judgement.verdict !== "does_not_fit" || cardRefusalKept,
+    reprieved: cardRefusalKept,
     cached: judgement.cached === true,
     depicts: judgement.depicts,
     reason: judgement.reason,
@@ -883,6 +935,8 @@ export async function ensureVerdictBeforeCompose(params: {
   sceneIndex?: number;
   beatIndex?: number;
   route?: string;
+  /** The caller is about to USE this picture, not compare it. See `BeatRelevanceParams.finalSay`. */
+  finalSay?: boolean;
 }): Promise<{ outcome: ComposeJudgeOutcome; verdict?: BeatImageVerdict }> {
   const scope = getComposeJudgeScope();
   if (!scope) return { outcome: "no_scope" };
@@ -904,26 +958,24 @@ export async function ensureVerdictBeforeCompose(params: {
   if (!ctx?.beatText?.trim()) return { outcome: "no_narration" };
 
   /**
-   * A card is registered as exempt rather than judged — see `isPlaceholder`. This still writes an
-   * entry, so the beat reads as "deliberately not judged" instead of "nobody looked", and it
-   * spends nothing from either budget.
+   * RONDE 199 — a card is JUDGED, and the answer cannot empty the beat.
+   *
+   * This used to register the card as exempt: an entry saying "deliberately not judged". The
+   * owner's rule is that every picture is looked at, and a map, a chart or a title card is a
+   * picture a viewer reads. So the flag still travels — `checkBeatRelevance` uses it to reprieve a
+   * refusal rather than obey it, which is the hazard the old exemption existed for — but it no
+   * longer decides whether anybody looks. The outcome keeps its own name so the log still says
+   * which of these were cards.
    */
   const placeholder = scope.isPlaceholder(path.basename(params.clipPath));
-  if (placeholder) {
-    await checkBeatRelevance({
-      clipPath: params.clipPath,
-      contentKey: params.contentKey,
-      ctx,
-      workDir: scope.workDir,
-      state: scope.state,
-      ledger: scope.ledger,
-      route: params.route ?? "compose",
-      placeholder: true,
-    });
-    return { outcome: "placeholder" };
-  }
 
-  if (scope.spent >= scope.budget) return { outcome: "budget_spent" };
+  /**
+   * The compose-phase budget bounds what this ROUTE may buy while ffmpeg waits. `finalSay` is the
+   * push route saying this clip is not a candidate but the picture — see `finalSay` on
+   * `BeatRelevanceParams`. Bypassing a spend cap for the one look that decides something is the
+   * opposite of raising a budget blindly: it is spending it where it changes an outcome.
+   */
+  if (!params.finalSay && scope.spent >= scope.budget) return { outcome: "budget_spent" };
   scope.spent++;
 
   const decision = await checkBeatRelevance({
@@ -934,8 +986,10 @@ export async function ensureVerdictBeforeCompose(params: {
     state: scope.state,
     ledger: scope.ledger,
     route: params.route ?? "compose",
+    ...(placeholder ? { placeholder: true } : {}),
+    ...(params.finalSay ? { finalSay: true } : {}),
   });
-  return { outcome: "judged", verdict: decision.verdict };
+  return { outcome: placeholder ? "placeholder" : "judged", verdict: decision.verdict };
 }
 
 /** How many verdicts the compose phase may buy. Overridable; see `ComposeJudgeScope.budget`. */

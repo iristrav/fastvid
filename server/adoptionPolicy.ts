@@ -97,9 +97,38 @@ export type AdoptionPolicy = {
    *                    veto still binds: a picture it looked at and REFUSED does not go in. An
    *                    `unknown` does, which is the answer the gate is designed to give when it
    *                    cannot tell, and the answer render 569 got for almost everything.
+   *   "looked_at"    — the editor must have seen it, and its answer is recorded, but the answer
+   *                    cannot take the picture away. Reserved for the last rung (below).
    *   "none"         — nothing photographic is claimed; there is nothing for an editor to judge.
+   *
+   * ── RONDE 199 — "NOT ASKED" IS NO LONGER AN ANSWER ──────────────────────────────────────────
+   *
+   * The owner's requirement, in their words: every picture must be LOOKED AT, and looked at for
+   * whether it is good enough for the text it runs under. Until now `not_rejected` was satisfied
+   * by silence — a rescue clip nobody ever showed the editor passed it, because the only thing
+   * that failed was an explicit REJECTED. That is the hole: a picture nobody judged and a picture
+   * the editor could not read were treated as the same thing, and only the second was ever meant
+   * to pass.
+   *
+   * So NOT_ASKED now fails every requirement except "none". UNCLEAR still passes `not_rejected`,
+   * which is RONDE 97's finding and is untouched: the editor looked and could not tell, and
+   * refusing that emptied render 569. What changed is only the difference between looking and not.
+   *
+   * This is a tightening, and it is only affordable because the guard now ASKS instead of merely
+   * checking: `adoptionGuardRefusesPush` puts an unjudged picture to the editor at the moment of
+   * adoption, past the per-beat look ceiling, because a picture about to become the beat's actual
+   * picture is exactly where a judgement decides something. The ceiling bounds competition between
+   * candidates; it was never meant to decide what ships unseen.
+   *
+   * ── The one place a verdict cannot act, stated rather than hidden ───────────────────────────
+   *
+   * A colour card is the marker for "nothing was found". There is nothing behind it: refusing it
+   * leaves the beat with no frames at all, which is a broken file rather than a picture choice.
+   * PLACEHOLDER therefore carries "looked_at" — the editor sees it and the render records what it
+   * said — and the export gate, which already refuses a film made of unverified pictures, is what
+   * acts on a film full of them. Every other category, drawn cards included, can be vetoed.
    */
-  visionRequirement: "approved" | "not_rejected" | "none";
+  visionRequirement: "approved" | "not_rejected" | "looked_at" | "none";
   /** May this count toward "the film is made of real footage"? */
   countsAsRealFootage: boolean;
   /** May this count toward "this beat has an approved picture of its own"? */
@@ -107,6 +136,36 @@ export type AdoptionPolicy = {
   /** Why the route is allowed to skip what it skips. Required for every exception. */
   exceptionReason?: string;
 };
+
+/**
+ * DOES THIS VERDICT SATISFY THIS ROUTE'S REQUIREMENT?
+ *
+ * RONDE 199 — one function, because there are two readers and they were drifting apart.
+ * `adoptionGuardVerdict` refuses an adoption; `noteAdoptionEvidence` decides whether the same
+ * adoption is reported as `backed`. The guard read `visionRequirement` and the evidence line read
+ * the coarser `requiresVision` boolean, so the moment a category's requirement stopped being
+ * all-or-nothing the two would have disagreed — the render refusing one thing and reporting
+ * another, which is the failure mode `noteAdoptionEvidence`'s own comment warns about.
+ *
+ * `NOT_ASKED` fails everything except "none": a picture nobody looked at is the thing this round
+ * exists to stop. `UNCLEAR` passes anything short of "approved" — see the RONDE 97 note above; the
+ * editor looking and being unable to tell is not the editor never being shown the picture.
+ */
+export function visionRequirementMet(
+  policy: AdoptionPolicy,
+  vision: AdoptionVisionVerdict
+): boolean {
+  switch (policy.visionRequirement) {
+    case "approved":
+      return vision === "APPROVED";
+    case "not_rejected":
+      return vision !== "REJECTED" && vision !== "NOT_ASKED";
+    case "looked_at":
+      return vision !== "NOT_ASKED";
+    case "none":
+      return true;
+  }
+}
 
 const REAL_FUNNEL = (): AdoptionPolicy => ({
   category: "REAL_FUNNEL",
@@ -129,15 +188,45 @@ const RESCUE_REAL = (reason: string): AdoptionPolicy => ({
   exceptionReason: reason,
 });
 
-const SYNTHETIC = (category: AdoptCategory, reason: string): AdoptionPolicy => ({
+/**
+ * RONDE 199 — A DRAWN CARD IS STILL SOMETHING THE VIEWER LOOKS AT.
+ *
+ * These two used to be one factory with `visionRequirement: "none"`, on the argument that a card
+ * depicts nothing so there is nothing to judge. That argument holds for a colour field and fails
+ * for everything else this category contains: a map, a chart, a title card, an overlay carrying
+ * the beat's own words. Those DO make a claim, they can be wrong about the narration underneath
+ * them, and nothing was checking. The owner's rule is that every picture is looked at.
+ *
+ * So they split by what a refusal could actually do:
+ *
+ *   GRAPHIC     — judged like any other picture; the editor's veto binds, and a card it refuses
+ *                 falls through to the next rung the way a refused photograph does.
+ *   PLACEHOLDER — judged, and the answer recorded, but nothing behind it to fall through to. See
+ *                 the "looked_at" note on `visionRequirement`.
+ */
+const DRAWN = (category: AdoptCategory, reason: string): AdoptionPolicy => ({
   category,
   requiresEligibility: false,
-  requiresVision: false,
-  visionRequirement: "none",
+  requiresVision: true,
+  visionRequirement: "not_rejected",
   countsAsRealFootage: false,
   countsAsVerifiedVisual: false,
   exceptionReason: reason,
 });
+
+const LAST_RUNG = (category: AdoptCategory, reason: string): AdoptionPolicy => ({
+  category,
+  requiresEligibility: false,
+  requiresVision: true,
+  /** Seen and recorded. A refusal here has nothing to fall through to — see `visionRequirement`. */
+  visionRequirement: "looked_at",
+  countsAsRealFootage: false,
+  countsAsVerifiedVisual: false,
+  exceptionReason: reason,
+});
+
+const SYNTHETIC = (category: AdoptCategory, reason: string): AdoptionPolicy =>
+  category === "PLACEHOLDER" ? LAST_RUNG(category, reason) : DRAWN(category, reason);
 
 /**
  * THE DECLARED VOCABULARY.
@@ -252,12 +341,21 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
       "footage of the beat's subject when its event, place or action could not be found",
   },
 
-  /** Holding or extending a picture already on screen. Real pixels, no new claim about the beat. */
+  /**
+   * Holding or extending a picture already on screen. Real pixels, no new claim about the beat.
+   *
+   * RONDE 199 — it makes no new claim, and it does run under words it was never judged against.
+   * The picture stretches over time the beat loop did not cover, so the text underneath it is not
+   * the text the editor was shown. It is therefore put to the editor for the beat it now covers,
+   * and the answer is recorded. The answer does not veto: refusing here does not produce a better
+   * picture, it produces a hole in the scene. What it produces instead is a render that can say
+   * which of its held pictures fit the words they ended up under.
+   */
   rescue_extend: {
     category: "BACKFILL_TIME",
     requiresEligibility: false,
-    requiresVision: false,
-    visionRequirement: "none",
+    requiresVision: true,
+    visionRequirement: "looked_at",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason: "extends a picture already adopted for this scene; makes no new claim",
@@ -265,8 +363,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   extend: {
     category: "BACKFILL_TIME",
     requiresEligibility: false,
-    requiresVision: false,
-    visionRequirement: "none",
+    requiresVision: true,
+    visionRequirement: "looked_at",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason: "extends a picture already adopted for this scene; makes no new claim",
@@ -274,8 +372,8 @@ const POLICIES: Readonly<Record<string, AdoptionPolicy>> = {
   backfill: {
     category: "BACKFILL_TIME",
     requiresEligibility: false,
-    requiresVision: false,
-    visionRequirement: "none",
+    requiresVision: true,
+    visionRequirement: "looked_at",
     countsAsRealFootage: true,
     countsAsVerifiedVisual: false,
     exceptionReason: "fills scene time the beat loop left uncovered",
@@ -649,12 +747,17 @@ export function adoptionGuardVerdict(input: {
    * `subject_fallback` turned away for an UNCLEAR, all fourteen beats fell to colour cards, and the
    * export gate correctly refused the film. The gate was right; the rule in front of it was wrong.
    */
-  if (visionAvailable) {
-    if (policy.visionRequirement === "approved" && input.vision !== "APPROVED") {
-      missing.push(`vision (${input.vision})`);
-    } else if (policy.visionRequirement === "not_rejected" && input.vision === "REJECTED") {
-      missing.push("vision (REJECTED)");
-    }
+  /**
+   * RONDE 199 — and the silence that used to satisfy it. See `visionRequirement`.
+   *
+   * `NOT_ASKED` is a picture nobody looked at. It now fails every requirement that involves an
+   * editor, which is the owner's rule: every picture is looked at, and looked at against the text
+   * it runs under. UNCLEAR is untouched and still passes `not_rejected` — RONDE 97's finding
+   * stands, and this round is careful not to re-fight it: the editor looking and being unable to
+   * tell is a different thing from the editor never being shown the picture.
+   */
+  if (visionAvailable && !visionRequirementMet(policy, input.vision)) {
+    missing.push(`vision (${input.vision})`);
   }
   if (missing.length === 0) return { allowed: true };
   return {

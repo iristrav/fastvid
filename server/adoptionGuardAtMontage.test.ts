@@ -253,15 +253,32 @@ describe("the montage guard refuses only what it can justify refusing", () => {
 
   it("a rescue is NOT refused a picture the editor could not read", () => {
     delete process.env[ENV];
-    for (const vision of ["UNCLEAR", "NOT_ASKED"] as const) {
+    expect(
+      verdict({ source: "rescue_wikimedia", eligible: false, vision: "UNCLEAR" }).allowed,
+      "a rescue was refused for UNCLEAR, which is render 569's failure"
+    ).toBe(true);
+    expect(
+      verdict({ source: "subject_fallback", eligible: false, vision: "UNCLEAR" }).allowed,
+      "a subject fallback was refused for UNCLEAR, which is render 569's failure"
+    ).toBe(true);
+  });
+
+  /**
+   * RONDE 199 — and the other half of that pair now goes the other way, on purpose.
+   *
+   * "The editor could not read it" and "the editor never saw it" were being treated as one
+   * answer. They are not: the first is a fact about the picture, the second about this render's
+   * budget and routing. Only the first was ever meant to pass. The push route obtains the verdict
+   * before this guard runs, so refusing here is what makes the look happen — not what removes the
+   * picture.
+   */
+  it("a rescue IS refused a picture nobody looked at", () => {
+    delete process.env[ENV];
+    for (const source of ["rescue_wikimedia", "subject_fallback"]) {
       expect(
-        verdict({ source: "rescue_wikimedia", eligible: false, vision }).allowed,
-        `a rescue was refused for ${vision}, which is render 569's failure`
-      ).toBe(true);
-      expect(
-        verdict({ source: "subject_fallback", eligible: false, vision }).allowed,
-        `a subject fallback was refused for ${vision}, which is render 569's failure`
-      ).toBe(true);
+        verdict({ source, eligible: false, vision: "NOT_ASKED" }).allowed,
+        `${source} adopted a picture nobody has looked at`
+      ).toBe(false);
     }
   });
 
@@ -274,11 +291,22 @@ describe("the montage guard refuses only what it can justify refusing", () => {
     expect(verdict({ source: "archive", eligible: true, vision: "APPROVED" }).allowed).toBe(true);
   });
 
-  /** A placeholder requires neither and must never be refused for lacking them. */
-  it("a placeholder passes with no evidence at all", () => {
+  /**
+   * A placeholder needs no eligibility and no approval — and, since RONDE 199, does need to have
+   * been SEEN. A card is a picture a viewer reads. Its answer cannot take it away (there is
+   * nothing behind the last rung; see the "looked_at" note on `visionRequirement`), but the render
+   * must be able to say what the editor made of the card it shipped.
+   */
+  it("a placeholder passes without eligibility and without an approval", () => {
     delete process.env[ENV];
-    expect(verdict({ source: "fallback", eligible: false, vision: "NOT_ASKED" }).allowed).toBe(true);
-    expect(verdict({ source: "guaranteed", eligible: false, vision: "NOT_ASKED" }).allowed).toBe(true);
+    for (const source of ["fallback", "guaranteed"]) {
+      expect(verdict({ source, eligible: false, vision: "UNCLEAR" }).allowed).toBe(true);
+      expect(verdict({ source, eligible: false, vision: "REJECTED" }).allowed).toBe(true);
+      expect(
+        verdict({ source, eligible: false, vision: "NOT_ASKED" }).allowed,
+        "a card nobody looked at"
+      ).toBe(false);
+    }
   });
 });
 
