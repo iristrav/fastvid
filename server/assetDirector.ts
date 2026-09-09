@@ -290,6 +290,24 @@ export type AssetDirectorContext = {
   activeLocation?: string | null;
   activeEra?: string | null;
   /**
+   * RONDE 220 — WHAT THE SCRIPT ASKED THE VIEWER TO SEE, AT THE LAYER THAT DECIDES WHO IS SEEN.
+   *
+   * The script states, per sentence, what should be on screen. That reached the QUERY long ago,
+   * and RONDE 218/219 gave it to the two relevance lists. This is the layer between them: the
+   * ranking, which orders candidates and therefore decides which of them the picture editor is
+   * shown at all — the per-beat look budget is small, so a candidate ranked twelfth is usually
+   * never judged.
+   *
+   * `beatText` is the sentence, and the ranker has always had it. This is the other thing: the
+   * script's own statement of the intended visual. Supplied as plain text rather than the intent
+   * object, because the only thing this layer does with it is match words — a structured type here
+   * would invite a second interpretation of a fact RONDE 218 already resolves.
+   *
+   * Absent or empty means "no statement", which is not evidence against any candidate. See
+   * `scoreAnnotationFingerprint`: it can only ever raise a score, never lower one.
+   */
+  intentText?: string | null;
+  /**
    * HOW MUCH MOVEMENT THIS BEAT WAS PLANNED FOR, as the band the planner actually produced.
    *
    * ── Why a range and not the level it used to be ─────────────────────────────────────────────
@@ -573,13 +591,48 @@ type FingerprintResult = {
  *   style        4%  — visual style (archival/modern/etc.)
  *   kg           3%  — Knowledge Graph entity expansion bonus
  */
+/**
+ * RONDE 220 — the bounded bonus for matching what the script asked to see.
+ *
+ * ── Why a bonus and not more words in the match ─────────────────────────────────────────────
+ *
+ * The obvious change was to append the intent's words to `words` below. Measured against the
+ * formula, that is a trap: the score is `hits / words.length`, so every added word grows the
+ * DENOMINATOR. A candidate that matched the sentence perfectly but happens not to contain the
+ * intent's phrasing would score LOWER than before — the round would have made the ranking worse
+ * while appearing to enrich it.
+ *
+ * It is also wrong on the evidence. Provider text is a short title about a whole asset; that it
+ * omits the script's wording is not an argument against the clip. Absence of this evidence is not
+ * evidence of absence.
+ *
+ * So it is additive and capped: a candidate that shows what the script asked for rises, and no
+ * candidate can score lower than it did before this round. The cap is 15 — below the 25-point
+ * floor of the existing formula and well below every evidence ceiling (35/55/70), so it can
+ * reorder candidates within a tier of evidence but never promote a filename match above a model
+ * that actually looked at the frames.
+ */
+const INTENT_MATCH_BONUS_MAX = 15;
+
+function intentMatchBonus(intentText: string | null | undefined, hay: string): number {
+  const words = (intentText ?? "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    .filter((w) => w.length > 3);
+  if (words.length === 0 || !hay) return 0;
+  const unique = [...new Set(words)];
+  const hits = unique.filter((w) => hay.includes(w)).length;
+  return Math.round((hits / unique.length) * INTENT_MATCH_BONUS_MAX);
+}
+
 function scoreAnnotationFingerprint(
   clipPath: string,
   beatText: string,
   activeEntity: string | null | undefined,
   activeLocation: string | null | undefined,
   activeEra: string | null | undefined,
-  meta?: CandidateMeta
+  meta?: CandidateMeta,
+  intentText?: string | null
 ): FingerprintResult {
   const ann = meta?.annotation;
   if (!ann) {
@@ -626,7 +679,13 @@ function scoreAnnotationFingerprint(
      */
     const ceiling = seenHay ? 70 : providerHay ? 55 : 35;
     const fallback = Math.round(25 + (words.length > 0 ? (hits / words.length) * ceiling : 0));
-    return { score: fallback, people: 0, objects: 0, actions: 0, location: 0, era: 0, emotion: 0, style: 0, knowledgeGraph: 0 };
+    /**
+     * RONDE 220: the script's own statement of the intended visual, as an addition to the
+     * sentence match rather than a dilution of it. See `intentMatchBonus` for why the words are
+     * not simply folded into `words` above.
+     */
+    const bonus = intentMatchBonus(intentText, `${base} ${providerHay} ${seenHay}`);
+    return { score: Math.min(100, fallback + bonus), people: 0, objects: 0, actions: 0, location: 0, era: 0, emotion: 0, style: 0, knowledgeGraph: 0 };
   }
 
   const beatLower = beatText.toLowerCase();
@@ -766,7 +825,29 @@ function scoreAnnotationFingerprint(
     knowledgeGraph * 0.03
   );
 
-  return { score, people, objects, actions, location, era, emotion, style, knowledgeGraph };
+  /**
+   * RONDE 220: the same bounded addition on the annotated branch.
+   *
+   * A curated annotation is structured — persons, objects, location, era — and the script's
+   * intent is prose, so it is matched against the annotation's own free text rather than folded
+   * into one of the weighted components. Capped and additive for the reason given on
+   * `intentMatchBonus`: it can raise a candidate that shows what the script asked for, never lower
+   * one that does not mention it.
+   */
+  const annHay = [
+    ...ann.persons.named, ...ann.persons.categories,
+    ...ann.objects, ...ann.actions,
+    ann.historicalContext.event, ann.historicalContext.period,
+    ann.location.country, ann.location.city, ann.location.region,
+    ...ann.usageHints.topicAffinity,
+    meta?.observedDepicts ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const withIntent = Math.min(100, score + intentMatchBonus(intentText, annHay));
+
+  return { score: withIntent, people, objects, actions, location, era, emotion, style, knowledgeGraph };
 }
 
 // ─── Embedding scorer (25%) ───────────────────────────────────────────────────
@@ -1022,7 +1103,9 @@ function scoreCandidate(
 
   // ── 1. Annotation fingerprint (40%) ──────────────────────────────────────
   const fp = scoreAnnotationFingerprint(
-    clipPath, beatText, ctx.activeEntity, ctx.activeLocation, ctx.activeEra, meta
+    clipPath, beatText, ctx.activeEntity, ctx.activeLocation, ctx.activeEra, meta,
+    /** RONDE 220: what the script asked the viewer to see, for the 40% that decides the order. */
+    ctx.intentText
   );
 
   // ── 2. Embedding similarity (25%) ────────────────────────────────────────

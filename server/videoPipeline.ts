@@ -24228,6 +24228,28 @@ async function adoptClip(
     activeLocation: dedup.assetDirectorActiveLocation,
     activeEra: dedup.assetDirectorActiveEra,
     /**
+     * RONDE 220 — the script's own statement of the intended visual, for the layer that decides
+     * WHICH candidates the picture editor is shown.
+     *
+     * RONDE 218 and 219 gave this to the two relevance lists, which judge a candidate once it is
+     * in hand. The ranking runs before them and is the reason a candidate is in hand at all: the
+     * per-beat look budget is small, so a candidate ranked twelfth is usually never judged.
+     *
+     * Same resolver as those two rounds and as `beatVisualSearchSubjects`, so the query, the
+     * ranking and both scorers cannot come to different conclusions about one beat.
+     */
+    intentText: (() => {
+      const it = resolveBeatVisualIntent(beatText);
+      return [
+        ...intentSearchQueries(it),
+        it.visual_description ?? it.visual_intent ?? "",
+        it.priority_subject ?? "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .trim() || null;
+    })(),
+    /**
      * R195 — THE PLANNED MOVEMENT BAND, FROM WHICHEVER PLANNER ACTUALLY PLANNED IT.
      *
      * Two producers, stated in precedence rather than merged. `RetrievalContract.motionRange` is
