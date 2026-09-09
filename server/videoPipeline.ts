@@ -39,6 +39,7 @@ import { formatPreparationCache, resetPreparationScope } from "./preparationCach
 import {
   BUDGETS,
   budgetAllows,
+  budgetExhaustedFor,
   createRetrievalBudgetState,
   formatRetrievalBudgets,
   type RetrievalBudgetState,
@@ -32929,10 +32930,35 @@ async function rescueBeatVisualWhenEmptyInner(
      * distinguish the two cases it never could: nothing was ever offered, or something was offered
      * and refused. The reason is the gate's own words, not a new vocabulary.
      */
+    /**
+     * RONDE 221 — THE THIRD ANSWER THIS LINE COULD NOT GIVE.
+     *
+     * Two outcomes were offered: something was refused, or nothing was ever offered. There is a
+     * third, and it is the one that misleads:
+     *
+     *     "ALL_SOURCING_EXHAUSTED (nothing was offered for this beat)"
+     *
+     * reads as "the world has no footage for this sentence". Sometimes the truth is that this beat
+     * hit a QUERY BUDGET and the pipeline stopped asking — `budgetAllows` returns false at the
+     * beat's own query entry point and records the ceiling it hit. Nothing was offered because
+     * nothing was ASKED FOR, which is a different fact with a different fix: one points at the
+     * providers, the other at the budget.
+     *
+     * `budgetExhaustedFor` exists for exactly this question — its own comment reads "Was this beat
+     * stopped by a budget rather than by a lack of candidates?" — and had no caller. The render-wide
+     * `formatRetrievalBudgets` totals the ceilings elsewhere; it cannot correct this per-beat line,
+     * which is the one a reader reaches for when asking why a specific sentence got a colour card.
+     *
+     * Refusals still win the ordering: a beat that was offered something and refused it has an
+     * answer that no budget explains.
+     */
+    const budgetStops = budgetExhaustedFor(dedup.beatBudget, scene.index, beat.index);
     const fallbackReason =
       rejectedHere > 0
         ? `REAL_ASSET_REJECTED (${topRejects})`
-        : "ALL_SOURCING_EXHAUSTED (nothing was offered for this beat)";
+        : budgetStops.length > 0
+          ? `BUDGET_EXHAUSTED (${budgetStops.join(",")}) — the search stopped before this beat ran out of sources`
+          : "ALL_SOURCING_EXHAUSTED (nothing was offered for this beat)";
     console.warn(
       `[VisualCoverage] s${scene.index}b${beat.index}: rejected=${rejectedHere} topRejects=${topRejects} ` +
         `contextualSearch=true fallback=PLACEHOLDER fallbackReason=${fallbackReason}`
