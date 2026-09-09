@@ -382,7 +382,8 @@ function noteAdoptionEvidence(
       })
     : null;
   const judged = Boolean(judgement);
-  const vision = visionVerdictFromGate(judgement?.verdict);
+  /** RONDE 199b: with `evaluated`, so a gate that never looked is not read as an opinion. */
+  const vision = visionVerdictFromGate(judgement?.verdict, judgement?.evaluated);
 
   /**
    * RONDE 94: `backed` now means what the guard means by it — APPROVED, not "spoken about".

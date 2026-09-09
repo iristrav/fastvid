@@ -39,6 +39,7 @@ import {
   adoptionGuardVerdict,
   adoptionPolicyFor,
   visionRequirementMet,
+  visionVerdictFromGate,
   type AdoptionVisionVerdict,
 } from "./adoptionPolicy";
 
@@ -254,5 +255,71 @@ describe("R199 §6 — 'good enough for the text' is the question that gets aske
     // No model in this environment: the point is that the beat's own text reached the question and
     // the outcome was recorded against that beat rather than silently dropped.
     expect(seen.join("\n")).toContain("s0b0");
+  });
+});
+
+/* ═══════════ 7. the distinction was carried the whole way and then dropped ═══════════ */
+
+describe("R199b — 'never looked' stopped arriving dressed as 'could not tell'", () => {
+  it("an unevaluated decision is NOT_ASKED, whatever word it carries", () => {
+    // `judgeBeatImage` returns verdict "unknown" for both, and separates them with `evaluated`.
+    expect(visionVerdictFromGate("unknown", false)).toBe("NOT_ASKED");
+    expect(visionVerdictFromGate("unknown", true)).toBe("UNCLEAR");
+  });
+
+  it("a model that WAS asked and failed is still an answer about the picture", () => {
+    // A timeout or an unparseable reply returns evaluated:true by design — the picture was seen
+    // and settled nothing. Reading that as "nobody looked" would empty montages on every outage.
+    expect(visionVerdictFromGate("unknown", true)).toBe("UNCLEAR");
+    expect(guard("rescue_wikimedia", visionVerdictFromGate("unknown", true)).allowed).toBe(true);
+  });
+
+  it("a verdict with no evaluated flag behaves exactly as before", () => {
+    // A replayed log line or a stored value has only the word. Nothing about those callers moved.
+    expect(visionVerdictFromGate("unknown")).toBe("UNCLEAR");
+    expect(visionVerdictFromGate("fits")).toBe("APPROVED");
+    expect(visionVerdictFromGate("does_not_fit")).toBe("REJECTED");
+    expect(visionVerdictFromGate(undefined)).toBe("NOT_ASKED");
+  });
+
+  it("every reader that holds a decision passes the flag", () => {
+    for (const file of ["clipAdoptAudit.ts", "videoPipeline.ts"]) {
+      const src = fs.readFileSync(path.join(__dirname, file), "utf8");
+      const bare = [...src.matchAll(/visionVerdictFromGate\([^,)]*\?\.verdict\)/g)];
+      expect(bare.map((m) => `${file}: ${m[0]}`), "a reader still drops `evaluated`").toEqual([]);
+    }
+  });
+});
+
+/* ═══════════ 8. no editor at all is a fact about the render, not about a picture ═══════════ */
+
+describe("R199b — an outage must never be able to empty a film", () => {
+  it("the three ways of having no editor all say so render-wide", async () => {
+    const GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
+    // Switched off, nothing contacted, and a provider with no capacity: the same statement.
+    expect(GATE).toContain("noteAskImpossible(state, \"the beat image gate is switched off");
+    expect(GATE).toContain("no provider could be asked");
+    expect(GATE).toContain("provider has no capacity");
+  });
+
+  it("it is announced once, not once per picture", async () => {
+    const { createBeatImageGateState } = await import("./beatImageRelevanceGate");
+    const state = createBeatImageGateState();
+    expect(state.askImpossible, "a render starts by demanding a verdict").toBe(false);
+  });
+
+  it("the adoption guard joins both editors' outages into one answer", () => {
+    const at = PIPE.indexOf("const visionAvailable =");
+    expect(at).toBeGreaterThan(0);
+    const block = PIPE.slice(at, at + 200);
+    expect(block).toContain("!visionPipelineIsUnavailable()");
+    expect(block).toContain("!dedup.beatImageGate?.askImpossible");
+  });
+
+  it("and a suspended requirement still cannot make a picture count as verified", () => {
+    // The suspension excuses a MISSING verdict. It never turns one into an approval, and the
+    // export gate still refuses a film whose beats hold no verified own visual.
+    expect(adoptionPolicyFor("rescue_wikimedia").countsAsVerifiedVisual).toBe(false);
+    expect(adoptionPolicyFor("fallback").countsAsRealFootage).toBe(false);
   });
 });

@@ -423,6 +423,8 @@ export async function checkBeatRelevance(
     contentKey,
     beatIdentity: identity,
     state,
+    /** RONDE 199b: the render-wide ceiling must not decide which pictures ship unexamined. */
+    ...(params.finalSay ? { finalSay: true } : {}),
   });
   discardFrames(framePaths);
 

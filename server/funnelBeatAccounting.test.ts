@@ -197,7 +197,21 @@ describe("no gate was weakened to make coverage look better", () => {
   /** The gate is still on by default, and the budget check still runs before any call. */
   it("the gate is still enabled by default and still checks its budget first", () => {
     expect(GATE).toContain('process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false"');
-    expect(GATE).toContain("if (state.judgementAttempts >= maxBeatImageJudgementsPerRender())");
+    /**
+     * RONDE 199b — the check is unchanged and now carries exactly one named exemption.
+     *
+     * The ceiling bounds what a render may spend COMPARING candidates. It was also, silently,
+     * deciding which pictures shipped unexamined once they arrived after it — by arrival order,
+     * with no rule about which. `finalSay` is set by the push routes and by nothing else: the
+     * picture about to be used is not competing with anything, and the extra spend is bounded by
+     * the number of pictures a video actually uses. The budget itself did not move — the test
+     * above still pins all three of its values.
+     */
+    expect(GATE).toContain(
+      "if (state.judgementAttempts >= maxBeatImageJudgementsPerRender() && !params.finalSay)"
+    );
+    const exemptions = [...GATE.matchAll(/params\.finalSay/g)];
+    expect(exemptions.length, "finalSay grew a second use inside the gate").toBe(1);
   });
 
   /** And this round added no new fallback route to inflate coverage. */

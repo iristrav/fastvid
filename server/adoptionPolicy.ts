@@ -651,10 +651,35 @@ export type AdoptionGuardVerdict =
  */
 export type AdoptionVisionVerdict = "APPROVED" | "REJECTED" | "UNCLEAR" | "NOT_ASKED";
 
-/** The gate's own vocabulary, translated once so no call site has to remember the mapping. */
-export function visionVerdictFromGate(verdict: string | null | undefined): AdoptionVisionVerdict {
+/**
+ * The gate's own vocabulary, translated once so no call site has to remember the mapping.
+ *
+ * ── RONDE 199b — THE DISTINCTION WAS CARRIED THE WHOLE WAY AND DROPPED HERE ──────────────────
+ *
+ * `judgeBeatImage` is careful about this. A model that was asked and came back with nothing
+ * usable — a timeout, an unparseable answer — returns `unknown` with `evaluated: true`, and its
+ * own comment says why: that is a fact about the PICTURE. A gate that never looked at all —
+ * switched off, no narration, budget spent, no frame it could extract — returns `unknown` with
+ * `evaluated: false`, "a fact about the RENDER's budget, not about the picture", and the comment
+ * ends "the two must not arrive at the caller wearing the same word".
+ *
+ * They arrived wearing the same word. Every reader called this with `judgement?.verdict` and
+ * nothing else, so both became UNCLEAR — and UNCLEAR is an answer that adopts. A render with the
+ * gate switched off produced a full set of "the editor looked and could not tell" verdicts about
+ * pictures no editor had seen, and RONDE 199's rule that silence is not an answer could not bite,
+ * because by this point the silence was no longer distinguishable from speech.
+ *
+ * `evaluated` is optional so a caller that genuinely has only a verdict string — a replayed log
+ * line, a stored value — behaves exactly as before. Every caller that holds a decision passes it.
+ */
+export function visionVerdictFromGate(
+  verdict: string | null | undefined,
+  evaluated?: boolean
+): AdoptionVisionVerdict {
   if (verdict === "fits") return "APPROVED";
   if (verdict === "does_not_fit") return "REJECTED";
+  /** The gate declined to look. Not an opinion about this picture — see above. */
+  if (evaluated === false) return "NOT_ASKED";
   if (verdict === "unknown") return "UNCLEAR";
   return "NOT_ASKED";
 }

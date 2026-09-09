@@ -29156,14 +29156,15 @@ async function beatClipPassesVisionGate(
     beat.index,
     visionPipelineIsUnavailable()
       ? "VISION_UNAVAILABLE"
-      : visionVerdictFromGate(
+      : /** RONDE 199b: the decision, not just its word — see `visionVerdictFromGate`. */
+        ((judged) => visionVerdictFromGate(judged?.verdict, judged?.evaluated))(
           relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
             localPath: clipPath,
             currentFilename: path.basename(clipPath),
             contentKey: clipContentKey(clipPath),
             sceneIndex: scene.index,
             beatIndex: beat.index,
-          })?.verdict
+          })
         )
   );
   if (!relevance.allowed) {
@@ -29497,13 +29498,27 @@ async function adoptionGuardRefusesPush(
           beatIndex,
         })
       : null;
-  const vision = visionVerdictFromGate(judgement?.verdict);
+  /** RONDE 199b: `evaluated` travels with the verdict — see `visionVerdictFromGate`. */
+  const vision = visionVerdictFromGate(judgement?.verdict, judgement?.evaluated);
   /**
    * RONDE 94: not "was this picture judged" but "could anything be judged at all". See
    * `adoptionGuardVerdict` — this suspends the vision requirement only when the model never
    * loaded, and RONDE 89's export gate still refuses the film such a render produces.
    */
-  const visionAvailable = !visionPipelineIsUnavailable();
+  /**
+   * RONDE 199b — and the same fact from the OTHER editor.
+   *
+   * `visionPipelineIsUnavailable()` is the CLIP model's latch. The beat image gate is a different
+   * model behind a different provider, and it has its own way of being unreachable: no key, every
+   * provider in cooldown, the spend budget gone, a 429 with no capacity. Until now nothing joined
+   * the two, so a render whose beat judge could not be reached still had its vision requirement
+   * enforced — and once "nobody looked" stopped counting as an answer, that would have refused
+   * every adoption and emptied the film.
+   *
+   * Both are the same statement: this render has no picture editor. See `askImpossible`.
+   */
+  const visionAvailable =
+    !visionPipelineIsUnavailable() && !dedup.beatImageGate?.askImpossible;
 
   const verdict = adoptionGuardVerdict({ source, eligible, vision, visionAvailable });
   /**

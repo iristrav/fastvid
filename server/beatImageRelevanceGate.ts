@@ -313,9 +313,51 @@ export type BeatImageGateState = {
    * gate that now refuses a blind render must not rest on prose.
    */
   judgementsProviderUnavailable: number;
+  /**
+   * RONDE 199b — COULD THIS RENDER ASK AT ALL?
+   *
+   * Not "was this picture judged". The three conditions below are facts about the ENVIRONMENT, and
+   * they are the ones that would otherwise turn RONDE 199's rule into a render with no pictures:
+   *
+   *   · the gate is switched off by configuration;
+   *   · no provider key is configured, every provider is in cooldown, or the spend budget is gone
+   *     (`isLlmPreflightRefusal`) — nothing was ever contacted;
+   *   · a provider was reached and has no capacity at all (`isLlmProviderUnavailable`).
+   *
+   * Once silence stopped counting as an answer, every one of these would have refused every
+   * adoption in the render and emptied the film — the exact failure the fail-open rule three
+   * hundred lines below exists to prevent, and the one RONDE 97 already paid for once.
+   *
+   * So they are reported as what they are: this render has no picture editor. The adoption guard
+   * suspends the vision requirement render-wide, exactly as it does for a CLIP model that will not
+   * load, and RONDE 89's export gate still refuses a film whose beats hold no verified visual. The
+   * render fails at the gate that can say why instead of disappearing into per-clip refusals.
+   *
+   * Render-scoped, on the state the render already owns, so two concurrent renders cannot inherit
+   * each other's outage.
+   */
+  askImpossible: boolean;
   /** Of the attempts, how many went to YouTube candidates — capped separately. */
   youtubeJudgementsUsed: number;
 };
+
+/**
+ * Record, once per render, that this render has no picture editor at all.
+ *
+ * Printed on the first occurrence only: the condition repeats on every clip, and forty identical
+ * lines would bury the one thing an operator has to act on. It is never cleared within a render —
+ * a provider that recovers mid-render is welcome to answer, and every answer it gives is used;
+ * what does not come back is the claim that the pictures it never saw were checked.
+ */
+function noteAskImpossible(state: BeatImageGateState, why: string): void {
+  if (state.askImpossible) return;
+  state.askImpossible = true;
+  console.warn(
+    `[BeatImageGate] THIS RENDER HAS NO PICTURE EDITOR — ${why}. Every picture in it is ` +
+      `unverified, the adoption guard's vision requirement is suspended render-wide, and the ` +
+      `export gate decides whether a film made this way may ship.`
+  );
+}
 
 export function createBeatImageGateState(): BeatImageGateState {
   return {
@@ -326,6 +368,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsFailed: 0,
     judgementsSkipped: 0,
     judgementsProviderUnavailable: 0,
+    askImpossible: false,
     youtubeJudgementsUsed: 0,
     noVerdictReasons: new Map(),
     verdictsByProvider: new Map(),
@@ -610,6 +653,18 @@ export async function judgeBeatImage(params: {
    * default is the ordinary beat judge, which is every caller but one.
    */
   censusCaller?: VisionCaller;
+  /**
+   * RONDE 199b — THE PICTURE THAT IS ABOUT TO BE USED, NOT ONE COMPETING TO BE.
+   *
+   * The render-wide ceiling below bounds what a render may SPEND comparing candidates. Once a
+   * decline stopped reading as "the editor could not tell" and started reading as what it is —
+   * nobody looked — that ceiling changed meaning: it would decide, silently and by arrival order,
+   * which of a render's pictures ship unexamined. The owner's rule leaves no room for that.
+   *
+   * So the push routes, and only the push routes, may pass it. What bounds the extra spend is the
+   * number of pictures a video actually uses, which is the bound that was wanted all along.
+   */
+  finalSay?: boolean;
 }): Promise<BeatImageJudgement> {
   const { framePaths, beatText, videoTitle, sceneText, contentKey, state } = params;
   const asker: VisionCaller = params.censusCaller ?? "beat_judge";
@@ -643,7 +698,11 @@ export async function judgeBeatImage(params: {
     return unknown(reason, false);
   };
 
-  if (!beatImageRelevanceGateEnabled()) return declined("gate disabled");
+  if (!beatImageRelevanceGateEnabled()) {
+    /** A switched-off editor is a fact about the render, not about this picture. See askImpossible. */
+    noteAskImpossible(state, "the beat image gate is switched off by configuration");
+    return declined("gate disabled");
+  }
   /**
    * The verdict belongs to a (picture, narration) pair, not to the picture. `beatIdentity` is
    * hashed from the beat's own words, so the same clip arriving on a different beat is a cache
@@ -687,7 +746,7 @@ export async function judgeBeatImage(params: {
     return fromStore;
   }
 
-  if (state.judgementAttempts >= maxBeatImageJudgementsPerRender()) {
+  if (state.judgementAttempts >= maxBeatImageJudgementsPerRender() && !params.finalSay) {
     return declined("render judgement budget spent");
   }
 
@@ -834,6 +893,8 @@ export async function judgeBeatImage(params: {
     if (isLlmPreflightRefusal(err)) {
       state.judgementAttempts--;
       state.judgementsProviderUnavailable++;
+      /** Nothing was contacted, so no picture in this render can be judged. See askImpossible. */
+      noteAskImpossible(state, `no provider could be asked: ${(err as Error).message?.slice(0, 90)}`);
       return declined(`gate could not ask: ${(err as Error).message?.slice(0, 90)}`);
     }
     /**
@@ -856,6 +917,7 @@ export async function judgeBeatImage(params: {
     if (isLlmProviderUnavailable(err)) {
       state.judgementAttempts--;
       state.judgementsProviderUnavailable++;
+      noteAskImpossible(state, `provider has no capacity: ${(err as Error).message?.slice(0, 90)}`);
       return declined(`provider unavailable (no capacity): ${(err as Error).message?.slice(0, 90)}`);
     }
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
