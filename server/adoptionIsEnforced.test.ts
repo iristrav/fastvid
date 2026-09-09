@@ -318,19 +318,46 @@ describe("an unreachable picture editor suspends one requirement and excuses not
     });
   });
 
-  /** Availability is a fact about the process, recorded where it is known and read once. */
-  it("the fact is set only by the fail-open branch and read only by the guard", () => {
+  /**
+   * Availability is a fact about the process, recorded where it is known and read once.
+   *
+   * RONDE 199b — THERE ARE TWO EDITORS, AND NOW BOTH OF THEM CAN BE UNREACHABLE.
+   *
+   * This asserted the guard's line verbatim. The line grew a second term, so the assertion is
+   * re-expressed as the property it was always defending rather than its spelling: each fact has
+   * exactly ONE write site, both are read in ONE place, and neither may excuse eligibility.
+   *
+   * The second fact is the beat image gate's own outage — no provider key, every provider in
+   * cooldown, the spend budget gone, a provider with no capacity, or the gate switched off. That
+   * is the same statement as a CLIP model that will not load: this render has no picture editor.
+   * Joining them became necessary when "nobody looked" stopped counting as an answer, because
+   * without it an outage would have refused every adoption and emptied the film — which is the
+   * failure this whole area exists to prevent.
+   */
+  it("each unavailability fact is written once, read once, and excuses only vision", () => {
     const GATE = fs.readFileSync(path.join(__dirname, "visualQualityGate.ts"), "utf8");
     const writes = [...GATE.matchAll(/visionPipelineUnavailable = true/g)];
     expect(writes.length, "more than one place claims the model is unavailable").toBe(1);
     const at = GATE.indexOf("visionPipelineUnavailable = true");
     expect(GATE.slice(Math.max(0, at - 1400), at)).toContain("if (!pipelineReady) {");
     expect(PIPE).toContain("visionPipelineIsUnavailable()");
-    /** And it may never be inverted into a reason to SKIP eligibility. */
+
+    /** The second fact keeps the same discipline: one writer, inside one named helper. */
+    const IMAGE_GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
+    const askWrites = [...IMAGE_GATE.matchAll(/askImpossible = true/g)];
+    expect(askWrites.length, "more than one place claims the beat judge is unreachable").toBe(1);
+    expect(IMAGE_GATE).toContain("function noteAskImpossible(");
+
+    /** Both are read in the guard, in one expression, and never inverted to SKIP eligibility. */
     const guardAt = PIPE.indexOf("async function adoptionGuardRefusesPush(");
     const guard = PIPE.slice(guardAt, PIPE.indexOf("\n}", guardAt));
-    expect(guard).toContain("const visionAvailable = !visionPipelineIsUnavailable();");
+    expect(guard).toContain("const visionAvailable =");
+    expect(guard).toContain("!visionPipelineIsUnavailable()");
+    expect(guard).toContain("!dedup.beatImageGate?.askImpossible");
     expect(guard).toContain("isEligible(clipPath, clipContentKey(clipPath))");
+    /** Eligibility is computed from the ledger alone — availability may not reach it. */
+    const eligibleAt = guard.indexOf("const eligible =");
+    expect(guard.slice(eligibleAt, eligibleAt + 160)).not.toContain("visionAvailable");
   });
 });
 
