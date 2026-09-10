@@ -199,6 +199,72 @@ export const CAPABILITIES: readonly Capability[] = [
     fatal: false,
   },
   {
+    /**
+     * The fallback, named as a fallback.
+     *
+     * Split out from `youtube_download` so the report can answer three separate questions —
+     * is the primary route there, is the fallback there, can YouTube be fetched at all — instead
+     * of one question whose "yes" hid render 576's actual state.
+     */
+    id: "youtube_fallback_download",
+    describes:
+      "the RapidAPI fallback, which downloads the whole source film and trims afterwards. Usable, " +
+      "but it stands aside whenever fewer than 12s of scene budget remain",
+    requires: ["RAPIDAPI_KEY"],
+    fatal: false,
+  },
+  {
+    /**
+     * Whether a YouTube clip can be shown at all, which is a RIGHTS question and not a transport one.
+     *
+     * `youtubeLicenseDecision` refuses YouTube-origin material whose rights FastVid cannot prove
+     * unless ALLOW_UNVERIFIED_YOUTUBE is deliberately set — and then it reports UNVERIFIED rather
+     * than borrowing the word VERIFIED, exactly as RONDE 124 and RONDE 147 wrote it. That default
+     * is correct and this preflight does not touch it. It only makes the state legible: a
+     * deployment where every YouTube candidate will be refused on rights should not read as a
+     * deployment where YouTube works.
+     *
+     * `satisfiedBy` rather than an env list, because the answer belongs to the production code that
+     * makes the decision, not to this file's opinion about which variable implies what.
+     */
+    id: "youtube_cc_evidence",
+    describes:
+      "whether YouTube-origin material may be used at all. Without a licence FastVid can prove, or " +
+      "an explicit operator authorisation, every YouTube candidate is refused on rights",
+    requires: [],
+    fatal: false,
+    satisfiedBy: (env) => {
+      /**
+       * The two rules below are `youtubeOperatorAuthorized()` and `allowUnverifiedYoutube()`
+       * verbatim, INCLUDING their defaults — note that the operator flag defaults to ON
+       * (`!== "false"`) while the unverified flag defaults to OFF (`=== "true"`). They are
+       * restated rather than imported because this module deliberately loads without the
+       * sourcing layer; the values are asserted against those functions in the tests, so the two
+       * cannot drift apart unnoticed.
+       */
+      const operator = env.ALLOW_OPERATOR_LICENSED_YOUTUBE?.trim().toLowerCase() !== "false";
+      const unverified = env.ALLOW_UNVERIFIED_YOUTUBE?.trim().toLowerCase() === "true";
+      if (operator) {
+        return {
+          available: true,
+          detail: "operator authorisation in force — reported OPERATOR_AUTHORIZED, never VERIFIED",
+        };
+      }
+      if (unverified) {
+        return {
+          available: true,
+          detail: "unverified YouTube allowed — reported UNVERIFIED, rights are NOT proven",
+        };
+      }
+      return {
+        available: false,
+        detail:
+          "ALLOW_OPERATOR_LICENSED_YOUTUBE=false and no ALLOW_UNVERIFIED_YOUTUBE — a candidate " +
+          "whose licence cannot be proven is refused",
+      };
+    },
+  },
+  {
     id: "ambience",
     describes: "Freesound room tone. Music has no source in this build either way",
     requires: ["FREESOUND_API_KEY"],

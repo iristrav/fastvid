@@ -1,6 +1,7 @@
 import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
+import { YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 
 /**
  * RONDE 56 — YouTube found 185 videos and delivered 2.
@@ -101,7 +102,15 @@ describe("RONDE 56 #2 — the lookup runs outside the beat's deadline", () => {
     expect(h).toContain("sceneFetchScopeStorage.exit(");
     // Detached means it gets its own full budget, not the scene's leftovers. Render 531 granted
     // it 3s — the clamp's floor — because the scene had nothing left to give.
-    expect(h).toContain("fetchWithTimeout(metaUrl, 20_000,");
+    //
+    // YOUTUBE PRODUCTION REPAIR: the literal 20_000 became the named constant. The rule asserted
+    // here is unchanged and is now checked in two places rather than one — that the probe gets its
+    // own fixed budget and never a scoped one. The number moved because a second reader needs it:
+    // `shouldProbeYoutubeDuration` decides whether the scene can AFFORD this probe before it runs,
+    // and a decision made against a second copy of the price is a decision made against the wrong
+    // price. The value itself is asserted below, so this cannot be loosened by renaming.
+    expect(h).toContain("fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS,");
+    expect(YOUTUBE_META_PROBE_TIMEOUT_MS).toBe(20_000);
     expect(h).not.toContain("scopedTimeoutMs(");
   });
 

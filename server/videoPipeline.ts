@@ -201,7 +201,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -13711,13 +13711,29 @@ export function rapidApiYoutubeMetaDurationSec(meta: RapidApiYoutubeMeta | null 
 async function fetchRapidApiYoutubeMeta(
   videoId: string,
   sceneIndex: number,
-  sourcingCache?: SourcingCache
+  sourcingCache?: SourcingCache,
+  /**
+   * YOUTUBE PRODUCTION REPAIR — answer from the render's memory, or not at all.
+   *
+   * The duration probe is an optimisation on the start offset; the download is the point. When the
+   * scene budget cannot pay for both, the caller says so here and a cache MISS costs nothing: no
+   * request, no twenty un-abortable seconds, and no `metadataCount` — because no metadata call was
+   * made, and a counter that says otherwise is a counter that lies. See
+   * `shouldProbeYoutubeDuration` for the measurement this exists for.
+   */
+  opts?: { onlyIfCached?: boolean }
 ): Promise<RapidApiYoutubeMeta | null> {
   const cached = getCachedProviderAsset(sourcingCache, "youtube_cc", videoId);
   if (cached?.metadata !== undefined) {
     providerMetrics(sourcingCache, "youtube_cc").metadataCacheHits++;
     return (cached.metadata as RapidApiYoutubeMeta | null) ?? null;
   }
+  /**
+   * A miss under `onlyIfCached` is NOT written to the cache. Caching a null here would teach the
+   * render that this video has no metadata, and the next beat — which may have all the budget in
+   * the world — would inherit a refusal that was only ever about the clock.
+   */
+  if (opts?.onlyIfCached) return null;
 
   const metaUrl = `https://${RAPIDAPI_YT_HOST}/dl?id=${videoId}`;
   providerMetrics(sourcingCache, "youtube_cc").metadataCount++;
@@ -13726,7 +13742,7 @@ async function fetchRapidApiYoutubeMeta(
   const meta = await sceneFetchScopeStorage.exit(async () => {
     try {
       const resp = await providerLimiter("youtube").run(() =>
-        fetchWithTimeout(metaUrl, 20_000, `RapidAPI YouTube meta scene ${sceneIndex}`, {
+        fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS, `RapidAPI YouTube meta scene ${sceneIndex}`, {
           headers: { "x-rapidapi-host": RAPIDAPI_YT_HOST, "x-rapidapi-key": RAPIDAPI_KEY },
         })
       );
@@ -15319,9 +15335,30 @@ export async function fetchYouTubeCCClips(
             // render 532 logged src=unknown on all 52 plans — while this same response, which
             // the download needs anyway, has been carrying lengthSeconds the whole time. It is
             // render-cached, so fetching it here rather than inside the download costs nothing.
+            /**
+             * YOUTUBE PRODUCTION REPAIR — the probe does not get to spend the download's budget.
+             *
+             * This probe runs detached from the scene scope so it cannot be aborted, which was the
+             * right call for a JSON GET (RONDE 62) and became the wrong outcome overall: the clock
+             * keeps running, and RONDE 68 then refuses a whole-video download with under twelve
+             * seconds left. Render 576 made thirteen of these calls and finished zero downloads;
+             * across every production log, 75 of 79 refusals came at literally 0s left.
+             *
+             * So the order of spending is decided before the probe rather than discovered after it.
+             * A cached answer is still free and still used. Only a MISS the budget cannot afford is
+             * skipped, and then `pickLongVideoStartSec`'s existing fallback picks the start — which
+             * is exactly what already happens whenever RapidAPI has nothing to say about a video.
+             */
+            const probe = shouldProbeYoutubeDuration({
+              remainingMs: remainingScopeMs(),
+              downloadFloorMs: YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
+            });
+            if (!probe.probe) console.log(formatYoutubeProbeSkip(sceneIndex, videoId, probe));
             const sourceDurationSec =
               rapidApiYoutubeMetaDurationSec(
-                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache)
+                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache, {
+                  onlyIfCached: !probe.probe,
+                })
               ) || peekYoutubeVideoContext(videoId)?.durationSec || 0;
             // The old flat 15 was applied to every candidate past the guided-attempt limit —
             // second 15 of a forty-minute documentary is its intro.

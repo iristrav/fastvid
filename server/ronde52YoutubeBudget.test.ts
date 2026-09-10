@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
+import { YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 
 /**
  * RONDE 52 — YouTube found 60 videos in render 530 and contributed zero clips.
@@ -205,7 +206,14 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
     // Clamping it there bottomed out at the 3s floor on every one of render 531's 85 attempts,
     // because the scene had nothing left to give. It now runs detached with its own full 20s;
     // see ronde56YoutubeMetaCache.test.ts for that half.
-    expect(s).toContain("fetchWithTimeout(metaUrl, 20_000,");
+    // YOUTUBE PRODUCTION REPAIR: the literal became a named constant, whose value is asserted on
+    // the next line. The rule this test guards — the metadata step is DETACHED and FLAT, never
+    // clamped to a spent scene budget — is unchanged. What is new is a decision made before the
+    // step runs at all: `shouldProbeYoutubeDuration` asks whether the scene can afford twenty
+    // un-abortable seconds AND still start a download, because render 576 could not, thirteen
+    // times over. That decision needs the price, and two copies of a price drift.
+    expect(s).toContain("fetchWithTimeout(metaUrl, YOUTUBE_META_PROBE_TIMEOUT_MS,");
+    expect(YOUTUBE_META_PROBE_TIMEOUT_MS).toBe(20_000);
     expect(s).toContain("sceneFetchScopeStorage.exit(");
     // The flat download value that could not fit is still gone.
     expect(s).not.toMatch(/youtubeDownloadTimeoutMs\(\),\s*\n\s*`RapidAPI YouTube download/);

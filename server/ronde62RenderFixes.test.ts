@@ -134,8 +134,25 @@ describe("RONDE 62 #2 — the YouTube duration comes from the call that works", 
 
   it("the metadata call supplies the start offset, with the watch page only as backup", () => {
     const src = PIPELINE();
+    /**
+     * YOUTUBE PRODUCTION REPAIR — the call gained a fourth argument and this expectation follows
+     * its shape. The RULE is untouched and every part of it is still asserted: the RapidAPI
+     * metadata answers the duration, the watch-page context is only the backup, and a zero falls
+     * through to the fixed start.
+     *
+     * What changed is that the probe now has to be AFFORDABLE. `onlyIfCached` is how the scene's
+     * remaining budget reaches the fetcher: render 576 spent up to twenty un-abortable seconds
+     * here, thirteen times, in front of downloads that then found nothing left — 75 of 79 refusals
+     * across the production logs read `0s left`. A cached answer is still free and still used, so
+     * this weakens nothing about WHERE a clip is cut; it only stops the question being asked when
+     * asking it costs the clip.
+     */
     expect(src).toContain(
-      "rapidApiYoutubeMetaDurationSec(\n                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache)\n              ) || peekYoutubeVideoContext(videoId)?.durationSec || 0"
+      "rapidApiYoutubeMetaDurationSec(\n" +
+        "                await fetchRapidApiYoutubeMeta(videoId, sceneIndex, sourcingCache, {\n" +
+        "                  onlyIfCached: !probe.probe,\n" +
+        "                })\n" +
+        "              ) || peekYoutubeVideoContext(videoId)?.durationSec || 0"
     );
     expect(src).toContain("pickLongVideoStartSec(sourceDurationSec, clipDur, videoId)");
   });
