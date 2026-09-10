@@ -171,6 +171,34 @@ export const CAPABILITIES: readonly Capability[] = [
     fatal: false,
   },
   {
+    /**
+     * RONDE 235 — "a download route is configured" and "the route built for this job is configured"
+     * are not the same sentence.
+     *
+     * `youtube_download` above is satisfied by RAPIDAPI_KEY alone, and in production that is exactly
+     * what it was: render 576 reported `cloudService=MISSING rapidApi=SET` on every attempt, and
+     * across every production log kept for this project the line `YouTube CC via cloud service` has
+     * never once been printed. The preflight said the capability was present, and it was — the
+     * FALLBACK was present.
+     *
+     * The two routes are not interchangeable. The cloud service asks yt-dlp for the seconds the beat
+     * needs (`--download-sections`); RapidAPI downloads the whole source film and trims afterwards,
+     * which is why it stands aside whenever fewer than twelve seconds of scene budget remain, and
+     * why every YouTube fetch in render 576 ended `scene_budget_too_short_to_start`.
+     *
+     * So the primary route gets its own line. Nothing about routing changes — `downloadYouTubeCCClip`
+     * still tries the cloud service first and still falls back — and this stays non-fatal, because a
+     * render without YouTube is a render, not a failure. It is only that the deployment can no longer
+     * read "ready" for a route that is not there.
+     */
+    id: "youtube_download_primary",
+    describes:
+      "the yt-dlp cloud service, which fetches only the seconds a beat needs. Without it every " +
+      "YouTube fetch falls to the whole-video RapidAPI route, which stands aside on a short scene budget",
+    requires: ["YOUTUBE_CC_DL_SERVICE"],
+    fatal: false,
+  },
+  {
     id: "ambience",
     describes: "Freesound room tone. Music has no source in this build either way",
     requires: ["FREESOUND_API_KEY"],

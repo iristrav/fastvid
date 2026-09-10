@@ -270,6 +270,77 @@ export function resetPermanentDownloadRefusals(): void {
   permanentRefusalsPrevented = 0;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * RONDE 235 — THE ONE DOWNLOAD ROUTE THE CHOKE POINT CANNOT SPEAK FOR.
+ *
+ * The memo above is written at exactly one place, `downloadToFileStreaming`, and RONDE 223 asserts
+ * that count on purpose: a rule registered by N loops is the defect this codebase keeps removing.
+ *
+ * `downloadYouTubeCCClip` is the one route whose refusals cannot arrive there. Its most useful
+ * "no" answers are decided BEFORE or AFTER any transfer — no mp4 format offered, no usable
+ * metadata, bytes that would not trim — so no stream failure exists for the choke point to
+ * classify. Render 576 is what that costs: twenty download slots spent on ten videos, every one
+ * asked for roughly twice, because nothing between the calls remembered the first answer.
+ *
+ * So the YouTube route gets a named pair here, beside the memo, rather than its own call to it in
+ * the pipeline. The pipeline keeps ONE writer of `notePermanentDownloadRefusal`; this file keeps
+ * the rule about WHICH YouTube statuses are permanent, in one place, with the reasoning attached.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The three YouTube outcomes that are about the VIDEO rather than about the moment.
+ *
+ *   DOWNLOAD_UNSUPPORTED       no mp4 format, no usable metadata, past the size ceiling
+ *   DOWNLOAD_EMPTY             the route answered with no video
+ *   DOWNLOAD_INVALID_CONTENT   bytes arrived and would not trim
+ *
+ * The other four are excluded deliberately, and each exclusion is load-bearing:
+ *
+ *   DOWNLOAD_TIMEOUT       usually the scene budget standing a whole-video fetch aside — 75 of
+ *                          render 576's 79 refusals came at literally 0s left. A later scene with
+ *                          room may fetch the same video perfectly well, and writing it off here
+ *                          would be a silent narrowing of retrieval.
+ *   DOWNLOAD_FAILED        an HTTP status or an unclassified throw: ambiguous by definition, and
+ *                          this memo is for PERMANENT reasons.
+ *   DOWNLOAD_UNAVAILABLE   a fact about the deployment, not about the video — memoising it would
+ *                          blacklist every video on the platform.
+ *   DOWNLOAD_SUCCESS       nothing to remember.
+ *
+ * Plain strings rather than the `YoutubeDownloadStatus` union: that type lives in videoPipeline.ts,
+ * which imports this module, and this module deliberately imports nothing from it.
+ */
+export const YOUTUBE_PERMANENT_DOWNLOAD_STATUSES: ReadonlySet<string> = new Set([
+  "DOWNLOAD_UNSUPPORTED",
+  "DOWNLOAD_EMPTY",
+  "DOWNLOAD_INVALID_CONTENT",
+]);
+
+/** The memo key for a YouTube video, so the read and the write can never disagree about it. */
+function youtubeRefusalKey(videoId: string): string {
+  return `youtube_cc:${videoId}`;
+}
+
+/**
+ * Remember a YouTube download refusal, when — and only when — it was about the video.
+ *
+ * Returns whether it was remembered, so a caller can log the distinction rather than guess at it.
+ */
+export function noteYoutubeDownloadRefusal(
+  videoId: string,
+  status: string | undefined,
+  reason?: string
+): boolean {
+  if (!videoId || !status || !YOUTUBE_PERMANENT_DOWNLOAD_STATUSES.has(status)) return false;
+  notePermanentDownloadRefusal(youtubeRefusalKey(videoId), `${status}${reason ? `:${reason}` : ""}`);
+  return true;
+}
+
+/** Why this video was already written off this render, or null when it has not been. */
+export function youtubeDownloadRefusal(videoId: string): string | null {
+  if (!videoId) return null;
+  return permanentDownloadRefusal(youtubeRefusalKey(videoId));
+}
+
 /** What the memo holds and what it saved — reported at the end of a render. */
 export function permanentDownloadRefusalStats(): { refused: number; prevented: number } {
   return { refused: permanentDownloadRefusals.size, prevented: permanentRefusalsPrevented };

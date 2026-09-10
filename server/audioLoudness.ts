@@ -101,6 +101,57 @@ export type LoudnessResult = {
 };
 
 /**
+ * RONDE 235 — WHAT RENDER 576 WAS ALLOWED TO SAY ABOUT ITS OWN FAILURE.
+ *
+ * The delivered film measured -41.4 LUFS against a -14 target and the correction pass failed. This
+ * is the entire diagnosis it printed:
+ *
+ *     [Loudness] ... outcome=failed — the correction pass failed: Command failed:
+ *     "/usr/bin/ffmpeg" -nostdin -hide_banner -y -i "/var/tmp/fastvid_576_.../covered_the_
+ *     assembled_film_....mp4" -map 0:v:0 -map
+ *
+ * — and it stops there, mid-flag. Node's `exec` builds its message as `Command failed: <the whole
+ * command>\n<stderr>`, and the command alone is well past the 160 characters the reason kept. So
+ * the slice could never reach ffmpeg's own words: for EVERY exec failure, on every file, the
+ * reason is the head of a command line the reader already knows and nothing else.
+ *
+ * The answer was never missing. `err.stderr` carries it, and ffmpeg puts the actual complaint —
+ * "No space left on device", "Invalid argument", "Conversion failed" — in the LAST lines it
+ * prints. So the tail is what survives, with the exit status in front of it.
+ *
+ * This is the same defect this codebase keeps removing, in its quietest form: not a refusal
+ * nobody logged, but a refusal that logged the question instead of the answer.
+ */
+export function describeFfmpegFailure(err: unknown, maxChars = 400): string {
+  const e = (err ?? {}) as { stderr?: unknown; message?: unknown; code?: unknown; signal?: unknown };
+  const status =
+    typeof e.signal === "string" && e.signal
+      ? `killed by ${e.signal}`
+      : typeof e.code === "number"
+        ? `exit ${e.code}`
+        : "no exit status";
+
+  /**
+   * `err.stderr` when the child produced any, otherwise whatever the message holds after the
+   * `Command failed: …` echo. Both are searched for the last non-empty lines rather than the
+   * first: ffmpeg's banner, its input analysis and its progress counters all come before the
+   * error, and only the error matters here.
+   */
+  const raw =
+    (typeof e.stderr === "string" && e.stderr.trim() ? e.stderr : String(e.message ?? "")).replace(
+      /^Command failed:.*$/m,
+      ""
+    );
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^(frame|size)=/.test(l));
+  const tail = lines.slice(-6).join(" | ");
+  const said = tail ? tail.slice(-maxChars) : "ffmpeg printed nothing";
+  return `${status}: ${said}`;
+}
+
+/**
  * Read a file's loudness with `loudnorm` itself, in analysis mode.
  *
  * `ebur128` would give the integrated figure too, but `loudnorm`'s own JSON carries the four
@@ -243,21 +294,53 @@ export async function normaliseDeliveredLoudness(
   }
 
   const tmpPath = `${filePath}.loudnorm.mp4`;
-  try {
-    await exec(
-      `"${ffmpegBin()}" -nostdin -hide_banner -y -i "${filePath}" ` +
-        `-map 0:v:0 -map 0:a:0 -c:v copy -af "${chain}" ` +
-        `-c:a aac -b:a 320k -movflags +faststart "${tmpPath}"`,
-      { timeout: opts.timeoutMs ?? 600_000, maxBuffer: 8 * 1024 * 1024 }
+  /**
+   * RONDE 235 — the correction is attempted twice, and the second attempt asks for less.
+   *
+   * `-movflags +faststart` is a convenience, not part of the correction: it makes ffmpeg write the
+   * whole file and then REWRITE it to move the moov atom to the front. At the moment this pass
+   * runs, the render's work directory still holds everything the render fetched — 311 downloads in
+   * render 576 — so the one step that needs a second full-size write is also the one most likely
+   * to be refused by the environment.
+   *
+   * So a failure is not the last word. The second attempt drops that flag and nothing else: same
+   * measurement, same linear chain, same target, same codec. What it CANNOT do is lower the bar —
+   * both attempts hand their output to the same measure-and-compare below, and a file that is not
+   * measurably closer to target is still discarded. A retry that could ship a worse file would be
+   * a worse defect than the one it fixes.
+   */
+  const runCorrection = async (faststart: boolean): Promise<string | null> => {
+    try {
+      await exec(
+        `"${ffmpegBin()}" -nostdin -hide_banner -y -i "${filePath}" ` +
+          `-map 0:v:0 -map 0:a:0 -c:v copy -af "${chain}" ` +
+          `-c:a aac -b:a 320k ${faststart ? "-movflags +faststart " : ""}"${tmpPath}"`,
+        { timeout: opts.timeoutMs ?? 600_000, maxBuffer: 8 * 1024 * 1024 }
+      );
+      return null;
+    } catch (err) {
+      safeUnlink(tmpPath);
+      return describeFfmpegFailure(err);
+    }
+  };
+
+  const firstFailure = await runCorrection(true);
+  if (firstFailure) {
+    const secondFailure = await runCorrection(false);
+    if (secondFailure) {
+      return {
+        ...base,
+        outcome: "failed",
+        beforeLufs: before.integratedLufs,
+        reason:
+          `the correction pass failed twice — with faststart: ${firstFailure} — ` +
+          `without faststart: ${secondFailure}`,
+      };
+    }
+    console.warn(
+      `[Loudness] the first correction attempt failed (${firstFailure}) — ` +
+        `the retry without +faststart produced a file`
     );
-  } catch (err) {
-    safeUnlink(tmpPath);
-    return {
-      ...base,
-      outcome: "failed",
-      beforeLufs: before.integratedLufs,
-      reason: `the correction pass failed: ${(err as Error).message?.slice(0, 160)}`,
-    };
   }
 
   if (!fs.existsSync(tmpPath) || fs.statSync(tmpPath).size <= 0) {

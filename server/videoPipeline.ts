@@ -51,9 +51,11 @@ import {
   formatProviderCooldown,
   formatRetryGuard,
   notePermanentDownloadRefusal,
+  noteYoutubeDownloadRefusal,
   permanentDownloadRefusal,
   resetPermanentDownloadRefusals,
   shouldRetryAfterFailure,
+  youtubeDownloadRefusal,
 } from "./providerFailureClass";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
@@ -15391,6 +15393,43 @@ export async function fetchYouTubeCCClips(
                */
               license: youtubeLicenseMetadata(pass.license),
             });
+            /**
+             * RONDE 235 — TWENTY SLOTS, TEN VIDEOS.
+             *
+             * Render 576 spent its whole download ceiling and fetched nothing. Two independent
+             * counters say why, and they disagree only because they count different things:
+             *
+             *     downloadOutcomes  DOWNLOAD_TIMEOUT=14 DOWNLOAD_FAILED=4 DOWNLOAD_UNSUPPORTED=2
+             *                       = 20 CALLS to downloadYouTubeCCClip, one status each
+             *     ProviderFunnel    candidates=80 tracked=10 terminalOutcomes=10
+             *                       = 10 DISTINCT videos, because the ledger folds a second
+             *                         sighting of an asset into its first record
+             *
+             * Twenty attempts on ten videos: on average every one was asked for twice. Nothing
+             * remembered the first answer. `fetchYouTubeCCClips` runs about twenty-six times per
+             * render, `downloadedIds` is a local of ONE of those runs, and the render-wide skip
+             * (`providerAssetAlreadyUsed`) only knows about assets that were ADOPTED — and nothing
+             * was adopted, so every failing video stayed eligible to fail again.
+             *
+             * The memo for exactly this already exists and is already imported: RONDE 223 built it
+             * after render 575 re-offered one URL thirty-six times, and render 576's own log shows
+             * it working for the other providers — "5 asset(s) refused for good this render, 55
+             * repeat request(s) not made". This route simply never consulted it.
+             *
+             * Consulted BEFORE the slot is claimed, so a video already known to be unfetchable
+             * costs no ceiling. WHICH failures are worth remembering is not decided here: that rule
+             * lives beside the memo in `providerFailureClass`, deliberately narrow, so this route
+             * gains a reader and not a second copy of the rule — which is the property RONDE 223
+             * asserts about this memo and which this round had no business breaking.
+             */
+            const alreadyRefused = youtubeDownloadRefusal(videoId);
+            if (alreadyRefused) {
+              console.log(
+                `[Pipeline] Scene ${sceneIndex}: skipping YouTube ${videoId} — already refused ` +
+                  `this render (${alreadyRefused}), no download slot spent`
+              );
+              continue;
+            }
             // RONDE 69: the ceiling is enforced HERE, with nothing awaited between the read and
             // the write. The loop-level checks above stay as cheap early exits; this is the one
             // that holds.
@@ -15460,6 +15499,22 @@ export async function fetchYouTubeCCClips(
               ok ? undefined : (dl.status ?? "youtube_download_failed")
             );
             if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
+            /**
+             * RONDE 235 — which "no" is about the VIDEO, and which is only about the moment.
+             *
+             * The seven-status vocabulary above this function exists precisely so this distinction
+             * can be made, and this is the first reader to need it. The rule itself lives beside
+             * the memo in `providerFailureClass` — a timeout on a spent scene budget says nothing
+             * about the video and must never write it off — and the helper reports whether it
+             * actually remembered anything, so the log states which kind of refusal this was
+             * instead of leaving a reader to infer it.
+             */
+            if (!ok && noteYoutubeDownloadRefusal(videoId, dl.status, dl.reason)) {
+              console.log(
+                `[Pipeline] Scene ${sceneIndex}: ${videoId} written off for this render ` +
+                  `(${dl.status}) — it will not be asked for again`
+              );
+            }
             /**
              * RONDE 114 — the refusal below is written down BEFORE the file is gone.
              *
