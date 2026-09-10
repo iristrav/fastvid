@@ -36762,11 +36762,40 @@ async function fetchSceneVisualsInner(
           `stockWon=${stockWon} archiving=${willArchive}`
         );
 
-        // Self-learning: ingest winning external clip into archive (best-effort, background)
-        if (archiveEligible && funnelClip && winningExternalCandidate) {
-          const wec = winningExternalCandidate;
-          const clipPath = funnelClip;
-          const beatQuery = beat.searchQuery?.trim() || beat.text;
+        /**
+         * SELF-LEARNING — WHAT THE ARCHIVE IS ALLOWED TO KEEP.
+         *
+         * ── What it kept before, and what that cost ─────────────────────────────────────────
+         *
+         * One clip per beat: the winner. Everything else the funnel downloaded and the picture
+         * editor APPROVED was deleted with the work directory when the render ended.
+         *
+         * Render 576 is the shape of that. Three hundred and eleven downloads, fourteen clips in
+         * the film, and — measured in its own log — not one `[Ingestion]` line, because the beats
+         * whose winner came from the curated archive have no external winner to ingest at all.
+         * Every approved runner-up from Wikimedia, the Internet Archive and Library of Congress
+         * was fetched, judged good, and thrown away. The next render started from nothing and
+         * fetched them again.
+         *
+         * ── What changes, and what deliberately does not ─────────────────────────────────────
+         *
+         * A clip is kept when the picture editor said it FITS — `visionResult.pass` — and it lost
+         * the beat only because another approved clip scored higher. Losing to a better picture is
+         * not a verdict on this one; RONDE 131 already says so in as many words about search
+         * memory ("Losing to a better candidate is not the memory being wrong").
+         *
+         * Nothing else moves. A clip Vision refused is still refused and still discarded. Pexels
+         * and Pixabay are still barred outright — RONDE 9's self-poisoning loop, where a generic
+         * stock clip tagged "adolf hitler" outranked real archive footage on every later render,
+         * is exactly the failure this must not reintroduce. `archive` candidates are skipped
+         * because they are already in it. And ingestion still runs behind its own semaphore of
+         * two, best-effort, never blocking a render.
+         */
+        const beatQuery = beat.searchQuery?.trim() || beat.text;
+        const queueArchiveIngestion = (
+          clipPath: string,
+          wec: NonNullable<typeof winningExternalCandidate>
+        ): void => {
           void (async () => {
             try {
               await ingestExternalClipToArchive(clipPath, {
@@ -36821,6 +36850,41 @@ async function fetchSceneVisualsInner(
               // best-effort: never block video production
             }
           })();
+        };
+
+        if (archiveEligible && funnelClip && winningExternalCandidate) {
+          queueArchiveIngestion(funnelClip, winningExternalCandidate);
+        }
+
+        /**
+         * The approved runners-up, kept for the same reasons and under the same rules.
+         *
+         * Guarded on their own rather than on `archiveEligible`: that flag requires the WINNER to
+         * have been external, so a beat won by the curated archive would otherwise discard every
+         * approved Wikimedia or YouTube clip beside it — which is the case render 576 was full of.
+         *
+         * Bounded without a new budget: `passingScored` cannot exceed the beat's existing shortlist
+         * cap, and `ingestExternalClipToArchive` already serialises behind a semaphore of two.
+         */
+        let approvedKept = 0;
+        if (externalAssetIngestionEnabled()) {
+          for (const s of passingScored) {
+            if (s === winner) continue;
+            const src = s.candidate.source;
+            /** RONDE 9's rule, unchanged: stock footage is never archive material. */
+            if (src === "pexels" || src === "pixabay") continue;
+            /** Already in the archive — ingesting it again would be a duplicate of itself. */
+            if (src === "archive") continue;
+            if (!s.clipPath) continue;
+            queueArchiveIngestion(s.clipPath, s.candidate);
+            approvedKept += 1;
+          }
+        }
+        if (approvedKept > 0) {
+          console.log(
+            `[Ingestion] s${scene.index}b${beat.index} keeping ${approvedKept} approved ` +
+              `runner-up clip(s) the picture editor passed — they lost the beat, not the judgement`
+          );
         }
 
         if (funnelClip) {
