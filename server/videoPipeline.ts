@@ -34678,6 +34678,25 @@ async function refillSceneStrictVoiceMatch(
           `askImpossible=${dedup.beatImageGate.askImpossible}`
       );
       if (why) console.error(why);
+      /**
+       * RONDE 226 — AND THE FUNNEL, FOR THE SAME REASON, ON THE SAME LINE OF ARGUMENT.
+       *
+       * `[BeatFunnel]` is the one line that says whether the editor was ever ASKED about the
+       * candidates this beat was holding: `retrieved eligible ranked shortlisted/cap visionAsked
+       * approved rejected unclear unavailable notAsked cappedOut`. It is emitted at line ~44187,
+       * inside the report — nine thousand lines past the throw above.
+       *
+       * So a render that dies here shows only the refusals. Video 576 printed fifty
+       * `[BeatShortlist] … not asked — SHORTLIST_FULL (8/8) eligible=53 ranked=0 unreviewed=45`
+       * lines and not one funnel line, which left "were those eight ever put to the editor, or are
+       * they simply held?" unanswerable — and that is the question the whole failure turns on.
+       *
+       * RONDE 119 is the warning attached to this: it records that `ranked=0` was once read as
+       * "the shortlist admits whatever arrives first" and that the reading was wrong, because the
+       * counter was not being called at all. The counter is called now. Printing the funnel where
+       * the render ends is what makes the number safe to read rather than tempting to interpret.
+       */
+      for (const line of formatBeatShortlists(dedup.beatShortlist)) console.error(line);
     }
 
     if (!curatedArchiveOnlyVisuals()) {

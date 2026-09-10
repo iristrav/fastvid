@@ -200,3 +200,42 @@ describe("R224 §3 — termSource is filled in", () => {
     }
   });
 });
+
+/* ═══════════ 4. RONDE 226 — the funnel reaches the same place ═══════════ */
+
+describe("R226 §4 — the beat funnel prints where the render dies", () => {
+  it("THE FUNNEL IS EMITTED AT THE SCENE GATE", () => {
+    expect(
+      PIPE,
+      "the funnel still only prints inside the report, past the throw"
+    ).toContain("for (const line of formatBeatShortlists(dedup.beatShortlist)) console.error(line);");
+  });
+
+  it("BEFORE the throw, beside the vision tally", () => {
+    const funnel = PIPE.indexOf("formatBeatShortlists(dedup.beatShortlist)");
+    const tally = PIPE.indexOf("const why = formatNoVerdictReasons(dedup.beatImageGate);");
+    const thrown = PIPE.indexOf("voice/script-matchende clips — export geblokkeerd");
+    expect(funnel).toBeGreaterThan(0);
+    expect(funnel).toBeGreaterThan(tally);
+    expect(funnel, "the funnel prints after the render has thrown").toBeLessThan(thrown);
+  });
+
+  it("the report's own copy is untouched — one formatter, two readers", () => {
+    /**
+     * Two CALL sites: the scene gate added here, and the report's own at ~44187. The import is a
+     * bare name without a paren and is deliberately not counted, so this asserts readers rather
+     * than mentions.
+     */
+    expect((PIPE.match(/formatBeatShortlists\(/g) ?? []).length).toBe(2);
+    expect(PIPE, "the report stopped printing its own funnel").toContain(
+      "for (const line of formatBeatShortlists(visualDedup.beatShortlist)) {"
+    );
+  });
+
+  it("it carries the counter the whole question turns on", () => {
+    const shortlist = fs.readFileSync(path.join(__dirname, "beatShortlist.ts"), "utf8");
+    expect(shortlist).toContain("visionAsked=${f.visionAsked}");
+    expect(shortlist).toContain("ranked=${f.ranked}");
+    expect(shortlist).toContain("shortlisted=${f.shortlisted}/${cap}");
+  });
+});
