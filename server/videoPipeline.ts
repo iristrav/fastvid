@@ -35,7 +35,7 @@ import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata,
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
-import { formatPreparationCache, resetPreparationScope } from "./preparationCache";
+import { formatPreparationCache, preparationKey, resetPreparationScope, runPreparation } from "./preparationCache";
 import {
   BUDGETS,
   budgetAllows,
@@ -13091,6 +13091,25 @@ export function isAllowedInternetArchiveLicense(
 }
 
 // ─── 3c2. Fetch Internet Archive Video Clips ────────────────────────────────
+/**
+ * RONDE 230-B — the four ways the live Internet Archive preparation can end without a clip.
+ *
+ * The download and the trim now run inside `runPreparation`, which reports a failure by the error
+ * its callback threw. These reasons were `recordRejection` strings on four separate `continue`
+ * statements before, and every one of them is preserved — the lineage ledger must still be able to
+ * say WHY an opened record ended, which is the whole point of RONDE 87's invariant.
+ */
+type ArchivePrepFailure = Error & { archiveRejection: string };
+function archivePrepFailure(reason: string, message?: string): ArchivePrepFailure {
+  const err = new Error(message ?? reason) as ArchivePrepFailure;
+  err.archiveRejection = reason;
+  return err;
+}
+function archiveRejectionReason(err: unknown): string | null {
+  const reason = (err as ArchivePrepFailure | undefined)?.archiveRejection;
+  return typeof reason === "string" && reason ? reason : null;
+}
+
 export async function fetchInternetArchiveClips(
   queries: string | string[],
   duration: number,
@@ -13356,8 +13375,47 @@ export async function fetchInternetArchiveClips(
           sourcingCache,
           { sceneIndex, title: doc.title, mediaType: "video", searchRoute: "fetchInternetArchiveClips" }
         );
-        const tmpPath = path.join(workDir, `scene_${sceneIndex}_${tag}archive_${fetched}_tmp`);
+        /**
+         * RONDE 230-B — ONE PREPARATION PER PHYSICAL ASSET, NOT ONE PER SCENE THAT ASKS FOR IT.
+         *
+         * ── What render 576 measured ──────────────────────────────────────────────────────────
+         *
+         * `scene_1_b5_ia_archive_0_tmp` was downloaded and trimmed roughly seventeen times, always
+         * the same archive item at the same byte count, because this function has NINE callers and
+         * every call re-entered here with a fresh `fetched` counter and a fresh scene/beat tag. The
+         * metadata was already cached (`getCachedProviderAsset` above); the two expensive steps
+         * were not.
+         *
+         * ── Why the existing cache was bypassed ───────────────────────────────────────────────
+         *
+         * `preparationCache.ts` already does exactly this job — canonical key, render-scoped,
+         * in-flight dedup so two routes racing for one asset produce one download, failures not
+         * cached, a vanished output treated as a miss. It had ONE caller, the curated route in
+         * `curatedMediaSourcing.ts`. This is the same defect this codebase keeps producing: a rule
+         * several routes must follow, registered by one of them.
+         *
+         * ── The identity ──────────────────────────────────────────────────────────────────────
+         *
+         * `internet_archive:<archive.org identifier>` is the ASSET. The trim's output also depends
+         * on how long a clip was asked for and on which derivative archive.org offered, so both
+         * travel in the key — `holdSec` is the existing field for the first and `variant` the
+         * existing field for the second. The start offset does not: it is the fixed `10` passed to
+         * `trimRemoteVideoToClip` below, identical on every call.
+         *
+         * Nothing scene-shaped enters the key. That is the entire fix: `outPath` still carries the
+         * scene and beat for provenance, and the PREPARATION no longer does.
+         */
+        const prepKey = preparationKey({
+          assetIdentity: `internet_archive:${doc.identifier}`,
+          holdSec: duration,
+          variant: videoFile.name,
+        });
+        /** Scene-independent, so two beats asking for the same asset name the same file. */
+        const prepSlug = createHash("sha256").update(prepKey).digest("hex").slice(0, 20);
+        const preparedPath = path.join(workDir, `prep_ia_${prepSlug}.mp4`);
+        const tmpPath = path.join(workDir, `prep_ia_${prepSlug}_tmp`);
 
+        const prepared = await runPreparation(workDir, prepKey, async () => {
         if (knownSize > MAX_ARCHIVE_SIZE) {
           // RONDE 8 (render 518): archive.org's WW2/history items are routinely FULL FILMS of
           // 100-700MB whose smallest derivative still exceeds the size cap — they used to be
@@ -13368,7 +13426,7 @@ export async function fetchInternetArchiveClips(
           if (!(await fetchArchiveSegmentViaFfmpeg(videoUrl, tmpPath, segmentSec, sceneIndex))) {
             console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(knownSize / 1024 / 1024).toFixed(1)}MB per metadata) and segment fetch failed, skipping`);
             /**
-             * EVERY `continue` PAST AN OPENED RECORD IS AN ASSET THAT VANISHES.
+             * EVERY EXIT PAST AN OPENED RECORD IS AN ASSET THAT VANISHES.
              *
              * `tagPathWithProviderAsset` opened a lineage record and filed DOWNLOAD_STARTED before
              * any of these three exits. Each one then abandoned it: no DOWNLOAD_FAILED, no
@@ -13388,8 +13446,7 @@ export async function fetchInternetArchiveClips(
              * `downloadsAreCountedOnBothChannels` holds that line and is right to. A refusal is
              * also the truer word: nothing arrived, so nothing "downloaded" either way.
              */
-            sourcingCache?.lineage?.recordRejection(outPath, "archive_segment_fetch_failed");
-            continue;
+            throw archivePrepFailure("archive_segment_fetch_failed");
           }
           console.log(
             `[Pipeline] Scene ${sceneIndex}: Archive segment fetched from large item ` +
@@ -13410,26 +13467,26 @@ export async function fetchInternetArchiveClips(
         );
         if (!dlResp.ok || bytesWritten === null) {
           /** See the note on the segment branch: an opened record must not be left without an end. */
-          sourcingCache?.lineage?.recordRejection(
-            outPath, `archive_http_${dlResp.status || "no_bytes"}`
-          );
-          continue;
+          throw archivePrepFailure(`archive_http_${dlResp.status || "no_bytes"}`);
         }
 
         if (bytesWritten > MAX_ARCHIVE_SIZE) {
           console.warn(`[Pipeline] Scene ${sceneIndex}: Archive clip too large (${(bytesWritten / 1024 / 1024).toFixed(1)}MB), skipping`);
           try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-          sourcingCache?.lineage?.recordRejection(outPath, "archive_over_size_cap");
-          continue;
+          throw archivePrepFailure("archive_over_size_cap");
         }
         }
 
+        /**
+         * Counted inside the preparation, so it counts DOWNLOADS. A reuse fetches nothing, and
+         * incrementing here on a cache hit would report bytes that never crossed the network —
+         * exactly the cosmetic kind of metric this codebase forbids. `[AssetUsageSummary]` still
+         * ADDS this counter channel to the lineage events, unchanged.
+         */
         providerMetrics(sourcingCache, "internet_archive").downloadCount++;
-        if (await trimRemoteVideoToClip(tmpPath, outPath, duration, 10, `Internet Archive scene ${sceneIndex}`)) {
-          results.push({ path: outPath, query, title: doc.title });
-          fetched++;
-          console.log(`[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}`);
-        } else {
+        const trimmed = await trimRemoteVideoToClip(tmpPath, preparedPath, duration, 10, `Internet Archive scene ${sceneIndex}`);
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        if (!trimmed) {
           /**
            * The bytes arrived and the trim produced nothing — an ending, filed on the REJECTION
            * channel rather than the download one.
@@ -13440,9 +13497,36 @@ export async function fetchInternetArchiveClips(
            * count the same arrival twice. A rejection is the honest shape anyway: the download
            * succeeded and the clip did not survive the trim, which is a different fact.
            */
-          sourcingCache?.lineage?.recordRejection(outPath, "archive_trim_produced_no_clip");
+          throw archivePrepFailure("archive_trim_produced_no_clip");
         }
-        try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        return preparedPath;
+        });
+
+        /**
+         * A failure ends the record with the reason its branch chose, exactly as the four
+         * `recordRejection` calls did before. `runPreparation` does not cache a failure, so a
+         * later beat asking for the same asset retries rather than inheriting the refusal.
+         */
+        if (prepared.status === "FAILED") {
+          sourcingCache?.lineage?.recordRejection(
+            outPath,
+            archiveRejectionReason(prepared.error) ?? "archive_preparation_failed"
+          );
+          continue;
+        }
+        /**
+         * A copy, not an alias — the same choice `curatedMediaSourcing` makes and for the same
+         * reason: several places in this codebase still read a scene and a beat out of a clip's
+         * filename, and handing beat 5 a file named for the preparation would fix a performance
+         * problem by creating a provenance one. `outPath` keeps the lineage record opened above.
+         */
+        await fs.promises.copyFile(prepared.path, outPath);
+        results.push({ path: outPath, query, title: doc.title });
+        fetched++;
+        console.log(
+          `[Pipeline] Scene ${sceneIndex}: Internet Archive clip added: ${doc.title}` +
+            (prepared.status === "REUSED" ? " (preparation reused — no second download or trim)" : "")
+        );
       } catch (err) {
         console.warn(`[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} failed:`, (err as Error).message);
       }

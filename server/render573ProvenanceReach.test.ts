@@ -195,7 +195,18 @@ describe("the archive segment fetch names a container, and its failure names its
      */
     expect(body).toContain('"-f", "matroska",');
     expect(body).toContain('"-c", "copy",');
-    expect(SRC).toContain("archive_${fetched}_tmp");
+    /**
+     * RONDE 230-B renamed the scratch file. It used to be `scene_<n>_<tag>archive_<i>_tmp`, named
+     * for the scene that asked; it is now `prep_ia_<slug>_tmp`, named for the PREPARATION, so two
+     * beats wanting one archive item name one file and the download happens once.
+     *
+     * What this assertion is for is unchanged and still enforced: the scratch path carries NO
+     * EXTENSION, which is precisely why the `-f matroska` above is not optional. Render 573
+     * reported `segment fetch failed` on every large item until it was added.
+     */
+    expect(SRC).toContain("`prep_ia_${prepSlug}_tmp`");
+    expect(SRC.slice(SRC.indexOf("`prep_ia_${prepSlug}_tmp`"), SRC.indexOf("`prep_ia_${prepSlug}_tmp`") + 30))
+      .not.toContain(".mp4");
   });
 
   it("every exit past an opened record files an outcome for it", () => {
@@ -203,17 +214,32 @@ describe("the archive segment fetch names a container, and its failure names its
      * `[ProviderFunnelInvariant] provider=internet_archive … terminalOutcomes=0 unexplained=33
      *  INVARIANT_BROKEN` — thirty-three of thirty-three, all leaving through a bare `continue`.
      */
+    /**
+     * RONDE 230-B moved the download and the trim inside `runPreparation`, so these four endings
+     * are thrown by their own branch and filed by ONE `recordRejection` at the failure handler
+     * instead of four scattered ones. The rule this test exists for is unchanged — no exit past an
+     * opened record may leave without an outcome — and it is now enforced in one place rather than
+     * four, which is stricter: a new branch inside the callback cannot forget to file, because the
+     * handler files whatever reason the throw carried.
+     */
     const at = SRC.indexOf("Archive clip too large (${(knownSize");
     expect(at).toBeGreaterThan(-1);
     const region = SRC.slice(at, at + 5_200);
-    expect(region).toContain('recordRejection(outPath, "archive_segment_fetch_failed")');
-    expect(region).toContain('recordRejection(outPath, "archive_over_size_cap")');
+    /** Every branch still names its own ending... */
+    expect(region).toContain('archivePrepFailure("archive_segment_fetch_failed")');
+    expect(region).toContain('archivePrepFailure("archive_over_size_cap")');
+    expect(region).toContain("archivePrepFailure(`archive_http_${dlResp.status || \"no_bytes\"}`)");
+    /** ...and the single handler turns whichever one arrived into the rejection it always was. */
+    expect(region).toContain("sourcingCache?.lineage?.recordRejection(");
+    expect(region).toContain('archiveRejectionReason(prepared.error) ?? "archive_preparation_failed"');
+    /** A throw that carried no reason still ends the record — it cannot vanish. */
+    expect(SRC).toContain("function archiveRejectionReason(err: unknown): string | null {");
     /**
      * The trim failure is filed as a REJECTION, not a download outcome: `downloadCount++` has
      * already counted this arrival on the counter channel, and `summary()` adds the counter to the
      * events, so a download event here would count one arrival twice.
      */
-    expect(region).toContain('recordRejection(outPath, "archive_trim_produced_no_clip")');
+    expect(region).toContain('archivePrepFailure("archive_trim_produced_no_clip")');
     /**
      * And on the REJECTION channel throughout: this fetcher owns `downloadCount++`, and
      * `[AssetUsageSummary]` adds the counter to the events, so any download event from here would
