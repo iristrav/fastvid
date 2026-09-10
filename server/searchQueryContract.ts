@@ -1948,11 +1948,32 @@ export function searchGateDecision(
   if (!verdict.ok) {
     searchGateAudit.record("queriesRejected", provider, ticket.route, verdict.reason);
     searchGateAudit.record("queriesBlocked", provider, ticket.route);
+    /**
+     * RONDE 224 — THE LINE ASKED WHERE THE TERM CAME FROM AND NOBODY ANSWERED.
+     *
+     * `formatSearchQueryRejected` has carried a `termSource` field since RONDE 90, and this — its
+     * only caller — never filled it in. So every refusal in every production log reads
+     * `termSource=unknown`: render 576 printed that 410 times, and the one question a reader needs
+     * answered to fix the builder is the one the line will not answer.
+     *
+     * It was never missing information, only unpassed information. `ticket.tokens` already carries
+     * a `source` per term — that is what `QueryTokenSource` exists for — so the offending term's
+     * own provenance is one lookup away.
+     *
+     * Matched case-insensitively because the gate lowercases as it tokenises, and falling back to
+     * the type's own `"unknown"` when no token matches, which is itself a fact worth seeing: it
+     * means the term reaching the gate is not one of the tokens the ticket was built from.
+     */
+    const offending = verdict.offendingTerm?.trim().toLowerCase();
+    const offendingToken = offending
+      ? ticket.tokens.find((t) => t.term.trim().toLowerCase() === offending)
+      : undefined;
     console.warn(
       formatSearchQueryRejected({
         query: text, provider, route: ticket.route,
         reason: verdict.reason ?? "UNVERIFIED_TERM",
         offendingTerm: verdict.offendingTerm,
+        termSource: offendingToken?.source,
       })
     );
     console.warn(audit("BLOCKED", verdict.reason));

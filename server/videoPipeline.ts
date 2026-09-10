@@ -34641,6 +34641,45 @@ async function refillSceneStrictVoiceMatch(
       return { clips, beatDurations, beats, clipBeatIndices };
     }
 
+    /**
+     * RONDE 224 — WHY NOBODY COULD JUDGE, SAID WHERE THE RENDER ACTUALLY DIES.
+     *
+     * RONDE 115 already built the line that answers this — `formatNoVerdictReasons` turns a render's
+     * declines into `[BeatImageGate] no verdict: 44x <reason>` — and RONDE 105 already counts every
+     * one of the seven ways the gate can decline. Both work. Neither is reachable from here.
+     *
+     * The summary is printed at two places in this file, both past line 43000, inside the export
+     * gate and the quality report. A scene that ends with nothing throws HERE, several thousand
+     * lines earlier, so a render that fails for want of judged footage is exactly the render whose
+     * explanation never prints. Measured: render 576 (video 576, 09:28–09:39) has zero
+     * `[BeatImageGate]` lines; render 574, which survived to the report, has one.
+     *
+     * That absence is why three consecutive failures could not be told apart. `vision=NOT_ASKED`
+     * reaches the adoption guard from seven different causes — a switched-off gate, no provider, no
+     * narration, a spent budget, no readable frame, unusable frames, a provider with no capacity —
+     * and only the tally distinguishes them. Without it the log shows the symptom seventy-four
+     * times and the cause zero times.
+     *
+     * Emitted on BOTH exits below, before either, because the throw is not the only way out: the
+     * archive-only deployment continues with an empty montage and needs the same answer.
+     *
+     * Reporting only. No verdict changes, no gate moves, nothing is retried.
+     */
+    {
+      const why = formatNoVerdictReasons(dedup.beatImageGate);
+      console.error(
+        `[Pipeline] Scene ${scene.index}: ${beats.length} zinnen, ${usable.length} bruikbare clips — ` +
+          `vision attempts=${dedup.beatImageGate.judgementAttempts} ` +
+          `fits=${dedup.beatImageGate.judgementsFits} ` +
+          `mismatch=${dedup.beatImageGate.judgementsMismatch} ` +
+          `failed=${dedup.beatImageGate.judgementsFailed} ` +
+          `skipped=${dedup.beatImageGate.judgementsSkipped} ` +
+          `providerUnavailable=${dedup.beatImageGate.judgementsProviderUnavailable} ` +
+          `askImpossible=${dedup.beatImageGate.askImpossible}`
+      );
+      if (why) console.error(why);
+    }
+
     if (!curatedArchiveOnlyVisuals()) {
       throw pipelineError(
         PIPELINE_ERROR.FFMPEG,
