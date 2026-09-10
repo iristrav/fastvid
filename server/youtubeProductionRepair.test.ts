@@ -93,15 +93,18 @@ describe("YT-REPAIR §1 — the order in which one scene budget is spent", () =>
     expect(d.remainingMs).toBe(0);
   });
 
-  it("THIS RAISED NO BUDGET AND LOWERED NO FLOOR", () => {
+  it("THE PROBE FIX ITSELF RAISED NO BUDGET AND LOWERED NO FLOOR", () => {
     /**
-     * The whole point is that the same seconds are spent differently, not that there are more of
-     * them. All three numbers are the ones render 576 ran with.
+     * The point of the probe change is that the same seconds are spent in a better ORDER, not that
+     * there are more of them. These three numbers are still the ones render 576 ran with.
+     *
+     * The download CAP is deliberately not asserted here any more: a later round raised it from 20
+     * to 60 as an explicit supply decision, and it has its own test below rather than being quietly
+     * carried by a guard whose subject is the probe.
      */
     expect(FLOOR).toBe(12_000);
     expect(YOUTUBE_META_PROBE_TIMEOUT_MS).toBe(20_000);
     expect(youtubeDownloadTimeoutMs()).toBe(180_000);
-    expect(youtubeMaxDownloadsPerRender()).toBe(20);
     expect(PIPE).toContain("const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS = 12_000;");
   });
 
@@ -261,10 +264,27 @@ describe("YT-REPAIR §4 — nothing was loosened to make YouTube work", () => {
     expect(allowUnverifiedYoutube()).toBe(false);
   });
 
-  it("THE SEARCH GATE, THE VISION GATE AND THE DOWNLOAD CAP ARE ALL AS THEY WERE", () => {
-    expect(youtubeMaxDownloadsPerRender()).toBe(20);
+  it("THE SEARCH GATE AND THE VISION GATE ARE EXACTLY AS THEY WERE", () => {
     /** NOT_ASKED is still not a verdict — RONDE 89/230-A's rule. */
     expect(PIPE).toContain('gateVerdict !== "NOT_ASKED"');
+  });
+
+  it("THE DOWNLOAD CAP WAS RAISED ON PURPOSE, and only the cap", () => {
+    /**
+     * 20 → 60. Not a gate, not a threshold, not a quality bar: a supply budget, raised because the
+     * production logs show what the old number costs. Attempts against clips delivered:
+     *
+     *     24 aug   103 → 17     25 aug    97 → 44     (ceiling not yet binding)
+     *     31 aug    20 →  2     10 sept   20 →  0     (ceiling binding)
+     *
+     * 60 stays under the ~100 those two renders spent without harm. Asserted here as its own
+     * statement so the change can never be mistaken for drift, and so the next reader sees the
+     * evidence rather than a number.
+     */
+    expect(youtubeMaxDownloadsPerRender()).toBe(60);
+    /** Still bounded, still overridable in both directions, still refusing nonsense. */
+    expect(youtubeMaxDownloadsPerRender()).toBeLessThan(134);
+    expect(PIPE).toContain("if (m.downloadSlotsClaimed >= maxDownloads) return false;");
   });
 
   it("A REFUSED VIDEO STILL COSTS NO SECOND SLOT — the R235 memo is still consulted first", () => {

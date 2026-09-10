@@ -94,10 +94,14 @@ describe("RONDE 68 — the ceiling counts what it claimed to count", () => {
     vi.stubEnv("YOUTUBE_MAX_DOWNLOAD_ATTEMPTS", "7");
     expect(youtubeMaxDownloadsPerRender()).toBe(7);
     vi.unstubAllEnvs();
+    // The default the ceiling falls back to. Raised from 20 to 60 deliberately — see the note on
+    // `youtubeMaxDownloadsPerRender`: the production logs show 97-103 attempts completing without
+    // harm and yielding 17-44 clips, against 20 attempts yielding 0-2. The RANGE this file guards
+    // (>= 10, < 134) is unchanged and 60 sits inside it.
     vi.stubEnv("YOUTUBE_MAX_DOWNLOADS_PER_RENDER", "junk");
-    expect(youtubeMaxDownloadsPerRender()).toBe(20);
+    expect(youtubeMaxDownloadsPerRender()).toBe(60);
     vi.stubEnv("YOUTUBE_MAX_DOWNLOADS_PER_RENDER", "0");
-    expect(youtubeMaxDownloadsPerRender()).toBe(20);
+    expect(youtubeMaxDownloadsPerRender()).toBe(60);
   });
 
   it("the ceiling message no longer claims to be per scene", () => {

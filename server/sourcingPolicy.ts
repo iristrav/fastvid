@@ -1039,9 +1039,31 @@ export function downloadStallTimeoutMs(): number {
  * video transfers are what left no scene budget for anything else — Wikimedia ran 0 searches
  * that render, Internet Archive downloaded 0 of 12 results, and the montage fell back to stock.
  *
- * 20 is deliberately generous: YouTube must stay a real participant, it just cannot be allowed
- * to spend the whole render's fetch budget on material it has yet to contribute a single clip
- * from in three renders.
+ * ── Why 20 became 60 ────────────────────────────────────────────────────────────────────────
+ *
+ * The sentence above used to end "20 is deliberately generous", written when this route had yet
+ * to contribute a single clip in three renders. The production logs since then say something the
+ * sentence could not know, because the counter it describes only began to bind on 25 August
+ * (`2866c8b`, `26094f9`):
+ *
+ *     24 aug   103 attempts   17 clips     ceiling not yet binding
+ *     25 aug    97 attempts   44 clips     ceiling not yet binding
+ *     31 aug    20 attempts    2 clips     ceiling binding
+ *     10 sept   20 attempts    0 clips     ceiling binding
+ *
+ * So the download itself was never the thing that failed. RapidAPI delivered 63 clips across
+ * those renders, at somewhere between 17% and 45% of attempts. What changed is that the budget
+ * for finding those clips fell from about a hundred tries to twenty — and twenty tries at 17%
+ * is three clips, for a film that needs fourteen.
+ *
+ * 60 is not a guess at a bigger number. It is under the ~100 those two renders actually spent
+ * without harm (both completed, and 25 August produced 44 clips), and at the measured rates it
+ * yields roughly 10-27 — enough for YouTube to be a real supplier rather than a garnish.
+ *
+ * What still bounds it, unchanged: every attempt is inside `youtubeBeatBudgetMs`, so the render's
+ * wall clock caps this long before 60 does; a video refused for its own sake costs no second slot
+ * (see `noteYoutubeDownloadRefusal`); and `YOUTUBE_MAX_DOWNLOADS_PER_RENDER` still overrides
+ * without a deploy, in either direction.
  */
 export function youtubeMaxDownloadsPerRender(): number {
   const raw = process.env.YOUTUBE_MAX_DOWNLOADS_PER_RENDER?.trim() ?? process.env.YOUTUBE_MAX_DOWNLOAD_ATTEMPTS?.trim();
@@ -1049,7 +1071,7 @@ export function youtubeMaxDownloadsPerRender(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1 && n <= 200) return n;
   }
-  return 20;
+  return 60;
 }
 
 /**
@@ -1108,7 +1130,24 @@ export function youtubeBeatBudgetMs(
     // guard's own minimum, or the source is switched off by arithmetic rather than by choice.
     if (!isNaN(n) && n >= 15_000 && n <= 120_000) return n;
   }
-  const base = isFastShortVideoLength(videoLength) ? 20_000 : 30_000;
+  /**
+   * ── Why the base grew ─────────────────────────────────────────────────────────────────────
+   *
+   * The note above says this slice is "deliberately SMALLER" than the archive's, so a beat that
+   * finds nothing on YouTube still reaches the archive with time to spare. That reasoning holds
+   * and the slice is still smaller — but the numbers it was set against have moved.
+   *
+   * The download guard refuses to start a whole-video transfer with under 12s left, and the
+   * RapidAPI route downloads the entire source before it trims. Inside a 30s slice that leaves
+   * one real attempt, sometimes none: render 576 spent 20 attempts and started zero transfers,
+   * and 75 of the 79 refusals in the production logs read `0s left`.
+   *
+   * 45s is two attempts' worth of room rather than one, and it is still well under the archive's
+   * own slice. The cap stays at twice the base, so a beat can never take a whole scene, and the
+   * slice is a CEILING rather than a spend — YouTube answering early returns immediately and the
+   * cascade never runs.
+   */
+  const base = isFastShortVideoLength(videoLength) ? 30_000 : 45_000;
   if (remainingWallClockMs == null || !Number.isFinite(remainingWallClockMs)) return base;
   const headroom = remainingWallClockMs - SOURCING_RESERVE_MS;
   if (headroom <= 0) return base;

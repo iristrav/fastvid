@@ -268,7 +268,8 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
   it("TEST A (sequential) — the limit is reached exactly, and the next claim is refused", () => {
     const cache = createSourcingCache();
     const limit = LIMIT();
-    expect(limit).toBe(20);
+    /** 60 since the YouTube-supply round; what this test proves is that the Nth claim is the last. */
+    expect(limit).toBe(60);
 
     for (let i = 0; i < limit; i++) {
       expect(claimYoutubeDownloadSlot(cache, limit)).toBe(true);
