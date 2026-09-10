@@ -24412,7 +24412,16 @@ async function adoptClip(
    * `ranked` far below it — and that gap, which nothing could previously show, is the whole
    * question of whether the editor is being asked about the best pictures or merely the earliest.
    */
-  noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length);
+  /**
+   * RONDE 227 — and `paths.length`, which is what this route was HANDED.
+   *
+   * `finalPaths` is the output of two stages that can both drop candidates: the asset director's
+   * `rankedPaths`, then `applyDocumentaryTasteModel` over it. So `ranked=0` from here has never
+   * been one fact. With the input size recorded beside it, `rankIn=11 ranked=0` says the ordering
+   * discarded eleven real candidates, and `rankIn=0 ranked=0` says nothing was ever handed over —
+   * and the second is a fault in whatever was meant to fill `paths`, not in the ranking.
+   */
+  noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length, paths.length);
   /**
    * R194 §18/§21 — THE BOUNDED REVIEW POOL, DECLARED BEFORE ANYTHING IS ASKED.
    *
@@ -24760,6 +24769,7 @@ async function adoptClip(
               `(${admission.slotsUsed}/${admission.cap}) route=adopt file=${path.basename(p)}` +
               (admission.eligible != null
                 ? ` eligible=${admission.eligible} ranked=${admission.ranked ?? 0}` +
+                  ` rankRuns=${admission.rankRuns ?? 0}` +
                   ` unreviewed=${admission.unreviewed ?? 0}`
                 : "")
           );
@@ -29447,6 +29457,8 @@ async function beatClipPassesVisionGate(
          */
         (admission.eligible != null
           ? ` eligible=${admission.eligible} ranked=${admission.ranked ?? 0}` +
+            /** RONDE 227 — on the rescue side especially: did the ranking route ever run here? */
+            ` rankRuns=${admission.rankRuns ?? 0}` +
             ` unreviewed=${admission.unreviewed ?? 0}`
           : "")
     );
@@ -34697,6 +34709,16 @@ async function refillSceneStrictVoiceMatch(
        * the render ends is what makes the number safe to read rather than tempting to interpret.
        */
       for (const line of formatBeatShortlists(dedup.beatShortlist)) console.error(line);
+      /**
+       * RONDE 227 — the invariants, for the third time on the same argument.
+       *
+       * `beatShortlistViolations` had exactly one reader, at line ~44225, inside the report. So
+       * every statement it is able to make — including this round's SHORTLIST_FILLED_UNRANKED,
+       * which is the one that would name this failure outright — was unreachable from the only
+       * exit these renders actually take. Checking a thing and never reading the answer where it
+       * matters is the same defect as not checking it.
+       */
+      for (const line of beatShortlistViolations(dedup.beatShortlist)) console.error(line);
     }
 
     if (!curatedArchiveOnlyVisuals()) {

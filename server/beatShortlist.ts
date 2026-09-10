@@ -164,6 +164,32 @@ export type BeatFunnel = {
   visionOutsideShortlist: number;
   /** Content keys actually put to the editor — never larger than `admitted`. */
   askedKeys: Set<string>;
+  /**
+   * RONDE 227 — `ranked=0` IS TWO DIFFERENT FACTS, AND THE LOG COULD NOT SAY WHICH.
+   *
+   * `noteRanked` has exactly one caller, in `adoptClip`, and there is no early return or throw
+   * between that function's first line and it — so the call is reached whenever the route runs.
+   * It is called as `noteRanked(state, s, b, finalPaths.length)`, which means a zero survives two
+   * completely different histories:
+   *
+   *   · the ranking route NEVER RAN for this beat — nothing was ever ordered, and every slot the
+   *     shortlist gave away went to arrival order on the rescue side; or
+   *   · the ranking route RAN AND ORDERED NOTHING — it was handed an empty list, or the asset
+   *     director and taste model between them dropped everything they were given.
+   *
+   * Those call for opposite fixes, and `ranked += 0` is indistinguishable from never being called
+   * because both leave the field at zero. RONDE 119 is the standing warning here: this same
+   * counter read zero once before, was interpreted as a statement about ordering, and was in fact
+   * measuring nothing at all. The lesson taken then was to call it. The lesson now is that a
+   * counter which cannot separate "did not run" from "ran and produced none" is still measuring
+   * less than a reader will assume it measures.
+   *
+   * `rankRuns` counts invocations, so zero means the route never reached the beat. `rankInput`
+   * counts what the route was HANDED, so `rankRuns=1 rankIn=11 ranked=0` accuses the ranking, and
+   * `rankRuns=1 rankIn=0 ranked=0` accuses whatever was supposed to fill its input.
+   */
+  rankRuns: number;
+  rankInput: number;
 };
 
 export type BeatShortlistState = {
@@ -205,6 +231,8 @@ export function beatFunnel(
     visionRepeatAsks: 0,
     visionOutsideShortlist: 0,
     askedKeys: new Set<string>(),
+    rankRuns: 0,
+    rankInput: 0,
   };
   state.beats.set(k, fresh);
   return fresh;
@@ -235,15 +263,26 @@ export function noteEligible(
   beatFunnel(state, sceneIndex, beatIndex).eligible += 1;
 }
 
-/** One candidate was placed in a route's ranked order. */
+/**
+ * One candidate was placed in a route's ranked order.
+ *
+ * RONDE 227: the call itself is recorded separately from what it reports, because `count` may
+ * legitimately be zero and a zero added to a zero leaves no trace that anything happened. Pass
+ * `inputCount` — what the route was handed before it ordered anything — and an empty result can
+ * be blamed on the ranking or on its supply rather than on one of them by assumption.
+ */
 export function noteRanked(
   state: BeatShortlistState | undefined,
   sceneIndex: number,
   beatIndex: number,
-  count = 1
+  count = 1,
+  inputCount?: number
 ): void {
   if (!state) return;
-  beatFunnel(state, sceneIndex, beatIndex).ranked += count;
+  const f = beatFunnel(state, sceneIndex, beatIndex);
+  f.rankRuns += 1;
+  f.ranked += count;
+  if (inputCount != null) f.rankInput += inputCount;
 }
 
 export type ShortlistAdmission =
@@ -257,6 +296,8 @@ export type ShortlistAdmission =
       eligible?: number;
       ranked?: number;
       unreviewed?: number;
+      /** RONDE 227 — whether a `ranked` of zero means "never ordered" or "ordered nothing". */
+      rankRuns?: number;
     };
 
 /**
@@ -307,6 +348,7 @@ export function admitToShortlist(
       eligible: f.eligible,
       ranked: f.ranked,
       unreviewed: Math.max(0, f.eligible - f.visionAsked),
+      rankRuns: f.rankRuns,
     };
   }
   f.shortlisted += 1;
@@ -488,7 +530,15 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     const reasons = reasonsFor(f);
     lines.push(
       `[BeatFunnel] s${f.sceneIndex}b${f.beatIndex} retrieved=${f.retrieved} eligible=${f.eligible} ` +
-        `ranked=${f.ranked} shortlisted=${f.shortlisted}/${cap} visionAsked=${f.visionAsked} ` +
+        /**
+         * RONDE 227 — `rankRuns` travels beside `ranked` because it is what makes `ranked`
+         * readable. Printed always, not only when it is zero: `ranked=0 rankRuns=0` and
+         * `ranked=0 rankRuns=1 rankIn=11` are both worth seeing, and a reader who has to notice
+         * an ABSENT field to tell them apart will not notice it.
+         */
+        `ranked=${f.ranked} rankRuns=${f.rankRuns}` +
+        (f.rankRuns > 0 ? ` rankIn=${f.rankInput}` : "") +
+        ` shortlisted=${f.shortlisted}/${cap} visionAsked=${f.visionAsked} ` +
         `approved=${f.approved} rejected=${f.rejected} unclear=${f.unclear} ` +
         `unavailable=${f.unavailable} notAsked=${f.notAsked}` +
         (f.refusedForCap > 0 ? ` cappedOut=${f.refusedForCap}` : "") +
@@ -562,6 +612,29 @@ export function beatShortlistViolations(state: BeatShortlistState | undefined): 
     }
     if (f.approved === 0 && reasonsFor(f).length === 0) {
       out.push(`[BeatFunnelInvariant] ${at} UNEXPLAINED_NO_APPROVAL`);
+    }
+    /**
+     * RONDE 227 — THE GAP RONDE 119 PREDICTED, NOW CHECKABLE.
+     *
+     * The note beside `noteRanked` says it plainly: "a rescue ladder that spends slots before this
+     * loop runs would leave `shortlisted=8` with `ranked` far below it — and that gap is the whole
+     * question of whether the editor is being asked about the best pictures or merely the earliest."
+     *
+     * That gap is now a statement rather than an inference. It fires only when BOTH halves are
+     * true — candidates were turned away for want of a slot, AND the ranking route never ran — so
+     * a beat that is simply served by the rescue side without ever hitting its bound says nothing.
+     * Those two together mean real candidates were refused in favour of arrival order, which is
+     * the one shape a bound is not supposed to produce.
+     *
+     * Reported, not enforced. Nothing here raises the cap, reorders a shortlist or re-admits a
+     * refused candidate; the bound is exactly the bound it was.
+     */
+    if (f.refusedForCap > 0 && f.rankRuns === 0) {
+      out.push(
+        `[BeatFunnelInvariant] ${at} SHORTLIST_FILLED_UNRANKED shortlisted=${f.shortlisted}/${cap} ` +
+          `cappedOut=${f.refusedForCap} eligible=${f.eligible} rankRuns=0 — ` +
+          `every slot went to arrival order; the ranking route never ran for this beat`
+      );
     }
   }
   return out;

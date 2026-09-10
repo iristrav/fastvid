@@ -42,8 +42,19 @@ describe("the ranked counter has a caller", () => {
   it("is called where the ranked list is built, with that list's length", () => {
     const at = PIPE.indexOf("const finalPaths = [...tasteResult.rankedPaths];");
     expect(at).toBeGreaterThan(-1);
-    const after = PIPE.slice(at, at + 1800);
-    expect(after).toContain("noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length)");
+    /**
+     * RONDE 227 widened this window from 1800 to 3000 and dropped the closing paren from the
+     * expected string. Both for the same reason and neither weakens the check: the call gained a
+     * fifth argument — `paths.length`, what the route was handed — so `finalPaths.length` is no
+     * longer the last thing inside the parentheses, and the round's own comment above the call
+     * pushed it to 2033 characters past this anchor. Measured, not guessed.
+     *
+     * What this test is for is unchanged and still enforced: the ranked list's length is what gets
+     * counted, at the place the ranked list is built. The exact five-argument form is pinned in
+     * r227RankedZeroIsTwoFacts.test.ts, which also asserts there is still exactly one caller.
+     */
+    const after = PIPE.slice(at, at + 3000);
+    expect(after).toContain("noteRanked(dedup.beatShortlist, sceneIndex, beatIndex, finalPaths.length");
   });
 
   it("counts the ranked order BEFORE the loop that spends the shortlist", () => {
