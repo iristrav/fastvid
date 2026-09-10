@@ -247,10 +247,26 @@ export type BeatRelevanceLedger = {
   byContentKey: Map<string, BeatRelevanceEntry>;
   /** `beatSlotKey` -> judgements this beat has paid for. Bounds a beat with many candidates. */
   spendByBeat: Map<string, number>;
+  /**
+   * RONDE 228 — clips whose NON-verdict has already been given its one second chance.
+   *
+   * `pass()` records a verdict-free result in this ledger, and `ensureVerdictBeforeCompose` used to
+   * treat any entry as `already_judged`. So a clip that was passed over unlooked-at — a spent
+   * budget, a momentarily missing frame — could never be looked at again, including by the
+   * `finalSay` last look the adoption guard makes precisely because the picture is about to be
+   * used. This set is what keeps that second chance from becoming an unbounded loop: one retry per
+   * clip per render, then the recorded answer stands whatever it says.
+   */
+  finalSayRetried: Set<string>;
 };
 
 export function createBeatRelevanceLedger(): BeatRelevanceLedger {
-  return { byClipPath: new Map(), byContentKey: new Map(), spendByBeat: new Map() };
+  return {
+    byClipPath: new Map(),
+    byContentKey: new Map(),
+    spendByBeat: new Map(),
+    finalSayRetried: new Set(),
+  };
 }
 
 /**
@@ -968,7 +984,59 @@ export async function ensureVerdictBeforeCompose(params: {
     (params.contentKey && !params.contentKey.startsWith("file:")
       ? scope.ledger.byContentKey.get(params.contentKey)
       : undefined);
-  if (existing) return { outcome: "already_judged", verdict: existing.decision.verdict };
+  /**
+   * RONDE 228 — "ALREADY JUDGED" HAS TO MEAN SOMEBODY LOOKED.
+   *
+   * ── What render 576 measured ────────────────────────────────────────────────────────────────
+   *
+   * The film died with `Scene 1: 7 zinnen maar 0 voice/script-matchende clips`. Its one piece of
+   * real, ELIGIBLE footage to reach the adoption guard — a Wikimedia clip — was refused six times,
+   * every time reading:
+   *
+   *     [AdoptionGuard] scene=1 beat=5 route=rescue_wikimedia eligible=true vision=NOT_ASKED
+   *         blocked=FUNNEL_WITHOUT_EVIDENCE
+   *
+   * and across eleven minutes the render's rejection tally held `beat_image_gate:2` FIXED while
+   * `FUNNEL_WITHOUT_EVIDENCE` climbed from 78 to 138. Two real looks in the whole render, and
+   * everything after them refused for want of a look.
+   *
+   * ── Why it could not recover ────────────────────────────────────────────────────────────────
+   *
+   * `pass()` above is, in its own words, "a verdict-free pass — every caller is a case where the
+   * gate DID NOT LOOK, so `evaluated` is false". It calls `record()`. A non-verdict therefore
+   * lands in this ledger looking exactly like a decision, and this reader returned `already_judged`
+   * for it without ever asking whether anybody had looked.
+   *
+   * RONDE 215 gave the adoption guard a last look for exactly this moment, with `finalSay: true`,
+   * which is allowed to bypass both spend caps because it is the look that decides something. That
+   * escape hatch could never fire: it was short-circuited here, one line before the budgets it was
+   * built to overrule. A cache that cannot tell "we have an answer" from "we recorded that we
+   * failed to get one" — the same defect RONDE 222 found in the overlay check, in another place.
+   *
+   * ── What this changes, and what it does not ─────────────────────────────────────────────────
+   *
+   * A recorded NON-verdict no longer satisfies a caller that is about to USE the picture. It is
+   * looked at, once, and whatever the editor then says is obeyed in full. NOTHING here turns
+   * NOT_ASKED into APPROVED, suspends the guard, or moves a threshold: a clip that comes back
+   * unjudged a second time is still unjudged, still refused, and RONDE 89's export blocks still
+   * stand over the film. Every other caller keeps the cache exactly as it was.
+   *
+   * Bounded at one retry per clip per render — see `finalSayRetried` — so a genuinely unjudgeable
+   * clip costs one extra look, not a loop. Render 576 offered the same five clips seventeen times
+   * each; without that bound this would have re-judged every one of them.
+   */
+  if (existing) {
+    const neverLookedAt = existing.decision.evaluated === false;
+    const mayRetry =
+      neverLookedAt && params.finalSay === true && !scope.ledger.finalSayRetried.has(params.clipPath);
+    if (!mayRetry) return { outcome: "already_judged", verdict: existing.decision.verdict };
+    scope.ledger.finalSayRetried.add(params.clipPath);
+    console.warn(
+      `[BeatRelevance] ${path.basename(params.clipPath)} was recorded without a look ` +
+        `(${existing.decision.reason}) and is about to be used — looking once before it is refused ` +
+        `for want of a verdict (route=${params.route ?? "compose"})`
+    );
+  }
 
   const at =
     params.sceneIndex != null && params.beatIndex != null
