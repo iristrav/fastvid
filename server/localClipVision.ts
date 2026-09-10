@@ -1048,6 +1048,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // systemic failures (e.g. the archive CLIP backfill indexing 0/600 with no visible cause) are
 // diagnosable without flooding logs for every single frame of every asset.
 let lastFrameExtractFailureLogMs = 0;
+/** RONDE 225 — its own clock, so one silence cannot mask the other. See `extractFrameAtFraction`. */
+let lastMissingClipLogMs = 0;
 const FRAME_EXTRACT_FAILURE_LOG_INTERVAL_MS = 60_000;
 
 export async function extractFrameAtFraction(
@@ -1056,7 +1058,35 @@ export async function extractFrameAtFraction(
   fraction: number,
   timeoutMs = 12_000
 ): Promise<boolean> {
-  if (!fs.existsSync(videoPath)) return false;
+  /**
+   * RONDE 225 — A CLIP THAT IS NOT THERE IS THE ONE FAILURE THAT SAID NOTHING AT ALL.
+   *
+   * Every other way this function can fail throws, is caught below, and reaches the throttled
+   * warning. This one returns `false` without throwing, so `sampleFrames`'s `.catch(() => false)`
+   * never fires and the warning never prints. The caller then has no frames, `judgeBeatImage`
+   * declines with "no frame available", that becomes `vision=NOT_ASKED`, and the adoption guard
+   * refuses the candidate for want of evidence — with nothing anywhere saying the file was missing.
+   *
+   * Measured, and this is why it matters: video 576 failed with `Scene 1: 7 zinnen maar 0
+   * voice/script-matchende clips` after 74 refusals, and its log contains ZERO
+   * `extractFrameAtFraction failed` lines. Video 574, which delivered, contains two. At a 60-second
+   * throttle, eleven minutes of genuinely failing extraction would have printed roughly ten. Zero
+   * failures and zero frames together point at the one path that reports neither.
+   *
+   * Throttled on its own clock rather than sharing the extraction one, so a run of missing files
+   * cannot hide a run of extraction errors or the other way round.
+   */
+  if (!fs.existsSync(videoPath)) {
+    const now = Date.now();
+    if (now - lastMissingClipLogMs > FRAME_EXTRACT_FAILURE_LOG_INTERVAL_MS) {
+      lastMissingClipLogMs = now;
+      console.warn(
+        `[LocalVision] no frame can be taken from ${path.basename(videoPath)} — the file is not ` +
+          `on disk; every judgement of this clip will read as NOT_ASKED`
+      );
+    }
+    return false;
+  }
   const durationSec = await probeDurationSec(videoPath, Math.min(timeoutMs, 8_000));
   // Duration unknown (probe failed) — grab the first frame rather than aborting outright.
   const seekSeconds = durationSec > 0 ? Math.max(0, Math.min(fraction * durationSec, durationSec - 0.1)) : 0;

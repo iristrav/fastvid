@@ -289,6 +289,26 @@ async function sampleFrames(
     ).catch(() => false);
     if (got) out.push(framePath);
   }
+  /**
+   * RONDE 225 — NO FRAMES IS A FINDING, NOT A QUIET RETURN.
+   *
+   * An empty answer here is the first domino: `judgeBeatImage` declines with "no frame available",
+   * the decline is `evaluated: false`, that reads as `vision=NOT_ASKED`, and the adoption guard
+   * refuses a candidate it has already found eligible. Video 576 did that seventy-four times and
+   * shipped nothing, and every step of the chain was silent at this end.
+   *
+   * Said per clip, with whether the file was even on disk, because that is the one fact that
+   * separates the two remaining causes — a clip that vanished before it could be judged, and a
+   * clip whose frames could not be decoded. `[LocalVision]` reports the second on its own throttle;
+   * this line names the beat that paid for it either way.
+   */
+  if (out.length === 0) {
+    console.warn(
+      `[BeatRelevance] s${ctx.sceneIndex}b${ctx.beatIndex} route=${tag}: no frame could be sampled ` +
+        `from ${path.basename(clipPath)} (onDisk=${fs.existsSync(clipPath)}) — this clip cannot be ` +
+        `judged, so it will read as NOT_ASKED`
+    );
+  }
   return out;
 }
 
