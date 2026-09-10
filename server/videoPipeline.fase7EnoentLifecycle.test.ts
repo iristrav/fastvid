@@ -168,9 +168,10 @@ describe("FASE 7 — source-level checks: fix location and constraints", () => {
     const idx = src.indexOf("export async function downloadToFileStreaming(");
     expect(idx).toBeGreaterThan(-1);
     // RONDE 21 widened this window: the function grew when the body-read stall guard was added,
-    // pushing createWriteStream past the old fixed 3500-char slice. The assertion itself is
+    // pushing createWriteStream past the old fixed 3500-char slice. RONDE 223 widened it again for
+    // the same reason — the choke point gained the permanent-refusal memo. The assertion itself is
     // unchanged — this still proves the function streams to disk rather than buffering.
-    const scoped = src.slice(idx, idx + 6000);
+    const scoped = src.slice(idx, idx + 9000);
     expect(scoped).not.toContain("arrayBuffer()");
     expect(scoped).toContain("fs.createWriteStream(destPath)");
   });

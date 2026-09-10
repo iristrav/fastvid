@@ -47,8 +47,12 @@ import {
 import {
   classifyProviderFailure,
   cooldownMsForFailure,
+  formatPermanentDownloadRefusals,
   formatProviderCooldown,
   formatRetryGuard,
+  notePermanentDownloadRefusal,
+  permanentDownloadRefusal,
+  resetPermanentDownloadRefusals,
   shouldRetryAfterFailure,
 } from "./providerFailureClass";
 import pLimit from "p-limit";
@@ -5920,7 +5924,32 @@ export async function downloadToFileStreaming(
    * competing for the same socket pool and the same provider rate limits, which is exactly the
    * case RONDE 83 did not cover. p-limit queues, so a download is delayed, never dropped.
    */
-  return withGlobalMediaFetch(() => downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes));
+  /**
+   * RONDE 223 — the same file is not fetched twice to be refused twice.
+   *
+   * Render 575 asked for one 92.2 MB Pixabay asset 108 times against an 80 MB cap, at roughly one
+   * request every second and a half, because the inner retry loop and the outer candidate loop
+   * each had their own idea of how many attempts this was. Neither could see the other.
+   *
+   * The refusal is a fact about the file, so it is remembered here — the choke point both loops
+   * pass through — and re-thrown without a network request. The error is deliberately the same
+   * shape the real refusal has, so every existing catch behaves exactly as it did before; the
+   * only difference is that nothing goes out on the wire.
+   */
+  const refusedBefore = permanentDownloadRefusal(url);
+  if (refusedBefore) throw new Error(`${label}: ${refusedBefore} (already refused this render)`);
+
+  try {
+    return await withGlobalMediaFetch(() =>
+      downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes)
+    );
+  } catch (err) {
+    if (classifyProviderFailure({ err }) === "PERMANENT") {
+      const reason = (err as Error)?.message?.slice(0, 200) ?? "permanently refused";
+      notePermanentDownloadRefusal(url, reason);
+    }
+    throw err;
+  }
 }
 
 async function downloadToFileStreamingInner(
@@ -40471,6 +40500,12 @@ async function _runVideoPipelineInner(
   // expensive render cannot spend the next one's budget, and the cache cannot grow unbounded
   // across the lifetime of a long-lived worker process.
   resetOverlayBudget();
+  /**
+   * RONDE 223 — and its sibling: what THIS render learns about permanently refused downloads is
+   * forgotten when the next one starts, so a provider that replaces an oversized file is asked
+   * again rather than written off for the lifetime of the worker.
+   */
+  resetPermanentDownloadRefusals();
   getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with
@@ -44579,6 +44614,17 @@ async function _runVideoPipelineInner(
       } else {
         console.log(pipelineReport.add("summary", line));
       }
+    }
+
+    /**
+     * RONDE 223 — say what the refusal memo saved, or say nothing at all.
+     *
+     * Printed only when something was actually refused, so a healthy render gains no noise, and a
+     * render that hit render 575's fault can be read for how much work it did not repeat.
+     */
+    {
+      const refusalLine = formatPermanentDownloadRefusals();
+      if (refusalLine) console.log(pipelineReport.add("summary", refusalLine));
     }
 
     const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;

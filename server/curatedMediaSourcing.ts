@@ -2442,7 +2442,25 @@ export function stubPowerWordFromSceneText(text: string): string {
       best = w;
     }
   }
-  return best || "documentary";
+  /**
+   * RONDE 223 — NO POWER WORD IS AN ANSWER; "documentary" IS NOT.
+   *
+   * RONDE 88A P4 found this exact line and described what it causes — a subject collapsed to a
+   * genre word, producing "documentary wide establishing aerial", which asks for aerial footage of
+   * the world in general. Render 568 built 128 such queries and the gate refused all 128. That
+   * round guarded the CONSUMER (`buildDocumentaryShotQueries` now returns nothing without a
+   * content anchor) and left the source returning the genre word to everything else that reads it.
+   *
+   * Render 575 (rmtulyr50) shows the rest of the family still arriving at the providers:
+   *
+   *     query="documentary"   reason=NO_CONTENT_ANCHOR  × 80
+   *     query="establishing"  reason=NO_CONTENT_ANCHOR  × 74
+   *
+   * `powerWord` is optional at every one of its readers, so absence is a value they already
+   * handle. RONDE 100B settled the principle for the identical case one file over: no subject
+   * means no query.
+   */
+  return best;
 }
 
 /** One-time per-video archive pool — avoids re-scanning every asset on each beat. */
@@ -2459,11 +2477,36 @@ export async function buildVideoArchiveCandidatePool(
 ): Promise<CuratedCandidatePick[]> {
   const text = combinedSceneText.trim().slice(0, 1200);
   const stubKeywords = text.split(/\s+/).filter((w) => w.length > 3).slice(0, 12);
+  /**
+   * RONDE 223 — NO SCENE TEXT MEANS NO QUERY, NOT THE WORD "DOCUMENTARY".
+   *
+   * Both fields fell back to the literal string "documentary" when the scene had nothing to derive
+   * a query from. That is a production word: `hasContentAnchor("documentary")` is false, so the
+   * search gate refuses it on sight — which is the correct behaviour and also proof that the
+   * fallback could never once have worked. Render 575 (rmtulyr50) sent it anyway:
+   *
+   *     query="documentary" term="documentary" reason=NO_CONTENT_ANCHOR  × 80
+   *
+   * built, sent to two providers, refused, logged, and built again on the next pass, while the
+   * scene it was for ran out of time and the export gate then refused it for having no footage.
+   *
+   * An invented query is a silent substitution of a made-up subject for a missing one, and it is
+   * worse than an empty one: an empty query searches nothing and costs nothing, while this
+   * searched for the word "documentary" and told the log a subject had been requested. The absence
+   * is now carried honestly and said out loud once, so a scene arriving here with no text is a
+   * visible fault rather than a stream of refusals.
+   */
+  if (!text) {
+    console.warn(
+      "[CuratedSourcing] scene text is empty — no query can be derived from it; " +
+        "searching with nothing rather than inventing a subject"
+    );
+  }
   const stubBeat: CuratedBeatContext = {
     index: 0,
     text,
-    keywords: stubKeywords.length > 0 ? stubKeywords : ["documentary"],
-    searchQuery: text.split(/\s+/).slice(0, 8).join(" ") || "documentary",
+    keywords: stubKeywords,
+    searchQuery: text.split(/\s+/).slice(0, 8).join(" "),
     powerWord: stubPowerWordFromSceneText(text),
   };
   const stubScene: CuratedSceneContext = { text, pexelsQuery: stubBeat.searchQuery };

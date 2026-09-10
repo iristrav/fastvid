@@ -66,6 +66,29 @@ export function isBudgetExhaustedError(err: unknown): boolean {
 }
 
 /**
+ * RONDE 223 — was this file refused for being too big?
+ *
+ * `downloadToFileStreaming` refuses a response whose Content-Length is over the caller's cap,
+ * before a single byte is transferred, and again from the running byte counter when the header
+ * lied or was absent. Both are facts about the FILE, not about the moment: the same URL will be
+ * exactly as large the next time it is asked for.
+ *
+ * Render 575 (rmtulyr50) asked 108 times anyway — one Pixabay asset, `Content-Length: 92216473`
+ * against an 83886080 cap, 111 identical refusals in 164 seconds, roughly one every second and a
+ * half — while the beat it was for ran out of time and the export gate then refused the scene for
+ * having no usable footage.
+ *
+ * Matched on the message, for the same reason `isCancellationError` is: the throw site is a plain
+ * Error, and a marker property would have to be threaded through a helper that several providers
+ * share. Both spellings are covered — "exceeds" is the Content-Length refusal and "exceeded" the
+ * streaming one.
+ */
+export function isOversizedResponseError(err: unknown): boolean {
+  const msg = (err as { message?: string })?.message ?? String(err ?? "");
+  return /response exceed(s|ed) maximum size of \d+ bytes/i.test(msg);
+}
+
+/**
  * Classify one failure.
  *
  * `status` is the HTTP status when there was one. A 429 is RATE_LIMITED whatever else is true of
@@ -79,6 +102,11 @@ export function classifyProviderFailure(params: {
   const { status } = params;
   if (isCancellationError(params.err)) return "CANCELLED";
   if (isBudgetExhaustedError(params.err)) return "BUDGET_EXCEEDED";
+  /**
+   * Before the status checks: a size refusal is thrown by our own code after a perfectly good
+   * 200, so the status says "fine" while the outcome is permanent.
+   */
+  if (isOversizedResponseError(params.err)) return "PERMANENT";
 
   if (typeof status === "number" && status > 0) {
     if (status === 429) return "RATE_LIMITED";
@@ -190,5 +218,69 @@ export function formatProviderCooldown(provider: string, kind: ProviderFailureKi
   return (
     `[ProviderCooldown] provider=${provider} reason=${kind} ` +
     `standing down for ${Math.round(ms / 1000)}s — other providers are unaffected`
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * RONDE 223 — A FILE THAT IS TOO BIG IS STILL TOO BIG THE SECOND TIME.
+ *
+ * `shouldRetryAfterFailure` above answers "ask again?" for ONE failure. It cannot help when the
+ * same asset is re-offered by an outer loop that never saw the first refusal — and that is what
+ * render 575 did: an inner loop of three attempts, wrapped by a candidate loop that handed the
+ * same URL back thirty-six times over.
+ *
+ * So the refusal is remembered for the render. A URL refused for a PERMANENT reason is not asked
+ * for again; the memo is cleared when the next render starts, exactly like the overlay budget, so
+ * nothing is inherited across renders and a provider that fixes its file is asked afresh.
+ * ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/** url → why it was refused. Cleared per render. */
+const permanentDownloadRefusals = new Map<string, string>();
+
+/** How many repeat requests the memo has prevented this render — for the log, and for tests. */
+let permanentRefusalsPrevented = 0;
+
+/**
+ * Record that this URL will never succeed this render.
+ *
+ * Keyed on the URL rather than on a provider or an asset id because the URL is the one identity
+ * every download path already has in hand at the moment of failure.
+ */
+export function notePermanentDownloadRefusal(url: string, reason: string): void {
+  if (!url) return;
+  if (!permanentDownloadRefusals.has(url)) permanentDownloadRefusals.set(url, reason);
+}
+
+/**
+ * The reason this URL was already refused, or null when it has not been.
+ *
+ * Every call that returns a reason is counted, because "how much work did this save" is the only
+ * evidence that the memo is doing anything, and a silent optimisation is one nobody can check.
+ */
+export function permanentDownloadRefusal(url: string): string | null {
+  const reason = permanentDownloadRefusals.get(url);
+  if (reason === undefined) return null;
+  permanentRefusalsPrevented++;
+  return reason;
+}
+
+/** Start of a render: forget what the last one learned. */
+export function resetPermanentDownloadRefusals(): void {
+  permanentDownloadRefusals.clear();
+  permanentRefusalsPrevented = 0;
+}
+
+/** What the memo holds and what it saved — reported at the end of a render. */
+export function permanentDownloadRefusalStats(): { refused: number; prevented: number } {
+  return { refused: permanentDownloadRefusals.size, prevented: permanentRefusalsPrevented };
+}
+
+/** The line the render logs so the saving is visible rather than merely believed. */
+export function formatPermanentDownloadRefusals(): string | null {
+  const { refused, prevented } = permanentDownloadRefusalStats();
+  if (refused === 0) return null;
+  return (
+    `[DownloadRefusals] ${refused} asset(s) refused for good this render, ` +
+    `${prevented} repeat request(s) not made`
   );
 }

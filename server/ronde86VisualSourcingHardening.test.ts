@@ -574,7 +574,12 @@ describe("RONDE 86 §G — the budget is global, not per render", () => {
   });
 
   it("TEST 36 — the gates sit at the single choke point each path already funnels through", () => {
-    expect(PIPELINE_SRC).toContain("return withGlobalMediaFetch(() => downloadToFileStreamingInner(");
+    // RONDE 223 re-anchor: the choke point now wraps this call in a try/catch so a
+    // permanently refused URL is remembered, so the `return` no longer sits on the same
+    // line. The property this guards — every download goes through the global media-fetch
+    // limiter — is unchanged and is what is asserted.
+    expect(PIPELINE_SRC).toContain("withGlobalMediaFetch(() =>");
+    expect(PIPELINE_SRC).toContain("downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes)");
     expect(PIPELINE_SRC).toContain("const result = await withGlobalVisionGate(() => evaluateClipVisionGate(");
     const queueSrc = fs.readFileSync(path.join(__dirname, "videoQueue.ts"), "utf8");
     expect(queueSrc).toContain("Math.min(config.maxJobsPerWorker, maxConcurrentRenders())");

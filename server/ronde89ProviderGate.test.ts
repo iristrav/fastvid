@@ -310,7 +310,8 @@ describe("RONDE 89 §20 — lineage, ranking and concurrency untouched", () => {
       "if (queue.length >= prepareCap) break;",
       "const visualLimit = pLimit(perf.sceneParallelism);",
       "const beatLimit = pLimit(beatConcurrency);",
-      "return withGlobalMediaFetch(() => downloadToFileStreamingInner(",
+      // RONDE 223 re-anchor — see note above; the limiter still wraps every download.
+      "withGlobalMediaFetch(() =>",
       "ledger.markFinalVideo(deliveredClips)",
       "await withGlobalVisionGate(() => evaluateClipVisionGate(",
     ]) {

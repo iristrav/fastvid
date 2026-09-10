@@ -509,7 +509,15 @@ async function searchArchiveCandidates(
     searchQuery: query.slice(0, 120),
     // RONDE 27: third instance of the "first word longer than four letters" anchor that RONDE 26
     // replaced elsewhere. Same failure — for a Führerbunker scene it yields "chaos".
-    powerWord: stubPowerWordFromSceneText(sceneText.slice(0, 400)) || words[0] || "documentary",
+    /**
+     * RONDE 223 — the genre word is gone from the end of this chain too.
+     *
+     * `words[0]` stays: it is a word the scene actually contains, so it is evidence even when it is
+     * a weak one. "documentary" is not from the scene at all, and `hasContentAnchor` refuses it, so
+     * it could only ever have travelled as far as the gate. `powerWord` is optional at every
+     * reader, and an absent one is the honest answer when the scene offers nothing.
+     */
+    powerWord: stubPowerWordFromSceneText(sceneText.slice(0, 400)) || words[0] || "",
   };
   const stubScene = { text: sceneText.slice(0, 200), pexelsQuery: query };
   const { beatTags, topicAnchors, allTags, videoVisualTopic } = buildBeatMatchTags(

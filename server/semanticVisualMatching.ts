@@ -7,7 +7,7 @@ import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getCachedBeatProfile, putCachedBeatProfile } from "./beatSemanticCache";
 import { ENV } from "./_core/env";
 import { DOCUMENTARY_EDITOR_VIEWER_QUESTION } from "./documentaryVisualPolicy";
-import { hasContentAnchor } from "./searchQueryContract";
+import { hasContentAnchor, termProvableFrom } from "./searchQueryContract";
 import {
   beatMentionsWwiiContent,
   extractEntitySearchTags,
@@ -958,8 +958,37 @@ export function buildSemanticPexelsQueries(
   ]) {
     for (const item of list) push(item);
   }
+  /**
+   * RONDE 223 — `searchTiersSource` was written twice and read nowhere.
+   *
+   * RONDE 91 §3 forbids the LLM/director route from introducing content, and the round that found
+   * it fixed exactly one of the two fields that carry model output into a query: `summary`, guarded
+   * below by `summarySource !== "llm"`. Its sibling was given the identical marker — set to "beat"
+   * on the fallback path (line ~299) and to "llm" when the model supplied tiers (line ~419) — and
+   * then nothing ever looked at it. A writer with no reader, which is this programme's signature
+   * defect, sitting one field away from the place it was already understood.
+   *
+   * So every phrase the model invented went to every stock provider. Render 575 (rmtulyr50):
+   *
+   *     query="street"      term="street"      reason=UNVERIFIED_TERM   × 76
+   *     query="germany"     term="germany"     reason=UNVERIFIED_TERM   × 74
+   *     query="government"  term="government"  reason=UNVERIFIED_TERM   × 72
+   *
+   * — all `termSource=unknown`, all refused, all rebuilt on the next beat and the next provider
+   * and the next pass, while scene 1 ran out of time and shipped nothing.
+   *
+   * ── This does not loosen the gate; it stops asking the gate what it has already answered ────
+   *
+   * `termProvableFrom` applies the SAME measure `validateSearchQuery` applies — every content word
+   * traceable to the source by stem. A term that fails it was never going to become a query. The
+   * beat-derived path is untouched: the script proves itself, so its tiers pass unchanged.
+   */
+  const tiersAreModelWritten = profile.searchTiersSource === "llm";
   for (const tier of profile.searchTiers) {
-    for (const term of tier) push(term);
+    for (const term of tier) {
+      if (tiersAreModelWritten && !termProvableFrom(term, profile.beatText)) continue;
+      push(term);
+    }
   }
   /**
    * A SENTENCE THE MODEL WROTE IS NOT A THING THE SCRIPT SAYS.

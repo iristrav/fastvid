@@ -650,7 +650,12 @@ describe("RONDE 87 §L — observability only", () => {
     // RONDE 83/86 concurrency.
     expect(PIPELINE_SRC).toContain("const visualLimit = pLimit(perf.sceneParallelism);");
     expect(PIPELINE_SRC).toContain("const beatLimit = pLimit(beatConcurrency);");
-    expect(PIPELINE_SRC).toContain("return withGlobalMediaFetch(() => downloadToFileStreamingInner(");
+    // RONDE 223 re-anchor: the choke point now wraps this call in a try/catch so a
+    // permanently refused URL is remembered, so the `return` no longer sits on the same
+    // line. The property this guards — every download goes through the global media-fetch
+    // limiter — is unchanged and is what is asserted.
+    expect(PIPELINE_SRC).toContain("withGlobalMediaFetch(() =>");
+    expect(PIPELINE_SRC).toContain("downloadToFileStreamingInner(url, destPath, timeoutMs, label, options, maxBytes)");
     // RONDE 84 candidate depth and RONDE 85's moving filler.
     expect(PIPELINE_SRC).toContain("export const ARCHIVE_PREPARE_ATTEMPTS_MAX = 6;");
     // SUPERSEDED by RONDE 111: two clone-pads now, both deliberate — the MONTAGE_TAIL_PAD

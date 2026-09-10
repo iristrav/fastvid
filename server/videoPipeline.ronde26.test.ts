@@ -10,6 +10,7 @@ import {
 } from "./archiveClipFilter";
 import { expandAnchorToKnownPerson } from "./mediaResearchEngine";
 import { stubPowerWordFromSceneText } from "./curatedMediaSourcing";
+import { hasContentAnchor } from "./searchQueryContract";
 
 // RONDE 26 — four defects found by re-reading the renders 525/526/527 logs end to end.
 //
@@ -252,9 +253,24 @@ describe("RONDE 26c — the scene-pool stand-in topic is about the subject", () 
     expect(picked).toBe("everything");
   });
 
-  it("still yields a usable value for text with nothing in it", () => {
-    expect(stubPowerWordFromSceneText("")).toBe("documentary");
-    expect(stubPowerWordFromSceneText("a b c d")).toBe("documentary");
+  it("still yields a defined value for text with nothing in it", () => {
+    /**
+     * RONDE 223 re-anchor. The intent stays — this function answers for empty input instead of
+     * throwing — and the answer changes, because the old one was never usable.
+     *
+     * It returned the literal "documentary", and `hasContentAnchor("documentary")` is false: the
+     * search gate refuses it on sight, so that value could not once have become a query. Render
+     * 575 sent it 80 times and was refused 80 times while the scene it was for ran out of time.
+     * "A usable value" was the claim; the gate had already disproved it.
+     *
+     * `powerWord` is optional at every reader — `beat.powerWord?.trim()`, `?? searchQuery ?? ""`,
+     * `if (powerWord?.trim() && powerWord.length >= 3)` — so an empty string is a value they
+     * already handle, and it is the honest one when the scene offers no subject.
+     */
+    expect(stubPowerWordFromSceneText("")).toBe("");
+    expect(stubPowerWordFromSceneText("a b c d")).toBe("");
+    /** The reason the old answer was wrong, asserted rather than described. */
+    expect(hasContentAnchor("documentary")).toBe(false);
   });
 });
 
