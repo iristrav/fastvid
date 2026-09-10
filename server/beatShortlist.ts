@@ -190,6 +190,16 @@ export type BeatFunnel = {
    */
   rankRuns: number;
   rankInput: number;
+  /**
+   * RONDE 230 — slots handed back because nobody actually looked.
+   *
+   * A slot is reserved at ADMISSION, which happens before the editor is asked. When the ask then
+   * declines without a verdict, the beat has spent a place out of a budget that exists to bound
+   * JUDGEMENTS, on something that was never judged. This counts the hand-backs, and it is also
+   * what bounds them: RONDE 97 moved the bound in front of the download precisely so a beat could
+   * not walk its whole candidate list, and an unbounded release would hand that regression back.
+   */
+  slotsReleased: number;
 };
 
 export type BeatShortlistState = {
@@ -233,6 +243,7 @@ export function beatFunnel(
     askedKeys: new Set<string>(),
     rankRuns: 0,
     rankInput: 0,
+    slotsReleased: 0,
   };
   state.beats.set(k, fresh);
   return fresh;
@@ -354,6 +365,70 @@ export function admitToShortlist(
   f.shortlisted += 1;
   if (id) f.admitted.add(id);
   return { admitted: true, alreadyOnList: false, slotsUsed: f.shortlisted, cap };
+}
+
+export type SlotRelease =
+  /** The slot is back. `released` is how many this beat has now handed back in total. */
+  | { released: true; slotsUsed: number; released_total: number }
+  /** Kept, and why — never silent, because a kept slot is what deadlocked render 576. */
+  | { released: false; reason: "NOT_HELD" | "ALREADY_ASKED" | "RELEASE_BUDGET_SPENT" };
+
+/**
+ * RONDE 230 — A PLACE IS SPENT BY A JUDGEMENT, NOT BY AN ARRIVAL.
+ *
+ * ── What render 576 measured ────────────────────────────────────────────────────────────────
+ *
+ * Beat s1b5 refused fifty candidates with `SHORTLIST_FULL (8/8)` while its own reject tally held
+ * `beat_image_gate:2` FIXED for eleven minutes. Eight places, two real looks. The five genuine
+ * Internet Archive clips — technically eligible, already downloaded — were turned away by a bound
+ * that had been spent on candidates nobody ever looked at.
+ *
+ * ── Why the bound could never recover ───────────────────────────────────────────────────────
+ *
+ * `admitToShortlist` reserves the place, and it runs BEFORE the editor is asked: videoPipeline
+ * 24764 admits, 24785 is where the ask is recorded. Nothing ever gave a place back — there was no
+ * release, no eviction and no replacement anywhere in this codebase. So one round of declines made
+ * a beat permanently unservable.
+ *
+ * The adopt route already knows the distinction and states it in a comment at the counter:
+ * "A decline costs no judgement, so it is not counted as one." The COUNTER was right; the SLOT was
+ * not. This closes that asymmetry.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────────────────────
+ *
+ * A place comes back only when all three hold:
+ *
+ *   · the beat is actually holding one for this key — a release cannot invent capacity;
+ *   · the editor never actually looked at it. FIT, MISMATCH, UNCLEAR and ERROR are all real
+ *     judgements and keep their place. Only "declined without looking" hands one back;
+ *   · the beat has not exhausted its release budget.
+ *
+ * That third clause is RONDE 97's cost bound, kept. A beat may hand back at most `cap` places, so
+ * it admits at most 2× cap candidates rather than walking its entire list — which is the 33-minute
+ * render RONDE 97 was written to stop. The number of ACTUAL judgements is unchanged: still at most
+ * `cap`, because a released place was by definition never spent on one.
+ *
+ * NOTHING HERE RAISES A BUDGET. The cap is the cap it was, the vision budget is untouched, and a
+ * candidate that comes back unjudged is still unjudged.
+ */
+export function releaseShortlistSlot(
+  state: BeatShortlistState | undefined,
+  sceneIndex: number,
+  beatIndex: number,
+  contentKey: string | undefined,
+  cap = maxShortlistPerBeat()
+): SlotRelease {
+  if (!state) return { released: false, reason: "NOT_HELD" };
+  const f = state.beats.get(key(sceneIndex, beatIndex));
+  const id = (contentKey ?? "").trim();
+  if (!f || !id || !f.admitted.has(id)) return { released: false, reason: "NOT_HELD" };
+  /** A real look happened. The place was spent on what it is for, and it stays spent. */
+  if (f.askedKeys.has(id)) return { released: false, reason: "ALREADY_ASKED" };
+  if (f.slotsReleased >= cap) return { released: false, reason: "RELEASE_BUDGET_SPENT" };
+  f.admitted.delete(id);
+  f.shortlisted = Math.max(0, f.shortlisted - 1);
+  f.slotsReleased += 1;
+  return { released: true, slotsUsed: f.shortlisted, released_total: f.slotsReleased };
 }
 
 /**
@@ -542,6 +617,8 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
         `approved=${f.approved} rejected=${f.rejected} unclear=${f.unclear} ` +
         `unavailable=${f.unavailable} notAsked=${f.notAsked}` +
         (f.refusedForCap > 0 ? ` cappedOut=${f.refusedForCap}` : "") +
+        /** RONDE 230 — places handed back because nobody looked. Zero on a healthy beat. */
+        (f.slotsReleased > 0 ? ` slotsReturned=${f.slotsReleased}` : "") +
         /** Only when non-zero: on a healthy beat these add nothing but noise. */
         (f.visionRepeatAsks > 0 ? ` repeatAsks=${f.visionRepeatAsks}` : "") +
         (f.visionOutsideShortlist > 0 ? ` OUTSIDE_SHORTLIST=${f.visionOutsideShortlist}` : "") +

@@ -244,6 +244,7 @@ import {
 } from "./beatVisualIntent";
 import {
   admitToShortlist,
+  releaseShortlistSlot,
   beatShortlistExhausted,
   maxShortlistPerBeat,
   beatShortlistViolations,
@@ -24814,6 +24815,24 @@ async function adoptClip(
         /** A decline costs no judgement, so it is not counted as one. */
         if (beatEvidence !== "UNREVIEWED") {
           noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
+        } else {
+          /**
+           * RONDE 230 — and it costs no PLACE either.
+           *
+           * The line above has said "a decline costs no judgement" since R194 and it is right. The
+           * place, though, was taken at admission a few lines up, and until now nothing gave it
+           * back — so a beat whose first eight candidates all declined could never look at a ninth.
+           * Render 576 died exactly that way. See `releaseShortlistSlot`, which refuses to hand
+           * back a place the editor actually used and is bounded so R97's cost bound survives.
+           */
+          const back = releaseShortlistSlot(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
+          if (back.released) {
+            console.log(
+              `[BeatShortlist] s${sceneIndex}b${beatIndex} slot returned — nobody looked at ` +
+                `${path.basename(p)} (route=adopt, now ${back.slotsUsed} held, ` +
+                `${back.released_total} returned this beat)`
+            );
+          }
         }
         noteVisionOutcome(
           dedup.beatShortlist,
@@ -29551,8 +29570,6 @@ async function beatClipPassesVisionGate(
         `the beat relevance gate decides`
     );
   }
-  /** The key admission was granted on, so a repeat and a bypass cannot be confused for each other. */
-  noteVisionAsked(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
   const relevance = await judgeBeatClipRelevance(dedup, scene.index, beat.index, {
     clipPath,
     contentKey: clipContentKey(clipPath),
@@ -29571,23 +29588,57 @@ async function beatClipPassesVisionGate(
    * render-wide fact RONDE 94 introduced: the model never loaded, so no answer here is about any
    * picture.
    */
-  noteVisionOutcome(
-    dedup.beatShortlist,
-    scene.index,
-    beat.index,
-    visionPipelineIsUnavailable()
-      ? "VISION_UNAVAILABLE"
-      : /** RONDE 199b: the decision, not just its word — see `visionVerdictFromGate`. */
-        ((judged) => visionVerdictFromGate(judged?.verdict, judged?.evaluated))(
-          relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
-            localPath: clipPath,
-            currentFilename: path.basename(clipPath),
-            contentKey: clipContentKey(clipPath),
-            sceneIndex: scene.index,
-            beatIndex: beat.index,
-          })
-        )
-  );
+  /**
+   * RONDE 230 — the verdict is read ONCE, and it decides three things instead of one.
+   *
+   * It used to be computed inline as this call's argument, while `noteVisionAsked` fired
+   * unconditionally on the line ABOVE the judgement — before anybody had looked. That is why
+   * render 576's funnel reported `eligible=53 … unreviewed=45`: visionAsked stood at 8 while the
+   * render's own reject tally held `beat_image_gate:2`. The counter was recording the INTENTION
+   * to ask, and the adopt route (24813) already records the opposite, correct thing.
+   *
+   * Hoisted so one reading of the ledger answers all three questions: what to record as the
+   * outcome, whether an ask actually happened, and whether the place this candidate is holding was
+   * ever put to use.
+   */
+  const gateVerdict = visionPipelineIsUnavailable()
+    ? "VISION_UNAVAILABLE"
+    : /** RONDE 199b: the decision, not just its word — see `visionVerdictFromGate`. */
+      ((judged) => visionVerdictFromGate(judged?.verdict, judged?.evaluated))(
+        relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+          localPath: clipPath,
+          currentFilename: path.basename(clipPath),
+          contentKey: clipContentKey(clipPath),
+          sceneIndex: scene.index,
+          beatIndex: beat.index,
+        })
+      );
+  /**
+   * APPROVED, REJECTED and UNCLEAR are all real looks and are counted as asks, exactly as before.
+   * NOT_ASKED means the gate declined without looking, and now says so. VISION_UNAVAILABLE keeps
+   * counting as an ask because an attempt was made and the render-wide latch is a separate fact
+   * the adoption guard already handles — not a policy this round touches.
+   */
+  if (gateVerdict !== "NOT_ASKED") {
+    /** The key admission was granted on, so a repeat and a bypass cannot be confused. */
+    noteVisionAsked(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
+  }
+  noteVisionOutcome(dedup.beatShortlist, scene.index, beat.index, gateVerdict);
+  if (gateVerdict === "NOT_ASKED") {
+    /**
+     * Nobody looked, so the place goes back. This is the route render 576 refused fifty candidates
+     * on — `route=internet_archive`, `SHORTLIST_FULL (8/8)` — while five real, eligible archive
+     * clips waited behind a bound that had never been spent on a judgement.
+     */
+    const back = releaseShortlistSlot(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
+    if (back.released) {
+      console.log(
+        `[BeatShortlist] s${scene.index}b${beat.index} slot returned — nobody looked at ` +
+          `${path.basename(clipPath)} (route=${queryLabel || "gate"}, now ${back.slotsUsed} held, ` +
+          `${back.released_total} returned this beat)`
+      );
+    }
+  }
   if (!relevance.allowed) {
     recordGateVerdict("beat_image_gate", true);
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "beat_image_gate", queryLabel);
