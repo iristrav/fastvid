@@ -33,6 +33,12 @@ import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
 import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, recordBlockedExport, touchVideoProgress, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
 import {
+  computeScreenTimeShare,
+  formatScreenTimeShare,
+  screenTimeFindings,
+  type DeliveredClip,
+} from "./deliveredScreenTime";
+import {
   curatedAssetIdsNeedingProvenance,
   formatCuratedProvenanceRepair,
   repairCuratedProvenance,
@@ -43697,6 +43703,53 @@ async function _runVideoPipelineInner(
         (err as Error).message?.slice(0, 200)
       );
     }
+    /** Carried into the quality report's warnings below, so the mix reaches the stored report too. */
+    const qualityReportScreenTimeWarnings: string[] = [];
+    /**
+     * WHAT THE VIEWER ACTUALLY SPENDS THEIR TIME LOOKING AT — see `deliveredScreenTime`.
+     *
+     * A 76-second render shipped with one modern stock clip filling 36.3 seconds of it, 47.6% of
+     * the film, across three appearances including the opening and closing shots. Every gate
+     * passed it, because the one number that describes the mix — `bySource` in the quality report
+     * — is `+ 1` per CLIP, so a 36-second clip and a 2-second clip weigh the same.
+     *
+     * Measured here, beside that report and from the same clip list, in seconds. Durations come
+     * from the render's own memoised probe where it has one and a real ffprobe otherwise; the
+     * source comes from the ledger, never from a filename.
+     */
+    try {
+      const ledger = visualDedup.sourcingCache.lineage;
+      const seenDur = new Map<string, number>();
+      const delivered: DeliveredClip[] = [];
+      for (const clipPath of allClipPaths) {
+        let durationSec = seenDur.get(clipPath) ?? 0;
+        if (!durationSec) {
+          durationSec =
+            memoisedVideoStreamMeta(clipPath)?.durationSec ||
+            (await probeVideoDurationSec(clipPath).catch(() => 0));
+          seenDur.set(clipPath, durationSec);
+        }
+        const contentKey = clipContentKey(clipPath) || null;
+        delivered.push({
+          path: clipPath,
+          source: ledger.providerFor(clipPath, contentKey ?? undefined),
+          contentKey,
+          durationSec,
+        });
+      }
+      const share = computeScreenTimeShare(delivered);
+      const findings = screenTimeFindings(share);
+      const line = formatScreenTimeShare(share, findings);
+      if (findings.length > 0) console.warn(line);
+      else console.log(line);
+      for (const f of findings) {
+        console.warn(`[ScreenTime] ${f.code} — ${f.detail}`);
+        qualityReportScreenTimeWarnings.push(`Screen time: ${f.code} — ${f.detail}`);
+      }
+    } catch (err) {
+      /** A measurement that fails measures nothing; it never costs the render its film. */
+      console.warn(`[ScreenTime] could not measure the delivered mix:`, (err as Error).message?.slice(0, 200));
+    }
     const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
       pipelineSec: Math.round((Date.now() - t0) / 1000),
       stockBeatsUsed: visualDedup.stockBeatsUsed,
@@ -43726,6 +43779,15 @@ async function _runVideoPipelineInner(
     // frame, not grey. Asserting a grey filler had been rendered was wrong on both counts. What the
     // list genuinely means is "this scene did not have enough footage to fill its narration",
     // which is the thing worth reporting either way.
+    /**
+     * The delivered mix reaches the STORED report, not only the console.
+     *
+     * Measured a few hundred lines above, before the report exists. Carrying it here rather than
+     * leaving it in the log is the difference between a finding an operator can read back off the
+     * video and one that scrolls past in a worker log nobody opens — which is how a film that was
+     * 47.6% one stock clip reached an audience.
+     */
+    for (const w of qualityReportScreenTimeWarnings) qualityReport.warnings.push(w);
     if (visualDedup.grayPadScenes.length > 0) {
       const padScenes = [...visualDedup.grayPadScenes].sort((a, b) => a - b);
       qualityReport.warnings.push(formatMontageShortfallWarning(visualDedup.montageShortfalls, padScenes));
