@@ -41403,6 +41403,31 @@ async function _runVideoPipelineInner(
         console.warn("[Pipeline] SERPAPI_KEY not set — named-person videos may lack real photos of the subject");
       }
     }
+    /**
+     * TWO SOURCING MODES, ONE BRANCH, AND THE LOSER SAID NOTHING.
+     *
+     * `beatPrimaryFetch` opens with `if (curatedArchiveOnlyVisuals())` and RETURNS inside that
+     * branch — the archive, then Wikimedia, then Pexels. The `if (youtubeOnlySourcingEnabled())`
+     * that follows it is therefore unreachable whenever the curated mode is on, and the curated
+     * mode is on by default: `CURATED_ARCHIVE_ONLY !== "false"`.
+     *
+     * So an operator who sets `YOUTUBE_ONLY_SOURCING=true` to make a film out of YouTube gets a
+     * render that behaves exactly as before, with nothing anywhere saying the setting was
+     * overruled. The `sourcing=` field below already resolves the conflict the same way the code
+     * does — correctly — but it reports the WINNER, and a winner is indistinguishable from a
+     * setting that was never made.
+     *
+     * Nothing here changes which mode wins. It says out loud that a choice was overruled, once
+     * per render, so the next flag flip is not paid for with a render.
+     */
+    if (curatedArchiveOnlyVisuals() && youtubeOnlySourcingEnabled()) {
+      console.warn(
+        "[Pipeline] SOURCING_CONFLICT: YOUTUBE_ONLY_SOURCING=true is overruled by " +
+          "CURATED_ARCHIVE_ONLY (default true). beatPrimaryFetch takes the curated-archive branch " +
+          "and returns inside it, so the YouTube-only branch is never reached. Set " +
+          "CURATED_ARCHIVE_ONLY=false as well for YouTube-only sourcing to take effect."
+      );
+    }
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
       `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
