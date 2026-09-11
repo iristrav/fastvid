@@ -31,7 +31,12 @@ import { LOCAL_UPLOADS_DIR } from "./storageLocal";
 import { invokeLLM } from "./_core/llm";
 import { ffmpegSemaphore } from "./_core/semaphore";
 import { providerLimiter } from "./_core/providerLimiters";
-import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, touchVideoProgress, getMediaArchiveAssetById, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
+import { getVideoById, updateVideoStatus, updateVideoScenes, mergeVideoMetadata, recordBlockedExport, touchVideoProgress, getMediaArchiveAssetById, getCuratedArchiveProvenance, getStoredTimeline, saveVideoTimeline, MANIFEST_SCHEMA_VERSION, type EditorScene } from "./db";
+import {
+  curatedAssetIdsNeedingProvenance,
+  formatCuratedProvenanceRepair,
+  repairCuratedProvenance,
+} from "./curatedProvenanceRepair";
 import { recordArchiveContentGap } from "./archiveContentGaps";
 import { personNameForGap } from "./archiveGapNames";
 import { stillImageMaxSec } from "./stillImagePolicy";
@@ -43503,6 +43508,34 @@ async function _runVideoPipelineInner(
       videoId,
       visualDedup.sourcingCache.lineage.renderId
     );
+    /**
+     * THE CURATED CLIPS GET THEIR PROVENANCE BACK, FROM THE ARCHIVE TABLE, BEFORE ANYTHING COUNTS.
+     *
+     * Render 577 was refused publication on `MOSTLY_UNVERIFIED_CLIPS — 9 of 15 fetched clip(s)
+     * have no proven source`. Every one of the nine was a clip out of FastVid's own curated
+     * archive, adopted through a route that did not open its lineage record first, so
+     * `recordClipAdoption` opened an anonymous one: asset id present, provider absent. The gate
+     * was right — the ledger genuinely could not say where the footage came from — and the
+     * evidence was sitting in `media_archive_assets` the whole time.
+     *
+     * Here, because `buildVideoQualityReport` is the first reader that counts providers, and a
+     * repair that landed after it would fix the ledger and leave the number that blocks the export
+     * untouched. Nothing is relaxed: the lookup either finds the row or it does not, and a record
+     * it cannot resolve stays UNVERIFIED.
+     */
+    try {
+      const ledger = visualDedup.sourcingCache.lineage;
+      const needing = curatedAssetIdsNeedingProvenance(ledger.allRecords());
+      const rows = needing.length > 0 ? await getCuratedArchiveProvenance(needing) : [];
+      const repair = repairCuratedProvenance(ledger, rows);
+      console.log(formatCuratedProvenanceRepair(repair));
+    } catch (err) {
+      /** A failed lookup leaves every record exactly as it was — UNVERIFIED, and the gate decides. */
+      console.warn(
+        `[CuratedProvenance] archive lookup failed — records stay unattributed:`,
+        (err as Error).message?.slice(0, 200)
+      );
+    }
     const qualityReport = buildVideoQualityReport(allClipPaths, videoTitle, {
       pipelineSec: Math.round((Date.now() - t0) / 1000),
       stockBeatsUsed: visualDedup.stockBeatsUsed,
@@ -45237,7 +45270,37 @@ async function _runVideoPipelineInner(
       url = uploadResult.url;
     }
 
-    enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
+    /**
+     * A BLOCKED EXPORT MAY NOT PUBLISH THE FILM. IT MAY NOT LOSE IT EITHER.
+     *
+     * The upload immediately above has already put the MP4 somewhere the owner's own download
+     * route can reach — `/api/download/video/:id` asks for ownership and a URL, never a status.
+     * But the only write that records that URL sits on the success path a thousand lines below,
+     * past this gate. So render 577 uploaded 71 MB, the gate refused it over
+     * MOSTLY_UNVERIFIED_CLIPS, the row went to `failed` with no URL at all, and the person who
+     * asked for the film could not look at the thing that had been judged. The gate's own
+     * sentence reached them; the film did not.
+     *
+     * The refusal is recorded, not softened. `recordBlockedExport` writes `failed` and the
+     * location of the refused file in one statement, and the same error travels on to the outer
+     * catch in routers.ts exactly as before. Nothing downstream reads this as approval: the
+     * video is not `completed`, no quality check is skipped, and the ledger is untouched. This
+     * is only the difference between "may not go out" and "does not exist".
+     */
+    try {
+      enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
+    } catch (gateError) {
+      if (url) {
+        await recordBlockedExport(videoId, url, (gateError as Error)?.message ?? String(gateError))
+          .catch((err) =>
+            console.warn(`[Pipeline] Failed to record blocked export for ${videoId}:`, err)
+          );
+        console.warn(
+          `[Quality] Video ${videoId}: the refused render is kept for review — status stays failed`
+        );
+      }
+      throw gateError;
+    }
     for (const w of finalValidation.softWarnings) {
       qualityReport.warnings.push(`Export QA: ${w}`);
     }

@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { FASTVID_PRO_PRICE_LABEL } from "@shared/billing";
+import { blockedExportForVideo } from "@shared/exportBlocked";
 import { formatGenerationDuration } from "@shared/pipelineProgress";
 import { getVideoLengthLabel, VIDEO_LENGTH_OPTIONS, videoLengthAllowedForRole, type VideoLength } from "@shared/videoLengths";
 import {
@@ -287,6 +288,8 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
         ? `Done · ${formatGenerationDuration(completedDurationSec)}`
         : stageInfo.label;
   const statusColor = STATUS_COLORS[currentStatus] ?? "text-slate-400 bg-slate-400/10";
+  /** A refused render is failed and watchable at once — see shared/exportBlocked.ts. */
+  const blockedExport = blockedExportForVideo({ status: currentStatus, metadata: video.metadata });
   const displayThumbnail = pollData?.thumbnailUrl ?? video.thumbnailUrl;
 
   useEffect(() => {
@@ -354,12 +357,27 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
                     Code {parseAppErrorCode(video.errorMessage)}
                   </p>
                 )}
-                <button
-                  onClick={() => onRetry(video.id)}
-                  className="flex items-center gap-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded-lg transition-colors shadow-lg shadow-purple-500/30"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> Retry
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onRetry(video.id)}
+                    className="flex items-center gap-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded-lg transition-colors shadow-lg shadow-purple-500/30"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Retry
+                  </button>
+                  {/*
+                    A render the quality gate refused produced a real film — it simply may not be
+                    published. Retry alone would be the only way out of this card, which is how
+                    render 577 became unreachable to the person who paid for it.
+                  */}
+                  {blockedExport && (
+                    <button
+                      onClick={() => onView(video.id)}
+                      className="flex items-center gap-2 text-xs font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      <Eye className="w-3.5 h-3.5" /> Watch anyway
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <Video className="w-10 h-10 text-slate-600" />
@@ -435,7 +453,7 @@ function VideoCard({ video, onView, onDelete, onRename, onRetry }: {
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
-            {currentStatus === "completed" && (
+            {(currentStatus === "completed" || blockedExport) && (
               <button
                 onClick={() => onView(video.id)}
                 className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
@@ -461,9 +479,20 @@ function VideoDetailModal({ videoId, onClose, onEdit }: {
   const videoRef = useRef<HTMLVideoElement>(null);
   const { data: video, isLoading } = trpc.video.get.useQuery({ id: videoId });
   // Fetch a direct presigned CloudFront URL for video playback (bypasses 307 redirect)
+  /**
+   * A render the quality gate refused is `failed`, and its file is still worth looking at.
+   *
+   * `blockedExportForVideo` answers from the row itself rather than from the bare presence of a
+   * URL — a video is only showing a blocked render while it is still failed and still carries
+   * the gate's own record. A retry that succeeds clears the case on its own.
+   */
+  const blockedExport = blockedExportForVideo(video ?? null);
   const { data: videoUrlData } = trpc.video.getVideoUrl.useQuery(
     { id: videoId },
-    { enabled: !!(video?.videoUrl && video?.status === "completed"), staleTime: 1000 * 60 * 5 }
+    {
+      enabled: !!(video?.videoUrl && (video?.status === "completed" || blockedExport)),
+      staleTime: 1000 * 60 * 5,
+    }
   );
   const rawVideoUrl = (video as { videoUrl?: string | null })?.videoUrl ?? null;
   const fileMissing = videoUrlData?.fileMissing === true;
@@ -512,7 +541,24 @@ function VideoDetailModal({ videoId, onClose, onEdit }: {
         ) : video ? (
           <div className="flex-1 overflow-y-auto p-5 space-y-5">
             {/* Video Player */}
-            {video.status === "completed" && (!video.videoUrl || fileMissing) && (
+            {blockedExport && (
+              <div className="glass-card border border-amber-500/25 rounded-xl p-5 flex items-start gap-3 bg-amber-500/5">
+                <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-amber-300">
+                    Not published — the quality gate held this render back
+                  </p>
+                  <p className="text-xs text-slate-300 mt-1 leading-relaxed break-words">
+                    {appErrorText(blockedExport.reason)}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2">
+                    The film below is the render that was refused. You can watch and download it,
+                    but it does not count as finished — retry to produce a version that passes.
+                  </p>
+                </div>
+              </div>
+            )}
+            {(video.status === "completed" || blockedExport) && (!video.videoUrl || fileMissing) && (
               <div className="glass-card border border-amber-500/20 rounded-xl p-5 flex items-start gap-3 bg-amber-500/5">
                 <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
                 <div>
@@ -525,25 +571,37 @@ function VideoDetailModal({ videoId, onClose, onEdit }: {
                 </div>
               </div>
             )}
-            {video.status === "completed" && video.videoUrl && !fileMissing && (
+            {(video.status === "completed" || blockedExport) && video.videoUrl && !fileMissing && (
               <div className="glass-card border border-white/8 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 pt-4 pb-2">
                   <h3 className="font-semibold text-white text-sm flex items-center gap-2">
-                    <Play className="w-4 h-4 text-green-400" /> Your Video
+                    {blockedExport ? (
+                      <>
+                        <Play className="w-4 h-4 text-amber-400" /> Blocked render
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4 text-green-400" /> Your Video
+                      </>
+                    )}
                   </h3>
                   <div className="flex items-center gap-2">
                     {/*
                       RONDE 148 §12 — the way in.
                       Only for a completed video: there is nothing to edit until a render has
                       produced a manifest, and offering the button earlier would open an empty
-                      editor and teach people the feature is broken.
+                      editor and teach people the feature is broken. A blocked render reaches
+                      this panel too, and it stops short of the editor for the same reason: the
+                      manifest is written past the gate that refused it.
                     */}
-                    <button
-                      onClick={() => onEdit(video.id)}
-                      className="flex items-center gap-1.5 text-xs text-purple-300 hover:text-purple-200 transition-colors px-2.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/20"
-                    >
-                      <Pencil className="w-3.5 h-3.5" /> Edit video
-                    </button>
+                    {video.status === "completed" && (
+                      <button
+                        onClick={() => onEdit(video.id)}
+                        className="flex items-center gap-1.5 text-xs text-purple-300 hover:text-purple-200 transition-colors px-2.5 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/20"
+                      >
+                        <Pencil className="w-3.5 h-3.5" /> Edit video
+                      </button>
+                    )}
                     <a
                       href={`/api/download/video/${video.id}`}
                       download={`${(video.title ?? `fastvid-${formatVideoId(video.id)}`).replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || `fastvid-${formatVideoId(video.id)}`}.mp4`}

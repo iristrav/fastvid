@@ -3,6 +3,7 @@ import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
+import { BLOCKED_EXPORT_METADATA_KEY, type BlockedExportRecord } from "@shared/exportBlocked";
 import {
   PIPELINE_PROCESSING_STATUSES,
   USER_ACTIVE_VIDEO_STATUSES,
@@ -315,6 +316,52 @@ export async function mergeVideoMetadata(id: number, patch: Record<string, unkno
   const video = await getVideoById(id);
   const merged = { ...readVideoMetadataObject(video), ...patch };
   await db.update(videos).set({ metadata: merged, updatedAt: new Date() }).where(eq(videos.id, id));
+}
+
+/**
+ * A render the export gate refused: mark it failed AND say where its file is.
+ *
+ * ONE write, not two, and that is the whole point of the function existing.
+ *
+ * `recoverVideoCompletionState` promotes any video that is not yet terminal but does have a
+ * `videoUrl` straight to `completed`. So recording the URL first and letting the outer catch
+ * in routers.ts set `failed` a moment later would open a window in which a dashboard poll
+ * could find a mid-render row with a URL on it and publish the very film the gate had just
+ * refused. Writing the status in the same statement closes that window: the row is never
+ * visible in the state that would trigger the promotion.
+ *
+ * Nothing here overrules the gate. The video is `failed`, it is not counted as completed
+ * anywhere, and `blockedExportForVideo` will only show it to its owner as what it is — a
+ * refused render they may look at, not a published one.
+ */
+export async function recordBlockedExport(
+  id: number,
+  videoUrl: string,
+  reason: string
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const video = await getVideoById(id);
+  const record: BlockedExportRecord = {
+    reason: reason.slice(0, 2000),
+    videoUrl,
+    at: new Date().toISOString(),
+  };
+  await db
+    .update(videos)
+    .set({
+      status: "failed",
+      videoUrl,
+      errorMessage: record.reason,
+      progressStep: "Export blocked",
+      progressPercent: 0,
+      metadata: {
+        ...readVideoMetadataObject(video),
+        [BLOCKED_EXPORT_METADATA_KEY]: record,
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(videos.id, id));
 }
 
 export async function getVideosByUserId(userId: number) {
@@ -1796,6 +1843,38 @@ export async function createMediaArchiveAsset(data: InsertMediaArchiveAsset) {
   }
 
   return newId;
+}
+
+/**
+ * The archive NAME behind a set of asset ids — the provider of a curated clip.
+ *
+ * One join rather than a row per asset: a render that has to attribute nine curated clips is
+ * already past its budget, and the answer is the same shape either way. Deliberately does NOT
+ * filter on `isActive`: this reads back the provenance of footage a render has ALREADY used, and
+ * an archive switched off since the render began does not make the clip's origin unknown. The
+ * selection paths that must respect `isActive` have their own queries.
+ */
+export async function getCuratedArchiveProvenance(
+  assetIds: number[]
+): Promise<{ assetId: number; archiveName: string | null; storageUrl: string | null }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const unique = [...new Set(assetIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (unique.length === 0) return [];
+  const rows = await db
+    .select({
+      assetId: mediaArchiveAssets.id,
+      archiveName: mediaArchives.name,
+      storageUrl: mediaArchiveAssets.storageUrl,
+    })
+    .from(mediaArchiveAssets)
+    .innerJoin(mediaArchives, eq(mediaArchiveAssets.archiveId, mediaArchives.id))
+    .where(inArray(mediaArchiveAssets.id, unique));
+  return rows.map((r) => ({
+    assetId: r.assetId,
+    archiveName: r.archiveName ?? null,
+    storageUrl: r.storageUrl ?? null,
+  }));
 }
 
 export async function updateMediaArchiveAsset(id: number, data: Partial<InsertMediaArchiveAsset>) {

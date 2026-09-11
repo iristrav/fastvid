@@ -30,6 +30,7 @@ function formatVideoId(id: number) {
 }
 
 import { FASTVID_PRO_MONTHLY_USD, FASTVID_PRO_PRICE_DISPLAY } from "@shared/billing";
+import { blockedExportForVideo } from "@shared/exportBlocked";
 
 
 function StatCard({ label, value, icon: Icon, color, sub }: {
@@ -277,7 +278,13 @@ function VideoDetailModal({ video, onClose }: { video: VideoRow; onClose: () => 
   // Fetch presigned URL for video playback (needed for /manus-storage/ URLs on Manus sandbox)
   const { data: videoUrlData } = trpc.video.getVideoUrl.useQuery(
     { id: video.id },
-    { enabled: !!(video.videoUrl && video.status === "completed"), staleTime: 1000 * 60 * 5 }
+    {
+      // A render the quality gate refused is `failed` and still has a file. The admin looking at
+      // why it was refused is exactly the person who needs to see it, so the signed URL is
+      // fetched for that case too — `blockedExportForVideo` says when the case applies.
+      enabled: !!(video.videoUrl && (video.status === "completed" || blockedExportForVideo(video))),
+      staleTime: 1000 * 60 * 5,
+    }
   );
   const playbackUrl = videoUrlData?.url ?? video.videoUrl;
 
