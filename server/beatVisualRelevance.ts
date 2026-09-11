@@ -979,11 +979,68 @@ export async function ensureVerdictBeforeCompose(params: {
   const scope = getComposeJudgeScope();
   if (!scope) return { outcome: "no_scope" };
 
-  const existing =
-    scope.ledger.byClipPath.get(params.clipPath) ??
-    (params.contentKey && !params.contentKey.startsWith("file:")
+  /**
+   * RONDE 240 — "ALREADY JUDGED" HAS TO MEAN JUDGED AGAINST *THIS* SENTENCE.
+   *
+   * ── What render 578 measured ────────────────────────────────────────────────────────────────
+   *
+   *     [ProviderFunnel] provider=youtube_cc judged=23 fits=7 refused=16 accepted=30%
+   *     visionAccepted=17   eligible=10   adopted=10
+   *     s1b4 visionAccepted=2 eligible=0 adopted=0   -> placeholder
+   *     s1b5 visionAccepted=3 eligible=0 adopted=0   -> placeholder
+   *     s1b6 visionAccepted=3 eligible=0 adopted=0   -> placeholder
+   *     [AdoptionGuard] route=archive eligible=true vision=NOT_ASKED
+   *         blocked=FUNNEL_WITHOUT_EVIDENCE
+   *
+   * Seven pictures the editor APPROVED produced nothing at all, and the three beats holding eight
+   * of those approvals between them ended as placeholders — which is how a documentary about 1945
+   * came to spend 47.6% of its running time on a modern security van fetched by the unregistered
+   * topical stock tier. `[EligibilityGap]` fired ZERO times that render, so the missing half was
+   * never the registration: it was the verdict.
+   *
+   * ── The two keys ────────────────────────────────────────────────────────────────────────────
+   *
+   * `relevanceVerdictForRenderedAsset` — the READER the adoption guard uses — holds a rule it
+   * states outright: "The verdict must belong to this beat's narration — a verdict earned
+   * elsewhere is not one." It compares `entry.ctx.sceneIndex` and `entry.ctx.beatIndex` and
+   * returns null when they do not match.
+   *
+   * This lookup — the ASKER — had no such comparison. It found an entry by path or by content key
+   * from ANY beat, concluded `already_judged`, and returned without asking. So a clip approved on
+   * one beat and offered to the next was simultaneously "already judged" to the asker and
+   * "NOT_ASKED" to the reader, and the guard refused it for want of evidence that existed a few
+   * lines away under a different beat index.
+   *
+   * A reader tightened without its writer, one more time, and it is the scene pool's own shape
+   * that made it bite: the funnel searches once per SCENE and `buildDownloadShortlist` draws per
+   * BEAT, so a good clip is routinely offered to several beats of the same scene. YouTube feels it
+   * hardest because it arrives through that route almost exclusively — `fits=7`, `eligible=1`.
+   *
+   * ── What this changes, and what it does not ─────────────────────────────────────────────────
+   *
+   * The asker now applies the reader's own rule. A verdict from another beat no longer satisfies
+   * this call, so the picture is judged against the sentence it is about to run under — which is
+   * the owner's rule and the whole point of the gate. Nothing is loosened: NOT_ASKED still fails,
+   * UNCLEAR still passes `not_rejected`, REJECTED is still a refusal, and RONDE 228's "somebody
+   * has to have looked" test below is untouched and still runs on whatever this finds.
+   *
+   * It costs judgements: a clip offered to three beats is now judged three times rather than
+   * once. That is the correct price for a per-beat verdict, it is bounded by the same spend caps
+   * as every other look, and `finalSay` — which exists precisely for the look that decides
+   * something — still overrules them exactly as before.
+   */
+  const onThisBeat = (entry: BeatRelevanceEntry | undefined): boolean => {
+    if (!entry) return false;
+    /** A caller that names no beat cannot be given one; it keeps the old, beat-blind behaviour. */
+    if (params.sceneIndex == null || params.beatIndex == null) return true;
+    return entry.ctx.sceneIndex === params.sceneIndex && entry.ctx.beatIndex === params.beatIndex;
+  };
+  const byPath = scope.ledger.byClipPath.get(params.clipPath);
+  const byKey =
+    params.contentKey && !params.contentKey.startsWith("file:")
       ? scope.ledger.byContentKey.get(params.contentKey)
-      : undefined);
+      : undefined;
+  const existing = onThisBeat(byPath) ? byPath : onThisBeat(byKey) ? byKey : undefined;
   /**
    * RONDE 228 — "ALREADY JUDGED" HAS TO MEAN SOMEBODY LOOKED.
    *
