@@ -172,11 +172,21 @@ describe("the gate is where the boundary is drawn", () => {
     const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
     expect(at).toBeGreaterThan(-1);
     const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body).toContain("admitToShortlist(dedup.beatShortlist, scene.index, beat.index");
+    /**
+     * Whitespace-tolerant: the call now spans lines because it also passes the SOURCE, so no one
+     * source can take a beat's whole shortlist. What is guarded is unchanged — this route admits
+     * before it asks the editor.
+     */
+    expect(body.replace(/\s+/g, " ")).toContain(
+      "admitToShortlist( dedup.beatShortlist, scene.index, beat.index"
+    );
 
     const adoptAt = PIPE.indexOf("async function adoptClip(");
     const adopt = PIPE.slice(adoptAt, PIPE.indexOf("\n}\n", adoptAt));
-    expect(adopt).toContain("admitToShortlist(dedup.beatShortlist, sceneIndex, beatIndex");
+    /** Whitespace-tolerant for the same reason as above — the call now carries its source. */
+    expect(adopt.replace(/\s+/g, " ")).toContain(
+      "admitToShortlist( dedup.beatShortlist, sceneIndex, beatIndex"
+    );
     expect(
       adopt.indexOf("admitToShortlist("),
       "the adoption route asks the editor before admitting the candidate"

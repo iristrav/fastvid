@@ -149,9 +149,16 @@ describe("R198 §2 — the film, not only each scene", () => {
 
   it("a repair that produces nothing keeps the composed file and says so", () => {
     const idx = PIPE.indexOf("[FinalCoverage] video ${videoId}: picture ends at");
-    const block = PIPE.slice(idx, idx + 2200);
+    /**
+     * Bounded by the else-branch this test is about rather than by the enclosing `catch`: a
+     * second repair (the silent-tail trim) now sits between them, and a fixed window would fail
+     * on a change that does not touch what this guards.
+     */
+    const end = PIPE.indexOf("AND THE OTHER DIRECTION", idx);
+    expect(end, "the next repair marks the end of this one").toBeGreaterThan(idx);
+    const block = PIPE.slice(idx, end);
     expect(block).toContain("repair did not produce a longer picture");
-    expect(block).toContain("} catch (err) {");
+    expect(block, "the composed file is kept").toContain("shipping as composed");
   });
 
   it("nothing is repaired unless the sound really outlasts the picture", () => {

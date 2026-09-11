@@ -18,7 +18,7 @@ import {
   type ScriptLengthBudget,
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
-import { assertQualityReportExportGate, indefensibleExportConditions } from "./videoQualityReport";
+import { assertQualityReportExportGate, indefensibleExportConditions, qualityStatusCeiling } from "./videoQualityReport";
 import type { FinalVideoValidation } from "./finalVideoGate";
 import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled, blockExportOnVisualMismatch } from "./sourcingPolicy";
 
@@ -47,6 +47,28 @@ export function healQualityReportForExport(
   if (exportReady && healed < minScore) {
     healed = Math.max(healed, minScore);
   }
+  /**
+   * AN AVAILABILITY DECISION MAY NOT MAKE A VERIFICATION CLAIM.
+   *
+   * Every condition above reads SOURCE TYPE: what share of the clips came from the archive, how
+   * many beats fell back, whether the file plays. Not one of them asks whether anybody looked at
+   * a picture — and the comment in `enforceQualityExportGate` has said so for rounds: "a montage
+   * of real archive clips with no fallback beats reaches 85 on source type alone, which says
+   * nothing about whether the pictures fit the narration."
+   *
+   * Render 578 is that sentence as a fact. Thirteen clips, every one out of the operator's own
+   * curated archive, so `archiveRatio` was 1.0 and `archiveMontageOk` was true. Its measured score
+   * was 43 — three scenes short of footage, one shot held for 17.4 seconds, 47.6% of the film on
+   * one piece of footage. It was raised to 85 and stored as 85.
+   *
+   * `STATUS_CEILING` is the number this pipeline already uses to say what a score may claim, and
+   * `computeMeritQualityScore` applies it to every measured score. The policy is now held to the
+   * same ceiling. This is a bound on a RAISE, so it can never block an export and never lowers a
+   * measured score: a render whose beats were verified keeps the full adjustment it had, and one
+   * whose beats were not stops at the number its own status permits.
+   */
+  const ceiling = qualityStatusCeiling(report.qualityStatus);
+  if (healed > ceiling) healed = Math.max(report.score, ceiling);
   /**
    * RONDE 124 — keep the number the quality inputs actually produced.
    *

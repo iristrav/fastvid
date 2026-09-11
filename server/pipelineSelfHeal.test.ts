@@ -5,7 +5,7 @@ import {
   healQualityReportForExport,
 } from "./pipelineSelfHeal";
 import { isArchiveGeoBlockedForBeat } from "./curatedMediaSourcing";
-import { buildVideoQualityReport } from "./videoQualityReport";
+import { buildVideoQualityReport, qualityStatusCeiling } from "./videoQualityReport";
 
 describe("pipelineSelfHeal", () => {
   it("buildEmergencyGeoStockQueries anchors on Singapore title", () => {
@@ -51,12 +51,48 @@ describe("pipelineSelfHeal", () => {
   });
 
   it("healQualityReportForExport bumps low archive-only scores", () => {
+    /**
+     * The raise still happens. What it may no longer do is outrun the render's own verification
+     * status: this fixture registers no beats at all, so its status is INSUFFICIENT_VERIFICATION
+     * and `qualityStatusCeiling` puts the raise at 45. The assertion used to read `>= 70`, which
+     * is the number the policy reached on SOURCE TYPE alone — two curated filenames, nothing
+     * looked at. Render 578 shipped as 85/100 on exactly that basis with a measured 43.
+     *
+     * Both halves are checked, so neither direction can drift: the policy raised the score, and
+     * it stopped where the status says a score may stop.
+     */
     const report = buildVideoQualityReport(
       ["/tmp/scene_0_b0_curated_a1.mp4", "/tmp/scene_1_b1_curated_a2.mp4"],
       "Why Did Hitler Kill Himself?",
       { archiveOnly: true, fastShort: true }
     );
     report.score = 28;
+    healQualityReportForExport(report, "1", {
+      ok: true,
+      durationSec: 62,
+      hasAudio: true,
+      hasVideo: true,
+      sizeBytes: 5_000_000,
+      spotOk: true,
+      reasons: [],
+    });
+    expect(report.score, "the availability policy still raises it").toBeGreaterThan(28);
+    expect(report.score).toBe(qualityStatusCeiling(report.qualityStatus));
+  });
+
+  it("and a render whose beats WERE verified still gets the full raise", () => {
+    /**
+     * The other side of the same rule, so the ceiling cannot be mistaken for a blanket cut. A
+     * report that can say its beats were checked and approved carries the VERIFIED ceiling of 100
+     * and keeps every point the policy gives it.
+     */
+    const report = buildVideoQualityReport(
+      ["/tmp/scene_0_b0_curated_a1.mp4", "/tmp/scene_1_b1_curated_a2.mp4"],
+      "Why Did Hitler Kill Himself?",
+      { archiveOnly: true, fastShort: true }
+    );
+    report.score = 28;
+    report.qualityStatus = "VERIFIED";
     healQualityReportForExport(report, "1", {
       ok: true,
       durationSec: 62,
@@ -108,8 +144,15 @@ describe("pipelineSelfHeal", () => {
       spotOk: true,
       reasons: [],
     };
+    /**
+     * The guarantee in this test's name is the one that matters and it is untouched: a playable
+     * film is never withheld over its score. The only score-based throw in this function sits
+     * behind `hardTier`, and `healQualityReportForExport` returns before the ceiling when that is
+     * on — so the ceiling below can never be the reason an export fails.
+     */
     expect(() => enforceQualityExportGate(330, report, "1", finalOk)).not.toThrow();
-    expect(report.score).toBeGreaterThanOrEqual(70);
+    expect(report.score, "raised, but only as far as the status allows").toBeGreaterThan(20);
+    expect(report.score).toBe(qualityStatusCeiling(report.qualityStatus));
   });
 
   it("enforceQualityExportGate never throws for 10-15 min after heal", () => {

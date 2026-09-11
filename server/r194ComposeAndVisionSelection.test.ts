@@ -596,7 +596,10 @@ describe("the adoption loop really uses the verdict", () => {
   /** §19 — the route that adopts now feeds the bound it was already consulting. */
   it("the adoption route admits to the same shortlist it checks", () => {
     const b = adoptBlock();
-    expect(b).toContain("admitToShortlist(dedup.beatShortlist, sceneIndex, beatIndex, contentKey)");
+    /** Whitespace-tolerant: the call gained a SOURCE argument and now spans lines. */
+    expect(b.replace(/\s+/g, " ")).toContain(
+      "admitToShortlist( dedup.beatShortlist, sceneIndex, beatIndex, contentKey, undefined,"
+    );
     expect(b).toContain("beatShortlistExhausted(dedup.beatShortlist");
     expect(b).toContain("noteVisionAsked(dedup.beatShortlist, sceneIndex, beatIndex, contentKey)");
   });

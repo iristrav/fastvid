@@ -37,6 +37,7 @@ import {
   formatScreenTimeShare,
   screenTimeFindings,
   type DeliveredClip,
+  type ScreenTimeFinding,
 } from "./deliveredScreenTime";
 import {
   curatedAssetIdsNeedingProvenance,
@@ -1504,6 +1505,16 @@ function sceneFetchAborted(): boolean {
  * JSON search to answer.
  */
 const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS = 12_000;
+
+/**
+ * When silent picture after the narration is long enough to be a fault rather than a breath.
+ *
+ * Matches `avSyncCheck`'s own EDGE_SILENCE_SEC so the trim fires on exactly what the detector
+ * reports — one threshold, not a second opinion about the same second.
+ */
+const TRAILING_SILENCE_TRIM_SEC = 2.0;
+/** Kept after the last sound so a final word is never clipped and a fade still has room. */
+const TRAILING_SILENCE_TAIL_SEC = 0.6;
 
 const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;
 
@@ -25085,7 +25096,15 @@ async function adoptClip(
         !requeuedAfterRefusal.has(p) && !heldForWeakEvidence.has(p);
       if (firstLookAtCandidate) {
         noteBeatShortlistEligible(dedup.beatShortlist, sceneIndex, beatIndex);
-        const admission = admitToShortlist(dedup.beatShortlist, sceneIndex, beatIndex, contentKey);
+        /**
+         * The SOURCE asks, not just the beat — see `maxShortlistPerBeatPerSource`. Read from the
+         * ledger, never from the filename, and null when the ledger cannot name one (which
+         * simply leaves that candidate outside the fairness rule rather than guessing at it).
+         */
+        const admission = admitToShortlist(
+          dedup.beatShortlist, sceneIndex, beatIndex, contentKey, undefined,
+          dedup.sourcingCache?.lineage?.providerFor(p, contentKey)
+        );
         if (!admission.admitted) {
           noteNotAsked(dedup.beatShortlist, sceneIndex, beatIndex, admission.reason);
           console.log(
@@ -29784,7 +29803,11 @@ async function beatClipPassesVisionGate(
    * render 568's undifferentiated `never_asked`.
    */
   const shortlistKey = clipContentKey(clipPath);
-  const admission = admitToShortlist(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
+  /** Same fairness rule at the other admission site — see `maxShortlistPerBeatPerSource`. */
+  const admission = admitToShortlist(
+    dedup.beatShortlist, scene.index, beat.index, shortlistKey, undefined,
+    dedup.sourcingCache?.lineage?.providerFor(clipPath, shortlistKey)
+  );
   if (!admission.admitted) {
     noteNotAsked(dedup.beatShortlist, scene.index, beat.index, admission.reason);
     console.log(
@@ -43706,6 +43729,15 @@ async function _runVideoPipelineInner(
     /** Carried into the quality report's warnings below, so the mix reaches the stored report too. */
     const qualityReportScreenTimeWarnings: string[] = [];
     /**
+     * The same findings as VALUES rather than as prose, because the score reads them.
+     *
+     * A warning is a sentence for a person; `computeMeritQualityScore` needs the codes. Render 578
+     * gave 47.6% of a 76-second film to one shot and held another for 17.4 seconds, and scored 43
+     * on inputs that could not see either — then the export-availability policy raised that 43 to
+     * 85 because every clip came from the curated archive.
+     */
+    const deliveredScreenTimeFindings: ScreenTimeFinding[] = [];
+    /**
      * WHAT THE VIEWER ACTUALLY SPENDS THEIR TIME LOOKING AT — see `deliveredScreenTime`.
      *
      * A 76-second render shipped with one modern stock clip filling 36.3 seconds of it, 47.6% of
@@ -43738,13 +43770,14 @@ async function _runVideoPipelineInner(
         });
       }
       const share = computeScreenTimeShare(delivered);
-      const findings = screenTimeFindings(share);
+      const findings = screenTimeFindings(share, {}, delivered);
       const line = formatScreenTimeShare(share, findings);
       if (findings.length > 0) console.warn(line);
       else console.log(line);
       for (const f of findings) {
         console.warn(`[ScreenTime] ${f.code} — ${f.detail}`);
         qualityReportScreenTimeWarnings.push(`Screen time: ${f.code} — ${f.detail}`);
+        deliveredScreenTimeFindings.push(f);
       }
     } catch (err) {
       /** A measurement that fails measures nothing; it never costs the render its film. */
@@ -43768,6 +43801,8 @@ async function _runVideoPipelineInner(
       // RONDE 105: the relevance ledger, so the report can tell a beat whose picture was approved
       // from one whose picture nobody looked at. Without it every beat reads as never_asked.
       relevanceLedger: visualDedup.beatRelevance,
+      /** Measured just above, in seconds, on this same clip list — and it costs the score. */
+      screenTime: deliveredScreenTimeFindings,
     });
     // RONDE 8 (render 518): a scene whose montage came up short scored 100/100 because the filler
     // is not a fallback clip. Same registration pattern as the silent-voiceover notes below.
@@ -44497,6 +44532,61 @@ async function _runVideoPipelineInner(
           console.warn(
             `[FinalCoverage] video ${videoId}: repair did not produce a longer picture — ` +
               `shipping as composed; stage 6 reports what the file actually is`
+          );
+        }
+      }
+      /**
+       * AND THE OTHER DIRECTION, WHICH HAD NO REPAIR AT ALL.
+       *
+       * The block above extends the picture when the sound outlasts it. The opposite happened in
+       * the delivered film and nothing acted on it:
+       *
+       *     [AVSync] video=82.36s audio=75.23s
+       *     trailing_silence 7.128s — the last 7.13s of the film are silent picture
+       *
+       * Seven seconds of picture after the narration has finished. `checkFileAvSync` names it
+       * precisely — and then the file shipped with it, because the finding had a detector and no
+       * reader. A viewer reads that as the video having frozen.
+       *
+       * Trimmed to the sound, plus a short tail so the last word is not clipped and a fade still
+       * has room. Stream-copied: no re-encode, so nothing about the picture or the loudness the
+       * step above corrected can change here. Only when the excess is REAL — the same
+       * `EDGE_EXCESS_SEC` threshold the detector uses — so an ordinary end-frame hold is left
+       * alone, and only when a trim would still leave a film worth shipping.
+       */
+      const pictureEnd2 = preExport.envelope.videoSec ?? 0;
+      const lastSound = preExport.envelope.lastSoundSec ?? 0;
+      const excess = pictureEnd2 - lastSound;
+      if (
+        preExport.findings.some((f) => f.code === "trailing_silence") &&
+        lastSound > 1 &&
+        excess > TRAILING_SILENCE_TRIM_SEC
+      ) {
+        const keepSec = Number((lastSound + TRAILING_SILENCE_TAIL_SEC).toFixed(3));
+        const trimmed = finalVideoPath.replace(/\.mp4$/i, "_tailtrim.mp4");
+        try {
+          await exec(
+            `"${FFMPEG_BIN}" -y -i "${finalVideoPath}" -t ${keepSec} -c copy ` +
+              `-movflags +faststart "${trimmed}"`,
+            180_000
+          );
+          if (fs.existsSync(trimmed) && fs.statSync(trimmed).size > 1_000) {
+            finalVideoPath = trimmed;
+            qualityReport.warnings.push(
+              `AV envelope: ${excess.toFixed(2)}s of silent picture after the narration was trimmed`
+            );
+            console.log(
+              pipelineReport.add(
+                "summary",
+                `[FinalCoverage] video ${videoId}: trimmed ${excess.toFixed(2)}s of silent tail ` +
+                  `(picture ${pictureEnd2.toFixed(2)}s → ${keepSec.toFixed(2)}s)`
+              )
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[FinalCoverage] video ${videoId}: tail trim failed, shipping as composed: ` +
+              `${(err as Error)?.message?.slice(0, 140)}`
           );
         }
       }
@@ -45435,6 +45525,8 @@ async function _runVideoPipelineInner(
           fastShort: isFastShortVideoLength(videoLength),
           byMixKind: qualityReport.byMixKind,
           postRenderOk: spot.ok,
+          /** From the report, so the re-score cannot drop what the delivered mix cost. */
+          screenTime: qualityReport.screenTime,
         });
         qualityReport.score = rescored.score;
         qualityReport.qualityStatus = rescored.status;
@@ -45473,6 +45565,8 @@ async function _runVideoPipelineInner(
             fastShort: isFastShortVideoLength(videoLength),
             byMixKind: qualityReport.byMixKind,
             postRenderOk: spot.ok,
+            /** From the report, so the re-score cannot drop what the delivered mix cost. */
+            screenTime: qualityReport.screenTime,
           });
           qualityReport.score = rescored.score;
           qualityReport.qualityStatus = rescored.status;

@@ -297,11 +297,48 @@ export function loudnormChain(stats: LoudnessStats, channelLayout?: string | nul
    * not read a layout, so a file this cannot describe is treated exactly as it was before.
    */
   const pin = channelLayout ? `aformat=channel_layouts=${channelLayout},` : "";
+  /**
+   * RONDE 240 — THE CORRECTION WAS BEING STOPPED BY THE PEAK, NOT BY THE LOUDNESS.
+   *
+   * ── What four parts of one delivered film measured ──────────────────────────────────────────
+   *
+   *     part 1   I: -15.3 LUFS   true peak -1.4 dBFS
+   *     part 2   I: -15.7 LUFS   true peak -1.5 dBFS
+   *     part 3   I: -16.0 LUFS   true peak -1.5 dBFS
+   *     part 4   I: -16.1 LUFS   true peak -1.5 dBFS
+   *
+   * and the render's own line agreed: `target=-14 LUFS measured=-41.6 LUFS → -15.7 LUFS`.
+   *
+   * The target is -14 with a tolerance of 1.0 LU, so every part landed outside it — and every
+   * part sat EXACTLY on the -1.5 dBTP ceiling. That coincidence is the diagnosis: `linear=true`
+   * applies one fixed gain to the whole file, and it may not raise that gain past the point where
+   * the loudest sample would breach TP. On material with a wide crest factor the peak is reached
+   * while the programme loudness is still ~1.5 LU short, so loudnorm stops there and reports
+   * success. Nothing was broken; the correction was simply not allowed to finish.
+   *
+   * ── What the limiter changes ────────────────────────────────────────────────────────────────
+   *
+   * `alimiter` after loudnorm holds the peak at the same ceiling the target already names, so the
+   * gain no longer has to stop short to protect it. The loudness reaches -14 and the true peak
+   * stays where the standard requires — which is what a broadcast chain does and what the two
+   * settings were always meant to mean together.
+   *
+   * `level=disabled` matters: the limiter must catch peaks, not normalise. Left on, it would
+   * apply its own gain after loudnorm's and the film would land somewhere neither setting asked
+   * for. `attack`/`release` are conservative for speech — fast enough to catch a consonant,
+   * slow enough not to pump under narration.
+   *
+   * Nothing about the TARGETS moves: -14 LUFS and -1.5 dBTP are the same numbers as before, and
+   * `isOnTarget`'s tolerance is untouched. This lets the existing target be reached rather than
+   * redefining it — the metric is repaired, not relaxed.
+   */
+  const ceilingLinear = Math.pow(10, TRUE_PEAK_DBTP / 20).toFixed(6);
   return (
     `${pin}loudnorm=I=${TARGET_LUFS}:TP=${TRUE_PEAK_DBTP}:LRA=${TARGET_LRA}:` +
     `measured_I=${integratedLufs}:measured_TP=${truePeakDb}:` +
     `measured_LRA=${lra}:measured_thresh=${thresholdLufs}:` +
-    `linear=true:print_format=summary`
+    `linear=true:print_format=summary,` +
+    `alimiter=limit=${ceilingLinear}:level=disabled:attack=5:release=50`
   );
 }
 

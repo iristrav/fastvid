@@ -56,6 +56,43 @@ export function maxShortlistPerBeat(): number {
 }
 
 /**
+ * HOW MANY OF THOSE SLOTS ONE SOURCE MAY TAKE.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────────────────────
+ *
+ * Render 578: 2479 YouTube candidates found, 88 downloaded, and NOT ONE in the delivered film,
+ * which came out as `clips=13 [ww2=13]` — thirteen clips, every one from the operator's own
+ * curated archive. The beat funnel says why:
+ *
+ *     s1b3 shortlisted=8/8 visionAsked=7 approved=0 notAsked=48 cappedOut=37
+ *     s1b0 shortlisted=8/8 visionAsked=4 approved=0 notAsked=48 cappedOut=31
+ *
+ * `admitToShortlist` was first-come, first-served up to the bound. The curated archive is asked
+ * FIRST for every beat on every topic — videoPipeline says so in its own comment — so it filled
+ * all eight slots before YouTube's candidates were offered, and they arrived at SHORTLIST_FULL.
+ * Thirty-seven turned away on one beat.
+ *
+ * This file's own note asked the right question and never answered it: "whether the eight the
+ * editor saw were the best eight or the first eight". They were the first eight.
+ *
+ * ── Why MAX_JUDGEMENTS_PER_BEAT is the right number, and not a guess ────────────────────────
+ *
+ * The shortlist is deliberately TWICE the judgement budget — see the note on
+ * `maxShortlistPerBeat`: several of the gate's answers cost no judgement, so a beat needs
+ * headroom to reach the budget it is allowed to spend. The editor still judges at most
+ * `MAX_JUDGEMENTS_PER_BEAT` candidates.
+ *
+ * So capping one source at exactly that number takes nothing away: a single source may still
+ * saturate the editor's entire attention for the beat. What it may no longer do is also occupy
+ * the headroom, which exists so that a second source can be seen at all. A beat where only one
+ * source has anything still gets its full judgement budget from that source — no slot is wasted,
+ * which is the RONDE 170 lesson this is careful not to repeat.
+ */
+export function maxShortlistPerBeatPerSource(): number {
+  return envInt("MAX_BEAT_SHORTLIST_PER_SOURCE", MAX_JUDGEMENTS_PER_BEAT, 1, 40);
+}
+
+/**
  * RONDE 95 PHASE 10 — WHY THIS BEAT'S PICTURE WAS NEVER PUT TO THE EDITOR.
  *
  * Render 568 reported `verification=never_asked reason=real_footage_never_judged` on 15 of 17
@@ -73,6 +110,13 @@ export type NotAskedReason =
   | "SHORTLIST_EMPTY"
   /** The beat's shortlist was full — this candidate arrived after the bound was reached. */
   | "SHORTLIST_FULL"
+  /**
+   * This candidate's SOURCE had already taken its share of the beat's shortlist, while slots
+   * remained for others. Deliberately distinct from SHORTLIST_FULL: one says the beat was out of
+   * room, the other says one source was out of room and the beat was not — opposite findings,
+   * and render 578 needed the difference to be visible.
+   */
+  | "SHORTLIST_SOURCE_SHARE"
   /** The render's or the beat's judgement budget was spent before this candidate. */
   | "VISION_BUDGET_EXHAUSTED"
   /** The picture editor could not be reached at all in this process. */
@@ -141,6 +185,10 @@ export type BeatFunnel = {
   admitted: Set<string>;
   /** Candidates turned away because the bound was already reached. */
   refusedForCap: number;
+  /** Slots taken per source, so no one source can fill a beat's whole shortlist. */
+  bySource: Map<string, number>;
+  /** Candidates turned away because their source had taken its share — see the reason's note. */
+  refusedForSourceShare: number;
   notAskedReasons: Map<NotAskedReason, number>;
   /**
    * RENDER 571 — WHY `visionAsked` CAN EXCEED `shortlisted`, SPLIT INTO ITS TWO POSSIBLE CAUSES.
@@ -237,6 +285,8 @@ export function beatFunnel(
     notAsked: 0,
     admitted: new Set<string>(),
     refusedForCap: 0,
+    bySource: new Map<string, number>(),
+    refusedForSourceShare: 0,
     notAskedReasons: new Map<NotAskedReason, number>(),
     visionRepeatAsks: 0,
     visionOutsideShortlist: 0,
@@ -328,7 +378,14 @@ export function admitToShortlist(
   sceneIndex: number,
   beatIndex: number,
   contentKey: string | undefined,
-  cap = maxShortlistPerBeat()
+  cap = maxShortlistPerBeat(),
+  /**
+   * Which source is asking. Optional, so a caller that cannot name one is unaffected — but every
+   * production caller can, and without it a beat's whole shortlist goes to whoever runs first.
+   * See `maxShortlistPerBeatPerSource`.
+   */
+  source?: string | null,
+  perSourceCap = maxShortlistPerBeatPerSource()
 ): ShortlistAdmission {
   if (!state) return { admitted: true, alreadyOnList: false, slotsUsed: 0, cap };
   const f = beatFunnel(state, sceneIndex, beatIndex);
@@ -336,6 +393,31 @@ export function admitToShortlist(
 
   if (id && f.admitted.has(id)) {
     return { admitted: true, alreadyOnList: true, slotsUsed: f.admitted.size, cap };
+  }
+  /**
+   * ONE SOURCE MAY FILL THE EDITOR'S ATTENTION. IT MAY NOT ALSO FILL THE HEADROOM.
+   *
+   * Checked BEFORE the bound, because the two refusals mean opposite things and the caller has to
+   * be able to tell them apart: `SHORTLIST_FULL` says the beat is out of room, this says one
+   * source is out of room while the beat is not. Render 578 had `shortlisted=8/8 cappedOut=37` on
+   * a beat whose eight slots had all gone to the source that happened to be asked first — and not
+   * one YouTube clip reached the film that render.
+   */
+  const src = (source ?? "").trim().toLowerCase();
+  if (src) {
+    const used = f.bySource.get(src) ?? 0;
+    if (used >= perSourceCap && f.shortlisted < cap) {
+      f.refusedForSourceShare += 1;
+      return {
+        admitted: false,
+        reason: "SHORTLIST_SOURCE_SHARE",
+        slotsUsed: f.shortlisted,
+        cap,
+        eligible: f.eligible,
+        ranked: f.ranked,
+        rankRuns: f.rankRuns,
+      };
+    }
   }
   if (f.shortlisted >= cap) {
     f.refusedForCap += 1;
@@ -364,6 +446,8 @@ export function admitToShortlist(
   }
   f.shortlisted += 1;
   if (id) f.admitted.add(id);
+  /** Counted only on a real admission, so a refusal can never consume a source's share. */
+  if (src) f.bySource.set(src, (f.bySource.get(src) ?? 0) + 1);
   return { admitted: true, alreadyOnList: false, slotsUsed: f.shortlisted, cap };
 }
 
@@ -590,6 +674,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     unavailable: 0,
     notAsked: 0,
     refusedForCap: 0,
+    refusedForSourceShare: 0,
   };
   for (const f of beats) {
     total.retrieved += f.retrieved;
@@ -602,6 +687,7 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
     total.unavailable += f.unavailable;
     total.notAsked += f.notAsked;
     total.refusedForCap += f.refusedForCap;
+    total.refusedForSourceShare += f.refusedForSourceShare;
     const reasons = reasonsFor(f);
     lines.push(
       `[BeatFunnel] s${f.sceneIndex}b${f.beatIndex} retrieved=${f.retrieved} eligible=${f.eligible} ` +
@@ -617,6 +703,8 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
         `approved=${f.approved} rejected=${f.rejected} unclear=${f.unclear} ` +
         `unavailable=${f.unavailable} notAsked=${f.notAsked}` +
         (f.refusedForCap > 0 ? ` cappedOut=${f.refusedForCap}` : "") +
+        /** One source out of room while the beat was not — see SHORTLIST_SOURCE_SHARE. */
+        (f.refusedForSourceShare > 0 ? ` sourceShareOut=${f.refusedForSourceShare}` : "") +
         /** RONDE 230 — places handed back because nobody looked. Zero on a healthy beat. */
         (f.slotsReleased > 0 ? ` slotsReturned=${f.slotsReleased}` : "") +
         /** Only when non-zero: on a healthy beat these add nothing but noise. */

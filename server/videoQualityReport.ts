@@ -29,6 +29,7 @@ import {
   type BeatVisualTally,
 } from "./beatVisualStatus";
 import type { BeatRelevanceLedger } from "./beatVisualRelevance";
+import type { ScreenTimeFinding } from "./deliveredScreenTime";
 
 export type { VoiceVisualMatchSummary };
 
@@ -307,6 +308,15 @@ export type VideoQualityReport = {
   rawVisualQualityScore?: number;
   availabilityAdjustedScore?: number;
   /**
+   * WHAT THE DELIVERED MIX COST THE SCORE — see `./deliveredScreenTime`.
+   *
+   * Measured in seconds on the composed clip list, stored here so every later reader of this
+   * report scores it the same way. `recountQualityReportForDeliveredClips` and the two post-render
+   * re-scores all re-run `computeMeritQualityScore`; without the findings ON the report, the
+   * penalty below would exist at build time and quietly vanish at the first re-score.
+   */
+  screenTime?: ScreenTimeFinding[];
+  /**
    * RONDE 105 — what the score is allowed to claim.
    *
    * A number on its own cannot say "nobody checked this". `status` can, and every reader that
@@ -417,6 +427,19 @@ const STATUS_CEILING: Record<QualityStatus, number> = {
 };
 
 /**
+ * The highest number a render with this verification status may carry — the one definition.
+ *
+ * Exported because the export-availability policy in `./pipelineSelfHeal` RAISES scores, and it
+ * was raising them past this ceiling: a render whose beats nobody approved was stored as 85/100
+ * because all of its clips came from one archive. A ceiling that only the measured path honours
+ * is not a ceiling. `status` defaults to the strictest reading, so a caller with nothing to say
+ * cannot buy headroom by saying nothing.
+ */
+export function qualityStatusCeiling(status?: QualityStatus | null): number {
+  return STATUS_CEILING[status ?? "INSUFFICIENT_VERIFICATION"] ?? STATUS_CEILING.INSUFFICIENT_VERIFICATION;
+}
+
+/**
  * Merit-based score from what the content decider actually verified, plus the sourcing mix.
  *
  * ── What changed in RONDE 105, and why ───────────────────────────────────────────────────────
@@ -454,6 +477,11 @@ export function computeMeritQualityScore(params: {
    * is the honest answer when nothing is known rather than a free pass.
    */
   beatVisuals?: BeatVisualTally;
+  /**
+   * What the delivered mix measured, from `./deliveredScreenTime`. Optional: a caller with no
+   * render measured nothing, and "nothing was measured" costs nothing — see the penalty below.
+   */
+  screenTime?: readonly ScreenTimeFinding[];
 }): QualityVerdict {
   const t = params.beatVisuals;
   const beats = t?.beats ?? 0;
@@ -530,6 +558,31 @@ export function computeMeritQualityScore(params: {
     score -= Math.min(10, t.byVerification.verified_mismatch * 5);
   }
 
+  /**
+   * WHAT THE VIEWER SPENT THE FILM LOOKING AT — the one input measured on the cut itself.
+   *
+   * Every term above counts beats and clips. None of them can see that a 76-second film gave 36.3
+   * of those seconds to one piece of footage and held a single shot for 17.4 of them: thirteen
+   * clips, thirteen filled beats, and a number that read 43 for reasons that had nothing to do
+   * with the two things a viewer would name first.
+   *
+   * Only two of the three findings are scored, and the line between them is a real one.
+   * `ONE_SOURCE_DOMINATES` describes a SOURCING POLICY — an operator who runs an archive-led
+   * documentary chooses it, and the `archiveOnly` bonus twenty lines up rewards exactly that, so
+   * charging for it here would have the score paying and fining for one decision. A single shot's
+   * share of the film and a single shot's length are not policy in any mode; they are what a
+   * scene short of footage looks like. Those two cost points.
+   *
+   * Weighted against the stand-in penalty above it: one shot filling the film is worse than one
+   * beat getting a held frame (5) and better than a montage of them (30); a held shot is the
+   * lighter of the pair because the footage is at least real. Neither number is tuned to a target
+   * — they encode that ordering.
+   */
+  for (const finding of params.screenTime ?? []) {
+    if (finding.code === "ONE_CLIP_DOMINATES") score -= 12;
+    else if (finding.code === "SHOT_HELD_TOO_LONG") score -= 8;
+  }
+
   score = Math.max(0, Math.min(STATUS_CEILING[status], Math.round(score)));
   return { score, status, reason };
 }
@@ -582,6 +635,11 @@ export function buildVideoQualityReport(
      * which is the honest answer for a caller that has no render — not a free pass.
      */
     relevanceLedger?: BeatRelevanceLedger;
+    /**
+     * The delivered mix, measured in seconds by `./deliveredScreenTime` just before this runs.
+     * Stored on the report AND fed to the score, so a later re-score reads the same facts.
+     */
+    screenTime?: readonly ScreenTimeFinding[];
   }
 ): VideoQualityReport {
   /** Official, lineage-only attribution. */
@@ -763,6 +821,7 @@ export function buildVideoQualityReport(
     archiveOnly,
     fastShort,
     byMixKind,
+    screenTime: opts?.screenTime,
   });
 
   const voiceVisualMatch = buildVoiceVisualMatchSummary(
@@ -801,6 +860,8 @@ export function buildVideoQualityReport(
     score: verdict.score,
     qualityStatus: verdict.status,
     qualityReason: verdict.reason,
+    /** Kept on the report so every later re-score charges for the same delivered mix. */
+    screenTime: opts?.screenTime ? [...opts.screenTime] : undefined,
     beatVisuals,
     beatVisualProblems: beatVisualProblems.length > 0 ? beatVisualProblems : undefined,
     beatVisualStatuses: beatStatuses.length > 0 ? beatStatuses : undefined,
@@ -897,6 +958,12 @@ export function recountQualityReportForDeliveredClips(
     fastShort: opts?.fastShort === true,
     byMixKind,
     postRenderOk: report.postRenderSpotCheck?.ok,
+    /**
+     * Read from the report, not re-measured. The recount changes WHICH clips are counted; it has
+     * no clip durations to work from, and carrying the measurement forward keeps a shot the cut
+     * held for seventeen seconds visible to the number instead of silently discounting it.
+     */
+    screenTime: report.screenTime,
   });
 
   report.totalClips = unique.length;

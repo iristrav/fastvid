@@ -100,8 +100,26 @@ export function computeScreenTimeShare(clips: readonly DeliveredClip[]): ScreenT
 export const MAX_SINGLE_FOOTAGE_SHARE = 0.25;
 export const MAX_SINGLE_SOURCE_SHARE = 0.7;
 
+/**
+ * HOW LONG ONE UNBROKEN SHOT MAY STAND.
+ *
+ * The delivered film held one shot for 17.4 seconds at the open and 17.1 more at the close. That
+ * is not an editing choice; the render's own report says what it was:
+ *
+ *     3 scene(s) with a short montage (0, 1, 2) — visual coverage incomplete
+ *
+ * All three scenes ran out of footage, so the renderer stretched the last clip it had until the
+ * narration finished. A viewer cannot tell a held shot from a frozen one, and at seventeen
+ * seconds both read as a fault.
+ *
+ * Eight seconds is where a documentary cut stops feeling deliberate — well above the 3-6s this
+ * pipeline plans for, so an intentionally long establishing shot is not flagged, and far below
+ * what a shortfall produces.
+ */
+export const MAX_SINGLE_SHOT_SEC = 8;
+
 export type ScreenTimeFinding = {
-  code: "ONE_CLIP_DOMINATES" | "ONE_SOURCE_DOMINATES";
+  code: "ONE_CLIP_DOMINATES" | "ONE_SOURCE_DOMINATES" | "SHOT_HELD_TOO_LONG";
   detail: string;
 };
 
@@ -113,12 +131,34 @@ export type ScreenTimeFinding = {
  */
 export function screenTimeFindings(
   share: ScreenTimeShare,
-  limits: { maxFootage?: number; maxSource?: number } = {}
+  limits: { maxFootage?: number; maxSource?: number; maxShotSec?: number } = {},
+  /** Every clip as composed, so one held shot is visible even when its asset is used once. */
+  clips: readonly DeliveredClip[] = []
 ): ScreenTimeFinding[] {
   const maxFootage = limits.maxFootage ?? MAX_SINGLE_FOOTAGE_SHARE;
   const maxSource = limits.maxSource ?? MAX_SINGLE_SOURCE_SHARE;
+  const maxShotSec = limits.maxShotSec ?? MAX_SINGLE_SHOT_SEC;
   const out: ScreenTimeFinding[] = [];
   if (share.totalSec <= 0) return out;
+
+  /**
+   * The longest single shot, measured on the clip AS COMPOSED rather than on its asset's total.
+   * A film that cuts back to one asset four times for three seconds each is a different thing
+   * from one that holds it for seventeen, and only this reading tells them apart.
+   */
+  const longest = [...clips]
+    .filter((c) => Number.isFinite(c.durationSec) && c.durationSec > 0)
+    .sort((a, b) => b.durationSec - a.durationSec)[0];
+  if (longest && longest.durationSec > maxShotSec) {
+    const over = clips.filter((c) => c.durationSec > maxShotSec).length;
+    out.push({
+      code: "SHOT_HELD_TOO_LONG",
+      detail:
+        `one shot stands for ${longest.durationSec.toFixed(1)}s ` +
+        `(limit ${maxShotSec}s, ${over} shot(s) over it, source=${longest.source ?? UNPROVEN_SOURCE}) — ` +
+        `a held shot this long is what a scene short of footage looks like, not an edit`,
+    });
+  }
 
   const topClip = share.byFootage[0];
   if (topClip && topClip.share > maxFootage) {
