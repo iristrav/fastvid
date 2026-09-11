@@ -44,6 +44,57 @@ function ffmpegBin(): string {
   return process.env.FFMPEG_BIN?.trim() || process.env.FFMPEG_PATH?.trim() || "ffmpeg";
 }
 
+function ffprobeBin(): string {
+  return process.env.FFPROBE_BIN?.trim() || process.env.FFPROBE_PATH?.trim() || "ffprobe";
+}
+
+/**
+ * RONDE 239 — THE LINK THE FILTER GRAPH COULD NOT NEGOTIATE.
+ *
+ * RONDE 235 made the correction's failure readable. Render 577 is the first time it spoke, and it
+ * named the fault precisely:
+ *
+ *     Cannot select channel layout for the link between filters
+ *     Parsed_aresample_1 and format_out_0_1
+ *     Error reinitializing filters! … Conversion failed!
+ *
+ * Twice — with `+faststart` and without it — so the retry proved the flag was never the problem.
+ *
+ * ffmpeg can only join two filters when it can agree a channel layout across the link. When the
+ * stream declares a channel COUNT but no layout — which is what an assembled film's mono track
+ * arrives as — `aresample` has nothing to name on its output side, and newer ffmpeg refuses the
+ * graph rather than guessing. The pipeline's own ffmpeg 6 accepts it; the deployed one does not.
+ * That is why this failed in production and passed every local check.
+ *
+ * The layout is therefore READ from the file and stated at the head of the chain, so every filter
+ * after it — loudnorm included — is working with a layout it was told rather than one it has to
+ * infer. Nothing about the audio changes: the layout asserted is the one the file already has.
+ */
+export async function probeAudioChannelLayout(filePath: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec(
+      `"${ffprobeBin()}" -v error -select_streams a:0 ` +
+        `-show_entries stream=channel_layout,channels -of default=nw=1:nk=0 "${filePath}"`,
+      { timeout: 30_000, maxBuffer: 1024 * 1024 }
+    );
+    const text = String(stdout);
+    const named = /channel_layout=([A-Za-z0-9._()]+)/.exec(text)?.[1]?.trim();
+    /** A layout the file states outright is always preferred — it may be 5.1, downmix, anything. */
+    if (named && named !== "unknown") return named;
+    /**
+     * No layout, only a count. Naming the standard layout for that count is not a guess about the
+     * content: it is the same layout ffmpeg itself would pick, stated early enough to be usable.
+     */
+    const channels = Number(/channels=(\d+)/.exec(text)?.[1] ?? 0);
+    if (channels === 1) return "mono";
+    if (channels === 2) return "stereo";
+    return null;
+  } catch {
+    /** No probe, no assertion — the chain is built without one and behaves exactly as before. */
+    return null;
+  }
+}
+
 /**
  * EBU R128 integrated target, in LUFS.
  *
@@ -228,16 +279,29 @@ export function parseLoudnormJson(stderr: string): LoudnessStats | null {
  * on its own when it would. `aresample=48000` is not optional: loudnorm outputs at 192 kHz, and
  * without this the muxed file carries a sample rate no player expects.
  */
-export function loudnormChain(stats: LoudnessStats): string | null {
+export function loudnormChain(stats: LoudnessStats, channelLayout?: string | null): string | null {
   const { integratedLufs, truePeakDb, lra, thresholdLufs } = stats;
   if (integratedLufs == null || truePeakDb == null || lra == null || thresholdLufs == null) {
     return null;
   }
+  /**
+   * RONDE 239 — the layout is asserted FIRST, and the resample has moved off the graph.
+   *
+   * Two changes, one fault. `aresample=48000` used to sit at the end of this chain purely to undo
+   * loudnorm's 192 kHz output, and it is exactly the filter render 577 could not link. Asking the
+   * ENCODER for 48 kHz instead (`-ar`) gets the same file with no such link to negotiate — ffmpeg
+   * inserts its own resampler, on the output side, where the layout is already settled.
+   *
+   * `aformat` in front then removes the underlying cause rather than only this one symptom: every
+   * filter in the chain is handed a layout instead of inferring one. Omitted when the probe could
+   * not read a layout, so a file this cannot describe is treated exactly as it was before.
+   */
+  const pin = channelLayout ? `aformat=channel_layouts=${channelLayout},` : "";
   return (
-    `loudnorm=I=${TARGET_LUFS}:TP=${TRUE_PEAK_DBTP}:LRA=${TARGET_LRA}:` +
+    `${pin}loudnorm=I=${TARGET_LUFS}:TP=${TRUE_PEAK_DBTP}:LRA=${TARGET_LRA}:` +
     `measured_I=${integratedLufs}:measured_TP=${truePeakDb}:` +
     `measured_LRA=${lra}:measured_thresh=${thresholdLufs}:` +
-    `linear=true:print_format=summary,aresample=48000`
+    `linear=true:print_format=summary`
   );
 }
 
@@ -283,7 +347,8 @@ export async function normaliseDeliveredLoudness(
     return { ...base, outcome: "already_on_target", beforeLufs: before.integratedLufs };
   }
 
-  const chain = loudnormChain(before);
+  const layout = await probeAudioChannelLayout(filePath);
+  const chain = loudnormChain(before, layout);
   if (!chain) {
     return {
       ...base,
@@ -314,7 +379,12 @@ export async function normaliseDeliveredLoudness(
       await exec(
         `"${ffmpegBin()}" -nostdin -hide_banner -y -i "${filePath}" ` +
           `-map 0:v:0 -map 0:a:0 -c:v copy -af "${chain}" ` +
-          `-c:a aac -b:a 320k ${faststart ? "-movflags +faststart " : ""}"${tmpPath}"`,
+          /**
+           * RONDE 239 — `-ar` on the encoder, not `aresample` in the graph. loudnorm still outputs
+           * 192 kHz and the delivered file must still be 48 kHz; this is the same requirement met
+           * on the side of the link that can always agree a layout.
+           */
+          `-c:a aac -b:a 320k -ar 48000 ${faststart ? "-movflags +faststart " : ""}"${tmpPath}"`,
         { timeout: opts.timeoutMs ?? 600_000, maxBuffer: 8 * 1024 * 1024 }
       );
       return null;

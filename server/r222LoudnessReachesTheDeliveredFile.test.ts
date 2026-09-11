@@ -116,11 +116,40 @@ describe("R222 §2 — the second pass carries the first pass's measurement", ()
     expect(loudnormChain(stats)).toContain("linear=true");
   });
 
-  it("THE SAMPLE RATE IS RESTORED — loudnorm outputs 192kHz", () => {
-    expect(
-      loudnormChain(stats),
-      "without aresample the delivered file carries a rate no player expects"
-    ).toContain("aresample=48000");
+  it("THE SAMPLE RATE IS STILL RESTORED — loudnorm outputs 192kHz", () => {
+    /**
+     * The REQUIREMENT is unchanged and still asserted: the delivered file must be 48 kHz, because
+     * loudnorm outputs 192 kHz and no player expects that. What moved is WHERE it is enforced.
+     *
+     * `aresample=48000` used to end this chain, and render 577 showed it is the one filter the
+     * deployed ffmpeg cannot link:
+     *
+     *     Cannot select channel layout for the link between filters
+     *     Parsed_aresample_1 and format_out_0_1 … Conversion failed!
+     *
+     * — twice, with and without faststart. Asking the ENCODER for 48 kHz produces the same file
+     * with no such link to negotiate. So the chain must NOT carry the filter any more, and the
+     * invocation MUST carry the rate; both halves are asserted, so the guarantee cannot be lost by
+     * dropping one of them.
+     */
+    const LOUD = fs.readFileSync(path.join(__dirname, "audioLoudness.ts"), "utf8");
+    expect(loudnormChain(stats), "the filter that could not be linked is back").not.toContain(
+      "aresample"
+    );
+    expect(LOUD, "nothing asks for 48 kHz any more").toContain("-c:a aac -b:a 320k -ar 48000 ");
+  });
+
+  it("AND THE CHANNEL LAYOUT IS STATED, so no filter has to infer one", () => {
+    /**
+     * The underlying cause of that failed link: a stream that declares a channel COUNT but no
+     * LAYOUT gives the graph nothing to agree on. The layout is read from the file and asserted at
+     * the head of the chain, so loudnorm and everything after it is told rather than guessing.
+     */
+    expect(loudnormChain(stats, "mono")).toContain("aformat=channel_layouts=mono,loudnorm=");
+    expect(loudnormChain(stats, "stereo")).toContain("aformat=channel_layouts=stereo,loudnorm=");
+    /** Unknown layout asserts nothing — exactly the behaviour that existed before. */
+    expect(loudnormChain(stats, null)).not.toContain("aformat");
+    expect(loudnormChain(stats)).not.toContain("aformat");
   });
 
   it("an incomplete measurement produces no chain at all", () => {
