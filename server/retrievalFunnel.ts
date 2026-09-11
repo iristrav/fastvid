@@ -1041,6 +1041,56 @@ const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
 const MAX_SHORTLIST_PER_ARCHIVE_SOURCE = 3;
 
 /**
+ * YOUTUBE'S OWN SHARE OF THE PER-BEAT SHORTLIST.
+ *
+ * ── What the operator asked for, and what the cap allowed ───────────────────────────────────
+ *
+ * The brief is a film made mostly of YouTube footage. Render 577's nineteen beats came out as
+ * six curated archive, two openverse, ONE youtube_cc, six placeholder and four with no candidate
+ * at all — and the download shortlist is where that was decided long before Vision saw anything:
+ *
+ *     youtube_cc  →  MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2, against a budget of 6
+ *     archive     →  MAX_SHORTLIST_PER_ARCHIVE_SOURCE    = 3
+ *
+ * Two chances in six, per beat, however many candidates YouTube had found. A source that may
+ * occupy at most a third of the shortlist cannot become most of the film, whatever the retrieval
+ * layer hands it.
+ *
+ * ── Why this is a different question from RONDE 157's ───────────────────────────────────────
+ *
+ * RONDE 157 raised the ARCHIVE cap to 4 and measured the cost: with five archive candidates
+ * outranking three other sources, a cap of 4 left one slot and a source that had a candidate got
+ * none. RONDE 170 then declined to raise caps at all and filled the slack instead. Both were
+ * answering "which mix makes the best beat", and for that question the answer is diversity.
+ *
+ * This is not that question. The operator has decided what the film should be made of, which is a
+ * decision about the WORK and not about beat quality, and that makes one source's share the point
+ * rather than the hazard. So the constant is YouTube's own, sitting beside the archive's, rather
+ * than a change to the shared non-stock cap — nothing about any other source moves.
+ *
+ * ── What this does NOT do ───────────────────────────────────────────────────────────────────
+ *
+ * It buys CHANCES, not slots. `buildDownloadShortlist` sorts by `rankingScore` and fills in that
+ * order, so YouTube takes four of the six only where four YouTube candidates actually out-rank
+ * the alternatives; where they do not, the cap is slack and RONDE 170's overflow fill hands the
+ * slot to whoever ranked next. Relevance still orders the shortlist, the download budget still
+ * bounds it at six, and VisionGate still picks the winner through `pickBestFunnelCandidate` — a
+ * YouTube clip the picture editor refuses is still refused.
+ *
+ * Four rather than six, deliberately: six would let one source take the whole shortlist, and a
+ * beat where YouTube found nothing usable would then have nothing to fall back on within the
+ * funnel. Four leaves two slots that the archive and the rest can still reach.
+ */
+export function maxShortlistPerYoutubeSource(): number {
+  const raw = process.env.YOUTUBE_SHORTLIST_CAP?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= MAX_FUNNEL_CANDIDATES_TO_SCORE) return n;
+  }
+  return 4;
+}
+
+/**
  * FASE 4 — Candidate Expansion: replaces the old flat "take the top N by rank" download
  * selection with a source-diversity-aware shortlist, so a strong candidate from a
  * less-dominant source (e.g. ranked 4th overall but the best NARA result) still gets a
@@ -1160,6 +1210,8 @@ export function buildDownloadShortlist(
 
   const capFor = (source: FunnelCandidateSource): number => {
     if (source === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;
+    /** The operator's chosen primary material — see `maxShortlistPerYoutubeSource`. */
+    if (source === "youtube_cc") return maxShortlistPerYoutubeSource();
     return STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
   };
 
