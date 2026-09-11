@@ -164,7 +164,53 @@ const KEYWORD_SCORE_MAX = 100;
  *  between Internet Archive and Europeana, per the requested priority order (Internet Archive
  *  > NARA > Library of Congress > NASA > Openverse > Europeana > Wikimedia > stock); the FASE 2
  *  values for internet_archive/europeana/wikimedia/pexels/pixabay are left unchanged. */
+/**
+ * YOUTUBE WAS NOT IN THIS TABLE AT ALL, AND `?? 0` PUT IT IN THE STOCK TIER.
+ *
+ * ── The reading that matters ────────────────────────────────────────────────────────────────
+ *
+ * The lookup below is `EXTERNAL_SOURCE_TIER_BONUS[c.source] ?? 0`. `youtube_cc` arrived later
+ * than this table (RONDE 169/170/175 built the pool route) and no entry was ever added for it, so
+ * every YouTube candidate scored `0.7 + 0` — the same tier as Pexels and Pixabay, and BELOW all
+ * seven historical sources, Wikimedia's 0.10 included. Not a bonus set too low: a missing row,
+ * defaulting silently to the bottom.
+ *
+ * That is the second half of what kept YouTube to one beat of nineteen in render 577. The
+ * shortlist cap decided how many chances YouTube could have; this decided whether it ever ranked
+ * high enough to use them, and `buildDownloadShortlist` fills in `rankingScore` order.
+ *
+ * ── Why above internet_archive and not merely present ───────────────────────────────────────
+ *
+ * The operator's brief is a film made mostly of YouTube footage. Simply adding YouTube at, say,
+ * 0.13 would slot it mid-table and leave the Internet Archive ranking first, which answers a
+ * different question than the one asked. The whole existing spread from best to worst historical
+ * source is 0.05 (0.15 down to 0.10), so a margin of 0.07 over the top of that table is decisive
+ * rather than marginal — which is the point, and is why it is stated here as a number with a
+ * reason instead of tuned until a render looked right.
+ *
+ * ── What a bonus cannot do ──────────────────────────────────────────────────────────────────
+ *
+ * It moves candidates up the shortlist, and nothing else. `assessCandidateTopicality` still drops
+ * an off-topic candidate before this line is reached — a bonus never rescues material that does
+ * not match the beat — the per-source cap still bounds how many YouTube candidates may be
+ * shortlisted, the download budget still bounds the shortlist, and `pickBestFunnelCandidate`
+ * still picks the winner on real VisionGate scores. A YouTube clip the picture editor refuses is
+ * still refused.
+ */
+export function youtubeSourceTierBonus(): number {
+  const raw = process.env.YOUTUBE_TIER_BONUS?.trim();
+  if (raw) {
+    const n = Number.parseFloat(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+  }
+  return 0.22;
+}
+
 const EXTERNAL_SOURCE_TIER_BONUS: Partial<Record<FunnelCandidateSource, number>> = {
+  /** Read through the accessor so an operator can dial it — see `youtubeSourceTierBonus`. */
+  get youtube_cc() {
+    return youtubeSourceTierBonus();
+  },
   internet_archive: 0.15,
   nara: 0.145,
   loc: 0.14,
