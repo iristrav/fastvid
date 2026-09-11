@@ -199,7 +199,14 @@ describe("the downloader is wired to the recorder", () => {
   it("records at the single exit point, so success and failure alike are captured", () => {
     const at = PIPE.indexOf("const reportDownload = (status: YoutubeDownloadStatus");
     expect(at).toBeGreaterThan(-1);
-    const body = PIPE.slice(at, at + 1400);
+    /**
+     * Bounded by the function's own end rather than a byte count: a comment added inside
+     * `reportDownload` used to push the replay block out of a fixed window, so the assertion
+     * failed on a change that did not touch what it guards.
+     */
+    const end = PIPE.indexOf("\n  // F3-41: cloud/yt-dlp service tried FIRST", at);
+    expect(end, "the landmark that closes reportDownload").toBeGreaterThan(at);
+    const body = PIPE.slice(at, end);
     expect(body).toContain('kind: "download"');
     expect(body).toContain("transferStarted,");
   });

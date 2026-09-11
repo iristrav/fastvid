@@ -147,7 +147,16 @@ describe("the wiring at the cascade", () => {
   });
 
   it("the new parameter is optional, so every other caller is unchanged", () => {
-    /** Two production call sites and four test files call this fetcher with the old arity. */
-    expect(PIPE).toContain("outcome?: { status?: YoutubeDownloadStatus; reason?: string }");
+    /**
+     * Two production call sites and four test files call this fetcher with the old arity.
+     *
+     * The box gained `transferStarted` — the fetcher's answer to "did any bytes move", which the
+     * caller holding the download slot needs to know whether the slot bought anything. What this
+     * test guards is unchanged and is the reason the old callers still compile: the PARAMETER is
+     * optional, and so is every field in it.
+     */
+    expect(PIPE).toContain(
+      "outcome?: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean }"
+    );
   });
 });

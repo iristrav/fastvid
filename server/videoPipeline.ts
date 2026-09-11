@@ -14217,7 +14217,7 @@ export async function downloadYouTubeCCClip(
    * this round's blast radius in the wrong place — the caller may hand in a box for it. Optional,
    * so every existing caller is untouched and no behaviour changes for any of them.
    */
-  outcome?: { status?: YoutubeDownloadStatus; reason?: string }
+  outcome?: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean }
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
   const hasCloudRoute = Boolean(cloudDlService);
@@ -14252,6 +14252,15 @@ export async function downloadYouTubeCCClip(
     if (outcome) {
       outcome.status = status;
       outcome.reason = reason;
+      /**
+       * AND WHETHER ANY BYTES ACTUALLY MOVED, WHICH THE CALLER NEEDS AND COULD NOT ASK.
+       *
+       * `transferStarted` has existed since RENDER 571 for the replay bundle; the caller holding
+       * the download slot never saw it. That is the difference between a transfer that failed and
+       * a decision not to start one, and it is the difference between a slot that is spent and a
+       * slot that is not — see `releaseYoutubeDownloadSlot`.
+       */
+      outcome.transferStarted = transferStarted;
     }
     const line = formatYoutubeDownloadLine({
       videoId, sceneIndex, status, attempts, hasCloudRoute, hasRapidRoute, reason,
@@ -15483,7 +15492,11 @@ export async function fetchYouTubeCCClips(
               break;
             }
             /** RONDE 115 — the box the fetcher drops its status into; see its `outcome` parameter. */
-            const dl: { status?: YoutubeDownloadStatus; reason?: string } = {};
+            const dl: {
+              status?: YoutubeDownloadStatus;
+              reason?: string;
+              transferStarted?: boolean;
+            } = {};
             const ok = await downloadYouTubeCCClip(
               videoId,
               clipDur,
@@ -15541,6 +15554,28 @@ export async function fetchYouTubeCCClips(
               ok ? undefined : (dl.status ?? "youtube_download_failed")
             );
             if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
+            /**
+             * A SLOT THAT BOUGHT NOTHING GOES BACK INTO THE RENDER'S BUDGET.
+             *
+             * Render 577 spent all 60 slots and fetched 17 clips. `DOWNLOAD_TIMEOUT=50` counts two
+             * different events under one name, and the fetcher's own guard — "not enough left in
+             * the scene budget to finish" — returns before a single byte moves, having already
+             * cost the slot that `claimDownloadSlot()` took a few lines above.
+             *
+             * `transferStarted` is the fetcher's own answer to "did bytes move", so the condition
+             * is exactly that and nothing else: a transfer that started and then failed keeps its
+             * slot, which is the rule render 533 established and which this must not touch. See
+             * `releaseYoutubeDownloadSlot` for why refunding the other case cannot reopen that hole.
+             */
+            if (!ok && dl.transferStarted === false) {
+              if (releaseYoutubeDownloadSlot(sourcingCache)) {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: YouTube ${videoId} moved no bytes ` +
+                    `(${dl.status ?? "unknown"}: ${dl.reason ?? "no reason given"}) — ` +
+                    `download slot returned, ${downloadsSoFar()}/${maxDownloadAttempts} still spent`
+                );
+              }
+            }
             /**
              * RONDE 235 — which "no" is about the VIDEO, and which is only about the moment.
              *
@@ -20025,6 +20060,15 @@ export interface ProviderSourcingMetrics {
    * Nothing else reads this. It exists so `downloadCount` can keep one meaning.
    */
   downloadSlotsClaimed: number;
+  /**
+   * Slots given back because no transfer ever started — see `releaseYoutubeDownloadSlot`.
+   *
+   * Counted rather than quietly subtracted. `downloadSlotsClaimed` after the refunds is what the
+   * ceiling enforces; this says how many of the render's "attempts" moved no bytes at all, which
+   * is the number render 577 could not produce and which decides whether the ceiling is the real
+   * limit on YouTube footage or just the loudest one.
+   */
+  downloadSlotsRefunded: number;
   downloadCacheHits: number;
   duplicateSkipped: number;
   acceptedCount: number;
@@ -20170,7 +20214,7 @@ function emptyProviderMetrics(): ProviderSourcingMetrics {
     // RONDE 124: the three licence outcomes, kept apart so a report can say how much material
     // was refused outright versus merely unproven.
     licenseVerified: 0, licenseUnverified: 0, licenseRejected: 0, usedCount: 0,
-    downloadCount: 0, downloadSlotsClaimed: 0, downloadCacheHits: 0,
+    downloadCount: 0, downloadSlotsClaimed: 0, downloadSlotsRefunded: 0, downloadCacheHits: 0,
     duplicateSkipped: 0, acceptedCount: 0,
     eligibleCount: 0, adoptedCount: 0,
     downloadOutcomes: {},
@@ -20289,6 +20333,50 @@ export function claimYoutubeDownloadSlot(
   const m = providerMetrics(cache, "youtube_cc");
   if (m.downloadSlotsClaimed >= maxDownloads) return false;
   m.downloadSlotsClaimed++;
+  return true;
+}
+
+/**
+ * A SLOT NO TRANSFER EVER USED GOES BACK. ONE THAT A TRANSFER USED NEVER DOES.
+ *
+ * ── The measurement ─────────────────────────────────────────────────────────────────────────
+ *
+ * Render 577, with the ceiling already raised to 60:
+ *
+ *     downloadOutcomes  DOWNLOAD_TIMEOUT=50 DOWNLOAD_SUCCESS=10      = 60, the whole ceiling
+ *     AssetUsageSummary found=215 downloaded=17 neverFetched=198
+ *
+ * The ceiling was spent in full and 198 of 215 candidates were never asked for. `DOWNLOAD_TIMEOUT`
+ * is two different events under one name — its own doc comment says so: "its own timeout, OR the
+ * scene budget that contains it". The second kind returns at the guard above
+ * `transferStarted = true`, having opened no connection and moved no bytes, and it still cost a
+ * slot, because `claimDownloadSlot()` runs before the fetcher is even called.
+ *
+ * ── Why this does not reopen render 533's hole ──────────────────────────────────────────────
+ *
+ * `claimYoutubeDownloadSlot` argues, correctly, that "a failed download does not return its slot:
+ * the 134 downloads of render 533 were nearly all failures, and a ceiling that only counted the
+ * successes is exactly the ceiling that did not hold." Every one of those 134 was a real transfer
+ * — bandwidth, time, a connection the render waited on. The ceiling exists to bound that cost and
+ * it must keep counting them, which it still does: this refunds on `transferStarted === false`
+ * ALONE, so a transfer that started and failed keeps its slot exactly as before.
+ *
+ * A decision not to start costs nothing, so it must not buy anything either. What it bought was a
+ * slot that a real candidate could have used.
+ *
+ * ── Bounded, and visible ────────────────────────────────────────────────────────────────────
+ *
+ * A refunded slot cannot become an endless retry: a video refused for a durable reason is already
+ * memoised by `noteYoutubeDownloadRefusal` and skipped before the claim, and a beat whose scene
+ * budget is exhausted stands aside for every remaining candidate and ends with the candidate list.
+ * `downloadSlotsRefunded` is counted rather than quietly subtracted, so the next render can say
+ * how many of its attempts were never attempts at all.
+ */
+export function releaseYoutubeDownloadSlot(cache: SourcingCache | undefined): boolean {
+  const m = providerMetrics(cache, "youtube_cc");
+  if (m.downloadSlotsClaimed <= 0) return false;
+  m.downloadSlotsClaimed--;
+  m.downloadSlotsRefunded++;
   return true;
 }
 
@@ -20628,6 +20716,21 @@ export function logSourcingMetrics(cache: SourcingCache | undefined, videoId?: n
         console.log(
           `[SourcingMetrics]   ${provider}: downloadOutcomes ` +
             outcomes.map(([status, n]) => `${status}=${n}`).join(" ")
+        );
+      }
+      /**
+       * HOW MUCH OF THE CEILING BOUGHT A REAL TRANSFER.
+       *
+       * Beside the outcomes rather than inside them, because it answers a different question. The
+       * outcome histogram says how the attempts ended; this says how many of them were attempts.
+       * Render 577 printed `DOWNLOAD_TIMEOUT=50 DOWNLOAD_SUCCESS=10` against a ceiling of 60 with
+       * no way to tell a failed transfer from a decision not to start one — see
+       * `releaseYoutubeDownloadSlot`. Only for a provider that claims slots at all.
+       */
+      if (m.downloadSlotsClaimed > 0 || m.downloadSlotsRefunded > 0) {
+        console.log(
+          `[SourcingMetrics]   ${provider}: downloadSlots spent=${m.downloadSlotsClaimed} ` +
+            `returned=${m.downloadSlotsRefunded} (returned = claimed but no bytes ever moved)`
         );
       }
     }
