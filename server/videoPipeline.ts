@@ -206,7 +206,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -15004,7 +15004,14 @@ export async function searchYoutubeVideoCandidates(
   minRelevanceScore: number,
   requiredPersonName: string,
   maxResults: number,
-  sourcingCache?: SourcingCache
+  sourcingCache?: SourcingCache,
+  /**
+   * Which duration slice to ask for — see `youtubeSearchDurationForPass`.
+   *
+   * Defaulted to the value this search has always sent, so the health probe and any caller that
+   * does not think about duration behaves exactly as before.
+   */
+  videoDuration: YoutubeSearchDuration = "medium"
 ): Promise<YoutubeSearchRow[]> {
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (!youtubeApiKey) {
@@ -15049,7 +15056,13 @@ export async function searchYoutubeVideoCandidates(
     : await cachedProviderSearch(
     sourcingCache,
     "youtube_cc",
-    `${query}#${license}#n${maxResults}`,
+    /**
+     * The duration is part of the key for the same reason the licence and the page size are: it
+     * shapes the REQUEST. Two passes asking one query for different slices must not share a
+     * payload, or the first answer would satisfy the second and the second slice would never be
+     * fetched — which is the whole point of alternating them.
+     */
+    `${query}#${license}#n${maxResults}#d${videoDuration}`,
     async (): Promise<{ items?: YoutubeSearchRow["item"][] } | null> => {
       const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
       searchUrl.searchParams.set("key", youtubeApiKey);
@@ -15060,7 +15073,7 @@ export async function searchYoutubeVideoCandidates(
       if (licenseParam) searchUrl.searchParams.set("videoLicense", licenseParam);
       searchUrl.searchParams.set("maxResults", String(maxResults));
       searchUrl.searchParams.set("part", "snippet");
-      searchUrl.searchParams.set("videoDuration", "medium");
+      searchUrl.searchParams.set("videoDuration", videoDuration);
       searchUrl.searchParams.set("order", "relevance");
       searchUrl.searchParams.set("videoEmbeddable", "true");
 
@@ -15273,11 +15286,21 @@ export async function fetchYouTubeCCClips(
     if (downloadsSoFar() >= maxDownloadAttempts) break;
     if (Date.now() > ytDeadline) break;
 
-    for (const pass of licensePasses) {
+    for (const [passIndex, pass] of licensePasses.entries()) {
       if (fetched >= count) break;
       if (downloadsSoFar() >= maxDownloadAttempts) break;
       if (Date.now() > ytDeadline) break;
       if (pass.license === "any" && fetched >= count) break;
+
+      /**
+       * This pass's duration slice — see `youtubeSearchDurationForPass`.
+       *
+       * The search sent `medium` unconditionally, so nothing under four minutes could ever be
+       * found: the richest category of archival footage, and the one best suited to a pipeline
+       * that keeps three to six seconds. Alternating across passes that are ALREADY separate API
+       * calls covers both slices for the quota the render was spending anyway.
+       */
+      const passDuration = youtubeSearchDurationForPass(passIndex, licensePasses.length);
 
       try {
         const items = await searchYoutubeVideoCandidates(
@@ -15287,8 +15310,17 @@ export async function fetchYouTubeCCClips(
           relevanceKeywords,
           minRelevanceScore,
           requiredPersonName,
-          Math.max(5, (count - fetched) * 4),
-          sourcingCache
+          /**
+           * The page the call already paid for — see `youtubeSearchPageSize`.
+           *
+           * This was `Math.max(5, (count - fetched) * 4)`, and `count` is 1 or 2 at every
+           * production call site, so render 577 asked YouTube for five results twenty-five times
+           * and got `results=215` against pexels's 4468. One `search.list` costs 100 quota units
+           * whether it returns 5 or 50.
+           */
+          youtubeSearchPageSize(),
+          sourcingCache,
+          passDuration
         );
         /**
          * RONDE 160 (FASE 8/15) — one line per SOURCE ATTEMPT, in the [Retrieval] vocabulary.
@@ -15300,7 +15332,8 @@ export async function fetchYouTubeCCClips(
          * key, never a URL.
          */
         console.log(
-          `[Retrieval] s${sceneIndex} source=youtube mode=${pass.license} attempted=true ` +
+          `[Retrieval] s${sceneIndex} source=youtube mode=${pass.license} ` +
+            `duration=${passDuration} attempted=true ` +
             `candidates=${items.length} query=${JSON.stringify(query.slice(0, 80))}`
         );
         if (!items.length) {

@@ -1074,6 +1074,94 @@ export function youtubeMaxDownloadsPerRender(): number {
   return 60;
 }
 
+/** The most `search.list` will return in one call. Asking for more is an API error. */
+export const YOUTUBE_SEARCH_PAGE_MAX = 50;
+
+/**
+ * ONE SEARCH CALL COSTS THE SAME WHETHER IT RETURNS 5 RESULTS OR 50.
+ *
+ * ── What render 577 measured ────────────────────────────────────────────────────────────────
+ *
+ *     youtube_cc:        searches=25  results=215     — 8.6 results per search
+ *     pexels:            searches=17  results=4468    — 263 per search
+ *     internet_archive:  searches=25  results=309
+ *
+ * YouTube was asked as often as the Internet Archive and answered with a fraction of the supply,
+ * and the reason is not the platform: it is the number this render asked for. The call site
+ * computed `Math.max(5, (count - fetched) * 4)`, and `count` is 1 or 2 at every production call
+ * site — so almost every YouTube search in that render asked for FIVE.
+ *
+ * The YouTube Data API charges `search.list` 100 quota units PER CALL, for any `maxResults`
+ * between 1 and 50. Asking for five bought a tenth of what the call had already paid for. The
+ * RapidAPI fallback is the same shape: it returns a whole page and the client slices it down.
+ *
+ * ── Why this is a supply fix and not a budget rise ──────────────────────────────────────────
+ *
+ * Nothing here spends more: the same searches, the same quota, the same number of network calls,
+ * one larger JSON body each. No gate moves, no threshold moves, and the download ceiling still
+ * bounds the expensive half — a render may now CHOOSE from ten times the candidates and still
+ * download no more of them than before. That is the point: `eligible=1 of 215` is a choice made
+ * from a thin pool, and the best of fifty is not the best of five.
+ *
+ * The answer deliberately does NOT depend on how many clips the caller wants. That was the old
+ * rule and it is the bug: the page is what the call returns, not what the render keeps, and
+ * sizing it to the need is sizing it to the wrong quantity. The one number that matters is the
+ * API's maximum, because anything below it discards supply already paid for.
+ */
+export function youtubeSearchPageSize(): number {
+  const raw = process.env.YOUTUBE_SEARCH_PAGE_SIZE?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= YOUTUBE_SEARCH_PAGE_MAX) return n;
+  }
+  return YOUTUBE_SEARCH_PAGE_MAX;
+}
+
+/**
+ * The two duration slices this pipeline can actually use.
+ *
+ * `long` (>20 min) is deliberately absent and is not an oversight: the YouTube route downloads the
+ * WHOLE source and only then trims, under an 80 MB ceiling. A forty-minute upload spends a
+ * download slot and the scene's remaining time to arrive at a file the size guard then refuses.
+ */
+export type YoutubeSearchDuration = "short" | "medium";
+
+/**
+ * BOTH SLICES GET SEARCHED, WITHOUT ONE EXTRA API CALL.
+ *
+ * ── What was being excluded ─────────────────────────────────────────────────────────────────
+ *
+ * The search sent `videoDuration=medium` unconditionally, which is 4 to 20 minutes. Everything
+ * shorter than four minutes — the single richest category of archival footage on the platform,
+ * and the category this pipeline is best suited to, since it keeps three to six seconds and
+ * `VIDRUSH_MIN_SOURCE_VIDEO_SEC` is 2.8 — could not be found at all. It arrived in a broad
+ * "improve visual candidate selection" commit with no note explaining it and no test guarding it.
+ *
+ * ── Why the pass index, and not a second search ─────────────────────────────────────────────
+ *
+ * The API takes ONE duration per call, so covering both slices normally means two calls per query
+ * and twice the quota — at 100 units a search, that is the difference between roughly four renders
+ * a day and two. But the licence passes (`any`, `creative_common`, `youtube`) are ALREADY separate
+ * calls. Giving each its own duration covers both slices for exactly the calls the render was
+ * making anyway.
+ *
+ * The first pass gets `short` because it is the one that most often decides the beat: every pass
+ * loop breaks on `fetched >= count`, so a pass that fills the beat is the last one to run. `short`
+ * is also the kinder half for this downloader — smaller files, faster transfers, and render 577's
+ * dominant failure was the transfer running out of time.
+ *
+ * A render with only ONE pass enabled keeps `medium`: with nothing to alternate against, rotating
+ * would not widen the render's supply, it would swap one slice for the other.
+ */
+export function youtubeSearchDurationForPass(
+  passIndex: number,
+  passCount: number
+): YoutubeSearchDuration {
+  if (!Number.isFinite(passIndex) || passIndex < 0) return "medium";
+  if (!Number.isFinite(passCount) || passCount <= 1) return "medium";
+  return passIndex % 2 === 0 ? "short" : "medium";
+}
+
 /**
  * ASK YOUTUBE FIRST, BEFORE THE ARCHIVE AND EVERYTHING ELSE.
  *

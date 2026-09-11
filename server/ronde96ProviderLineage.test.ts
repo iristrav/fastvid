@@ -56,10 +56,21 @@ const ALL_DOWNLOADING_FETCHERS = [
   "fetchPixabayClips", "fetchWikimediaImages", "fetchBrollClips",
 ] as const;
 
+/**
+ * The function's OWN body, bounded by the next top-level declaration.
+ *
+ * This was a fixed 16 000-character window, and that is a trap these assertions walked into: a
+ * comment added anywhere inside `fetchYouTubeCCClips` pushed its `tagPathWithProviderAsset(` call
+ * past the edge, and the test reported that a downloader had stopped opening a ledger record when
+ * nothing about the record had changed. What is guarded here is real and stays exactly as strict;
+ * only the window is now derived from the source instead of guessed.
+ */
 function bodyOf(fn: string, span = 16000): string {
   const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
   expect(idx, `${fn} not found`).toBeGreaterThan(-1);
-  return PIPELINE_SRC.slice(idx, idx + span);
+  const next = PIPELINE_SRC.slice(idx + 1).search(/\n(?:export\s+)?(?:async\s+)?function\s/);
+  const end = next === -1 ? idx + span : idx + 1 + next;
+  return PIPELINE_SRC.slice(idx, end);
 }
 
 /** A cache shaped like the one the pipeline passes, with a real ledger inside it. */

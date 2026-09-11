@@ -32,10 +32,21 @@ function codeLines(src: string): string[] {
     });
 }
 
+/**
+ * The function's OWN body, bounded by the next top-level declaration.
+ *
+ * A fixed 20 000-character window meant that a comment added anywhere inside
+ * `fetchYouTubeCCClips` could push the very call this test looks for past the edge, and the
+ * failure then read as "the route stopped keying its lineage on the real videoId" when the
+ * keying had not changed at all. The assertion is unchanged; only its window is now read from
+ * the source instead of guessed.
+ */
 function bodyOf(fn: string, span = 20000): string {
   const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
   expect(idx, `${fn} not found`).toBeGreaterThan(-1);
-  return PIPELINE_SRC.slice(idx, idx + span);
+  const next = PIPELINE_SRC.slice(idx + 1).search(/\n(?:export\s+)?(?:async\s+)?function\s/);
+  const end = next === -1 ? idx + span : idx + 1 + next;
+  return PIPELINE_SRC.slice(idx, end);
 }
 
 function silence<T>(fn: () => T): T {
@@ -172,7 +183,8 @@ describe("RONDE 97 §7 — the invariant", () => {
     for (const fn of ["fetchYouTubeCCClips", "searchYoutubeVideoCandidates", "downloadYouTubeCCClip"]) {
       const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
       if (idx === -1) continue;
-      const body = PIPELINE_SRC.slice(idx, idx + 20000);
+      /** Bounded by the function itself, for the reason given on `bodyOf`. */
+      const body = bodyOf(fn);
       const tagIdx = body.indexOf("tagPathWithProviderAsset(");
       if (tagIdx === -1) continue;
       const call = body.slice(tagIdx, tagIdx + 900);
