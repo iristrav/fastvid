@@ -22,6 +22,18 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      # Twelve test files build real video with ffmpeg rather than asserting over fixtures —
+      # `writeTestVideo` and its siblings — so without it the suite fails with
+      # `spawnSync ffmpeg ENOENT` and says nothing about the code. The runner image does not
+      # carry it; the Dockerfile installs it in both stages and verifies it with `ffmpeg -version`,
+      # and this is the same dependency for the same reason.
+      #
+      # It went unnoticed because CI never reached the tests: `pnpm install --frozen-lockfile`
+      # failed first, on a lockfile that had drifted from package.json, and every step after it was
+      # skipped. Fixing the install is what made this visible.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
