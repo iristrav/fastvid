@@ -396,6 +396,20 @@ export type YoutubeServiceRefusal =
   | "below_floor"
   | "over_ceiling"
   | "auth"
+  /**
+   * The service could not REACH YouTube: a proxy refused the tunnel, a connection was reset, DNS
+   * failed, the transfer timed out. Named because it is the failure a PROXY deployment produces,
+   * and because it is about the route rather than the video — retrying the same id later is
+   * sensible, which is the opposite of what `unavailable` implies.
+   *
+   * Found by running the real service against a real /download and reading what came back. It
+   * classified as `other`, which is the honest answer for an unrecognised message and the wrong
+   * one for a message this specific:
+   *
+   *     ERROR: [youtube] dQw4w9WgXcQ: Unable to download API page: ('Unable to connect to
+   *     proxy', OSError('Tunnel connection failed: 403 Forbidden'))
+   */
+  | "network"
   | "service_error"
   | "other";
 
@@ -444,6 +458,17 @@ export function classifyYoutubeServiceRefusal(
   if (/too many requests|http error 429|rate.?limit/.test(text)) return "rate_limited";
   if (/video unavailable|has been removed|no longer available|does not exist/.test(text)) {
     return "unavailable";
+  }
+  /**
+   * Checked before the service's own three refusals and after the platform's, because a transport
+   * failure can quote anything: the text that follows "caused by" is the network's, not YouTube's.
+   */
+  if (
+    /unable to connect to proxy|tunnel connection failed|proxyerror|connection reset|connection refused|name or service not known|temporary failure in name resolution|timed out|read timeout|network is unreachable|unable to download api page/.test(
+      text
+    )
+  ) {
+    return "network";
   }
   if (/produced no file/.test(text)) return "no_file";
   if (/below floor/.test(text)) return "below_floor";

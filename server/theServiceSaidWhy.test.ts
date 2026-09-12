@@ -83,6 +83,48 @@ describe("the four 502s are told apart", () => {
     expect(classifyYoutubeServiceRefusal(403, "")).toBe("auth");
   });
 
+  it("A TRANSPORT FAILURE IS NAMED — this body came back from the real service", () => {
+    /**
+     * Captured from an actual `/download` call against `services/ytdlp-download/main.py` running
+     * with the real yt-dlp, in an environment whose proxy refuses YouTube. Not composed by hand:
+     * this is what the service sends when it cannot REACH the platform.
+     *
+     * It classified as `other` on the first run, which is honest for an unrecognised message and
+     * wrong for one this specific — and it is the failure a PROXY deployment produces, which is
+     * the configuration under consideration. `network` also says something `unavailable` does not:
+     * the video is fine and the same id is worth asking for again.
+     */
+    const real =
+      "ERROR: [youtube] dQw4w9WgXcQ: Unable to download API page: ('Unable to connect to proxy', " +
+      "OSError('Tunnel connection failed: 403 Forbidden')) (caused by ProxyError(\"('Unable to " +
+      "connect to proxy', OSError('Tunnel connection failed: 403 Forbidden'))\")); please report " +
+      "this issue on  https://github.com/";
+    expect(classifyYoutubeServiceRefusal(502, real)).toBe("network");
+    expect(youtubeServiceRefusalReason(502, real)).toBe("http_502:network");
+  });
+
+  it("and the other shapes a transport failure takes", () => {
+    for (const body of [
+      "Connection reset by peer",
+      "Connection refused",
+      "Temporary failure in name resolution",
+      "The read operation timed out",
+      "Network is unreachable",
+    ]) {
+      expect(classifyYoutubeServiceRefusal(502, body), body).toBe("network");
+    }
+  });
+
+  it("A TRANSPORT FAILURE IS NOT A VIDEO FAILURE — the two must never merge", () => {
+    /**
+     * `unavailable` says the video is gone and asking again is pointless; `network` says the route
+     * was blocked and asking again is exactly right. Merging them would either blacklist working
+     * videos or retry dead ones forever.
+     */
+    expect(classifyYoutubeServiceRefusal(502, "Video unavailable")).toBe("unavailable");
+    expect(classifyYoutubeServiceRefusal(502, "Connection refused")).toBe("network");
+  });
+
   it("an unrecognised message is 'other', never guessed at", () => {
     expect(classifyYoutubeServiceRefusal(502, "something nobody has seen before")).toBe("other");
   });
