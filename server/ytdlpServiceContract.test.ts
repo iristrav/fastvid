@@ -96,6 +96,84 @@ describe("both halves agree on what is an acceptable file", () => {
   });
 });
 
+/* ═══════════════════════ an oversized body is a failed cut ═══════════════════════ */
+
+/**
+ * THE CEILING WAS A WASTE BIN, AND THE BYTES WERE ALREADY SPENT.
+ *
+ * This service fetches a RANGE, so a correct answer to a three-second beat is a few megabytes. A
+ * body over the ceiling does not mean the footage is too big — it means the range did not bind and
+ * the whole source arrived. The check runs after the download, so refusing recovered nothing that
+ * was still at stake; it only declined to send on what had already been paid for.
+ *
+ * Render 575 measured what that costs on another provider against the same 80 MB ceiling: one
+ * 92 216 473-byte asset, 111 identical refusals in 164 seconds, while the beat it was for ran out
+ * of time and the export gate then refused the scene for having no usable footage.
+ *
+ * The cut is verified against real ffmpeg rather than asserted here — these tests pin the RULES,
+ * which are the half that can drift silently: that the salvage exists, that the ceiling still
+ * binds afterwards, and that the ceiling was not quietly raised to make the problem go away.
+ */
+describe("an over-ceiling body is cut, not discarded", () => {
+  const code = SERVICE.replace(/"""[\s\S]*?"""/g, "").replace(/#[^\n]*/g, "");
+
+  it("THE SALVAGE RUNS BEFORE THE BOUNDS ARE ENFORCED", () => {
+    const salvage = code.indexOf("_salvage_oversized(produced, work, start, duration, size)");
+    const floor = code.indexOf("if size < MIN_BYTES:");
+    expect(salvage, "the salvage is gone — an untrimmed body is discarded again").toBeGreaterThan(-1);
+    expect(floor).toBeGreaterThan(-1);
+    expect(salvage, "the bounds are enforced before the cut is attempted").toBeLessThan(floor);
+  });
+
+  it("AND THE CEILING STILL BINDS AFTERWARDS — the client does not trim", () => {
+    /**
+     * The one that would ruin a video silently. `downloadYouTubeCCClip` renames this response
+     * straight to the beat's clip file, so a whole video answered at 200 is a whole video in the
+     * montage. The salvage may turn a refusal into a clip; it may never turn it into a pass.
+     */
+    const salvage = code.indexOf("_salvage_oversized(produced, work, start, duration, size)");
+    expect(code.slice(salvage)).toContain("if size > MAX_BYTES:");
+  });
+
+  it("the ceiling was not raised to make the refusal go away", () => {
+    expect(SERVICE).toContain("MAX_BYTES = 80 * 1024 * 1024");
+    expect(code, "the ceiling became configurable — the client's is not").not.toMatch(
+      /MAX_BYTES\s*=\s*int\(os\.environ/
+    );
+  });
+
+  it("THE WINDOW IS MEASURED BEFORE IT IS CUT", () => {
+    /**
+     * Cutting `[start, start+duration]` out of a file that is ALREADY that window would take the
+     * wrong seconds — the offset applied twice. So the file's real duration decides, and a body at
+     * the requested length is refused exactly as before rather than re-encoded.
+     */
+    expect(code).toContain("def _probe_duration(");
+    expect(code).toContain("if probed <= duration + _SALVAGE_MARGIN_SEC:");
+    expect(code).toContain('return produced, size, "already_cut"');
+  });
+
+  it("the cut seeks before it decodes", () => {
+    // `-ss` BEFORE `-i`: four seconds out of a forty-minute file costs what four seconds cost.
+    const args = code.slice(code.indexOf("def _cut_window("), code.indexOf("def _salvage_oversized("));
+    expect(args.indexOf('"-ss"')).toBeLessThan(args.indexOf('"-i"'));
+  });
+
+  it("EVERY OUTCOME IS NAMED, so a repeated failure can say which one it is", () => {
+    for (const outcome of ["salvaged", "already_cut", "cut_failed", "unprobed"]) {
+      expect(code, `the ${outcome} case lost its name`).toContain(`"${outcome}"`);
+    }
+    expect(code, "the refusal does not say whether the cut was tried").toContain("salvage={salvage}");
+  });
+
+  it("a failed cut falls through to the refusal rather than raising", () => {
+    /** Every helper here answers; none of them can turn a size problem into a 500. */
+    const helpers = code.slice(code.indexOf("def _probe_duration("), code.indexOf('@app.get("/health")'));
+    expect(helpers).toContain("except Exception:");
+    expect(helpers, "a helper raises instead of answering").not.toMatch(/\braise\b/);
+  });
+});
+
 /* ═══════════════════════ the segment, not the video ═══════════════════════ */
 
 describe("the service returns the already-trimmed segment", () => {

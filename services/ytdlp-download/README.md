@@ -19,6 +19,45 @@ halves of this against each other; it runs in the normal suite.
 Any non-200, an empty body or a timeout is fine: FastVid falls through to
 RapidAPI and records the reason.
 
+## Reading a 502
+
+All four of these answer 502, and they are four different problems:
+
+| Detail | What actually happened |
+| --- | --- |
+| yt-dlp's own message | YouTube refused — "Sign in to confirm you're not a bot", "Video unavailable", a format that does not exist. This is the one the proxy section below is about. |
+| `yt-dlp produced no file` | The call returned without writing anything. |
+| `file below floor` | Under 10 000 bytes. Not a small clip — no clip: an error page or a truncated transfer. Nothing usable is that small. |
+| `file over ceiling (…, salvage=…)` | Over 80 MB after the cut was attempted. See below. |
+
+The detail is in the response body **and** in this service's own log, on the
+line beginning `download failed id=`. A render that keeps losing YouTube
+footage is diagnosed from that line, not from the status code.
+
+### The ceiling, and why it is not a waste bin
+
+This service fetches a *range*, so a correct answer to a three-second beat is a
+few megabytes. A body over the ceiling therefore does not mean the footage is
+too big — it means the range did not bind and the **whole source** came down.
+
+That check runs after the download, so refusing outright recovered nothing:
+every byte was already spent. Render 575 measured the cost on another provider
+against this same ceiling — one 92 MB asset, 111 identical refusals in 164
+seconds, while the beat it was for ran out of time and the scene was then
+refused for having no usable footage.
+
+So an over-ceiling body is now measured and cut to the requested window with
+ffmpeg before the bounds are enforced. The ceiling itself is unchanged and still
+refuses afterwards, because FastVid does not trim what it receives. `salvage=`
+in the refusal says which case it was:
+
+| `salvage=` | Meaning |
+| --- | --- |
+| `salvaged` | The cut worked; this value appears in the success log, not a refusal. |
+| `already_cut` | The file was already the requested length and still over 80 MB — genuinely heavy footage. Not re-encoded: shrinking it is a quality decision this service does not make for the client. |
+| `cut_failed` | ffmpeg could not cut it. |
+| `unprobed` | ffprobe could not read the file at all. |
+
 ## Environment
 
 | Variable | Required | What it does |

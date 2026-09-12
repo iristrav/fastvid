@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -109,6 +110,123 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
     return opts
 
 
+"""
+AN OVERSIZED BODY IS A FAILED CUT, NOT A HEAVY CLIP.
+
+This service asks yt-dlp for a RANGE, so a correct answer to a three-second beat is a few
+megabytes. A body over the ceiling therefore does not mean "this footage is too big to use" — it
+means the range did not bind and the whole source came down instead. The footage is fine. Only
+the window is wrong, and ffmpeg is already installed on this machine to force keyframes at cuts.
+
+── Why refusing it outright was the wrong answer ───────────────────────────────────────────────
+
+The check runs AFTER the download. Every byte is already spent by the time the size is known, so
+refusing recovers nothing that was at stake — it only declines to send on what was already paid
+for, and hands the client a failure indistinguishable from YouTube blocking the fetch.
+
+Render 575 is what that costs, on another provider against the same ceiling: one 92 216 473-byte
+Pixabay asset, 111 identical refusals in 164 seconds — about one every second and a half, each
+one re-fetching a file whose size was never going to change — while the beat it was for ran out
+of time and the export gate then refused the scene for having no usable footage.
+
+── The two things this deliberately does NOT do ────────────────────────────────────────────────
+
+It does not raise the ceiling. `downloadYouTubeCCClip` renames this response straight to the
+beat's clip file and does not trim again, so a whole video answered at 200 is a whole video in the
+montage — the failure this file's header calls "the one that bites". The ceiling is still checked,
+still at 80 MB, and still refuses; it is now checked against the CUT file rather than the raw one.
+
+It does not re-encode a clip whose window is already correct. A file at the requested length that
+is still over the ceiling is genuinely heavy footage, and shrinking it is a quality decision this
+service has no business making on the client's behalf. That case is refused exactly as before, and
+the refusal says which case it was.
+
+── Why the probe, rather than cutting whatever arrives ─────────────────────────────────────────
+
+Cutting `[start, start+duration]` out of a file that is ALREADY that window would take the wrong
+seconds — the window's own offset, applied twice. So the file's real duration decides: longer than
+asked by more than the margin means it contains more than the window, and only then is it cut.
+"""
+
+_SALVAGE_MARGIN_SEC = 2.0
+
+
+def _probe_duration(path: Path) -> float | None:
+    """Seconds of media in the file, or None when ffprobe cannot say. Never raises."""
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+        seconds = float(out)
+        return seconds if seconds > 0 else None
+    except Exception:  # noqa: BLE001 - an unreadable file is an answer, not an outage
+        return None
+
+
+def _cut_window(src: Path, dst: Path, start: float, duration: float) -> bool:
+    """
+    Cut [start, start+duration] out of src.
+
+    `-ss` BEFORE `-i` so ffmpeg seeks to the window and decodes only that — cutting four seconds
+    out of a forty-minute file costs about what cutting four seconds always costs. Re-encoded
+    rather than stream-copied because a copy lands on the preceding keyframe, which is the frozen
+    opening frame `force_keyframes_at_cuts` exists to prevent on the yt-dlp side.
+    """
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-ss", f"{start:.3f}",
+                "-i", str(src),
+                "-t", f"{duration:.3f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac",
+                "-movflags", "+faststart",
+                str(dst),
+            ],
+            capture_output=True, timeout=120, check=True,
+        )
+        return dst.is_file() and dst.stat().st_size > 0
+    except Exception:  # noqa: BLE001 - a failed cut falls through to the ceiling refusal
+        return False
+
+
+def _salvage_oversized(
+    produced: Path, work: Path, start: float, duration: float, size: int
+) -> tuple[Path, int, str]:
+    """
+    Try to turn an over-ceiling body into the window that was asked for.
+
+    Returns the file to answer with, its size, and WHICH CASE THIS WAS — the third value is the
+    point: every outcome here is named and logged, so a render that keeps failing on size can say
+    whether the cut was never attempted, attempted and failed, or never applicable.
+    """
+    probed = _probe_duration(produced)
+    if probed is None:
+        log.warning("over ceiling and unreadable: bytes=%d wanted=%.2fs", size, duration)
+        return produced, size, "unprobed"
+    if probed <= duration + _SALVAGE_MARGIN_SEC:
+        # The window is right; the file is simply heavy. Not this service's call to re-encode.
+        log.warning("over ceiling at the requested length: bytes=%d probed=%.1fs", size, probed)
+        return produced, size, "already_cut"
+    cut = work / f"{uuid.uuid4().hex}-cut.mp4"
+    if not _cut_window(produced, cut, start, duration):
+        log.warning("over ceiling and the cut failed: bytes=%d probed=%.1fs", size, probed)
+        return produced, size, "cut_failed"
+    cut_size = cut.stat().st_size
+    log.info(
+        "salvaged an untrimmed body: bytes=%d->%d probed=%.1fs wanted=%.2fs start=%.2f",
+        size, cut_size, probed, duration, start,
+    )
+    return cut, cut_size, "salvaged"
+
+
 @app.get("/health")
 def health() -> JSONResponse:
     """
@@ -167,17 +285,36 @@ def download(
         raise HTTPException(status_code=502, detail="yt-dlp produced no file")
 
     size = produced.stat().st_size
+    # An over-ceiling body is a failed cut, not a heavy clip — see `_salvage_oversized`. Tried
+    # before the bounds are enforced, and the bounds below are then enforced on the result.
+    salvage = "none"
+    if size > MAX_BYTES:
+        produced, size, salvage = _salvage_oversized(produced, work, start, duration, size)
+
     # Refused HERE rather than left for FastVid to discard: a body outside these bounds is a
     # transfer neither side can use, and the client's own reason codes (DOWNLOAD_EMPTY,
     # DOWNLOAD_UNSUPPORTED) read better when the service names the same fact first.
     if size < MIN_BYTES:
         cleanup.func(*cleanup.args, **cleanup.kwargs)
-        raise HTTPException(status_code=502, detail=f"file below floor ({size} < {MIN_BYTES} bytes)")
+        # `salvage=` matters here too: since the cut runs first, a below-floor body can now also be
+        # a cut that produced almost nothing, which is a different fault from an empty download.
+        raise HTTPException(
+            status_code=502,
+            detail=f"file below floor ({size} < {MIN_BYTES} bytes, salvage={salvage})",
+        )
     if size > MAX_BYTES:
         cleanup.func(*cleanup.args, **cleanup.kwargs)
-        raise HTTPException(status_code=502, detail=f"file over ceiling ({size} > {MAX_BYTES} bytes)")
+        # `salvage=` names which case this was, so the operator is not left to guess whether the
+        # cut was attempted. See `_salvage_oversized` for what each value means.
+        raise HTTPException(
+            status_code=502,
+            detail=f"file over ceiling ({size} > {MAX_BYTES} bytes, salvage={salvage})",
+        )
 
-    log.info("ok id=%s start=%.2f dur=%.2f bytes=%d proxy=%s", id, start, duration, size, bool(PROXY_URL))
+    log.info(
+        "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s",
+        id, start, duration, size, salvage, bool(PROXY_URL),
+    )
     return FileResponse(
         produced,
         media_type="video/mp4",

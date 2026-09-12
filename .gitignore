@@ -120,3 +120,6 @@ client/public/__manus__/version.json
 # results (including real user PII) from whichever database was connected at the time. Must
 # never be committed.
 .manus/
+
+# Python bytecode from the yt-dlp download service, generated whenever main.py is imported.
+__pycache__/
