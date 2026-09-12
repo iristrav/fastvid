@@ -33,8 +33,22 @@ import { VisualSourceLedger } from "./visualSourceLineage";
  *
  *     [VisualFunnel] youtube_cc retrieved=2479 downloadSucceeded=88 eligible=1 composed=0
  *
- * Forty-four downloads, reported as eighty-eight. It does not survive its own ceiling either:
- * `youtubeMaxDownloadsPerRender()` is 60 ATTEMPTS, and 88 successes cannot come from 60 attempts.
+ * That figure is inflated, and by how much cannot be read off it. YouTube arrives by TWO paths and
+ * they counted differently:
+ *
+ *   `fetchYouTubeCCClips`   files the event AND bumps the counter — counted twice
+ *   the scene-pool route    files the event alone, and says so in its own comment
+ *                           ("this route does not bump `providerMetrics.downloadCount` either")
+ *                           — counted once
+ *
+ * So 88 is a mixture of singles and doubles: the real number of files is somewhere between 44 and
+ * 88, and the one line cannot say where. What it CAN say is that 88 is wrong —
+ * `youtubeMaxDownloadsPerRender()` is 60 ATTEMPTS, and no number of successes above 60 can come
+ * out of 60 attempts.
+ *
+ * Written this way deliberately. An earlier version of this comment said "forty-four downloads,
+ * reported as eighty-eight", which assumed a single path and was not checked. A confident number
+ * in a comment is read later as a measurement.
  *
  * ── What these tests are for ────────────────────────────────────────────────────────────────
  *
@@ -119,6 +133,36 @@ describe("no fetcher reports one arrival on both channels", () => {
       code,
       "youtube_cc is back on both channels — the fold will report double its downloads"
     ).not.toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount++');
+  });
+
+  it("YOUTUBE ARRIVES BY TWO PATHS, AND NEITHER USES BOTH CHANNELS", () => {
+    /**
+     * The fact an earlier reading of this file missed, and the reason its arithmetic was stated as
+     * a range rather than a number.
+     *
+     *   `fetchYouTubeCCClips`  the direct loop — where the double count was
+     *   the scene-pool route   `downloadAndTrim`, which files its outcome in a `finally` so that
+     *                          no branch can forget it, and bumps no counter
+     *
+     * Asserted together because "the YouTube route" is two routes, and a rule checked on one of
+     * them is exactly the shape this file exists to catch.
+     */
+    const pool = code.indexOf("let arrivalFailure: string | null =");
+    expect(pool, "the pool route's arrival flag moved").toBeGreaterThan(-1);
+    /**
+     * Anchored on the next FUNCTION, not on the comment that introduces it: this slice is taken
+     * from `code`, which has had its comments stripped, so a prose anchor resolves to -1 and the
+     * slice silently runs to the end of the file — where nine other providers do bump the counter.
+     * Found by this test failing on its first run, which is the anchor working.
+     */
+    const poolEnd = code.indexOf("async function trimDownloadedStockClip(", pool);
+    expect(poolEnd, "the function after the pool route was renamed").toBeGreaterThan(pool);
+    const poolBody = code.slice(pool, poolEnd);
+    expect(poolBody).toContain("recordProviderDownloadOutcome(");
+    expect(
+      poolBody,
+      "the pool route joined the counter channel — its downloads would count twice"
+    ).not.toContain(".downloadCount++");
   });
 
   it("and the archive route still files the rejection rather than a download event", () => {
