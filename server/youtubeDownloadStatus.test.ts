@@ -139,7 +139,29 @@ describe("§4 — the line carries the whole trail", () => {
 
   /** Both routes' outcomes survive, so "the cloud service is empty" is visible even when RapidAPI answered. */
   it("lists every route that was tried", () => {
-    expect(line).toContain("attempts=cloud:DOWNLOAD_EMPTY,rapidapi:DOWNLOAD_INVALID_CONTENT");
+    /**
+     * Each entry now carries its `detail` too. That field was written by every attempt and read by
+     * nothing — this line printed `route:status` and dropped it, so the one structured line a
+     * render emits per download named no cause. Render 578's 502 could not be explained from it.
+     *
+     * The trail, its order and both routes are unchanged; the detail is added, not substituted.
+     * The fixture's detail is the helper's default "d" — see `attempt` at the top of this file.
+     */
+    expect(line).toContain("attempts=cloud:DOWNLOAD_EMPTY(d),rapidapi:DOWNLOAD_INVALID_CONTENT(d)");
+  });
+
+  it("AND THE DETAIL IS WHAT MAKES THE LINE WORTH READING", () => {
+    /** `http_502` alone is the status the reader already has; the class is the actionable half. */
+    const withReason = formatYoutubeDownloadLine({
+      videoId: "dQw4w9WgXcQ",
+      sceneIndex: 3,
+      status: "DOWNLOAD_FAILED",
+      attempts: [attempt("cloud", "DOWNLOAD_FAILED", "http_502:bot_check")],
+      hasCloudRoute: true,
+      hasRapidRoute: false,
+      reason: "every_configured_route_failed",
+    });
+    expect(withReason).toContain("cloud:DOWNLOAD_FAILED(http_502:bot_check)");
   });
 
   it("reports configuration as presence only", () => {
