@@ -538,7 +538,20 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
      * ended another.
      */
     expect(body).toContain("const contentKey = clipContentKey(clipPath);");
-    expect(body).toContain("composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey)");
+    /**
+     * Read whitespace-insensitively, because the call now spans several lines: the barrier is
+     * asked about the BEAT as well, so one beat's `does_not_fit` no longer turns the clip away at
+     * a beat that approved it (see `composeBarrierAllows` and aVerdictBelongsToItsBeat).
+     *
+     * The property this pins is untouched and still the point — the barrier is consulted with the
+     * clip's own reused content key — and the beat argument is asserted beside it rather than the
+     * assertion being loosened to match the new spelling.
+     */
+    const flat = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+    expect(flat).toContain("composeBarrierAllows( dedup.beatRelevance, clipPath, contentKey,");
+    expect(flat, "the barrier is asked about the beat this clip is being placed at").toContain(
+      "beatIndex != null ? { sceneIndex, beatIndex } : undefined"
+    );
     expect(body).toContain("if (barrier.allow) return false;");
     /**
      * And a refusal leaves an ending on the ledger. Before this, both refusals in every
