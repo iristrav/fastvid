@@ -27433,7 +27433,6 @@ async function researchBeatClipUnifiedInner(
     }
   }
 
-  const allResearchTasks = [...ytTasks, ...tasks];
 
   if (
     europeanaSourcingEnabled() &&
@@ -27638,6 +27637,39 @@ async function researchBeatClipUnifiedInner(
       }
     }
   }
+
+  /**
+   * NINE RESEARCH TASKS WERE BUILT AND NEVER RUN.
+   *
+   * This line stood two hundred lines higher, directly after the YouTube and archive tasks were
+   * queued and BEFORE nine more `tasks.push(...)` calls. `[...ytTasks, ...tasks]` copies the array
+   * as it is at that moment, so everything pushed afterwards went into `tasks` — which nothing
+   * reads again. Europeana, NASA, Wikimedia images, Openverse, Unsplash, SerpAPI, Pexels (two
+   * routes) and Pixabay (two routes) were constructed for every beat and discarded.
+   *
+   * ── Why this is a defect and not a budget ───────────────────────────────────────────────────
+   *
+   * `maxTasks` is 10, 14 or 18. The copied list held at most about nine, so the slice below never
+   * bound anything — a ceiling of eighteen over a list that cannot reach ten is not a ceiling that
+   * was meant to exclude these. It was written for the list WITH them in it.
+   *
+   * It has been this way since the line was introduced (60dc4f7, 17 Aug, "limited cross-provider
+   * pooling"): ten pushes already sat below it in that same commit. Nothing drifted; the snapshot
+   * was taken in the wrong place on the first day.
+   *
+   * ── What this does and does not change ──────────────────────────────────────────────────────
+   *
+   * The order is kept exactly — YouTube first, then the rest — because the slice favours the front
+   * of the list and the YouTube route is the primary one. What changes is that the tail exists.
+   *
+   * These providers are NOT idle in the pipeline: each has between two and seven other call sites
+   * and runs from them. What was missing is their part in the per-beat research round, which is
+   * the round that looks for material for the sentence a shot will play under.
+   *
+   * `maxTasks` now binds for the first time, which is its job, and `fetchMs`/`researchMs` bound
+   * the round as they always did. Nothing here raises a budget.
+   */
+  const allResearchTasks = [...ytTasks, ...tasks];
 
   const researchMs = archivalFirst
     ? (perf.fastStockMode ? 95_000 : 110_000)
