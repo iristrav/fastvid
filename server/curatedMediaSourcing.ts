@@ -4,6 +4,7 @@
 import pLimit from "p-limit";
 import { exec as execCb } from "child_process";
 import { foldSearchText } from "./searchTextNormalize";
+import { checkPersonName } from "./searchQueryContract";
 import { stitchSourceFloorSec } from "./coverageFillPlan";
 import {
   getSourceFloorMemo,
@@ -871,6 +872,93 @@ export function computeBeatScoringContext(beatText?: string): BeatScoringContext
   };
 }
 
+/**
+ * THE "PERSON-NAME GUARANTEE" THAT NEVER CHECKED FOR A PERSON.
+ *
+ * ── What the delivered film did ─────────────────────────────────────────────────────────────
+ *
+ * A 76-second documentary about Hitler's death opened on a modern Brink's armoured security van
+ * and held it for seventeen seconds. Its first sentence is:
+ *
+ *     "Standing on the BRINK of utter defeat, his empire crumbling..."
+ *
+ * and the van has BRINKS painted down its side. It came back for the closing nineteen seconds,
+ * 36.3 of the film's 76 seconds in total.
+ *
+ * ── What the code said, and what it did ─────────────────────────────────────────────────────
+ *
+ * The rule this replaces read, in full:
+ *
+ *     // Person-name guarantee: if a tag names a specific person AND the beat text
+ *     // mentions that person → strong boost, clip is guaranteed to rank above generics.
+ *     for (const t of assetTags) {
+ *       if (t.length >= 4 && bl.includes(t)) { score += 200; beatHits += 3; break; }
+ *     }
+ *
+ * It never asked whether the tag named a person. Any tag of four characters or more that appeared
+ * ANYWHERE inside the beat sentence — as a substring, so not even a whole word — scored 200. That
+ * is more than twice the next largest term in this function (85 for a double geo hit) and nearly
+ * five times an exact tag match (42), which is what "guaranteed to rank above generics" means in
+ * practice: one accidental word overlap decides the shot.
+ *
+ * On a WWII script the overlaps are not rare, they are constant. `bunker`, `defeat`, `empire`,
+ * `reich`, `berlin`, `surrender`, `betrayal` are ordinary archive tags and ordinary narration
+ * words. Every one of them bought a guaranteed win. Substring matching made it worse: `rink`
+ * matched "brink", `eich` matched "Reich".
+ *
+ * ── What it does now ────────────────────────────────────────────────────────────────────────
+ *
+ * The guarantee is kept for the case it was written for and taken away from the case it was not.
+ * A tag is matched on WHOLE WORDS, and the span it matched is then put to `checkPersonName` —
+ * this pipeline's one definition of "is that a person" — reading the beat text with its original
+ * capitalisation. A real person mention still scores 200 and still outranks everything. Any other
+ * word the narration happens to share with a tag scores below an exact tag match, which is the
+ * ordering the rest of this function already encodes: a curated beat tag is better evidence than
+ * a word that happens to occur in a sentence.
+ *
+ * Nothing is relaxed and no film is emptied: a generic overlap still scores, it just no longer
+ * wins on its own.
+ */
+export const PERSON_TAG_BONUS = 200;
+export const BEAT_TEXT_WORD_BONUS = 30;
+
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The best reason a tag has to claim this beat — a named person if there is one, otherwise the
+ * first whole-word overlap. Returns the span AS WRITTEN in the beat text, because capitalisation
+ * is what `checkPersonName` reads and asset tags are stored lower-cased.
+ */
+export function beatTextTagMatch(
+  assetTags: readonly string[],
+  beatText: string
+): { tag: string; matched: string; isPerson: boolean } | null {
+  const text = beatText ?? "";
+  if (!text.trim()) return null;
+  let generic: { tag: string; matched: string; isPerson: boolean } | null = null;
+
+  for (const raw of assetTags) {
+    const tag = (raw ?? "").trim();
+    if (tag.length < 4) continue;
+    let re: RegExp;
+    try {
+      re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeForRegex(tag)}(?![\\p{L}\\p{N}])`, "iu");
+    } catch {
+      /** A tag that cannot be made into a pattern proves nothing; it simply does not match. */
+      continue;
+    }
+    const m = re.exec(text);
+    if (!m) continue;
+    const matched = m[0];
+    /** The whole point: 200 is for a person, and this is the pipeline's only test for one. */
+    if (checkPersonName(matched, text).ok) return { tag, matched, isPerson: true };
+    if (!generic) generic = { tag, matched, isPerson: false };
+  }
+  return generic;
+}
+
 export function scoreCuratedAsset(
   asset: ArchiveAssetRow,
   archiveNicheTags: string[],
@@ -888,15 +976,10 @@ export function scoreCuratedAsset(
   const ctx = beatCtx ?? computeBeatScoringContext(beatText);
 
   if (beatText?.trim()) {
-    const bl = beatText.toLowerCase();
-    // Person-name guarantee: if a tag names a specific person AND the beat text
-    // mentions that person → strong boost, clip is guaranteed to rank above generics.
-    for (const t of assetTags) {
-      if (t.length >= 4 && bl.includes(t)) {
-        score += 200;
-        beatHits += 3;
-        break; // one person match is enough
-      }
+    const hit = beatTextTagMatch(assetTags, beatText);
+    if (hit) {
+      score += hit.isPerson ? PERSON_TAG_BONUS : BEAT_TEXT_WORD_BONUS;
+      beatHits += hit.isPerson ? 3 : 1;
     }
   }
 
