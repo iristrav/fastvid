@@ -75,9 +75,13 @@ describe("RONDE 175 §1 — four looks per beat, not two", () => {
      * that was never going to be used, while the funnel judges the clip about to go in the video.
      * The YouTube share deliberately did not move, so the whole increase lands on the funnel.
      */
-    expect(maxYoutubeBeatImageJudgements()).toBe(24);
-    const forEverythingElse = maxBeatImageJudgementsPerRender() - maxYoutubeBeatImageJudgements();
-    expect(forEverythingElse).toBeGreaterThanOrEqual(19 * MAX_JUDGEMENTS_PER_BEAT);
+    /**
+     * The slice is gone entirely — the screening it paid for was removed, so YouTube now draws on
+     * the render ceiling through the beat shortlist like every other source, bounded there by
+     * `maxShortlistPerBeatPerSource`. The guarantee this test is named for is therefore stronger
+     * than it was: the WHOLE ceiling is available to the funnel, not the ceiling minus 24.
+     */
+    expect(maxBeatImageJudgementsPerRender()).toBeGreaterThanOrEqual(19 * MAX_JUDGEMENTS_PER_BEAT);
   });
 
   it("both budgets stay overridable, and refuse nonsense", () => {

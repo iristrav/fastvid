@@ -178,10 +178,23 @@ describe("the licence passes are ordered by what the project may use", () => {
 describe("everything a candidate has to survive is untouched", () => {
   const PIPELINE = read("videoPipeline.ts");
 
-  it("a downloaded clip is still screened on what it SHOWS, and refused with a reason", () => {
-    expect(PIPELINE).toContain("await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided)");
-    /** RONDE 114 — the refusal is a terminal outcome on the ledger, not a silent unlink. */
-    expect(PIPELINE).toContain("recordYoutubeScreeningRefusal(sourcingCache, outPath, sceneIndex");
+  it("a downloaded clip is still judged on what it SHOWS — by the beat that will use it", () => {
+    /**
+     * This used to assert a pre-pool screening at download time. That screening is gone: it judged
+     * against ONE beat's sentence and deleted the file for the whole scene, and its 24-judgement
+     * slice was spent in arrival order before any ranking. What it was really guarding — that a
+     * YouTube clip cannot reach the screen without the picture editor having looked at it — is
+     * unchanged and is now enforced in one place instead of two.
+     *
+     * `beatClipRefusedByRelevanceGate` obtains a verdict for the clip against the sentence it is
+     * about to run under (`finalSay: true`, which overrules the spend caps precisely because this
+     * look decides something), and `composeBarrierAllows` turns away anything refused. See
+     * youtubeIsJudgedWhereItIsUsed.test.ts.
+     */
+    expect(PIPELINE, "no clip is judged before it belongs to a beat")
+      .not.toContain("youtubeClipPassesImageGate");
+    expect(PIPELINE).toContain("beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index");
+    expect(PIPELINE).toContain("finalSay: true,");
   });
 
   it("the relevance floor and the person gate still run on every row", () => {

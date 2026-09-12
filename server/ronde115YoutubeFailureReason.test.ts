@@ -140,10 +140,16 @@ describe("the wiring at the cascade", () => {
     const b = block();
     expect(b).toContain("claimDownloadSlot()");
     expect(PIPE).toContain('if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
-    /** RONDE 114's order still holds: the arrival is filed before the editor may refuse it. */
-    const outcome = b.indexOf("recordProviderDownloadOutcome(");
-    const gate = b.indexOf("youtubeClipPassesImageGate(outPath");
-    expect(gate).toBeGreaterThan(outcome);
+    /**
+     * RONDE 114's subject was that a download's arrival is filed BEFORE anything may refuse it,
+     * so a refused clip could not end as a record that simply stopped. The screening that could
+     * refuse it here is gone, so there is no longer a second step to order against — but the
+     * first half, the one that actually mattered, is asserted exactly as before: every download
+     * that reaches this point files its own outcome.
+     */
+    expect(b).toContain("recordProviderDownloadOutcome(");
+    expect(b, "and nothing refuses a clip at this point any more")
+      .not.toContain("youtubeClipPassesImageGate");
   });
 
   it("the new parameter is optional, so every other caller is unchanged", () => {

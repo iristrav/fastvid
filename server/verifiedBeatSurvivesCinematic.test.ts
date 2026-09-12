@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { clipContentKey } from "./videoPipeline";
-import { createBeatRelevanceLedger, recordExternalRelevanceVerdict } from "./beatVisualRelevance";
+import { createBeatRelevanceLedger, } from "./beatVisualRelevance";
+import { recordExternalRelevanceVerdict } from "./beatRelevanceSeed.test.support";
 import { bindContentKeyResolver, type ClipAdoptEntry } from "./clipAdoptAudit";
 import { buildBeatVisualStatuses } from "./beatVisualStatus";
 import {

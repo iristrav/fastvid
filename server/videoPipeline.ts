@@ -571,7 +571,6 @@ import {
   checkBeatRelevance,
   composeBarrierAllows,
   createBeatRelevanceLedger,
-  recordExternalRelevanceVerdict,
   formatRelevanceSummary,
   inheritBeatRelevance,
   reprieveBeatClip,

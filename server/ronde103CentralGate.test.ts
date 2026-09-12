@@ -356,16 +356,18 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
   it("every judgement in the pipeline goes through the central gate", () => {
     /**
      * `judgeBeatImage` is the vision model. Calling it directly is how the three copies of this
-     * gate came to exist and drift. Exactly one direct caller remains — the YouTube pre-pool
-     * check, which runs before a clip is in any beat's pool and is documented as such — and
-     * everything else asks through checkBeatRelevance.
+     * gate came to exist and drift.
+     *
+     * This used to allow exactly ONE exception — the YouTube pre-pool check, which judged a clip
+     * before it belonged to any beat. That screening is gone (see
+     * youtubeIsJudgedWhereItIsUsed.test.ts), so the rule this test is named for now holds without
+     * exception: NO route goes round the decider. The assertion is tightened from one to zero
+     * rather than relaxed.
      */
     const direct = SRC.split("\n").filter(
       (l) => l.includes("judgeBeatImage({") && !/^\s*(\/\/|\*)/.test(l)
     );
-    expect(direct).toHaveLength(1);
-    const ytIdx = SRC.indexOf("async function youtubeClipPassesImageGate(");
-    expect(SRC.indexOf("judgeBeatImage({", ytIdx)).toBeGreaterThan(ytIdx);
+    expect(direct).toHaveLength(0);
     /**
      * The routes reach the decider through `judgeBeatClipRelevance`, which records the gate's
      * spend AND its verdict and then calls `checkBeatRelevance`. Counting the wrapper is counting

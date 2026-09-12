@@ -41,7 +41,8 @@ import {
   recordClipAdopt,
 } from "./clipAdoptAudit";
 import { VisualSourceLedger } from "./visualSourceLineage";
-import { createBeatRelevanceLedger, recordExternalRelevanceVerdict } from "./beatVisualRelevance";
+import { createBeatRelevanceLedger, } from "./beatVisualRelevance";
+import { recordExternalRelevanceVerdict } from "./beatRelevanceSeed.test.support";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 

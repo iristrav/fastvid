@@ -509,66 +509,6 @@ export async function checkBeatRelevance(
 }
 
 /**
- * RONDE 104 — record a verdict that was earned outside `checkBeatRelevance`.
- *
- * There is exactly one such caller and it is deliberate: the YouTube pre-pool check judges a clip
- * before it belongs to any beat, so it cannot go through the normal path (there is no beat slot
- * to charge, and no per-beat ceiling that means anything). Its answers were therefore going only
- * to the log — which meant a YouTube clip refused there could arrive later by another route as a
- * path nothing had judged, and the compose barrier had to let it through.
- *
- * This does not make a decision and does not call the model. It writes down one that was already
- * made, so the refusal follows the ASSET rather than the file it happened to be in at the time.
- */
-export function recordExternalRelevanceVerdict(
-  ledger: BeatRelevanceLedger,
-  clipPath: string,
-  contentKey: string,
-  ctx: BeatVisualContext,
-  /**
-   * `evaluated` is optional and defaults to TRUE here, deliberately.
-   *
-   * Every caller of this recorder passes a verdict a model really produced — that is what
-   * "earned outside checkBeatRelevance" means. A caller that has a decline to record must say so
-   * explicitly, rather than a decline being the accidental default of an omitted field.
-   */
-  judgement: {
-    verdict: BeatImageVerdict;
-    depicts: string;
-    reason: string;
-    cached?: boolean;
-    evaluated?: boolean;
-    /**
-     * Optional, and absent for every existing caller.
-     *
-     * This recorder exists for verdicts earned OUTSIDE `checkBeatRelevance` — the YouTube
-     * pre-pool screening, the compose barrier. Those callers hold a real judgement and may know
-     * its framing; a caller that does not simply omits it, exactly as before.
-     */
-    framing?: ShotType;
-  },
-  route: string
-): BeatRelevanceDecision {
-  const decision: BeatRelevanceDecision = {
-    verdict: judgement.verdict,
-    allowed: judgement.verdict !== "does_not_fit",
-    reprieved: false,
-    cached: judgement.cached === true,
-    depicts: judgement.depicts,
-    reason: judgement.reason,
-    /** Carried, not re-derived — see `framing` on this type. Absent stays absent. */
-    ...(judgement.framing ? { framing: judgement.framing } : {}),
-    route,
-    /** See the parameter's note: an omitted flag means a real look, never a decline. */
-    evaluated: judgement.evaluated !== false,
-  };
-  const entry: BeatRelevanceEntry = { ctx, decision };
-  ledger.byClipPath.set(clipPath, entry);
-  if (contentKey && !contentKey.startsWith("file:")) ledger.byContentKey.set(contentKey, entry);
-  return decision;
-}
-
-/**
  * RONDE 103 phase 15 — overrule the judge, on the record.
  * RONDE 166 — and only for the refusals that decision was ever defensible for.
  *

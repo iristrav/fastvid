@@ -84,13 +84,23 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     expect(mod).toContain('if (!ctx.beatText?.trim()) return pass("unknown", "no narration to judge against");');
     expect(mod).toContain("allowed: true");
     /**
-     * `allowed` can be false in exactly one way — a definite refusal — and both places that build
-     * a decision spell it the same way. RONDE 104 added the second: recordExternalRelevanceVerdict
-     * writes down the YouTube pre-pool verdict, which is earned outside checkBeatRelevance and
-     * must be read by the same rule.
+     * `allowed` can be false in exactly one way — a definite refusal — and every place that builds
+     * a decision spells it the same way.
+     *
+     * RONDE 104 added a second builder here: `recordExternalRelevanceVerdict`, which wrote down the
+     * YouTube pre-pool verdict earned outside `checkBeatRelevance`. That screening is gone (see
+     * youtubeIsJudgedWhereItIsUsed.test.ts) and the builder moved to test support, so production
+     * is back to ONE — which is the stronger position this test has always been arguing for.
+     *
+     * The moved copy is checked too, and against this exact spelling, because a seeder that read
+     * the verdict differently from production would put decisions in the ledger that production
+     * could never produce, and every test built on it would be testing a fiction.
      */
-    expect(mod.match(/allowed: judgement\.verdict !== "does_not_fit"/g) ?? []).toHaveLength(2);
+    expect(mod.match(/allowed: judgement\.verdict !== "does_not_fit"/g) ?? []).toHaveLength(1);
     expect(mod).not.toContain("allowed: false,");
+    const seeder = fs.readFileSync(path.join(__dirname, "beatRelevanceSeed.test.support.ts"), "utf8");
+    expect(seeder).toContain('allowed: judgement.verdict !== "does_not_fit"');
+    expect(seeder).not.toContain("allowed: false,");
   });
 
   it("the frames it judges are cleaned up", () => {

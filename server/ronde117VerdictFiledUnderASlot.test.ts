@@ -31,9 +31,9 @@ import { describe, expect, it } from "vitest";
 import {
   createBeatRelevanceLedger,
   inheritBeatRelevance,
-  recordExternalRelevanceVerdict,
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
+import { recordExternalRelevanceVerdict } from "./beatRelevanceSeed.test.support";
 import { bindContentKeyResolver, type ClipAdoptEntry } from "./clipAdoptAudit";
 
 /**

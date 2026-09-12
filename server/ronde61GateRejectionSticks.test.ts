@@ -171,60 +171,24 @@ describe("RONDE 61 — the pipeline records and honours the refusal", () => {
   });
 });
 
-describe("RONDE 61 — YouTube no longer eats the render's judgements", () => {
-  it("YouTube gets a slice, not the whole budget", () => {
-    expect(maxYoutubeBeatImageJudgements()).toBeLessThan(maxBeatImageJudgementsPerRender());
-    // Render 532 spent 52 of 60 on YouTube; the slice has to be well under that.
-    expect(maxYoutubeBeatImageJudgements()).toBeLessThan(52);
-  });
+/**
+ * RONDE 61 — YOUTUBE EATING THE RENDER'S JUDGEMENTS, AND WHY THE SLICE IS GONE.
+ *
+ * Render 532 spent 52 of its 60 judgements on YouTube candidates and refused 48 of them, leaving
+ * the funnel — the route the adopted clips actually come from — just 8. This describe guarded the
+ * answer to that: a separate 24-judgement slice YouTube could not spend past.
+ *
+ * The crowding was possible only because YouTube was judged BEFORE a clip entered any beat's
+ * pool, so it drew on the render ceiling outside the one place where drawing is bounded. That
+ * screening is gone, and with it the need for a slice: YouTube now reaches the editor through the
+ * beat shortlist like every other source, where `maxShortlistPerBeatPerSource` caps what any one
+ * source may put to the editor per beat.
+ *
+ * So the finding survives and the mechanism it justified does not. See
+ * youtubeIsJudgedWhereItIsUsed.test.ts, which carries render 532's measurement and asserts both
+ * that the slice has no definition left and that the two real budgets are untouched.
+ */
 
-  it("the slice is env-overridable within sane bounds", () => {
-    vi.stubEnv("MAX_YOUTUBE_BEAT_IMAGE_JUDGEMENTS", "10");
-    expect(maxYoutubeBeatImageJudgements()).toBe(10);
-    vi.stubEnv("MAX_YOUTUBE_BEAT_IMAGE_JUDGEMENTS", "nonsense");
-    expect(maxYoutubeBeatImageJudgements()).toBe(24);
-  });
-
-  it("the state tracks YouTube's spend separately from the render's", () => {
-    const state = createBeatImageGateState();
-    expect(state.judgementAttempts).toBe(0);
-    expect(state.youtubeJudgementsUsed).toBe(0);
-  });
-
-  it("past its slice, YouTube adopts as before rather than starting to reject", () => {
-    /**
-     * The guarantee is unchanged and so is the answer; only the line changed shape.
-     *
-     * `return true` became `return noteYoutubeUnscreenedAdmission(...)` so that a clip admitted
-     * WITHOUT being looked at is counted as such — render 578 screened 24 of 88 downloads and
-     * every count it produced treated the other 64 as though they had passed. The helper's return
-     * type is the literal `true`, which is what keeps this test's promise checkable by the
-     * compiler as well as by this assertion, so a future edit cannot turn it into a rejection
-     * without changing that signature in plain sight.
-     */
-    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const idx = src.indexOf("async function youtubeClipPassesImageGate(");
-    const block = src.slice(idx, idx + 2600);
-    expect(block).toContain(
-      "if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return noteYoutubeUnscreenedAdmission("
-    );
-    expect(block, "and still no rejection past the slice").not.toContain(
-      "if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return false;"
-    );
-    /** The helper answers `true` and cannot answer anything else. */
-    expect(src.replace(/\s+/g, " ")).toContain(
-      "function noteYoutubeUnscreenedAdmission( gate: BeatImageGateState, sceneIndex: number, videoId: string ): true {"
-    );
-  });
-
-  it("a cached verdict is free — it does not count against the slice", () => {
-    const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const idx = src.indexOf("async function youtubeClipPassesImageGate(");
-    const block = src.slice(idx, idx + 2600);
-    expect(block).toContain("const spentBefore = gate.judgementAttempts;");
-    expect(block).toContain("if (gate.judgementAttempts > spentBefore) gate.youtubeJudgementsUsed++;");
-  });
-});
 
 describe("RONDE 61 — the watch page gets a budget it can finish in", () => {
   it("it no longer inherits the 3.5s transcript timeout", () => {

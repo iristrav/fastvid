@@ -271,39 +271,24 @@ describe("RONDE 104 #5 — the durable verdict store", () => {
 
 /* ═══════════ 6. YouTube joins the ledger ═══════════ */
 
-describe("RONDE 104 #6 — the YouTube pre-pool verdict is written down", () => {
-  it("records into the ledger under the clip's content identity", () => {
-    const idx = PIPELINE.indexOf("async function youtubeClipPassesImageGate(");
-    const body = PIPELINE.slice(idx, PIPELINE.indexOf("\nexport async function", idx));
-    expect(body).toContain("recordExternalRelevanceVerdict(");
-    expect(body).toContain('"youtube_prepool"');
-    expect(body).toContain("clipContentKey(clipPath),");
-  });
+/**
+ * RONDE 104 #6 — THE YOUTUBE PRE-POOL VERDICT, AND WHY THIS SECTION IS GONE.
+ *
+ * This described a screening that judged a downloaded YouTube clip before it belonged to any beat
+ * and wrote the verdict into the ledger under the clip's CONTENT identity, so a refused asset
+ * could not walk back in under a new filename. Four assertions guarded it.
+ *
+ * The screening itself is gone — see youtubeIsJudgedWhereItIsUsed.test.ts for what render 578
+ * measured and why. With it went the only production caller of `recordExternalRelevanceVerdict`,
+ * which now lives in `beatRelevanceSeed.test.support.ts` as the ledger seeder eight test files
+ * use it as.
+ *
+ * The rule the section protected is NOT gone and is not guarded here. A verdict is still indexed
+ * by content identity rather than by path, and a `file:` key is still refused that indexing — by
+ * `isCanonicalAssetKey` and by `ensureVerdictBeforeCompose`, both in beatVisualRelevance.ts, on
+ * the route every judgement now takes.
+ */
 
-  it("every caller that supplies the gate state also supplies the ledger", () => {
-    const withGate = PIPELINE.split("imageGate: dedup.beatImageGate,").length - 1;
-    const withLedger = PIPELINE.split("relevanceLedger: dedup.beatRelevance").length - 1;
-    expect(withGate).toBeGreaterThanOrEqual(8);
-    expect(withLedger).toBe(withGate);
-  });
-
-  it("the recorder writes a decision down but never makes one", () => {
-    const idx = RELEVANCE.indexOf("export function recordExternalRelevanceVerdict(");
-    expect(idx).toBeGreaterThan(-1);
-    const body = RELEVANCE.slice(idx, RELEVANCE.indexOf("\n}", idx));
-    expect(body).toContain('allowed: judgement.verdict !== "does_not_fit"');
-    // No model call, no frame extraction, no budget spend.
-    for (const forbidden of ["judgeBeatImage", "sampleFrames", "judgementAttempts", "await "]) {
-      expect(body, `recorder does ${forbidden}`).not.toContain(forbidden);
-    }
-  });
-
-  it("a `file:` key is still not indexed by content — it cannot survive a rename", () => {
-    const idx = RELEVANCE.indexOf("export function recordExternalRelevanceVerdict(");
-    const body = RELEVANCE.slice(idx, RELEVANCE.indexOf("\n}", idx));
-    expect(body).toContain('!contentKey.startsWith("file:")');
-  });
-});
 
 /* ═══════════ 7. the reprieve bookkeeping ═══════════ */
 

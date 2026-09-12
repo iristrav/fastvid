@@ -76,66 +76,18 @@ describe("1. backfill may not fill a beat nobody was asked about", () => {
 });
 
 /**
- * WHY THE SECOND FIX IS ONE LINE OF COMMENT IN THE PIPELINE AND ALL OF THIS HERE.
+ * 2. A SPENT JUDGEMENT BUDGET IS NOT AN APPROVAL — superseded by removing the budget.
  *
- * `youtubeClipPassesImageGate` ends with an instruction in its own words: "DO NOT ADD PROSE
- * ANYWHERE ABOVE — put it after this return, or in a test file", because `ronde61GateRejectionSticks`
- * slices that function at 2600 characters and `ronde60YoutubeSegment` at 4200, and each proves a
- * rule lives inside its slice. A few hundred characters of explanation pushes one of them out and
- * the rule reads as deleted — a false finding produced by prose, which this file has produced
- * before. So the explanation lives here, where it costs nothing.
+ * This section made the silent `return true` visible: when YouTube's 24-judgement slice ran out,
+ * every further download entered the pool on an answer the caller reads as "passed the image
+ * gate", and the render counted 24 of 88 and said nothing about the other 64.
  *
- * ── What render 578 measured ────────────────────────────────────────────────────────────────
- *
- *     [VisionCensus] youtube_screening judged=24 unavailable=0 skipped=21
- *     [VisualFunnel]  youtube_cc retrieved=2479 downloadSucceeded=88 eligible=1 composed=0
- *
- * `maxYoutubeBeatImageJudgements()` is 24 and the render spent exactly 24 — the whole slice,
- * first-come, on whichever clips finished downloading first, of which it refused 22. The other
- * sixty-odd downloads met `if (used >= max) return true;` and were waved through.
- *
- * The caller reads that `true` as "passes the image gate" and puts the clip in the pool. So the
- * render's most expensive source spent most of its bandwidth on material admitted by a silent
- * yes, and the one number an operator can read about it — the screening census — counted 24 of 88
- * and said nothing whatever about the other 64. Not a wrong decision: an unrecorded one.
- *
- * ── What changes ────────────────────────────────────────────────────────────────────────────
- *
- * The answer is the same and the clip is still admitted. Turning it away would lose material the
- * beat gate can still judge, and the download is already paid for. What is added is that the
- * render SAYS a clip went in unscreened and counts how many did — incremented where the decision
- * is made rather than reconstructed afterwards from the gap between two other counters, which is
- * exactly the reconstruction nobody performed.
+ * Counting them was the right first move and it is what showed the size of the problem. The
+ * second move made the counter unnecessary: the pre-pool screening is gone, so there is no budget
+ * to spend here and no unscreened admission to record. YouTube is judged once, by the beat gate,
+ * on the sentence it will run under. See youtubeIsJudgedWhereItIsUsed.test.ts.
  */
-describe("2. a spent judgement budget is not an approval", () => {
-  const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("THE RENDER SAYS A CLIP WENT IN UNSCREENED", () => {
-    expect(SRC).toContain("NOT_SCREENED");
-    expect(SRC).toContain("gate.youtubeUnscreenedAdmissions = (gate.youtubeUnscreenedAdmissions ?? 0) + 1");
-  });
-
-  it("and counts them, so the number is stated rather than inferred", () => {
-    const state = createBeatImageGateState();
-    expect(state.youtubeUnscreenedAdmissions).toBe(0);
-  });
-
-  it("BOTH YOUTUBE NUMBERS REACH THE SUMMARY — one without the other misleads", () => {
-    expect(SRC).toContain("youtube judged=${g.youtubeJudgementsUsed}");
-    expect(SRC).toContain("unscreened=${g.youtubeUnscreenedAdmissions ?? 0}");
-  });
-
-  it("the clip is still ADMITTED — this is a record, not a new refusal", () => {
-    /**
-     * Turning the clip away would lose material the beat gate can still judge, and the download
-     * is already paid for. RONDE 199b's lesson: a requirement that cannot be met empties the film.
-     */
-    const flat = SRC.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "").replace(/\s+/g, " ");
-    const idx = flat.indexOf("gate.youtubeUnscreenedAdmissions = ");
-    expect(idx).toBeGreaterThan(-1);
-    expect(flat.slice(idx, idx + 400)).toContain("return true;");
-  });
-});
 
 describe("3. a query has to name something you could photograph", () => {
   it("RENDER 578: \"standing brink\" IS NO LONGER A SEARCH QUERY", () => {

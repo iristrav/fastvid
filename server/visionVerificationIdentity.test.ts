@@ -15,9 +15,9 @@ import { clipContentKey } from "./videoPipeline";
 import {
   createBeatRelevanceLedger,
   isCanonicalAssetKey,
-  recordExternalRelevanceVerdict,
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
+import { recordExternalRelevanceVerdict } from "./beatRelevanceSeed.test.support";
 import { bindContentKeyResolver, type ClipAdoptEntry } from "./clipAdoptAudit";
 import { buildBeatVisualStatuses } from "./beatVisualStatus";
 

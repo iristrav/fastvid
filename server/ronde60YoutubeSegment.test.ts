@@ -329,76 +329,26 @@ describe("RONDE 60 #1 — the pipeline's own flat 15 is gone", () => {
   });
 });
 
-describe("RONDE 60 #3 — YouTube finally reaches the beat-image gate", () => {
-  const SRC = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+/**
+ * RONDE 60 #3 — YOUTUBE REACHING THE BEAT-IMAGE GATE, AND WHERE THAT NOW HAPPENS.
+ *
+ * Six assertions used to guard `youtubeClipPassesImageGate`: that it judged a downloaded clip on
+ * its frames, failed open in every direction, deleted a rejected clip so a later beat could not
+ * pick it up off disk, cleaned up its frames, was handed the render's budget by every call site,
+ * and kept that budget render-scoped.
+ *
+ * The function is gone. It judged against ONE beat's sentence at download time and deleted the
+ * file for the whole scene, and it spent its slice in arrival order before any ranking had said
+ * which candidates were worth a look — render 578 screened 24 of 88 downloads and delivered none
+ * of them.
+ *
+ * What RONDE 60 was actually after — YouTube being judged by the picture editor at all, rather
+ * than adopted on a filename — is unchanged and is now the beat gate's job alone, which is where
+ * every other source has always been judged. See youtubeIsJudgedWhereItIsUsed.test.ts. The
+ * fail-open rule and the render-scoped state it checked still hold; they belong to the gate
+ * itself and are asserted in beatImageRelevanceGate's own tests.
+ */
 
-  it("a downloaded YouTube clip is judged on what it shows", () => {
-    const src = SRC();
-    const idx = src.indexOf("async function youtubeClipPassesImageGate(");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 4200);
-    expect(block).toContain("JUDGEMENT_FRAME_FRACTIONS");
-    expect(block).toContain("judgeBeatImage({");
-    expect(block).toContain('return judgement.verdict !== "does_not_fit";');
-    /**
-     * RONDE 103: this check runs before a clip is in any beat's pool, so it has narration but no
-     * beat slot — and it must not therefore share a cache bucket with every beat that later
-     * judges the same video. Its identity comes from the narration it does have.
-     */
-    expect(block).toContain("beatIdentity: beatIdentityKey({");
-  });
-
-  it("it fails open in every direction, exactly like the funnel's copy", () => {
-    const src = SRC();
-    const idx = src.indexOf("async function youtubeClipPassesImageGate(");
-    const block = src.slice(idx, idx + 2200);
-    // No gate state, gate switched off, or no narration -> adopt, without spending a call.
-    expect(block).toContain(
-      'if (!gate || !beatImageRelevanceGateEnabled() || !scriptGuided?.beatText?.trim()) return true;'
-    );
-  });
-
-  it("a rejected clip is deleted so a later beat cannot pick it up off disk", () => {
-    const src = SRC();
-    const idx = src.indexOf("youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided)");
-    expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 500);
-    expect(block).toContain("fs.unlinkSync(outPath)");
-    expect(block).toContain("continue;");
-  });
-
-  it("the frames it judges are cleaned up", () => {
-    const src = SRC();
-    const idx = src.indexOf("async function youtubeClipPassesImageGate(");
-    /**
-     * Bounded by where the function actually ends, not by a character count.
-     *
-     * This used to slice a fixed 2200 characters, which made the assertion depend on how much
-     * COMMENTARY sat between the judgement and the cleanup — adding a paragraph of explanation
-     * pushed the unlink out of the window and turned a documentation change into a red test. The
-     * property being guarded is "the frames this function extracts are deleted inside it", and the
-     * function's own closing brace is where that stops being true.
-     */
-    const nextFn = src.indexOf("\nasync function ", idx + 1);
-    const block = src.slice(idx, nextFn > idx ? nextFn : idx + 4000);
-    expect(block).toMatch(/for \(const p of framePaths\)[\s\S]{0,80}fs\.unlinkSync\(p\)/);
-  });
-
-  it("every YouTube call site hands over the render's judgement budget", () => {
-    const src = SRC();
-    const callSites = [...src.matchAll(/fetchYouTubeCCClips\(/g)].length;
-    const gated = [...src.matchAll(/imageGate: dedup\.beatImageGate/g)].length;
-    // One definition line plus one call per site; every call must carry the gate.
-    expect(gated).toBe(callSites - 1);
-    expect(gated).toBeGreaterThanOrEqual(9);
-  });
-
-  it("the gate state stays render-scoped — it is never a module-level budget", () => {
-    const src = SRC();
-    expect(src).toContain("imageGate?: BeatImageGateState;");
-    expect(src).toContain("state: gate,");
-  });
-});
 
 describe("RONDE 60 #2 — the transcript route actually locates the subject now", () => {
   const CAPTIONS = {

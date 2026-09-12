@@ -136,13 +136,21 @@ describe("the YouTube route closes the download record it opens", () => {
    * failed download would swap a relevance problem for a retrieval one — the exact confusion this
    * whole change exists to end.
    */
-  it("a clip the picture editor refuses is still counted as downloaded", () => {
+  it("a downloaded clip is counted the moment it arrives, whatever happens to it next", () => {
+    /**
+     * This used to read "a clip the picture editor refuses is still counted as downloaded", and
+     * named the pre-pool screening as the thing that might refuse it. That screening is gone, so
+     * no YouTube download is dropped between arriving and entering the pool at all — which makes
+     * the accounting claim easier to keep, not harder. What is asserted is the half that carries
+     * it: the outcome is filed inside the slot the download claimed.
+     */
     const src = PIPELINE();
     const at = src.indexOf("if (!claimDownloadSlot()) {");
+    expect(at).toBeGreaterThan(-1);
     const outcome = src.indexOf("recordProviderDownloadOutcome(", at);
-    const gate = src.indexOf("youtubeClipPassesImageGate(outPath", at);
-    expect(outcome).toBeGreaterThan(-1);
-    expect(gate).toBeGreaterThan(outcome);
+    expect(outcome).toBeGreaterThan(at);
+    expect(src.slice(at, outcome), "nothing refuses the clip before it is counted")
+      .not.toContain("youtubeClipPassesImageGate");
   });
 });
 

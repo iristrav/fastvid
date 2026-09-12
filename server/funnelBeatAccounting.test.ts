@@ -191,7 +191,15 @@ describe("no gate was weakened to make coverage look better", () => {
   it("the vision budgets are unchanged", () => {
     expect(GATE).toContain('envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 120, 0, 500)');
     expect(GATE).toContain('envInt("MAX_BEAT_IMAGE_JUDGEMENTS_PER_BEAT", 4, 1, 12)');
-    expect(GATE).toContain('envInt("MAX_YOUTUBE_BEAT_IMAGE_JUDGEMENTS", 24, 0, 500)');
+    /**
+     * The third budget — YouTube's own 24-judgement slice — is deliberately absent, and its
+     * removal is a TIGHTENING rather than the loosening this describe guards against. It bought
+     * pre-pool screenings: looks spent before any ranking, on one beat's sentence, on material the
+     * film might never use. YouTube now draws on the two ceilings above through the beat shortlist
+     * like every other source. See youtubeIsJudgedWhereItIsUsed.test.ts, which asserts the slice
+     * is gone and these two are untouched.
+     */
+    expect(GATE).not.toContain('MAX_YOUTUBE_BEAT_IMAGE_JUDGEMENTS');
   });
 
   /** The gate is still on by default, and the budget check still runs before any call. */

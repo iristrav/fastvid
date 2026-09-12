@@ -54,10 +54,10 @@ import {
   createBeatRelevanceLedger,
   formatAdoptedFitDecision,
   inheritBeatRelevance,
-  recordExternalRelevanceVerdict,
   reprieveBeatClip,
   type BeatRelevanceLedger,
 } from "./beatVisualRelevance";
+import { recordExternalRelevanceVerdict } from "./beatRelevanceSeed.test.support";
 import {
   buildBeatVisualStatuses,
   formatVisualFitAudit,

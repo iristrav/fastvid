@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBeatImageGateState } from "./beatImageRelevanceGate";
 import {
   createBeatRelevanceLedger,
-  recordExternalRelevanceVerdict,
   reprieveBeatClip,
 } from "./beatVisualRelevance";
+import { recordExternalRelevanceVerdict } from "./beatRelevanceSeed.test.support";
 import { fetchYoutubeVideoContext, _resetYoutubeVideoContextCache } from "./youtubeVideoContext";
 
 /**
