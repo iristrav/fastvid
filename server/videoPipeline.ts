@@ -564,7 +564,6 @@ import {
   judgementTally,
   formatNoVerdictReasons,
   formatVerdictProviders,
-  maxYoutubeBeatImageJudgements,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
 import {
@@ -3019,8 +3018,6 @@ async function fetchBeatYoutubeOnly(
           beatIndex: beat.index,
           videoTitle,
           fastMode: dedup.perf.fastStockMode,
-          imageGate: dedup.beatImageGate,
-          relevanceLedger: dedup.beatRelevance,
         },
         dedup.usedContentKeys,
         dedup.sourcingCache
@@ -4108,8 +4105,6 @@ async function tryBeatRealYouTubeFootage(
                 beatIndex: beat.index,
                 videoTitle: adoptOpts.videoTitle,
                 fastMode: dedup.perf.fastStockMode,
-                imageGate: dedup.beatImageGate,
-                relevanceLedger: dedup.beatRelevance,
               },
               dedup.usedContentKeys,
               dedup.sourcingCache
@@ -13937,178 +13932,8 @@ function beatVisionEvidenceFor(
   return found ? evidenceFromVerdict(found) : "UNREVIEWED";
 }
 
-async function youtubeClipPassesImageGate(
-  clipPath: string,
-  workDir: string,
-  sceneIndex: number,
-  videoId: string,
-  scriptGuided?: ScriptGuidedBeatContext
-): Promise<boolean> {
-  const gate = scriptGuided?.imageGate;
-  if (!gate || !beatImageRelevanceGateEnabled() || !scriptGuided?.beatText?.trim()) return true;
-  // RONDE 61: YouTube gets a slice of the render's judgements, not all of them. It is judged
-  // before a clip is even accepted into the pool, so it spends calls on material that may never
-  // be used; the funnel spends them on the clip about to go into the video. Past the slice this
-  // adopts as before, exactly like every other way this gate declines to answer.
-  // Same answer, recorded.
-  if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return noteYoutubeUnscreenedAdmission(gate, sceneIndex, videoId);
 
-  const framePaths: string[] = [];
-  for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
-    const framePath = path.join(workDir, `ytgate_s${sceneIndex}_${videoId.slice(0, 12)}_${f}.jpg`);
-    const got = await extractFrameAtFraction(
-      clipPath, framePath, JUDGEMENT_FRAME_FRACTIONS[f]!, 8_000
-    ).catch(() => false);
-    if (got) framePaths.push(framePath);
-  }
-  const spentBefore = gate.judgementAttempts;
-  const judgement = await judgeBeatImage({
-    framePaths,
-    /**
-     * Named so the render's vision roll-call can separate what the YouTube branch cost from what
-     * the beat judge cost. They arrive at the same gate with the same shape and were, until this,
-     * indistinguishable in every count.
-     */
-    censusCaller: "youtube_screening",
-    beatText: scriptGuided.beatText,
-    videoTitle: scriptGuided.videoTitle,
-    contentKey: clipContentKey(clipPath),
-    // RONDE 103: this check runs before a clip is in any beat's pool, so it has narration but no
-    // beat slot. Deriving the identity from the narration it DOES have keeps it in its own cache
-    // bucket rather than sharing one with every beat that later judges the same video.
-    beatIdentity: beatIdentityKey({
-      sceneIndex,
-      /** Shares the beat's own cache bucket, so the beat gets this answer free. */
-      beatIndex: scriptGuided.beatIndex ?? -1,
-      beatText: scriptGuided.beatText,
-      videoTitle: scriptGuided.videoTitle,
-    }),
-    state: gate,
-  });
-  // Only a call that actually cost something counts against YouTube's slice — a cached verdict
-  // for a video already judged on an earlier beat is free.
-  if (gate.judgementAttempts > spentBefore) gate.youtubeJudgementsUsed++;
-  for (const p of framePaths) {
-    try { fs.unlinkSync(p); } catch { /* ignore */ }
-  }
 
-  console.log(
-    `[BeatImageGate] youtube s${sceneIndex} ${videoId.slice(0, 12)} ${judgement.verdict} ` +
-      `depicts="${judgement.depicts}" reason="${judgement.reason}" cached=${judgement.cached === true}`
-  );
-  /**
-   * RONDE 104: write the verdict down where the compose barrier can find it.
-   *
-   * Until now this was the one gate whose answers went only to the log. A YouTube clip refused
-   * here was dropped from the pool — but the same asset arriving later by another route (the
-   * funnel's own YouTube path, a rescue) reached compose as a path nothing had ever judged, and
-   * the barrier had to let it through. Recording it under the clip's CONTENT identity closes
-   * that: the refusal now follows the asset, not the file.
-   */
-  if (scriptGuided.relevanceLedger) {
-    recordExternalRelevanceVerdict(
-      scriptGuided.relevanceLedger,
-      clipPath,
-      clipContentKey(clipPath),
-      {
-        sceneIndex,
-        /** See `beatIndex` on ScriptGuidedBeatContext — this is what made an approval unusable. */
-        beatIndex: scriptGuided.beatIndex ?? -1,
-        beatText: scriptGuided.beatText,
-        videoTitle: scriptGuided.videoTitle,
-      },
-      judgement,
-      "youtube_prepool"
-    );
-  }
-  return judgement.verdict !== "does_not_fit";
-  /**
-   * DO NOT ADD PROSE ANYWHERE ABOVE — put it after this return, or in a test file.
-   *
-   * Two structural tests slice this function by byte count and prove a rule is inside the slice:
-   * ronde61GateRejectionSticks takes 2600 characters and looks for the cached-verdict line
-   * (~2410), ronde60YoutubeSegment takes 4200 and looks for the return above (~4130). A couple of
-   * hundred characters of comment anywhere earlier pushes one of them out, and the rule reads as
-   * deleted — a false finding produced by prose. This round produced both, in that order, from
-   * notes explaining the beatIndex fix. That explanation lives in
-   * youtubeApprovalIsNotThrownAway.test.ts, where it costs nothing.
-   *
-   * Below the return is free: no slice that must contain the return can be shortened by it.
-   */
-}
-
-/**
- * A YOUTUBE CLIP THAT ENTERED THE POOL WITHOUT BEING SCREENED, FILED AS UNSCREENED.
- *
- * `youtubeClipPassesImageGate` has a fixed slice of the render's judgements and, once it is spent,
- * answers `true` without looking. That answer is defensible — the beat gate can still judge the
- * clip, and the download is already paid for — but the caller reads `true` as "passes the image
- * gate", so an unlooked-at clip and an approved one were indistinguishable in every count the
- * render produced. Render 578 screened 24 of 88 downloads and said nothing about the other 64.
- *
- * A function rather than three lines at the call site, for the reason the sibling
- * `recordYoutubeScreeningRefusal` gives directly above: two structural tests slice that function
- * by byte count, and prose or extra statements inside it push their assertions out of range and
- * read as deleted. The full account is in nobodyLookedAtTheYoutube.test.ts.
- *
- * Returns `true` because that is the answer it is recording, not a second decision.
- */
-function noteYoutubeUnscreenedAdmission(
-  gate: BeatImageGateState,
-  sceneIndex: number,
-  videoId: string
-): true {
-  gate.youtubeUnscreenedAdmissions = (gate.youtubeUnscreenedAdmissions ?? 0) + 1;
-  console.warn(
-    `[BeatImageGate] youtube s${sceneIndex} ${videoId.slice(0, 12)} NOT_SCREENED — ` +
-      `the ${maxYoutubeBeatImageJudgements()}-judgement YouTube slice was already spent; ` +
-      `admitted to the pool unjudged (${gate.youtubeUnscreenedAdmissions} so far this render)`
-  );
-  return true;
-}
-
-/**
- * RONDE 114 — A YOUTUBE CLIP REFUSED BY THE SCREENING GATE, FILED AS REFUSED.
- *
- * ── The black hole this closes ──────────────────────────────────────────────────────────────
- *
- * The gate above answers a question; its caller ACTS on the answer by deleting the file, and that
- * deletion is what lost the asset. Render 568 downloaded four YouTube clips successfully, refused
- * two of them here, and reported `rejected=0` for youtube_cc — with two of its lineage records
- * ending nowhere at all (`unexplained=2 INVARIANT_BROKEN`). The refusal was real; only the record
- * of it was missing.
- *
- * ── Why this is not a new lifecycle ─────────────────────────────────────────────────────────
- *
- * `recordAssetOutcome` is the pipeline's one terminal-outcome writer and `vision_rejected` is the
- * reason the picture editor's refusals already use everywhere else — the adopt route files exactly
- * this for a candidate the same gate turned down. Nothing new is introduced here: the same reason,
- * the same ledger, the same record the download was filed on, reached by the same handles.
- *
- * ── Why a function and not four lines at the call site ──────────────────────────────────────
- *
- * Two structural tests slice that branch by byte count to prove the deletion and the `continue`
- * are inside it. Four lines of call plus the explanation above would push them out and read as
- * deleted — a false finding produced by prose, which this file has produced before. The name also
- * gives the census one thing to look for if a second refusal branch is ever written.
- */
-function recordYoutubeScreeningRefusal(
-  cache: SourcingCache | undefined,
-  clipPath: string,
-  sceneIndex: number,
-  beatIndex: number | undefined
-): void {
-  recordAssetOutcome(
-    cache?.lineage,
-    clipPath,
-    "vision_rejected",
-    beatIndex != null
-      ? `s${sceneIndex}b${beatIndex}:youtube_screening`
-      : `s${sceneIndex}:youtube_screening`,
-    /** The second handle: correct if the record was opened under the content key rather than the path. */
-    clipContentKey(clipPath)
-  );
-}
 
 /**
  * FINAL VALIDATION §4 — every way a YouTube fetch can end, named.
@@ -14917,44 +14742,25 @@ export async function probeStabilityAI(): Promise<{
 type ScriptGuidedBeatContext = {
   beatText: string;
   /**
-   * WHICH BEAT'S NARRATION THIS SCREENING IS JUDGING — render 569's YouTube bottleneck.
+   * WHICH BEAT THIS CONTEXT BELONGS TO.
    *
-   * `youtubeClipPassesImageGate` shows the picture editor a downloaded YouTube clip and asks
-   * whether it fits `beatText`. That is the same question the beat gate asks later, about the same
-   * clip and the same sentence. The verdict was then filed under `beatIndex: -1`, because this
-   * check runs before the clip is in any beat's pool and the index was not to hand.
+   * ── Why the double approval it was built for is gone ────────────────────────────────────
    *
-   * `relevanceVerdictForRenderedAsset` only accepts a verdict whose beat matches — "a verdict
-   * earned elsewhere is not one", which is the right rule — so `-1` never matched, and the
-   * adoption guard saw NOT_ASKED. `youtube` and `youtube_cc` are REAL_FUNNEL, the one category
-   * that demands an explicit APPROVED, so a YouTube clip the editor had ALREADY approved arrived
-   * at adoption with no approval to show and was refused. Render 569: downloads=3, accepted=0.
+   * This field was added because a downloaded YouTube clip used to be shown to the picture editor
+   * TWICE: once in a screening before it was in any beat's pool, and again after winning one of
+   * the beat's shortlist slots. The first verdict was filed under `beatIndex: -1`, no real beat
+   * ever matched it, and the adoption guard therefore saw NOT_ASKED for a clip the editor had
+   * already approved. Render 569: downloads=3, accepted=0.
    *
-   * YouTube was the only source that had to be approved twice — once here, and again after
-   * winning one of the beat's eight shortlist slots. Passing the index files the verdict against
-   * the beat whose narration actually earned it. No policy is relaxed: the same editor, the same
-   * frames, the same sentence, recorded where the beat can find it instead of thrown away.
+   * The screening is gone — see youtubeIsJudgedWhereItIsUsed.test.ts. YouTube is now judged once,
+   * by the beat gate, on the sentence it will actually run under, like every other source. The
+   * field stays because the context still travels with a beat and the search side reads it.
    *
    * Optional, and `-1` remains the honest answer when a caller genuinely has no beat.
    */
   beatIndex?: number;
   videoTitle?: string;
   fastMode?: boolean;
-  /**
-   * RONDE 60: the render's beat-image judgement budget, so a downloaded YouTube clip can be
-   * looked at before it is returned. Optional — a call site without it simply is not gated,
-   * which is the same behaviour every other failure mode of the gate produces.
-   */
-  imageGate?: BeatImageGateState;
-  /**
-   * RONDE 104: the render's relevance ledger, so a YouTube clip refused here is REMEMBERED.
-   *
-   * This check runs before a clip is in any beat's pool, so it was the one judgement that never
-   * reached the ledger — and a YouTube clip refused here could walk back in through a different
-   * route under a name the compose barrier had never seen. Optional for exactly the same reason
-   * imageGate is: a call site without it behaves as before.
-   */
-  relevanceLedger?: BeatRelevanceLedger;
 };
 
 type YoutubeSearchRow = {
@@ -15674,25 +15480,13 @@ export async function fetchYouTubeCCClips(
               );
             }
             /**
-             * RONDE 114 — the refusal below is written down BEFORE the file is gone.
+             * THE PRE-POOL SCREENING IS GONE — see youtubeIsJudgedWhereItIsUsed.test.ts.
              *
-             * Render 568 downloaded four YouTube clips and adopted none. RONDE 113 traced two of
-             * them to this branch: the picture editor refused them (`youtube_screening judged=2
-             * fits=0 refused=2`), the file was unlinked, and the loop moved on. The ledger held a
-             * DOWNLOAD_SUCCEEDED for each and then nothing — `rejected=0` in the youtube_cc row
-             * while two clips had just been rejected, and `unexplained=2 INVARIANT_BROKEN` where
-             * the record simply stopped. A refusal is not a missing outcome; it is an outcome.
-             *
-             * Nothing about the DECISION changes. A clip refused before this round is refused
-             * after it, by the same gate at the same threshold. The render can now say so.
+             * A downloaded clip now goes into the scene pool and is judged by the beat gate at the
+             * moment it is about to be used, on the sentence it will actually run under, like
+             * every other source. It is not judged here against one beat's text and deleted for
+             * the whole scene.
              */
-            if (ok && !(await youtubeClipPassesImageGate(outPath, workDir, sceneIndex, videoId, scriptGuided))) {
-              recordYoutubeScreeningRefusal(sourcingCache, outPath, sceneIndex, scriptGuided?.beatIndex);
-              // Rejected on what it shows, not on what it is called. The file is removed so a
-              // later beat cannot pick it up off disk, and the loop moves to the next candidate.
-              try { fs.unlinkSync(outPath); } catch { /* ignore */ }
-              continue;
-            }
             if (ok) {
               results.push(outPath);
               downloadedIds.add(videoId);
@@ -27094,7 +26888,7 @@ async function fetchHistoricalBeatVideoInner(
         if (!youtubeReady) return [];
         return fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
-          { beatText: beat.text, beatIndex: beat.index, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode, imageGate: dedup.beatImageGate, relevanceLedger: dedup.beatRelevance },
+          { beatText: beat.text, beatIndex: beat.index, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode },
           dedup.usedContentKeys,
           dedup.sourcingCache
         );
@@ -27453,8 +27247,6 @@ async function researchBeatClipUnifiedInner(
               beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
-              imageGate: dedup.beatImageGate,
-              relevanceLedger: dedup.beatRelevance,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -27484,8 +27276,6 @@ async function researchBeatClipUnifiedInner(
               beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
-              imageGate: dedup.beatImageGate,
-              relevanceLedger: dedup.beatRelevance,
             },
             dedup.usedContentKeys,
             dedup.sourcingCache
@@ -28335,8 +28125,6 @@ async function fetchBeatClipInner(
               beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
-              imageGate: dedup.beatImageGate,
-              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
         {
@@ -28392,8 +28180,6 @@ async function fetchBeatClipInner(
             beatIndex: beat.index,
             videoTitle,
             fastMode: perf.fastStockMode,
-            imageGate: dedup.beatImageGate,
-            relevanceLedger: dedup.beatRelevance,
           }, dedup.usedContentKeys, dedup.sourcingCache),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
@@ -28417,8 +28203,6 @@ async function fetchBeatClipInner(
               beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
-              imageGate: dedup.beatImageGate,
-              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
@@ -28505,8 +28289,6 @@ async function fetchBeatClipInner(
               beatIndex: beat.index,
               videoTitle,
               fastMode: perf.fastStockMode,
-              imageGate: dedup.beatImageGate,
-              relevanceLedger: dedup.beatRelevance,
             }, dedup.usedContentKeys, dedup.sourcingCache),
         },
       ],
@@ -43951,14 +43733,7 @@ async function _runVideoPipelineInner(
           console.log(
             `[Quality] Video ${videoId}: beat image gate — attempts=${t.attempts} ` +
               `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
-              `failed=${t.failed} never_asked=${t.skipped} ` +
-              /**
-               * Both YouTube numbers, because one without the other misleads. `judged` is what the
-               * slice bought; `unscreened` is what walked in after it ran out. Render 578 read
-               * 24 and 64 and printed only the 24.
-               */
-              `(youtube judged=${g.youtubeJudgementsUsed} ` +
-              `unscreened=${g.youtubeUnscreenedAdmissions ?? 0})`
+              `failed=${t.failed} never_asked=${t.skipped}`
           );
           // RONDE 115: and WHY, in one line — the fact that was previously spread over one log
           // line per clip and therefore invisible.

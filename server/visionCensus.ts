@@ -43,7 +43,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export type VisionCaller =
   | "funnel_scorer"
   | "beat_judge"
-  | "youtube_screening"
   | "clip_quality_gate"
   | "adopted_clip_quality";
 

@@ -187,18 +187,6 @@ export function maxBeatImageJudgementsPerRender(): number {
   return envInt("MAX_BEAT_IMAGE_JUDGEMENTS", 120, 0, 500);
 }
 
-/**
- * RONDE 61: how much of that ceiling YouTube may take.
- *
- * Render 532 spent 52 of its 60 judgements on YouTube candidates and refused 48 of them, leaving
- * the funnel — the route the adopted clips actually come from — just 8. YouTube is judged BEFORE
- * a clip is accepted into the pool, so it burns calls on material that was never going to be
- * used; the funnel is judged on the clip about to go into the video. When the two compete for
- * one budget, the wrong one wins.
- */
-export function maxYoutubeBeatImageJudgements(): number {
-  return envInt("MAX_YOUTUBE_BEAT_IMAGE_JUDGEMENTS", 24, 0, 500);
-}
 
 export function beatImageRelevanceGateEnabled(): boolean {
   return process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE !== "false";
@@ -337,19 +325,6 @@ export type BeatImageGateState = {
    * each other's outage.
    */
   askImpossible: boolean;
-  /** Of the attempts, how many went to YouTube candidates — capped separately. */
-  youtubeJudgementsUsed: number;
-  /**
-   * How many YouTube clips entered the pool WITHOUT being screened, because the slice above was
-   * already spent.
-   *
-   * Render 578 screened 24 of 88 downloads — the whole slice, first-come — and admitted the other
-   * 64 on a bare `true` that the caller reads as "passes the image gate". The decision is
-   * defensible (the beat gate can still judge them, and the download is already paid for); its
-   * invisibility was not. Counted where the decision is made, so the render can state it rather
-   * than leave it to be inferred from the gap between two other numbers.
-   */
-  youtubeUnscreenedAdmissions: number;
 };
 
 /**
@@ -380,8 +355,6 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsSkipped: 0,
     judgementsProviderUnavailable: 0,
     askImpossible: false,
-    youtubeJudgementsUsed: 0,
-    youtubeUnscreenedAdmissions: 0,
     noVerdictReasons: new Map(),
     verdictsByProvider: new Map(),
   };
