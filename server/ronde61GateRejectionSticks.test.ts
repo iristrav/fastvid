@@ -192,11 +192,28 @@ describe("RONDE 61 — YouTube no longer eats the render's judgements", () => {
   });
 
   it("past its slice, YouTube adopts as before rather than starting to reject", () => {
+    /**
+     * The guarantee is unchanged and so is the answer; only the line changed shape.
+     *
+     * `return true` became `return noteYoutubeUnscreenedAdmission(...)` so that a clip admitted
+     * WITHOUT being looked at is counted as such — render 578 screened 24 of 88 downloads and
+     * every count it produced treated the other 64 as though they had passed. The helper's return
+     * type is the literal `true`, which is what keeps this test's promise checkable by the
+     * compiler as well as by this assertion, so a future edit cannot turn it into a rejection
+     * without changing that signature in plain sight.
+     */
     const src = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const idx = src.indexOf("async function youtubeClipPassesImageGate(");
     const block = src.slice(idx, idx + 2600);
     expect(block).toContain(
-      "if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return true;"
+      "if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return noteYoutubeUnscreenedAdmission("
+    );
+    expect(block, "and still no rejection past the slice").not.toContain(
+      "if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return false;"
+    );
+    /** The helper answers `true` and cannot answer anything else. */
+    expect(src.replace(/\s+/g, " ")).toContain(
+      "function noteYoutubeUnscreenedAdmission( gate: BeatImageGateState, sceneIndex: number, videoId: string ): true {"
     );
   });
 

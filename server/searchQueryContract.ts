@@ -398,6 +398,67 @@ export function isProductionWord(token: string): boolean {
 }
 
 /**
+ * THE WORDS THAT NAME NOTHING YOU COULD PHOTOGRAPH.
+ *
+ * ── The query that put a Brink's van in a film about 1945 ────────────────────────────────────
+ *
+ * Render 578's opening sentence is "Standing on the brink of utter defeat, his empire crumbling",
+ * and its own trace records what it asked an image provider for:
+ *
+ *     [AssetTrace] provider=openverse scene=0 beat=2 query="standing brink"
+ *                  sourceUrl=https://live.staticflickr.com/8314/7941253338_802399d09d_b.jpg
+ *
+ * A Flickr photograph of a BRINK'S armoured security truck. The query was not wrong about the
+ * narration — those two words are in it. It was wrong about pictures: neither word names a thing
+ * a camera can be pointed at, so the only handle the provider had was a brand name.
+ *
+ * ── Why this belongs beside PRODUCTION_VOCABULARY and not in a new mechanism ─────────────────
+ *
+ * That set already answers half of this question. "documentary" and "establishing" describe the
+ * FILM rather than its subject, and `hasContentAnchor` refuses a query built only from them —
+ * render 578 had `documentary` ×88 and `establishing` ×80 refused on exactly that ground, without
+ * emptying anything. The words below describe the MEANING rather than its subject, which fails the
+ * same question for the same reason and had no answer at all: `hasContentAnchor("standing brink")`
+ * returned true, and so did `validateSearchQuery`.
+ *
+ * ── What is deliberately NOT here ───────────────────────────────────────────────────────────
+ *
+ * Anything a camera can be pointed at, however grim or abstract it sounds: `war`, `bunker`,
+ * `funeral`, `grave`, `cyanide`, `pistol`, `rubble`, `surrender`, `military`, `street`, `crowd`.
+ * Every one of those returns real pictures of a real thing, and blocking them would empty films
+ * to no purpose — the failure this codebase has paid for before. The test for membership is not
+ * "is the word gloomy" or "is it abstract-sounding" but "would an image provider have to guess
+ * what to show me". Nothing here is specific to a subject or an era; it is ordinary English.
+ *
+ * A word here is not forbidden — it is simply not an ANCHOR. "brink of war" still searches,
+ * because `war` is a thing; "standing brink" no longer does, because nothing in it is.
+ */
+export const ABSTRACTION_VOCABULARY: ReadonlySet<string> = new Set([
+  // States of affairs and outcomes — real, and not photographable.
+  "brink", "defeat", "victory", "triumph", "downfall", "collapse", "doom", "fate", "destiny",
+  "outcome", "consequence", "result", "impact", "influence", "legacy", "aftermath",
+  // Inner life.
+  "pride", "shame", "guilt", "honour", "honor", "glory", "courage", "fear", "hope", "despair",
+  "ambition", "obsession", "madness", "genius", "betrayal", "loyalty", "desperation",
+  // Ideas about ideas.
+  "meaning", "reason", "purpose", "cause", "truth", "mystery", "secret", "decision", "choice",
+  "importance", "significance", "existence", "power", "authority", "control", "freedom",
+  "liberty", "justice", "evil", "chaos", "order",
+  // Time and position in a story, which every narration is full of and no picture contains.
+  "moment", "era", "epoch", "period", "beginning", "ending", "opening", "closing", "start",
+  "finish", "rise", "fall", "end", "future", "past", "present", "history", "death", "life",
+  // Participles and adjectives that qualify a subject without being one.
+  "standing", "sitting", "lying", "walking", "running", "holding", "facing", "waiting",
+  "crumbling", "shattered", "haunted", "unavoidable", "utter", "final", "ultimate",
+  "unimaginable", "unthinkable", "steadfast", "formidable", "secluded", "dim", "sheer",
+]);
+
+/** A word that qualifies or interprets a subject, but cannot BE one. See the set's own note. */
+export function isAbstractionWord(token: string): boolean {
+  return ABSTRACTION_VOCABULARY.has(token.trim().toLowerCase().replace(/[^\p{L}\p{N}'-]/gu, ""));
+}
+
+/**
  * RONDE 90 (§3) — the forms of an English word that count as the same word, for evidence only.
  *
  * A beat that says "canals" proves "canal"; one that says "bridge" proves "bridges". Refusing
@@ -1099,7 +1160,13 @@ export function hasContentAnchor(query: string): boolean {
        */
       if (!/[\p{L}\p{N}]/u.test(raw)) return false;
       const w = foldSearchText(raw);
-      return Boolean(w) && !isProductionWord(w) && !isFunctionWord(w);
+      /**
+       * `isAbstractionWord` is the third of the same question, added after render 578 asked
+       * Openverse for "standing brink" and was handed a Brink's armoured truck. A word that names
+       * the film, a word that joins a sentence together, and a word that names a meaning rather
+       * than a thing all fail to point a camera at anything. See ABSTRACTION_VOCABULARY.
+       */
+      return Boolean(w) && !isProductionWord(w) && !isFunctionWord(w) && !isAbstractionWord(w);
     });
 }
 

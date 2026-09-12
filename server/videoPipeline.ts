@@ -13950,7 +13950,8 @@ async function youtubeClipPassesImageGate(
   // before a clip is even accepted into the pool, so it spends calls on material that may never
   // be used; the funnel spends them on the clip about to go into the video. Past the slice this
   // adopts as before, exactly like every other way this gate declines to answer.
-  if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return true;
+  // Same answer, recorded.
+  if (gate.youtubeJudgementsUsed >= maxYoutubeBeatImageJudgements()) return noteYoutubeUnscreenedAdmission(gate, sceneIndex, videoId);
 
   const framePaths: string[] = [];
   for (let f = 0; f < JUDGEMENT_FRAME_FRACTIONS.length; f++) {
@@ -14034,6 +14035,36 @@ async function youtubeClipPassesImageGate(
    *
    * Below the return is free: no slice that must contain the return can be shortened by it.
    */
+}
+
+/**
+ * A YOUTUBE CLIP THAT ENTERED THE POOL WITHOUT BEING SCREENED, FILED AS UNSCREENED.
+ *
+ * `youtubeClipPassesImageGate` has a fixed slice of the render's judgements and, once it is spent,
+ * answers `true` without looking. That answer is defensible — the beat gate can still judge the
+ * clip, and the download is already paid for — but the caller reads `true` as "passes the image
+ * gate", so an unlooked-at clip and an approved one were indistinguishable in every count the
+ * render produced. Render 578 screened 24 of 88 downloads and said nothing about the other 64.
+ *
+ * A function rather than three lines at the call site, for the reason the sibling
+ * `recordYoutubeScreeningRefusal` gives directly above: two structural tests slice that function
+ * by byte count, and prose or extra statements inside it push their assertions out of range and
+ * read as deleted. The full account is in nobodyLookedAtTheYoutube.test.ts.
+ *
+ * Returns `true` because that is the answer it is recording, not a second decision.
+ */
+function noteYoutubeUnscreenedAdmission(
+  gate: BeatImageGateState,
+  sceneIndex: number,
+  videoId: string
+): true {
+  gate.youtubeUnscreenedAdmissions = (gate.youtubeUnscreenedAdmissions ?? 0) + 1;
+  console.warn(
+    `[BeatImageGate] youtube s${sceneIndex} ${videoId.slice(0, 12)} NOT_SCREENED — ` +
+      `the ${maxYoutubeBeatImageJudgements()}-judgement YouTube slice was already spent; ` +
+      `admitted to the pool unjudged (${gate.youtubeUnscreenedAdmissions} so far this render)`
+  );
+  return true;
 }
 
 /**
@@ -33920,11 +33951,46 @@ async function backfillComposeMontageIfShort(
   const xfade = montageXfadeSec();
 
   const pushClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
+    /**
+     * THE BEAT IS CHOSEN BEFORE THE EDITOR IS ASKED ABOUT IT, NOT AFTER.
+     *
+     * ── What render 578 delivered ───────────────────────────────────────────────────────────
+     *
+     * Every one of the thirteen clips in the finished film entered through `route=backfill`, and
+     * the render's own selection tally read:
+     *
+     *     [VisionSelection] TOTAL beats=17 reviewPool=19 reviewed=10 FIT=0
+     *
+     * Not one approval in the whole film. Backfill is the last resort and it is allowed to be —
+     * but it is not allowed to fill a beat nobody was asked about, and that is what this closure
+     * did whenever its caller had no beat index to give.
+     *
+     * ── The one line ────────────────────────────────────────────────────────────────────────
+     *
+     * `beatClipRefusedByRelevanceGate` does two different things depending on this argument. With
+     * a beat it calls `ensureVerdictBeforeCompose({ finalSay: true })` — it OBTAINS a verdict for
+     * the picture against the sentence it is about to run under, overruling the spend caps
+     * precisely because this look decides something. With `undefined` it does neither: it only
+     * checks whether a refusal happens to exist already, and a picture nobody judged is not
+     * refused.
+     *
+     * The beat index was available the whole time. It was simply computed fourteen lines lower,
+     * where `composeClipBeatIndices.push(bi)` needs it — after the question that needed it had
+     * already been asked and answered with nothing. `pickVoiceBackfillBeatIndex` reads only the
+     * arrays as they stand before this clip is added, so moving the call up changes which beat
+     * nothing: it is the same function on the same inputs, asked in time to be useful.
+     *
+     * Nothing is loosened and nothing new can refuse a render: a beat that produces no verdict
+     * behaves exactly as it did. What changes is that the picture is now put to the editor.
+     */
+    const bi =
+      beatIndex ??
+      pickVoiceBackfillBeatIndex(beatInputs, outDur, composeClipBeatIndices, composeBeatDurations, xfade);
     // RONDE 103, second audit: this is an acceptance point like the four pushSceneClip closures,
     // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
     // later must not be able to push a clip this render has already refused.
-    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
-    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi)) return false;
+    if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, bi)) return false;
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
     let actualHold = holdSec;
@@ -33934,9 +34000,6 @@ async function backfillComposeMontageIfShort(
     seenKeys.add(key);
     safeClips.push(clipPath);
     composeBeatDurations.push(actualHold);
-    const bi =
-      beatIndex ??
-      pickVoiceBackfillBeatIndex(beatInputs, outDur, composeClipBeatIndices, composeBeatDurations, xfade);
     composeClipBeatIndices.push(bi);
     markCuratedAssetUsed(clipPath, dedup.usedCuratedAssetIds, dedup.usedCuratedStorageUrls, curatedStorageUrlForClip(clipPath, dedup));
     coverage = await estimateBalancedMontageCoverageSec(safeClips, composeBeatDurations, outDur);
@@ -43888,7 +43951,14 @@ async function _runVideoPipelineInner(
           console.log(
             `[Quality] Video ${videoId}: beat image gate — attempts=${t.attempts} ` +
               `answered=${t.answered} (fits=${t.fits} does_not_fit=${t.mismatch}) ` +
-              `failed=${t.failed} never_asked=${t.skipped} (youtube ${g.youtubeJudgementsUsed})`
+              `failed=${t.failed} never_asked=${t.skipped} ` +
+              /**
+               * Both YouTube numbers, because one without the other misleads. `judged` is what the
+               * slice bought; `unscreened` is what walked in after it ran out. Render 578 read
+               * 24 and 64 and printed only the 24.
+               */
+              `(youtube judged=${g.youtubeJudgementsUsed} ` +
+              `unscreened=${g.youtubeUnscreenedAdmissions ?? 0})`
           );
           // RONDE 115: and WHY, in one line — the fact that was previously spread over one log
           // line per clip and therefore invisible.

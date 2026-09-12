@@ -339,6 +339,17 @@ export type BeatImageGateState = {
   askImpossible: boolean;
   /** Of the attempts, how many went to YouTube candidates — capped separately. */
   youtubeJudgementsUsed: number;
+  /**
+   * How many YouTube clips entered the pool WITHOUT being screened, because the slice above was
+   * already spent.
+   *
+   * Render 578 screened 24 of 88 downloads — the whole slice, first-come — and admitted the other
+   * 64 on a bare `true` that the caller reads as "passes the image gate". The decision is
+   * defensible (the beat gate can still judge them, and the download is already paid for); its
+   * invisibility was not. Counted where the decision is made, so the render can state it rather
+   * than leave it to be inferred from the gap between two other numbers.
+   */
+  youtubeUnscreenedAdmissions: number;
 };
 
 /**
@@ -370,6 +381,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsProviderUnavailable: 0,
     askImpossible: false,
     youtubeJudgementsUsed: 0,
+    youtubeUnscreenedAdmissions: 0,
     noVerdictReasons: new Map(),
     verdictsByProvider: new Map(),
   };
