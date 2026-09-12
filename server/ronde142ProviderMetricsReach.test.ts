@@ -186,7 +186,14 @@ describe("RONDE 142 §3 — one line, in the function every counter goes through
      * way they always did.
      */
     expect(src).toContain('providerMetrics(sourcingCache, "pexels").resultCount +=');
-    expect(src).toContain('providerMetrics(sourcingCache, "youtube_cc").downloadCount');
+    /**
+     * The download example is the Internet Archive rather than youtube_cc, which used to stand
+     * here. Not a weakening: the archive is a fetcher that genuinely reports arrivals on the
+     * COUNTER channel, which is what this test is about. youtube_cc reports them as lineage events
+     * instead — it was doing both, and the end-of-render fold added them together. See
+     * `aCounterCountsOnce`.
+     */
+    expect(src).toContain('providerMetrics(sourcingCache, "internet_archive").downloadCount');
   });
 });
 

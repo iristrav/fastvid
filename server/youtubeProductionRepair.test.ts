@@ -295,10 +295,20 @@ describe("YT-REPAIR §4 — nothing was loosened to make YouTube work", () => {
   });
 
   it("AND A DOWNLOAD THAT FAILED IS STILL NOT A DOWNLOAD THAT SUCCEEDED", () => {
-    /** `downloadCount` — the usage summary's `downloaded` column — rises on `ok` and nowhere else. */
+    /**
+     * The `downloaded` column rises on `ok` and nowhere else — now through the lineage event,
+     * which is also what files the failure with its own status.
+     *
+     * This used to require exactly one `downloadCount++`. That bump ran alongside the event and
+     * the end-of-render fold adds the two channels, so the column rose TWICE per arrival: 88
+     * printed for forty-four downloads, out of a ceiling of 60 attempts. See `aCounterCountsOnce`.
+     */
     expect(
       [...PIPE.matchAll(/providerMetrics\(sourcingCache, "youtube_cc"\)\.downloadCount\+\+/g)]
-    ).toHaveLength(1);
-    expect(PIPE).toContain('if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
+    ).toHaveLength(0);
+    const at = PIPE.indexOf("if (!claimDownloadSlot()) {");
+    const block = PIPE.slice(at, PIPE.indexOf("results.push(outPath);", at));
+    expect(block).toContain("recordProviderDownloadOutcome(");
+    expect(block).toContain("youtube_download_failed");
   });
 });

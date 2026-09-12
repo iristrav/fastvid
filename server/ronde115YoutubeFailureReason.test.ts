@@ -139,7 +139,19 @@ describe("the wiring at the cascade", () => {
   it("leaves the ceiling, the success counter and the screening order untouched", () => {
     const b = block();
     expect(b).toContain("claimDownloadSlot()");
-    expect(PIPE).toContain('if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
+    /**
+     * The success counter is the lineage EVENT, and it is the only channel this route uses.
+     *
+     * It was both: `recordProviderDownloadOutcome` and a `downloadCount++` beside it, while the
+     * end-of-render fold adds the two channels together — so every YouTube arrival was counted
+     * twice and `[VisualFunnel] youtube_cc downloadSucceeded=88` meant forty-four. The arrival is
+     * still counted on `ok` and nowhere else; it is counted once. See `aCounterCountsOnce`.
+     */
+    expect(b).toContain("recordProviderDownloadOutcome(");
+    expect(
+      PIPE,
+      "the counter channel is back, and the fold counts this route's downloads twice again"
+    ).not.toContain('if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
     /**
      * RONDE 114's subject was that a download's arrival is filed BEFORE anything may refuse it,
      * so a refused clip could not end as a record that simply stopped. The screening that could

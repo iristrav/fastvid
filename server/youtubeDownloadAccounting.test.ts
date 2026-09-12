@@ -125,9 +125,24 @@ describe("the YouTube route closes the download record it opens", () => {
     expect(block).toContain("youtube_download_failed");
   });
 
-  it("counts an arrival only when one arrived", () => {
+  it("counts an arrival only when one arrived — and counts it ONCE", () => {
+    /**
+     * This asserted `if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;`, which
+     * ran beside the `recordProviderDownloadOutcome` call above it. A download is recorded on one
+     * of two channels and the end-of-render fold ADDS them, so this route reported every arrival
+     * twice — `downloadSucceeded=88` for forty-four files, against a ceiling of 60 attempts.
+     *
+     * "Only when one arrived" is intact and is what is asserted: `ok` still decides, on the
+     * channel that carries the failure too. See `aCounterCountsOnce` for the fold.
+     */
     const src = PIPELINE();
-    expect(src).toContain('if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;');
+    const at = src.indexOf("if (!claimDownloadSlot()) {");
+    const block = src.slice(at, src.indexOf("results.push(outPath);", at));
+    expect(block).toContain("ok,");
+    expect(block).toContain("recordProviderDownloadOutcome(");
+    expect(src, "both channels again — the fold will double this route's downloads").not.toContain(
+      'providerMetrics(sourcingCache, "youtube_cc").downloadCount++'
+    );
   });
 
   /**

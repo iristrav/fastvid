@@ -26,6 +26,7 @@
  * It makes no decision and calls no model. It writes down one the caller already has.
  */
 import type { BeatImageVerdict } from "./beatImageRelevanceGate";
+import { beatRelevanceBeatKey, isCanonicalAssetKey } from "./beatVisualRelevance";
 import type {
   BeatRelevanceDecision,
   BeatRelevanceEntry,
@@ -79,5 +80,22 @@ export function recordExternalRelevanceVerdict(
   const entry: BeatRelevanceEntry = { ctx, decision };
   ledger.byClipPath.set(clipPath, entry);
   if (contentKey && !contentKey.startsWith("file:")) ledger.byContentKey.set(contentKey, entry);
+  /**
+   * AND THE PER-BEAT INDEX, because a seeded ledger has to behave like a real one.
+   *
+   * `checkBeatRelevance`'s own `record()` writes all three; a seeder that wrote two would hand
+   * eight test files a ledger whose verdicts vanish where production's survive, and the tests
+   * built on it would be describing a pipeline that does not exist. See `byBeat`.
+   */
+  ledger.byBeat.set(
+    beatRelevanceBeatKey(ctx.sceneIndex, ctx.beatIndex, "path", clipPath),
+    entry
+  );
+  if (isCanonicalAssetKey(contentKey)) {
+    ledger.byBeat.set(
+      beatRelevanceBeatKey(ctx.sceneIndex, ctx.beatIndex, "content", contentKey),
+      entry
+    );
+  }
   return decision;
 }

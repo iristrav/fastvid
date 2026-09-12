@@ -15439,7 +15439,51 @@ export async function fetchYouTubeCCClips(
                */
               ok ? undefined : (dl.status ?? "youtube_download_failed")
             );
-            if (ok) providerMetrics(sourcingCache, "youtube_cc").downloadCount++;
+            /**
+             * ONE CHANNEL, NOT TWO — THE ARRIVAL IS COUNTED ABOVE, NOT HERE.
+             *
+             * This route used to bump its own `downloadCount` on success, on a line right here,
+             * while the `recordProviderDownloadOutcome` call directly above already filed the same
+             * arrival as a lineage event. Every YouTube download that arrived was counted TWICE.
+             *
+             * (Deliberately described rather than quoted: several tests scan this file's raw source
+             * for that increment, and a citation of a removed line reads to a regex exactly like
+             * the line itself. This file has paid for that once already.)
+             *
+             * A completed download is recorded on one of two channels: the counter
+             * (`providerMetrics(...).downloadCount`) or a DOWNLOAD_SUCCEEDED lineage event. The
+             * end-of-render fold ADDS them — `countProviderDownloads` at the `[AssetUsageSummary]`
+             * site — on the stated ground that "the two channels are disjoint by construction: the
+             * pool route files events and bumps no counter, the direct fetchers bump the counter and
+             * file no events". Pexels, SerpAPI and Openverse each file the event ALONE for exactly
+             * this reason, and the Internet Archive route files a REJECTION rather than a download
+             * event so that its counter is not joined by one.
+             *
+             * Adding the event here without removing the counter broke that disjointness, and the
+             * fold's own comment could not know: the two halves are three thousand lines apart and
+             * nothing made them agree.
+             *
+             * ── What it was reporting ───────────────────────────────────────────────────────────
+             *
+             *     [VisualFunnel] youtube_cc retrieved=2479 downloadSucceeded=88 eligible=1 composed=0
+             *
+             * Forty-four downloads, printed as eighty-eight. The number does not survive its own
+             * ceiling either: `youtubeMaxDownloadsPerRender()` is 60 ATTEMPTS, and 88 successes
+             * cannot come out of 60 attempts. Every judgement made about this route's yield —
+             * including this session's — has been made against a figure twice the real one.
+             *
+             * ── Why the event is the channel that stays ─────────────────────────────────────────
+             *
+             * It carries strictly more: the success, the FAILURE with its own status (which is what
+             * put YouTube's download failures into the failure-reason histogram at all), and the
+             * lineage record that `downloadSucceeded` is derived from rather than folded into. The
+             * counter carries a number.
+             *
+             * Nothing reads `downloadCount` for this provider any more: the ceiling has
+             * `downloadSlotsClaimed` (RONDE 69), and `[SourcingMetrics]` computes its event total as
+             * `downloadSucceeded - counter`, which is correct at a counter of zero and was
+             * double-subtracting before.
+             */
             /**
              * A SLOT THAT BOUGHT NOTHING GOES BACK INTO THE RENDER'S BUDGET.
              *
@@ -29960,7 +30004,24 @@ async function beatClipRefusedByRelevanceGate(
     });
   }
   const contentKey = clipContentKey(clipPath);
-  const barrier = composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey);
+  /**
+   * THE BEAT IS PASSED, BECAUSE THIS ROUTE HAS ONE.
+   *
+   * The barrier read one verdict per clip and never asked which sentence it was about, so a
+   * `does_not_fit` earned at one beat turned the clip away at every beat — including beats where
+   * the editor had approved it. See `composeBarrierAllows` for why that is the pre-pool screening's
+   * failure in a second place, and for what does NOT change: a beat with no verdict of its own
+   * still inherits the refusal.
+   *
+   * `beatIndex` is optional on this function and null on the routes that genuinely have no beat;
+   * those keep exactly the behaviour they had.
+   */
+  const barrier = composeBarrierAllows(
+    dedup.beatRelevance,
+    clipPath,
+    contentKey,
+    beatIndex != null ? { sceneIndex, beatIndex } : undefined
+  );
   if (barrier.allow) return false;
   console.warn(
     `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +

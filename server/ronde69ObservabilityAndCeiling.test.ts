@@ -411,10 +411,21 @@ describe("RONDE 69 FIX 2 — the YouTube ceiling is claimed, not checked", () =>
       src.indexOf("\n}", src.indexOf("export function claimYoutubeDownloadSlot("))
     );
     expect(claim).not.toContain("downloadCount");
-    // The success counter is bumped exactly once, on the path where bytes actually arrived.
+    /**
+     * And the arrival is counted on ONE channel, which is now the lineage event.
+     *
+     * This asserted exactly one `downloadCount++` for youtube_cc. That bump sat beside a
+     * `recordProviderDownloadOutcome` call, and the end-of-render fold ADDS the counter channel to
+     * the event channel — so "bumped exactly once" was true of the line and false of the number it
+     * produced: `downloadSucceeded=88` for forty-four downloads, out of a ceiling of 60 attempts.
+     *
+     * The claim this test was making — the ceiling and the report do not read the same counter —
+     * is untouched and asserted above. See `aCounterCountsOnce` for the fold's arithmetic.
+     */
     expect(
       [...src.matchAll(/providerMetrics\(sourcingCache, "youtube_cc"\)\.downloadCount\+\+/g)]
-    ).toHaveLength(1);
+    ).toHaveLength(0);
+    expect(src).toContain("recordProviderDownloadOutcome(");
   });
 
   it("every call site threads the render's cache, or the ceiling counts against a throwaway", () => {

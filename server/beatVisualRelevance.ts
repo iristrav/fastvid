@@ -245,6 +245,44 @@ export type BeatRelevanceLedger = {
    * exact trick that used to get one into the finished file.
    */
   byContentKey: Map<string, BeatRelevanceEntry>;
+  /**
+   * THE VERDICT THIS BEAT EARNED, WHICH THE NEXT BEAT MAY NOT OVERWRITE.
+   *
+   * ── What the two maps above cannot hold ─────────────────────────────────────────────────────
+   *
+   * The gate judges per BEAT. Its own cache key is `${contentKey}|${beatIdentity}`, so the same
+   * clip is asked about again, separately, for every sentence it might run under — which is right:
+   * a shot that does not belong under one line can be exactly the shot for another.
+   *
+   * `byClipPath` and `byContentKey` keep one entry per CLIP. Every new judgement overwrites the
+   * last, so of the several verdicts a clip earns, only the most recent survives. Two things
+   * follow, and both of them cost footage:
+   *
+   *   · A clip approved for beat 2 and then judged for beat 5 no longer has a verdict for beat 2.
+   *     `relevanceVerdictForRenderedAsset` asks for one, correctly refuses a verdict earned at
+   *     another beat, and answers `never_asked`. Under REAL_FUNNEL — which YouTube, Wikimedia,
+   *     the archive and stock all are — an unjudged clip may not be adopted. The approval was
+   *     earned, recorded, and then destroyed by an unrelated question about a different sentence.
+   *
+   *   · `composeBarrierAllows` reads whichever verdict is left and does not ask which beat it came
+   *     from, so one beat's `does_not_fit` turns the clip away at every beat. That is the same
+   *     failure as the YouTube pre-pool screening this session removed — one sentence ending a
+   *     clip's life for a whole scene — surviving in a second place.
+   *
+   * ── Why an index rather than a rewrite ──────────────────────────────────────────────────────
+   *
+   * The two maps above answer a question this one cannot: "what is the latest thing known about
+   * this file", which is what the reprieve path, the adopted-fit log and `barrierCoverage` ask.
+   * Keyed per beat they would each need a beat they do not have. So the per-beat facts get their
+   * own index, the existing readers keep theirs, and nothing has to be re-derived.
+   *
+   * Entries are the SAME objects as in the maps above, so `reprieveBeatClip` — which mutates the
+   * entry it finds — reaches every index at once, exactly as it already reaches both of them.
+   *
+   * Keys are `beatRelevanceBeatKey`'s: the beat slot, then the handle. Path and content handles
+   * are prefixed apart so a filename can never be read as an asset identity.
+   */
+  byBeat: Map<string, BeatRelevanceEntry>;
   /** `beatSlotKey` -> judgements this beat has paid for. Bounds a beat with many candidates. */
   spendByBeat: Map<string, number>;
   /**
@@ -264,9 +302,27 @@ export function createBeatRelevanceLedger(): BeatRelevanceLedger {
   return {
     byClipPath: new Map(),
     byContentKey: new Map(),
+    byBeat: new Map(),
     spendByBeat: new Map(),
     finalSayRetried: new Set(),
   };
+}
+
+/**
+ * The key one beat's verdict about one clip is filed under.
+ *
+ * `kind` keeps the two handles in separate namespaces: a clip's path and a clip's content identity
+ * are different strings about the same file, and a filename must never be looked up as though it
+ * were an asset id. The beat comes first so the key reads the way the question does — this beat,
+ * this clip.
+ */
+export function beatRelevanceBeatKey(
+  sceneIndex: number,
+  beatIndex: number,
+  kind: "path" | "content",
+  handle: string
+): string {
+  return `s${sceneIndex}b${beatIndex}\u0000${kind}:${handle}`;
 }
 
 /**
@@ -392,6 +448,21 @@ export async function checkBeatRelevance(
     // Only an ASSET identity goes in the asset index — see `isCanonicalAssetKey`, which is the
     // same rule the verification reader asks before it calls a missing verdict `never_judged`.
     if (isCanonicalAssetKey(contentKey)) ledger.byContentKey.set(contentKey, entry);
+    /**
+     * And the same entry under THIS BEAT, which the next beat's question cannot overwrite.
+     * See `byBeat` for what the two maps above lose. Same object, so a later reprieve reaches
+     * all three.
+     */
+    ledger.byBeat.set(
+      beatRelevanceBeatKey(ctx.sceneIndex, ctx.beatIndex, "path", clipPath),
+      entry
+    );
+    if (isCanonicalAssetKey(contentKey)) {
+      ledger.byBeat.set(
+        beatRelevanceBeatKey(ctx.sceneIndex, ctx.beatIndex, "content", contentKey),
+        entry
+      );
+    }
     return decision;
   };
   /**
@@ -687,6 +758,28 @@ export function relevanceVerdictForRenderedAsset(
     matchedBy,
   });
 
+  /**
+   * THIS BEAT'S OWN INDEX FIRST — see `byBeat`.
+   *
+   * The two lookups below read the LATEST verdict about the clip and then check whether it happens
+   * to belong to this beat. That check is right and stays; what it could not do is find a verdict
+   * this beat earned and a later beat's question overwrote. Asked here first, an approval survives
+   * every question asked after it.
+   */
+  const beatPath = asset.localPath
+    ? ledger.byBeat.get(
+        beatRelevanceBeatKey(asset.sceneIndex, asset.beatIndex, "path", asset.localPath)
+      )
+    : undefined;
+  if (onThisBeat(beatPath)) return answer(beatPath!, "beat_path");
+
+  const beatContent = asset.contentKey
+    ? ledger.byBeat.get(
+        beatRelevanceBeatKey(asset.sceneIndex, asset.beatIndex, "content", asset.contentKey)
+      )
+    : undefined;
+  if (onThisBeat(beatContent)) return answer(beatContent!, "beat_content");
+
   const byPath = asset.localPath ? ledger.byClipPath.get(asset.localPath) : undefined;
   if (onThisBeat(byPath)) return answer(byPath!, "path");
 
@@ -748,6 +841,29 @@ export function inheritBeatRelevance(
   if (fromClipPath === toClipPath) return;
   const entry = ledger.byClipPath.get(fromClipPath);
   if (entry) ledger.byClipPath.set(toClipPath, entry);
+  /**
+   * The per-beat verdicts travel with it, or the rename would undo the fix `byBeat` exists for:
+   * a clip approved at a beat, then trimmed, would arrive at that beat's own reader under a name
+   * it has no verdict for, and be adopted — or refused — as though nobody had looked.
+   *
+   * Every beat that judged this file, not only the most recent one: the whole point is that a clip
+   * carries several verdicts at once, and a rename must not pick one of them.
+   */
+  const carried: Array<[string, BeatRelevanceEntry]> = [];
+  for (const [key, e] of ledger.byBeat) {
+    // Rebuilt from the entry's own beat rather than sliced out of the key: the key's shape is
+    // `beatRelevanceBeatKey`'s business, and a path may contain anything a filesystem allows.
+    if (key !== beatRelevanceBeatKey(e.ctx.sceneIndex, e.ctx.beatIndex, "path", fromClipPath)) {
+      continue;
+    }
+    carried.push([
+      beatRelevanceBeatKey(e.ctx.sceneIndex, e.ctx.beatIndex, "path", toClipPath),
+      e,
+    ]);
+  }
+  // Written after the walk, not during it: adding to a Map being iterated is a trap worth not
+  // setting, even where this particular key could not match again.
+  for (const [key, e] of carried) ledger.byBeat.set(key, e);
 }
 
 /**
@@ -789,15 +905,61 @@ export function composeBarrierAllows(
   ledger: BeatRelevanceLedger,
   clipPath: string,
   /** Content identity of the file, so a refused clip cannot walk through under a new name. */
-  contentKey?: string
+  contentKey?: string,
+  /**
+   * WHICH BEAT THIS CLIP IS BEING PLACED AT, when the caller knows.
+   *
+   * ── Why the question needed asking ──────────────────────────────────────────────────────────
+   *
+   * This function read one verdict per clip and never asked which sentence it was about. The gate
+   * judges per beat, so `does_not_fit` here has always meant "does not fit ONE of the beats" — and
+   * the barrier applied it to all of them. Its own refusal string says so: `refused on s1b0:` is
+   * printed while turning the clip away at s1b3, which never saw that judgement.
+   *
+   * That is the pre-pool screening's failure in a second place: one sentence deciding a clip's
+   * fate for every sentence. A shot that does not belong under one line is regularly the right
+   * shot for another, which is exactly why the gate asks again per beat.
+   *
+   * ── What changes, and what deliberately does not ────────────────────────────────────────────
+   *
+   * Only the case where THIS beat has a verdict of its own: then that verdict decides, because it
+   * is the one about the narration the clip will actually run under.
+   *
+   * A beat with NO verdict of its own still inherits the refusal recorded elsewhere. Nothing is
+   * loosened there: an unjudged clip cannot be adopted as REAL_FUNNEL anyway, and a clip some beat
+   * refused arriving at a beat nobody asked about is exactly the case this barrier exists for. The
+   * reason string now says which of the two it was, so the log stops implying a judgement that
+   * never happened.
+   *
+   * Omitted by the four compose call sites that are handed bare paths and have no beat. They keep
+   * the behaviour they had.
+   */
+  beat?: { sceneIndex: number; beatIndex: number }
 ): { allow: boolean; reason: string } {
+  const ownVerdict = beat
+    ? ledger.byBeat.get(
+        beatRelevanceBeatKey(beat.sceneIndex, beat.beatIndex, "path", clipPath)
+      ) ??
+      (contentKey
+        ? ledger.byBeat.get(
+            beatRelevanceBeatKey(beat.sceneIndex, beat.beatIndex, "content", contentKey)
+          )
+        : undefined)
+    : undefined;
   const entry =
+    ownVerdict ??
     ledger.byClipPath.get(clipPath) ??
     (contentKey ? ledger.byContentKey.get(contentKey) : undefined);
   if (!entry) return { allow: true, reason: "never judged — no beat context at this path" };
   const d = entry.decision;
   if (d.verdict === "does_not_fit" && !d.reprieved) {
-    return { allow: false, reason: `refused on ${beatSlotKey(entry.ctx)}: ${d.reason}` };
+    /** Named apart: this beat's own no, or another beat's no reaching a beat that has none. */
+    const where = ownVerdict
+      ? `refused on ${beatSlotKey(entry.ctx)}`
+      : beat
+        ? `refused on ${beatSlotKey(entry.ctx)}, and s${beat.sceneIndex}b${beat.beatIndex} has no verdict of its own`
+        : `refused on ${beatSlotKey(entry.ctx)}`;
+    return { allow: false, reason: `${where}: ${d.reason}` };
   }
   if (d.reprieved) return { allow: true, reason: "refused but reprieved deliberately" };
   return { allow: true, reason: d.verdict };
