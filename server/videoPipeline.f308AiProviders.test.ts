@@ -100,7 +100,22 @@ describe("generateStabilityAIClip timeout (F3-08-A)", () => {
     expect(mockedFetch).toHaveBeenCalledTimes(1);
     const [calledUrl] = mockedFetch.mock.calls[0]!;
     expect(String(calledUrl)).toContain("stable-image/generate");
-  });
+    /**
+     * A REAL ENCODE, GIVEN THE TIME A REAL ENCODE TAKES.
+     *
+     * The fetch is mocked; the clip is not. `generateStabilityAIClip` turns the seed PNG into an
+     * actual video file with ffmpeg, and every assertion above is about that file — it exists, it
+     * is over a kilobyte, it came from the right endpoint. Five seconds is vitest's DEFAULT, not
+     * a budget anyone chose for encoding work, and on a shared two-core runner it is not enough:
+     * the same test passes locally and timed out in CI at 5000ms.
+     *
+     * It had never run on a CI machine before. This file builds its seed frame with ffmpeg, which
+     * the runner did not have, so it failed at the fixture long before it reached this assertion.
+     *
+     * Nothing is relaxed: no assertion changes, and a hang still fails — 20s is the same explicit
+     * ceiling `scriptEngine.test.ts` gives its two slow cases, so the convention is the file's own.
+     */
+  }, 20_000);
 
   it("aborts within the 45s budget when the core response headers never arrive, instead of hanging", async () => {
     vi.useFakeTimers();

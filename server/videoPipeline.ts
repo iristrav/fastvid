@@ -68,6 +68,7 @@ import {
   resetPermanentDownloadRefusals,
   shouldRetryAfterFailure,
   youtubeDownloadRefusal,
+  youtubeServiceRefusalReason,
 } from "./providerFailureClass";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
@@ -14033,8 +14034,22 @@ export function formatYoutubeDownloadLine(params: {
   hasRapidRoute: boolean;
   reason: string;
 }): string {
+  /**
+   * THE DETAIL WAS WRITTEN AND NEVER READ — the one line about a download said only that it failed.
+   *
+   * Every attempt carries a `detail`: the classified reason the service gave, the size that was
+   * rejected, the message a throw arrived with. This line dropped all of it and printed
+   * `cloud:DOWNLOAD_FAILED`, which is the status the reader already has from `status=` two fields
+   * along. So the render's own account of a failed download named no cause — and render 578's 502
+   * could only be explained from a service log on another machine.
+   *
+   * A `detail` is a short classified token by construction (see `youtubeServiceRefusalReason`), so
+   * this stays one line.
+   */
   const trail =
-    params.attempts.map((a) => `${a.route}:${a.status}`).join(",") || "none";
+    params.attempts
+      .map((a) => `${a.route}:${a.status}${a.detail ? `(${a.detail})` : ""}`)
+      .join(",") || "none";
   return (
     `[YouTubeDownload] video=${params.videoId} scene=${params.sceneIndex} ` +
     `status=${params.status} attempts=${trail} ` +
@@ -14192,7 +14207,18 @@ export async function downloadYouTubeCCClip(
       );
       if (!dlResp.ok) {
         const errText = await dlResp.text().catch(() => "");
-        note("cloud", "DOWNLOAD_FAILED", `http_${dlResp.status}`);
+        /**
+         * WHAT THE SERVICE SAID, NOT JUST THAT IT SAID NO.
+         *
+         * This recorded `http_${status}` and nothing else, while the body — already read, one line
+         * below — carries the only fact an operator can act on. The service answers 502 for four
+         * unrelated situations (see `classifyYoutubeServiceRefusal`), and "a bot check", "this
+         * video is gone" and "the cut failed" need three different responses.
+         *
+         * Classified rather than pasted, because reasons are COUNTED: raw yt-dlp messages carry a
+         * video id each, so a histogram of them is a list of ones.
+         */
+        note("cloud", "DOWNLOAD_FAILED", youtubeServiceRefusalReason(dlResp.status, errText));
         console.warn(
           `[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)} — falling back to RapidAPI`
         );

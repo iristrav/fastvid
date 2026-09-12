@@ -355,3 +355,109 @@ export function formatPermanentDownloadRefusals(): string | null {
     `${prevented} repeat request(s) not made`
   );
 }
+
+/* ═══════════ what the yt-dlp service actually said, kept instead of thrown away ═══════════ */
+
+/**
+ * THE SERVICE EXPLAINS ITSELF AND THE CLIENT RECORDED A NUMBER.
+ *
+ * ── What was lost ───────────────────────────────────────────────────────────────────────────
+ *
+ * `services/ytdlp-download/main.py` answers 502 in four different situations and puts the reason
+ * in the body every time — yt-dlp's own message, "yt-dlp produced no file", a size floor, a size
+ * ceiling. The four need completely different responses from an operator: a bot check is a
+ * network-identity problem, an unavailable video is a fact about that video, and a size refusal
+ * is a failed cut.
+ *
+ * `downloadYouTubeCCClip` read that body into `errText`, printed a hundred characters of it to
+ * the console, and recorded `http_502` as the attempt's reason. So the render's own account of
+ * itself could say only that a number came back — and the explanation lived in a service log on
+ * another machine, which is exactly where a diagnosis is least likely to be read.
+ *
+ * ── Why a CLASS and not the raw text ────────────────────────────────────────────────────────
+ *
+ * The reason is counted: identical reasons group, and "44 of them say the same thing" is the
+ * signal RONDE 115 exists to preserve. Raw yt-dlp messages carry video ids and URLs, so every one
+ * would be unique and the histogram would collapse into a list. A stable class groups; the raw
+ * line is still printed beside it for the one case where the class is `other`.
+ *
+ * Reporting only. Nothing here decides whether a video is retried — that is
+ * `YOUTUBE_PERMANENT_DOWNLOAD_STATUSES`, which is deliberately conservative and untouched.
+ */
+export type YoutubeServiceRefusal =
+  | "bot_check"
+  | "unavailable"
+  | "private"
+  | "members_only"
+  | "geo_blocked"
+  | "no_format"
+  | "rate_limited"
+  | "no_file"
+  | "below_floor"
+  | "over_ceiling"
+  | "auth"
+  | "service_error"
+  | "other";
+
+/**
+ * Strip anything that could carry a secret out of a service message before it is logged.
+ *
+ * Query strings are the real risk — a signed format URL carries a token — and a bearer value
+ * could be echoed by a misconfigured proxy. Both are removed rather than truncated, because a
+ * truncated secret is still a secret.
+ */
+export function sanitizeServiceDetail(body: string, max = 60): string {
+  return body
+    .replace(/[Bb]earer\s+\S+/g, "Bearer …")
+    .replace(/\?[^\s"']*/g, "?…")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+/**
+ * Which of the service's refusals this is. `status` is the HTTP status; `body` its response text.
+ */
+export function classifyYoutubeServiceRefusal(
+  status: number,
+  body: string | undefined
+): YoutubeServiceRefusal {
+  /**
+   * Trimmed, because a body of blanks is a body that said nothing — `"   "` used to be truthy
+   * here and fell through to `other`, which claims the service said something unrecognised when
+   * it said nothing at all. Found by its own test.
+   */
+  const text = (body ?? "").toLowerCase().trim();
+  if (status === 401 || status === 403) return "auth";
+  if (/sign in to confirm|not a bot|confirm you'?re not/.test(text)) return "bot_check";
+  if (/private video/.test(text)) return "private";
+  if (/members[- ]only|join this channel/.test(text)) return "members_only";
+  /**
+   * YouTube phrases this as "has not made this video available in your country", so a pattern
+   * anchored on "not available" misses it — the negation sits on the verb, not on the adjective.
+   * Matched on the country clause itself, and `geo.?block` kept for the shorter wordings.
+   */
+  if (/available in your country|geo.?block|blocked it on copyright/.test(text)) {
+    return "geo_blocked";
+  }
+  if (/requested format is not available|no video formats/.test(text)) return "no_format";
+  if (/too many requests|http error 429|rate.?limit/.test(text)) return "rate_limited";
+  if (/video unavailable|has been removed|no longer available|does not exist/.test(text)) {
+    return "unavailable";
+  }
+  if (/produced no file/.test(text)) return "no_file";
+  if (/below floor/.test(text)) return "below_floor";
+  if (/over ceiling/.test(text)) return "over_ceiling";
+  if (status >= 500 && !text) return "service_error";
+  return "other";
+}
+
+/**
+ * The attempt reason to record: the status, the class, and — only when the class is `other` — a
+ * sanitised scrap of what was actually said, because that is the one case the class cannot carry.
+ */
+export function youtubeServiceRefusalReason(status: number, body: string | undefined): string {
+  const kind = classifyYoutubeServiceRefusal(status, body);
+  const tail = kind === "other" && body?.trim() ? `:${sanitizeServiceDetail(body)}` : "";
+  return `http_${status}:${kind}${tail}`;
+}
