@@ -2,5 +2,15 @@
 # pinned version works for a few weeks and then silently downloads nothing. The Dockerfile
 # reinstalls on every build, so a redeploy is the upgrade path.
 yt-dlp>=2026.3.3
+# THE PACKAGE THAT LETS yt-dlp SOLVE YOUTUBE'S JAVASCRIPT CHALLENGE.
+#
+# yt-dlp's own help says `--remote-components` is "not needed if you are using an official
+# executable or have the requisite version of the yt-dlp-ejs package installed". This service
+# installs yt-dlp from PyPI, which is neither — so without this package a challenge can only be
+# answered by fetching remote components, which nothing here enables.
+#
+# Unpinned above a floor for the same reason yt-dlp is: the pair has to stay in step with
+# YouTube, and a redeploy is the upgrade path.
+yt-dlp-ejs>=0.8
 fastapi>=0.115
 uvicorn[standard]>=0.32

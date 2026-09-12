@@ -220,6 +220,53 @@ describe("the service is deployable", () => {
     expect(dockerfile, "ffmpeg is missing — every cut would fail after downloading").toContain("ffmpeg");
   });
 
+  /**
+   * THE IMAGE HAD NO JAVASCRIPT RUNTIME AT ALL, AND NOTHING SAID SO.
+   *
+   * yt-dlp needs a JS runtime to answer YouTube's challenge. Its own help names four — deno,
+   * node, quickjs, bun — and says "Only 'deno' is enabled by default". Its Python API confirms
+   * the same: `params.get('js_runtimes', {'deno': {}})`.
+   *
+   * This service runs on `python:3.12-slim`, whose apt line installed ffmpeg and ca-certificates.
+   * None of the four was present, and `_ydl_options` passed no `js_runtimes`. So a video that
+   * required a challenge could not be fetched under any circumstances — and the failure reads
+   * exactly like YouTube refusing the request, which is where a diagnosis goes to die.
+   *
+   * Verified as far as it can be without the platform: `yt-dlp-ejs` installs from PyPI (0.8.0),
+   * yt-dlp 2026.08.19 accepts the parameter with no complaint, and the service answers /health
+   * unchanged. That a real challenge is solved needs a route to YouTube and is not proven here.
+   */
+  it("THE IMAGE INSTALLS A JAVASCRIPT RUNTIME", () => {
+    const dockerfile = fs.readFileSync(path.join(SERVICE_DIR, "Dockerfile"), "utf8");
+    expect(
+      dockerfile,
+      "no JS runtime in the image — every YouTube challenge fails and looks like a refusal"
+    ).toMatch(/\bnodejs\b|\bdeno\b/);
+  });
+
+  it("and the challenge components ship with it, rather than being fetched", () => {
+    /**
+     * `--remote-components` is "not needed if you are using an official executable or have the
+     * requisite version of the yt-dlp-ejs package installed". This service installs yt-dlp from
+     * PyPI, so it is neither unless the package is there.
+     */
+    const reqs = fs.readFileSync(path.join(SERVICE_DIR, "requirements.txt"), "utf8");
+    expect(reqs, "yt-dlp-ejs is gone — a challenge can only be answered remotely").toMatch(
+      /yt-dlp-ejs>=/
+    );
+    expect(reqs, "a pinned ejs drifts out of step with yt-dlp").not.toMatch(/yt-dlp-ejs==/);
+  });
+
+  it("AND THE RUNTIME IS ENABLED — installing it is not the same as allowing it", () => {
+    /**
+     * The two halves of this are independent and both are required: apt puts node in the image,
+     * and `js_runtimes` is what lets yt-dlp use it, because node is not enabled by default. deno
+     * is named too, so an image that later gains the higher-priority runtime uses it with no code
+     * change — yt-dlp takes the highest runtime that is both enabled and available.
+     */
+    expect(SERVICE).toContain('"js_runtimes": {"deno": {}, "node": {}}');
+  });
+
   /** Railway supplies $PORT; a hardcoded port answers nothing. */
   it("it binds the port the platform gives it", () => {
     const dockerfile = fs.readFileSync(path.join(SERVICE_DIR, "Dockerfile"), "utf8");

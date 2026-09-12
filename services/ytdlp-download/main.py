@@ -102,6 +102,19 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
         # long retry ladders here only spend that budget without adding an outcome.
         "retries": 1,
         "socket_timeout": 30,
+        # WHICH JAVASCRIPT RUNTIMES MAY ANSWER YOUTUBE'S CHALLENGE.
+        #
+        # yt-dlp's default for this parameter is `{'deno': {}}` — deno alone — and this image had
+        # no deno, no node, no quickjs and no bun. So the challenge could not be solved here under
+        # any circumstances, and that failure looks exactly like YouTube refusing us.
+        #
+        # Both are named: node is what the image installs, deno is kept because it is the higher
+        # priority runtime and yt-dlp picks the highest one that is enabled AND available. An
+        # image that later gains deno therefore uses it without touching this file.
+        #
+        # Enabling a runtime does not fetch anything: `yt-dlp-ejs` in requirements.txt supplies
+        # the components locally, which is why `remote_components` stays off.
+        "js_runtimes": {"deno": {}, "node": {}},
     }
     if PROXY_URL:
         opts["proxy"] = PROXY_URL
