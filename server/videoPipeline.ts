@@ -14108,7 +14108,20 @@ export async function downloadYouTubeCCClip(
    * this round's blast radius in the wrong place — the caller may hand in a box for it. Optional,
    * so every existing caller is untouched and no behaviour changes for any of them.
    */
-  outcome?: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean }
+  outcome?: { status?: YoutubeDownloadStatus; reason?: string; transferStarted?: boolean },
+  /**
+   * HOW LONG THE CALLER WILL ACTUALLY WAIT — so this transfer cannot outlive its own usefulness.
+   *
+   * Render 579 filed twenty-three `download_timeout` failures, five of them followed by a
+   * DOWNLOAD_SUCCEEDED for the same asset. A transfer cannot succeed after its own abort, so the
+   * abort that fired was not this function's: the beat wrapper allows 22-80 s on Railway while
+   * `youtubeDownloadTimeoutMs()` handed the fetch 180 s. The wrapper gave up, the fetch was never
+   * cancelled, and it finished into a ledger nobody was reading any more.
+   *
+   * Optional, so `rehydrationDeps` and the runtime-test tool — which have their own budgets and no
+   * beat wrapper — keep the 180 s they had.
+   */
+  budgetMs?: number
 ): Promise<boolean> {
   const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
   const hasCloudRoute = Boolean(cloudDlService);
@@ -14204,7 +14217,7 @@ export async function downloadYouTubeCCClip(
       const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
         cloudTmpPath,
-        youtubeDownloadTimeoutMs(),
+        youtubeDownloadTimeoutMs(budgetMs),
         `YouTube CC cloud download scene ${sceneIndex}`,
         { headers: cloudHeaders },
         80 * 1024 * 1024
@@ -15346,7 +15359,42 @@ export async function fetchYouTubeCCClips(
               "youtube_cc",
               videoId,
               sourcingCache,
-              { sceneIndex, title, mediaType: "video", searchRoute: "fetchYouTubeCCClips" }
+              {
+                sceneIndex,
+                /**
+                 * THE BEAT THIS CLIP WAS FETCHED FOR — carried the whole way and dropped here.
+                 *
+                 * ── What render 579 measured ──────────────────────────────────────────────────
+                 *
+                 * All thirty-two YouTube lineage records were opened with `beat=-1`. Not one was
+                 * bound to a beat, and the trace shows what that costs: FOUND, DOWNLOAD_STARTED,
+                 * DOWNLOAD_SUCCEEDED — and then nothing. No ELIGIBLE, no VISION, no ADOPTED for
+                 * any of them, because eligibility, the shortlist, the vision verdict and adoption
+                 * are all keyed BY BEAT. A record with no beat has no funnel to enter.
+                 *
+                 *     [YouTubeTrace] assets=32 delivered=0 refused=20 openEnded=12
+                 *     [VisualFunnel] youtube_cc retrieved=3250 downloadSucceeded=17 adopted=0
+                 *
+                 * Seventeen clips were fetched successfully and every one of them had nowhere to
+                 * go. That, and not the download, is why no YouTube footage reaches the film.
+                 *
+                 * ── Why it is one line ────────────────────────────────────────────────────────
+                 *
+                 * The beat was never missing. `ScriptGuidedBeatContext.beatIndex` is filled by both
+                 * research-round callers (`beatIndex: beat.index`), travels into this function as
+                 * `scriptGuided`, and was simply not read at the one point that files the record —
+                 * the same shape as `recordClipAdopt` in RONDE 53 and `metadata.publishedAt` this
+                 * week: a value computed, carried, and then not used by the one reader that needed it.
+                 *
+                 * `-1` stays the answer for a caller that genuinely has no beat — the hero fetch and
+                 * the scene-level ladders — which is what that field's own comment already says.
+                 */
+                ...(scriptGuided?.beatIndex != null ? { beatIndex: scriptGuided.beatIndex } : {}),
+                ...(scriptGuided?.beatText ? { beatText: scriptGuided.beatText } : {}),
+                title,
+                mediaType: "video",
+                searchRoute: "fetchYouTubeCCClips",
+              }
             );
             // Fase 4: real YouTube-authored title/description, independent of our search query —
             // adoptClip's generic providerText lookup (see above) picks this up for both
@@ -15424,7 +15472,12 @@ export async function fetchYouTubeCCClips(
               // earlier beat is reused instead of re-fetched and re-aborted.
               sourcingCache,
               startIsExact,
-              dl
+              dl,
+              /**
+               * The same number the wrapper around this fetch uses, so the transfer ends while the
+               * beat can still act on the answer instead of after it has moved on.
+               */
+              youtubeBeatFetchTimeoutMs(scriptGuided?.fastMode ?? false)
             );
             /**
              * THE DOWNLOAD RECORD THIS ROUTE OPENED, CLOSED.

@@ -204,15 +204,25 @@ describe("RONDE 95 §2 — provider and route travel together", () => {
       const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
       expect(idx, `${fn} missing`).toBeGreaterThan(-1);
       /**
-       * SUPERSEDED BY RONDE 124 — the window, not the rule.
+       * BOUNDED BY THE FUNCTION, NOT BY A BYTE COUNT — the third time this window moved.
        *
-       * This slice is a stand-in for "inside this function", and RONDE 124 added the licence
-       * classification block to fetchInternetArchiveClips, pushing its `searchRoute:` past the
-       * 14000-character mark. Nothing about what this test guards changed: each downloader must
-       * still pass its OWN route rather than inheriting a default. Widened rather than loosened —
-       * the assertion is still anchored to this one function.
+       * RONDE 124 widened it from 14 000 to 17 000 when the licence block grew
+       * `fetchInternetArchiveClips`. This round pushed `fetchYouTubeCCClips` past 17 000 by
+       * documenting why its lineage record now carries the beat, and the test failed while the rule
+       * it guards was untouched — the same false alarm, a second time.
+       *
+       * A byte count is the wrong boundary in both directions: it fails on a function that grows,
+       * and once a function grows past it, it would hide a genuinely REMOVED tag just as quietly.
+       * Anchored to the next top-level declaration instead, exactly as TEST 13 below already does —
+       * a boundary the function's own length cannot move past.
+       *
+       * The rule is unchanged and not one assertion weaker: each downloader must pass its OWN
+       * route rather than inherit a default.
        */
-      const body = PIPELINE_SRC.slice(idx, idx + 17000);
+      const nextDecl = PIPELINE_SRC.slice(idx + 1).search(/\n(?:export )?(?:async )?function [A-Za-z]/);
+      const end = nextDecl === -1 ? PIPELINE_SRC.length : idx + 1 + nextDecl;
+      expect(end, `${fn} has no end boundary`).toBeGreaterThan(idx);
+      const body = PIPELINE_SRC.slice(idx, end);
       expect(body, `${fn} does not pass its own searchRoute`).toContain(`searchRoute: "${route}"`);
     }
   });

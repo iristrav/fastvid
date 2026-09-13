@@ -1326,14 +1326,59 @@ export function formatYoutubeProbeSkip(
   );
 }
 
-export function youtubeDownloadTimeoutMs(): number {
+/**
+ * HOW LONG ONE YOUTUBE TRANSFER MAY TAKE — and why it may never exceed what the caller waits.
+ *
+ * ── What render 579 measured ────────────────────────────────────────────────────────────────
+ *
+ * Twenty-three downloads failed, every one of them with `reason=download_timeout`, and five of
+ * them filed DOWNLOAD_SUCCEEDED *after* their own failure:
+ *
+ *     FOUND               OK
+ *     DOWNLOAD_STARTED    OK
+ *     DOWNLOAD_FAILED     FAILED   reason=download_timeout
+ *     DOWNLOAD_SUCCEEDED  OK          ← after the timeout
+ *
+ * A transfer cannot succeed after its own abort fired. So the abort that fired was not this one.
+ *
+ * ── The contradiction ───────────────────────────────────────────────────────────────────────
+ *
+ * This function returned 180 000 ms. The wrapper the beat round puts around the same call,
+ * `youtubeBeatFetchTimeoutMs`, allows 22 000 / 55 000 / 80 000 ms on Railway. The inner operation
+ * was therefore handed three minutes by a caller who would wait at most twenty-two seconds.
+ *
+ * The outer wrapper fires first and files `download_timeout`; the inner fetch was never actually
+ * cancelled, runs to completion, and files DOWNLOAD_SUCCEEDED into a ledger nobody is reading any
+ * more. The clip exists on disk and no beat will ever use it.
+ *
+ * ── What this changes, and what it deliberately does not ────────────────────────────────────
+ *
+ * It LOWERS the inner ceiling to the caller's own budget. It raises nothing: `YOUTUBE_DOWNLOAD_
+ * TIMEOUT_MS`, the 180 s default and the 30 s/600 s bounds are all untouched, and a caller that
+ * passes no cap gets exactly the number it got before.
+ *
+ * The gain is not more time — it is a transfer that gives up while the beat can still do something
+ * with the answer. A download that cannot finish inside the beat's budget is a download the beat
+ * cannot use, and spending the whole budget discovering that costs the beat every other candidate
+ * it might have tried.
+ *
+ * The floor exists so a nearly-spent budget cannot produce a zero or negative timeout, which
+ * `AbortSignal.timeout` would treat as "abort immediately" and would report as a transfer failure
+ * rather than as the budget exhaustion it is.
+ */
+export function youtubeDownloadTimeoutMs(capMs?: number): number {
   const raw = process.env.YOUTUBE_DOWNLOAD_TIMEOUT_MS?.trim();
+  let base = 180_000;
   if (raw) {
     const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 30_000 && n <= 600_000) return n;
+    if (!isNaN(n) && n >= 30_000 && n <= 600_000) base = n;
   }
-  return 180_000;
+  if (capMs == null || !Number.isFinite(capMs)) return base;
+  return Math.max(YOUTUBE_DOWNLOAD_TIMEOUT_FLOOR_MS, Math.min(base, Math.floor(capMs)));
 }
+
+/** Below this a transfer has no chance at all, and an instant abort would misreport the cause. */
+export const YOUTUBE_DOWNLOAD_TIMEOUT_FLOOR_MS = 8_000;
 
 /**
  * RONDE 27: lowest source height still worth downloading from YouTube.
