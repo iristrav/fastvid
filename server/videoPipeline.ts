@@ -430,6 +430,11 @@ import {
   type VisualLineageRecord,
 } from "./visualSourceLineage";
 import {
+  traceYoutubeLifecycle,
+  formatYoutubeLifecycle,
+  youtubeLifecycleViolations,
+} from "./youtubeLifecycleTrace";
+import {
   LINEAGE_SNAPSHOT_METADATA_KEY,
   formatDeliveryRecord,
   snapshotComposeDelivery,
@@ -45017,6 +45022,26 @@ async function _runVideoPipelineInner(
        */
       for (const line of formatProviderTrace(ledger, "youtube_cc", { label: "YouTubeTrace" })) {
         console.log(pipelineReport.add("sourcing", line));
+      }
+      /**
+       * AND WHAT THE PICTURE EDITOR SAID ABOUT EACH OF THOSE CLIPS, BESIDE WHERE IT ENDED UP.
+       *
+       * `[YouTubeTrace]` above reads the lineage and can say "adopted, then nothing". It cannot say
+       * "APPROVED, then nothing", because `LINEAGE_STAGES` has no stage for a vision verdict — the
+       * verdicts live in `beatRelevance` and have never been read against the lifecycle. So the one
+       * question this render keeps raising — did a clip the editor said yes to disappear before the
+       * film — had no reader at all, and `INCONCLUSIVE` was the honest answer to it.
+       *
+       * A third READER of registers that both already exist, joined on the content key both sides
+       * carry. It files no event, keeps no state and refuses nothing.
+       */
+      const youtubeLifecycle = traceYoutubeLifecycle(ledger, visualDedup.beatRelevance);
+      for (const line of formatYoutubeLifecycle(youtubeLifecycle)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      /** A clean render prints nothing here; an approved clip that vanished is not routine. */
+      for (const line of youtubeLifecycleViolations(youtubeLifecycle)) {
+        console.warn(pipelineReport.add("sourcing", line));
       }
       // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
       // rendered — plus a refusal to print a funnel that widens.
