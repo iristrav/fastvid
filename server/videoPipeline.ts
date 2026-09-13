@@ -773,6 +773,7 @@ import {
   logVideoQualityReport,
   assertVisualCoverageExportGate,
   assertVisionCoverageExportGate,
+  visionCoverageRefusal,
 } from "./videoQualityReport";
 import { postRenderSpotCheckEnabledForVideo, spotCheckFinalVideo } from "./postRenderSpotCheck";
 import { avSyncFindingCodes, checkFileAvSync, formatAvSync } from "./avSyncCheck";
@@ -44438,7 +44439,25 @@ async function _runVideoPipelineInner(
      * Built from the beat audit rather than from the gate's prose. See the gate's own comment for
      * why both conditions are required and why CLIP is not an acceptable stand-in.
      */
-    assertVisionCoverageExportGate({
+    /**
+     * RENDER 580 — DECIDED HERE, THROWN WHERE THE FILM IS KEPT.
+     *
+     * This threw on the spot, and the spot is before Stage 5. Render 580 spent 3788.7s composing
+     * three scenes, all three finished on disk, and the operator got nothing: no concatenation, no
+     * upload, no URL, and a container that is reclaimed afterwards. Sixty-three minutes for a
+     * sentence.
+     *
+     * The refusal was right. Destroying the film is not the same act as refusing to publish it, and
+     * RONDE 202 already settled that for every gate downstream of the upload — `recordBlockedExport`
+     * writes `failed` AND the file's location together, so "the gate's own sentence reached them;
+     * the film did not" cannot happen. This gate simply sat upstream of that rule.
+     *
+     * So the verdict is taken here, where the beat audit is complete and the evidence is exactly
+     * what it always was, announced immediately so the log still shows it at the moment it happens,
+     * and carried to the export-gate block below where a refused render is uploaded and recorded.
+     * Nothing about what is refused changes.
+     */
+    const visionCoverageParams = {
       providerUnavailable: visualDedup.beatImageGate.judgementsProviderUnavailable,
       beats: [...visualDedup.beatOutcomeAudit.beats.values()].map((rec) => ({
         sceneIndex: rec.sceneIndex,
@@ -44447,7 +44466,21 @@ async function _runVideoPipelineInner(
         hasRealFootage: coverageHasRealFootage(resolveBeatCoverage(rec)),
       })),
       noVerdictSummary: formatNoVerdictReasons(visualDedup.beatImageGate),
-    });
+    };
+    /** The evidence is frozen here; only the moment of throwing moves. */
+    const visionCoverageBlock = visionCoverageRefusal(visionCoverageParams);
+    if (visionCoverageBlock) {
+      console.error(
+        pipelineReport.add(
+          "summary",
+          `[VisionCoverage] EXPORT WILL BE BLOCKED — ${visionCoverageBlock}`
+        )
+      );
+      console.warn(
+        `[VisionCoverage] finishing the assembly anyway so the refused film can be looked at — ` +
+          `the render still ends as failed`
+      );
+    }
 
     // Cleanup intermediates
     for (let i = 0; i < scenes.length; i++) {
@@ -45784,6 +45817,13 @@ async function _runVideoPipelineInner(
      * is only the difference between "may not go out" and "does not exist".
      */
     try {
+      /**
+       * RENDER 580's refusal, thrown here rather than before Stage 5, so the `catch` below records
+       * it against the film instead of leaving the operator with a sentence and no video. First,
+       * because it is the gravest of the refusals: unjudged footage on screen is what RONDE 562's
+       * gate exists to stop, and it should be the reason reported when more than one applies.
+       */
+      assertVisionCoverageExportGate(visionCoverageParams);
       enforceQualityExportGate(videoId, qualityReport, videoLength, finalValidation);
     } catch (gateError) {
       if (url) {

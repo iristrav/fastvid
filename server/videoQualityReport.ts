@@ -1447,32 +1447,68 @@ export type VisionCoverageBeat = {
   hasRealFootage: boolean;
 };
 
-export function assertVisionCoverageExportGate(params: {
+export type VisionCoverageGateParams = {
   /** Declines caused by an unreachable provider — never a budget or configuration decline. */
   providerUnavailable: number;
   beats: readonly VisionCoverageBeat[];
   /** The gate's own one-line summary of why it produced no verdicts, for the failure message. */
   noVerdictSummary?: string;
-}): void {
-  if (params.providerUnavailable <= 0) return;
+};
+
+/**
+ * THE REFUSAL AS A VALUE, SO IT CAN BE DECIDED EARLY AND THROWN LATE.
+ *
+ * ── Render 580, and why the verdict was right and the outcome was not ───────────────────────
+ *
+ *     [Pipeline] Stage 4 (compose): 3 scenes in 3788.7s
+ *     scene_0_composed.mp4  scene_1_composed.mp4  scene_2_composed.mp4
+ *     [Video Generation] Error: Render rejected — the picture editor was unreachable ...
+ *
+ * Sixty-three minutes of rendering, three finished scenes on disk, and the operator received
+ * nothing at all: Stage 5 never ran, so there was no assembled film, no upload and no URL. The
+ * refusal was correct — every provider was gone and a beat of real footage had no verdict — but
+ * refusing to PUBLISH a film and destroying it are not the same act.
+ *
+ * RONDE 202 settled this for the other export gates and built the machinery: `recordBlockedExport`
+ * writes `failed` AND the location of the refused file in one statement, so "the gate's own
+ * sentence reached them; the film did not" cannot happen again. Its closing line is the whole
+ * principle: "This is only the difference between 'may not go out' and 'does not exist'."
+ *
+ * That protection sits after the upload. This gate threw about twelve hundred lines earlier —
+ * before the concatenation, before the music, before anything was uploaded — so it fell outside
+ * the one rule written to cover exactly this.
+ *
+ * So the decision is separated from the throw. The pipeline asks here, at the moment the evidence
+ * is complete, says so in the log immediately, and carries the refusal to the point where a blocked
+ * export is recorded with its film. Nothing about WHAT is refused changes: same two conditions,
+ * same message, same error code, same `failed` status. What changes is that the operator can look
+ * at the thing that was judged.
+ */
+export function visionCoverageRefusal(params: VisionCoverageGateParams): string | null {
+  if (params.providerUnavailable <= 0) return null;
   const unchecked = params.beats.filter((b) => b.hasRealFootage && b.verdicts === 0);
-  if (unchecked.length === 0) return;
+  if (unchecked.length === 0) return null;
 
   const named = unchecked
     .slice(0, 6)
     .map((b) => `s${b.sceneIndex}b${b.beatIndex}`)
     .join(", ");
   const withFootage = params.beats.filter((b) => b.hasRealFootage).length;
-  throw pipelineError(
-    PIPELINE_ERROR.QUALITY_GATE,
+  return (
     `Render rejected — the picture editor was unreachable and this video contains footage nobody ` +
-      `judged: ${unchecked.length} of ${withFootage} beat(s) with real footage received no verdict ` +
-      `(${named}${unchecked.length > 6 ? ", …" : ""}), after ${params.providerUnavailable} ` +
-      `judgement(s) were declined for want of a vision provider. ` +
-      `${params.noVerdictSummary || "No provider was reachable."} ` +
-      `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) and ` +
-      `re-render; set ENABLE_BEAT_IMAGE_RELEVANCE_GATE=false only if you accept unjudged footage.`
+    `judged: ${unchecked.length} of ${withFootage} beat(s) with real footage received no verdict ` +
+    `(${named}${unchecked.length > 6 ? ", …" : ""}), after ${params.providerUnavailable} ` +
+    `judgement(s) were declined for want of a vision provider. ` +
+    `${params.noVerdictSummary || "No provider was reachable."} ` +
+    `Restore a vision provider (OpenAI credit, or a Gemini key whose project is not denied) and ` +
+    `re-render; set ENABLE_BEAT_IMAGE_RELEVANCE_GATE=false only if you accept unjudged footage.`
   );
+}
+
+/** The same gate, thrown where a caller wants it thrown. */
+export function assertVisionCoverageExportGate(params: VisionCoverageGateParams): void {
+  const refusal = visionCoverageRefusal(params);
+  if (refusal) throw pipelineError(PIPELINE_ERROR.QUALITY_GATE, refusal);
 }
 
 /**

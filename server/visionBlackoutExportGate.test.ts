@@ -262,12 +262,29 @@ describe("the gate still fails open per clip", () => {
     expect(quality, "the export gate is missing").toContain("assertVisionCoverageExportGate");
 
     const pipe = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    expect(pipe, "the pipeline never calls the export gate").toContain(
-      "assertVisionCoverageExportGate({"
+    /**
+     * Matched without pinning the argument form. Render 580 separated the decision from the throw —
+     * the verdict is taken before Stage 5 where the beat audit is complete, and thrown after the
+     * upload so `recordBlockedExport` keeps the refused film — so the call now takes a named
+     * parameter object. An anchor on `({` read that as the pipeline no longer calling the gate.
+     */
+    expect(pipe, "the pipeline never calls the export gate").toMatch(
+      /assertVisionCoverageExportGate\((\{|visionCoverageParams\))/
     );
     expect(pipe, "the gate is fed something other than the outage counter").toContain(
       "visualDedup.beatImageGate.judgementsProviderUnavailable"
     );
+    /**
+     * And the refusal still ENDS the render. Deferring the throw must not have turned the gate into
+     * a warning: a render that logs "EXPORT WILL BE BLOCKED" and then completes would be the exact
+     * failure RONDE 562 was written for, wearing the fix as a disguise.
+     */
+    const thrown = pipe.indexOf("assertVisionCoverageExportGate(visionCoverageParams)");
+    expect(thrown, "the gate is decided but never thrown").toBeGreaterThan(-1);
+    expect(
+      pipe.slice(thrown, pipe.indexOf("recordBlockedExport(videoId, url,")),
+      "the refusal no longer reaches the blocked-export recorder"
+    ).toContain("catch (gateError)");
   });
 
   /** The existing coverage gate keeps its own job — this is a second question, not a rewrite. */
