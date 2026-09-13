@@ -33221,11 +33221,26 @@ async function rescueBeatVisualWhenEmptyInner(
   ) {
     try {
       const videoCtx: VideoVisualContext | undefined = dedup.videoVisualContext;
-      const plan = await getOrGenerateSearchPlan(`s${scene.index}`, {
+      /**
+       * RENDER 580 — ONE PLAN PER BEAT, BECAUSE THE PLAN IS BUILT FROM ONE BEAT'S WORDS.
+       *
+       * The key was `s${scene.index}` while the input is `beatText: beat.text`. So the FIRST beat
+       * of a scene built the plan and every later beat of that scene was handed it — terms,
+       * reasoning and all. A beat about one thing searched with another beat's subject, and the
+       * `[SearchQueryAudit]` lines could not show it because they all name the beat that asked, not
+       * the beat the terms came from.
+       *
+       * The cache still exists and still does its job: it stops one beat re-planning itself across
+       * the several rungs that ask for a plan. It simply no longer answers for a beat it was not
+       * built from.
+       */
+      const plan = await getOrGenerateSearchPlan(`s${scene.index}b${beat.index}`, {
         beatText: beat.text,
         sceneText: scene.text ?? beat.text,
         topic: videoTitle ?? beat.text,
         videoContext: videoCtx,
+        /** P0-1: the beat's own typed intent, the same one the Wikimedia rescue already reads. */
+        intent: beatVisualIntent(dedup.beatIntent, scene.index, beat.index),
       });
       const rounds = searchPlanRounds(plan);
       for (const round of rounds) {

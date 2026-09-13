@@ -233,12 +233,29 @@ describe("R213 §4 — no builder sends a raw sentence any more", () => {
   });
 
   it("AN EMPTY REDUCTION ADDS NO QUERY — no site falls back to the raw text", () => {
-    for (const m of PLAN.matchAll(/contentTermsFromText\(/g)) {
-      const around = PLAN.slice(m.index!, m.index! + 400);
+    /**
+     * The reduction now sits behind `beatQueryTerms`, which picks the beat's TYPED terms first and
+     * falls back to the reading-order reduction only when the extractors typed nothing. So the
+     * emptiness check moved one level up rather than away: every CONSUMER of the result checks it,
+     * which is the rule this test exists for and a stronger statement than checking each
+     * `contentTermsFromText` call site individually.
+     */
+    const code = PLAN.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    for (const m of code.matchAll(/beatQueryTerms\(input\)/g)) {
+      const around = code.slice(m.index!, m.index! + 400);
       expect(around, "a reduction result is used without checking it is non-empty").toMatch(
         /\?|if \(/
       );
     }
+    expect(
+      (code.match(/beatQueryTerms\(input\)/g) ?? []).length,
+      "the plan route and the planless route must both go through it"
+    ).toBeGreaterThanOrEqual(2);
+    /** Both consumers, named — a window check alone would pass on the wrong `?`. */
+    expect(code).toMatch(/beatTerms\s*\?\s*\[/);
+    expect(code).toMatch(/planless\s*\?\s*\[/);
+    /** And the reduction is still reachable — replaced as the DEFAULT, not removed as a route. */
+    expect(PLAN).toContain("contentTermsFromText(input.beatText, BEAT_QUERY_TERMS)");
     /**
      * `const beatTerms =` rather than the whole former one-line assignment: the right-hand side
      * now picks the typed terms first and falls back to the reduction, so the literal line is

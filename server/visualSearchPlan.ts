@@ -12,7 +12,8 @@ import {
   analyzeBeatSemanticsFallback,
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
-import { contentTermsFromText } from "./searchQueryContract";
+import { contentTermsFromText, visualTermsFromIntent } from "./searchQueryContract";
+import { foldSearchText } from "./searchTextNormalize";
 import { invokeLLM } from "./_core/llm";
 import { getActiveVideoId } from "./videoGenerationCancel";
 
@@ -64,6 +65,39 @@ export type VisualSearchPlanInput = {
     prevBeat?: string;
     nextBeat?: string;
   };
+  /**
+   * RENDER 580 — WHAT THIS BEAT IS ABOUT, not what its first four words happen to be.
+   *
+   * ── The break this closes ───────────────────────────────────────────────────────────────────
+   *
+   *     beat  "Rumors about Kylie Jenner illuminate how they amplify her celebrity"
+   *     → contentTermsFromText → "Rumors Kylie Jenner illuminate"
+   *     → scene=2 beat=0 query="illuminate" reason=OK
+   *
+   * `contentTermsFromText` walks the narration in READING order and keeps the first four
+   * non-function words. RONDE 577 already measured what that produces — "shaped"×11, "life"×10,
+   * "evidence"×10 — and `visualTermsFromIntent` was written to answer the question properly:
+   * subject, then people, event, location, period, objects, with action last and never alone.
+   *
+   * It was then wired into ONE production call site, the Wikimedia rescue at the bottom of the
+   * ladder, and the primary plan — the queries every provider is asked FIRST — kept the reading
+   * order. That is this codebase's recurring shape once more: the right answer computed, and read
+   * by one route of several.
+   *
+   * Optional, so a caller that has no typed intent behaves exactly as it did. It cannot widen
+   * anything either: every term it yields has already passed `termProvableFrom`, the gate's own
+   * evidence measure, so what arrives is a SUBSET of what `contentTermsFromText` could have sent.
+   */
+  intent?: {
+    subject?: string;
+    people?: readonly string[];
+    event?: readonly string[];
+    location?: readonly string[];
+    period?: readonly string[];
+    objects?: readonly string[];
+    action?: readonly string[];
+    forbidden?: readonly string[];
+  } | null;
 };
 
 /**
@@ -257,11 +291,30 @@ function planFromProfile(
    * own order, capped at four. `contentTermsFromText` returns "" for a sentence that names no
    * subject, and an empty query is dropped rather than replaced by the raw text.
    */
-  const beatTerms = contentTermsFromText(input.beatText, BEAT_QUERY_TERMS);
-  const primary = dedupScored([
-    ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
-    ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
-  ]).slice(0, 6);
+  const beatTerms = beatQueryTerms(input);
+  /**
+   * RENDER 580 — AND THE SINGLE-WORD QUERIES, WHICH ARE WHERE "illuminate" ACTUALLY CAME FROM.
+   *
+   *     scene=2 beat=0 query="illuminate" terms=["Kylie Jenner"] reason=OK
+   *
+   * That is one WORD, not a term list, so it did not come from `contentTermsFromText` — it came
+   * from `profile.searchTiers[0]`, which this function sends as its own query at confidence 0.9,
+   * ahead of everything else. Fixing only the joined term list would have left the measured symptom
+   * in place, which is the whole reason this round reconstructs before it repairs.
+   *
+   * `dropActionOnlyQueries` removes a query whose every content word is one of THIS beat's typed
+   * actions. A verb still rides along behind a subject — "Kylie Jenner illuminate amplify" keeps
+   * its anchor and is untouched — and a verb alone no longer goes to a provider that can only
+   * answer it wrongly. See this module's own note: "a verb rarely narrows a search and often
+   * widens it".
+   */
+  const primary = dropActionOnlyQueries(
+    dedupScored([
+      ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
+      ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
+    ]),
+    input.intent
+  ).slice(0, 6);
 
   // Secondary: synonyms/variations + named persons
   const secondary = dedupScored([
@@ -437,6 +490,71 @@ function logPlan(sceneLabel: string, beatLabel: string, plan: VisualSearchPlan):
  * Generate (or return cached) a visual search plan for a scene.
  * Cache key = sceneIndex so all beats in a scene share one plan.
  */
+/**
+ * The beat's own query terms: what it is ABOUT when the extractors typed something, and the
+ * sentence's reading order only when they did not.
+ *
+ * One function so the plan route and the planless route cannot drift apart — render 580's
+ * `query="illuminate"` came from the plan route, and the planless branch builds the SAME query in
+ * the same way, so fixing one and not the other would leave the defect reachable with a flag.
+ *
+ * `contentTermsFromText` stays for a beat whose extractors typed nothing. That beat is no worse
+ * off than it is today; a beat that HAS a subject now asks about the subject.
+ */
+/**
+ * Remove queries that ask only for a doing, WHEN THE BEAT HAS SOMETHING BETTER TO ASK ABOUT.
+ *
+ * ── Narrow on three counts, each for a reason ───────────────────────────────────────────────
+ *
+ *   · A query is dropped only when EVERY one of its content words is a term this beat's own
+ *     extractors typed as an `action`. A verb the intent never typed is left alone: this round
+ *     repairs the term source, it does not start judging vocabulary it has no evidence about.
+ *
+ *   · A query with any other content word in it keeps its anchor and is untouched, so
+ *     "Kylie Jenner illuminate amplify" survives while "illuminate" alone does not.
+ *
+ *   · NOTHING IS DROPPED WHEN THE ACTIONS ARE ALL THE BEAT TYPED. An earlier round decided that
+ *     deliberately and pinned it — `visualTermsFromIntent({action:["cremation"]})` must still
+ *     answer "cremation" — and it is right: "cremation" names an event a camera can be pointed
+ *     at, and a beat with nothing else is better served by it than by nothing. What render 580
+ *     proved is narrower: an action must not be asked about INSTEAD OF a subject that exists.
+ */
+function dropActionOnlyQueries(
+  queries: ScoredQuery[],
+  intent: VisualSearchPlanInput["intent"]
+): ScoredQuery[] {
+  const actions = new Set(
+    (intent?.action ?? []).map((a) => foldSearchText(a)).filter(Boolean)
+  );
+  if (actions.size === 0) return queries;
+  /** Something better to ask about. Without one, the actions are all this beat has. */
+  const hasVisualAnchor = Boolean(
+    intent?.subject ||
+      intent?.people?.length ||
+      intent?.event?.length ||
+      intent?.location?.length ||
+      intent?.period?.length ||
+      intent?.objects?.length
+  );
+  if (!hasVisualAnchor) return queries;
+  return queries.filter((q) => {
+    const words = q.query
+      .split(/[^\p{L}\p{N}'’-]+/u)
+      .map((w) => foldSearchText(w))
+      .filter(Boolean);
+    if (words.length === 0) return true;
+    return !words.every((w) => actions.has(w));
+  });
+}
+
+function beatQueryTerms(input: VisualSearchPlanInput): string {
+  const source = `${input.beatText ?? ""} ${input.sceneText ?? ""}`;
+  return (
+    visualTermsFromIntent(input.intent, source, BEAT_QUERY_TERMS) ||
+    contentTermsFromText(input.beatText, BEAT_QUERY_TERMS)
+  );
+}
+
 export async function getOrGenerateSearchPlan(
   cacheKeyIn: string,
   input: VisualSearchPlanInput
@@ -460,7 +578,7 @@ export async function getOrGenerateSearchPlan(
      *
      * `intent` is a label for the log, not a query, so it keeps the readable sentence.
      */
-    const planless = contentTermsFromText(input.beatText, BEAT_QUERY_TERMS);
+    const planless = beatQueryTerms(input);
     const empty: VisualSearchPlan = {
       intent: input.beatText.slice(0, 80),
       reasoning: "",
