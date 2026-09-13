@@ -130,12 +130,30 @@ describe("RONDE 106 — the render collects what it already prints", () => {
       builds.length,
       "the early store was removed — a render that throws at the quality gate now stores no report"
     ).toBe(2);
-    const gate = code.indexOf("PIPELINE_ERROR.QUALITY_GATE");
-    expect(gate, "the quality gate throw has moved").toBeGreaterThan(-1);
-    expect(
-      builds[0]!.index!,
-      "the first store no longer precedes the throw it exists to survive"
-    ).toBeLessThan(gate);
+    const gates = [...code.matchAll(/PIPELINE_ERROR\.QUALITY_GATE/g)].map((m) => m.index!);
+    expect(gates.length, "the quality gate throw has moved").toBeGreaterThan(0);
+    /**
+     * Split around the first store, because the two sides are different promises.
+     *
+     * AFTER it: every quality-gate throw is one the early store exists to survive — the render has
+     * done work and the partial report is the only record it leaves. That is the invariant.
+     *
+     * BEFORE it: render 580's preflight, which refuses when the picture editor cannot be reached at
+     * all. It fires beside `assertDiskSpaceAvailable`, before the render has produced anything, so
+     * there is nothing to store and a report built there would say only that nothing happened. It
+     * is asserted to be that one by name rather than merely tolerated, so a LATER throw drifting
+     * above the store still fails this test.
+     */
+    const firstBuild = builds[0]!.index!;
+    for (const gate of gates.filter((g) => g > firstBuild)) {
+      expect(firstBuild, "the first store no longer precedes a throw it exists to survive").toBeLessThan(gate);
+    }
+    for (const gate of gates.filter((g) => g < firstBuild)) {
+      expect(
+        code.slice(Math.max(0, gate - 400), gate + 200),
+        "a quality-gate throw moved above the first store — the render it aborts would leave no report"
+      ).toContain("formatVisionJudgeUnreachable");
+    }
   });
 
   it("every structured report the render composes is collected", () => {

@@ -571,6 +571,7 @@ import {
   formatVerdictProviders,
   type BeatImageGateState,
 } from "./beatImageRelevanceGate";
+import { probeVisionJudge, formatVisionJudgeUnreachable } from "./visionJudgeReachability";
 import {
   beatIdentityKey,
   checkBeatRelevance,
@@ -41204,6 +41205,39 @@ async function _runVideoPipelineInner(
   try {
 
   assertDiskSpaceAvailable(workDir, videoId);
+  /**
+   * RENDER 580 — ASK WHETHER THERE IS A JUDGE BEFORE SPENDING AN HOUR FINDING OUT.
+   *
+   * That render composed three scenes in 3788.7s and was then refused because every vision
+   * provider was gone — a condition that was already true when it started. All 228 declines had
+   * the same cause and the first one knew it.
+   *
+   * Beside `assertDiskSpaceAvailable` because it is the same kind of question: a precondition the
+   * render cannot create for itself, cheap to ask, and ruinous to discover late.
+   *
+   * A configuration check would not have caught render 580 — `GEMINI_API_KEY` was set and the key
+   * was the wrong thing to look at; the 403 PERMISSION_DENIED exists only in the answer to a real
+   * call. So `probeVisionJudge` makes one, through the same `invokeLLM` and the same provider
+   * chain the gate itself uses.
+   *
+   * ── The two cases it deliberately lets through ────────────────────────────────────────────
+   *
+   *   · The gate switched off. `beatImageRelevanceGateEnabled()` false means the operator turned
+   *     the judge off on purpose, and the export gate says the same: "a render where every
+   *     provider is down but the gate is switched off passes."
+   *   · A reachable judge. Whether this render's footage ends up judged is a question only the
+   *     export gate can answer, and it still does. This refuses nothing that the export gate would
+   *     have allowed — with no judge at all, every beat's verdict count is zero, so a film with any
+   *     real footage is certain to be refused later. The outcome is the same one, an hour earlier.
+   */
+  if (beatImageRelevanceGateEnabled()) {
+    const judge = await probeVisionJudge();
+    if (!judge.reachable) {
+      console.error(`[VisionPreflight] video ${videoId}: NO JUDGE — ${judge.reason ?? "no reason recorded"}`);
+      throw pipelineError(PIPELINE_ERROR.QUALITY_GATE, formatVisionJudgeUnreachable(judge));
+    }
+    console.log(`[VisionPreflight] video ${videoId}: picture editor reachable via ${judge.provider}`);
+  }
   const videoRow = await getVideoById(videoId);
   const pipelineWallStartMs = videoRow?.generationStartedAt
     ? new Date(videoRow.generationStartedAt).getTime()
