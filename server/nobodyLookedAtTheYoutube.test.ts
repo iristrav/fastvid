@@ -41,10 +41,29 @@ describe("1. backfill may not fill a beat nobody was asked about", () => {
      * because that is the entire defect and a re-ordering is exactly what could silently return.
      */
     const pick = flat.indexOf("const bi = beatIndex ?? pickVoiceBackfillBeatIndex(");
-    const ask = flat.indexOf("if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi))");
+    /**
+     * Matched without pinning the argument list. Render 579 added a fifth argument here — the
+     * backfill now demands an APPROVAL rather than the absence of a refusal — and an anchor that
+     * spelled out four arguments read that tightening as the question no longer being asked.
+     */
+    const ask = flat.search(
+      /if \(await beatClipRefusedByRelevanceGate\(dedup, clipPath, scene\.index, bi[,)]/
+    );
     expect(pick, "the backfill still picks a beat").toBeGreaterThan(-1);
     expect(ask, "and still asks about it").toBeGreaterThan(-1);
     expect(pick, "and picks it FIRST").toBeLessThan(ask);
+  });
+
+  it("AND THE BACKFILL ASKS FOR A YES, NOT MERELY THE ABSENCE OF A NO", () => {
+    /**
+     * Render 579: assets 57502 and 57526 reached the delivered film through this closure with
+     * `verdict=unknown route=backfill`, while the editor refused every ww2 clip it was shown
+     * (`judged=43 fits=0 accepted=0%`). Picking the beat in time to ask was necessary and not
+     * sufficient — the answer also has to count, and `unknown` is not an approval.
+     */
+    expect(flat).toContain(
+      'if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi, "approval"))'
+    );
   });
 
   it("the adoption guard is asked about the same beat", () => {

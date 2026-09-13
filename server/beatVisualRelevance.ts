@@ -934,7 +934,49 @@ export function composeBarrierAllows(
    * Omitted by the four compose call sites that are handed bare paths and have no beat. They keep
    * the behaviour they had.
    */
-  beat?: { sceneIndex: number; beatIndex: number }
+  beat?: { sceneIndex: number; beatIndex: number },
+  /**
+   * WHAT THIS CALLER NEEDS BEFORE THE CLIP MAY BE COMPOSED.
+   *
+   * ── What render 579 delivered ───────────────────────────────────────────────────────────────
+   *
+   *     [ProviderFunnel] provider=ww2 judged=43 fits=0 refused=39 unclear=4 accepted=0%
+   *     [ProviderFunnel] ww2 supplied 43 judged clips and NOT ONE was accepted
+   *     ww2   judged= 18 accepted= 0 refused= 18 ( 0%)  mostly=UNRELATED
+   *
+   * The editor refused every single one, and the render printed an ERROR saying so. Two of them
+   * were in the delivered film anyway, for 8.9s of a 56.9s documentary about Kylie Jenner:
+   *
+   *     [VisualFunnel] ww2 retrieved=0 eligible=89 ranked=0 selected=0 adopted=2 finalVideo=2
+   *     [RenderAsset] provider=ww2 providerAssetId=57502 scene=1 beat=1
+   *                   verdict=unknown route=backfill rendered=true
+   *
+   * `ranked=0 selected=0` with `adopted=2`: they never entered the funnel. The compose backfill
+   * took them straight out of the operator's own archive by asset id, and this function let them
+   * through — because `unknown` is not `does_not_fit`, and the line below returns `allow: true`
+   * for everything that is not an explicit no.
+   *
+   * ── The two demands ─────────────────────────────────────────────────────────────────────────
+   *
+   *   "no_refusal" (default)  Exactly what this function has always done, unchanged, for every
+   *                           existing caller: refuse a `does_not_fit` nobody reprieved.
+   *
+   *   "approval"              Also requires a POSITIVE verdict, EARNED AT THIS BEAT. Only the
+   *                           backfill routes ask for it, and only because of what they are: a
+   *                           backfill places a picture under a sentence nobody chose it for. For
+   *                           that, "nobody objected" is not a reason — an `unknown` there means
+   *                           the editor looked and could not say, and a clip the editor could not
+   *                           vouch for is exactly the one that must not fill a hole.
+   *
+   * ── Why fail-open is preserved where it matters ─────────────────────────────────────────────
+   *
+   * "A vision outage must never be able to empty a montage" is older than this function and is NOT
+   * weakened: the primary routes, the rescue paths and the extension path all keep "no_refusal".
+   * Only the last rung is strict, and the consequence of a vision outage there is a held frame
+   * instead of unrelated archive footage — which is a fault a viewer reads as a fault, rather than
+   * one they read as an editorial choice.
+   */
+  demand: "no_refusal" | "approval" = "no_refusal"
 ): { allow: boolean; reason: string } {
   const ownVerdict = beat
     ? ledger.byBeat.get(
@@ -950,7 +992,21 @@ export function composeBarrierAllows(
     ownVerdict ??
     ledger.byClipPath.get(clipPath) ??
     (contentKey ? ledger.byContentKey.get(contentKey) : undefined);
-  if (!entry) return { allow: true, reason: "never judged — no beat context at this path" };
+  if (!entry) {
+    /**
+     * A backfill clip nobody judged at all. Under the default demand this is the documented pass —
+     * the barrier cannot refuse what it has never seen. Under "approval" it is the whole point.
+     */
+    if (demand === "approval") {
+      return {
+        allow: false,
+        reason: beat
+          ? `backfill needs an approval for s${beat.sceneIndex}b${beat.beatIndex} and this clip was never judged`
+          : "backfill needs an approval and this clip was never judged",
+      };
+    }
+    return { allow: true, reason: "never judged — no beat context at this path" };
+  }
   const d = entry.decision;
   if (d.verdict === "does_not_fit" && !d.reprieved) {
     /** Named apart: this beat's own no, or another beat's no reaching a beat that has none. */
@@ -961,7 +1017,35 @@ export function composeBarrierAllows(
         : `refused on ${beatSlotKey(entry.ctx)}`;
     return { allow: false, reason: `${where}: ${d.reason}` };
   }
+  /**
+   * A reprieve survives the stricter demand, deliberately. RONDE 200's `reprieveAllowedFor` is a
+   * decision to overrule the judge on purpose and on the record — that is a positive act about
+   * this picture, not the absence of one, which is the thing "approval" exists to require.
+   */
   if (d.reprieved) return { allow: true, reason: "refused but reprieved deliberately" };
+  if (demand === "approval") {
+    /**
+     * `fits` EARNED AT THIS BEAT, or nothing. The fallback lookups above find a verdict filed under
+     * the clip path or its content key from ANY beat, and an approval for one sentence is not an
+     * approval for another — that asymmetry is the same one this function's `beat` parameter was
+     * added to fix, read from the other side. `unknown` is refused here: the editor looked and
+     * could not say, and render 579's `unclear=4` is precisely that column.
+     */
+    if (!ownVerdict) {
+      return {
+        allow: false,
+        reason: beat
+          ? `backfill needs an approval for s${beat.sceneIndex}b${beat.beatIndex}; the only verdict is ${d.verdict} on ${beatSlotKey(entry.ctx)}`
+          : `backfill needs an approval and this clip has no verdict for the beat it would fill`,
+      };
+    }
+    if (d.verdict !== "fits") {
+      return {
+        allow: false,
+        reason: `backfill needs an approval; the editor answered ${d.verdict} on ${beatSlotKey(entry.ctx)}`,
+      };
+    }
+  }
   return { allow: true, reason: d.verdict };
 }
 

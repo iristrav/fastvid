@@ -18284,6 +18284,17 @@ export interface VisualDedupState {
    * the final export validation to fail the render explicitly instead of shipping it.
    */
   sceneRescueColorFallbackCount: number;
+  /**
+   * RENDER 579 — how many pictures the backfill routes gave up because the editor never approved
+   * them for the sentence they would have filled.
+   *
+   * Counted separately from every other refusal because this rule is new and its cost has to be
+   * readable: if it turns out to empty montages rather than keep unrelated footage out, that shows
+   * up here as a number next to the held frames, instead of having to be inferred from a quieter
+   * film. The per-clip reason is already in `[BeatRelevance]`, the lineage and the beat tally; this
+   * is the render-level total.
+   */
+  backfillRefusedWithoutApproval: number;
   /** Ken Burns / Serp stills allowed this scene (0 = video only). */
   stillPhotosThisScene: number;
   stillPhotosMaxThisScene: number;
@@ -18880,6 +18891,7 @@ export function createVisualDedupState(
     grayPadScenes: [],
     montageShortfalls: [],
     sceneRescueColorFallbackCount: 0,
+    backfillRefusedWithoutApproval: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
     stillPhotosUsedGlobal: 0,
@@ -30135,7 +30147,12 @@ async function beatClipRefusedByRelevanceGate(
   dedup: VisualDedupState,
   clipPath: string,
   sceneIndex: number,
-  beatIndex: number | undefined
+  beatIndex: number | undefined,
+  /**
+   * RENDER 579 — only the two backfill push closures pass "approval"; every other caller keeps the
+   * default and therefore keeps exactly the behaviour it had. See `composeBarrierAllows`.
+   */
+  demand: "no_refusal" | "approval" = "no_refusal"
 ): Promise<boolean> {
   /**
    * RENDER 564 — get an answer before this clip becomes part of a scene.
@@ -30184,9 +30201,19 @@ async function beatClipRefusedByRelevanceGate(
     dedup.beatRelevance,
     clipPath,
     contentKey,
-    beatIndex != null ? { sceneIndex, beatIndex } : undefined
+    beatIndex != null ? { sceneIndex, beatIndex } : undefined,
+    /**
+     * RENDER 579 — the backfill routes ask for an approval, not merely the absence of a refusal.
+     * See `composeBarrierAllows` for the two asset ids that shipped on `verdict=unknown` and why
+     * the other routes deliberately keep the fail-open answer they have always had.
+     */
+    demand
   );
   if (barrier.allow) return false;
+  /** Only the refusals this rule actually caused — a `does_not_fit` would have been refused anyway. */
+  if (demand === "approval" && barrier.reason.startsWith("backfill needs an approval")) {
+    dedup.backfillRefusedWithoutApproval += 1;
+  }
   console.warn(
     `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +
       `${path.basename(clipPath)} — ${barrier.reason}`
@@ -34010,7 +34037,20 @@ async function backfillComposeMontageIfShort(
     // RONDE 103, second audit: this is an acceptance point like the four pushSceneClip closures,
     // so it enforces the same refusal. Its own fill routes are gated, but a route reaching it
     // later must not be able to push a clip this render has already refused.
-    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi)) return false;
+    /**
+     * RENDER 579 — THIS ROUTE NEEDS A YES, NOT THE ABSENCE OF A NO.
+     *
+     * Asset 57502 and 57526 reached the delivered film through this closure, `verdict=unknown`,
+     * `route=backfill`, for 8.9s of a 56.9s film about Kylie Jenner — while the editor refused
+     * every ww2 clip it was actually shown (`judged=43 fits=0 accepted=0%`). The barrier let them
+     * pass because `unknown` is not `does_not_fit`.
+     *
+     * A backfill is the one route that places a picture under a sentence nobody chose it for, so
+     * it is the one route where "nobody objected" is not a reason. The verdict is obtained
+     * immediately above with `finalSay: true`, so this bites only when the editor looked and could
+     * not say — render 579's `unclear=4` column.
+     */
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, bi, "approval")) return false;
     if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, bi)) return false;
     const key = clipContentKey(clipPath);
     if (seenKeys.has(key) || dedup.usedContentKeys.has(key)) return false;
@@ -35239,7 +35279,12 @@ async function ensureArchiveMontageVoiceCoverage(
   );
 
   const pushSceneClip = async (clipPath: string, holdSec: number, beatIndex?: number): Promise<boolean> => {
-    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)) return false;
+    /**
+     * RENDER 579 — the second of the two closures that feed `backfillArchiveMontageFromPool`, and
+     * therefore the second route that can file `route=backfill` on a delivered clip. It takes the
+     * same demand for the same reason; see the closure in `backfillComposeMontageIfShort`.
+     */
+    if (await beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex, "approval")) return false;
     if (await adoptionGuardRefusesPush(dedup, clipPath, scene.index, beatIndex)) return false;
     const key = clipContentKey(clipPath);
     if (dedup.usedContentKeys.has(key)) {
@@ -44855,6 +44900,22 @@ async function _runVideoPipelineInner(
         if (line.includes("INVARIANT_BROKEN")) console.warn(pipelineReport.add("sourcing", line));
         else console.log(pipelineReport.add("sourcing", line));
       }
+      /**
+       * RENDER 579 — WHAT THE BACKFILL APPROVAL RULE COST THIS RENDER.
+       *
+       * Printed unconditionally, zero included. A rule whose line only appears when it fired reads
+       * as "this never happens" on every render that does not print it, and the number that matters
+       * here is the one next to a quiet film: if this is large while beats end up holding frames,
+       * the rule is turning away more than the two unrelated archive clips it was written for, and
+       * that has to be visible without re-reading the whole log for `[BeatRelevance]` warnings.
+       */
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          `[BackfillApproval] refused=${visualDedup.backfillRefusedWithoutApproval} ` +
+            `picture(s) the backfill would have used without an approval for the beat they would fill`
+        )
+      );
       /**
        * EVERY YOUTUBE ASSET, EVENT BY EVENT — the answer to "why was this refused and where did
        * that one go".

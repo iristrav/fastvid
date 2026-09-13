@@ -523,7 +523,22 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     const closures = SRC.split("const pushSceneClip = async (").slice(1);
     expect(closures.length).toBeGreaterThanOrEqual(4);
     for (const c of closures) {
-      expect(c.slice(0, 700)).toContain("beatClipRefusedByRelevanceGate(dedup, clipPath, scene.index, beatIndex)");
+      const head = c.slice(0, 1200);
+      /**
+       * The demand argument is optional, so the call is matched up to the beat and then allowed to
+       * end or continue. Render 579 gave the coverage backfill a fifth argument — `"approval"`,
+       * because a backfill places a picture under a sentence nobody chose it for — and an anchor
+       * spelling out four arguments read that as the closure no longer consulting the gate at all.
+       */
+      const call = head.match(
+        /beatClipRefusedByRelevanceGate\(dedup, clipPath, scene\.index, beatIndex(, "(\w+)")?\)/
+      );
+      expect(call, "a pushSceneClip closure no longer asks the gate about its own beat").toBeTruthy();
+      /**
+       * And what it may ask for is bounded. Only the documented tightening is allowed through here;
+       * a future argument that loosened the gate would otherwise slip past this audit unnoticed.
+       */
+      if (call![2] !== undefined) expect(call![2]).toBe("approval");
     }
     // And it refuses only a refusal — an unjudged clip still passes, or the routes that build
     // their own files would empty every montage.
