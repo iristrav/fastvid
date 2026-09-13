@@ -432,6 +432,8 @@ import {
 import {
   traceYoutubeLifecycle,
   formatYoutubeLifecycle,
+  formatYoutubeLifecycleTable,
+  formatYoutubeVisionAvailability,
   youtubeLifecycleViolations,
 } from "./youtubeLifecycleTrace";
 import {
@@ -45037,6 +45039,23 @@ async function _runVideoPipelineInner(
        */
       const youtubeLifecycle = traceYoutubeLifecycle(ledger, visualDedup.beatRelevance);
       for (const line of formatYoutubeLifecycle(youtubeLifecycle)) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      /**
+       * Whether this render had a picture editor at all — once, for the render.
+       *
+       * `NOT_ASKED` on a row says the gate declined and cannot say why: the reason exists only as
+       * prose, and `judgementsProviderUnavailable` is the counter the gate keeps so that no reader
+       * has to match on prose. Read here exactly as the export gate reads it.
+       */
+      for (const line of formatYoutubeVisionAvailability(
+        visualDedup.beatImageGate,
+        youtubeLifecycle
+      )) {
+        console.log(pipelineReport.add("sourcing", line));
+      }
+      /** The same rows as columns, for reading a whole render's YouTube at a glance. */
+      for (const line of formatYoutubeLifecycleTable(youtubeLifecycle)) {
         console.log(pipelineReport.add("sourcing", line));
       }
       /** A clean render prints nothing here; an approved clip that vanished is not routine. */
