@@ -53,6 +53,7 @@ import {
   type ComposeJudgeScope,
 } from "./beatVisualRelevance";
 import { createBeatImageGateState } from "./beatImageRelevanceGate";
+import { indefensibleExportConditions } from "./videoQualityReport";
 
 const SRC = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
 
@@ -248,8 +249,30 @@ describe("R228 §3 — the export blocks stand", () => {
     const REPORT = fs.readFileSync(path.join(__dirname, "videoQualityReport.ts"), "utf8");
     for (const block of ["NO_VERIFIED_OWN_VISUAL", "MOSTLY_UNVERIFIED_CLIPS"]) {
       expect(REPORT, `${block} was removed`).toContain(block);
+      /**
+       * Both still members of the union, checked one at a time rather than against the whole line.
+       * The union grows — `FINAL_PICTURE_IS_BLACK` joined it when a blank film turned out to be
+       * measured and shipped anyway — and ADDING a refusal is not removing one. Pinning the exact
+       * line meant this test read a third block as R89 being weakened, which is backwards.
+       */
+      expect(REPORT, `${block} left the IndefensibleExportCondition union`).toMatch(
+        new RegExp(`code:[^;]*"${block}"`)
+      );
     }
-    expect(REPORT).toContain('code: "NO_VERIFIED_OWN_VISUAL" | "MOSTLY_UNVERIFIED_CLIPS";');
+    /** And both still produce a condition, not merely appear in the file. */
+    const noOwnVisual = indefensibleExportConditions({
+      beatVisuals: { beats: 12, verifiedOwnVisual: 0, ownFootage: 0, byVerification: { never_asked: 12 } },
+      bySource: {},
+      totalClips: 0,
+      generatedClips: 0,
+    } as never);
+    expect(noOwnVisual.map((c) => c.code)).toContain("NO_VERIFIED_OWN_VISUAL");
+    const unproven = indefensibleExportConditions({
+      bySource: { UNVERIFIED: 9 },
+      totalClips: 10,
+      generatedClips: 0,
+    } as never);
+    expect(unproven.map((c) => c.code)).toContain("MOSTLY_UNVERIFIED_CLIPS");
   });
 
   it("the scene gate still throws rather than shipping an empty scene", () => {

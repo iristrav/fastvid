@@ -1022,12 +1022,22 @@ export function logVideoQualityReport(videoId: number, report: VideoQualityRepor
 /** One reason a render must not be delivered, whatever its score says. */
 export type IndefensibleExportCondition = {
   /** Machine-readable, stable, and the same word in the log and the thrown error. */
-  code: "NO_VERIFIED_OWN_VISUAL" | "MOSTLY_UNVERIFIED_CLIPS";
+  code: "NO_VERIFIED_OWN_VISUAL" | "MOSTLY_UNVERIFIED_CLIPS" | "FINAL_PICTURE_IS_BLACK";
   detail: string;
 };
 
 /** More than half the delivered clips having no proven source is the second condition's bar. */
 const UNVERIFIED_CLIP_SHARE_LIMIT = 0.5;
+
+/**
+ * How many of the spot check's four samples must be dark before the film is called blank.
+ *
+ * `spotCheckFinalVideo` samples the delivered file at 12%, 38%, 62% and 88% — never at the very
+ * start or the very end, so an opening or closing fade cannot produce a dark sample. ALL of them
+ * is the bar: a documentary may legitimately hold on black once, and two of four dark is a night
+ * sequence, not an empty render. Four of four is a film with no picture anywhere it was looked.
+ */
+const BLANK_PICTURE_MIN_SAMPLES = 2;
 
 /**
  * RONDE 89 — THE TWO THINGS A SCORE MAY NOT OVERRULE.
@@ -1132,6 +1142,56 @@ export function indefensibleExportConditions(
     });
   }
 
+  /**
+   * AND THE ONE A VIEWER NOTICES BEFORE ANY OF THE OTHERS: THERE IS NO PICTURE.
+   *
+   * ── What was already true before this ───────────────────────────────────────────────────────
+   *
+   * `spotCheckFinalVideo` samples the DELIVERED file at four points and already draws the
+   * conclusion in as many words:
+   *
+   *     warnings.push(`Final video appears fully black (worst luma ...)`)
+   *
+   * and `isInformationalSpotWarning` singles that sentence out — with "Final video missing or too
+   * small" — as the one kind of warning that is NOT informational, which is what makes
+   * `ok: blockingWarnings.length === 0` false. So the render measured the blankness, classified it
+   * as blocking, and wrote it into `qualityReport.postRenderSpotCheck.ok`.
+   *
+   * Nothing then read that boolean. The two call sites log `console.warn` and feed `postRenderOk`
+   * into the merit score, which the availability heal can raise again; neither refuses anything.
+   * A blank film was uploaded, scored and delivered. Same shape as `formatAssetTrace` exported to
+   * no caller and `metadata.publishedAt` written as null while the ranking engine read it: a value
+   * computed, carried, and dropped by the only reader that needed it.
+   *
+   * ── Why the condition is stricter than the warning that prompted it ─────────────────────────
+   *
+   * The warning fires on `worstMeanLuma < 1` — ONE black sample out of four — while its sentence
+   * says "fully black". That gap is why it could not be promoted as written: a film that opens on
+   * a held black frame would be refused publication over a legitimate edit. So this reads the
+   * count, not the worst: every sample dark, and at least two samples actually taken. The warning
+   * is left exactly as it is; it is a warning, and it says "appears".
+   *
+   * ── What it deliberately does not do ────────────────────────────────────────────────────────
+   *
+   * It does not fire when the spot check did not run, or could not extract frames. Following this
+   * function's own rule: "nothing was measured" is not evidence of a bad render, and a render whose
+   * picture was never sampled is reported as unsampled rather than convicted.
+   */
+  const spot = report.postRenderSpotCheck;
+  if (
+    spot &&
+    spot.framesChecked >= BLANK_PICTURE_MIN_SAMPLES &&
+    spot.blackFrameCount === spot.framesChecked
+  ) {
+    out.push({
+      code: "FINAL_PICTURE_IS_BLACK",
+      detail:
+        `all ${spot.framesChecked} sampled frame(s) of the delivered file are black ` +
+        `(worst mean luma ${spot.worstMeanLuma?.toFixed(0) ?? "?"}) — ` +
+        `the film has no picture at any point that was looked at`,
+    });
+  }
+
   return out;
 }
 
@@ -1195,18 +1255,28 @@ export function exportGateReadiness(
         : ""),
   });
 
-  /** 2 and 3. The two indefensible conditions, from the one function that decides them. */
+  /** 2, 3 and 4. The indefensible conditions, from the one function that decides them. */
   const indefensible = indefensibleExportConditions(report);
-  for (const code of ["NO_VERIFIED_OWN_VISUAL", "MOSTLY_UNVERIFIED_CLIPS"]) {
+  /**
+   * The blank-picture condition reads a measurement of the DELIVERED file, which the spot check
+   * takes at upload time — after most callers of this readiness list. Its "not blocking" line must
+   * therefore never read as a pass: an unsampled film is reported as unsampled, by the same rule
+   * the stillness and repeat figures already follow when they cannot speak about the delivered file.
+   */
+  const spot = report.postRenderSpotCheck;
+  const notBlocking: Record<string, string> = {
+    NO_VERIFIED_OWN_VISUAL: `${report.beatVisuals?.verifiedOwnVisual ?? 0} of ${report.beatVisuals?.beats ?? 0} beat(s) hold an approved own picture`,
+    MOSTLY_UNVERIFIED_CLIPS: `${report.generatedClips ?? 0} drawn card(s) of ${report.totalClips} clip(s), the rest traced`,
+    FINAL_PICTURE_IS_BLACK: spot
+      ? `${spot.blackFrameCount}/${spot.framesChecked} sampled frame(s) dark, worst mean luma ${spot.worstMeanLuma?.toFixed(0) ?? "?"}`
+      : "the delivered file has not been sampled yet — this is not a pass",
+  };
+  for (const code of ["NO_VERIFIED_OWN_VISUAL", "MOSTLY_UNVERIFIED_CLIPS", "FINAL_PICTURE_IS_BLACK"]) {
     const hit = indefensible.find((c) => c.code === code);
     out.push({
       gate: code.toLowerCase(),
       blocking: Boolean(hit),
-      detail:
-        hit?.detail ??
-        (code === "NO_VERIFIED_OWN_VISUAL"
-          ? `${report.beatVisuals?.verifiedOwnVisual ?? 0} of ${report.beatVisuals?.beats ?? 0} beat(s) hold an approved own picture`
-          : `${report.generatedClips ?? 0} drawn card(s) of ${report.totalClips} clip(s), the rest traced`),
+      detail: hit?.detail ?? notBlocking[code]!,
     });
   }
 

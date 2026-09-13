@@ -59,11 +59,18 @@ const gate = (r: VideoQualityReport, name: string, scenes = 0, policy = POLICY) 
 describe("every gate is reported, blocking or not", () => {
   const clean = reportFor({ adoptAudit: [adopt(0, 0, "archive"), adopt(0, 1, "wikimedia")] });
 
-  it("names all five", () => {
+  it("names all six", () => {
+    /**
+     * `final_picture_is_black` joined the list when the blank-film condition was added: the spot
+     * check had been measuring an empty render and classifying it as blocking, and no reader ever
+     * refused on it. A gate that can throw and is missing from this list rebuilds exactly the
+     * problem the list was written to solve, so the whole list is pinned by name and in order.
+     */
     expect(exportGateReadiness(clean, 0, POLICY).map((g) => g.gate)).toEqual([
       "visual_coverage",
       "no_verified_own_visual",
       "mostly_unverified_clips",
+      "final_picture_is_black",
       "voice_visual_match",
       "quality_score",
     ]);
@@ -76,8 +83,13 @@ describe("every gate is reported, blocking or not", () => {
 
   it("the summary line counts the blocking ones", () => {
     const lines = formatExportGateReadiness(569, exportGateReadiness(clean, 0, POLICY));
-    expect(lines[0]).toMatch(/video=569 \d of 5 gate\(s\) would block/);
-    expect(lines).toHaveLength(6);
+    expect(lines[0]).toMatch(/video=569 \d of 6 gate\(s\) would block/);
+    expect(lines).toHaveLength(7);
+    /**
+     * And the count is the real one. A summary that says "6 gates" while printing 5 rows would be
+     * the same class of defect this whole list exists to catch.
+     */
+    expect(lines[0]).toContain(`of ${lines.length - 1} gate(s)`);
   });
 });
 
