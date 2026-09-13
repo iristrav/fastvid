@@ -299,6 +299,48 @@ export function noteVisionAdopted(
   beatReviewPool(state, sceneIndex, beatIndex).adopted = contentKey;
 }
 
+/**
+ * THE CANDIDATES THIS BEAT MEANT TO ASK ABOUT AND NEVER DID.
+ *
+ * ── What render 579 measured ────────────────────────────────────────────────────────────────
+ *
+ *     [VisionSelection] TOTAL beats=18 reviewPool=23 reviewed=5 FIT=4 UNCLEAR=0
+ *     [VisionSelection] s0b1 cap=8 reviewPool=1 reviewed=0 FIT=0 ... adopted=none
+ *     [VisionSelection] s0b2 cap=8 reviewPool=1 reviewed=0 FIT=0 ... adopted=none
+ *     ... thirteen of eighteen beats the same
+ *
+ * Eighteen of twenty-three declared candidates never reached the picture editor. When it did look
+ * it was decisive — four fits out of five — so the problem was never the judgement. The editor was
+ * barely asked.
+ *
+ * ── Why the number was invisible ────────────────────────────────────────────────────────────
+ *
+ * The gap was printed as two numbers a reader had to subtract, and the subtraction has no name.
+ * `reviewPool=1 reviewed=0` reads as a quiet line; `neverReached=1` reads as a candidate that was
+ * chosen, declared, and then dropped by something before the one gate that exists to judge it.
+ *
+ * Between `declareVisionReviewPool` and the first `noteVisionReviewed` in the adoption loop there
+ * are thirty-one `continue` statements and exactly ONE call to `noteNotAsked`. Thirty of the
+ * thirty-one ways a candidate can leave file nothing at all. That is this codebase's recurring
+ * shape once more — a rule N exits must follow, registered by one of them — and annotating thirty
+ * sites would leave exit thirty-two to be forgotten by whoever adds it.
+ *
+ * So the accounting is derived here instead, from the two lists the pool already keeps. It cannot
+ * be forgotten by a gate added later, because it does not depend on any gate remembering anything:
+ * a declared candidate with no answer IS the finding, however it left.
+ *
+ * ── What it deliberately does not claim ─────────────────────────────────────────────────────
+ *
+ * WHICH gate dropped it. That is not knowable from these two lists and inventing an attribution
+ * would be worse than the silence it replaces. The honest statement is "declared, never answered",
+ * and the size of the number is what says whether naming the individual gates is worth a round.
+ */
+export function neverReachedEditor(pool: BeatReviewPool): string[] {
+  if (pool.declared.length === 0) return [];
+  const answered = new Set(pool.reviewed.map((c) => c.contentKey));
+  return pool.declared.filter((k) => !answered.has(k));
+}
+
 export function evidenceCounts(pool: BeatReviewPool): Record<VisionEvidence, number> {
   const counts: Record<VisionEvidence, number> = {
     FIT: 0,
@@ -320,7 +362,7 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
   );
   const lines: string[] = [];
   const total = {
-    declared: 0, reviewed: 0, unusable: 0,
+    declared: 0, reviewed: 0, unusable: 0, neverReached: 0,
     FIT: 0, UNREVIEWED: 0, UNCLEAR: 0, MISMATCH: 0,
   };
   for (const pool of beats) {
@@ -331,16 +373,19 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
      * and the old line could not tell them apart.
      */
     const unusable = pool.reviewed.filter((c) => c.unusable);
+    const unasked = neverReachedEditor(pool);
     total.declared += pool.declared.length;
     total.reviewed += pool.reviewed.length;
     total.unusable += unusable.length;
+    total.neverReached += unasked.length;
     for (const e of VISION_EVIDENCE_ORDER) total[e] += counts[e];
     const best = bestByVisionEvidence(pool.reviewed);
     lines.push(
       `[VisionSelection] s${pool.sceneIndex}b${pool.beatIndex} cap=${pool.cap} ` +
         `reviewPool=${pool.declared.length} reviewed=${pool.reviewed.length} ` +
         `FIT=${counts.FIT} UNREVIEWED=${counts.UNREVIEWED} UNCLEAR=${counts.UNCLEAR} ` +
-        `MISMATCH=${counts.MISMATCH} unusable=${unusable.length} finalShortlisted=${
+        `MISMATCH=${counts.MISMATCH} unusable=${unusable.length} ` +
+        `neverReached=${unasked.length} finalShortlisted=${
           pool.reviewed.filter(isAvailableCandidate).length
         } best=${best ? `${best.evidence}@rank${best.cheapRank}` : "none"} ` +
         `adopted=${pool.adopted ?? "none"}`
@@ -351,11 +396,23 @@ export function formatVisionSelection(state: VisionReviewPoolState | undefined):
           `@rank${c.cheapRank} ${c.contentKey} — ${c.unusable}`
       );
     }
+    /**
+     * Named individually, like the unusable rows above, because a count alone cannot be followed
+     * back to an asset. These are the pictures the beat chose and then never put to the editor;
+     * without the identity there is no way to ask what happened to any one of them.
+     */
+    for (const contentKey of unasked) {
+      lines.push(
+        `[VisionSelection] s${pool.sceneIndex}b${pool.beatIndex} neverReached ${contentKey} ` +
+          `— declared for review and no verdict was ever filed`
+      );
+    }
   }
   lines.push(
     `[VisionSelection] TOTAL beats=${beats.length} reviewPool=${total.declared} ` +
       `reviewed=${total.reviewed} FIT=${total.FIT} UNREVIEWED=${total.UNREVIEWED} ` +
-      `UNCLEAR=${total.UNCLEAR} MISMATCH=${total.MISMATCH} unusable=${total.unusable}`
+      `UNCLEAR=${total.UNCLEAR} MISMATCH=${total.MISMATCH} unusable=${total.unusable} ` +
+      `neverReached=${total.neverReached}`
   );
   return lines;
 }
@@ -380,6 +437,27 @@ export function visionSelectionViolations(state: VisionReviewPoolState | undefin
     if (pool.cap > 0 && pool.reviewed.length > pool.cap) {
       out.push(
         `[VisionSelectionInvariant] ${at} REVIEWED_OVER_BUDGET reviewed=${pool.reviewed.length} cap=${pool.cap}`
+      );
+    }
+    /**
+     * RENDER 579 — A POOL DECLARED AND NOT ONE QUESTION ASKED.
+     *
+     * Thirteen of eighteen beats read `reviewPool=1 reviewed=0`: the beat picked the candidate it
+     * meant to put to the picture editor and then never put it. Across the film that was eighteen
+     * of twenty-three declared candidates, while the five that were reviewed produced four fits —
+     * so the editor was not wrong, it was barely consulted.
+     *
+     * Distinct from the two invariants above, which catch a pool PROMISING more than the budget
+     * allows. This catches the opposite: a budget that was never spent. It is stated as a violation
+     * rather than a note because a declaration nobody acted on is a broken intention, and because
+     * the backfill approval rule now depends on these verdicts existing — a render that files none
+     * will refuse its own last-resort pictures and hold frames instead.
+     */
+    if (pool.declared.length > 0 && pool.reviewed.length === 0) {
+      out.push(
+        `[VisionSelectionInvariant] ${at} POOL_DECLARED_NOTHING_REVIEWED ` +
+          `declared=${pool.declared.length} reviewed=0 — the beat chose what to ask about and ` +
+          `never asked`
       );
     }
     if (!pool.adopted) continue;
