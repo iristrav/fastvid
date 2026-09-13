@@ -3071,6 +3071,108 @@ export function formatAssetLifecycleAudit(ledger: VisualSourceLedger): string[] 
   return lines;
 }
 
+/**
+ * EVERY ASSET FROM ONE SOURCE, AND EXACTLY WHAT HAPPENED TO IT.
+ *
+ * ── The question this answers ───────────────────────────────────────────────────────────────
+ *
+ * "Why was this picture refused, and where did that one disappear?" Until now the honest answer
+ * was: read the whole log and infer it from what is missing. Render 577 reported
+ * `youtube_cc adopted=1 composed=0 finalVideo=0` — one clip cleared every gate and never reached
+ * the film — and nothing said which clip, or where it stopped.
+ *
+ * The facts were already there. `record` holds the provider, the asset id, the scene, the beat,
+ * the query and the route; every `event` holds a stage, a status, a reason and the gate that
+ * refused it. What was missing was a reader: `formatAssetTrace` has been exported since RONDE 95
+ * and is called by NOTHING — the same shape of defect as `metadata.publishedAt`, a writer whose
+ * output nobody collects.
+ *
+ * ── What it prints ──────────────────────────────────────────────────────────────────────────
+ *
+ * One block per asset, oldest event first, so a life reads top to bottom:
+ *
+ *     [YouTubeTrace] asset=L12 provider=youtube_cc providerAssetId=dQw4w9WgXcQ scene=1 beat=3
+ *                    query="Tokyo harbour 1954" route=youtube_cc file=…
+ *     [YouTubeTrace]   RETRIEVED      OK
+ *     [YouTubeTrace]   ELIGIBLE       OK        reason=adopt_clip_gates_cleared
+ *     [YouTubeTrace]   VISION         REJECTED  reason=wrong_subject gate=beat_image_gate
+ *
+ * A REJECTED line names the reason and the gate, so "afgekeurd" stops being a category and
+ * becomes a sentence. An asset whose last line is not a terminal stage is exactly the "disappeared"
+ * case, and the summary counts them separately rather than letting them blend into the refusals.
+ *
+ * ── What it is not ──────────────────────────────────────────────────────────────────────────
+ *
+ * A report. It decides nothing, refuses nothing and changes no count. It is a second READER of the
+ * ledger the render already writes, which is why it cannot disagree with the funnel: both read the
+ * same events.
+ */
+export function formatProviderTrace(
+  ledger: VisualSourceLedger | undefined,
+  provider: string,
+  opts?: { label?: string; maxAssets?: number }
+): string[] {
+  if (!ledger) return [];
+  const tag = opts?.label ?? `${provider}Trace`;
+  const wanted = provider.trim().toLowerCase();
+  const records = ledger
+    .allRecords()
+    .filter((r) => (r.provider ?? "").trim().toLowerCase() === wanted);
+  if (records.length === 0) return [`[${tag}] assets=0 — this render opened no ${provider} lineage record`];
+
+  const eventsByLineage = new Map<string, VisualLineageEvent[]>();
+  for (const event of ledger.allEvents()) {
+    const list = eventsByLineage.get(event.lineageId);
+    if (list) list.push(event);
+    else eventsByLineage.set(event.lineageId, [event]);
+  }
+
+  let delivered = 0;
+  let refused = 0;
+  let openEnded = 0;
+  const bodies: string[] = [];
+  const cap = opts?.maxAssets ?? 40;
+
+  for (const record of records) {
+    const events = [...(eventsByLineage.get(record.lineageId) ?? [])].sort(
+      (a, b) => a.timestamp - b.timestamp
+    );
+    const stages = new Set(events.map((e) => e.stage));
+    const refusal = events.find((e) => e.status === "REJECTED" || e.status === "FAILED");
+    if (stages.has("FINAL_VIDEO")) delivered++;
+    else if (refusal) refused++;
+    else openEnded++;
+
+    if (bodies.length >= cap * 6) continue;
+    bodies.push(
+      `[${tag}] asset=${record.lineageId} provider=${record.provider ?? UNVERIFIED_PROVIDER}` +
+        (record.providerAssetId ? ` providerAssetId=${record.providerAssetId}` : "") +
+        ` scene=${record.sceneIndex} beat=${record.beatIndex}` +
+        (record.query ? ` query="${record.query}"` : "") +
+        ` route=${record.route} file=${record.currentFilename}`
+    );
+    if (events.length === 0) {
+      /** A record with no events at all — opened and then never spoken of again. */
+      bodies.push(`[${tag}]   (no events filed — the record was opened and never updated)`);
+      continue;
+    }
+    for (const event of events) {
+      bodies.push(
+        `[${tag}]   ${event.stage.padEnd(14)} ${event.status.padEnd(9)}` +
+          (event.reason ? ` reason=${event.reason}` : "") +
+          (event.gate ? ` gate=${event.gate}` : "")
+      );
+    }
+  }
+
+  return [
+    `[${tag}] assets=${records.length} delivered=${delivered} refused=${refused} ` +
+      `openEnded=${openEnded} — openEnded is an asset whose life has no terminal event, which is ` +
+      `the "disappeared" case rather than the "refused" one`,
+    ...bodies,
+  ];
+}
+
 /** One composed clip's provenance, for the compose-time manifest. */
 export function formatLineageLine(record: VisualLineageRecord | null, clipPath: string): string {
   const basename = path.basename(clipPath);

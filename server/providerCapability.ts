@@ -54,9 +54,41 @@ export type SourceClass =
   | "PLATFORM"
   | "GENERATED";
 
+/**
+ * HOW WIDE THE SUBJECT MATTER IS — and why form-fit alone was not enough.
+ *
+ * ── What this fixes ─────────────────────────────────────────────────────────────────────────
+ *
+ * `providerFitForNeed` scores a source by which MEDIA FORMS it supplies. NASA declares archival
+ * footage, real footage, photos, objects and b-roll — which happens to cover everything an
+ * archival beat asks for, so it scored a perfect 1.000 and was asked FIRST on every dated beat,
+ * ahead of the Internet Archive and Europeana. On a beat about Berlin in 1945 that is a wasted
+ * task slot: NASA holds spaceflight material.
+ *
+ * The flaw is structural, not a typo. Fit rewarded the BREADTH OF THE DECLARED FORM LIST, and a
+ * source that names many forms wins over one that names few — whatever it is actually about.
+ *
+ * ── Why this is not a topic rule ────────────────────────────────────────────────────────────
+ *
+ * It never asks what the beat is about, and it names no subject. It says only whether a source
+ * covers subject matter broadly or holds one slice of it. "internet_archive holds everything" and
+ * "NASA holds spaceflight" are facts about the SOURCES, true for a video about Japan's economy and
+ * one about a bunker alike.
+ *
+ * `SPECIALIST` is not a demotion. A specialist source that genuinely matches the beat is the best
+ * possible answer — and precisely that is what nothing here can know, because the intent models
+ * what the viewer must SEE and not which institution happens to hold it. So a specialist is not
+ * promoted to the front of the round on form-fit it may not be able to realise. It keeps every
+ * other route it had: it stays in the list, it is still asked, and its candidates are still ranked
+ * on their own merits.
+ */
+export type SubjectScope = "GENERAL" | "SPECIALIST";
+
 export type ProviderCapability = {
   provider: string;
   sourceClass: SourceClass;
+  /** Whether this source covers subject matter broadly, or holds one slice of it. */
+  subjectScope: SubjectScope;
   /**
    * The media forms this source can actually supply. Empty is never correct — a source that can
    * supply nothing has no reason to be in the ladder — so an empty list is a bug, and a test says so.
@@ -111,6 +143,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   own_archive: {
     ...UNCHARACTERISED,
     provider: "own_archive",
+    /** a single curated historical subject */
+    subjectScope: "SPECIALIST",
     sourceClass: "OWN_ARCHIVE",
     mediaForms: ["ARCHIVAL_FOOTAGE", "PERSON", "LOCATION", "OBJECT", "B_ROLL"],
     historical: "GREEN",
@@ -132,6 +166,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   internet_archive: {
     ...UNCHARACTERISED,
     provider: "internet_archive",
+    /** an open archive of everything anyone uploaded */
+    subjectScope: "GENERAL",
     sourceClass: "OPEN_ARCHIVE",
     mediaForms: ["ARCHIVAL_FOOTAGE", "REAL_FOOTAGE", "PERSON", "LOCATION", "OBJECT", "B_ROLL"],
     historical: "GREEN",
@@ -148,6 +184,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   wikimedia: {
     ...UNCHARACTERISED,
     provider: "wikimedia",
+    /** the encyclopaedic commons */
+    subjectScope: "GENERAL",
     sourceClass: "ENCYCLOPEDIC",
     mediaForms: ["PHOTO", "PERSON", "LOCATION", "OBJECT", "MAP", "ARCHIVAL_FOOTAGE"],
     historical: "YELLOW",
@@ -166,6 +204,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   europeana: {
     ...UNCHARACTERISED,
     provider: "europeana",
+    /** all of European cultural heritage — bounded by geography, not by subject */
+    subjectScope: "GENERAL",
     sourceClass: "INSTITUTIONAL_ARCHIVE",
     mediaForms: ["ARCHIVAL_FOOTAGE", "PHOTO", "B_ROLL"],
     historical: "GREEN",
@@ -175,6 +215,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   nara: {
     ...UNCHARACTERISED,
     provider: "nara",
+    /** a national archive's whole record — bounded by nation, not by subject */
+    subjectScope: "GENERAL",
     sourceClass: "INSTITUTIONAL_ARCHIVE",
     mediaForms: ["ARCHIVAL_FOOTAGE", "PHOTO", "DOCUMENT", "B_ROLL"],
     historical: "GREEN",
@@ -184,6 +226,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   nasa: {
     ...UNCHARACTERISED,
     provider: "nasa",
+    /** spaceflight and aeronautics */
+    subjectScope: "SPECIALIST",
     sourceClass: "INSTITUTIONAL_ARCHIVE",
     mediaForms: ["REAL_FOOTAGE", "ARCHIVAL_FOOTAGE", "PHOTO", "OBJECT", "B_ROLL"],
     historical: "YELLOW",
@@ -197,6 +241,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   gdelt: {
     ...UNCHARACTERISED,
     provider: "gdelt",
+    /** television news across every subject */
+    subjectScope: "GENERAL",
     sourceClass: "NEWS",
     mediaForms: ["NEWS", "REAL_FOOTAGE"],
     historical: "RED",
@@ -207,6 +253,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   sepiasearch: {
     ...UNCHARACTERISED,
     provider: "sepiasearch",
+    /** a federated video index with no subject bound */
+    subjectScope: "GENERAL",
     sourceClass: "PLATFORM",
     mediaForms: ["REAL_FOOTAGE", "B_ROLL"],
     modern: "YELLOW",
@@ -215,6 +263,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   mediaccc: {
     ...UNCHARACTERISED,
     provider: "mediaccc",
+    /** one conference series */
+    subjectScope: "SPECIALIST",
     sourceClass: "PLATFORM",
     mediaForms: ["REAL_FOOTAGE", "INTERVIEW"],
     modern: "YELLOW",
@@ -224,6 +274,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   flickr: {
     ...UNCHARACTERISED,
     provider: "flickr",
+    /** a general photo platform */
+    subjectScope: "GENERAL",
     sourceClass: "PLATFORM",
     mediaForms: ["PHOTO", "REAL_FOOTAGE", "LOCATION", "OBJECT"],
     rightsEvidence: "YELLOW",
@@ -232,6 +284,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   openverse: {
     ...UNCHARACTERISED,
     provider: "openverse",
+    /** a general image index */
+    subjectScope: "GENERAL",
     sourceClass: "ENCYCLOPEDIC",
     mediaForms: ["PHOTO", "OBJECT", "LOCATION"],
     historical: "RED",
@@ -246,6 +300,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   pexels: {
     ...UNCHARACTERISED,
     provider: "pexels",
+    /** a general stock library */
+    subjectScope: "GENERAL",
     sourceClass: "STOCK",
     mediaForms: ["REAL_FOOTAGE", "PHOTO", "B_ROLL", "PROCESS"],
     historical: "RED",
@@ -264,6 +320,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   pixabay: {
     ...UNCHARACTERISED,
     provider: "pixabay",
+    /** a general stock library */
+    subjectScope: "GENERAL",
     sourceClass: "STOCK",
     mediaForms: ["REAL_FOOTAGE", "PHOTO", "B_ROLL", "PROCESS"],
     historical: "RED",
@@ -280,6 +338,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   youtube_cc: {
     ...UNCHARACTERISED,
     provider: "youtube_cc",
+    /** the whole platform */
+    subjectScope: "GENERAL",
     sourceClass: "PLATFORM",
     mediaForms: [
       "ARCHIVAL_FOOTAGE",
@@ -310,6 +370,8 @@ export const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapability>>
   ai_generated: {
     ...UNCHARACTERISED,
     provider: "ai_generated",
+    /** a generator is bound by no subject at all */
+    subjectScope: "GENERAL",
     sourceClass: "GENERATED",
     mediaForms: ["GRAPHIC", "B_ROLL"],
     historical: "RED",
@@ -376,8 +438,29 @@ export function providerFitForNeed(
     if (supplies(form)) score += 1 / 3;
   }
   const best = need.preferred.length + (need.acceptable.length - need.preferred.length) / 3;
-  return best > 0 ? Math.min(1, score / best) : null;
+  if (best <= 0) return null;
+  /**
+   * A SPECIALIST'S FORM-FIT IS DISCOUNTED, BECAUSE IT MAY NOT BE ABLE TO REALISE IT.
+   *
+   * Measured, not assumed: before this, NASA scored 1.000 on every dated beat — archival footage,
+   * real footage, photos, objects and b-roll cover an archival need completely — and was therefore
+   * asked FIRST, ahead of the Internet Archive and Europeana, on a beat about Berlin in 1945.
+   *
+   * 0.6 rather than 0 or 1. At 1 the breadth of a declared form list decides the round, which is
+   * the defect. At 0 a specialist would never be asked early even when it is the only source that
+   * holds the material. 0.6 puts NASA on an archival beat at 0.600: behind the general archives
+   * (0.833) and Wikimedia (0.667), still ahead of stock (0.500) — which is exactly the standing it
+   * has earned on a beat nobody has shown to be about spaceflight.
+   *
+   * It changes ORDER only. No source is skipped, no budget moves, and a specialist's candidates
+   * are ranked on their own merits exactly as before.
+   */
+  const scoped = cap.subjectScope === "SPECIALIST" ? score * SPECIALIST_FIT_FACTOR : score;
+  return Math.min(1, scoped / best);
 }
+
+/** See `providerFitForNeed` for why this is 0.6 and not 0 or 1. */
+const SPECIALIST_FIT_FACTOR = 0.6;
 
 /**
  * THE RETRIEVAL ROUND, ORDERED BY WHAT THE BEAT NEEDS.

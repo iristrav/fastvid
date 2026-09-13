@@ -418,6 +418,7 @@ import {
   formatFillerOverAdoptedAsset,
   formatFunnelReport,
   formatProviderFunnelInvariant,
+  formatProviderTrace,
   lifecyclesOf,
   formatLifecycleInvariants,
   formatLineageLine,
@@ -44800,6 +44801,26 @@ async function _runVideoPipelineInner(
       for (const line of formatProviderFunnelInvariant(summary, ledger.allRecords(), ledger.allEvents())) {
         if (line.includes("INVARIANT_BROKEN")) console.warn(pipelineReport.add("sourcing", line));
         else console.log(pipelineReport.add("sourcing", line));
+      }
+      /**
+       * EVERY YOUTUBE ASSET, EVENT BY EVENT — the answer to "why was this refused and where did
+       * that one go".
+       *
+       * Render 577 reported `youtube_cc adopted=1 composed=0 finalVideo=0`: one clip cleared every
+       * gate and never reached the film, and no line said which clip or where it stopped. The facts
+       * were all in the ledger — provider, asset id, scene, beat, query, and per event a stage, a
+       * status, a reason and the gate — and nothing read them back out. `formatAssetTrace` has been
+       * exported since RONDE 95 with no caller at all.
+       *
+       * Counted separately, because they are different problems: `refused` is an asset something
+       * turned down and said why; `openEnded` is an asset whose life simply stops, which is the
+       * disappearance. Blending them is how `adopted=1 composed=0` stayed unexplained for a month.
+       *
+       * A second READER of the same events the funnel above reads, so the two cannot disagree. It
+       * refuses nothing and changes no count.
+       */
+      for (const line of formatProviderTrace(ledger, "youtube_cc", { label: "YouTubeTrace" })) {
+        console.log(pipelineReport.add("sourcing", line));
       }
       // RONDE 94: the same events, per provider, in found/validated/selected/downloaded/assigned/
       // rendered — plus a refusal to print a funnel that widens.
