@@ -2577,21 +2577,103 @@ export function formatProviderFunnelInvariant(
     if (e.status !== "OK" || !stages.has(e.stage)) stages.set(e.stage, e.status);
   }
 
-  const byProvider = new Map<string, { tracked: number; terminal: number }>();
+  const byProvider = new Map<
+    string,
+    {
+      tracked: number;
+      terminal: number;
+      neverFetched: number;
+      fetchStalled: number;
+      fetchedThenSilent: number;
+      failedThenSucceeded: number;
+    }
+  >();
   for (const r of records) {
     /** A derived file is not a second candidate — only roots are counted. */
     if (r.parentLineageId) continue;
     const key = r.provider ?? UNVERIFIED_PROVIDER;
-    const entry = byProvider.get(key) ?? { tracked: 0, terminal: 0 };
+    const entry =
+      byProvider.get(key) ??
+      {
+        tracked: 0,
+        terminal: 0,
+        neverFetched: 0,
+        fetchStalled: 0,
+        fetchedThenSilent: 0,
+        failedThenSucceeded: 0,
+      };
     entry.tracked++;
     const stages = stagesById.get(r.lineageId) ?? new Map<LineageStage, LineageEventStatus>();
     if (stages.has("FINAL_VIDEO") || hasTerminalOutcome(stages)) entry.terminal++;
+    else {
+      /**
+       * §12 again, one level down — WHICH KIND OF SILENCE THIS RECORD IS.
+       *
+       * ── What render 579 could not distinguish ───────────────────────────────────────────────
+       *
+       *     [ProviderFunnelInvariant] pexels     unexplained=82  INVARIANT_BROKEN
+       *     [ProviderFunnelInvariant] pixabay    unexplained=64  INVARIANT_BROKEN
+       *     [ProviderFunnelInvariant] wikimedia  unexplained=35  INVARIANT_BROKEN
+       *     [ProviderFunnelInvariant] youtube_cc unexplained=17  INVARIANT_BROKEN
+       *     ... eight providers, every one of them broken, ~237 records in total
+       *
+       * One number over eight providers, and no way to tell whether it names one leak or three.
+       * The split above already exists for exactly this reason — `untracked` and `unexplained`
+       * were separated because they have different fixes — and it stopped one level too early.
+       *
+       * ── The three shapes, and why each needs a different repair ──────────────────────────────
+       *
+       *   neverFetched        The record was opened and no transfer was ever attempted. The
+       *                       candidate was screened out before any bytes moved. Between the
+       *                       review pool's declaration and the first verdict in the adoption loop
+       *                       there are thirty-one `continue` statements and one call that files
+       *                       anything, so this is where the pexels/pixabay mass sits.
+       *
+       *   fetchedThenSilent   The bytes arrived and nothing ever said what became of the file.
+       *                       This is the expensive one: the render paid for a download and then
+       *                       lost the result. Render 579's seventeen youtube_cc records are this
+       *                       shape, and the cause is known — every one was filed under `beat=-1`,
+       *                       so no beat funnel could pick it up (fixed in 32c819d, unverified in
+       *                       production).
+       *
+       *   failedThenSucceeded A DOWNLOAD_FAILED and a DOWNLOAD_SUCCEEDED on the same record.
+       *                       RONDE 167 F1 deliberately declines to call that terminal, because a
+       *                       success after a failure means the failure was not the ending. It is
+       *                       a real contradiction — render 579 had five, all from a caller that
+       *                       had already given up — and it is counted apart so it stops inflating
+       *                       the other two.
+       *
+       * ── What this still refuses to do ───────────────────────────────────────────────────────
+       *
+       * Name the gate. These are stage lists, not decision logs, and this function's own header is
+       * the rule: guessing a reason "would make the log look complete and read wrong, which is the
+       * defect this whole investigation started from". Three shapes is what the stages can honestly
+       * support. `unexplained` keeps its meaning and its total exactly; it is only no longer the
+       * only thing said about it.
+       */
+      const started = stages.has("DOWNLOAD_STARTED");
+      const succeeded = stages.has("DOWNLOAD_SUCCEEDED");
+      const failed = stages.has("DOWNLOAD_FAILED");
+      if (failed && succeeded) entry.failedThenSucceeded++;
+      else if (succeeded) entry.fetchedThenSilent++;
+      else if (started) entry.fetchStalled++;
+      else entry.neverFetched++;
+    }
     byProvider.set(key, entry);
   }
 
   const lines: string[] = [];
   for (const [provider, counts] of Object.entries(summary.byProvider)) {
-    const seen = byProvider.get(provider) ?? { tracked: 0, terminal: 0 };
+    const seen =
+      byProvider.get(provider) ??
+      {
+        tracked: 0,
+        terminal: 0,
+        neverFetched: 0,
+        fetchStalled: 0,
+        fetchedThenSilent: 0,
+        failedThenSucceeded: 0,
+      };
     /**
      * Two different gaps, kept apart because they have different fixes.
      *
@@ -2601,10 +2683,20 @@ export function formatProviderFunnelInvariant(
     const untracked = Math.max(0, counts.results - seen.tracked);
     const unexplained = Math.max(0, seen.tracked - seen.terminal);
     const broken = unexplained > 0 ? " INVARIANT_BROKEN" : "";
+    /**
+     * The shapes, printed only when there is something to shape. On a healthy provider the line is
+     * exactly what it always was, so a clean render does not grow four zero columns.
+     */
+    const shapes =
+      unexplained > 0
+        ? ` neverFetched=${seen.neverFetched} fetchStalled=${seen.fetchStalled}` +
+          ` fetchedThenSilent=${seen.fetchedThenSilent}` +
+          ` failedThenSucceeded=${seen.failedThenSucceeded}`
+        : "";
     lines.push(
       `[ProviderFunnelInvariant] provider=${provider} candidates=${counts.results} ` +
         `tracked=${seen.tracked} terminalOutcomes=${seen.terminal} ` +
-        `untracked=${untracked} unexplained=${unexplained}${broken}`
+        `untracked=${untracked} unexplained=${unexplained}${shapes}${broken}`
     );
   }
   return lines;
