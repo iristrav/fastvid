@@ -36,8 +36,21 @@
  * exactly this translation. A second copy of that mapping would be a second opinion about what
  * "archival" means.
  */
-import { rankCandidates, DEFAULT_RANKING_CONFIG } from "./visualMatchingV2/candidateRanking";
-import type { CandidateAsset, RankedCandidate, VisualIntent } from "./visualMatchingV2/types";
+import {
+  rankCandidates,
+  DEFAULT_RANKING_CONFIG,
+  DEFAULT_SOURCE_PRIORITY,
+} from "./visualMatchingV2/candidateRanking";
+import { providerFitForNeed } from "./providerCapability";
+import { classifyChannelAuthority } from "./channelAuthority";
+import type { MediaForm } from "./beatVisualIntent";
+import type {
+  CandidateAsset,
+  CandidateSource,
+  RankedCandidate,
+  SourcePriority,
+  VisualIntent,
+} from "./visualMatchingV2/types";
 import { engineSourceFor } from "./cinematicPipelineInputs";
 
 /**
@@ -67,7 +80,44 @@ export type RankablePoolCandidate = {
   rankingScore: number | null;
   /** The query this candidate came back for, when the retrieval route recorded one. */
   searchQuery?: string;
+  /**
+   * The platform block, when the provider filled one. Optional everywhere: only YouTube supplies
+   * it, and a candidate without it is ranked exactly as it was before this round.
+   */
+  youtube?: { channel?: string | null; publishedAt?: string | null } | null;
 };
+
+/**
+ * WHAT THE CANDIDATE'S OWN PUBLICATION FACTS SAY — the metadata that had no writer.
+ *
+ * `freshnessScore` in the ranking engine reads `candidate.metadata.publishedAt`, and this adapter
+ * set `metadata: null` on every candidate, so the signal could never fire for anybody. The same
+ * shape as every other finding in this codebase: a reader with no writer.
+ *
+ * `channelAuthority` rides along in the same object because it is the same kind of fact — who
+ * published this, and when — and because carrying it makes it visible in the ranking breakdown and
+ * therefore in the render's own report. It carries NO weight of its own: adding a fourteenth
+ * signal redistributes the other thirteen, and that is a decision to make against measured data
+ * rather than in the same change that first makes the data exist.
+ *
+ * Returns null when nothing is known, so a candidate with no publication facts is exactly as it
+ * was — the engine redistributes an absent signal's weight rather than scoring a fabricated zero.
+ */
+function publicationMetadata(c: RankablePoolCandidate): Record<string, unknown> | null {
+  const publishedAt = c.youtube?.publishedAt ?? null;
+  const channel = c.youtube?.channel ?? null;
+  if (!publishedAt && !channel) return null;
+  const authority = classifyChannelAuthority(channel, c.description);
+  return {
+    ...(publishedAt ? { publishedAt } : {}),
+    ...(channel
+      ? {
+          channelAuthority: authority.authorityClass,
+          channelAuthorityConfidence: authority.confidence,
+        }
+      : {}),
+  };
+}
 
 /**
  * A pool candidate in the ranking engine's vocabulary.
@@ -98,7 +148,7 @@ export function poolCandidateToAsset(
     thumbnail: c.thumbnailUrl,
     localPath: null,
     remoteUrl: c.remoteUrl,
-    metadata: null,
+    metadata: publicationMetadata(c),
     /**
      * F-3 — CARRIED, NOT BLANKED.
      *
@@ -213,7 +263,78 @@ export type PoolRankingRequest = {
    * the behaviour every caller had before.
    */
   keywordScoreOf?: (candidate: RankablePoolCandidate) => number | null | undefined;
+  /**
+   * What kind of picture this beat needs, so the source priority can answer for THIS beat.
+   *
+   * Omit it and the engine keeps `DEFAULT_SOURCE_PRIORITY` exactly as before — which is also what
+   * happens for a beat whose intent proved nothing, because `mediaFormsForIntent` returns an empty
+   * `preferred` and `contextualSourcePriority` then hands back the default untouched.
+   */
+  mediaFormNeed?: { preferred: readonly MediaForm[]; acceptable: readonly MediaForm[] };
 };
+
+/**
+ * How far the beat's own need may move a source, in the priority table's own units.
+ *
+ * The table runs 0..100 and `sourcePriority` carries a weight of 0.07 in the engine, so this is a
+ * nudge inside one of thirteen signals — not a veto. 80 is chosen so that the ONE case the audit
+ * proved wrong actually changes: on a dated beat, stock (pexels 80, no archival form) stayed
+ * ahead of internet_archive (60) and youtube_cc (55), and a historical beat was therefore filled
+ * from a library whose footage was shot this decade. At ±40 the archives pass the stock libraries
+ * on archival beats and nowhere else.
+ *
+ * It is not larger because the default order encodes real, earned differences — an own-archive
+ * asset with measured tags genuinely is a better starting bet than an unclassified platform clip,
+ * and a need should re-order sources, not erase what is known about them.
+ */
+const NEED_PRIORITY_SPAN = 80;
+
+/**
+ * THE DEFAULT TABLE, RE-ANSWERED FOR THIS BEAT.
+ *
+ * ── What the audit measured ─────────────────────────────────────────────────────────────────
+ *
+ * `DEFAULT_SOURCE_PRIORITY` is one fixed order for every beat of every topic:
+ *
+ *     own_archive 100 · wikimedia 90 · europeana 85 · pexels 80
+ *     pixabay 70 · internet_archive 60 · youtube_cc 55 · ai_generated 50
+ *
+ * For a beat about a bunker in 1945 that is the wrong order, and provably so: pexels and pixabay
+ * cannot supply archival footage at all — stock is shot now — yet they sit above both archives.
+ * The engine's own comment concedes the table is "known only here".
+ *
+ * ── What this does ──────────────────────────────────────────────────────────────────────────
+ *
+ * Keeps the default as the baseline and moves each source by how well it answers THIS beat's
+ * media-form need, from the capability registry. A source the registry has never characterised is
+ * left exactly where the default put it — `providerFitForNeed` returns null, and null means "no
+ * information", never "no".
+ *
+ * ── What it deliberately does not do ────────────────────────────────────────────────────────
+ *
+ * It does not prefer YouTube. YouTube gains on archival and news beats because it supplies those
+ * forms and stock does not, and gains nothing on a beat that wants a photograph. There is no
+ * per-source bonus, no quota, and no topic anywhere in this function: the same code moves
+ * wikimedia up on a portrait beat and down on a news one.
+ */
+export function contextualSourcePriority(need?: {
+  preferred: readonly MediaForm[];
+  acceptable: readonly MediaForm[];
+}): SourcePriority {
+  const base = { ...DEFAULT_SOURCE_PRIORITY };
+  if (!need || need.preferred.length === 0) return base;
+
+  const out = { ...base };
+  for (const source of Object.keys(base) as CandidateSource[]) {
+    const fit = providerFitForNeed(source, need);
+    /** null is "no information", never "no": the source keeps the place the default gave it. */
+    if (fit == null) continue;
+    /** fit 0.5 is neutral: a source that answers the need averagely keeps its earned place. */
+    const moved = base[source] + NEED_PRIORITY_SPAN * (fit - 0.5);
+    out[source] = Math.max(0, Math.min(100, Math.round(moved * 100) / 100));
+  }
+  return out;
+}
 
 /**
  * Rank a pool with the real engine, highest first.
@@ -221,12 +342,51 @@ export type PoolRankingRequest = {
  * Returns the engine's own `RankedCandidate[]`, breakdown included, so a caller can log WHY a
  * candidate won — which is what makes FASE 15's "why was this asset chosen" answerable at all.
  */
+/**
+ * RECENCY IS A VIRTUE ONLY WHEN THE BEAT IS ABOUT NOW.
+ *
+ * `freshnessScore` is `1 - ageYears / 20`: newer scores higher, always. That is right for a beat
+ * about a current event and exactly backwards for a beat about 1945, where a 2024 upload is more
+ * likely to be a modern reconstruction than the footage itself.
+ *
+ * Until this round the question never arose, because nothing wrote `metadata.publishedAt` and the
+ * signal never fired. Now that it does fire, a dated beat must not be quietly pulled toward recent
+ * uploads — so the weight is set to zero for a beat that asked for archival material, and the
+ * engine redistributes it exactly as it does for any absent signal.
+ *
+ * Zero rather than inverted: "older is better" is a different claim, and one this codebase has no
+ * evidence for — a 1970s documentary about 1945 is not thereby better than a 2010 restoration of
+ * the original reel. Declining to use the signal is the honest position; inverting it would be a
+ * guess dressed as a rule.
+ *
+ * Every other weight is untouched, and a beat with no need gets `DEFAULT_RANKING_WEIGHTS` itself.
+ */
+function freshnessAwareWeights(need?: {
+  preferred: readonly MediaForm[];
+  acceptable: readonly MediaForm[];
+}): typeof DEFAULT_RANKING_CONFIG.weights {
+  if (!need?.preferred.includes("ARCHIVAL_FOOTAGE")) return DEFAULT_RANKING_CONFIG.weights;
+  return { ...DEFAULT_RANKING_CONFIG.weights, freshness: 0 };
+}
+
 export function rankPoolCandidates(req: PoolRankingRequest): RankedCandidate[] {
   if (req.candidates.length === 0) return [];
   return rankCandidates(
     req.intent,
     req.candidates.map((c) => poolCandidateToAsset(c, req.keywordScoreOf?.(c))),
-    DEFAULT_RANKING_CONFIG,
+    /**
+     * The same config, with the source table re-answered for this beat. Without a need it IS
+     * `DEFAULT_RANKING_CONFIG` — `contextualSourcePriority` returns the default object's own
+     * values — so a caller that passes no need gets byte-identical behaviour to before.
+     *
+     * The weights are untouched. This round changes which source scores well on a given beat, not
+     * how much the source signal is worth against the other twelve.
+     */
+    {
+      ...DEFAULT_RANKING_CONFIG,
+      weights: freshnessAwareWeights(req.mediaFormNeed),
+      sourcePriority: contextualSourcePriority(req.mediaFormNeed),
+    },
     {
       ...(req.targetMotionLevel != null ? { targetMotionLevel: req.targetMotionLevel } : {}),
       ...(req.targetOrientation ? { targetOrientation: req.targetOrientation } : {}),

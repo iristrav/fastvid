@@ -219,6 +219,127 @@ export function intentMatchScore(
  * `=[]`: a beat that could not state its period is more visible when the field is missing than
  * when it is present and empty.
  */
+/* ═══════════════════════ WHAT KIND OF PICTURE THIS BEAT NEEDS ═══════════════════════ */
+
+/**
+ * THE MEDIA FORM — and why it is not `mediaType`.
+ *
+ * `mediaType` (video / still) says how a file is ENCODED. It is a fact about storage, and the
+ * pipeline has always had it. What the pipeline has never had is a statement of what KIND of
+ * picture the beat needs: an archive reel, a portrait, a map, a chart. Those are different
+ * questions with different best sources, and without the second one every beat is routed to the
+ * same fourteen providers in source-code order — which is what render 577 did.
+ *
+ * The list is deliberately small and deliberately about SUBJECT MATTER, not about aesthetics.
+ */
+export type MediaForm =
+  | "ARCHIVAL_FOOTAGE"
+  | "REAL_FOOTAGE"
+  | "PHOTO"
+  | "MAP"
+  | "DOCUMENT"
+  | "NEWS"
+  | "PERSON"
+  | "LOCATION"
+  | "OBJECT"
+  | "PROCESS"
+  | "B_ROLL"
+  | "GRAPHIC"
+  | "DATA_VISUALIZATION"
+  | "INTERVIEW";
+
+/**
+ * What the beat needs, and what it will also take.
+ *
+ * Two lists rather than one label, because a beat naming a person IN a place in 1945 genuinely
+ * has three good answers and picking one of them by fiat would throw away two. `preferred` is
+ * what the routing should ask first; `acceptable` is what it may still use.
+ *
+ * `preferred` is EMPTY when the beat proved nothing. That is the honest answer for a beat whose
+ * extractors typed nothing at all, and it is why this cannot quietly narrow such a beat to one
+ * form: an empty `preferred` means "no opinion", and a router reading it must fall back to its
+ * default order rather than invent a form.
+ */
+export type MediaFormNeed = {
+  preferred: readonly MediaForm[];
+  acceptable: readonly MediaForm[];
+};
+
+/**
+ * INFERRED FROM WHAT THE BEAT ALREADY TYPED — no LLM call, no new API, no new extractor.
+ *
+ * Every rule below reads a field `buildBeatVisualIntent` already fills from the verified context.
+ * Deterministic, so the same beat always produces the same need and a render is reproducible.
+ *
+ * The rules, in the order they contribute:
+ *
+ *   period      → ARCHIVAL_FOOTAGE. A dated beat wants material FROM that date, and that is the
+ *                 single strongest routing signal there is: it separates an archive from a stock
+ *                 library more sharply than any other field.
+ *   people      → PERSON. Someone has to be shown, which is a different search from a place.
+ *   location    → LOCATION.
+ *   objects     → OBJECT.
+ *   event       → NEWS when the beat is NOT dated to the past, ARCHIVAL_FOOTAGE when it is. The
+ *                 same word ("the vote", "the launch") means a news clip this year and an archive
+ *                 reel in 1945, and only the period field can tell them apart.
+ *   action only → PROCESS. A beat that names a verb and no noun is describing something happening.
+ *
+ * `acceptable` always ends with B_ROLL: whatever the beat wants, general footage is still usable
+ * rather than wrong. PHOTO is acceptable wherever a still can carry the subject — which is
+ * everywhere except a beat that specifically needs motion, and this model does not claim to know
+ * that. REAL_FOOTAGE is acceptable everywhere for the same reason.
+ *
+ * What this does NOT do: MAP, DOCUMENT, GRAPHIC, DATA_VISUALIZATION and INTERVIEW are declared in
+ * `MediaForm` and never inferred here. Nothing in the current intent can prove a beat needs a map
+ * or a chart — the extractors do not type quantities, and guessing from a word like "percent"
+ * would be exactly the kind of inference this codebase keeps removing. They are in the type so a
+ * later round that CAN prove them has a name to use, and naming them without inferring them is
+ * the honest state.
+ */
+export function mediaFormsForIntent(
+  intent:
+    | {
+        people?: readonly string[];
+        event?: readonly string[];
+        location?: readonly string[];
+        period?: readonly string[];
+        objects?: readonly string[];
+        action?: readonly string[];
+      }
+    | null
+    | undefined
+): MediaFormNeed {
+  const has = (list: readonly string[] | undefined): boolean => (list?.length ?? 0) > 0;
+  if (!intent) return { preferred: [], acceptable: ["B_ROLL"] };
+
+  const dated = has(intent.period);
+  const preferred: MediaForm[] = [];
+  const push = (form: MediaForm): void => {
+    if (!preferred.includes(form)) preferred.push(form);
+  };
+
+  if (dated) push("ARCHIVAL_FOOTAGE");
+  if (has(intent.people)) push("PERSON");
+  if (has(intent.location)) push("LOCATION");
+  if (has(intent.objects)) push("OBJECT");
+  if (has(intent.event)) push(dated ? "ARCHIVAL_FOOTAGE" : "NEWS");
+  if (preferred.length === 0 && has(intent.action)) push("PROCESS");
+
+  /** Nothing typed: no opinion, and the router keeps its default order. */
+  if (preferred.length === 0) return { preferred: [], acceptable: ["B_ROLL"] };
+
+  const acceptable: MediaForm[] = [];
+  for (const form of [...preferred, "REAL_FOOTAGE" as const, "PHOTO" as const, "B_ROLL" as const]) {
+    if (!acceptable.includes(form)) acceptable.push(form);
+  }
+  return { preferred, acceptable };
+}
+
+/** One line, for the render's own log — a need nobody can read is a need nobody can audit. */
+export function formatMediaFormNeed(need: MediaFormNeed): string {
+  return `want=${need.preferred.join("|") || "NONE"} ok=${need.acceptable.join("|")}`;
+}
+
 export function formatVisualIntent(intent: BeatVisualIntent): string {
   const parts: string[] = [
     `s${intent.sceneIndex}b${intent.beatIndex}`,
@@ -238,6 +359,8 @@ export function formatVisualIntent(intent: BeatVisualIntent): string {
   if (intent.fallbackClass) parts.push(`fallbackShot=${intent.fallbackClass}`);
   if (intent.narrativePurpose) parts.push(`purpose=${intent.narrativePurpose}`);
   add("forbidden", intent.forbidden);
+  /** The need, on the same line as the terms it was derived from, so the two can be compared. */
+  parts.push(formatMediaFormNeed(mediaFormsForIntent(intent)));
   return `[VisualIntent] ${parts.join(" ")}`;
 }
 

@@ -248,6 +248,7 @@ import {
   beatVisualIntent,
   formatQueryProvenance,
   queryIntentHints,
+  mediaFormsForIntent,
   queryProvenance,
   type BeatVisualIntent,
   createBeatVisualIntentState,
@@ -257,6 +258,7 @@ import {
   intentMatchScore,
   type BeatVisualIntentState,
 } from "./beatVisualIntent";
+import { orderResearchTasksByNeed } from "./providerCapability";
 import {
   admitToShortlist,
   releaseShortlistSlot,
@@ -451,6 +453,7 @@ import {
   withSearchProvenance,
   withQueryScope,
   contentTermsFromText,
+  visualTermsFromIntent,
   isFunctionWord,
   isPronounToken,
   provenToken,
@@ -27285,7 +27288,16 @@ async function researchBeatClipUnifiedInner(
   ): MediaCandidate[] =>
     paths.filter(Boolean).map((p) => ({ path: p, query, source, isVideo }));
 
-  type ResearchTask = { run: () => Promise<MediaCandidate[]> };
+  /**
+   * `provider` is the capability registry's label for whatever this task asks, so the round can
+   * order itself by what the beat needs instead of by the order the pushes happen to be written in.
+   *
+   * Optional on purpose. Three of the fourteen tasks — the celebrity route, Unsplash and SerpAPI —
+   * have no registry entry, and inventing one for them to satisfy a type would be exactly the
+   * guess `providerCapability` refuses to make. An unlabelled task is ordered as "no information",
+   * which leaves it precisely where it was.
+   */
+  type ResearchTask = { provider?: string; run: () => Promise<MediaCandidate[]> };
   const ytTasks: ResearchTask[] = [];
   const tasks: ResearchTask[] = [];
 
@@ -27300,6 +27312,7 @@ async function researchBeatClipUnifiedInner(
     ) {
       const eq = entityYt[0];
       ytTasks.push({
+        provider: "youtube_cc",
         run: async () => {
           dedup.entityYoutubeFetchesUsed++;
           const paths = await fetchYouTubeCCClips(
@@ -27330,6 +27343,7 @@ async function researchBeatClipUnifiedInner(
       : queries.slice(0, 2);
     for (const q of ytQueries) {
       ytTasks.push({
+        provider: "youtube_cc",
         run: async () => {
           const paths = await fetchYouTubeCCClips(
             q,
@@ -27385,6 +27399,7 @@ async function researchBeatClipUnifiedInner(
   const querySlice = archivalFirst ? queries.slice(0, 4) : queries.slice(0, 2);
   for (const q of querySlice) {
     tasks.push({
+      provider: "wikimedia",
       run: async () => {
         const hits = await fetchWikimediaVideos(
           q,
@@ -27409,6 +27424,7 @@ async function researchBeatClipUnifiedInner(
 
     if (perf.enableArchival) {
       tasks.push({
+        provider: "internet_archive",
         run: async () => {
           const hits = await fetchInternetArchiveClips(
             q,
@@ -27440,6 +27456,7 @@ async function researchBeatClipUnifiedInner(
     (intent.topicKind === "historical" || intent.topicKind === "news")
   ) {
     tasks.push({
+      provider: "europeana",
       run: async () => {
         const hits = await fetchEuropeanaVideos(
           queries.slice(0, 2),
@@ -27465,6 +27482,7 @@ async function researchBeatClipUnifiedInner(
 
   if (perf.enableNasa && spaceTopic && primaryQ) {
     tasks.push({
+      provider: "nasa",
       run: async () => {
         const paths = await fetchNasaVideoClips(
           primaryQ, clipFetchDur, workDir, sceneIndex, 1, dedup.usedContentKeys, dedup.sourcingCache
@@ -27476,6 +27494,7 @@ async function researchBeatClipUnifiedInner(
 
   if (!archivalFirst && !dedup.personTopicLock) {
     tasks.push({
+      provider: "wikimedia",
       run: async () => {
         const imgs = await fetchWikimediaImages(
           primaryQ,
@@ -27490,6 +27509,7 @@ async function researchBeatClipUnifiedInner(
       },
     });
     tasks.push({
+      provider: "openverse",
       run: async () => {
         const ovQuery = primary?.trim() ? `${primary} ${primaryQ}` : primaryQ;
         const paths = await fetchOpenverseImages(
@@ -27568,6 +27588,7 @@ async function researchBeatClipUnifiedInner(
   if (!archivalFirst && allowStock) {
     if (intent.personTopicLock && primary?.trim()) {
       tasks.push({
+        provider: "pexels",
         run: async () => {
           const personQueries = buildPersonStockVideoQueries(primary, beat, scene, videoTitle).slice(0, 3);
           const out: MediaCandidate[] = [];
@@ -27610,6 +27631,7 @@ async function researchBeatClipUnifiedInner(
       for (const q of queries.slice(0, 2)) {
         if (PEXELS_API_KEY) {
           tasks.push({
+            provider: "pexels",
             run: async () => {
               const paths = await pexFetch(q, `${tag}_research`, candidateOffset, muskTopic ? 2 : 1)();
               return toCandidates(paths, q, "pexels", true);
@@ -27618,6 +27640,7 @@ async function researchBeatClipUnifiedInner(
         }
         if (PIXABAY_API_KEY) {
           tasks.push({
+            provider: "pixabay",
             run: async () => {
               const paths = await fetchPixabayClips(
                 q,
@@ -27671,6 +27694,35 @@ async function researchBeatClipUnifiedInner(
    */
   const allResearchTasks = [...ytTasks, ...tasks];
 
+  /**
+   * THE ROUND ASKS THE SOURCES THAT CAN ANSWER THIS BEAT — not the first ten in the file.
+   *
+   * ── What it replaces ──────────────────────────────────────────────────────────────────────
+   *
+   * `maxTasks` is 10, 14 or 18 and the list above holds fourteen, so the slice below genuinely
+   * cuts. What it cut was decided entirely by the order the pushes are written in: YouTube, the
+   * celebrity route, Wikimedia video, Internet Archive, Europeana, NASA, Wikimedia images,
+   * Openverse, Unsplash, SerpAPI, then the stock libraries. Identical for a beat about the
+   * Japanese economy and a beat about a bunker in 1945.
+   *
+   * ── What this is, and what it deliberately is not ─────────────────────────────────────────
+   *
+   * A stable reorder of the existing list, and nothing else. No task is added, none is removed,
+   * no provider is skipped, no budget moves: `maxTasks` still binds and still binds at the same
+   * number. It is a filter on ORDER, which is what decides who survives the slice.
+   *
+   * Not a second selection engine: the ordering key is `providerFitForNeed`, the same registry the
+   * ranking reads, and it returns `null` for a source nobody has characterised. A null keeps the
+   * task exactly where it was — "no information" is never a reason to demote a source.
+   *
+   * A beat whose intent proved nothing produces an empty `preferred`, every fit is then null, and
+   * the order is byte-identical to the order before this round. The default is the old behaviour.
+   */
+  const routedResearchTasks = orderResearchTasksByNeed(
+    allResearchTasks,
+    mediaFormsForIntent(beatVisualIntent(dedup.beatIntent, sceneIndex, beat.index))
+  );
+
   const researchMs = archivalFirst
     ? (perf.fastStockMode ? 95_000 : 110_000)
     : (perf.fastStockMode ? 50_000 : 100_000);
@@ -27679,7 +27731,7 @@ async function researchBeatClipUnifiedInner(
   try {
     const settled = await withTimeout(
       Promise.allSettled(
-        allResearchTasks.slice(0, maxTasks).map((task) =>
+        routedResearchTasks.slice(0, maxTasks).map((task) =>
           withTimeout(task.run(), fetchMs, `media research s${sceneIndex} b${beat.index}`).catch(
             () => [] as MediaCandidate[]
           )
@@ -33133,7 +33185,22 @@ async function rescueBeatVisualWhenEmptyInner(
     const wikiQueries: string[] = [];
     if (scene.pexelsQueries?.length) wikiQueries.push(...scene.pexelsQueries.slice(0, 3));
     wikiQueries.push(...buildBeatQueryEscalationTiers(beat.text, dedup.primaryPerson, videoTitle));
-    const beatTerms = contentTermsFromText(beat.text);
+    /**
+     * THE BEAT'S TYPED TERMS FIRST, THE SENTENCE'S WORD ORDER ONLY IF THERE ARE NONE.
+     *
+     * Render 577 spent this rung on "shaped", "life", "evidence" and "instructions" — the first
+     * four non-function words of the narration, in reading order. `visualTermsFromIntent` asks the
+     * beat what it is ABOUT instead, from the same typed tokens the primary builder uses, and puts
+     * every one of them through the gate's own evidence measure first. It therefore cannot widen
+     * anything: what it returns is a subset of what `validateSearchQuery` already accepted.
+     *
+     * `contentTermsFromText` stays as the fallback for a beat whose extractors typed nothing. That
+     * beat is no worse off than before; a beat that HAS a subject now asks about the subject.
+     */
+    const intentForTerms = beatVisualIntent(dedup.beatIntent, scene.index, beat.index);
+    const beatTerms =
+      visualTermsFromIntent(intentForTerms, `${beat.text} ${scene.text ?? ""}`) ||
+      contentTermsFromText(beat.text);
     if (beatTerms) wikiQueries.push(beatTerms);
     for (const q of Array.from(new Set(wikiQueries))) {
       const wikiClips = await fetchWikimediaImages(q, holdSec, workDir, scene.index, 1, `rescue_wiki`, { dedup, beatIndex: beat.index });
@@ -37105,6 +37172,20 @@ async function fetchSceneVisualsInner(
             ],
             usageLedger: dedup.usageLedger,
             at: { sceneIndex: scene.index, beatIndex: beat.index },
+            /**
+             * WHAT KIND OF PICTURE THIS BEAT NEEDS, so the source table can answer for this beat.
+             *
+             * Without it `contextualSourcePriority` falls back to `DEFAULT_SOURCE_PRIORITY` — one
+             * fixed order for every beat of every topic, in which pexels (80) and pixabay (70) sit
+             * above both archives even on a beat dated to 1945. This is the writer for that reader:
+             * a need built here, from the beat's own typed terms, and read by the ranking engine.
+             *
+             * A beat whose extractors typed nothing produces an empty `preferred`, and the engine
+             * then gets exactly the table it had before.
+             */
+            mediaFormNeed: mediaFormsForIntent(
+              beatVisualIntent(dedup.beatIntent, scene.index, beat.index)
+            ),
           }
         );
         if (poolThumbnailRankingEnabled() && poolCandidates.some(c => c.thumbnailUrl)) {

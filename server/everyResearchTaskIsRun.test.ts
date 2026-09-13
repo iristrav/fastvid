@@ -41,12 +41,42 @@ const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const code = PIPE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
 const SNAPSHOT = "const allResearchTasks = [...ytTasks, ...tasks];";
-const RUN = "allResearchTasks.slice(0, maxTasks)";
+/**
+ * The round now ORDERS the copied list before slicing it, so the run site reads the routed list.
+ * The guarantee this file protects is unchanged — no task may be queued after the copy — and the
+ * three constants below let it also state the new one: routing sits BETWEEN the copy and the run,
+ * and it is a reorder, so nothing may be added or dropped there either.
+ */
+const ROUTE = "const routedResearchTasks = orderResearchTasksByNeed(";
+const RUN = "routedResearchTasks.slice(0, maxTasks)";
 
 describe("the research round runs every task it builds", () => {
   it("the list is still copied once and run once", () => {
     expect(code.split(SNAPSHOT).length - 1, "the snapshot was duplicated or removed").toBe(1);
     expect(code.split(RUN).length - 1, "the run site was duplicated or removed").toBe(1);
+    expect(code.split(ROUTE).length - 1, "the routing step was duplicated or removed").toBe(1);
+  });
+
+  it("THE ROUTING SITS BETWEEN THE COPY AND THE RUN, AND ONLY REORDERS", () => {
+    /**
+     * The new step's safety argument, asserted rather than described. `orderResearchTasksByNeed`
+     * is given the copied list and its result is what runs, so a task cannot be introduced or
+     * dropped on the way — the ordering function returns the same objects, and the slice below is
+     * still the only thing that bounds the round.
+     */
+    const snapshot = code.indexOf(SNAPSHOT);
+    const route = code.indexOf(ROUTE);
+    const run = code.indexOf(RUN);
+    expect(route, "the routing step is gone").toBeGreaterThan(snapshot);
+    expect(run, "the run site is gone").toBeGreaterThan(route);
+    expect(code, "the routing step reads something other than the copied list").toContain(
+      `${ROUTE}\n    allResearchTasks,`
+    );
+  });
+
+  it("and the bound is still maxTasks, not a number routing chose", () => {
+    expect(code).toContain("routedResearchTasks.slice(0, maxTasks)");
+    expect(code).not.toMatch(/routedResearchTasks\.slice\(0,\s*\d/);
   });
 
   it("NO TASK IS QUEUED AFTER THE LIST IS COPIED", () => {

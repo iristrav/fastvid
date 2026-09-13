@@ -31,6 +31,7 @@ import { formatYoutubeLicenseLine, youtubeLicenseDecision } from "./youtubeLicen
  * its own, which is why the decision now lives there and every module can reach it.
  */
 import { rankedPool } from "./poolRanking";
+import type { MediaForm } from "./beatVisualIntent";
 import { penaliseDuplicates, type UsageLedger } from "./duplicateGuard";
 import { youtubePoolCandidates, type YoutubeRowLike } from "./youtubePoolSource";
 import { youtubeRetrievalMode } from "./sourcingPolicy";
@@ -1817,6 +1818,14 @@ export type PoolSelectionContext = {
   usageLedger?: UsageLedger;
   /** Where this selection is happening, so a repeat can be reported as same-beat/scene/video. */
   at?: { sceneIndex: number; beatIndex: number };
+  /**
+   * What KIND of picture this beat needs, from `mediaFormsForIntent`.
+   *
+   * Carried through to the ranking engine so the source-priority table can answer for THIS beat
+   * instead of applying one fixed order to every beat of every topic. Optional and absent-safe:
+   * without it the engine uses `DEFAULT_SOURCE_PRIORITY` exactly as it always did.
+   */
+  mediaFormNeed?: { preferred: readonly MediaForm[]; acceptable: readonly MediaForm[] };
 };
 
 /**
@@ -1922,6 +1931,11 @@ export function selectCandidatesFromPool(
       ...(ctx.usedPaths ? { usedPaths: ctx.usedPaths } : {}),
       ...(ctx.usedCategories ? { usedCategories: ctx.usedCategories } : {}),
       ...(ctx.entityTerms ? { entityTerms: ctx.entityTerms } : {}),
+      /**
+       * The beat's media-form need, so `contextualSourcePriority` can re-answer the source table
+       * for this beat. Omitted when the beat proved nothing, which is the same as before.
+       */
+      ...(ctx.mediaFormNeed ? { mediaFormNeed: ctx.mediaFormNeed } : {}),
     });
 
     return settleRepetition(ranked, (c) => c.rankingScore ?? 0, pool, ctx).slice(0, count);

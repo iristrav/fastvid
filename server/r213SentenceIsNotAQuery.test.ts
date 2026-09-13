@@ -217,7 +217,19 @@ describe("R213 §4 — no builder sends a raw sentence any more", () => {
     );
     const at = PIPE.indexOf("const wikiQueries: string[] = [];");
     expect(at).toBeGreaterThan(0);
-    expect(PIPE.slice(at, at + 600)).toContain("contentTermsFromText(beat.text)");
+    /**
+     * The window was 600 characters and is now 2000. The rung acquired a documented intent-first
+     * term source above this line (see `theBeatSaysWhatItIsAbout.test.ts`), which pushed the
+     * reduction past the old window — the guarantee this test exists for is unchanged, so the
+     * anchor moves rather than the assertion.
+     */
+    const block = PIPE.slice(at, at + 2000);
+    expect(block).toContain("contentTermsFromText(beat.text)");
+    /** And the stronger statement the same rung now makes: the typed terms are tried FIRST. */
+    expect(block.indexOf("visualTermsFromIntent(")).toBeGreaterThan(-1);
+    expect(block.indexOf("visualTermsFromIntent(")).toBeLessThan(
+      block.indexOf("contentTermsFromText(beat.text)")
+    );
   });
 
   it("AN EMPTY REDUCTION ADDS NO QUERY — no site falls back to the raw text", () => {
@@ -227,8 +239,14 @@ describe("R213 §4 — no builder sends a raw sentence any more", () => {
         /\?|if \(/
       );
     }
-    const at = PIPE.indexOf("const beatTerms = contentTermsFromText(beat.text);");
-    expect(PIPE.slice(at, at + 120)).toContain("if (beatTerms) wikiQueries.push(beatTerms)");
+    /**
+     * `const beatTerms =` rather than the whole former one-line assignment: the right-hand side
+     * now picks the typed terms first and falls back to the reduction, so the literal line is
+     * gone while the rule this test protects — an empty result adds NO query — is not.
+     */
+    const at = PIPE.indexOf("const beatTerms =");
+    expect(at).toBeGreaterThan(0);
+    expect(PIPE.slice(at, at + 260)).toContain("if (beatTerms) wikiQueries.push(beatTerms)");
   });
 
   it("the cap is one named constant, not a number repeated at each site", () => {

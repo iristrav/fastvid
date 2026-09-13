@@ -1228,6 +1228,93 @@ export function contentTermsFromText(text: string, maxTerms = 4): string {
 }
 
 /**
+ * THE BEAT'S TYPED TERMS, IN THE ORDER A PICTURE NEEDS THEM.
+ *
+ * ── What render 577 measured ────────────────────────────────────────────────────────────────
+ *
+ *     ALLOWED : "shaped"×11  "life"×10  "evidence"×10  "instructions"×9
+ *     BLOCKED : "establishing"×32 "documentary"×30 "funeral"×14 "corpse"×14 "bunker"×4
+ *
+ * The allowed column is not a list of things a viewer can be shown. It is the first four
+ * non-function words of a sentence, which is exactly what `contentTermsFromText` returns: it
+ * walks the narration in READING order and keeps what it finds. On "The instructions shaped the
+ * final hours of life" that is "instructions shaped final hours" — a grammatical fact about the
+ * sentence and a query no archive can answer.
+ *
+ * The primary builder never had this problem. `buildPrioritisedQueries` works from the beat's
+ * TYPED tokens — persons, places, events, objects, times — which is a model of what the beat is
+ * about rather than of how its sentence is ordered. This gives the FALLBACK the same source, so
+ * the two no longer mean different things by "the beat's own words".
+ *
+ * ── Why this cannot loosen the gate ─────────────────────────────────────────────────────────
+ *
+ * Every term is put through `termProvableFrom` against the same evidence the gate checks — so a
+ * term this returns is a term `validateSearchQuery` was always going to accept. It can only ever
+ * return a SUBSET of what was already allowed, reordered. A planner term with no evidence behind
+ * it ("Führerbunker" on a beat that says only "Hitler was in Berlin") is dropped here exactly as
+ * the gate would drop it, and dropping it here saves the render the round trip.
+ *
+ * That is also why this is not a second query generator: it introduces no word that the beat did
+ * not already prove, and it decides nothing about admission.
+ *
+ * ── The order ───────────────────────────────────────────────────────────────────────────────
+ *
+ * `subject` first because it is what a person would say the beat is ABOUT. Then people, event,
+ * location, period, objects — nouns that narrow an archive, strongest first. `action` last: a
+ * verb rarely narrows a search and often widens it, which is how "shaped" became a query in the
+ * first place.
+ *
+ * Structurally typed rather than importing `BeatVisualIntent`, because that module imports this
+ * one and the dependency may not run both ways.
+ */
+export function visualTermsFromIntent(
+  intent:
+    | {
+        subject?: string;
+        people?: readonly string[];
+        event?: readonly string[];
+        location?: readonly string[];
+        period?: readonly string[];
+        objects?: readonly string[];
+        action?: readonly string[];
+        forbidden?: readonly string[];
+      }
+    | null
+    | undefined,
+  sourceText: string,
+  maxTerms = 4
+): string {
+  if (!intent || maxTerms <= 0) return "";
+  const forbidden = new Set(
+    (intent.forbidden ?? []).map((t) => foldSearchText(t)).filter(Boolean)
+  );
+  const ordered = [
+    ...(intent.subject ? [intent.subject] : []),
+    ...(intent.people ?? []),
+    ...(intent.event ?? []),
+    ...(intent.location ?? []),
+    ...(intent.period ?? []),
+    ...(intent.objects ?? []),
+    ...(intent.action ?? []),
+  ];
+  const kept: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of ordered) {
+    const term = queryProper(raw ?? "").trim();
+    if (!term) continue;
+    const folded = foldSearchText(term);
+    if (!folded || seen.has(folded) || forbidden.has(folded)) continue;
+    /** The gate's own measure, so this can only ever narrow what was already allowed. */
+    if (!termProvableFrom(term, sourceText)) continue;
+    seen.add(folded);
+    kept.push(term);
+    if (kept.length >= maxTerms) break;
+  }
+  const query = kept.join(" ");
+  return hasContentAnchor(query) ? query : "";
+}
+
+/**
  * RONDE 216 — ASK BEFORE YOU BUILD, WITH THE GATE'S OWN MEASURE.
  *
  * ── What render 575 measured ────────────────────────────────────────────────────────────────
