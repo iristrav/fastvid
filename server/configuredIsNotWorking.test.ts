@@ -15,9 +15,23 @@
  *     [VisualFunnel] youtube_cc retrieved=2609 downloadSucceeded=0 adopted=0 finalVideo=0
  *
  * Three separate reports — the service's `/health`, the render's preflight, and the funnel — and
- * the first two were green for the whole render. `proxy: true` means a variable is set;
- * `AVAILABLE` means the same variable is set on the other side. Neither had asked YouTube
- * anything.
+ * the first two were green for the whole render, because both answer a question about
+ * CONFIGURATION: `AVAILABLE` means an env var is set on the client side, and `/health`'s `proxy`
+ * field means one is set on the service side. Neither had asked YouTube anything.
+ *
+ * ── A correction to what this comment used to say ───────────────────────────────────────────
+ *
+ * It read "`proxy: true` means a variable is set", presenting render 581 as a render with a proxy
+ * configured that failed anyway. That was inferred, not measured, and it was wrong. Production's
+ * own answer, once the probe existed to ask:
+ *
+ *     {"ok":false,"reason":"bot_check","proxyConfigured":false,
+ *      "jsRuntime":"node-22.23.2","jsRuntimeSupported":true,
+ *      "playerClients":["visionos","web"]}
+ *
+ * There was never a proxy. Which makes the point of these tests sharper rather than weaker: the
+ * green signals were not hiding a failing proxy, they were hiding the absence of one, and not a
+ * single reading distinguished those two states either.
  *
  * These tests pin the three answers that follow from that: the service says whether it GOT
  * THROUGH, the render stops asking a route that is refusing its network identity, and the
