@@ -69,7 +69,9 @@ import {
   permanentDownloadRefusal,
   resetPermanentDownloadRefusals,
   cloudEgressRefusal,
+  cloudEgressRefusalStreak,
   noteCloudEgressBlocked,
+  noteCloudEgressOk,
   resetCloudEgressBlocked,
   shouldRetryAfterFailure,
   youtubeDownloadRefusal,
@@ -14381,9 +14383,11 @@ export async function downloadYouTubeCCClip(
          */
         if (cloudReason.endsWith(":bot_check") && noteCloudEgressBlocked(videoId, cloudReason)) {
           console.error(
-            `[Pipeline] YouTube has bot-checked the yt-dlp service (first seen on ${videoId}). ` +
-              `The cloud route is skipped for the rest of this render — it is the service's network ` +
-              `identity that is refused, not these videos. Check PROXY_URL on the download service`
+            `[Pipeline] YouTube has bot-checked the yt-dlp service ${cloudEgressRefusalStreak()}× ` +
+              `in a row (latest on ${videoId}). The cloud route is skipped for the rest of this ` +
+              `render — a run this long is the service's network identity being refused, not these ` +
+              `videos, and not one unlucky address out of a rotating pool. Check PROXY_URL on the ` +
+              `download service`
           );
         }
         console.warn(
@@ -14405,6 +14409,13 @@ export async function downloadYouTubeCCClip(
         } else if (cloudFileSize > 10_000) {
           fs.renameSync(cloudTmpPath, outPath);
           note("cloud", "DOWNLOAD_SUCCESS", `${cloudFileSize}_bytes`);
+          /**
+           * The route answered, so whatever it was refused for earlier is not what it is now — see
+           * `noteCloudEgressOk`. Without this the refusal count is a lifetime tally instead of a
+           * run, and a rotating proxy that meets a flagged address once every twenty videos would
+           * eventually be latched shut by arithmetic rather than by evidence.
+           */
+          noteCloudEgressOk();
           console.log(
             `[Pipeline] Scene ${sceneIndex}: ✅ YouTube CC via cloud service: "${title?.slice(0, 60) ?? videoId}" (${videoId})`
           );

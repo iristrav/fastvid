@@ -47,6 +47,8 @@ import {
   noteCloudEgressBlocked,
   cloudEgressRefusal,
   resetCloudEgressBlocked,
+  noteCloudEgressOk,
+  cloudEgressRefusalStreak,
 } from "./providerFailureClass";
 
 const probes = (over: Partial<HostProbes> = {}): HostProbes => ({
@@ -280,20 +282,78 @@ describe("1b. the egress answer says which runtime and clients produced it", () 
   });
 });
 
-describe("2. one bot check ends the cloud route for the render", () => {
-  beforeEach(() => resetCloudEgressBlocked());
+/**
+ * 2. A RUN OF BOT CHECKS ENDS THE CLOUD ROUTE FOR THE RENDER.
+ *
+ * It used to be one, and that was right for the network it was written against: no proxy, one
+ * address, so the first "Sign in to confirm you're not a bot" was the answer the next 2608 would
+ * get too.
+ *
+ * A residential proxy rotates the address, and render 582 is what one-strike cost once it existed:
+ * a single bot check closed the cloud route, all 48 later attempts fell to RapidAPI — which
+ * downloads the WHOLE source before trimming — and scene 2 reached them with 11 seconds against a
+ * 12-second floor. Every one was refused before it started, while the cloud route, which fetches
+ * only the seconds a beat needs, would have fitted.
+ */
+describe("2. a run of bot checks ends the cloud route for the render", () => {
+  beforeEach(() => {
+    delete process.env.MAX_CLOUD_EGRESS_REFUSALS;
+    resetCloudEgressBlocked();
+  });
 
-  it("the latch closes once and says which call closed it", () => {
+  /** One flagged address out of ninety million says nothing about the next request. */
+  it("a single refusal does NOT close the route", () => {
+    expect(noteCloudEgressBlocked("ynJoy1OCeVQ", "http_502:bot_check")).toBe(false);
     expect(cloudEgressRefusal()).toBeNull();
-    expect(noteCloudEgressBlocked("ynJoy1OCeVQ", "http_502:bot_check")).toBe(true);
-    expect(cloudEgressRefusal()).toEqual({ videoId: "ynJoy1OCeVQ", reason: "http_502:bot_check" });
+  });
+
+  it("closes on the third in a row, and names the call that closed it", () => {
+    process.env.MAX_CLOUD_EGRESS_REFUSALS = "3";
+    expect(noteCloudEgressBlocked("a", "http_502:bot_check")).toBe(false);
+    expect(noteCloudEgressBlocked("b", "http_502:bot_check")).toBe(false);
+    expect(noteCloudEgressBlocked("c", "http_502:bot_check")).toBe(true);
+    expect(cloudEgressRefusal()).toEqual({ videoId: "c", reason: "http_502:bot_check" });
+  });
+
+  /**
+   * CONSECUTIVE is the whole of it. A success proves the route is alive whatever the last refusal
+   * said; without this the count is a lifetime tally and a pool that meets a flagged address once
+   * every twenty videos is eventually latched shut by arithmetic rather than by evidence.
+   */
+  it("a success resets the run", () => {
+    process.env.MAX_CLOUD_EGRESS_REFUSALS = "3";
+    noteCloudEgressBlocked("a", "http_502:bot_check");
+    noteCloudEgressBlocked("b", "http_502:bot_check");
+    noteCloudEgressOk();
+    expect(cloudEgressRefusalStreak()).toBe(0);
+    expect(noteCloudEgressBlocked("c", "http_502:bot_check")).toBe(false);
+    expect(cloudEgressRefusal()).toBeNull();
+  });
+
+  /** Still bounded: without a proxy the address does not rotate, so the run is unbroken. */
+  it("an unbroken run still closes it — 3 wasted calls, not 2609", () => {
+    for (let i = 0; i < 20; i++) noteCloudEgressBlocked(`v${i}`, "http_502:bot_check");
+    expect(cloudEgressRefusal()).not.toBeNull();
+    expect(cloudEgressRefusalStreak()).toBeLessThanOrEqual(3);
   });
 
   /** So the caller logs it once, not on every one of 2609 candidates. */
-  it("a second bot check does not re-announce it", () => {
+  it("it is announced exactly once", () => {
+    process.env.MAX_CLOUD_EGRESS_REFUSALS = "2";
+    const announced = ["a", "b", "c", "d"].filter((v) =>
+      noteCloudEgressBlocked(v, "http_502:bot_check")
+    );
+    expect(announced).toEqual(["b"]);
+  });
+
+  it("the threshold is configurable, and nonsense falls back to the default", () => {
+    process.env.MAX_CLOUD_EGRESS_REFUSALS = "1";
     expect(noteCloudEgressBlocked("a", "http_502:bot_check")).toBe(true);
+    resetCloudEgressBlocked();
+    process.env.MAX_CLOUD_EGRESS_REFUSALS = "banana";
+    expect(noteCloudEgressBlocked("a", "http_502:bot_check")).toBe(false);
     expect(noteCloudEgressBlocked("b", "http_502:bot_check")).toBe(false);
-    expect(cloudEgressRefusal()?.videoId).toBe("a");
+    expect(noteCloudEgressBlocked("c", "http_502:bot_check")).toBe(true);
   });
 
   /**

@@ -392,17 +392,71 @@ export function isDurableYoutubeServiceRefusal(reason: string | undefined): bool
  * ═════════════════════════════════════════════════════════════════════════════════════════════ */
 
 let cloudEgressBlocked: { videoId: string; reason: string } | null = null;
+let consecutiveEgressRefusals = 0;
 
 /**
- * Record that the yt-dlp cloud service cannot reach YouTube from where it runs.
+ * HOW MANY REFUSALS IN A ROW MEAN THE ROUTE IS DEAD.
+ *
+ * ── Why this is not one ─────────────────────────────────────────────────────────────────────
+ *
+ * It was one, and that was right for the network this was written against: no proxy, so every
+ * request left from the same address, and one "Sign in to confirm you're not a bot" was the same
+ * answer the next 2608 would get. Closing after the first refusal saved render 581 from asking a
+ * dead route about every candidate it had.
+ *
+ * A residential proxy changes the fact the rule was built on. The address ROTATES — a refusal is
+ * now about one IP out of a pool of ninety million, and the next request gets a different one. A
+ * single flagged address no longer says anything about the route.
+ *
+ * Render 582 is what the old rule cost once the proxy existed: one bot check closed the cloud
+ * route, and all 48 later attempts fell to RapidAPI, which downloads the WHOLE source before it
+ * trims. Scene 2 reached them with 11 seconds left against a 12-second floor, so every one was
+ * refused before it started — while the cloud route, which fetches only the seconds a beat needs,
+ * would have fitted comfortably. The latch closed the only door that could still have opened.
+ *
+ * ── Why it is still bounded ─────────────────────────────────────────────────────────────────
+ *
+ * Without a proxy the address does not rotate, so the refusals arrive in an unbroken run and the
+ * latch still closes — after three attempts instead of one. Three wasted calls against 2609 is the
+ * same protection to two significant figures, and it buys a rotating pool the retries it needs.
+ *
+ * CONSECUTIVE is the whole of it: any success resets the count, because a success proves the route
+ * is alive whatever the last refusal said.
+ */
+function maxConsecutiveEgressRefusals(): number {
+  const raw = process.env.MAX_CLOUD_EGRESS_REFUSALS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 1 && n <= 20 ? n : 3;
+}
+
+/**
+ * Record that the yt-dlp cloud service was refused by YouTube on this attempt.
  *
  * Returns whether this call was the one that closed the latch, so the caller can log it once
  * instead of on every subsequent video.
  */
 export function noteCloudEgressBlocked(videoId: string, reason: string): boolean {
   if (cloudEgressBlocked) return false;
+  consecutiveEgressRefusals += 1;
+  if (consecutiveEgressRefusals < maxConsecutiveEgressRefusals()) return false;
   cloudEgressBlocked = { videoId, reason };
   return true;
+}
+
+/**
+ * The cloud route answered. Whatever it was refused for before, it is not refused now.
+ *
+ * Called on every successful cloud download. Without this the counter is a lifetime tally rather
+ * than a run, and a route that fails once per twenty videos would eventually be closed by
+ * arithmetic instead of by evidence.
+ */
+export function noteCloudEgressOk(): void {
+  consecutiveEgressRefusals = 0;
+}
+
+/** How many refusals in a row the cloud route has seen — for the render's own report. */
+export function cloudEgressRefusalStreak(): number {
+  return consecutiveEgressRefusals;
 }
 
 /** Why the cloud route is being skipped for the rest of this render, or null while it is alive. */
@@ -413,6 +467,7 @@ export function cloudEgressRefusal(): { videoId: string; reason: string } | null
 /** Cleared at the start of every render, beside the per-video memo. */
 export function resetCloudEgressBlocked(): void {
   cloudEgressBlocked = null;
+  consecutiveEgressRefusals = 0;
 }
 
 /** The memo key for a YouTube video, so the read and the write can never disagree about it. */
