@@ -155,6 +155,117 @@ describe("1. the service probes its own egress, and says what it found", () => {
   });
 });
 
+/**
+ * 1b. THE SAME WORD FOR TWO DIFFERENT PROBLEMS.
+ *
+ * `bot_check` on a supported runtime with ['visionos','web'], and `bot_check` on a deploy whose
+ * image never took, are one answer and two situations that send an operator to opposite places.
+ * The image shipped node 20 against yt-dlp's floor of 22 for weeks on exactly that ambiguity:
+ * nothing on the wire said which runtime was in use, so "installed" and "accepted" were
+ * indistinguishable from outside.
+ */
+describe("1b. the egress answer says which runtime and clients produced it", () => {
+  const SRC = readFileSync(join(__dirname, "..", "services", "ytdlp-download", "main.py"), "utf8");
+
+  const py = (code: string) =>
+    spawnSync("python3", ["-c", code], {
+      cwd: join(__dirname, "..", "services", "ytdlp-download"),
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+  const runs = py("import yt_dlp, fastapi").status === 0 ? it : it.skip;
+
+  const facts = (nodePath: string) => {
+    const r = py(
+      `import yt_dlp, main, json;` +
+        `ydl = yt_dlp.YoutubeDL({"js_runtimes": {"deno": {}, "node": {"path": ${JSON.stringify(nodePath)}}},` +
+        ` "quiet": True, "no_warnings": True});` +
+        `print(json.dumps(main._runtime_facts(ydl)))`
+    );
+    return r.status === 0 ? JSON.parse(r.stdout.trim()) : null;
+  };
+
+  /**
+   * RUN it against a real node, both sides of yt-dlp's floor. Reading the source would only prove
+   * the field was written — the same mistake that let `_ydl_options()` ship uncallable.
+   */
+  runs("an unsupported runtime is reported as unsupported, with the JS-less client set", () => {
+    const f = facts("/opt/node20/bin/node");
+    if (!f?.jsRuntime) return; // no node 20 on this machine — nothing to assert against
+    expect(f.jsRuntime).toMatch(/^node-20\./);
+    expect(f.jsRuntimeSupported).toBe(false);
+    expect(f.playerClients).toEqual(["visionos"]);
+  });
+
+  runs("a supported runtime is reported as supported, and the client set widens", () => {
+    const f = facts("/opt/node22/bin/node");
+    if (!f?.jsRuntime) return; // no node 22 on this machine
+    expect(f.jsRuntimeSupported).toBe(true);
+    expect(f.playerClients).toContain("web");
+  });
+
+  /**
+   * yt-dlp internals, reached deliberately. A release that moves them must cost this field a null,
+   * never the service an error — a diagnostic may not be the reason a download fails.
+   */
+  runs("unreadable internals give nulls, not an exception", () => {
+    const r = py(
+      [
+        "import main, json",
+        "class B:",
+        "    @property",
+        "    def _js_runtimes(self): raise RuntimeError('moved')",
+        "    def get_info_extractor(self, n): raise RuntimeError('moved')",
+        "print(json.dumps(main._runtime_facts(B())))",
+      ].join("\n")
+    );
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout.trim())).toEqual({
+      jsRuntime: null,
+      jsRuntimeSupported: null,
+      playerClients: null,
+    });
+  });
+
+  /** The failing answer is where these matter most, so they may not live only on the happy path. */
+  it("the fields are on the failure branch too", () => {
+    const body = SRC.slice(SRC.indexOf("def _probe_egress()"), SRC.indexOf('@app.get("/health/egress")'));
+    const except = body.indexOf("except Exception as err");
+    expect(except).toBeGreaterThan(0);
+    expect(body.slice(except)).toContain("**facts");
+  });
+
+  /**
+   * `facts` is read by the handler, and `_probe_options()` can raise. Bound inside the try, a
+   * setup failure would become a NameError in the very handler written to make sure a setup
+   * failure still comes back as an answer.
+   */
+  it("facts are bound before the try, so a setup failure is still an answer", () => {
+    const body = SRC.slice(SRC.indexOf("def _probe_egress()"), SRC.indexOf('@app.get("/health/egress")'));
+    expect(body.indexOf('facts: dict[str, object] = {"jsRuntime"')).toBeLessThan(body.indexOf("try:"));
+  });
+
+  /**
+   * The shell's `node --version` is NOT yt-dlp's answer: `_find_exe` checks Python's scripts
+   * directory before PATH, so a newer node under /opt with a PATH entry is ignored while an older
+   * /usr/local/bin/node keeps being used. Reporting the shell's node would print a green line over
+   * a broken runtime — precisely the failure this field exists to catch.
+   */
+  it("the runtime is asked of yt-dlp, never of the shell", () => {
+    const body = SRC.slice(SRC.indexOf("def _runtime_facts("), SRC.indexOf("def _probe_egress()"));
+    expect(body).toContain("_js_runtimes");
+    expect(body).not.toMatch(/subprocess|shutil\.which|"node", "--version"/);
+  });
+
+  /** A rejected runtime is stated at boot, where a deploy log is actually read. */
+  it("boot says it out loud when yt-dlp rejects the runtime", () => {
+    const boot = SRC.slice(SRC.indexOf("def _probe_on_boot()"));
+    expect(boot).toContain("[Runtime]");
+    expect(boot).toContain('result.get("jsRuntimeSupported") is False');
+    expect(boot).toContain("the build did not take");
+  });
+});
+
 describe("2. one bot check ends the cloud route for the render", () => {
   beforeEach(() => resetCloudEgressBlocked());
 

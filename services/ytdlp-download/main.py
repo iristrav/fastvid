@@ -347,17 +347,77 @@ def _probe_options() -> dict:
     return opts
 
 
+def _runtime_facts(ydl: yt_dlp.YoutubeDL) -> dict[str, object]:
+    """
+    WHICH JS RUNTIME YT-DLP CHOSE, AND WHICH CLIENTS THAT LEAVES IT.
+
+    ── Why this is on the egress answer at all ─────────────────────────────────────────────────
+
+    A deploy that fixes the runtime and a deploy that silently did not both come back as
+    `bot_check`, and an operator cannot tell them apart. The image shipped node 20 against yt-dlp's
+    floor of 22 for weeks on exactly that ambiguity: nothing reported which runtime was in use, so
+    "installed" and "accepted" were never distinguishable from outside.
+
+    ── Why it asks yt-dlp instead of the shell ─────────────────────────────────────────────────
+
+    Running `node --version` here would report what PATH resolves, which is NOT necessarily what
+    yt-dlp uses: `utils/_jsruntime.py` `_find_exe` looks in Python's scripts directory first and
+    only then falls back to PATH. On a machine with node 22 first on PATH and a node 20 in
+    /usr/local/bin, the shell says 22 and yt-dlp uses 20. Reporting the shell's answer would
+    produce a green line over a broken runtime — the precise failure this field exists to catch.
+
+    So both values come from the YoutubeDL instance that just ran the probe: `_js_runtimes` is the
+    same source yt-dlp's own "JS runtimes:" debug line reads, and the client list is asked of the
+    extractor, offline — `_get_requested_clients` makes no network request.
+
+    Never raises, and never fails the probe: these are diagnostics about the probe, and an
+    unreadable diagnostic must not turn a working egress into a failed one. Internals of another
+    package, reached deliberately and defensively; a yt-dlp release that moves them costs this
+    field a `null`, not the service an error.
+    """
+    facts: dict[str, object] = {"jsRuntime": None, "jsRuntimeSupported": None, "playerClients": None}
+    try:
+        for runtime in (getattr(ydl, "_js_runtimes", None) or {}).values():
+            info = getattr(runtime, "info", None)
+            if info is None:
+                continue
+            # The first one yt-dlp would actually use: providers are tried in priority order and a
+            # supported one ends the search. An unsupported one is still worth naming — that is
+            # the whole point — so it is only kept while nothing better has been seen.
+            if facts["jsRuntime"] is None or (info.supported and not facts["jsRuntimeSupported"]):
+                facts["jsRuntime"] = f"{info.name}-{info.version}"
+                facts["jsRuntimeSupported"] = bool(info.supported)
+    except Exception:  # noqa: BLE001 — a diagnostic that cannot be read is a null, not an outage
+        pass
+    try:
+        ie = ydl.get_info_extractor("Youtube")
+        ie.initialize()
+        facts["playerClients"] = list(
+            ie._get_requested_clients(f"https://www.youtube.com/watch?v={PROBE_VIDEO_ID}", {}, False)
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return facts
+
+
 def _probe_egress() -> dict[str, object]:
     """Ask YouTube for one video's metadata and report whether the answer got through."""
     global _last_egress
     result: dict[str, object]
+    # Bound BEFORE the try. The handler below reads this, and `_probe_options` can raise — leaving
+    # it assigned inside would turn a setup failure into a NameError in the very handler written to
+    # make sure a setup failure still comes back as an answer.
+    facts: dict[str, object] = {"jsRuntime": None, "jsRuntimeSupported": None, "playerClients": None}
     try:
         # Built INSIDE the try. `_probe_options` reads the environment and goes through the shared
         # builder, so it can raise — and a probe whose own setup throws must still come back as an
         # answer. Leaving this outside turned a wrong call into a 500 on the health endpoint,
         # which reads to a caller exactly like a service that is down.
         opts = _probe_options()
+        # Read BEFORE the extraction, so the facts survive a failing one: a probe that fails is
+        # exactly when an operator needs to know which runtime and clients were in play.
         with yt_dlp.YoutubeDL(opts) as ydl:
+            facts = _runtime_facts(ydl)
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={PROBE_VIDEO_ID}", download=False)
         result = {
             "ok": True,
@@ -366,6 +426,7 @@ def _probe_egress() -> dict[str, object]:
             "probeVideo": PROBE_VIDEO_ID,
             "title": (info or {}).get("title"),
             "proxyConfigured": bool(PROXY_URL),
+            **facts,
         }
     except Exception as err:  # noqa: BLE001 — the probe reports every failure, it never raises
         message = str(err)
@@ -378,6 +439,10 @@ def _probe_egress() -> dict[str, object]:
             "probeVideo": PROBE_VIDEO_ID,
             "title": None,
             "proxyConfigured": bool(PROXY_URL),
+            # THE REASON THESE ARE HERE. `bot_check` on a supported runtime with ['visionos','web']
+            # and `bot_check` on a deploy that never took are the same word and two different
+            # problems; without these fields the second reads as the first.
+            **facts,
         }
     _last_egress = result
     return result
@@ -402,6 +467,24 @@ def _probe_on_boot() -> None:
     except Exception as err:  # noqa: BLE001
         logging.warning("[Egress] probe could not run at boot: %s", str(err)[:200])
         return
+    # Said on its own line and on every boot, healthy or not. A runtime below yt-dlp's floor is
+    # silently downgraded to the JS-less client set, and that is invisible in every other signal
+    # this service emits — see `_runtime_facts`.
+    logging.info(
+        "[Runtime] js=%s supported=%s clients=%s",
+        result.get("jsRuntime"),
+        result.get("jsRuntimeSupported"),
+        result.get("playerClients"),
+    )
+    if result.get("jsRuntimeSupported") is False:
+        logging.error(
+            "[Runtime] yt-dlp has REJECTED this image's JavaScript runtime (%s). It has fallen "
+            "back to the JS-less client set (%s), so every client needing the JS player is "
+            "unreachable regardless of the network. The Dockerfile pins a supported one — this "
+            "means the build did not take.",
+            result.get("jsRuntime"),
+            result.get("playerClients"),
+        )
     if result.get("ok"):
         logging.info(
             "[Egress] YouTube is reachable from this machine (proxy %s)",
