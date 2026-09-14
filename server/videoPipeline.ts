@@ -296,6 +296,7 @@ import {
 } from "./composeCensus";
 import {
   adoptionGuardVerdict,
+  adoptionPolicyFor,
   censusAdoptionPolicies,
   currentAdoptionIntent,
   formatAdoptionPolicyCensus,
@@ -18304,6 +18305,21 @@ export interface VisualDedupState {
    * is the render-level total.
    */
   backfillRefusedWithoutApproval: number;
+  /**
+   * PICTURES THAT ENTERED THE FILM WITHOUT A JUDGEMENT, BECAUSE THERE WAS NOTHING TO JUDGE THEM
+   * AGAINST — counted per route, so the exemption has a size instead of a footnote.
+   *
+   * `adoptionGuardRefusesPush` SUSPENDS the vision requirement when `ensureVerdictBeforeCompose`
+   * reports `no_scope`, `beat_unknown` or `no_narration`: there is no sentence behind the slot, so
+   * no amount of asking can produce a verdict, and demanding one would empty the film rather than
+   * raise the standard. That reasoning is sound and it stays.
+   *
+   * What it was missing is a number. Video 580 delivered three curated WW2 clips into a video
+   * about Kylie Jenner through exactly this door, and the render's own report counted them as the
+   * beats' own footage. Each suspension warned on its own line, and nothing added them up — so the
+   * exemption was invisible at exactly the scale where it matters.
+   */
+  adoptedWithSuspendedVision: Map<string, number>;
   /** Ken Burns / Serp stills allowed this scene (0 = video only). */
   stillPhotosThisScene: number;
   stillPhotosMaxThisScene: number;
@@ -18901,6 +18917,7 @@ export function createVisualDedupState(
     montageShortfalls: [],
     sceneRescueColorFallbackCount: 0,
     backfillRefusedWithoutApproval: 0,
+    adoptedWithSuspendedVision: new Map(),
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
     stillPhotosUsedGlobal: 0,
@@ -30505,6 +30522,33 @@ async function adoptionGuardRefusesPush(
       code: verdict.allowed ? null : verdict.code,
     });
   }
+  /**
+   * AN EXEMPTION THAT LETS A PICTURE IN MUST NOT ALSO LET IN THE CLAIM THAT IT WAS CHECKED.
+   *
+   * This is the door video 580's WW2 clips came through. `askWasPossible` is false, the vision
+   * requirement is suspended, `adoptionGuardVerdict` allows the adoption — and the picture is
+   * then recorded under the beat it was fetched for, where `own_footage` used to mean "this beat
+   * is finished". Real footage plus a suspended check read exactly like real footage that passed.
+   *
+   * The adoption still goes through. Refusing it is what RONDE 215 already measured and rejected:
+   * a requirement nothing can satisfy empties the film instead of raising the bar, and the owner
+   * has been clear that an empty video is the worst outcome of all.
+   *
+   * What changes is that the exemption is now COUNTED, per route, and said out loud at the end of
+   * the render. The claim is withdrawn separately and structurally: no verdict was filed, so
+   * `verificationForBeat` answers `never_asked`, and `buildBeatVisualStatuses` downgrades the
+   * beat's coverage from `own_footage` to `unjudged_footage`. The picture is in the film and the
+   * report no longer says anybody approved it.
+   */
+  if (verdict.allowed && !visionAvailable && !askWasPossible && adoptionPolicyFor(source).countsAsRealFootage) {
+    const seen = dedup.adoptedWithSuspendedVision.get(source) ?? 0;
+    dedup.adoptedWithSuspendedVision.set(source, seen + 1);
+    console.warn(
+      `[AdoptionGuard] s${sceneIndex}b${beatIndex ?? "?"} route=${source} ` +
+        `UNJUDGED_REAL_FOOTAGE_ADOPTED file=${path.basename(clipPath)} — real footage entered the ` +
+        `film with the vision requirement suspended; this beat may not claim an own approved picture`
+    );
+  }
   if (verdict.allowed) return false;
 
   /**
@@ -30530,6 +30574,27 @@ async function adoptionGuardRefusesPush(
   ledger?.recordRejection(clipPath, verdict.code, clipContentKey(clipPath));
   tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, verdict.code);
   return true;
+}
+
+/**
+ * The render's own account of every picture that entered with the vision requirement suspended.
+ *
+ * Exported for the test suite: this is a pure string function over a counter, and the claim worth
+ * asserting — that a clean render says so in words rather than by staying quiet — is a property of
+ * the sentence, not of a pipeline run.
+ */
+export function formatSuspendedVisionAdoptions(byRoute: ReadonlyMap<string, number>): string {
+  const rows = [...byRoute.entries()].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  const total = rows.reduce((sum, [, n]) => sum + n, 0);
+  if (total === 0) {
+    return "[UnjudgedFootage] adopted=0 — every picture in this film was put to the picture editor";
+  }
+  return (
+    `[UnjudgedFootage] adopted=${total} ` +
+    `(${rows.map(([route, n]) => `${route}=${n}`).join(" ")}) — real footage the editor was never ` +
+    `shown, because the slot it filled had no narration to judge it against. These beats may not ` +
+    `claim an approved own picture; see coverage=unjudged_footage`
+  );
 }
 
 function noteDuplicateClipRefused(
@@ -44998,6 +45063,21 @@ async function _runVideoPipelineInner(
        * the rule is turning away more than the two unrelated archive clips it was written for, and
        * that has to be visible without re-reading the whole log for `[BeatRelevance]` warnings.
        */
+      /**
+       * HOW MUCH REAL FOOTAGE THIS FILM CARRIES THAT NOBODY LOOKED AT.
+       *
+       * Printed unconditionally, zero included — the same reasoning as the line below. An
+       * exemption whose line only appears when it fired reads as "this never happens" on every
+       * render that stays silent, and this one had been firing for months: video 580 put three
+       * curated WW2 clips into a film about Kylie Jenner through it, each with its own warning and
+       * no total anywhere.
+       */
+      console.log(
+        pipelineReport.add(
+          "sourcing",
+          formatSuspendedVisionAdoptions(visualDedup.adoptedWithSuspendedVision)
+        )
+      );
       console.log(
         pipelineReport.add(
           "sourcing",

@@ -50,6 +50,36 @@ import { isCanonicalAssetKey } from "./beatVisualRelevance";
 export type BeatCoverage =
   /** Real footage sourced for this beat. The only value that is not a compromise. */
   | "own_footage"
+  /**
+   * REAL FOOTAGE THAT NOBODY LOOKED AT — and therefore not shown to be this beat's.
+   *
+   * ── The three clips that made this necessary ────────────────────────────────────────────────
+   *
+   * Video 580 is about Kylie Jenner. Three of its sixteen delivered clips came from the curated
+   * WW2 archive, and its own report counted them as the beat's own footage:
+   *
+   *     s0b0  cov=own_footage  ver=never_asked  src=rescue_archive  scene_0_b0_curated_a57692_still.mp4
+   *     s1b1  cov=own_footage  ver=unknown      src=rescue_archive  scene_1_b1_curated_a57446.mp4
+   *
+   * They did not get past the picture editor. They never met it. `adoptionGuardRefusesPush`
+   * SUSPENDS the vision requirement when there is no sentence to judge a picture against — a
+   * deliberate rule with its own log line — and the adoption is then recorded under the beat it
+   * was fetched for. Real footage plus a suspended check arrived at the report wearing the label
+   * that means "this beat is finished".
+   *
+   * ── Why this is its own kind and not `subject_only` ─────────────────────────────────────────
+   *
+   * `subject_only` makes a positive claim: the editor WAS asked and confirmed the picture shows
+   * the beat's subject. Bombers under a sentence about a lip-kit are not on subject, and filing
+   * them there would replace one false claim with a quieter one. `placeholder` is equally wrong —
+   * these are real frames, not a colour card, and a viewer sees them.
+   *
+   * So the honest third thing: the footage is real, and nothing is known about whether it belongs.
+   * Same split this codebase keeps rediscovering — `never_asked` beside `unknown`, `neverFetched`
+   * beside `fetchStalled`. A word doing two jobs is how an unexamined beat came to read as an
+   * examined one.
+   */
+  | "unjudged_footage"
   /** The previous clip was held longer because there was no new one. */
   | "held_frame"
   /**
@@ -330,6 +360,7 @@ export function neverAskedReason(coverage: BeatCoverage): string {
       return "generated_clip_not_routed_through_gate";
     case "own_footage":
     case "subject_only":
+    case "unjudged_footage":
       // Real footage with no verdict. Nothing about the coverage explains it, so nothing is
       // invented — this names the gap rather than papering over it.
       return "real_footage_never_judged";
@@ -364,7 +395,7 @@ export function buildBeatVisualStatuses(
   const byBeat = representativeAdoptEntryPerBeat(adoptAudit ?? []).entries;
   const out: BeatVisualStatus[] = [];
   for (const entry of byBeat.values()) {
-    const coverage = coverageOfAdoptEntry(entry);
+    const claimed = coverageOfAdoptEntry(entry);
     /**
      * The render's own key for this file — the one adoption recorded, not one re-derived here.
      *
@@ -386,6 +417,32 @@ export function buildBeatVisualStatuses(
       /** The words this beat plays — the guard that keeps another beat's answer out. */
       entry.beatText
     );
+    /**
+     * A ROUTE'S CLAIM IS NOT A VERDICT — the downgrade this round exists for.
+     *
+     * `coverageOfAdoptEntry` answers from the adoption POLICY: what this route is entitled to
+     * claim. It cannot answer whether the claim was ever checked, because it is handed only a
+     * source and a filename. Here, and only here, both records are in hand.
+     *
+     * `own_footage` means "this beat has its own real picture". Nobody may say that about a
+     * picture the editor was never shown. `never_asked` is exactly that case — and it is the one
+     * that put WW2 footage into a Kylie Jenner video under a label that read as finished.
+     *
+     * ── Deliberately narrow, in three ways ──────────────────────────────────────────────────
+     *
+     * Only `own_footage` moves. `subject_only` already earned a verdict about its subject, and
+     * every other value is a stand-in that never claimed a check.
+     *
+     * Only `never_asked` triggers it. `unknown` means the editor LOOKED and could not tell — a
+     * fact about the picture, not about the render — and RONDE 97 measured what refusing that
+     * costs. It keeps `own_footage`, and `verifiedOwnVisual` already excludes it.
+     *
+     * And it changes no render decision. `verifiedOwnVisual` is `own_footage` AND `verified_fit`,
+     * so a `never_asked` beat was already excluded from it; the export gate's numbers do not move
+     * because of this line. What moves is what the report CLAIMS — which is the whole point.
+     */
+    const coverage: BeatCoverage =
+      claimed === "own_footage" && verification === "never_asked" ? "unjudged_footage" : claimed;
     const verifiedOwnVisual = coverage === "own_footage" && verification === "verified_fit";
     out.push({
       sceneIndex: entry.sceneIndex,
@@ -418,7 +475,11 @@ export function buildBeatVisualStatuses(
        * known" made every such beat read `never_judged`, which is the answer for the OTHER cause.
        */
       verdictGap:
-        verification === "never_asked" && (coverage === "own_footage" || coverage === "subject_only")
+        verification === "never_asked" &&
+        (coverage === "own_footage" ||
+          coverage === "subject_only" ||
+          /** The downgrade above lands every real-footage `never_asked` beat here. */
+          coverage === "unjudged_footage")
           ? isCanonicalAssetKey(assetKey)
             ? "never_judged"
             : "no_asset_key"
@@ -446,8 +507,8 @@ export type BeatVisualTally = {
 
 export function tallyBeatVisualStatuses(statuses: readonly BeatVisualStatus[]): BeatVisualTally {
   const byCoverage: Record<BeatCoverage, number> = {
-    own_footage: 0, subject_only: 0, held_frame: 0, graphic: 0, placeholder: 0, generated: 0,
-    none: 0,
+    own_footage: 0, unjudged_footage: 0, subject_only: 0, held_frame: 0, graphic: 0,
+    placeholder: 0, generated: 0, none: 0,
   };
   const byVerification: Record<BeatVerification, number> = {
     verified_fit: 0, verified_mismatch: 0, reprieved_after_refusal: 0, unknown: 0, never_asked: 0,

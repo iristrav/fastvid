@@ -316,13 +316,55 @@ describe("coverage is derived from the declared policy", () => {
     expect(status!.verifiedOwnVisual).toBe(false);
   });
 
-  /** A declared funnel route still can — the fix must not flatten every beat to unverified. */
-  it("a funnel route still reaches own_footage", () => {
+  /**
+   * A declared funnel route still can — the fix must not flatten every beat to unverified.
+   *
+   * The audit alone is not enough to show that any more: a later round separated the route's
+   * CLAIM from whether anyone checked it, so a beat the editor never saw now reads
+   * `unjudged_footage` however impeccable its route. That is the point of the split, and asserting
+   * against an empty ledger would only re-assert it.
+   *
+   * So the verdict is supplied, and the test asks what it always meant to: a declared funnel route
+   * whose picture WAS judged reaches `own_footage` and becomes the beat's verified visual. The
+   * unjudged half is pinned directly underneath, so both directions are covered here rather than
+   * one of them being implied.
+   */
+  it("a funnel route whose picture was judged still reaches own_footage", () => {
+    const judged = {
+      byClipPath: new Map([
+        [
+          "/w/x.mp4",
+          {
+            ctx: { sceneIndex: 0, beatIndex: 0 },
+            decision: {
+              verdict: "fits", allowed: true, reprieved: false, cached: false,
+              depicts: "", reason: "", route: "adopt", evaluated: true,
+            },
+          },
+        ],
+      ]),
+      byContentKey: new Map(),
+      byBeat: new Map(),
+      spendByBeat: new Map(),
+      finalSayRetried: new Set(),
+    } as never;
+    const [status] = buildBeatVisualStatuses(
+      [{ sceneIndex: 0, beatIndex: 0, beatText: "b", basename: "x.mp4", source: "archive" }] as never,
+      judged
+    );
+    expect(status!.coverage).toBe("own_footage");
+    expect(status!.verification).toBe("verified_fit");
+    expect(status!.verifiedOwnVisual).toBe(true);
+  });
+
+  /** And the same route, unjudged, keeps its footage and loses only the claim. */
+  it("the same funnel route unjudged is unjudged_footage, not a placeholder", () => {
     const [status] = buildBeatVisualStatuses(
       [{ sceneIndex: 0, beatIndex: 0, beatText: "b", basename: "x.mp4", source: "archive" }] as never,
       undefined
     );
-    expect(status!.coverage).toBe("own_footage");
+    expect(status!.coverage).toBe("unjudged_footage");
+    expect(status!.verifiedOwnVisual).toBe(false);
   });
 
   /** The filename second opinion may only ever make the reading MORE conservative. */

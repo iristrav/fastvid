@@ -113,11 +113,27 @@ describe("the render that was refused, replayed", () => {
     ...[0, 1, 2, 3, 4].map((i) => [entry(2, i, "fallback")]),
   ].flat();
 
+  /**
+   * REAL FOOTAGE, whichever word the report uses for it.
+   *
+   * This filter was `coverage === "own_footage"` while that was the only value meaning "there is
+   * real footage here". A later round split it: a picture the editor was never shown keeps its
+   * footage and loses its CLAIM, and reads `unjudged_footage` — which is what these sixteen beats
+   * are, since this fixture passes no ledger and so nothing was ever judged.
+   *
+   * Asked as one label the test would now pass for the wrong reason on an empty set. Asked as
+   * "real footage", it still asserts exactly what its name says, and the placeholder check below
+   * is the half that was actually at stake.
+   */
+  const REAL_FOOTAGE = new Set(["own_footage", "unjudged_footage"]);
+
   it("beats holding real footage are no longer read as placeholders", () => {
     const statuses = buildBeatVisualStatuses(RENDER, undefined);
-    const ownFootage = statuses.filter((s) => s.coverage === "own_footage").length;
+    const real = statuses.filter((s) => REAL_FOOTAGE.has(s.coverage));
     expect(statuses).toHaveLength(16);
-    expect(ownFootage, "three of sixteen was the reported number").toBe(11);
+    expect(real, "three of sixteen was the reported number").toHaveLength(11);
+    /** The defect itself: thirteen of these were reported as cards. Not one may be again. */
+    expect(real.some((s) => s.coverage === "placeholder")).toBe(false);
   });
 
   /**
@@ -141,7 +157,9 @@ describe("the render that was refused, replayed", () => {
    */
   it("names the gap instead of excusing it", () => {
     const statuses = buildBeatVisualStatuses(RENDER, undefined);
-    const real = statuses.filter((s) => s.coverage === "own_footage");
+    const real = statuses.filter((s) => REAL_FOOTAGE.has(s.coverage));
+    /** Non-empty, so `every` cannot pass by having nothing to check. */
+    expect(real).toHaveLength(11);
     expect(real.every((s) => s.reason === "real_footage_never_judged")).toBe(true);
   });
 });
@@ -168,7 +186,10 @@ describe("both summarisers ask the same function", () => {
     const statuses = buildBeatVisualStatuses(audit, undefined);
     expect(summary.archiveBeats).toBe(1);
     expect(summary.fallbackBeats).toBe(1);
-    expect(statuses.filter((s) => s.coverage === "own_footage")).toHaveLength(1);
+    /** Real footage, whichever word the report uses — see REAL_FOOTAGE above. */
+    expect(
+      statuses.filter((s) => s.coverage === "own_footage" || s.coverage === "unjudged_footage")
+    ).toHaveLength(1);
     expect(statuses.filter((s) => s.coverage === "placeholder")).toHaveLength(1);
   });
 });
