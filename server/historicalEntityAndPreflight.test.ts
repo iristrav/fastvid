@@ -130,11 +130,23 @@ describe("the environment that renders checks itself before it renders", () => {
    */
   it("cannot itself stop the worker from starting", () => {
     const at = WORKER.indexOf('await import("./productionPreflight")');
-    const region = WORKER.slice(Math.max(0, at - 2500), at + 3000);
-    expect(region).toContain("[Preflight] could not run at boot");
-    expect(region).toContain("} catch (err) {");
     const start = WORKER.indexOf("startVideoQueueWorker();");
+    expect(at).toBeGreaterThan(0);
     expect(start, "the queue must start after the preflight, not instead of it").toBeGreaterThan(at);
+
+    // The import must sit inside a try whose catch closes before the queue starts — measured by
+    // where those keywords are, not by how many characters of probe live between them.
+    const tryAt = WORKER.lastIndexOf("  try {", at);
+    const catchAt = WORKER.indexOf("  } catch (err) {", at);
+    expect(tryAt, "the preflight import is not inside a try").toBeGreaterThan(0);
+    expect(catchAt, "the preflight try has no catch before the queue starts").toBeGreaterThan(at);
+    expect(catchAt).toBeLessThan(start);
+
+    const handler = WORKER.slice(catchAt, start);
+    expect(handler).toContain("[Preflight] could not run at boot");
+    // A handler that logs and then rethrows would still stop the boot.
+    expect(handler).not.toMatch(/\bthrow\b/);
+    expect(handler).not.toMatch(/process\.exit/);
   });
 
   /**

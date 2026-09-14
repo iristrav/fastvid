@@ -66,6 +66,9 @@ import {
   noteYoutubeDownloadRefusal,
   permanentDownloadRefusal,
   resetPermanentDownloadRefusals,
+  cloudEgressRefusal,
+  noteCloudEgressBlocked,
+  resetCloudEgressBlocked,
   shouldRetryAfterFailure,
   youtubeDownloadRefusal,
   youtubeServiceRefusalReason,
@@ -14236,7 +14239,15 @@ export async function downloadYouTubeCCClip(
    * nothing timed out. See `scene_budget_too_short_to_start` on the fallback below, whose name
    * this deliberately shares so the two read as one decision in the log.
    */
-  if (cloudDlService) {
+  /**
+   * The latch is read here, before the budget check, because a dead route costs nothing to skip
+   * and the budget it would have spent is worth more to the routes that still work.
+   */
+  const egressBlocked = cloudEgressRefusal();
+  if (cloudDlService && egressBlocked) {
+    note("cloud", "DOWNLOAD_FAILED", `cloud_egress_blocked:${egressBlocked.reason}`);
+  }
+  if (cloudDlService && !egressBlocked) {
     const remainingForCloud = remainingScopeMs();
     if (remainingForCloud < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
       remainingAtCheckMs = remainingForCloud;
@@ -14309,6 +14320,20 @@ export async function downloadYouTubeCCClip(
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: ${videoId} written off for this render — the yt-dlp ` +
               `service refused it durably (${cloudReason}); it will not be asked for again`
+          );
+        }
+        /**
+         * A BOT CHECK IS NOT ABOUT THIS VIDEO — see `noteCloudEgressBlocked`.
+         *
+         * The memo above stops one video being asked four times. It cannot stop the render asking
+         * the same dead route about the next video, because a per-video key cannot say "this route
+         * is dead". Render 581 asked about 2609 candidates and moved zero bytes.
+         */
+        if (cloudReason.endsWith(":bot_check") && noteCloudEgressBlocked(videoId, cloudReason)) {
+          console.error(
+            `[Pipeline] YouTube has bot-checked the yt-dlp service (first seen on ${videoId}). ` +
+              `The cloud route is skipped for the rest of this render — it is the service's network ` +
+              `identity that is refused, not these videos. Check PROXY_URL on the download service`
           );
         }
         console.warn(
@@ -41474,6 +41499,8 @@ async function _runVideoPipelineInner(
    * again rather than written off for the lifetime of the worker.
    */
   resetPermanentDownloadRefusals();
+  /** The cloud route's egress latch is render-scoped too — see noteCloudEgressBlocked. */
+  resetCloudEgressBlocked();
   getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with

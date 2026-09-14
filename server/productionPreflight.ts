@@ -451,6 +451,24 @@ export type HostProbes = {
    * there is no key for it and no URL — the model either loads on this machine or it does not.
    */
   canLoadVisionModel: () => Promise<boolean>;
+  /**
+   * CAN THE yt-dlp SERVICE ACTUALLY REACH YOUTUBE FROM WHERE IT RUNS?
+   *
+   * The `youtube_download_primary` capability answers "is YOUTUBE_CC_DL_SERVICE set", and render
+   * 581 is what that is worth: the variable was set, the service was up, the preflight printed
+   * `AVAILABLE`, and every one of 2609 candidates came back
+   *
+   *     {"detail":"ERROR: [youtube] …: Sign in to confirm you're not a bot…"}
+   *
+   * Zero bytes for a whole render, from a route the report called ready. That is the same shape as
+   * `canReachDatabase`'s note one field up — a URL pointing nowhere looks like readiness — and it
+   * needs the same answer: ask the thing.
+   *
+   * Optional so an existing caller keeps compiling and a deployment without the service is simply
+   * not asked. `null` means "no service configured", which is a different answer from "configured
+   * and blocked" and must not be flattened into it.
+   */
+  canReachYoutubeEgress?: () => Promise<{ ok: boolean; reason?: string } | null>;
 };
 
 export async function checkHost(probes: HostProbes, env: NodeJS.ProcessEnv = process.env): Promise<ToolStatus[]> {
@@ -544,6 +562,39 @@ export async function checkHost(probes: HostProbes, env: NodeJS.ProcessEnv = pro
   } else {
     const ok = await probes.canReachRedis();
     out.push({ id: "redis", available: ok, detail: ok ? "reachable" : "CONFIGURED BUT UNREACHABLE" });
+  }
+
+  /**
+   * Asked only when the service is configured, and reported by what it ANSWERED.
+   *
+   * A deployment without the cloud service is not failing at anything — the fallback route exists
+   * and the capability above already says the primary is absent. Saying "unreachable" there would
+   * report a configuration choice as a fault.
+   */
+  if (envPresence("YOUTUBE_CC_DL_SERVICE", env) && probes.canReachYoutubeEgress) {
+    const egress = await probes.canReachYoutubeEgress().catch(() => null);
+    if (egress === null) {
+      out.push({
+        id: "youtube_egress",
+        available: false,
+        detail: "the yt-dlp service did not answer its own egress probe — it may be down or starting",
+      });
+    } else if (egress.ok) {
+      out.push({
+        id: "youtube_egress",
+        available: true,
+        detail: "the yt-dlp service reached YouTube — downloads can actually arrive",
+      });
+    } else {
+      out.push({
+        id: "youtube_egress",
+        available: false,
+        detail:
+          `the yt-dlp service CANNOT reach YouTube (${egress.reason ?? "no reason given"}) — every ` +
+          `YouTube download will fail. On bot_check this is the service's network identity: check ` +
+          `PROXY_URL on the download service`,
+      });
+    }
   }
   return out;
 }

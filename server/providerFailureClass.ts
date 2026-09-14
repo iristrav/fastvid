@@ -374,6 +374,47 @@ export function isDurableYoutubeServiceRefusal(reason: string | undefined): bool
   return YOUTUBE_DURABLE_SERVICE_REFUSALS.has(cls.trim());
 }
 
+/* ═══════════ the cloud service's network identity, which is not about any one video ═══════════
+ *
+ * A bot check is not a fact about the video that happened to be asked for. It is a fact about the
+ * machine doing the asking: YouTube has decided this IP is automated, and it will decide that
+ * again for the next video and the one after. Render 581 asked 2609 candidates' worth of
+ * questions and moved zero bytes.
+ *
+ * The per-video memo above stops one video being asked four times. It cannot stop the render
+ * asking the same dead route about a different video, because a per-video key cannot express
+ * "this route is dead". That is what this latch is for — the same shape as the beat image gate's
+ * `askImpossible`: a fact about the render, recorded once, read everywhere.
+ *
+ * Deliberately NOT persisted beyond the render: an IP's reputation can recover, a proxy can be
+ * fixed, and a latch that outlived its render would turn a bad hour into a permanent outage. It is
+ * reset with everything else at the start of a render.
+ * ═════════════════════════════════════════════════════════════════════════════════════════════ */
+
+let cloudEgressBlocked: { videoId: string; reason: string } | null = null;
+
+/**
+ * Record that the yt-dlp cloud service cannot reach YouTube from where it runs.
+ *
+ * Returns whether this call was the one that closed the latch, so the caller can log it once
+ * instead of on every subsequent video.
+ */
+export function noteCloudEgressBlocked(videoId: string, reason: string): boolean {
+  if (cloudEgressBlocked) return false;
+  cloudEgressBlocked = { videoId, reason };
+  return true;
+}
+
+/** Why the cloud route is being skipped for the rest of this render, or null while it is alive. */
+export function cloudEgressRefusal(): { videoId: string; reason: string } | null {
+  return cloudEgressBlocked;
+}
+
+/** Cleared at the start of every render, beside the per-video memo. */
+export function resetCloudEgressBlocked(): void {
+  cloudEgressBlocked = null;
+}
+
 /** The memo key for a YouTube video, so the read and the write can never disagree about it. */
 function youtubeRefusalKey(videoId: string): string {
   return `youtube_cc:${videoId}`;

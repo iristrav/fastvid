@@ -60,6 +60,13 @@ PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 # A cookies.txt from a signed-in browser. Optional, and a second answer to the same IP-reputation
 # problem PROXY_URL addresses — see the README on which to reach for.
 COOKIES_FILE = os.environ.get("COOKIES_FILE", "").strip()
+# WHICH VIDEO THE EGRESS PROBE ASKS ABOUT.
+#
+# "Me at the zoo", uploaded April 2005 and the oldest video on the platform. Chosen because the
+# probe must not fail for a reason that is about the VIDEO — a removed or private one would answer
+# "unavailable" and read as a healthy egress. Overridable so a future removal is a configuration
+# change rather than a deploy.
+PROBE_VIDEO_ID = os.environ.get("EGRESS_PROBE_VIDEO_ID", "jNQXAC9IVRw").strip()
 
 app = FastAPI(title="FastVid YouTube download service")
 
@@ -257,7 +264,131 @@ def health() -> JSONResponse:
             "proxy": bool(PROXY_URL),
             "cookies": bool(COOKIES_FILE and Path(COOKIES_FILE).is_file()),
             "minHeight": MIN_HEIGHT,
+            # Whether the LAST probe got through, not whether a proxy is configured. Null until
+            # one has run. See /health/egress.
+            "egress": _last_egress,
         }
+    )
+
+
+"""
+CONFIGURED IS NOT THE SAME AS WORKING, AND ONLY ONE OF THEM MATTERS.
+
+`/health` has always reported `proxy: true|false` — whether the variable is set. Render 581 shows
+what that is worth: the proxy was configured, the service was up, `/health` was green, and every
+single fetch came back
+
+    {"detail":"ERROR: [youtube] ynJoy1OCeVQ: Sign in to confirm you're not a bot…"}
+
+2609 candidates, 0 bytes. A service that cannot reach YouTube reported itself as healthy for the
+entire render, and the client's preflight repeated it: `AVAILABLE youtube_download_primary`.
+
+── What this probe is ──────────────────────────────────────────────────────────────────────────
+
+One metadata call — `download=False`, no bytes, no file — through THE SAME options builder the
+real route uses, so it exercises the proxy, the JS runtime and the cookies exactly as a download
+would. It answers the only question that matters: does this machine's network identity get through?
+
+── What it deliberately is not ─────────────────────────────────────────────────────────────────
+
+Not on `/health`. A platform probes that endpoint every few seconds and this one costs a real
+request to YouTube; running it there would turn a health check into rate-limit pressure and make
+the thing it measures worse. It runs once at boot, and on demand at `/health/egress`.
+
+Never fatal. A service that cannot reach YouTube today may reach it in an hour, and refusing to
+start would remove the endpoint that says so.
+"""
+
+_last_egress: dict[str, object] | None = None
+
+
+def _classify_probe_error(message: str) -> str:
+    """
+    The same vocabulary `classifyYoutubeServiceRefusal` uses on the client, so one word means one
+    thing on both sides of the contract. Kept deliberately small: this names the cases an operator
+    acts on differently, and everything else is `other` with the raw line beside it.
+    """
+    text = (message or "").lower()
+    if "sign in to confirm" in text or "not a bot" in text or "confirm you're not" in text:
+        return "bot_check"
+    if "too many requests" in text or "429" in text or "rate" in text and "limit" in text:
+        return "rate_limited"
+    if "proxy" in text or "tunnel" in text or "connection reset" in text or "connection refused" in text:
+        return "proxy"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "unavailable" in text or "removed" in text or "private" in text:
+        return "video_unavailable"
+    return "other"
+
+
+def _probe_egress() -> dict[str, object]:
+    """Ask YouTube for one video's metadata and report whether the answer got through."""
+    global _last_egress
+    opts = dict(_ydl_options())
+    opts.update({"skip_download": True, "quiet": True, "no_warnings": True, "socket_timeout": 20})
+    # The format selector and the range hooks are about DOWNLOADING; a metadata call must not
+    # inherit them or it can fail for reasons that have nothing to do with egress.
+    for key in ("format", "download_ranges", "force_keyframes_at_cuts", "outtmpl", "merge_output_format"):
+        opts.pop(key, None)
+    result: dict[str, object]
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={PROBE_VIDEO_ID}", download=False)
+        result = {
+            "ok": True,
+            "reason": None,
+            "detail": None,
+            "probeVideo": PROBE_VIDEO_ID,
+            "title": (info or {}).get("title"),
+            "proxyConfigured": bool(PROXY_URL),
+        }
+    except Exception as err:  # noqa: BLE001 — the probe reports every failure, it never raises
+        message = str(err)
+        result = {
+            "ok": False,
+            "reason": _classify_probe_error(message),
+            # Truncated, and it is yt-dlp's own text: it carries a video id and a URL, never a
+            # credential. PROXY_URL is not interpolated into it and is never printed.
+            "detail": message[:200],
+            "probeVideo": PROBE_VIDEO_ID,
+            "title": None,
+            "proxyConfigured": bool(PROXY_URL),
+        }
+    _last_egress = result
+    return result
+
+
+@app.get("/health/egress")
+def health_egress() -> JSONResponse:
+    """A live answer to 'can this machine actually fetch from YouTube right now?'."""
+    return JSONResponse(_probe_egress())
+
+
+@app.on_event("startup")
+def _probe_on_boot() -> None:
+    """
+    Say it once, at boot, where an operator reading a deploy log will see it.
+
+    Wrapped because a probe that throws must never stop the service from starting: the endpoint
+    above is how the question gets asked again, and it has to exist to be asked.
+    """
+    try:
+        result = _probe_egress()
+    except Exception as err:  # noqa: BLE001
+        logging.warning("[Egress] probe could not run at boot: %s", str(err)[:200])
+        return
+    if result.get("ok"):
+        logging.info(
+            "[Egress] YouTube is reachable from this machine (proxy %s)",
+            "configured" if PROXY_URL else "NOT configured",
+        )
+        return
+    logging.error(
+        "[Egress] YouTube is NOT reachable from this machine: %s — proxy %s. "
+        "Every download will fail until this changes; the client will read it as a timeout.",
+        result.get("reason"),
+        "configured" if PROXY_URL else "NOT configured",
     )
 
 

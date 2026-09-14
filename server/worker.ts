@@ -284,6 +284,35 @@ async function main() {
       },
       canReachRedis: async () => true,
       canLoadVisionModel: async () => ensureClipPipelinesLoaded().catch(() => false),
+      /**
+       * Ask the download service whether it can reach YouTube, rather than whether it exists.
+       *
+       * The service runs its own probe — one metadata call through the same yt-dlp options a
+       * download uses — so this is a cheap read of an answer it already has. Presence only in the
+       * request: the bearer token is sent, never logged, and the service's reply carries no
+       * credential (see `_probe_egress` in services/ytdlp-download/main.py).
+       *
+       * `null` on any failure to ASK, which the preflight reports differently from a failure to
+       * REACH: "the service did not answer" and "the service answered that it is blocked" send an
+       * operator to two different places.
+       */
+      canReachYoutubeEgress: async () => {
+        const base = process.env.YOUTUBE_CC_DL_SERVICE?.trim().replace(/\/$/, "");
+        if (!base) return null;
+        const token = process.env.YOUTUBE_CC_DL_TOKEN?.trim();
+        try {
+          const res = await fetch(`${base}/health/egress`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            signal: AbortSignal.timeout(25_000),
+          });
+          if (!res.ok) return null;
+          const body = (await res.json()) as { ok?: boolean; reason?: string };
+          if (typeof body?.ok !== "boolean") return null;
+          return { ok: body.ok, reason: body.reason };
+        } catch {
+          return null;
+        }
+      },
     });
     console.log(formatPreflight(report));
     if (report.verdict === "PRODUCTION_RENDER_BLOCKED") {
