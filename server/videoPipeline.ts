@@ -14210,7 +14210,46 @@ export async function downloadYouTubeCCClip(
   // deliberately not a local dependency of this repo). RapidAPI stays below as the fallback.
   // Any failure here falls through to the RapidAPI branch instead of aborting the function —
   // unlike the old second-branch version, a failure can no longer be the final word.
+  /**
+   * THE BUDGET IS CHECKED BEFORE THE CLOUD CALL, NOT ONLY BEFORE THE FALLBACK.
+   *
+   * ── What render 581 measured, four attempts on one video ────────────────────────────────────
+   *
+   *     [Pipeline] Scene 0: not probing ynJoy1OCeVQ's duration — 2s left and the probe plus the
+   *                download floor need 32s. The start offset falls back; the download keeps the budget
+   *     [Pipeline] Scene 0: Cloud DL failed for ynJoy1OCeVQ: Aborted: … was cancelled by the
+   *                enclosing scene budget before its own 55s timeout — the request itself did not
+   *                time out — falling back to RapidAPI
+   *     [Pipeline] Scene 0: skipping YouTube download of ynJoy1OCeVQ — 0s left in the scene budget
+   *
+   * Three of the four attempts never reached the service at all. The line above them is the
+   * pipeline stating, correctly, that it has two seconds and needs thirty-two — it declines the
+   * duration probe to preserve the budget, and then spends that same budget on a cloud download
+   * that the enclosing scope cancels mid-flight. Only the FOURTH attempt got far enough to hear
+   * what the service actually had to say (a bot check).
+   *
+   * `YOUTUBE_MIN_DOWNLOAD_WINDOW_MS` has guarded the RapidAPI branch since RONDE 52 for exactly
+   * this reason. The cloud branch is older and was never given it, so the guard protected the
+   * cheap fallback and left the expensive primary unprotected — the wrong way round.
+   *
+   * Standing aside is reported under its own reason, not as a timeout: nothing was contacted and
+   * nothing timed out. See `scene_budget_too_short_to_start` on the fallback below, whose name
+   * this deliberately shares so the two read as one decision in the log.
+   */
   if (cloudDlService) {
+    const remainingForCloud = remainingScopeMs();
+    if (remainingForCloud < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
+      remainingAtCheckMs = remainingForCloud;
+      console.log(
+        `[Pipeline] Scene ${sceneIndex}: not calling the yt-dlp cloud service for ${videoId} — ` +
+          `${Math.round(remainingForCloud / 1000)}s left in the scene budget, below the ` +
+          `${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s floor. The call would be cancelled ` +
+          `mid-flight and spend what is left`
+      );
+      note("cloud", "DOWNLOAD_TIMEOUT", `scene_budget_${Math.round(remainingForCloud / 1000)}s_left`);
+      reportDownload("DOWNLOAD_TIMEOUT", "scene_budget_too_short_to_start");
+      return false;
+    }
     // F3-05: streams to a tmpPath (never directly to outPath) so a network drop mid-download
     // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
     // atomic fs.renameSync below, and only once the download is complete and size-validated.
@@ -14245,7 +14284,33 @@ export async function downloadYouTubeCCClip(
          * Classified rather than pasted, because reasons are COUNTED: raw yt-dlp messages carry a
          * video id each, so a histogram of them is a list of ones.
          */
-        note("cloud", "DOWNLOAD_FAILED", youtubeServiceRefusalReason(dlResp.status, errText));
+        const cloudReason = youtubeServiceRefusalReason(dlResp.status, errText);
+        note("cloud", "DOWNLOAD_FAILED", cloudReason);
+        /**
+         * THE SERVICE'S VERDICT REACHES THE MEMO FROM HERE, BECAUSE IT REACHES IT NOWHERE ELSE.
+         *
+         * The refusal memo is written once, at the end of the fetch, from the attempt's OVERALL
+         * status — and that status is decided by `summariseYoutubeDownloadAttempts`, which ranks a
+         * fallback's `DOWNLOAD_TIMEOUT` above this branch's `DOWNLOAD_FAILED`. Render 581:
+         *
+         *     attempts=cloud:DOWNLOAD_FAILED(http_502:bot_check),rapidapi:DOWNLOAD_TIMEOUT(…)
+         *     status=DOWNLOAD_TIMEOUT
+         *
+         * So the one fact that could have stopped the retry — the service saying "bot check" — was
+         * classified correctly, printed correctly, and then outranked. The same video was asked for
+         * four times.
+         *
+         * Noted here rather than by reordering that priority: the ranking is about what the render
+         * REPORTS, and changing it would move every headline in the log to chase one case. This is
+         * about what the render REMEMBERS, which is a different question with a different answer.
+         * Still the single named writer — `noteYoutubeDownloadRefusal` decides, not this call site.
+         */
+        if (noteYoutubeDownloadRefusal(videoId, "DOWNLOAD_FAILED", cloudReason)) {
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: ${videoId} written off for this render — the yt-dlp ` +
+              `service refused it durably (${cloudReason}); it will not be asked for again`
+          );
+        }
         console.warn(
           `[Pipeline] Scene ${sceneIndex}: Cloud DL service error ${dlResp.status} for ${videoId}: ${errText.slice(0, 100)} — falling back to RapidAPI`
         );

@@ -196,11 +196,32 @@ describe("the service returns the already-trimmed segment", () => {
     expect(SERVICE).toContain('"force_keyframes_at_cuts": True');
   });
 
-  /** The client's own comment says it renames rather than trims — if that changes, so must this. */
+  /**
+   * The client's own comment says it renames rather than trims — if that changes, so must this.
+   *
+   * Asked structurally rather than through a fixed slice of characters. The window was 4000 and a
+   * later round's comment block pushed the rename past it, which failed the test without anything
+   * about the contract having moved. What matters is the ORDER and the ABSENCE of a local cut, and
+   * both are properties of the branch, not of its length.
+   */
   it("the client still renames the body straight to the clip", () => {
-    const at = CLIENT.indexOf("cloudTmpPath");
-    expect(at).toBeGreaterThan(-1);
-    expect(CLIENT.slice(at, at + 4000)).toContain("fs.renameSync(cloudTmpPath, outPath)");
+    const declared = CLIENT.indexOf("const cloudTmpPath =");
+    const renamed = CLIENT.indexOf("fs.renameSync(cloudTmpPath, outPath)");
+    expect(declared).toBeGreaterThan(-1);
+    expect(renamed).toBeGreaterThan(declared);
+  });
+
+  /**
+   * And the reason the rename is the whole story: the service already cut the seconds this beat
+   * asked for, so a second cut here would re-encode a file that is already correct — the cost the
+   * cloud route exists to avoid. Nothing between the download and the rename may run ffmpeg on it.
+   */
+  it("and does not cut the file a second time", () => {
+    const declared = CLIENT.indexOf("const cloudTmpPath =");
+    const renamed = CLIENT.indexOf("fs.renameSync(cloudTmpPath, outPath)");
+    const branch = CLIENT.slice(declared, renamed);
+    expect(branch).not.toMatch(/FFMPEG_BIN[^\n]*cloudTmpPath/);
+    expect(branch).not.toMatch(/-ss\s|\s-t\s/);
   });
 });
 

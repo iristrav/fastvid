@@ -315,6 +315,65 @@ export const YOUTUBE_PERMANENT_DOWNLOAD_STATUSES: ReadonlySet<string> = new Set(
   "DOWNLOAD_INVALID_CONTENT",
 ]);
 
+/**
+ * THE SERVICE ANSWERS THAT CANNOT CHANGE WITHIN ONE RENDER.
+ *
+ * ── Why the status alone was not enough ─────────────────────────────────────────────────────
+ *
+ * The set above is keyed on STATUS, and the yt-dlp cloud service's refusals all arrive as
+ * `DOWNLOAD_FAILED` — deliberately excluded there as "ambiguous by definition". They are not
+ * ambiguous once the body has been read, and `classifyYoutubeServiceRefusal` has been reading it
+ * since RONDE 223. Render 581, one video, four attempts:
+ *
+ *     Cloud DL service error 502 for ynJoy1OCeVQ: {"detail":"ERROR: [youtube] ynJoy1OCeVQ:
+ *     Sign in to confirm you're not a bot. Use --cookies-from-bro…
+ *
+ *     [YouTubeDownload] video=ynJoy1OCeVQ status=DOWNLOAD_TIMEOUT
+ *                       attempts=cloud:DOWNLOAD_FAILED(http_502:bot_check),rapidapi:…
+ *
+ * The classifier said `bot_check`, the memo never saw it — the render's headline status is
+ * `DOWNLOAD_TIMEOUT`, because the fallback's budget stand-aside wins the summary — and the same
+ * video was asked for four times. YouTube does not change its mind about a bot check in fifty
+ * seconds.
+ *
+ * ── What is in, and what is deliberately out ────────────────────────────────────────────────
+ *
+ *   private, members_only, unavailable, geo_blocked, no_format
+ *                  facts about the VIDEO. True on the first ask and true on the fiftieth.
+ *   bot_check      a fact about the SERVICE's network identity rather than the video, so the key
+ *                  is arguably too narrow — it will be true of every video this render asks for.
+ *                  Memoising per video is still right and still safe: it cannot wrongly skip a
+ *                  video that would have worked, and it stops one video being asked four times.
+ *                  The render-wide reading belongs in a latch, not here.
+ *
+ *   rate_limited   the one refusal that lifts on its own. Excluded, and this is the whole reason
+ *                  the list is explicit rather than "everything the classifier named".
+ *   auth, proxy/transport, no_file, below_floor, over_ceiling, other
+ *                  about the deployment, the network or the cut — not about this video's
+ *                  availability. `over_ceiling` and `no_file` already reach the memo through
+ *                  DOWNLOAD_UNSUPPORTED / DOWNLOAD_EMPTY where they belong.
+ */
+export const YOUTUBE_DURABLE_SERVICE_REFUSALS: ReadonlySet<string> = new Set<string>([
+  "bot_check",
+  "private",
+  "members_only",
+  "unavailable",
+  "geo_blocked",
+  "no_format",
+]);
+
+/**
+ * Does this refusal mean "not this render", whatever status it arrived under?
+ *
+ * The reason string is `http_<code>:<class>` (see `youtubeServiceRefusalReason`), so the class is
+ * read off the end rather than the caller being asked to take it apart.
+ */
+export function isDurableYoutubeServiceRefusal(reason: string | undefined): boolean {
+  if (!reason) return false;
+  const cls = reason.includes(":") ? reason.slice(reason.lastIndexOf(":") + 1) : reason;
+  return YOUTUBE_DURABLE_SERVICE_REFUSALS.has(cls.trim());
+}
+
 /** The memo key for a YouTube video, so the read and the write can never disagree about it. */
 function youtubeRefusalKey(videoId: string): string {
   return `youtube_cc:${videoId}`;
@@ -330,7 +389,15 @@ export function noteYoutubeDownloadRefusal(
   status: string | undefined,
   reason?: string
 ): boolean {
-  if (!videoId || !status || !YOUTUBE_PERMANENT_DOWNLOAD_STATUSES.has(status)) return false;
+  /**
+   * Two rules, one memo. The status rule is RONDE 223's and is untouched; the reason rule is
+   * what lets the cloud service's own verdict through — see `YOUTUBE_DURABLE_SERVICE_REFUSALS`
+   * for why `DOWNLOAD_FAILED` alone had to stay ambiguous and why these classes are not.
+   */
+  const durable =
+    (status && YOUTUBE_PERMANENT_DOWNLOAD_STATUSES.has(status)) ||
+    isDurableYoutubeServiceRefusal(reason);
+  if (!videoId || !status || !durable) return false;
   notePermanentDownloadRefusal(youtubeRefusalKey(videoId), `${status}${reason ? `:${reason}` : ""}`);
   return true;
 }
