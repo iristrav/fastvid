@@ -52,13 +52,31 @@ import {
 
 const pipeline = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-/** The one line that decides whether YouTube gets a turn at all. */
-const guard = (): string => {
+/**
+ * The shared slice both sourcing routes ask through. A FUNCTION rather than a block is the point:
+ * RONDE 233 repaired the guard on the cascade and RONDE 234 found `beatPrimaryFetchInner` could
+ * not reach that cascade at all, so the turn was true on one path and absent on another.
+ */
+const slice = (): string => {
   const src = pipeline();
-  const at = src.indexOf("if (youtubeFirstEnabled()");
-  expect(at, "the YouTube-first guard is gone").toBeGreaterThan(0);
-  return src.slice(at, src.indexOf("{", at) + 1);
+  const at = src.indexOf("async function youtubeFirstBeatSlice(");
+  expect(at, "the YouTube-first slice is gone").toBeGreaterThan(0);
+  const end = src.indexOf("\n}\n", at);
+  expect(end, "its body has no closing brace at column 0").toBeGreaterThan(at);
+  return src.slice(at, end);
 };
+
+/** The one line inside it that decides whether YouTube gets a turn at all. */
+const guard = (): string => {
+  const body = slice();
+  const at = body.indexOf("if (!youtubeFirstEnabled()");
+  expect(at, "the YouTube-first guard is gone").toBeGreaterThan(-1);
+  return body.slice(at, body.indexOf("\n", at));
+};
+
+/** Every place a beat can ask for its YouTube slice. */
+const callSites = (): number =>
+  (pipeline().match(/(?<!async function )youtubeFirstBeatSlice\(/g) ?? []).length;
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -83,11 +101,42 @@ describe("YouTube is the first source the cascade asks", () => {
   it("runs before the curated archive lookup", () => {
     const src = pipeline();
     const fn = src.indexOf("export async function fetchBeatArchivalThenPexels(");
-    const yt = src.indexOf("youtubeFirstEnabled()", fn);
+    const yt = src.indexOf("youtubeFirstBeatSlice(", fn);
     const archive = src.indexOf("fetchCuratedArchiveBeatClip(", fn);
     expect(fn).toBeGreaterThan(-1);
     expect(yt).toBeGreaterThan(fn);
     expect(archive).toBeGreaterThan(yt);
+  });
+
+  /**
+   * RONDE 234 — THE OTHER ROUTE. `beatPrimaryFetchInner` opens with its own
+   * `if (curatedArchiveOnlyVisuals())` branch whose every exit is a `return`, so with that flag at
+   * its default it never reached the cascade — and RONDE 233's repaired guard sat in the cascade.
+   * Fixing one guard left the turn absent on this path entirely.
+   */
+  it("also runs before the archive on beatPrimaryFetch's own curated branch", () => {
+    const src = pipeline();
+    const fn = src.indexOf("async function beatPrimaryFetchInner(");
+    expect(fn).toBeGreaterThan(-1);
+    const curated = src.indexOf("if (curatedArchiveOnlyVisuals()) {", fn);
+    const yt = src.indexOf("youtubeFirstBeatSlice(", fn);
+    const archive = src.indexOf("fetchCuratedArchiveBeatClipWithLineage(", fn);
+    expect(yt, "the curated branch asks YouTube").toBeGreaterThan(curated);
+    expect(archive, "and it asks before the archive, not after").toBeGreaterThan(yt);
+  });
+
+  /**
+   * TWO CALL SITES, AND THEY ARE MUTUALLY EXCLUSIVE. The curated branch returns before reaching
+   * the cascade, so no beat can spend two 45-second slices on the same query. A third call site
+   * would break that argument, which is why the count is asserted and not just the presence.
+   */
+  it("is asked once per beat, never twice", () => {
+    expect(callSites()).toBe(2);
+  });
+
+  /** One implementation, so the turn cannot be true on one route and quietly absent on another. */
+  it("both routes ask through the same code", () => {
+    expect(pipeline().match(/async function youtubeFirstBeatSlice\(/g) ?? []).toHaveLength(1);
   });
 
   /**
@@ -96,18 +145,20 @@ describe("YouTube is the first source the cascade asks", () => {
    */
   it("a miss falls through instead of ending the beat", () => {
     const src = pipeline();
-    const yt = src.indexOf("youtubeFirstEnabled()");
-    const block = src.slice(yt, src.indexOf("fetchCuratedArchiveBeatClip(", yt));
-    expect(block).toContain("if (ytFirst) {");
-    expect(block).toContain("return ytFirst;");
-    // No unconditional return: a null answer continues down the cascade.
-    expect(block).not.toMatch(/\n\s+return null;/);
+    // A hit short-circuits at each call site; a miss is a null the caller simply walks past.
+    for (const m of src.matchAll(/youtubeFirstBeatSlice\(\n[\s\S]{0,300}?\);\n([\s\S]{0,80})/g)) {
+      expect(m[1], "the call site must not treat a miss as the end of the beat")
+        .toMatch(/if \(ytFirstClip\) return ytFirstClip;/);
+    }
+    expect(slice(), "and the slice itself answers null rather than throwing").toContain("return null;");
   });
 
   /** `youtubeOnly` asks YouTube and then Pexels, skipping the archive — a turn before the cascade
    * would be a turn before itself. It is the one mode this still stands down for. */
   it("does not double up with youtube-only mode", () => {
-    expect(guard()).toContain("!youtubeOnlySourcingEnabled()");
+    // Inverted as an early return, so the mode that skips the archive reads as a stand-down.
+    expect(guard()).toMatch(/\|\|\s*youtubeOnlySourcingEnabled\(\)/);
+    expect(guard()).toContain("return null;");
   });
 
   /**
@@ -140,11 +191,11 @@ describe("YouTube is the first source the cascade asks", () => {
 
   /** A slice that runs out costs the beat nothing but time — the archive still gets asked. */
   it("a spent slice is caught, not thrown", () => {
-    const src = pipeline();
-    const yt = src.indexOf("youtubeFirstEnabled()");
-    const block = src.slice(yt, src.indexOf("fetchCuratedArchiveBeatClip(", yt));
-    expect(block).toContain("} catch (err) {");
-    expect(block).toContain("continuing with the archive cascade");
+    const body = slice();
+    expect(body).toContain("} catch (err) {");
+    expect(body).toContain("continuing with the archive cascade");
+    // The catch is INSIDE the shared slice, so both routes inherit it rather than one remembering.
+    expect(body.indexOf("} catch (err) {")).toBeLessThan(body.lastIndexOf("return null;"));
   });
 
   /**
@@ -332,9 +383,10 @@ describe("the funnel's download loop uses that order", () => {
 
 describe("the YouTube-first attempt cannot eat the scene", () => {
   it("is bounded by its own slice, not by the scene budget", () => {
-    const src = pipeline();
-    expect(src).toContain("const ytBudget = youtubeBeatBudgetMs(");
-    expect(src).toContain("`youtube-first s${sceneIndex} b${beat.index}`");
+    const body = slice();
+    expect(body).toContain("const ytBudget = youtubeBeatBudgetMs(");
+    expect(body).toContain("withSceneFetchTimeout(");
+    expect(body).toContain("`youtube-first s${sceneIndex} b${beat.index}`");
   });
 
   /**

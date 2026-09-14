@@ -3143,6 +3143,132 @@ async function fetchBeatYoutubeThenPexels(
   return null;
 }
 
+/**
+ * YOUTUBE IS ASKED FIRST, WITHIN ITS OWN SLICE — ON EVERY ROUTE THAT SOURCES A BEAT.
+ *
+ * ── What the production log proved ──────────────────────────────────────────────────────────
+ *
+ * YouTube sat at the back of the cascade and never got a turn. Seventeen videos FOUND, seventeen
+ * downloads refused, and every refusal identical:
+ *
+ *     Scene 1: skipping YouTube download of 9V7Zgx4rDDA
+ *              — 0s left in the scene budget, not enough to finish
+ *
+ * Seventeen out of seventeen at `0s left`. The picture editor judged none of them, so nothing was
+ * ever refused on its merits and not one byte was fetched. `[ProviderFunnel]` would have reported
+ * judged=0 — the difference between "this source finds the wrong material" and "this source is
+ * never asked", which until RONDE 232 looked identical from outside.
+ *
+ * ── Why it is bounded rather than simply moved ──────────────────────────────────────────────
+ *
+ * The same log says the budget is the binding constraint everywhere: 45 scope aborts, 56 clips
+ * refused for want of time, `[ArchiveFilter] overlay budget spent (40/40)`. YouTube over RapidAPI
+ * is the slowest source here — that render had `cloudService=MISSING`, so the fast yt-dlp route
+ * was not even available — and putting the slowest source first unbounded would starve the
+ * curated archive, which is what actually delivers footage today.
+ *
+ * So it gets `youtubeBeatBudgetMs`, the same shape of slice the archive already takes. Past the
+ * slice this returns null and the caller's cascade runs completely unchanged, in its original
+ * order. Nothing is removed and nothing is reordered behind it.
+ *
+ * ── Why it is not inside `youtubeOnlySourcingEnabled` ───────────────────────────────────────
+ *
+ * That mode asks YouTube and then Pexels, skipping the archive entirely. This is the other thing:
+ * YouTube first, then the archive and the rest.
+ *
+ * ── RONDE 233 — IT STOOD DOWN FOR A FLAG THAT IS ON BY DEFAULT ──────────────────────────────
+ *
+ * The guard carried `&& !curatedArchiveOnlyVisuals()`, and that flag reads
+ * `CURATED_ARCHIVE_ONLY !== "false"` — so it defaults to ON and the block was unreachable in the
+ * default configuration. Not rarely: never. Every word above about a slice, about a turn before
+ * the cascade, about judged=0, described code that did not run.
+ *
+ * Render 582 is the receipt: YOUTUBE_FIRST on, egress healthy, and ZERO occurrences of either
+ * line this function cannot run without emitting.
+ *
+ * ── RONDE 234 — AND ONE ROUTE STILL COULD NOT REACH IT ──────────────────────────────────────
+ *
+ * Dropping that clause was necessary and not sufficient, because `fetchBeatArchivalThenPexels` is
+ * not the only way a beat is sourced. `beatPrimaryFetchInner` opens with its own
+ * `if (curatedArchiveOnlyVisuals())` branch whose every exit is a `return` — so with the flag at
+ * its default, that function never reached the cascade at all, and the repaired slice with it.
+ * The same defect twice over, one call frame apart.
+ *
+ * Hence a function rather than a block: both routes ask YouTube through THIS code, so the turn
+ * cannot be true on one path and quietly absent on another. The two callers are mutually
+ * exclusive by construction — `beatPrimaryFetchInner` calls it inside the curated branch, which
+ * returns before the cascade; the cascade calls it on every other path, including the recovery
+ * top-up — so no beat can ever spend two slices.
+ *
+ * ── Why this is not a loosening ─────────────────────────────────────────────────────────────
+ *
+ * CURATED_ARCHIVE_ONLY means the curated archive is the SOURCE OF RECORD, not that nothing may be
+ * asked before it. The archive is untouched: past the slice this returns null and each caller
+ * proceeds exactly as it did, archive first. What changes is that a beat with a YouTube clip in
+ * hand no longer waits for the archive to be exhausted before anyone looks at it — and that clip
+ * passed the same adoption guard, the same picture editor and the same licence handling as every
+ * other route's.
+ *
+ * The bound is what makes that safe and it is unchanged: `youtubeBeatBudgetMs`, floored above the
+ * download guard's own minimum so the source cannot be switched off by arithmetic. A render that
+ * wants the old behaviour sets YOUTUBE_FIRST=false, the flag that says what it does.
+ */
+async function youtubeFirstBeatSlice(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  sceneIndex: number,
+  clipFetchDur: number,
+  dedup: VisualDedupState,
+  personName: string,
+  videoTitle: string | undefined,
+  adoptOpts: VisualAdoptOptions,
+  tag: string
+): Promise<string | null> {
+  if (!youtubeFirstEnabled() || youtubeOnlySourcingEnabled()) return null;
+  const ytBudget = youtubeBeatBudgetMs(
+    dedup.videoLength,
+    get_activeBudgetTracker()?.remainingMs?.()
+  );
+  try {
+    const ytFirst = await withSceneFetchTimeout(
+      () => fetchBeatYoutubeOnly(
+        beat,
+        scene,
+        workDir,
+        sceneIndex,
+        clipFetchDur,
+        dedup,
+        adoptOpts,
+        personName,
+        videoTitle,
+        `${tag}yt-first`
+      ),
+      ytBudget,
+      `youtube-first s${sceneIndex} b${beat.index}`
+    );
+    if (ytFirst) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube answered first ` +
+          `(${Math.round(ytBudget / 1000)}s slice) — cascade not needed`
+      );
+      return ytFirst;
+    }
+  } catch (err) {
+    /**
+     * A slice that ran out is not a failure, it is the bound doing its job — and it must not cost
+     * the beat its remaining sources. Reported so a render where YouTube eats its slice on every
+     * beat is visible rather than merely slow.
+     */
+    console.log(
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube-first slice spent ` +
+        `(${Math.round(ytBudget / 1000)}s) — continuing with the archive cascade` +
+        (isScopeAbortError(err) ? " (scene scope ended)" : "")
+    );
+  }
+  return null;
+}
+
 /** Archive + Wikimedia video first, then Pexels/Pixabay, then AI. */
 export async function fetchBeatArchivalThenPexels(
   beat: SceneBeat,
@@ -3158,114 +3284,10 @@ export async function fetchBeatArchivalThenPexels(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
-  /**
-   * YOUTUBE IS ASKED FIRST, WITHIN ITS OWN SLICE.
-   *
-   * ── What the production log proved ────────────────────────────────────────────────────────
-   *
-   * YouTube sat at the back of this cascade and never got a turn. Seventeen videos FOUND,
-   * seventeen downloads refused, and every refusal identical:
-   *
-   *     Scene 1: skipping YouTube download of 9V7Zgx4rDDA
-   *              — 0s left in the scene budget, not enough to finish
-   *
-   * Seventeen out of seventeen at `0s left`. The picture editor judged none of them, so nothing
-   * was ever refused on its merits and not one byte was fetched. `[ProviderFunnel]` would have
-   * reported judged=0 — which is the difference between "this source finds the wrong material"
-   * and "this source is never asked", and until this round those looked identical.
-   *
-   * ── Why it is bounded rather than simply moved ───────────────────────────────────────────
-   *
-   * The same log says the budget is the binding constraint everywhere: 45 scope aborts, 56 clips
-   * refused for want of time, `[ArchiveFilter] overlay budget spent (40/40)`. YouTube over
-   * RapidAPI is the slowest source here — that render had `cloudService=MISSING`, so the fast
-   * yt-dlp route was not even available — and putting the slowest source first unbounded would
-   * starve the curated archive, which is what actually delivers footage today.
-   *
-   * So it gets `youtubeBeatBudgetMs`, the same shape of slice the archive already takes. Past the
-   * slice this returns null and the cascade below runs completely unchanged, in its original
-   * order. Nothing is removed and nothing is reordered behind it.
-   *
-   * ── Why it is not inside `youtubeOnlySourcingEnabled` ────────────────────────────────────
-   *
-   * That mode asks YouTube and then Pexels, skipping the archive entirely. This is the other
-   * thing: YouTube first, then the archive and the rest.
-   *
-   * ── RONDE 233 — AND WHY IT NO LONGER STANDS DOWN FOR `CURATED_ARCHIVE_ONLY` ───────────────
-   *
-   * This condition also carried `&& !curatedArchiveOnlyVisuals()`, and that flag defaults to ON:
-   *
-   *     export function curatedArchiveOnlyVisuals(): boolean {
-   *       return process.env.CURATED_ARCHIVE_ONLY !== "false";
-   *     }
-   *
-   * So the whole block was unreachable in the default configuration. Not rarely — never. Every
-   * word above about a 45-second slice, about YouTube getting a turn before the cascade, about
-   * `[ProviderFunnel] judged=0` being the difference between "finds the wrong material" and
-   * "is never asked": all of it described code that did not run.
-   *
-   * Render 582 is the receipt. `YOUTUBE_FIRST` was on, the proxy was live, and the log contains
-   * ZERO "YouTube answered first" and ZERO "YouTube-first slice spent" — the two lines this block
-   * cannot run without emitting. Scene 2's archive work starts at 17:53:41; its first YouTube
-   * search is at 17:55:02, and by the time a download may start there are 11 seconds against a
-   * 12-second floor. Every one of 48 attempts was refused before it began.
-   *
-   * ── Why removing it is the right call and not a loosening ────────────────────────────────
-   *
-   * CURATED_ARCHIVE_ONLY means the curated archive is the SOURCE OF RECORD, not that nothing may
-   * be asked before it. The archive is untouched below: past the slice this returns null and the
-   * cascade runs exactly as it did, in its original order, archive first. What changes is that a
-   * beat with a YouTube clip in hand no longer has to wait for the archive to be exhausted before
-   * anyone looks at it — and the clip it returns has passed the same adoption guard, the same
-   * picture editor and the same licence handling as every other route's.
-   *
-   * The bound is what makes that safe, and the bound is unchanged: `youtubeBeatBudgetMs`, the same
-   * shape of slice the archive already takes, floored above the download guard's own minimum so
-   * the source cannot be switched off by arithmetic. A render that wants the old behaviour sets
-   * YOUTUBE_FIRST=false, which is the flag that says what it does.
-   */
-  if (youtubeFirstEnabled() && !youtubeOnlySourcingEnabled()) {
-    const ytBudget = youtubeBeatBudgetMs(
-      dedup.videoLength,
-      get_activeBudgetTracker()?.remainingMs?.()
-    );
-    try {
-      const ytFirst = await withSceneFetchTimeout(
-        () => fetchBeatYoutubeOnly(
-          beat,
-          scene,
-          workDir,
-          sceneIndex,
-          clipFetchDur,
-          dedup,
-          adoptOpts,
-          personName,
-          videoTitle,
-          `${tag}yt-first`
-        ),
-        ytBudget,
-        `youtube-first s${sceneIndex} b${beat.index}`
-      );
-      if (ytFirst) {
-        console.log(
-          `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube answered first ` +
-            `(${Math.round(ytBudget / 1000)}s slice) — cascade not needed`
-        );
-        return ytFirst;
-      }
-    } catch (err) {
-      /**
-       * A slice that ran out is not a failure, it is the bound doing its job — and it must not
-       * cost the beat its remaining sources. Reported so a render where YouTube eats its slice on
-       * every beat is visible rather than merely slow.
-       */
-      console.log(
-        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube-first slice spent ` +
-          `(${Math.round(ytBudget / 1000)}s) — continuing with the archive cascade` +
-          (isScopeAbortError(err) ? " (scene scope ended)" : "")
-      );
-    }
-  }
+  const ytFirstClip = await youtubeFirstBeatSlice(
+    beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, tag
+  );
+  if (ytFirstClip) return ytFirstClip;
 
   // User's own curated media archive is checked first for every beat, on every topic —
   // not just when curatedArchiveOnlyVisuals() mode is on. That flag still controls the
@@ -3670,6 +3692,23 @@ async function beatPrimaryFetchInner(
   stockReason: string
 ): Promise<string | null> {
   if (curatedArchiveOnlyVisuals()) {
+    /**
+     * RONDE 234 — THE ROUTE THE REPAIRED SLICE COULD NOT REACH.
+     *
+     * Every exit in this branch is a `return`, so while CURATED_ARCHIVE_ONLY is on — its default —
+     * control never arrives at the `fetchBeatArchivalThenPexels` call at the end of this function,
+     * and the YouTube-first slice living there was unreachable from here no matter what RONDE 233
+     * did to its guard. Asking here, through the same `youtubeFirstBeatSlice`, is what makes
+     * "YouTube first, then the archive" true on this route as well as the cascade.
+     *
+     * Mutually exclusive with the cascade's own call by construction: this branch returns, so a
+     * beat that spends its slice here can never reach the one below and spend a second.
+     */
+    const ytFirstClip = await youtubeFirstBeatSlice(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, adoptOpts, tag
+    );
+    if (ytFirstClip) return ytFirstClip;
+
     const archiveClip = await fetchCuratedArchiveBeatClipWithLineage(dedup, sceneIndex, beat.index, (pickedOut) =>
       fetchCuratedArchiveBeatClip(
         beat,

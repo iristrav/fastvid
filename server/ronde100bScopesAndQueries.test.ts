@@ -32,6 +32,26 @@ const PIPELINE_SRC = fs.readFileSync(path.join(SERVER_DIR, "videoPipeline.ts"), 
 const CONTRACT_SRC = fs.readFileSync(path.join(SERVER_DIR, "searchQueryContract.ts"), "utf8");
 
 /**
+ * Helpers that reach a provider without opening a scope themselves, and are safe ONLY because
+ * every one of their own callers is a scoped body. TEST 5b enforces exactly that, transitively:
+ * a name on this list buys no exemption, it buys a caller check.
+ *
+ * ONE list, read three times in that test. It used to be three literals that had to be kept in
+ * step by hand — and a helper present in one copy but missing from another reads as "safe" in the
+ * first pass and as an offender in the second, which is a confusing way to learn you typed it
+ * twice.
+ *
+ * RONDE 234 added `youtubeFirstBeatSlice`. It qualifies for the ordinary reason: its two callers
+ * are `beatPrimaryFetchInner` (an `...Inner`, so scoped by TEST 2) and `fetchBeatArchivalThenPexels`
+ * (on this list, so checked in the same loop).
+ */
+const SAFE_HELPERS = [
+  "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
+  "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
+  "youtubeFirstBeatSlice",
+] as const;
+
+/**
  * Body of one top-level function, brace-matched.
  *
  * The opening brace has to be found AFTER the parameter list: several of these signatures carry
@@ -240,10 +260,7 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
         const line = PIPELINE_SRC.slice(0, m.index).split("\n").length;
         const host = enclosing(line);
         // A helper is safe when every one of ITS callers is a scoped body — pinned below.
-        const safeHelpers = new Set([
-          "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
-          "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
-        ]);
+        const safeHelpers = new Set(SAFE_HELPERS);
         // One provider fetcher calling another (fetchYouTubeCCClips → searchYoutubeVideoCandidates)
         // says nothing about scope: what matters is how the OUTER one is reached, and every
         // fetcher in this list is checked for exactly that.
@@ -270,10 +287,7 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
 
     // And every safe helper's own callers must themselves be scoped bodies. This is the check
     // that turns "surely it is always reached from a scoped path" into something enforced.
-    for (const helper of [
-      "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
-      "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
-    ]) {
+    for (const helper of SAFE_HELPERS) {
       const re = new RegExp(`(?<![\\w.])${helper}\\s*\\(`, "g");
       let m: RegExpExecArray | null;
       const hosts = new Set<string>();
@@ -282,10 +296,7 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
         const h = enclosing(line);
         if (h !== helper) hosts.add(h);
       }
-      const helpers = new Set([
-        "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
-        "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
-      ]);
+      const helpers = new Set(SAFE_HELPERS);
       const unscoped = [...hosts].filter((h) => !h.endsWith("Inner") && !helpers.has(h));
       expect(unscoped, `${helper} is reachable unscoped from ${unscoped.join(", ")}`).toEqual([]);
     }

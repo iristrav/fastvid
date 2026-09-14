@@ -67,14 +67,34 @@ describe("the conflict is real, and these are the facts behind the warning", () 
    * archive that is still asked first within it.
    */
   it("YouTube-FIRST is no longer switched off by the same flag", () => {
-    const at = PIPE.indexOf("if (youtubeFirstEnabled()");
-    expect(at, "the YouTube-first guard is gone").toBeGreaterThan(0);
-    const cond = PIPE.slice(at, PIPE.indexOf("{", at) + 1);
-    expect(cond, "it must not stand down for the default-on curated flag")
+    const fn = PIPE.indexOf("async function youtubeFirstBeatSlice(");
+    expect(fn, "the YouTube-first slice is gone").toBeGreaterThan(0);
+    const body = PIPE.slice(fn, PIPE.indexOf("\n}\n", fn));
+    expect(body, "it must not stand down for the default-on curated flag")
       .not.toContain("curatedArchiveOnlyVisuals");
     // Narrowed, not widened: the mode that skips the archive entirely still stands it down.
-    expect(cond).toContain("!youtubeOnlySourcingEnabled()");
+    expect(body).toContain("youtubeOnlySourcingEnabled()");
     expect(POLICY).toContain('return process.env.YOUTUBE_FIRST !== "false";');
+  });
+
+  /**
+   * RONDE 234 — AND THE CURATED BRANCH BELOW NOW ASKS IT.
+   *
+   * The branch this file exists to describe still returns from every exit, and this file still
+   * does not resolve that. What changed is that it no longer takes YouTube down with it: the
+   * branch asks for its bounded slice before the archive lookup, so "YouTube first, then the
+   * archive" holds on this route too. `YOUTUBE_ONLY_SOURCING` remains unreachable from here, for
+   * the control-flow reason pinned above — that is a different question, still open.
+   */
+  it("and the curated branch asks for its slice before the archive", () => {
+    const at = PIPE.indexOf("async function beatPrimaryFetchInner(");
+    const curatedAt = PIPE.indexOf("if (curatedArchiveOnlyVisuals()) {", at);
+    const sliceAt = PIPE.indexOf("youtubeFirstBeatSlice(", curatedAt);
+    const archiveAt = PIPE.indexOf("fetchCuratedArchiveBeatClipWithLineage(", curatedAt);
+    const youtubeOnlyAt = PIPE.indexOf("if (youtubeOnlySourcingEnabled()) {", at);
+    expect(sliceAt, "the slice is asked inside the curated branch").toBeGreaterThan(curatedAt);
+    expect(sliceAt, "inside it, not after it").toBeLessThan(youtubeOnlyAt);
+    expect(archiveAt, "and before the archive, not after").toBeGreaterThan(sliceAt);
   });
 });
 
