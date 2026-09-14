@@ -25,6 +25,7 @@
  */
 import { describe, expect, it, beforeEach } from "vitest";
 import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
 import { join } from "path";
 
 import { checkHost, type HostProbes } from "./productionPreflight";
@@ -53,26 +54,75 @@ describe("1. the service probes its own egress, and says what it found", () => {
     const at = SRC.indexOf("def _probe_egress()");
     const body = SRC.slice(at, SRC.indexOf("@app.get(\"/health/egress\")"));
     expect(body).toContain("download=False");
-    expect(body).toContain('"skip_download": True');
   });
 
-  it("it goes through the same options builder a real download uses", () => {
-    const at = SRC.indexOf("def _probe_egress()");
-    const body = SRC.slice(at, SRC.indexOf("@app.get(\"/health/egress\")"));
-    expect(body).toContain("_ydl_options()");
+  /**
+   * RUN it, do not read it. The first version of this probe called `_ydl_options()` with no
+   * arguments — it takes three — and this test asserted the string "_ydl_options()" was present,
+   * found it, and passed. Every call to /health/egress raised TypeError and returned 500, which a
+   * caller cannot tell apart from a service that is down. A test that reads a call can only prove
+   * the call was written, never that it can be made.
+   */
+  const py = (code: string) => {
+    const r = spawnSync("python3", ["-c", code], {
+      cwd: join(__dirname, "..", "services", "ytdlp-download"),
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    return r;
+  };
+  const importable = py("import yt_dlp, fastapi").status === 0;
+  const runs = importable ? it : it.skip;
+
+  runs("the probe's options can actually be built — the builder is called correctly", () => {
+    const r = py(
+      "import main, json; o = main._probe_options(); print(json.dumps(sorted(o.keys())))"
+    );
+    expect(r.stderr, "building the probe options raised").not.toContain("Error");
+    expect(r.status).toBe(0);
+    const keys: string[] = JSON.parse(r.stdout.trim());
+    expect(keys).toContain("skip_download");
+
+    const v = py("import main; print(main._probe_options()['skip_download'])");
+    expect(v.stdout.trim(), "skip_download is set but not to True").toBe("True");
   });
 
   /**
    * A metadata call must not inherit the format selector or the range hooks, or it can fail for
    * reasons that have nothing to do with egress — and then report a working proxy as blocked.
    */
-  it("it drops the download-only options before asking", () => {
-    const at = SRC.indexOf("def _probe_egress()");
-    const body = SRC.slice(at, SRC.indexOf("@app.get(\"/health/egress\")"));
-    for (const key of ["format", "download_ranges", "force_keyframes_at_cuts"]) {
-      expect(body).toContain(`"${key}"`);
+  runs("it drops the download-only options before asking", () => {
+    const r = py("import main, json; print(json.dumps(sorted(main._probe_options().keys())))");
+    expect(r.status).toBe(0);
+    const keys: string[] = JSON.parse(r.stdout.trim());
+    for (const key of ["format", "download_ranges", "force_keyframes_at_cuts", "outtmpl"]) {
+      expect(keys, `${key} survived into a metadata-only call`).not.toContain(key);
     }
-    expect(body).toContain("opts.pop(key, None)");
+  });
+
+  /** What it must KEEP: the settings that decide whose network identity is being tested. */
+  runs("it keeps the settings that make this a test of the real route", () => {
+    const r = py("import main, json; print(json.dumps(sorted(main._probe_options().keys())))");
+    const keys: string[] = JSON.parse(r.stdout.trim());
+    expect(keys).toContain("js_runtimes");
+    expect(keys).toContain("socket_timeout");
+  });
+
+  it("it goes through the same options builder a real download uses", () => {
+    const body = SRC.slice(SRC.indexOf("def _probe_options()"), SRC.indexOf("def _probe_egress()"));
+    expect(body).toContain("_ydl_options(");
+  });
+
+  /**
+   * The setup is inside the try, not before it. `_probe_options` reads the environment and goes
+   * through the shared builder, so it can raise — and the endpoint's whole purpose is to return an
+   * answer rather than an error.
+   */
+  it("a failure to set the probe up is still an answer, not a 500", () => {
+    const body = SRC.slice(SRC.indexOf("def _probe_egress()"), SRC.indexOf('@app.get("/health/egress")'));
+    const tryAt = body.indexOf("try:");
+    expect(tryAt).toBeGreaterThan(0);
+    expect(body.indexOf("_probe_options()")).toBeGreaterThan(tryAt);
   });
 
   it("it never raises — a probe that throws must not stop the service", () => {

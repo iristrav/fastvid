@@ -322,17 +322,41 @@ def _classify_probe_error(message: str) -> str:
     return "other"
 
 
+# The download-only options. A metadata call must not inherit them or it can fail for reasons that
+# have nothing to do with egress — and then report a working proxy as blocked.
+PROBE_DROPS = ("format", "download_ranges", "force_keyframes_at_cuts", "outtmpl", "merge_output_format")
+
+
+def _probe_options() -> dict:
+    """
+    The probe's yt-dlp options, built by the same builder a real download uses so that the proxy,
+    the cookies and the JS runtimes under test are the ones actually in service.
+
+    Split out so it can be CALLED in a test rather than read as text. The first version of this
+    probe passed no arguments to `_ydl_options`, which needs three; the contract test asserted the
+    string "_ydl_options()" was present, saw it, and passed — while every call to the endpoint
+    raised TypeError and returned 500. A test that reads a call cannot tell whether it can be made.
+
+    The three arguments belong to a download and are all discarded below; they are supplied only
+    because the shared builder requires them.
+    """
+    opts = dict(_ydl_options(Path(tempfile.gettempdir()) / "egress-probe.mp4", 0.0, 1.0))
+    opts.update({"skip_download": True, "quiet": True, "no_warnings": True, "socket_timeout": 20})
+    for key in PROBE_DROPS:
+        opts.pop(key, None)
+    return opts
+
+
 def _probe_egress() -> dict[str, object]:
     """Ask YouTube for one video's metadata and report whether the answer got through."""
     global _last_egress
-    opts = dict(_ydl_options())
-    opts.update({"skip_download": True, "quiet": True, "no_warnings": True, "socket_timeout": 20})
-    # The format selector and the range hooks are about DOWNLOADING; a metadata call must not
-    # inherit them or it can fail for reasons that have nothing to do with egress.
-    for key in ("format", "download_ranges", "force_keyframes_at_cuts", "outtmpl", "merge_output_format"):
-        opts.pop(key, None)
     result: dict[str, object]
     try:
+        # Built INSIDE the try. `_probe_options` reads the environment and goes through the shared
+        # builder, so it can raise — and a probe whose own setup throws must still come back as an
+        # answer. Leaving this outside turned a wrong call into a 500 on the health endpoint,
+        # which reads to a caller exactly like a service that is down.
+        opts = _probe_options()
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={PROBE_VIDEO_ID}", download=False)
         result = {
