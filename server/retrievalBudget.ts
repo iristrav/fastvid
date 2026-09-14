@@ -27,6 +27,8 @@
  * shape as `SHORTLIST_FULL` in RONDE 95, and it feeds the same taxonomy.
  */
 
+import { getQueryScope } from "./searchQueryContract";
+
 function envInt(key: string, fallback: number, min: number, max: number): number {
   const raw = process.env[key];
   if (!raw) return fallback;
@@ -59,10 +61,29 @@ export type RetrievalBudgetState = {
   byBeat: Map<string, BeatSpend>;
   /** One line per exhaustion, so the render can say which beat stopped and why. */
   exhausted: Array<{ sceneIndex: number; beatIndex: number; kind: BudgetKind; limit: number }>;
+  /**
+   * WORK THAT ARRIVED WITH NO BEAT TO CHARGE IT TO.
+   *
+   * A per-beat budget can only bound work that knows which beat it belongs to. RONDE 100B opens
+   * the beat scope at the leaves — the functions that actually call a provider — precisely so that
+   * every route carries its identity, and `[SearchQueryAudit] scene=? beat=?` was the receipt for
+   * what happens when it does not.
+   *
+   * A charge that arrives outside any beat scope is therefore allowed through: refusing it would
+   * stop legitimate render-level work, and guessing a beat would file the spend against one that
+   * never asked. But it is COUNTED, because an unscoped download is a hole in this ceiling, and
+   * the whole reason the downloads budget went four rounds without biting is that nobody could see
+   * it was not being charged. If this number is large, the bound is not covering what it claims.
+   */
+  unscoped: BeatSpend;
 };
 
 export function createRetrievalBudgetState(): RetrievalBudgetState {
-  return { byBeat: new Map(), exhausted: [] };
+  return {
+    byBeat: new Map(),
+    exhausted: [],
+    unscoped: { queries: 0, downloads: 0, preparations: 0, rescues: 0 },
+  };
 }
 
 const key = (sceneIndex: number, beatIndex: number): string => `${sceneIndex}:${beatIndex}`;
@@ -129,13 +150,88 @@ export function budgetExhaustedFor(
 }
 
 /**
+ * ── RONDE 231 — THE THREE BUDGETS THAT WERE NEVER CHARGED ───────────────────────────────────
+ *
+ * This module declared four budgets. One was enforced.
+ *
+ *     $ grep -n 'budgetAllows(' server/*.ts | grep -v test
+ *     server/retrievalBudget.ts:90:export function budgetAllows(    ← the definition
+ *     server/videoPipeline.ts:32169: ... "queries")                 ← one caller
+ *
+ * `downloads`, `preparations` and `rescues` had a documented default, an env var, a comment
+ * arguing the number, and a test file called `retrievalBudgetIsEnforced.test.ts` — and not one
+ * call site. The limit of twelve downloads per beat was decided four rounds ago and has never
+ * refused a download.
+ *
+ * Render 581 is the receipt: 2228 Pexels and Pixabay retrievals, 382 files actually written,
+ * `adopted=0`, and YouTube reaching `0s left in the scene budget` on 28 of 32 attempts. The
+ * spend that starved it was bounded on paper the whole time.
+ *
+ * ── Why an ambient charge and not a parameter ───────────────────────────────────────────────
+ *
+ * The choke points are `downloadToFileStreaming` (which documents itself as "the single choke
+ * point every provider download funnels through") and `runPreparation` in preparationCache.ts.
+ * Neither is handed the render's state, and neither should be: threading it means 37 call sites
+ * again, and the 38th added next round starts uncharged. That is precisely the failure RONDE 173
+ * describes for the sourcing cache and solves the same way.
+ *
+ * The beat identity is already ambient — `getQueryScope()`, opened at the same leaves as the
+ * provenance — so the only thing missing is the state, and `setBudgetResolver` supplies it.
+ */
+let resolveBudget: (() => RetrievalBudgetState | undefined) | null = null;
+
+/**
+ * Teach this module how to find the current render's budget.
+ *
+ * videoPipeline owns `RenderCtx` and calls this once with a reader for it. Injected rather than
+ * imported because preparationCache.ts is on the other side of the dependency graph from
+ * videoPipeline, and a module-level state object here would be shared by two concurrent renders on
+ * one worker — which is the exact hazard RenderCtx's AsyncLocalStorage exists to avoid.
+ */
+export function setBudgetResolver(fn: (() => RetrievalBudgetState | undefined) | null): void {
+  resolveBudget = fn;
+}
+
+export function activeRetrievalBudget(): RetrievalBudgetState | undefined {
+  try {
+    return resolveBudget?.() ?? undefined;
+  } catch {
+    /** A budget that cannot be read must never be the reason a download fails. */
+    return undefined;
+  }
+}
+
+/**
+ * MAY THE BEAT THAT IS CURRENTLY RUNNING SPEND ONE MORE?
+ *
+ * True when it may, and the spend is charged. False only when a beat is identified AND its budget
+ * for that kind is gone — never because the ambient wiring is missing, which is counted under
+ * `unscoped` instead. Refusing on a missing scope would turn a plumbing gap into lost footage.
+ */
+export function chargeAmbientBudget(kind: BudgetKind): boolean {
+  const state = activeRetrievalBudget();
+  if (!state) return true;
+  const { sceneIndex, beatIndex } = getQueryScope();
+  if (sceneIndex == null || beatIndex == null) {
+    state.unscoped[kind] += 1;
+    return true;
+  }
+  return budgetAllows(state, sceneIndex, beatIndex, kind);
+}
+
+/**
  * What the render spent, and which beats hit a ceiling.
  *
  * A render with no exhaustion prints one totals line; the per-beat lines exist only for the beats
  * that were actually stopped, because those are the ones whose result needs explaining.
  */
 export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined): string[] {
-  if (!state || state.byBeat.size === 0) return [];
+  if (!state) return [];
+  const unscopedTotal = (Object.keys(state.unscoped) as BudgetKind[]).reduce(
+    (n, k) => n + state.unscoped[k],
+    0
+  );
+  if (state.byBeat.size === 0 && unscopedTotal === 0) return [];
   const total: BeatSpend = { queries: 0, downloads: 0, preparations: 0, rescues: 0 };
   for (const spend of state.byBeat.values()) {
     for (const kind of Object.keys(total) as BudgetKind[]) total[kind] += spend[kind];
@@ -145,6 +241,19 @@ export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined):
       `downloads=${total.downloads} preparations=${total.preparations} rescues=${total.rescues} ` +
       `(perBeat caps q=${BUDGETS.queries()} d=${BUDGETS.downloads()} p=${BUDGETS.preparations()} r=${BUDGETS.rescues()})`,
   ];
+  /**
+   * The hole, stated rather than assumed away. Work charged here was allowed through unbounded
+   * because nothing said which beat it belonged to — so the per-beat caps above did not apply to
+   * it, and a reader comparing the totals to the caps needs to know that.
+   */
+  if (unscopedTotal > 0) {
+    const u = state.unscoped;
+    lines.push(
+      `[RetrievalBudget] UNSCOPED total=${unscopedTotal} queries=${u.queries} ` +
+        `downloads=${u.downloads} preparations=${u.preparations} rescues=${u.rescues} — ` +
+        `charged to no beat, so no per-beat cap applied to it`
+    );
+  }
   for (const e of state.exhausted) {
     lines.push(
       `[RetrievalBudget] s${e.sceneIndex}b${e.beatIndex} BUDGET_EXHAUSTED kind=${e.kind} ` +

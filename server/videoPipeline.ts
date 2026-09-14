@@ -52,8 +52,10 @@ import {
   BUDGETS,
   budgetAllows,
   budgetExhaustedFor,
+  chargeAmbientBudget,
   createRetrievalBudgetState,
   formatRetrievalBudgets,
+  setBudgetResolver,
   type RetrievalBudgetState,
 } from "./retrievalBudget";
 import {
@@ -458,6 +460,7 @@ import {
   formatSearchGateReport,
   type VerifiedSearchQuery,
   emptyQueryContext,
+  getQueryScope,
   getRenderTopic,
   getSearchProvenance,
   searchGateDecision,
@@ -1339,9 +1342,30 @@ type RenderCtx = {
    * so two concurrent renders on one worker cannot share a cache.
    */
   sourcingCache: SourcingCache | null;
+  /**
+   * RONDE 231 — this render's per-beat retrieval budget, reachable from the choke points.
+   *
+   * Same argument as `sourcingCache` above, for the same reason. The budgets are charged in
+   * `downloadToFileStreaming` and in `runPreparation` (preparationCache.ts) — the two functions
+   * every provider download and every real preparation funnel through — and neither is handed the
+   * render's state. Threading it there means threading it through every caller of both, which is
+   * the arrangement that left three of the four budgets uncharged for four rounds.
+   *
+   * Per-render by construction, so two concurrent renders on one worker cannot spend each other's.
+   */
+  beatBudget: RetrievalBudgetState | null;
 };
 
 const renderCtxStorage = new AsyncLocalStorage<RenderCtx>();
+
+/**
+ * RONDE 231 — teach retrievalBudget.ts how to find the current render's budget.
+ *
+ * Registered once at module load, and read through AsyncLocalStorage on every call, so it stays
+ * per-render. preparationCache.ts cannot import this module, which is why the direction is
+ * inverted: the owner of the context hands over a reader rather than the other way round.
+ */
+setBudgetResolver(() => getRenderCtx().beatBudget ?? undefined);
 
 function getRenderCtx(): RenderCtx {
   return (
@@ -1357,6 +1381,7 @@ function getRenderCtx(): RenderCtx {
       barrierPassedUnjudged: 0,
       barrierChecked: 0,
       sourcingCache: null,
+      beatBudget: null,
     }
   );
 }
@@ -5975,6 +6000,31 @@ export async function downloadToFileStreaming(
    */
   const refusedBefore = permanentDownloadRefusal(url);
   if (refusedBefore) throw new Error(`${label}: ${refusedBefore} (already refused this render)`);
+
+  /**
+   * RONDE 231 — a beat that has spent its download budget stops downloading.
+   *
+   * `MAX_BEAT_DOWNLOADS` has existed since RONDE 97 §10 with the reasoning "100 downloads for 10
+   * used clips — a beat gets enough attempts to survive bad files, not enough to trawl". It was
+   * never charged anywhere. Render 581 wrote 382 stock files that nothing adopted, and the scene
+   * budget those bytes consumed is why YouTube was reached with `0s left` on 28 of 32 attempts.
+   *
+   * Charged HERE because this function's own comment already names it: "the single choke point
+   * every provider download funnels through, which makes it the one place a limit covers all of
+   * them." The process-wide fetch budget is charged on that basis two lines below; the per-beat
+   * one has the same claim to the spot.
+   *
+   * Thrown rather than returned, deliberately matching `refusedBefore` directly above: every
+   * existing catch already handles a download that refuses itself before the wire, so a refusal
+   * here behaves like the refusals a caller is written for, and no route learns a new shape.
+   */
+  if (!chargeAmbientBudget("downloads")) {
+    const scope = getQueryScope();
+    throw new Error(
+      `${label}: beat s${scope.sceneIndex}b${scope.beatIndex} has spent its download budget ` +
+        `(${BUDGETS.downloads()}) — stopped asking, did not run out of candidates`
+    );
+  }
 
   try {
     return await withGlobalMediaFetch(() =>
@@ -33413,6 +33463,23 @@ async function rescueBeatVisualWhenEmpty(
   holdSec: number,
   semanticProfile?: BeatSemanticProfile
 ): Promise<boolean> {
+  /**
+   * RONDE 231 — the rescue ladder may be entered a few times, never indefinitely.
+   *
+   * `MAX_BEAT_RESCUES` was written for exactly this — its comment names "the infinite-rescue
+   * case" — and was never charged. Checked on the wrapper rather than inside, so every route that
+   * re-enters the ladder is counted once per entry regardless of which rung it reaches.
+   *
+   * A beat that has spent it keeps whatever the earlier entries found; returning false is what
+   * this function already returns when a rescue finds nothing, so no caller learns a new shape.
+   */
+  if (!budgetAllows(dedup.beatBudget, scene.index, beat.index, "rescues")) {
+    console.warn(
+      `[Pipeline] Scene ${scene.index} beat ${beat.index}: rescue ladder already entered ` +
+        `${BUDGETS.rescues()}× — standing aside rather than entering again`
+    );
+    return false;
+  }
   // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
   return withBeatProvenance(beat, scene, () => rescueBeatVisualWhenEmptyInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile));
 }
@@ -41315,6 +41382,8 @@ export async function runVideoPipeline(
     voiceoverSilentFallbackNotes: [],
     elevenLabsQuotaExhausted: false,
     sourcingCache: null,
+    /** Filled in where the visual dedup state is built — see RONDE 231 there. */
+    beatBudget: null,
   };
   // runWithActiveVideoId makes videoId/userId readable from ANY module in this render's call
   // tree (including localClipVision.ts and llm.ts, which can't import from here — see exec()'s
@@ -41991,6 +42060,13 @@ async function _runVideoPipelineInner(
       );
     }
     const visualDedup = createVisualDedupState(perf, { primaryPerson, personTopicLock: personLocked, videoId });
+    /**
+     * RONDE 231 — the SAME budget object the beats spend, published where the choke points can
+     * reach it. One register, two ways in: `dedup.beatBudget` for the code that already holds the
+     * dedup state, the render context for `downloadToFileStreaming` and `runPreparation`, which
+     * do not. A second budget object would be a second opinion about the same spend.
+     */
+    getRenderCtx().beatBudget = visualDedup.beatBudget;
     /**
      * RENDER 563 — the subject gate can now place a beat.
      *

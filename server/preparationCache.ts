@@ -29,6 +29,8 @@
  */
 import * as fs from "fs";
 
+import { BUDGETS, chargeAmbientBudget } from "./retrievalBudget";
+
 export type PreparationCounters = {
   requested: number;
   started: number;
@@ -134,6 +136,29 @@ export async function runPreparation(
     } catch (err) {
       return { status: "FAILED", error: err as Error };
     }
+  }
+
+  /**
+   * RONDE 231 — a beat that has spent its preparation budget stops preparing.
+   *
+   * Charged HERE, below the two cache checks above, and that placement is the whole point:
+   * `MAX_BEAT_PREPARATIONS`'s own comment says "RONDE 97's cache makes repeats free, so this
+   * bounds real work". A REUSED hit costs nothing and must not be charged, or the budget would
+   * measure how often a beat asked rather than how much work it caused.
+   *
+   * Like every budget here, exhaustion is a refusal to start new work, not an error: the outcome
+   * is the same FAILED the caller already handles when a preparation cannot be produced, with the
+   * reason in the message rather than a silent stop.
+   */
+  if (!chargeAmbientBudget("preparations")) {
+    scope.counters.failed += 1;
+    return {
+      status: "FAILED",
+      error: new Error(
+        `preparation budget spent (${BUDGETS.preparations()} per beat) — ` +
+          `the beat stopped preparing, it did not run out of candidates`
+      ),
+    };
   }
 
   const entry: Entry = { path: null, inFlight: null };
