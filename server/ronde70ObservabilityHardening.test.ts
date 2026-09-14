@@ -599,10 +599,29 @@ describe("RONDE 70 §10 — observability only", () => {
     for (const forbidden of ["await", "verdict", "return false", "return true"]) {
       expect(body).not.toContain(forbidden);
     }
-    // And the gate measures that delta off the state's own counters, exactly as before.
+    /**
+     * SUPERSEDED BY RONDE 232 — the delta was measured the wrong way, and this pinned it.
+     *
+     * It read `judged: state.judgementAttempts - before.attempts`, a subtraction over a counter
+     * that lives on ONE state object for the whole render, across the `await` on judgeBeatImage.
+     * Beats are judged concurrently — `pLimit(beatConcurrency)` over `Promise.all` — so every
+     * judgement any other beat made during that await was billed to this one. Render 581's s2b1
+     * was charged 22 against a ceiling of 5 while evaluating 2 clips, and 433 candidates were
+     * refused without anyone looking at them.
+     *
+     * What this test is FOR is unchanged and asserted above: the attribution reads what it was
+     * handed and changes no verdict. What it may no longer do is require the handing-over to be a
+     * render-wide delta. The assertion below is the stronger form of the same idea — the spend is
+     * this call's own, derived from this call's own judgement.
+     */
     const mod = fs.readFileSync(path.join(__dirname, "beatVisualRelevance.ts"), "utf8");
-    expect(mod).toContain("judged: state.judgementAttempts - before.attempts");
-    expect(mod).toContain("failed: state.judgementsFailed - before.failed");
+    const code = mod
+      .split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+      .join("\n");
+    expect(code).toContain("judged: lookedAtAModel ? 1 : 0");
+    expect(code).not.toContain("state.judgementAttempts");
+    expect(code).not.toContain("state.judgementsFailed");
     // judgeBeatImage's own signature is untouched.
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
     /**

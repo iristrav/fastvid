@@ -514,11 +514,6 @@ export async function checkBeatRelevance(
   }
 
   const framePaths = alreadyKnown ? [] : await sampleFrames(clipPath, workDir, ctx, route);
-  const before = {
-    attempts: state.judgementAttempts,
-    failed: state.judgementsFailed,
-    skipped: state.judgementsSkipped,
-  };
   const judgement = await judgeBeatImage({
     framePaths,
     beatText: ctx.beatText,
@@ -535,10 +530,49 @@ export async function checkBeatRelevance(
   });
   discardFrames(framePaths);
 
+  /**
+   * RONDE 232 — THE BILL FOR THIS LOOK, NOT FOR EVERY LOOK TAKEN WHILE IT RAN.
+   *
+   * ── What this used to compute ───────────────────────────────────────────────────────────────
+   *
+   *     const before = { attempts: state.judgementAttempts, … };   // before the await
+   *     await judgeBeatImage(…);
+   *     judged: state.judgementAttempts - before.attempts;         // after the await
+   *
+   * `state` is ONE object for the whole render — `beatImageGate: createBeatImageGateState()` in the
+   * visual dedup state — and beats are judged CONCURRENTLY: `pLimit(beatConcurrency)` over
+   * `Promise.all(beats.map(…))`. So that subtraction spans an await during which every other beat
+   * in flight was also incrementing the same counter, and all of it was charged here.
+   *
+   * ── What that cost ──────────────────────────────────────────────────────────────────────────
+   *
+   * `maxRelevanceLooksPerBeat()` is MAX_JUDGEMENTS_PER_BEAT + 1 = 5. Render 581's s2b1 was charged
+   * 22 while the ledger recorded it evaluating 2 clips — so it was out of budget after its first
+   * look, and every candidate after that was declined without anybody looking:
+   *
+   *     offered=14 evaluated=1   (s1b2)        offered=13 evaluated=2   (s1b1)
+   *     offered=12 evaluated=2   (s1b3)        offered=8  evaluated=2   (s2b1)
+   *     113 offered across the render, 34 looked at, never_asked=433
+   *
+   * The same arithmetic runs the other way too: s0b4 was credited 5 looks on 2 offers, because its
+   * neighbours' judgements landed inside its window. Which beat starved and which got a free ride
+   * depended on scheduling, so no two renders spent the budget the same way.
+   *
+   * ── What it computes now ────────────────────────────────────────────────────────────────────
+   *
+   * The judgement says what it cost, and it is the only thing that can: `evaluated === false` is a
+   * decline — the gate never asked — and `cached` is an answer that came out of memory. Exactly one
+   * model call happens per `judgeBeatImage`, so a look that reached a model is worth exactly 1.
+   * Nothing here reads a render-wide counter, so nothing here can be charged another beat's spend.
+   */
+  const lookedAtAModel = judgement.evaluated === true && judgement.cached !== true;
   const spent = {
-    judged: state.judgementAttempts - before.attempts,
-    failed: state.judgementsFailed - before.failed,
-    skipped: state.judgementsSkipped - before.skipped,
+    /** One model call, or none. Never a count of what the render did meanwhile. */
+    judged: lookedAtAModel ? 1 : 0,
+    /** Asked and got nothing usable back — a timeout, an unparseable answer. */
+    failed: lookedAtAModel && judgement.verdict === "unknown" ? 1 : 0,
+    /** Declined: the gate did not look. `evaluated: false` is the whole signal. */
+    skipped: judgement.evaluated === false ? 1 : 0,
   };
   if (spent.judged > 0) ledger.spendByBeat.set(slot, spentOnBeat + spent.judged);
   params.onSpend?.(spent);
@@ -1028,8 +1062,8 @@ export function composeBarrierAllows(
      * `fits` EARNED AT THIS BEAT, or nothing. The fallback lookups above find a verdict filed under
      * the clip path or its content key from ANY beat, and an approval for one sentence is not an
      * approval for another — that asymmetry is the same one this function's `beat` parameter was
-     * added to fix, read from the other side. `unknown` is refused here: the editor looked and
-     * could not say, and render 579's `unclear=4` is precisely that column.
+     * added to fix, read from the other side. `unknown` is refused here — but see below for the
+     * two very different things that word covers.
      */
     if (!ownVerdict) {
       return {
@@ -1040,9 +1074,40 @@ export function composeBarrierAllows(
       };
     }
     if (d.verdict !== "fits") {
+      /**
+       * RONDE 232 — "THE EDITOR ANSWERED UNKNOWN" WAS NOT TRUE.
+       *
+       * ── What render 581 printed, fifty times ────────────────────────────────────────────────
+       *
+       *     [BeatRelevance] s2b1: refusing to push scene_2_slot1_guaranteed.mp4 —
+       *     backfill needs an approval; the editor answered unknown on s2b1
+       *
+       * The editor answered nothing. That render's own summary:
+       *
+       *     beat image gate — attempts=194 answered=194 (fits=17 does_not_fit=177)
+       *                       failed=0 never_asked=433
+       *
+       * 194 asked, 194 answered, zero failures. The picture editor does not hedge; it says fits or
+       * does_not_fit. Every `unknown` in this system comes from one of three places, and not one of
+       * them is doubt: the gate is switched off, there is no narration to judge against, or the
+       * per-beat look budget is spent. All three mean NOBODY LOOKED — and `evaluated` is the field
+       * that has said so all along, carried on the decision and read nowhere near this message.
+       *
+       * ── Why the wording is the fix and not a cosmetic ───────────────────────────────────────
+       *
+       * The refusal is correct either way: a picture nobody vouched for must not fill a hole, and
+       * that is deliberately unchanged here. What was wrong is that the render could not tell a
+       * beat whose footage was JUDGED AND REJECTED from one whose footage was never seen. Those ask
+       * for opposite responses — the first means look harder for better footage, the second means
+       * the budget ran out before the work was done — and for as long as they shared one sentence,
+       * 433 unasked candidates read as 433 editorial refusals.
+       */
       return {
         allow: false,
-        reason: `backfill needs an approval; the editor answered ${d.verdict} on ${beatSlotKey(entry.ctx)}`,
+        reason:
+          d.evaluated === false
+            ? `backfill needs an approval; nobody looked at this clip for ${beatSlotKey(entry.ctx)} (${d.reason})`
+            : `backfill needs an approval; the editor answered ${d.verdict} on ${beatSlotKey(entry.ctx)}`,
       };
     }
   }

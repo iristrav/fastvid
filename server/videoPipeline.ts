@@ -18446,6 +18446,16 @@ export interface VisualDedupState {
    */
   backfillRefusedWithoutApproval: number;
   /**
+   * RONDE 232 — OF THOSE REFUSALS, HOW MANY TURNED AWAY A PICTURE NOBODY HAD LOOKED AT.
+   *
+   * A subset of the count above, and the half that means something different. "The editor saw it
+   * and said no" is the rule working. "Nobody ever looked" is the render running out of budget
+   * before it finished its job, and it asks for a different response — more looks, not better
+   * footage. Render 581 could not distinguish them: both printed `the editor answered unknown`,
+   * and its 433 never-asked candidates were indistinguishable from 433 editorial refusals.
+   */
+  backfillRefusedNeverLookedAt: number;
+  /**
    * PICTURES THAT ENTERED THE FILM WITHOUT A JUDGEMENT, BECAUSE THERE WAS NOTHING TO JUDGE THEM
    * AGAINST — counted per route, so the exemption has a size instead of a footnote.
    *
@@ -19085,6 +19095,7 @@ export function createVisualDedupState(
     montageShortfalls: [],
     sceneRescueColorFallbackCount: 0,
     backfillRefusedWithoutApproval: 0,
+    backfillRefusedNeverLookedAt: 0,
     adoptedWithSuspendedVision: new Map(),
     stockLadderRunsByBeat: new Map(),
     stockQueriesAsked: new Set(),
@@ -30411,6 +30422,13 @@ async function beatClipRefusedByRelevanceGate(
   /** Only the refusals this rule actually caused — a `does_not_fit` would have been refused anyway. */
   if (demand === "approval" && barrier.reason.startsWith("backfill needs an approval")) {
     dedup.backfillRefusedWithoutApproval += 1;
+    /**
+     * RONDE 232 — the half of that number that is about the render rather than the picture. See
+     * `backfillRefusedNeverLookedAt`; `composeBarrierAllows` decides which sentence it wrote.
+     */
+    if (barrier.reason.includes("nobody looked at this clip")) {
+      dedup.backfillRefusedNeverLookedAt += 1;
+    }
   }
   console.warn(
     `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +
@@ -45382,7 +45400,11 @@ async function _runVideoPipelineInner(
         pipelineReport.add(
           "sourcing",
           `[BackfillApproval] refused=${visualDedup.backfillRefusedWithoutApproval} ` +
-            `picture(s) the backfill would have used without an approval for the beat they would fill`
+            `(neverLookedAt=${visualDedup.backfillRefusedNeverLookedAt}) ` +
+            `picture(s) the backfill would have used without an approval for the beat they would fill` +
+            (visualDedup.backfillRefusedNeverLookedAt > 0
+              ? ` — the neverLookedAt half is a spent look budget, not an editorial refusal`
+              : "")
         )
       );
       /**
