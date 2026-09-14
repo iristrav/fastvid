@@ -51,14 +51,29 @@ describe("the conflict is real, and these are the facts behind the warning", () 
     expect(PIPE).toContain('return youtubeSourcingEnabled() && envFlagIsOn("YOUTUBE_ONLY_SOURCING");');
   });
 
-  it("YouTube-FIRST is switched off by the same flag", () => {
-    /**
-     * The second casualty of the same default: the bounded YouTube-first slice — the thing built
-     * so YouTube would stop arriving at a scene with no budget left — never runs either.
-     */
-    expect(PIPE).toContain(
-      "if (youtubeFirstEnabled() && !youtubeOnlySourcingEnabled() && !curatedArchiveOnlyVisuals()) {"
-    );
+  /**
+   * RONDE 233 — YOUTUBE-FIRST WAS THE SECOND CASUALTY, AND IS NO LONGER ONE.
+   *
+   * The bounded YouTube-first slice — built precisely so YouTube would stop arriving at a scene
+   * with no budget left — carried `&& !curatedArchiveOnlyVisuals()` and so never ran either. This
+   * test used to assert that dead condition verbatim, which is how a defect ends up with a passing
+   * test guarding it.
+   *
+   * It is fixed at the source now, and the distinction is worth stating: the two YouTube flags were
+   * silenced by the same default for DIFFERENT reasons. `YOUTUBE_ONLY_SOURCING` is unreachable
+   * because the curated branch above it returns — a control-flow fact this file still pins, and
+   * still does not resolve. `YOUTUBE_FIRST` was switched off by an explicit clause, which was a
+   * mistake: asking YouTube inside its own slice before the cascade takes nothing away from an
+   * archive that is still asked first within it.
+   */
+  it("YouTube-FIRST is no longer switched off by the same flag", () => {
+    const at = PIPE.indexOf("if (youtubeFirstEnabled()");
+    expect(at, "the YouTube-first guard is gone").toBeGreaterThan(0);
+    const cond = PIPE.slice(at, PIPE.indexOf("{", at) + 1);
+    expect(cond, "it must not stand down for the default-on curated flag")
+      .not.toContain("curatedArchiveOnlyVisuals");
+    // Narrowed, not widened: the mode that skips the archive entirely still stands it down.
+    expect(cond).toContain("!youtubeOnlySourcingEnabled()");
     expect(POLICY).toContain('return process.env.YOUTUBE_FIRST !== "false";');
   });
 });

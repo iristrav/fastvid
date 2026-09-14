@@ -3190,8 +3190,41 @@ export async function fetchBeatArchivalThenPexels(
    *
    * That mode asks YouTube and then Pexels, skipping the archive entirely. This is the other
    * thing: YouTube first, then the archive and the rest.
+   *
+   * ── RONDE 233 — AND WHY IT NO LONGER STANDS DOWN FOR `CURATED_ARCHIVE_ONLY` ───────────────
+   *
+   * This condition also carried `&& !curatedArchiveOnlyVisuals()`, and that flag defaults to ON:
+   *
+   *     export function curatedArchiveOnlyVisuals(): boolean {
+   *       return process.env.CURATED_ARCHIVE_ONLY !== "false";
+   *     }
+   *
+   * So the whole block was unreachable in the default configuration. Not rarely — never. Every
+   * word above about a 45-second slice, about YouTube getting a turn before the cascade, about
+   * `[ProviderFunnel] judged=0` being the difference between "finds the wrong material" and
+   * "is never asked": all of it described code that did not run.
+   *
+   * Render 582 is the receipt. `YOUTUBE_FIRST` was on, the proxy was live, and the log contains
+   * ZERO "YouTube answered first" and ZERO "YouTube-first slice spent" — the two lines this block
+   * cannot run without emitting. Scene 2's archive work starts at 17:53:41; its first YouTube
+   * search is at 17:55:02, and by the time a download may start there are 11 seconds against a
+   * 12-second floor. Every one of 48 attempts was refused before it began.
+   *
+   * ── Why removing it is the right call and not a loosening ────────────────────────────────
+   *
+   * CURATED_ARCHIVE_ONLY means the curated archive is the SOURCE OF RECORD, not that nothing may
+   * be asked before it. The archive is untouched below: past the slice this returns null and the
+   * cascade runs exactly as it did, in its original order, archive first. What changes is that a
+   * beat with a YouTube clip in hand no longer has to wait for the archive to be exhausted before
+   * anyone looks at it — and the clip it returns has passed the same adoption guard, the same
+   * picture editor and the same licence handling as every other route's.
+   *
+   * The bound is what makes that safe, and the bound is unchanged: `youtubeBeatBudgetMs`, the same
+   * shape of slice the archive already takes, floored above the download guard's own minimum so
+   * the source cannot be switched off by arithmetic. A render that wants the old behaviour sets
+   * YOUTUBE_FIRST=false, which is the flag that says what it does.
    */
-  if (youtubeFirstEnabled() && !youtubeOnlySourcingEnabled() && !curatedArchiveOnlyVisuals()) {
+  if (youtubeFirstEnabled() && !youtubeOnlySourcingEnabled()) {
     const ytBudget = youtubeBeatBudgetMs(
       dedup.videoLength,
       get_activeBudgetTracker()?.remainingMs?.()

@@ -52,6 +52,14 @@ import {
 
 const pipeline = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
+/** The one line that decides whether YouTube gets a turn at all. */
+const guard = (): string => {
+  const src = pipeline();
+  const at = src.indexOf("if (youtubeFirstEnabled()");
+  expect(at, "the YouTube-first guard is gone").toBeGreaterThan(0);
+  return src.slice(at, src.indexOf("{", at) + 1);
+};
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });
@@ -96,12 +104,38 @@ describe("YouTube is the first source the cascade asks", () => {
     expect(block).not.toMatch(/\n\s+return null;/);
   });
 
-  /** The two existing modes keep their meaning. `youtubeOnly` skips the archive; this does not. */
-  it("does not double up with youtube-only or archive-only mode", () => {
-    const src = pipeline();
-    expect(src).toContain(
-      "if (youtubeFirstEnabled() && !youtubeOnlySourcingEnabled() && !curatedArchiveOnlyVisuals()) {"
-    );
+  /** `youtubeOnly` asks YouTube and then Pexels, skipping the archive — a turn before the cascade
+   * would be a turn before itself. It is the one mode this still stands down for. */
+  it("does not double up with youtube-only mode", () => {
+    expect(guard()).toContain("!youtubeOnlySourcingEnabled()");
+  });
+
+  /**
+   * RONDE 233 — THE TURN THAT WAS CONFIGURED, DOCUMENTED, TESTED, AND UNREACHABLE.
+   *
+   * This guard also carried `&& !curatedArchiveOnlyVisuals()`, and that flag defaults to ON, so the
+   * whole block stood down in the default configuration. Not rarely — never. Everything written
+   * above about a bounded slice and a turn before the cascade described code that did not run, and
+   * this test file asserted the dead condition verbatim, which is how it stayed dead.
+   *
+   * Render 582 is the receipt: YOUTUBE_FIRST on, proxy live, and ZERO occurrences of either of the
+   * two lines the block cannot run without emitting. Scene 2's first YouTube search lands at
+   * 17:55:02 with 11 seconds against a 12-second floor — 48 attempts refused before they began.
+   *
+   * Removing it is not a loosening. CURATED_ARCHIVE_ONLY means the archive is the source of RECORD,
+   * not that nothing may be asked before it: past the slice this returns null and the cascade runs
+   * in its original order, archive first, and the clip YouTube returns passed the same adoption
+   * guard and the same picture editor as every other route's.
+   */
+  it("no longer stands down for CURATED_ARCHIVE_ONLY", () => {
+    expect(guard()).not.toContain("curatedArchiveOnlyVisuals");
+  });
+
+  /** Which is what made the old condition dead rather than merely narrow. */
+  it("and that flag really is on unless it is switched off", () => {
+    expect(
+      fs.readFileSync(path.join(__dirname, "sourcingPolicy.ts"), "utf8")
+    ).toContain('return process.env.CURATED_ARCHIVE_ONLY !== "false";');
   });
 
   /** A slice that runs out costs the beat nothing but time — the archive still gets asked. */
@@ -111,6 +145,19 @@ describe("YouTube is the first source the cascade asks", () => {
     const block = src.slice(yt, src.indexOf("fetchCuratedArchiveBeatClip(", yt));
     expect(block).toContain("} catch (err) {");
     expect(block).toContain("continuing with the archive cascade");
+  });
+
+  /**
+   * BOTH OUTCOMES LOG, AND THAT IS WHAT MAKES THE DEFECT ABOVE FINDABLE NEXT TIME.
+   *
+   * Without these two lines, "the block never ran" and "it ran and found nothing" are the same
+   * silence in the log — which is exactly the silence that hid RONDE 233's dead condition across
+   * every render between the feature landing and 582.
+   */
+  it("a render can prove the turn was taken", () => {
+    const src = pipeline();
+    expect(src, "the success says so").toContain("YouTube answered first");
+    expect(src, "and so does the spent slice").toContain("YouTube-first slice spent");
   });
 });
 
