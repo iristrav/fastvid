@@ -18320,6 +18320,34 @@ export interface VisualDedupState {
    * exemption was invisible at exactly the scale where it matters.
    */
   adoptedWithSuspendedVision: Map<string, number>;
+  /**
+   * HOW OFTEN THE STOCK LADDER HAS ALREADY RUN FOR A BEAT — keyed `s<scene>b<beat>`.
+   *
+   * Render 581's scene 2 beat 1 produced 168 `[SearchQueryAudit]` lines per provider. Its two
+   * neighbours produced seven each. 168 / 7 queries = twenty-four runs of the same ladder over the
+   * same sentence, asking the same seven questions of the same two providers.
+   *
+   * The ladder's own inner retry is bounded at four and is not the cause. `adoptStockBeatClipFallback`
+   * has TEN call sites, and a beat nothing can fill reaches most of them: the archive has no row,
+   * stock is asked, the guaranteed card is drawn, the backfill refuses it for want of an approval,
+   * the beat is still empty, and the next route tries the same thing again.
+   *
+   * The counter lives on the render's own dedup state, so it is discarded with the render and two
+   * concurrent renders cannot see each other's beats.
+   */
+  stockLadderRunsByBeat: Map<string, number>;
+  /**
+   * EVERY (beat, provider, query) THIS RENDER HAS ALREADY ASKED.
+   *
+   * Six of the seven queries on that beat came back `status=BLOCKED` from the search gate — "tesla",
+   * "spacex", "space", "rocket", "technology", "documentary" — and were re-offered twenty-four
+   * times each. A blocked query returns nothing by construction, so asking it again is not a second
+   * chance, it is the same refusal bought twice.
+   */
+  stockQueriesAsked: Set<string>;
+  /** What the two bounds above cost, so a render can say it rather than be measured for it. */
+  stockLadderStandAsides: number;
+  stockQueryRepeatsSkipped: number;
   /** Ken Burns / Serp stills allowed this scene (0 = video only). */
   stillPhotosThisScene: number;
   stillPhotosMaxThisScene: number;
@@ -18918,6 +18946,10 @@ export function createVisualDedupState(
     sceneRescueColorFallbackCount: 0,
     backfillRefusedWithoutApproval: 0,
     adoptedWithSuspendedVision: new Map(),
+    stockLadderRunsByBeat: new Map(),
+    stockQueriesAsked: new Set(),
+    stockLadderStandAsides: 0,
+    stockQueryRepeatsSkipped: 0,
     stillPhotosThisScene: 0,
     stillPhotosMaxThisScene: 0,
     stillPhotosUsedGlobal: 0,
@@ -32791,8 +32823,85 @@ async function adoptStockBeatClipFallback(
   semanticProfile?: BeatSemanticProfile,
   stockOpts?: { visionFloor?: number; adoptSource?: string }
 ): Promise<boolean> {
+  /**
+   * ONE BEAT, ONE RUN OF THE STOCK LADDER.
+   *
+   * ── What render 581 measured ────────────────────────────────────────────────────────────────
+   *
+   *     [SearchQueryAudit] render=581 scene=2 beat=1 provider=pexels  … × 168
+   *     [SearchQueryAudit] render=581 scene=2 beat=1 provider=pixabay … × 168
+   *     [SearchQueryAudit] render=581 scene=2 beat=2 provider=pexels  … ×   7
+   *     [SearchQueryAudit] render=581 scene=2 beat=3 provider=pexels  … ×   7
+   *
+   * Seven queries per run. Beats 2 and 3 ran the ladder once each; beat 1 ran it twenty-four
+   * times — the same seven questions, of the same two providers, about the same sentence. The
+   * render fetched 382 stock video files and adopted none of them:
+   *
+   *     [VisualFunnel] pexels  retrieved=12855 downloadSucceeded=275 adopted=0 finalVideo=0
+   *     [VisualFunnel] pixabay retrieved= 3676 downloadSucceeded=107 adopted=0 finalVideo=0
+   *
+   * ── Why once, and not twice ─────────────────────────────────────────────────────────────────
+   *
+   * The queries come from the beat's own words, so a second run asks exactly what the first asked.
+   * What changes between runs is only the exclusion set, so a repeat can return LOWER-ranked
+   * results than the ones already rejected — never better ones. Twenty-four runs produced zero
+   * adoptions, which is the strongest available statement that the second was not going to help.
+   *
+   * ── Why here and not at the ten call sites ──────────────────────────────────────────────────
+   *
+   * `adoptStockBeatClipFallback` has ten callers. A beat nothing can fill reaches most of them in
+   * turn — archive empty, stock asked, guaranteed card drawn, backfill refuses it for want of an
+   * approval, beat still empty, next route tries the same thing. Putting the bound in the callers
+   * is the rule-registered-by-a-few pattern this codebase keeps paying for; putting it in the one
+   * function they all pass through is where it reaches all ten and the eleventh.
+   *
+   * Bounded, not switched off: the first run is untouched, every stand-aside is named in the log
+   * and counted, and `[StockLadder]` reports the total on every render, zero included.
+   */
+  const beatKey = `s${scene.index}b${beat.index}`;
+  const runs = dedup.stockLadderRunsByBeat.get(beatKey) ?? 0;
+  if (runs >= maxStockLadderRunsPerBeat()) {
+    dedup.stockLadderStandAsides += 1;
+    console.warn(
+      `[StockLadder] ${beatKey}: stock ladder already ran ${runs}× for this beat — standing aside ` +
+        `rather than asking the same queries again (the beat's words have not changed)`
+    );
+    return false;
+  }
+  dedup.stockLadderRunsByBeat.set(beatKey, runs + 1);
   // RONDE 100B: proof in scope before any provider is asked — see withBeatProvenance.
   return withBeatProvenance(beat, scene, () => adoptStockBeatClipFallbackInner(beat, scene, workDir, videoTitle, dedup, pushClip, holdSec, semanticProfile, stockOpts));
+}
+
+/**
+ * How many times one beat may run the whole stock ladder. One, unless an operator says otherwise.
+ *
+ * Env-overridable because this is a bound on RETRIES rather than a gate on quality: if a render
+ * ever turns out to need a second pass, raising it is a configuration change and the
+ * `[StockLadder]` line says exactly what the bound cost. Clamped so a typo cannot restore the
+ * twenty-four.
+ */
+export function maxStockLadderRunsPerBeat(): number {
+  const raw = process.env.MAX_STOCK_LADDER_RUNS_PER_BEAT?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 1 && n <= 4) return n;
+  }
+  return 1;
+}
+
+/** What the two stock bounds cost this render. Printed unconditionally, zero included. */
+export function formatStockLadderBounds(state: {
+  stockLadderStandAsides: number;
+  stockQueryRepeatsSkipped: number;
+  stockLadderRunsByBeat: ReadonlyMap<string, number>;
+}): string {
+  const beats = state.stockLadderRunsByBeat.size;
+  return (
+    `[StockLadder] beatsAsked=${beats} repeatRunsRefused=${state.stockLadderStandAsides} ` +
+    `repeatQueriesSkipped=${state.stockQueryRepeatsSkipped} — a beat's words do not change between ` +
+    `routes, so the same question is asked once`
+  );
 }
 
 async function adoptStockBeatClipFallbackInner(
@@ -32987,6 +33096,27 @@ async function adoptStockBeatClipFallbackInner(
 
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi]!;
+    /**
+     * THE SAME QUESTION, ASKED ONCE.
+     *
+     * Six of render 581's seven queries on s2b1 came back `status=BLOCKED` from the search gate —
+     * "tesla", "spacex", "space", "rocket", "technology", "documentary" — and each was re-offered
+     * twenty-four times. A blocked query returns nothing by construction, so the repeat is not a
+     * second chance; it is the same refusal paid for again.
+     *
+     * Keyed on (beat, provider, query) rather than on the query alone: the gate's verdict depends
+     * on the beat's own terms, so the same word can honestly be refused under one sentence and
+     * allowed under the next, and a render-wide key would suppress an ask that was never made.
+     *
+     * This bounds the OTHER routes too. The ladder itself now runs once per beat, but nine other
+     * call sites reach these providers, and an identical ask from any of them is the same waste.
+     */
+    const askKey = `${scene.index}:${beat.index}:${q}`;
+    if (dedup.stockQueriesAsked.has(askKey)) {
+      dedup.stockQueryRepeatsSkipped += 1;
+      continue;
+    }
+    dedup.stockQueriesAsked.add(askKey);
     const pexelsClipCap =
       fastShortStock ? 1 : clipVisionGateEnabled() ? 2 : 1;
     const pexelsTimeoutMs = fastShortStock ? 10_000 : 16_000;
@@ -45078,6 +45208,8 @@ async function _runVideoPipelineInner(
           formatSuspendedVisionAdoptions(visualDedup.adoptedWithSuspendedVision)
         )
       );
+      /** What the two stock-ladder bounds cost, so the next render can say whether they are right. */
+      console.log(pipelineReport.add("sourcing", formatStockLadderBounds(visualDedup)));
       console.log(
         pipelineReport.add(
           "sourcing",
