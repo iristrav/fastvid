@@ -338,18 +338,40 @@ describe("the funnel asks YouTube while the beat can still answer", () => {
 });
 
 describe("the funnel's download loop uses that order", () => {
-  it("orders the batches, and honours the same flag as the cascade", () => {
+  it("downloads the ORDERED list, and honours the same flag as the cascade", () => {
     const src = pipeline();
     const at = src.indexOf("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
     expect(at).toBeGreaterThan(-1);
-    const block = src.slice(at, at + 2200);
+    const block = src.slice(at, at + 3400);
     expect(block).toContain("youtubeFirstEnabled()");
     expect(block).toContain("hoistBudgetSensitiveDownload(subjectScreened)");
-    // The loop must iterate the ORDERED list — slicing `subjectScreened` would compute an order
-    // and then ignore it, which is the whole defect in a different shape.
-    expect(block).toContain("dlIdx < downloadOrder.length");
-    expect(block).toContain("downloadOrder.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY)");
-    expect(block).not.toContain("subjectScreened.slice(dlIdx");
+    // The downloads must run over the ORDERED list — submitting `subjectScreened` would compute an
+    // order and then ignore it, which is the whole defect in a different shape.
+    expect(block).toContain("downloadOrder.map((candidate, slotIdx)");
+    expect(block).not.toContain("subjectScreened.map((candidate");
+  });
+
+  /**
+   * RONDE 240 — AND THE ORDER MUST SURVIVE BEING RUN CONCURRENTLY.
+   *
+   * The downloads no longer wait at a batch boundary, so they settle out of order. If results were
+   * collected as they arrived, `downloadedClips` would be ordered by SPEED and the evaluation
+   * would reach a fast low-ranked candidate before the YouTube one deliberately put in front —
+   * this whole file's guarantee, undone by a scheduling change, with every assertion above still
+   * passing. Each result is written to its own slot and the list is compacted in ranking order.
+   */
+  it("and a concurrent finish cannot reorder what the hoist arranged", () => {
+    const src = pipeline();
+    const at = src.indexOf("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
+    const block = src.slice(at, src.indexOf("noteBeatCandidatesOffered(", at));
+    expect(block).toContain("downloadSlots[slotIdx] = { candidate, clipPath }");
+    expect(block).toContain("for (let slotIdx = 0; slotIdx < downloadOrder.length; slotIdx++)");
+    const bodyAt = block.indexOf("downloadLimit(async () => {");
+    expect(bodyAt).toBeGreaterThan(0);
+    expect(
+      block.slice(bodyAt, block.indexOf("        );", bodyAt)),
+      "collecting inside the concurrent body would order by speed"
+    ).not.toContain("downloadedClips.push");
   });
 
   /**

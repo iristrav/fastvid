@@ -36260,6 +36260,22 @@ async function fetchSceneVisualsInner(
         const funnelTimeoutMs = funnelAwaitTimeoutMs();
         const funnelAwaitT0 = Date.now();
         console.log(`[FunnelTimeout] scene=${scene.index} timeoutMs=${funnelTimeoutMs}`);
+        /**
+         * RONDE 241 — THE STAGES THAT SPEND THE RENDER ARE MEASURED, NOT JUST THE CHEAP ONES.
+         *
+         * `[Budget]` proved retrieval runs 10x over its allowance in every one of 39 measured
+         * renders. `[Step]` could not say what inside it: the only instrumented steps were the
+         * provider searches, and those all read 0ms because they come from cache. RONDE 237 made
+         * the report legible; it reported 1.7 seconds of an hour because 1.7 seconds was all
+         * anybody had ever measured.
+         *
+         * These three are the retrieval phase, in the order it runs: finding candidates, fetching
+         * them, judging them. `dedup.stepTiming` is the recorder the render already threads
+         * everywhere, so nothing new is plumbed — the meter existed, it was simply not attached to
+         * anything that takes time. `funnelAwaitT0` is the stamp this block already took two lines
+         * above for its own timeout arithmetic — measured once, read twice, so the number in the
+         * report and the number the timeout uses can never drift apart.
+         */
         console.log(`[Hang] BEFORE funnel await s${scene.index} prefetch=${!!prefetchFunnel}`);
         // P1-B: anchor era-less stock phrasing to the year/person/location the script states.
         const inlineFunnelQueries = anchorQueriesToHistoricalContext({
@@ -36346,6 +36362,9 @@ async function fetchSceneVisualsInner(
           `timeoutMs=${funnelTimeoutMs}`
         );
         console.log(`[Hang] AFTER funnel await s${scene.index} candidates=${funnelResult?.candidates?.length ?? 0}`);
+        recordPipelineTiming(
+          dedup.stepTiming, "image_search", "Funnel candidate pool", Date.now() - funnelAwaitT0, scene.index
+        );
         const waited = Date.now() - poolT0;
         console.log(
           `[Funnel] Scene ${scene.index}: ${funnelResult.candidates.length} candidates ` +
@@ -36768,15 +36787,53 @@ async function fetchSceneVisualsInner(
           );
         }
         const downloadedClips: Array<{ candidate: FunnelCandidate; clipPath: string }> = [];
-        for (let dlIdx = 0; dlIdx < downloadOrder.length; dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY) {
-          const batch = downloadOrder.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY);
-          const batchResults = await Promise.all(
-            batch.map(async (candidate) => ({
-              candidate,
-              clipPath: await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec, dedup.sourcingCache),
-            }))
-          );
-          for (const { candidate, clipPath } of batchResults) {
+        /**
+         * RONDE 240 — THREE AT A TIME, NOT THREE AND THEN A WAIT.
+         *
+         * This was `for (…dlIdx += 3) { await Promise.all(batch.map(…)) }`: a barrier every three
+         * candidates. `Promise.all` settles on its SLOWEST member, so two downloads that finished
+         * in two seconds sat idle until the third returned — and being first in the order bought
+         * the hoisted YouTube candidate nothing, because it shared a batch with whatever was ranked
+         * next. One `loc` transfer held a beat for twenty-five minutes exactly this way while its
+         * two neighbours had long since finished.
+         *
+         * A limit of three keeps the concurrency the batch was there to impose — the same number,
+         * the same ceiling on parallel transfers — while removing the barrier: a finished slot
+         * starts the next candidate immediately instead of waiting for its neighbours.
+         *
+         * ── Why results are written by POSITION and not pushed ──────────────────────────────
+         *
+         * `downloadedClips` feeds the evaluation below, and its order is the ranking order — the
+         * order `hoistBudgetSensitiveDownload` was written to set. Pushing as each download settles
+         * would order by SPEED instead, so a fast low-ranked candidate would be judged ahead of the
+         * YouTube one deliberately put in front. That would undo RONDE 233/234 silently, while
+         * every test still passed. So each result lands in its own slot and the list is compacted
+         * in order afterwards: concurrency changes, ranking does not.
+         */
+        const downloadLimit = pLimit(FUNNEL_DOWNLOAD_CONCURRENCY);
+        const downloadSlots: Array<{ candidate: FunnelCandidate; clipPath: string } | null> =
+          new Array(downloadOrder.length).fill(null);
+        const downloadsT0 = Date.now();
+        await Promise.all(
+          downloadOrder.map((candidate, slotIdx) =>
+            downloadLimit(async () => {
+              const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec, dedup.sourcingCache);
+              if (clipPath) downloadSlots[slotIdx] = { candidate, clipPath };
+              else downloadSlots[slotIdx] = null;
+            })
+          )
+        );
+        recordPipelineTiming(
+          dedup.stepTiming,
+          "image_download",
+          `Funnel downloads (${downloadOrder.length} candidate(s), ${FUNNEL_DOWNLOAD_CONCURRENCY} at a time)`,
+          Date.now() - downloadsT0,
+          scene.index
+        );
+        {
+          for (let slotIdx = 0; slotIdx < downloadOrder.length; slotIdx++) {
+            const candidate = downloadOrder[slotIdx]!;
+            const clipPath = downloadSlots[slotIdx]?.clipPath ?? "";
             if (!clipPath) {
               // FIX 3 — register failed downloads too. Only the beat WINNER used to be recorded,
               // so a candidate whose download fails stayed in every later beat's shortlist and
@@ -36819,6 +36876,7 @@ async function fetchSceneVisualsInner(
         noteBeatCandidatesOffered(
           dedup.beatOutcomeAudit, scene.index, beat.index, downloadedClips.length
         );
+        const visionT0 = Date.now();
         for (const { candidate, clipPath } of downloadedClips) {
           const visionResult = await evaluateClipVisionGate(
             clipPath,
@@ -36852,6 +36910,13 @@ async function fetchSceneVisualsInner(
           }
           scored.push({ candidate, clipPath, visionResult });
         }
+        recordPipelineTiming(
+          dedup.stepTiming,
+          "image_processing",
+          `Clip vision gate (${downloadedClips.length} clip(s))`,
+          Date.now() - visionT0,
+          scene.index
+        );
 
         // FIX 1: prefer a passer this render has not adopted yet. Ranking and VisionGate are
         // untouched — the best REMAINING candidate still wins on its own score. When every

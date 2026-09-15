@@ -50,27 +50,42 @@ function funnelConsumptionBlock(): string {
 // ─── FIX 6 — bounded parallel shortlist downloads ─────────────────────────────
 
 describe("FIX 6 — shortlist downloads run in bounded parallel batches", () => {
-  it("the download loop batches by FUNNEL_DOWNLOAD_CONCURRENCY = 3", () => {
+  /**
+   * RONDE 240 — THE BOUND IS THE PROPERTY; BATCHING WAS ONLY HOW IT WAS SPELT.
+   *
+   * FIX 6 exists to stop two things: downloading candidates one at a time, and putting every
+   * candidate on the wire at once. Batches of three were the original implementation, and they
+   * carried a cost that took until RONDE 240 to see — `await Promise.all(batch)` settles on the
+   * SLOWEST of its three, so two downloads finishing in two seconds waited for a `loc` transfer
+   * that ran for twenty-five minutes, and being first in the order bought the hoisted YouTube
+   * candidate nothing.
+   *
+   * The pool keeps FIX 6's bound exactly — three in flight, never four — and drops the barrier.
+   * This test now asserts the bound rather than the spelling, so the next change to HOW it is
+   * bounded does not read as a regression of WHETHER it is.
+   */
+  it("the download loop is bounded at FUNNEL_DOWNLOAD_CONCURRENCY = 3", () => {
     const block = codeOnly(funnelConsumptionBlock());
     expect(block).toContain("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
-    expect(block).toContain("dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY");
+    expect(block, "the bound is imposed by the limiter").toContain("pLimit(FUNNEL_DOWNLOAD_CONCURRENCY)");
     /**
-     * The batched slice, over the SCREENED shortlist. The array it reads has been renamed twice,
-     * and both renames were the shortlist growing a stage rather than the batching changing:
-     * `toScore` is the shortlist, `subjectScreened` is what survived a check that costs no
-     * download, and `downloadOrder` is that same set with the YouTube candidate moved to the front
-     * (its transfer is the only one the beat budget refuses outright, so it has to be attempted
-     * while the budget still exists).
-     *
-     * The batching property this test exists for is unchanged. Asserting the derivation as well as
-     * the name keeps what the previous assertion bought: the batched list must still come from the
-     * screened one, so a future change can neither go back to downloading unscreened candidates nor
-     * compute an order and then ignore it.
+     * Over the SCREENED shortlist. The array has been renamed twice, and both renames were the
+     * shortlist growing a stage rather than the bound changing: `toScore` is the shortlist,
+     * `subjectScreened` is what survived a check that costs no download, and `downloadOrder` is
+     * that same set with the YouTube candidate moved to the front. Asserting the derivation keeps
+     * what the original assertion bought — a future change can neither go back to downloading
+     * unscreened candidates nor compute an order and then ignore it.
      */
-    expect(block).toContain("downloadOrder.slice(dlIdx, dlIdx + FUNNEL_DOWNLOAD_CONCURRENCY)");
     expect(block).toContain("hoistBudgetSensitiveDownload(subjectScreened)");
     expect(block).toContain(": subjectScreened;");
     expect(block).toContain("await Promise.all(");
+  });
+
+  /** And the barrier that made the bound cost more than it bought is gone. */
+  it("no batch barrier: a finished slot starts the next candidate", () => {
+    const block = codeOnly(funnelConsumptionBlock());
+    expect(block).not.toContain("dlIdx += FUNNEL_DOWNLOAD_CONCURRENCY");
+    expect(block).not.toContain("downloadOrder.slice(dlIdx");
   });
 
   it("the sequential download form is gone", () => {
