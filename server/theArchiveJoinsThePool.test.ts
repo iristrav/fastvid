@@ -187,3 +187,62 @@ describe("5. the pool actually asks for it", () => {
     expect(POOL).toContain('skipped["archive"] = "not_wired"');
   });
 });
+
+/**
+ * RONDE 245 — AND A ROUTE ACTUALLY HANDS IT OVER.
+ *
+ * RONDE 244 built the adapter and wired the pool to accept one; no caller supplied it, so every
+ * render still recorded `skipped["archive"]="not_wired"`. That is the same shape as the gap it
+ * was meant to close — a source the type system says exists and the render never receives — which
+ * is why it is pinned here rather than left to the next reader to notice.
+ */
+describe("6. the render hands the pool its archive search", () => {
+  const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
+
+  it("the funnel's pool call passes archiveSearch", () => {
+    const at = PIPE.indexOf("buildSceneCandidatePool({");
+    expect(at).toBeGreaterThan(0);
+    expect(PIPE.slice(at, at + 1600)).toContain("archiveSearch: scenePoolArchiveSearch(");
+  });
+
+  /**
+   * THE WHOLE DESIGN, in one assertion. `listCuratedArchiveCandidates` IS the curated route's
+   * selection — it resolves the archives, loads assets through the render's cache and scores each
+   * with `scoreCuratedAsset`. Re-deriving "which archive asset suits this sentence" here would be
+   * a second source-selection engine, which is the one thing this pipeline must not grow.
+   */
+  it("through the existing selection, not a second one", () => {
+    const at = PIPE.indexOf("function scenePoolArchiveSearch(");
+    expect(at).toBeGreaterThan(0);
+    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
+    expect(body).toContain("listCuratedArchiveCandidates(");
+    expect(body, "no scoring of its own").not.toContain("scoreCuratedAsset(");
+    expect(body, "and no database call of its own").not.toContain("getAllMediaArchives(");
+  });
+
+  /**
+   * The score-1 dump exists for a beat with nothing left to try. Fed to a RANKING it would drown
+   * the pool in material nobody judged relevant — and relevance deciding is the pool's entire
+   * purpose. The beat route still reaches that last resort on its own.
+   */
+  it("and never the last-resort dump of the whole archive", () => {
+    const at = PIPE.indexOf("function scenePoolArchiveSearch(");
+    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
+    expect(body).toContain("the score-1 dump belongs to a desperate beat, never to a ranking");
+  });
+
+  /** It respects what the render has already used, like every other route reading the archive. */
+  it("it honours the render's exclusions", () => {
+    const at = PIPE.indexOf("function scenePoolArchiveSearch(");
+    const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
+    expect(body).toContain("dedup.usedCuratedAssetIds");
+    expect(body).toContain("dedup.usedCuratedStorageUrls");
+    expect(body).toContain("dedup.crossVideoExcludeIds");
+  });
+
+  /** And reuses the render's asset cache rather than re-reading the archive per scene. */
+  it("and reuses the render's asset cache", () => {
+    const at = PIPE.indexOf("function scenePoolArchiveSearch(");
+    expect(PIPE.slice(at, PIPE.indexOf("\n}\n", at))).toContain("dedup.archiveAssetsCache");
+  });
+});

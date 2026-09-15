@@ -249,6 +249,7 @@ import {
   reorderForArchiveDiversity,
   type CuratedCandidatePick,
   type ArchiveAssetRow,
+  listCuratedArchiveCandidates,
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import {
@@ -478,7 +479,7 @@ import {
   type VerifiedQueryContext,
 } from "./searchQueryContract";
 import { formatFallback, formatSelection } from "./renderCorrelation";
-import type { YoutubePoolSearch } from "./scenePool";
+import type { ArchivePoolSearch, YoutubePoolSearch } from "./scenePool";
 
 /**
  * RONDE 177 — the YouTube search the SCENE POOL should use, or nothing.
@@ -502,6 +503,67 @@ function scenePoolYoutubeSearch(sourcingCache?: SourcingCache): YoutubePoolSearc
       query, sceneIndex, license, relevanceKeywords, minRelevanceScore,
       requiredPersonName, maxResults, sourcingCache
     );
+}
+
+/**
+ * RONDE 245 — the operator's archive, handed to the pool the way YouTube's search already is.
+ *
+ * ── Why this calls `listCuratedArchiveCandidates` and nothing else ──────────────────────────
+ *
+ * That function IS the curated route's selection: it resolves which archives are relevant, loads
+ * their assets through the render's own cache, and scores each one with `scoreCuratedAsset` —
+ * tags, entities, niche tags, geography, the baked-text and off-topic refusals, all of it. What it
+ * does NOT do is download, trim or prepare anything, which is exactly the half the pool wants.
+ *
+ * So the pool gets the archive's real opinion rather than a second one invented here. Re-deriving
+ * "which archive asset suits this sentence" would be a second source-selection engine, and this
+ * pipeline has spent ten rounds discovering what a second engine costs.
+ *
+ * ── Scene text, not beat text ───────────────────────────────────────────────────────────────
+ *
+ * The pool is built once per scene, so it is asked with the scene's text and its own exclusions.
+ * The per-beat route is unchanged and still runs with beat text; a beat that wants a sharper match
+ * than the scene-level pool offers still gets one there. This adds a source to the ranking — it
+ * replaces no route and removes no refusal.
+ *
+ * ── Why `noUniversalFallback` is true ───────────────────────────────────────────────────────
+ *
+ * The last-resort branch dumps the entire archive at score 1 when dedup has emptied the pool. That
+ * is a reasonable thing for a beat with nothing left to do, and a terrible thing to feed a RANKING:
+ * a hundred score-1 assets would drown the pool in material nobody judged relevant, and the pool's
+ * whole purpose is that relevance decides. A beat that genuinely needs the last resort still
+ * reaches it on its own route.
+ */
+function scenePoolArchiveSearch(
+  sceneText: string,
+  dedup: VisualDedupState,
+  beatTags: string[],
+  topicAnchors: string[]
+): ArchivePoolSearch {
+  /**
+   * No flag guards this. The archive is the operator's own collection, not an optional provider
+   * with a key — an account with no archives simply gets `[]` back and the pool reports
+   * `candidates=0`, which is the honest answer and is different from `not_wired`.
+   */
+  return async () =>
+    (await listCuratedArchiveCandidates(
+      beatTags,
+      dedup.usedCuratedAssetIds,
+      dedup.usedCuratedStorageUrls,
+      topicAnchors,
+      undefined,
+      sceneText,
+      dedup.crossVideoExcludeIds,
+      dedup.archiveAssetsCache,
+      /** Every active archive: the pool is scene-wide, so it asks the whole collection. */
+      true,
+      /** See above — the score-1 dump belongs to a desperate beat, never to a ranking. */
+      true
+    )).map((pick) => ({
+      asset: pick.asset,
+      score: pick.score,
+      archiveName: pick.archiveName,
+    }));
 }
 export { getRenderTopic, getSearchProvenance, withRenderTopic, withSearchProvenance } from "./searchQueryContract";
 export { getQueryScope, withQueryScope } from "./searchQueryContract";
@@ -36430,6 +36492,19 @@ async function fetchSceneVisualsInner(
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
               /** RONDE 177 — YouTube joins the pool here, through the existing search client. */
               youtubeSearch: scenePoolYoutubeSearch(dedup.sourcingCache),
+              /**
+               * RONDE 245 — and the operator's own archive, through the existing selection.
+               *
+               * The scene's own anchors are what the archive is asked about, the same text every
+               * other provider in this pool is given. See `scenePoolArchiveSearch` for why this
+               * calls `listCuratedArchiveCandidates` rather than re-deriving a match.
+               */
+              archiveSearch: scenePoolArchiveSearch(
+                scene.text,
+                dedup,
+                inlinePoolQueries.primaryQuery ? [inlinePoolQueries.primaryQuery] : [],
+                [dedup.primaryPerson || personName].filter(Boolean)
+              ),
             }), 60_000, `buildSceneCandidatePool s${scene.index}`);
         console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
