@@ -32,5 +32,9 @@ vitest_new*.json
 todo.md
 
 # The Python clip-extraction service builds from its own Dockerfile (root dir
-# ytdlp-service) and has nothing to do with the Node image.
-ytdlp-service
+# services/ytdlp-download) and has nothing to do with the Node image.
+#
+# RONDE 236: this said `ytdlp-service`, a second copy of the service that was left behind when the
+# live one moved to services/ytdlp-download. That copy is deleted — see the round's commit for why
+# a dormant duplicate of the egress path is worth removing rather than leaving to rot.
+services/ytdlp-download
