@@ -187,6 +187,22 @@ export type BeatFunnel = {
   refusedForCap: number;
   /** Slots taken per source, so no one source can fill a beat's whole shortlist. */
   bySource: Map<string, number>;
+  /**
+   * RONDE 247 — WHICH SOURCE IS HOLDING EACH SLOT, so a release can give its share back too.
+   *
+   * `bySource` alone cannot be decremented: a release is addressed by content key, and the key on
+   * its own does not say who took the place. Render 584 is what that cost. `releaseShortlistSlot`
+   * handed the BEAT its place back and left the SOURCE'S tally standing, so after one round of
+   * churn a beat reported `shortlisted=0/8 slotsReturned=6 sourceShareOut=4` — every place free and
+   * every source locked out of it. Two of scene 2's four sentences were never shown a single
+   * candidate, out of thirty-five the render had already downloaded.
+   *
+   * Keyed by content key, so it is written and read on exactly the identities `admitted` tracks.
+   * A candidate with no content identity is not remembered here for the same reason it is not
+   * remembered there — there is nothing to remember it by — and it cannot be released either, so
+   * the two maps stay in step.
+   */
+  slotSource: Map<string, string>;
   /** Candidates turned away because their source had taken its share — see the reason's note. */
   refusedForSourceShare: number;
   notAskedReasons: Map<NotAskedReason, number>;
@@ -286,6 +302,7 @@ export function beatFunnel(
     admitted: new Set<string>(),
     refusedForCap: 0,
     bySource: new Map<string, number>(),
+    slotSource: new Map<string, string>(),
     refusedForSourceShare: 0,
     notAskedReasons: new Map<NotAskedReason, number>(),
     visionRepeatAsks: 0,
@@ -447,7 +464,11 @@ export function admitToShortlist(
   f.shortlisted += 1;
   if (id) f.admitted.add(id);
   /** Counted only on a real admission, so a refusal can never consume a source's share. */
-  if (src) f.bySource.set(src, (f.bySource.get(src) ?? 0) + 1);
+  if (src) {
+    f.bySource.set(src, (f.bySource.get(src) ?? 0) + 1);
+    /** Recorded alongside the tally, so the release can find its way back to this same entry. */
+    if (id) f.slotSource.set(id, src);
+  }
   return { admitted: true, alreadyOnList: false, slotsUsed: f.shortlisted, cap };
 }
 
@@ -511,6 +532,26 @@ export function releaseShortlistSlot(
   if (f.slotsReleased >= cap) return { released: false, reason: "RELEASE_BUDGET_SPENT" };
   f.admitted.delete(id);
   f.shortlisted = Math.max(0, f.shortlisted - 1);
+  /**
+   * RONDE 247 — AND THE SOURCE'S SHARE, which this release used to keep.
+   *
+   * The per-source cap was added after this function, and the two were never introduced. The beat
+   * got its place back; the source that had been holding it did not. So a source could take its
+   * four places, have all four handed back unjudged, and be refused for the rest of the render on
+   * a beat whose own line read `shortlisted=0/8`. Render 584: 59 places returned across the film,
+   * 21 candidates refused for source share, and 84 never put to the picture editor at all.
+   *
+   * NOTHING HERE RAISES A LIMIT. The per-source cap is the number it was and the beat's cap is
+   * unchanged; a place that was never spent on a judgement simply stops being counted as spent.
+   * The release budget above still bounds how often this can happen.
+   */
+  const heldBy = f.slotSource.get(id);
+  if (heldBy) {
+    const held = f.bySource.get(heldBy) ?? 0;
+    if (held <= 1) f.bySource.delete(heldBy);
+    else f.bySource.set(heldBy, held - 1);
+    f.slotSource.delete(id);
+  }
   f.slotsReleased += 1;
   return { released: true, slotsUsed: f.shortlisted, released_total: f.slotsReleased };
 }

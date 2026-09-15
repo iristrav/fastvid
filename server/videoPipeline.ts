@@ -35865,6 +35865,21 @@ async function refillSceneStrictVoiceMatch(
        * matters is the same defect as not checking it.
        */
       for (const line of beatShortlistViolations(dedup.beatShortlist)) console.error(line);
+      /**
+       * RONDE 247 — THE TIME REPORT, FOR THE FOURTH TIME ON THE SAME ARGUMENT.
+       *
+       * RONDE 241 attached the step meter to the three retrieval stages that spend a render, to
+       * answer "where do the forty-eight minutes go". It never answered, and this is why:
+       * `toReportLines()` had exactly one reader, at videoPipeline 45114, on the success path with
+       * no `catch` or `finally` over it. The throw below is eleven thousand lines earlier. So the
+       * meter printed for every render that worked and stayed silent for every render that did not
+       * — which is the only kind anyone needs it for.
+       *
+       * That is precisely the defect RONDE 226 found in `[BeatFunnel]` and RONDE 227 found in the
+       * invariants, committed a third time by the instrument built to find it. Measuring a thing
+       * and never reading the answer where it matters is the same defect as not measuring it.
+       */
+      for (const line of dedup.stepTiming?.toReportLines() ?? []) console.error(line);
     }
 
     if (!curatedArchiveOnlyVisuals()) {
