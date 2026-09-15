@@ -3062,10 +3062,12 @@ function buildBeatYoutubeQueries(
   // prepended so every query the list had before still reaches the provider.
   const typed = typedQueryPrefix(beat.text, { scenePersons: [personName] }).slice(0, 2);
   const rest = [
-    ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+    // RONDE 249: the beat's own person before the twelve-entry table — see the note at the
+    // "fast person YouTube" route. Same list, same queries, the script's answer asked first.
     ...(coercePersonName(personName)
       ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
       : []),
+    ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
     ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
     beat.searchQuery,
     scene.visualCue,
@@ -4906,15 +4908,24 @@ async function resolveBeatClipFastInner(
 
   const ytMs = youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode);
   if (youtubeSourcingEnabled() && youtubeCcReady()) {
-    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-    let clip = await tryBeatRealYouTubeFootage(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, entityYt, "fast event YouTube", ytMs
-    );
-    if (clip) {
-      dedup.lastMuskStockClip = clip; dedup.lastRealClip = clip;
-      return clip;
-    }
+    /**
+     * RONDE 249 — THE BEAT'S OWN PERSON GOES FIRST, THE TWELVE-ENTRY TABLE SECOND.
+     *
+     * These two asks were the other way round, and the first one returned on success — so a beat
+     * whose subject the table happened to recognise never got its actual subject put to YouTube at
+     * all. Render 584: the narration says Kris Jenner, the table matched on the surname, YouTube
+     * was asked for Kylie Jenner, and a clip of the wrong person ended the search.
+     *
+     * RONDE 249's other half stops that particular mismatch, but the ordering is the deeper fault
+     * and outlives it: `scenePersons` comes from the script, and REAL_ENTITY_RULES is twelve
+     * hardcoded subjects. What the beat actually names is better evidence than what a fixed list
+     * recognises, whatever is on the list.
+     *
+     * Nothing is removed. The table still runs, on exactly the same queries, for every beat the
+     * person route does not satisfy — including every beat that names no person at all.
+     */
     const person = scenePersons[0] ?? dedup.primaryPerson;
+    let clip: string | null = null;
     if (person) {
       const personYt = buildPersonCelebrityVideoQueries(person, beat.text, beat.index);
       clip = await tryBeatRealYouTubeFootage(
@@ -4934,6 +4945,14 @@ async function resolveBeatClipFastInner(
         console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: fast person YouTube (${person})`);
         return clip;
       }
+    }
+    const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
+    clip = await tryBeatRealYouTubeFootage(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, adoptOpts, entityYt, "fast event YouTube", ytMs
+    );
+    if (clip) {
+      dedup.lastMuskStockClip = clip; dedup.lastRealClip = clip;
+      return clip;
     }
   }
 
@@ -19671,7 +19690,7 @@ const BLOCKED_STOCK_TAGS_RE =
 const MUSK_TOPIC_TOKENS = ["tesla", "spacex", "musk", "electric", "ev", "battery", "gigafactory", "falcon", "starship", "cybertruck", "automotive", "rocket", "launch"];
 
 /** When narration names a real company/product, clip slug/query must show that same entity (real-world footage). */
-type RealEntityRule = {
+type RealEntityRuleBase = {
   id: string;
   mentionRe: RegExp;
   clipMustMatchRe: RegExp;
@@ -19691,6 +19710,45 @@ type RealEntityRule = {
    */
   kind: "person" | "company" | "brand" | "object";
 };
+
+/**
+ * RONDE 249 — A SURNAME IS NOT A PERSON, AND THE TYPE SAYS SO.
+ *
+ * Render 584's scene 2 was about KRIS Jenner. The kylie rule's `mentionRe` ends in `jenner\b`, so
+ * it matched, and YouTube was asked for "Kylie Jenner" — the wrong person, 26 times in eight
+ * minutes. Measured, not deduced: `extractBeatRealEntities` on the render's own sentence returns
+ * the kylie rule, and on the bare word "Jenner" it returns it too.
+ *
+ * A surname belongs to a family, not to a person. So a rule that claims to recognise a PERSON now
+ * has to carry the name it recognises, and `extractBeatRealEntities` requires the beat to contain
+ * that whole name before the rule may speak.
+ *
+ * This is a union rather than an optional field on purpose. Optional would let rule thirteen be
+ * added without one and fail silently — either matching a surname again, or (fail-closed) going
+ * quiet for no visible reason. The compiler asks the question instead.
+ *
+ * The other ten rules are companies, brands and objects, where the bare token IS the whole name:
+ * "Tesla", "SpaceX", "Neuralink". Those are unchanged, and `fullName` would mean nothing on them.
+ */
+type RealEntityRule =
+  | (RealEntityRuleBase & {
+      kind: "person";
+      /** The person's full name as narration writes it — the rule may not fire on less. */
+      fullName: string;
+    })
+  | (RealEntityRuleBase & { kind: "company" | "brand" | "object" });
+
+/** Whether this beat names the whole person, not just their family. */
+function beatNamesWholePerson(rule: RealEntityRule, text: string): boolean {
+  if (rule.kind !== "person") return true;
+  const parts = rule.fullName
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (parts.length === 0) return false;
+  return new RegExp(`\\b${parts.join("\\s+")}\\b`, "i").test(text);
+}
 
 /**
  * RONDE 100B — the entity's NAME is proven by the mention; its activities are not.
@@ -19715,6 +19773,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   {
     id: "kylie",
     kind: "person",
+    fullName: "Kylie Jenner",
     mentionRe: /\b(kylie\s+jenner|kylie\b|jenner\b)/i,
     clipMustMatchRe: /\b(kylie|jenner|kardashian|celebrity|influencer|makeup|fashion)\b/i,
     stockQueries: ["Kylie Jenner"],
@@ -19723,6 +19782,7 @@ const REAL_ENTITY_RULES: RealEntityRule[] = [
   {
     id: "musk",
     kind: "person",
+    fullName: "Elon Musk",
     mentionRe: /\b(elon\s+musk|musk)\b/i,
     clipMustMatchRe: /\b(musk|elon|tesla|spacex)\b/i,
     stockQueries: ["Elon Musk"],
@@ -19846,10 +19906,20 @@ export function beatNamedEntitiesByKind(beatText: string): {
 }
 
 export function extractBeatRealEntities(beatText: string, _sceneText = "", _videoTitle = ""): RealEntityRule[] {
-  const fromBeat = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(beatText));
+  /**
+   * RONDE 249 — the mention AND, for a person, the whole name. See `beatNamesWholePerson`.
+   *
+   * `mentionRe` stays exactly as it was: it is also read by the candidate filters, and narrowing
+   * it would change what a clip has to show as well as when a rule fires. Those are separate
+   * questions and this is only the second one.
+   */
+  const matches = (r: RealEntityRule, text: string): boolean =>
+    r.mentionRe.test(text) && beatNamesWholePerson(r, text);
+
+  const fromBeat = REAL_ENTITY_RULES.filter((r) => matches(r, beatText));
   if (fromBeat.length > 0) return fromBeat;
   for (const cue of extractInlineVisualCues(beatText)) {
-    const fromCue = REAL_ENTITY_RULES.filter((r) => r.mentionRe.test(cue));
+    const fromCue = REAL_ENTITY_RULES.filter((r) => matches(r, cue));
     if (fromCue.length > 0) return fromCue;
   }
   return [];
@@ -27242,10 +27312,11 @@ async function fetchLastResortRealClipInner(
   const uniqueQueries = [...new Set(queries)];
 
   const ytQueries = [
-    ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+    // RONDE 249: the script's person before the hardcoded table.
     ...(coercePersonName(personName)
       ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index)
       : []),
+    ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
   ];
   const ytClip = await tryBeatRealYouTubeFootage(
     beat,
@@ -27873,11 +27944,12 @@ async function researchBeatClipUnifiedInner(
     if (youtubeSourcingEnabled()) {
       const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
       const ytFirstQueries = [
-        ...entityYt,
-        ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
+        // RONDE 249: the script's person before the hardcoded table.
         ...(effectivePrimary.trim()
           ? buildPersonCelebrityVideoQueries(effectivePrimary, beat.text, beat.index)
           : []),
+        ...entityYt,
+        ...buildTopicDocumentaryYoutubeQueries(beat, scene, videoTitle),
       ];
       const ytFirst = await tryBeatRealYouTubeFootage(
         beat,
@@ -29492,8 +29564,9 @@ async function fetchBeatAuthenticVideoInner(
 
   if (youtubeSourcingEnabled()) {
     const ytQueries = [
-      ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+      // RONDE 249: the script's person before the hardcoded table.
       ...(coercePersonName(personName) ? buildPersonCelebrityVideoQueries(personName, beat.text, beat.index) : []),
+      ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
       ...(asVideoTitleString(videoTitle).trim()
         ? [
             `${asVideoTitleString(videoTitle)} documentary footage`,
@@ -29814,8 +29887,9 @@ async function resolveBeatClipTurboInner(
       muskTopic,
     });
     const turboYtQueries = [
-      ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
+      // RONDE 249: the script's person before the hardcoded table.
       ...(person.trim() ? buildPersonCelebrityVideoQueries(person, beat.text, beat.index) : []),
+      ...realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle),
       ...beatQueries.slice(0, 2),
     ];
     const turboYt = await tryBeatRealYouTubeFootage(
