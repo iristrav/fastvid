@@ -3,11 +3,9 @@
  */
 import * as path from "path";
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
-import {
-  STANDARD_TRANSITION,
-  extractMotionOverlayCandidates,
-  type MotionOverlayPlan,
-} from "./motionGraphicsLayer";
+// RONDE 242: `extractMotionOverlayCandidates` and `MotionOverlayPlan` are gone with the check that
+// called the extractor only to discard its answer. Only the constant this module returns is left.
+import { STANDARD_TRANSITION } from "./motionGraphicsLayer";
 import type { ScriptVisualIntentEntry } from "./scriptVisualKeywords";
 
 export const STANDARD_OVERLAY_POSITION = "center" as const;
@@ -60,7 +58,43 @@ function resolveKeywords(input: GeneratedClipPlanInput): string[] {
   );
 }
 
-/** Validate clip metadata; throws pipelineError and logs on failure. */
+/**
+ * Validate clip metadata; throws pipelineError and logs on failure.
+ *
+ * ── RONDE 242 — THREE OF THE FIVE CHECKS COULD NOT FAIL ─────────────────────────────────────
+ *
+ * What stood here:
+ *
+ *     const transition = STANDARD_TRANSITION;
+ *     if (transition !== "crossfade") errors.push(…);          // STANDARD_TRANSITION IS "crossfade"
+ *
+ *     const overlay_position = STANDARD_OVERLAY_POSITION;
+ *     if (overlay_position !== "center") errors.push(…);       // …and that one IS "center"
+ *
+ *     const overlayPlans = extractMotionOverlayCandidates(…).map(() => ({ position: overlay_position }));
+ *     for (const overlay of overlayPlans)
+ *       if (overlay.position !== "center") errors.push(…);     // …every element set FROM that constant
+ *
+ * Each compares a constant with its own definition. Not "rarely fails" — cannot fail, and the
+ * compiler knows: both are `as const`, and `MotionOverlayPlan.position` is typed `"center"`, a
+ * literal with exactly one inhabitant. The third is the worst of the three, because it reads as a
+ * check over real overlay data: it calls the extractor, throws the answer away with
+ * `.map(() => ({ position: overlay_position }))`, and validates the constant it just substituted.
+ *
+ * A check that cannot fail is worse than no check. It costs a call, it appears in the success line
+ * as though something was verified, and it spends the reader's trust on nothing — which is exactly
+ * how the real gaps in this pipeline kept surviving review.
+ *
+ * The three REAL checks are kept, unchanged: a clip must carry a visual description, at least one
+ * keyword, and an image prompt. Those can fail, and do.
+ *
+ * The constants are still exported and still returned in the result — callers read them, and the
+ * shape of `GeneratedClipPlanCheck` is unchanged. What is gone is pretending they were checked.
+ *
+ * The thrown code was `NO_SCENES` (10106), which says the script produced no scenes. It produced
+ * scenes; one clip's metadata was incomplete. A render that failed here sent its reader to the
+ * wrong end of the pipeline, so it now throws `QUALITY_GATE` (10115) — what this function is.
+ */
 export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): GeneratedClipPlanCheck {
   const errors: string[] = [];
   const clipBasename = path.basename(input.clipPath);
@@ -74,45 +108,17 @@ export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): Genera
   const image_prompt = resolveImagePrompt(input);
   if (!image_prompt) errors.push("missing image_prompt");
 
-  const transition = STANDARD_TRANSITION;
-  if (transition !== "crossfade") errors.push(`invalid transition: ${transition} (expected crossfade)`);
-
-  const overlay_position = STANDARD_OVERLAY_POSITION;
-  if (overlay_position !== "center") {
-    errors.push(`invalid overlay position: ${overlay_position} (expected center)`);
-  }
-
-  const beatText = input.beatText?.trim() ?? "";
-  if (beatText) {
-    const overlayPlans: Pick<MotionOverlayPlan, "position">[] = extractMotionOverlayCandidates(
-      beatText,
-      {
-        text: beatText,
-        // holdSec is required by BeatLabelInput's shape but not read by
-        // extractMotionOverlayCandidates (only powerWord/highlightWords are) — this validation
-        // path has no real beat duration to supply, so 0 is a harmless placeholder.
-        holdSec: 0,
-        powerWord: input.powerWord,
-        highlightWords: input.highlightWords,
-      }
-    ).map(() => ({ position: overlay_position }));
-    for (const overlay of overlayPlans) {
-      if (overlay.position !== "center") {
-        errors.push(`overlay position must be center (got ${overlay.position})`);
-      }
-    }
-  }
-
   if (errors.length > 0) {
     const msg =
       `Scene ${input.sceneIndex} beat ${input.beatIndex} clip "${clipBasename}": ${errors.join("; ")}`;
     console.error(`[ClipValidation] FAIL — ${msg}`);
-    throw pipelineError(PIPELINE_ERROR.NO_SCENES, msg);
+    throw pipelineError(PIPELINE_ERROR.QUALITY_GATE, msg);
   }
 
+  /** Says what was actually checked. The transition and overlay position are constants, not findings. */
   console.log(
     `[ClipValidation] OK scene ${input.sceneIndex} beat ${input.beatIndex} "${clipBasename}" ` +
-      `(visual_description present, ${keywords.length} keyword(s), image_prompt present, crossfade, center)`
+      `(visual_description present, ${keywords.length} keyword(s), image_prompt present)`
   );
 
   return {
@@ -122,7 +128,8 @@ export function validateGeneratedClipPlan(input: GeneratedClipPlanInput): Genera
     visual_description,
     keywords,
     image_prompt,
-    transition,
-    overlay_position,
+    /** Constants, returned because callers read them — never checked, because they cannot vary. */
+    transition: STANDARD_TRANSITION,
+    overlay_position: STANDARD_OVERLAY_POSITION,
   };
 }

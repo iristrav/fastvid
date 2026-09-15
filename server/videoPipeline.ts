@@ -13220,10 +13220,43 @@ export async function searchWebWideVideoClips(
         const tmpPath = path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}_tmp.jpg`);
         const outPath = path.join(workDir, `scene_${sceneIndex}_webwide_${results.length}.mp4`);
         try {
-          const imgResp = await withTimeout(fetch(item.url), 10_000, `Web-wide image download scene ${sceneIndex}`);
+          /**
+           * RONDE 243 — THE ENOENT WAS A WRITE INTO A DIRECTORY THE RENDER HAD ALREADY DELETED.
+           *
+           * Production logs carry thirteen of
+           *
+           *     ENOENT: no such file or directory, open
+           *       '/var/tmp/fastvid_<id>_<ts>/scene_2_webwide_0_tmp.jpg'
+           *
+           * — the render's own workDir, removed in the `finally` that ends a render. Nothing here
+           * was corrupt: this loop was simply still running after the render it belonged to had
+           * finished and cleaned up.
+           *
+           * TWO THINGS LET THAT HAPPEN, and both are fixed here rather than caught afterwards.
+           *
+           * First, `withTimeout(fetch(...))` only RACES — `fetchWithTimeout`'s own comment spells
+           * this out, and records the same ENOENT shape it was written to stop: the caller moves
+           * on, the fetch keeps running fully detached, and its write lands in a directory that no
+           * longer exists. `fetchWithTimeout` joins the enclosing scene scope's AbortSignal, so an
+           * aborted scope actually stops the transfer instead of orphaning it.
+           *
+           * Second, `cancelled()` above answers only "did the operator press cancel". It says
+           * nothing about a scope that timed out or a render that finished normally, which is the
+           * common case. So the directory itself is the check, taken after the awaits and
+           * immediately before the write — the one question that matters is whether there is still
+           * somewhere to write to.
+           */
+          const imgResp = await fetchWithTimeout(item.url, 10_000, `Web-wide image download scene ${sceneIndex}`);
           if (!imgResp.ok) continue;
           const imgBuf = Buffer.from(await imgResp.arrayBuffer());
           if (imgBuf.length < 5000) continue; // existing Openverse-still quality gate, unchanged
+          if (!fs.existsSync(workDir)) {
+            console.warn(
+              `[Pipeline] Scene ${sceneIndex}: web-wide discovery stopping — the render's work ` +
+                `directory is gone, so this search outlived the render it belonged to`
+            );
+            break;
+          }
           fs.writeFileSync(tmpPath, imgBuf);
 
           await stillImageToVideo(
