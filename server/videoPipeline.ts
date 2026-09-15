@@ -17198,6 +17198,81 @@ const NON_ACTION_QUERY_WORDS = new Set([
 ]);
 
 /**
+ * RONDE 248 — VERBS THAT NAME AN ACT NOBODY CAN FILM.
+ *
+ * ── What went wrong ─────────────────────────────────────────────────────────────────────────
+ *
+ * Render 584, scene 2: `[QueryProvenance] subject=Kris Jenner place=Los Angeles action=watches`.
+ * The sentence was "Inside a Los Angeles conference room, Kris Jenner watches…", and "watches"
+ * became a search term — `"Kris Jenner watches"`, `"Kris Jenner Los Angeles watches"` — and then
+ * travelled further than that: it appears in `terms=["Kris Jenner","Beverly Hills","Los Angeles",
+ * "watches","2022"]` on 496 audit lines, which is the vocabulary candidates are SCORED against.
+ *
+ * `extractActionCue` takes its verbs from `PERSON_ACTION_VERBS`, and says so: "Reused here, not
+ * copied, and not modified". The reuse is the defect. That list was assembled by RONDE 72 as
+ * PERSON EVIDENCE — a name followed by an action verb is probably a person — and for that job it
+ * is right to be greedy. Choosing what to photograph wants the opposite property, and the list
+ * contains "believed", "hoped", "knew", "thought", "wanted", "intended", "remained", "waited"
+ * and "watches". None of those describes something a camera can point at.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────────────────────
+ *
+ * A verb earns a place in a query only if footage OF THAT ACT would look different from footage
+ * of the person simply being there. "signed", "marched", "boarded", "saluted" pass: the act has
+ * its own picture. "believed" and "watched" do not — a shot of someone believing is a shot of
+ * someone. This set names the classes where that is true by definition: cognition, emotion,
+ * perception, and staying put.
+ *
+ * ── What this deliberately does NOT do ──────────────────────────────────────────────────────
+ *
+ * `PERSON_ACTION_VERBS` is untouched, so person classification is bit-for-bit unchanged. This is
+ * a narrowing of one consumer, not a weakening of anything: a beat whose only verb is unfilmable
+ * now contributes no verb at all, and `extractActionCue` already documents "" as its ordinary
+ * answer that callers must read as "nothing to add".
+ *
+ * Speech verbs with a setting of their own — "addressed", "announced", "declared" — are NOT here.
+ * A podium, a crowd and a press conference are real archival searches, and removing them would
+ * cost the historical documentaries this pipeline mostly makes.
+ */
+const UNFILMABLE_ACTION_VERBS = new Set([
+  // Cognition and intent — no outward act at all.
+  "believed", "believes", "thought", "thinks", "knew", "knows", "understood", "understands",
+  "wanted", "wants", "intended", "intends", "planned", "plans", "decided", "decides",
+  "hoped", "hopes", "feared", "fears", "meant", "means", "considered", "considers",
+  "remembered", "remembers", "forgot", "forgets", "realised", "realized", "realises", "realizes",
+  "wondered", "wonders", "expected", "expects", "assumed", "assumes", "doubted", "doubts",
+  "imagined", "imagines", "suspected", "suspects", "wished", "wishes",
+  // Perception — the picture is of the person, never of the perceiving.
+  "watched", "watches", "saw", "sees", "seen", "looked", "looks", "listened", "listens",
+  "heard", "hears", "noticed", "notices", "observed", "observes", "viewed", "views",
+  /**
+   * Staying put — the absence of an act.
+   *
+   * POSTURE VERBS ARE DELIBERATELY NOT HERE. "stood", "sat" and "lay" were in this set on the
+   * first pass and took four RONDE 77/78 tests down with them: those rounds decided that
+   * "The Brandenburg Gate stood in ruins" has "stood" as its action, and built
+   * `"Brandenburg Gate stood"` on purpose.
+   *
+   * By the rule at the top of this set they arguably belong here — a shot of a gate standing is
+   * a shot of a gate, and no archivist ever wrote "stood" in a title. But that is reasoning, and
+   * what justifies this whole set is MEASUREMENT: render 584 sent "watches" to nine providers and
+   * put it in the scoring vocabulary 496 times. There is no such evidence against "stood", and
+   * overruling two deliberate earlier decisions on an argument alone is how a list like this
+   * starts quietly eating the terms it was meant to protect.
+   *
+   * Worth settling later with a render that actually measures what posture verbs cost.
+   */
+  "remained", "remains", "stayed", "stays", "waited", "waits", "continued", "continues",
+  "kept", "keeps",
+  // Pure reporting speech — a person talking, with nothing in frame to distinguish what about.
+  "said", "says", "told", "tells", "asked", "asks", "answered", "answers", "replied", "replies",
+  "argued", "argues", "insisted", "insists", "admitted", "admits", "confessed", "confesses",
+  "denied", "denies", "claimed", "claims", "stated", "mentioned", "mentions", "added", "adds",
+  "noted", "notes", "remarked", "remarks", "agreed", "agrees", "refused", "refuses",
+  "promised", "promises", "warned", "warns",
+]);
+
+/**
  * Month names. Capitalised in narration and period markers in their own right, but three of them
  * collide with ordinary words STOP_WORDS carries — "may" the modal, "march" the verb, "august"
  * the adjective — so "on the eighth of May" lost its month entirely. A capitalised month is a
@@ -17249,12 +17324,22 @@ const SENTENCE_OPENER_WORDS = new Set([
  * No new LLM call, no new API, no new dependency: two word sets and the capitalisation the
  * script already carries.
  */
+/**
+ * How many words a subject query may carry. Three, which is what `.slice(0, 3)` meant back when
+ * every candidate was a single token — kept deliberately, so RONDE 248 changes what an entry IS
+ * without quietly changing how much a provider is asked for.
+ */
+const SUBJECT_QUERY_WORD_BUDGET = 3;
+
 function beatSubjectCandidates(clean: string): { proper: string[]; common: string[]; year: string } {
   const proper: string[] = [];
   const common: string[] = [];
   const seen = new Set<string>();
+  /** Where the proper noun currently at the end of `proper` stopped — see the run note below. */
+  let properRunEnd: { sentence: number; token: number } | null = null;
   // Sentence-initial position is per sentence, not per beat: a beat can hold several.
-  for (const sentence of clean.split(/(?<=[.!?])\s+/)) {
+  const sentences = clean.split(/(?<=[.!?])\s+/);
+  sentences.forEach((sentence, sentenceIdx) => {
     const tokens = sentence.split(/\s+/).filter(Boolean);
     tokens.forEach((raw, i) => {
       const word = raw.replace(/[^\p{L}\p{N}'-]/gu, "");
@@ -17271,9 +17356,33 @@ function beatSubjectCandidates(clean: string): { proper: string[]; common: strin
       // it is almost always grammar the stop list has not happened to catch.
       if (word.length < 4 && !isProperNoun) return;
       seen.add(lower);
+      /**
+       * RONDE 248 — A NAME OF TWO WORDS IS ONE NAME.
+       *
+       * This walked token by token, so "Inside a Los Angeles conference room, Kris Jenner…" put
+       * "los" and "angeles" into `proper` as two unrelated entries. `extractBeatSubject` then took
+       * the first of them as "the best remaining entity" and built `"Kris Jenner los"` — measured,
+       * not deduced: running the real extractor on render 584's own sentence returns exactly that.
+       *
+       * Half a place name is not a place. It is the same failure as RONDE 88A's `hrerbunker`,
+       * arrived at by splitting rather than by encoding, and the same failure RONDE 71 named when
+       * it removed the positional heuristic: a query assembled out of grammar instead of meaning.
+       *
+       * Adjacency in the ORIGINAL token stream is the test, so a run only forms out of words that
+       * stood side by side. Every filter above still runs per word and unchanged — a word that
+       * does not survive them cannot join a run, and it breaks the run it would have joined,
+       * because two capitalised words with a stop word between them are not one name.
+       */
+      const prev = isProperNoun ? properRunEnd : null;
+      if (prev && prev.sentence === sentenceIdx && prev.token === i - 1) {
+        proper[proper.length - 1] = `${proper[proper.length - 1]} ${lower}`;
+        properRunEnd = { sentence: sentenceIdx, token: i };
+        return;
+      }
       (isProperNoun ? proper : common).push(lower);
+      properRunEnd = isProperNoun ? { sentence: sentenceIdx, token: i } : null;
     });
-  }
+  });
   // Only a year the beat itself states — never one inherited from the video title.
   const year = clean.match(/\b(1[5-9]\d{2}|20\d{2})\b/)?.[0] ?? "";
   return { proper, common, year };
@@ -17293,13 +17402,48 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
     const personWords = new Set(
       foldSearchText(person).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
     );
-    const notPerson = (w: string) => !personWords.has(foldSearchText(w));
+    /**
+     * RONDE 248 — asked of every word, because a candidate is no longer always one word.
+     *
+     * This read `!personWords.has(foldSearchText(w))`, which is a lookup of the WHOLE candidate in
+     * a set of SINGLE words. That was right while "Eva" and "Braun" were two entries and wrong the
+     * moment they became one: "eva braun" is not in {eva, braun}, so the candidate read as "not the
+     * person" and the extractor appended the person's own name to itself — `"Eva Braun eva braun"`,
+     * with "bunker" pushed out of the query entirely. Exactly the failure RONDE 88A's note above
+     * describes, reached by a different route.
+     *
+     * A candidate IS the person when every word of it is one of the person's. A candidate that
+     * merely SHARES a word is a different entity and keeps its place — "Hitler Youth" is not
+     * Adolf Hitler, and refusing it would lose the beat its actual subject.
+     */
+    const notPerson = (w: string) =>
+      !foldSearchText(w).split(/\s+/).filter(Boolean).every((part) => personWords.has(part));
     const extra = proper.find(notPerson) ?? common.find(notPerson) ?? "";
     return extra ? `${person} ${extra}` : person;
   }
 
-  // Entities first, then concrete nouns, then the beat's own year if it stated one.
-  const ranked = [...proper, ...common].slice(0, 3);
+  /**
+   * Entities first, then concrete nouns, then the beat's own year if it stated one.
+   *
+   * RONDE 248 — BOUNDED IN WORDS, because the entries stopped being words.
+   *
+   * `.slice(0, 3)` meant three words while every entry was one token. Now that "Los Angeles" is
+   * one entry, three entries can be six words, and the first run of this change produced
+   * `"los angeles kris jenner beverly hills"` where the old code produced `"los angeles kris"` —
+   * longer, and no better. Keeping names whole is worth nothing if the query then swallows three
+   * of them, so the budget counts what a provider actually receives.
+   *
+   * The first entry is always taken even when it alone exceeds the budget: a single long name is
+   * the subject, and refusing it would answer "" for the beats that named their subject best.
+   */
+  const ranked: string[] = [];
+  let wordsUsed = 0;
+  for (const entry of [...proper, ...common]) {
+    const words = entry.split(/\s+/).length;
+    if (ranked.length > 0 && wordsUsed + words > SUBJECT_QUERY_WORD_BUDGET) break;
+    ranked.push(entry);
+    wordsUsed += words;
+  }
   if (ranked.length === 0) {
     /**
      * RONDE 103 (phase 10) — nothing concrete survived, so this beat has no subject.
@@ -17323,7 +17467,7 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
     return "";
   }
   // The year rides along only when there is room and it is not already in the words.
-  if (year && ranked.length < 3) ranked.push(year);
+  if (year && wordsUsed < SUBJECT_QUERY_WORD_BUDGET) ranked.push(year);
   return ranked.join(" ");
 }
 
@@ -17856,6 +18000,14 @@ export function extractActionCue(beatText: string): string {
     // A capitalised word mid-sentence is a name, not a verb.
     if (word[0] !== word[0]!.toLowerCase()) continue;
     const lower = word.toLowerCase();
+    /**
+     * RONDE 248 — checked on BOTH branches, before either can return.
+     *
+     * The listed branch returned immediately with no filter at all, which is how "watches" left
+     * this function. The morphological branch needs it too: "believed", "remained" and "watched"
+     * all end in "ed" and would simply come back through the other door.
+     */
+    if (UNFILMABLE_ACTION_VERBS.has(lower)) continue;
     if (PERSON_ACTION_VERBS.has(lower)) return lower;
     if (
       !morphological &&
