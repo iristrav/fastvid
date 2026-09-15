@@ -36505,6 +36505,13 @@ async function fetchSceneVisualsInner(
                 inlinePoolQueries.primaryQuery ? [inlinePoolQueries.primaryQuery] : [],
                 [dedup.primaryPerson || personName].filter(Boolean)
               ),
+              /**
+               * RONDE 246 — what "enough" means for THIS scene, so the tiered run can stop before
+               * the slow tail. Without it every tier is asked, which is the old cost minus the
+               * parallelism — so this is not an optimisation detail, it is the thing that pays for
+               * tiering at all.
+               */
+              beatCount: beats.length,
             }), 60_000, `buildSceneCandidatePool s${scene.index}`);
         console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;

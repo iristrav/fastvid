@@ -452,8 +452,40 @@ describe("FIX A — scope", () => {
     expect(code).not.toMatch(/\.visionScore\s*=[^=]/);
   });
 
-  it("providers still run in parallel with each other, unchanged", () => {
-    expect(src).toContain("const results = await Promise.allSettled(tasks);");
+  /**
+   * RONDE 246 — WHAT THIS GUARD PROTECTS, AND WHAT DELIBERATELY CHANGED.
+   *
+   * RONDE 3 exists because Library of Congress made 51 SEQUENTIAL calls and took 150 seconds.
+   * Serialising retrieval is the regression it was written to catch, so a change that serialises
+   * anything has to answer to it rather than edit it away.
+   *
+   * Tiering serialises retrieval ACROSS tiers, on purpose: the operator ranks YouTube first, then
+   * their own archive, then Internet Archive and Wikimedia, then the rest, and a scene that is
+   * already served never asks the later tiers at all. The cost moves from "the slowest of eleven"
+   * to "the sum of the tiers actually visited", and the early exit is what pays for it.
+   *
+   * What must NOT change — and is what this test now pins — is parallelism WITHIN a group. That is
+   * the property that stopped the 51 sequential calls, and it is intact: a tier's members are
+   * still handed to one `Promise.allSettled`, so a slow or broken provider neither serialises its
+   * neighbours nor takes their results down with it.
+   */
+  it("providers in the same tier still run in parallel with each other", () => {
+    const runner = readFileSync(path.join(__dirname, "tieredRetrieval.ts"), "utf8");
+    expect(runner).toContain("await Promise.allSettled(inTier.map((t) => t.run()))");
+    expect(src, "the pool hands its tiers to that runner").toContain("runTieredRetrieval({");
+  });
+
+  /**
+   * And the tasks are DEFERRED, which is the mechanism. `tasks.push(searchX(...))` starts the
+   * search at push time — a list built that way is already running before anything can decide not
+   * to run it, so tiering would have been decoration over eleven searches already in flight.
+   */
+  it("and a task is not started until its tier is reached", () => {
+    const code = codeOnly(src);
+    expect(code).toMatch(/tasks\.push\(\{ tier: \d+, source: "[a-z_]+", run: \(\) =>/);
+    expect(code, "a bare push would start the search immediately").not.toMatch(
+      /tasks\.push\(\s*search[A-Z]/
+    );
   });
 });
 
@@ -495,7 +527,11 @@ describe("FIX C — per-provider latency logging", () => {
 
   it("logging added no await, no retry and no extra request", () => {
     const start = src.indexOf("const liveT0 = Date.now();");
-    const end = src.indexOf("const results = await Promise.allSettled(tasks);");
+    // RONDE 246: the block now ENDS at the tiered run rather than at a single allSettled. Same
+    // block, same guarantee — building the task list still does no work — and now more strictly
+    // true, since the list holds thunks that have not been called.
+    const end = src.indexOf("const tierReport = await runTieredRetrieval({");
+    expect(end, "the tiered run is gone").toBeGreaterThan(start);
     const block = codeOnly(src.slice(start, end));
     expect(block).not.toContain("await ");
     expect(block).not.toMatch(/\bretry\b|\bbackoff\b/i);

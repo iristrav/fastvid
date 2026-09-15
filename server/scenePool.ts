@@ -35,6 +35,7 @@ import type { MediaForm } from "./beatVisualIntent";
 import { penaliseDuplicates, type UsageLedger } from "./duplicateGuard";
 import { youtubePoolCandidates, type YoutubeRowLike } from "./youtubePoolSource";
 import { archivePoolCandidates, type ArchiveRowLike } from "./archivePoolSource";
+import { enoughForEveryBeat, runTieredRetrieval, type RetrievalTask } from "./tieredRetrieval";
 import { youtubeRetrievalMode } from "./sourcingPolicy";
 
 /**
@@ -258,6 +259,14 @@ export type BuildPoolRequest = {
   youtubeSearch?: YoutubePoolSearch;
   /** Which licence question to ask YouTube. Defaults to the CC-only pass. */
   youtubeLicenseMode?: YoutubeLicenseMode;
+  /**
+   * RONDE 246 — how many sentences this scene has, so the tiered run can stop when it has enough.
+   *
+   * Absent means never stop early: every tier is asked. A caller that does not say how many
+   * sentences it has cannot be told it has enough for them, and guessing here would turn a missing
+   * fact into a confident early exit.
+   */
+  beatCount?: number;
   /**
    * RONDE 244 — the operator's own archive, injected for exactly the reason YouTube's search is.
    *
@@ -1534,7 +1543,21 @@ async function buildSceneCandidatePoolInner(
   // provider's own wall-clock duration — search plus detail fetches. Purely observational:
   // no extra await, no extra request, no change to which providers are queried.
   const liveT0 = Date.now();
-  const tasks: Promise<{ candidates: PoolCandidate[]; apiCalls: number; source: string; ms: number }>[] = [];
+  /**
+   * RONDE 246 — DEFERRED, and grouped into tiers.
+   *
+   * This was `Promise<...>[]`, and `tasks.push(searchX(...))` therefore STARTED each search at
+   * push time: the list was already running before anyone could decide whether it should. Holding
+   * thunks is what makes "do not ask tier 4 when tier 1 covered the scene" expressible at all.
+   *
+   *   1  youtube_cc                    2  archive (the operator's own)
+   *   3  internet_archive, wikimedia   4  everything else
+   *
+   * Within a tier nothing changes — its members still run together under `Promise.allSettled`, so
+   * one slow or broken provider neither serialises its neighbours nor takes their results with it.
+   * See `runTieredRetrieval` for the trade this makes and what pays for it.
+   */
+  const tasks: RetrievalTask<{ candidates: PoolCandidate[]; apiCalls: number; source: string; ms: number }>[] = [];
 
   /**
    * RONDE 132 §13 — a provider that was never asked says so.
@@ -1561,30 +1584,30 @@ async function buildSceneCandidatePoolInner(
 
   // The guard keeps its own key check so the type still narrows; noteSkip only records WHY.
   if (!noteSkip("pexels", skipPexels, Boolean(pexelsApiKey)) && pexelsApiKey) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "pexels", run: () =>
       searchPexelsCandidates(queries, pexelsApiKey, maxPerSource).then(r => ({
         ...r,
         source: "pexels",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
   if (!noteSkip("pixabay", skipPixabay, Boolean(pixabayApiKey)) && pixabayApiKey) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "pixabay", run: () =>
       searchPixabayCandidates(queries, pixabayApiKey, maxPerSource).then(r => ({
         ...r,
         source: "pixabay",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
-  tasks.push(
+  tasks.push({ tier: 3, source: "wikimedia", run: () =>
     searchWikimediaCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "wikimedia",
         ms: Date.now() - liveT0,
       }))
-  );
+  });
 
   /**
    * RONDE 175 — YouTube joins the pool, so it can be RANKED rather than only reached.
@@ -1599,6 +1622,7 @@ async function buildSceneCandidatePoolInner(
    * duplicate penalty and the same download and rehydration as everything else.
    */
   if (req.youtubeSearch) {
+    const youtubeSearch = req.youtubeSearch;
     /**
      * The licence question this pool asks YouTube.
      *
@@ -1617,7 +1641,7 @@ async function buildSceneCandidatePoolInner(
      * guard is a text scan and cannot see that — and a guard that has to be reasoned around is one
      * people edit. Matching the established shape keeps it exact.
      */
-    tasks.push(
+    tasks.push({ tier: 1, source: "youtube_cc", run: () =>
       youtubePoolCandidates({
         /**
          * MASTER YOUTUBE BUILD — the whole query list, like every other provider in this file.
@@ -1634,7 +1658,8 @@ async function buildSceneCandidatePoolInner(
         sceneIndex,
         mode,
         maxResults: maxPerSource,
-        search: req.youtubeSearch,
+        /** Narrowed before the thunk: `req.youtubeSearch` is optional and the guard is outside. */
+        search: youtubeSearch,
       }).then(({ candidates, log, apiCalls }) => {
         console.log(log);
         return {
@@ -1645,7 +1670,7 @@ async function buildSceneCandidatePoolInner(
           ms: Date.now() - liveT0,
         };
       })
-    );
+    });
   } else {
     skipped.youtube_cc = "no_search_function_supplied";
   }
@@ -1664,7 +1689,7 @@ async function buildSceneCandidatePoolInner(
    */
   if (req.archiveSearch && !noteSkip("archive", false, true)) {
     const archiveSearch = req.archiveSearch;
-    tasks.push(
+    tasks.push({ tier: 2, source: "archive", run: () =>
       archivePoolCandidates({
         sceneIndex,
         maxResults: maxPerSource,
@@ -1676,91 +1701,123 @@ async function buildSceneCandidatePoolInner(
         source: "archive",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   } else if (!req.archiveSearch) {
     skipped["archive"] = "not_wired";
   }
 
   if (!noteSkip("internet_archive", skipInternetArchive, true)) {
-    tasks.push(
+    tasks.push({ tier: 3, source: "internet_archive", run: () =>
       searchInternetArchiveCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "internet_archive",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
   if (!noteSkip("europeana", skipEuropeana, Boolean(europeanaApiKey)) && europeanaApiKey) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "europeana", run: () =>
       searchEuropeanaCandidates(queries, europeanaApiKey, maxPerSource).then(r => ({
         ...r,
         source: "europeana",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
   // FASE 3 — Priority A historical/open sources: Openverse/NASA/Library of Congress need no
   // API key (same shape as Internet Archive above); NARA needs a key, same shape as Europeana.
   if (!noteSkip("openverse", skipOpenverse, true)) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "openverse", run: () =>
       searchOpenverseCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "openverse",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
   if (!noteSkip("nasa", skipNasa, true)) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "nasa", run: () =>
       searchNasaCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "nasa",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
   if (!noteSkip("nara", skipNara, Boolean(naraApiKey)) && naraApiKey) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "nara", run: () =>
       searchNaraCandidates(queries, naraApiKey, maxPerSource).then(r => ({
         ...r,
         source: "nara",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
   if (!noteSkip("loc", skipLoc, true)) {
-    tasks.push(
+    tasks.push({ tier: 4, source: "loc", run: () =>
       searchLibraryOfCongressCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "loc",
         ms: Date.now() - liveT0,
       }))
-    );
+    });
   }
 
   if (Object.keys(skipped).length > 0) {
     console.log(`[ProviderSkipped] scene=${sceneIndex} ${formatProviderSkips(skipped)}`);
   }
 
-  const results = await Promise.allSettled(tasks);
-
   const rawCandidates: PoolCandidate[] = [];
-  for (const result of results) {
-    if (result.status === "rejected") continue;
-    const { candidates, apiCalls, source, ms } = result.value;
-    apiCallsPerProvider[source] = apiCalls;
-    msPerProvider[source] = ms;
-    rawCandidates.push(...candidates);
+  /**
+   * RONDE 246 — the accumulation is UNCHANGED; it simply runs once per tier instead of once.
+   *
+   * Every line below did exactly this before, in a single pass over one `allSettled`. Keeping it
+   * byte-for-byte and moving only when it runs is deliberate: the per-source cache write, the
+   * api-call bookkeeping and the latency record are all load-bearing, and a tier change is not a
+   * licence to quietly rewrite them.
+   */
+  const absorb = (results: PromiseSettledResult<{ candidates: PoolCandidate[]; apiCalls: number; source: string; ms: number }>[]): void => {
+    for (const result of results) {
+      if (result.status === "rejected") continue;
+      const { candidates, apiCalls, source, ms } = result.value;
+      apiCallsPerProvider[source] = apiCalls;
+      msPerProvider[source] = ms;
+      rawCandidates.push(...candidates);
 
-    // Populate scene candidate cache per source (best-effort).
-    // Pexels URLs expire quickly — skip caching for pexels.
-    if (candidates.length > 0 && (source === "wikimedia" || source === "pixabay" || source === "archive")) {
-      void putCandidatePool(
-        primaryQuery,
-        source as CandidateSource,
-        candidates.map(toCachedCandidate)
-      );
+      // Populate scene candidate cache per source (best-effort).
+      // Pexels URLs expire quickly — skip caching for pexels.
+      if (candidates.length > 0 && (source === "wikimedia" || source === "pixabay" || source === "archive")) {
+        void putCandidatePool(
+          primaryQuery,
+          source as CandidateSource,
+          candidates.map(toCachedCandidate)
+        );
+      }
     }
+  };
+
+  /**
+   * Enough when there are distinct candidates enough that every sentence COULD have one — see
+   * `enoughForEveryBeat` for why that is the true, weaker claim and not "the scene is covered".
+   *
+   * Measured on what has arrived so far, deduped the way the final pool will be, so a tier that
+   * returned forty near-copies of one asset does not read as forty candidates.
+   */
+  const tierReport = await runTieredRetrieval({
+    tasks,
+    onTierResults: absorb,
+    satisfied: () =>
+      enoughForEveryBeat({
+        beatCount: req.beatCount,
+        distinctCandidates: dedupCandidates(rawCandidates).length,
+      }),
+    log: (line) => console.log(line),
+  });
+  if (tierReport.stoppedEarly) {
+    console.log(
+      `[ScenePool] Scene ${sceneIndex}: covered after ${tierReport.tiersRun} tier(s) — ` +
+        `tier(s) ${tierReport.tiersSkipped.join(",")} were not asked`
+    );
   }
 
   const candidatesBeforeDedup = rawCandidates.length;
