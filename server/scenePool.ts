@@ -34,6 +34,7 @@ import { rankedPool } from "./poolRanking";
 import type { MediaForm } from "./beatVisualIntent";
 import { penaliseDuplicates, type UsageLedger } from "./duplicateGuard";
 import { youtubePoolCandidates, type YoutubeRowLike } from "./youtubePoolSource";
+import { archivePoolCandidates, type ArchiveRowLike } from "./archivePoolSource";
 import { youtubeRetrievalMode } from "./sourcingPolicy";
 
 /**
@@ -52,6 +53,16 @@ export type YoutubePoolSearch = (
   requiredPersonName: string,
   maxResults: number
 ) => Promise<YoutubeRowLike[]>;
+
+/**
+ * RONDE 244 — the archive scan, injected for the same reason the YouTube search is.
+ *
+ * Structural, so this module never acquires database access or an opinion about what a good
+ * archive match is. The caller passes the curated route's own scan; this file only translates.
+ */
+export type ArchivePoolSearch = () => Promise<
+  ReadonlyArray<{ asset: ArchiveRowLike; score?: number | null; archiveName?: string | null }>
+>;
 import type { YoutubeLicenseMode } from "./videoPipeline";
 import type { VisualIntent as RankingIntent } from "./visualMatchingV2/types";
 import {
@@ -247,6 +258,21 @@ export type BuildPoolRequest = {
   youtubeSearch?: YoutubePoolSearch;
   /** Which licence question to ask YouTube. Defaults to the CC-only pass. */
   youtubeLicenseMode?: YoutubeLicenseMode;
+  /**
+   * RONDE 244 — the operator's own archive, injected for exactly the reason YouTube's search is.
+   *
+   * `PoolCandidateSource` has listed `"archive"` since this pool was written and nothing ever
+   * produced one: the union admitted a source the pool could not receive. So the archive was
+   * reachable only through `fetchCuratedArchiveBeatClip`, a route beside the pool rather than in
+   * it — which means an excellent archive clip and a poor YouTube one were never compared, each
+   * winning or losing on which route happened to run first.
+   *
+   * This module gains no database access and no notion of a good archive match. The caller passes
+   * the curated route's own scan, with its scoring, niche tags and budgets intact; absent means
+   * the archive is simply not one of this pool's sources, which is what happens on every route
+   * that does not supply it.
+   */
+  archiveSearch?: ArchivePoolSearch;
   maxPerSource?: number;
   maxTotal?: number;
 };
@@ -1625,6 +1651,36 @@ async function buildSceneCandidatePoolInner(
   }
   // FASE 2 — Priority A historical/open sources: no API key required for Internet Archive
   // (like Wikimedia); Europeana needs a key, same shape as Pexels/Pixabay above.
+  /**
+   * RONDE 244 — the operator's own archive, as one more entry in this same task list.
+   *
+   * Pushed here rather than given a phase of its own, because the point is precisely that it is
+   * ranked ALONGSIDE the others: an excellent archive clip beating a poor YouTube one is a
+   * comparison the pool can make and the old two-route arrangement could not.
+   *
+   * `noteSkip` records the absence with the same vocabulary as every other source, so a render
+   * that had no archive search wired says so rather than looking like an archive with nothing in
+   * it — the distinction that kept this gap invisible for as long as it lasted.
+   */
+  if (req.archiveSearch && !noteSkip("archive", false, true)) {
+    const archiveSearch = req.archiveSearch;
+    tasks.push(
+      archivePoolCandidates({
+        sceneIndex,
+        maxResults: maxPerSource,
+        search: archiveSearch,
+      }).then((r) => ({
+        candidates: r.candidates,
+        log: r.log,
+        apiCalls: 0,
+        source: "archive",
+        ms: Date.now() - liveT0,
+      }))
+    );
+  } else if (!req.archiveSearch) {
+    skipped["archive"] = "not_wired";
+  }
+
   if (!noteSkip("internet_archive", skipInternetArchive, true)) {
     tasks.push(
       searchInternetArchiveCandidates(queries, maxPerSource).then(r => ({

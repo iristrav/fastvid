@@ -53,9 +53,18 @@ function poolSources(): string[] {
 /* ═══════════════════════ the matrix, as a structural fact ═══════════════════════ */
 
 describe("R203 — the pool's providers, and what happens to their names downstream", () => {
-  it("the pool builds the ten sources the matrix reports", () => {
+  /**
+   * RONDE 244 added `archive` — the operator's own collection, which the union had listed as a
+   * source since the pool was written while nothing ever produced one.
+   *
+   * This test did exactly its job on that change: it failed, and the check below is why that
+   * mattered. `docGradeSourceKindForProvider` already classifies "archive" as archival, so the
+   * eleventh provider arrives graded rather than "unknown" — but that was worth being made to
+   * verify rather than assume, which is the whole point of pinning the list.
+   */
+  it("the pool builds the eleven sources the matrix reports", () => {
     expect(poolSources()).toEqual([
-      "europeana", "internet_archive", "loc", "nara", "nasa",
+      "archive", "europeana", "internet_archive", "loc", "nara", "nasa",
       "openverse", "pexels", "pixabay", "wikimedia", "youtube_cc",
     ]);
   });
