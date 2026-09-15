@@ -1017,6 +1017,58 @@ export function downloadStallTimeoutMs(): number {
 }
 
 /**
+ * RONDE 239 — THE BACKSTOP THE IDLE TIMEOUT ABOVE CANNOT BE.
+ *
+ * Everything the comment above says is still true: an idle timeout is the right instrument for a
+ * transfer that stops delivering, and turning IT into a total cap would break a legitimately large
+ * download. This is a different instrument for a different failure, sitting above the whole
+ * operation rather than inside the byte stream.
+ *
+ * ── Why one was needed ──────────────────────────────────────────────────────────────────────
+ *
+ * A pool download already carries `AbortSignal.timeout(22_000)`. Across every render log in this
+ * repo, 262 of 263 fetches returned — the slowest in 4.4s — and ONE did not return at all. Its
+ * beat's heartbeat counted upward every five seconds for twenty-five minutes and was still
+ * counting when the log ended:
+ *
+ *     [WorkerHeartbeat] downloadAndTrim s0b1 src=loc (601s)
+ *     ...
+ *     [WorkerHeartbeat] downloadAndTrim s0b1 src=loc (1506s)
+ *
+ * Twenty-two seconds of abort signal did not stop it. WHY it did not is not established, and this
+ * bound deliberately does not depend on knowing: it is an outer wall clock that fires whether or
+ * not the inner one worked. A guard that assumes the guard below it works is not a backstop.
+ *
+ * ── Why 45 seconds, and not a number that looked reasonable ─────────────────────────────────
+ *
+ * Measured over 130 pool downloads that completed, from every source the pipeline uses:
+ *
+ *     median 2.2s · p90 4.3s · p99 8.0s · slowest that EVER succeeded 11.4s
+ *     by source: pexels max 8.0s · loc max 11.4s · wikimedia max 6.0s · archive max 5.4s
+ *
+ * And per sub-step, across the same logs: fetch max 4.4s, ffprobe max 3.2s, trim max 7.6s.
+ *
+ * There is no middle ground to protect. Downloads either finish inside twelve seconds or run for
+ * ten minutes and more — of 536 measured in-flight durations, 403 were past ten minutes and nine
+ * were under fifteen seconds. 45s is four times the slowest success ever recorded, so it cuts
+ * nothing that would have arrived, and it is under half the 96s retrieval budget, so one stuck
+ * transfer can no longer eat the turn every other source — YouTube included — was waiting for.
+ *
+ * The Library of Congress is the proof that this is a per-attempt accident and not a slow source:
+ * the same `loc` that hung for 25 minutes has a median of 2.8s and has never taken more than 11.4s
+ * when it worked.
+ */
+export function poolDownloadTotalTimeoutMs(): number {
+  const raw = process.env.POOL_DOWNLOAD_TOTAL_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    /** Floor above the slowest sub-step ever measured (7.6s), so it can never cut a working path. */
+    if (!isNaN(n) && n >= 15_000 && n <= 300_000) return n;
+  }
+  return 45_000;
+}
+
+/**
  * RONDE 27: total budget for pulling one YouTube source file down.
  *
  * Was a flat 90s, and render 528 lost every YouTube clip to it — three relevant WWII finds, three

@@ -221,7 +221,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -5233,6 +5233,48 @@ export async function downloadAndTrimPoolCandidate(
    * histogram and the log agree instead of inventing a second vocabulary.
    */
   let arrivalFailure: string | null = "download_did_not_complete";
+  /**
+   * RONDE 239 — ONE WALL CLOCK OVER THE WHOLE ATTEMPT, BECAUSE THE INNER ONES CAN FAIL.
+   *
+   * The fetch below already carries a 22-second abort. Across every render log in this repo it
+   * worked 262 times out of 263 — and the one time it did not, this beat's heartbeat counted to
+   * 1506 seconds and was still counting when the log ended. Twenty-five minutes of a 96-second
+   * retrieval budget, spent on one file, which is why every later candidate in the scene — every
+   * YouTube one included — was refused at `0s left` before it began.
+   *
+   * This bound deliberately does not care WHY the inner abort did not fire. A backstop that only
+   * works when the guard beneath it works is not a backstop. It is armed here, disarmed in the
+   * `finally` that already runs on every exit, and its signal is threaded into the fetch so firing
+   * it actually cancels the transfer rather than merely abandoning it — `fetchWithTimeout`'s own
+   * comment records what orphaned downloads cost this pipeline in ENOENT crashes.
+   *
+   * See `poolDownloadTotalTimeoutMs` for the measurements behind 45 seconds. Briefly: 130 completed
+   * pool downloads, median 2.2s, slowest that ever succeeded 11.4s, and nothing at all between
+   * twelve seconds and ten minutes.
+   */
+  const totalBudgetMs = poolDownloadTotalTimeoutMs();
+  const attemptStartedMs = Date.now();
+  const totalClock = new AbortController();
+  let totalClockFired = false;
+  const totalClockTimer = setTimeout(() => {
+    totalClockFired = true;
+    totalClock.abort();
+    console.warn(
+      `[FunnelDownload] s${sceneIndex}b${beatIndex} ABANDONED src=${candidate.source} ` +
+        `id=${candidate.assetId.slice(0, 24)} — still running after ${Math.round(totalBudgetMs / 1000)}s ` +
+        `(no pool download has ever succeeded past 12s); cancelled so the beat keeps its budget`
+    );
+  }, totalBudgetMs);
+  /** Elapsed check for the steps after the transfer, which the signal alone cannot interrupt. */
+  const outOfTime = (step: string): boolean => {
+    if (!totalClockFired) return false;
+    console.warn(
+      `[FunnelDownload] s${sceneIndex}b${beatIndex} stopping before ${step} src=${candidate.source} ` +
+        `— ${Math.round((Date.now() - attemptStartedMs) / 1000)}s spent, past the ${Math.round(totalBudgetMs / 1000)}s cap`
+    );
+    arrivalFailure = "download_exceeded_total_budget";
+    return true;
+  };
   setWorkerHeartbeat(heartbeatLabel);
   console.log(`[Hang] downloadAndTrim ENTER s${sceneIndex}b${beatIndex} src=${candidate.source} id=${candidate.assetId.slice(0,20)} type=${candidate.mediaType}`);
   try {
@@ -5302,7 +5344,12 @@ export async function downloadAndTrimPoolCandidate(
         // required by Wikimedia) is what lets Wikimedia clips finally get downloaded and scored.
         resp = await fetch(candidate.remoteUrl, {
           headers: { "User-Agent": "Fastvid/1.0 (video generation; contact@fastvid.ai)" },
-          signal: AbortSignal.timeout(22_000),
+          /**
+           * RONDE 239: the attempt's own 22s abort, AND the operation-wide clock above it. The 22s
+           * one is the first line and usually the only one that fires; the outer one is what caught
+           * the transfer that ignored it for twenty-five minutes.
+           */
+          signal: AbortSignal.any([AbortSignal.timeout(22_000), totalClock.signal]),
         });
       } catch (err: unknown) {
         if ((err as Error).name === "AbortError") {
@@ -5452,6 +5499,9 @@ export async function downloadAndTrimPoolCandidate(
          * tell us", which under this pipeline's own memory pressure is routinely a timeout on a
          * perfectly good file. It does not refuse, and the provider does not get to answer for it.
          */
+        // RONDE 239: the clock may have fired while the bytes were arriving. ffprobe and the trim
+        // below are child processes an AbortSignal does not reach, so they are checked, not raced.
+        if (outOfTime("ffprobe")) return null;
         console.log(`[Hang] downloadAndTrim BEFORE ffprobe s${sceneIndex}b${beatIndex}`);
         const _p0 = Date.now();
         const rawMeta = await probeVideoStreamMeta(rawPath);
@@ -5521,6 +5571,7 @@ export async function downloadAndTrimPoolCandidate(
         // reason every downstream judge saw a flat, text-heavy frame.
         const takeSec = Math.min(holdSec, Math.max(2.5, sourceDur - 0.05));
         const startOffsetSec = pickBeatSegmentStartSec(sourceDur, takeSec, beatIndex);
+        if (outOfTime("trim")) return null;
         console.log(`[Hang] downloadAndTrim BEFORE trim s${sceneIndex}b${beatIndex} dur=${sourceDur.toFixed(1)}s ss=${startOffsetSec.toFixed(1)}s`);
         const _t0 = Date.now();
         const ok = await trimDownloadedStockClip(rawPath, outPath, holdSec, sourceDur, `pool s${sceneIndex}b${beatIndex}`, startOffsetSec);
@@ -5617,6 +5668,8 @@ export async function downloadAndTrimPoolCandidate(
      * behind. A `finally` is the only construct that cannot be forgotten by a future branch.
      */
     clearWorkerHeartbeat(heartbeatLabel);
+    /** RONDE 239: same argument — a timer left armed on a worker that outlives renders is a leak. */
+    clearTimeout(totalClockTimer);
     /**
      * And for the same reason, the download record opened by `tagPathWithProviderAsset` is closed
      * here rather than at each of those exits. `arrivalFailure` is null only once the file has
