@@ -251,12 +251,39 @@ export function pickCaptionTrack(
  * the kind of thing that ages badly; the ANDROID client context is accepted without one, and the
  * watch page remains as the fallback if it is not.
  */
+/**
+ * RONDE 235 — THE PRIMARY ROUTE USED TO FAIL WITHOUT SAYING SO.
+ *
+ * Every exit in `fetchInnerTubePlayer` was a bare `return null`: a refusal, a timeout, a changed
+ * response shape and a network error were one silence, and the only line a render ever printed was
+ * the watch page's. A reader of the log could not tell "innertube was never tried" from "innertube
+ * was refused" — and on a datacentre address, being refused is the expected case, not the exotic
+ * one. Four sections above, this same file argues that render 532 could only report `src=unknown`
+ * and that those are "three very different problems with three different fixes"; the fix went to
+ * the watch page and the route in front of it kept the defect.
+ *
+ * Reported here, so a render says which of the two routes answered it and why the first did not.
+ * `via=watchpage` on a later line already implied this one failed, but only to a reader who knew
+ * the routes were tried in that order, which is exactly the knowledge a log should not require.
+ *
+ * DELIBERATELY NOT `noteFailure`. The breaker counts one failure per video, at the watch page,
+ * which is the last route tried; charging it here as well would make it trip after three videos
+ * instead of six without anyone choosing that. This round fixes the silence and changes no
+ * behaviour — a log line and a stand-down threshold are separate decisions.
+ */
+function reportInnerTubeMiss(videoId: string, why: string, startedAtMs: number): void {
+  console.warn(
+    `[YTContext] ${videoId} via=innertube ${why} ms=${Date.now() - startedAtMs} — trying watch page`
+  );
+}
+
 async function fetchInnerTubePlayer(
   videoId: string,
   timeoutMs: number
 ): Promise<YoutubeVideoContext | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const t0 = Date.now();
   try {
     const resp = await fetch("https://www.youtube.com/youtubei/v1/player", {
       method: "POST",
@@ -279,7 +306,10 @@ async function fetchInnerTubePlayer(
       }),
       signal: controller.signal as never,
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      reportInnerTubeMiss(videoId, `http=${resp.status}`, t0);
+      return null;
+    }
     const data = (await resp.json()) as {
       videoDetails?: { lengthSeconds?: string | number };
       captions?: {
@@ -296,9 +326,24 @@ async function fetchInnerTubePlayer(
         kind: typeof t.kind === "string" ? t.kind : undefined,
       }))
       .filter((t) => t.baseUrl.startsWith("http"));
-    if (durationSec <= 0 && captionTracks.length === 0) return null;
+    if (durationSec <= 0 && captionTracks.length === 0) {
+      /**
+       * A 200 that carries neither a duration nor a caption track. Two very different things look
+       * like this and the distinction matters: a changed response shape (our parsing is stale) and
+       * a `playabilityStatus` refusal (YouTube answered, and the answer is no). Both are reported
+       * as `unreadable`; which one it is shows in whether EVERY video reads this way or only some.
+       */
+      reportInnerTubeMiss(videoId, "unreadable", t0);
+      return null;
+    }
     return { durationSec, captionTracks };
-  } catch {
+  } catch (err) {
+    const aborted = (err as Error)?.name === "AbortError";
+    reportInnerTubeMiss(
+      videoId,
+      aborted ? `timeout after ${timeoutMs}ms` : `failed: ${(err as Error).message?.slice(0, 100)}`,
+      t0
+    );
     return null;
   } finally {
     clearTimeout(timer);
