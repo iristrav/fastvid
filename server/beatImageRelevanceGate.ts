@@ -35,7 +35,12 @@
  */
 
 import fs from "fs";
-import { invokeLLM, isLlmPreflightRefusal, isLlmProviderUnavailable } from "./_core/llm";
+import {
+  describeProviderUnavailability,
+  invokeLLM,
+  isLlmPreflightRefusal,
+  isLlmProviderUnavailable,
+} from "./_core/llm";
 import { imageMimeToDataUrl, prepareImageForVision } from "./archiveClipFilter";
 import { recordVisionAsk, type VisionCaller } from "./visionCensus";
 import { normaliseShotType } from "./shotVocabulary";
@@ -902,8 +907,21 @@ export async function judgeBeatImage(params: {
     if (isLlmProviderUnavailable(err)) {
       state.judgementAttempts--;
       state.judgementsProviderUnavailable++;
-      noteAskImpossible(state, `provider has no capacity: ${(err as Error).message?.slice(0, 90)}`);
-      return declined(`provider unavailable (no capacity): ${(err as Error).message?.slice(0, 90)}`);
+      /**
+       * RONDE 238 — the counter is right; the sentence beside it was not.
+       *
+       * Both lines below used to read "no capacity" for every member of this bucket, and render 580
+       * printed that 228 times while Gemini was answering 403 PERMISSION_DENIED — "Your project has
+       * been denied access. Please contact support." A blocked account is not a busy one, and the
+       * two need opposite work: one waits for a limit to reset, the other never resets at all.
+       *
+       * Only the wording changes. `judgementsProviderUnavailable` still counts exactly what it
+       * counted, the attempt is still handed back, and nothing about routing or retry is touched —
+       * this bucket is still "no model looked at anything", which is the fact the counter is for.
+       */
+      const why = describeProviderUnavailability(err);
+      noteAskImpossible(state, `no provider served the call — ${why}`);
+      return declined(`provider unavailable (${why}): ${(err as Error).message?.slice(0, 90)}`);
     }
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
     // so a render whose verdicts were mostly unobtainable can say so.

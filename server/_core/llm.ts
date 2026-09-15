@@ -774,6 +774,49 @@ export class LlmProviderUnavailableError extends Error {
 }
 
 /**
+ * RONDE 238 — WHY no provider served the call, for the operator rather than for the router.
+ *
+ * `isProviderCapacityFailure` deliberately answers ONE question — did any model look at anything —
+ * and lumps 402, 403, 404, 413 and 429 together because for ROUTING they are the same fact. That
+ * is right, and this changes none of it.
+ *
+ * What it is not right for is the sentence an operator reads. Render 580 declined 228 judgements
+ * and reported every one of them as
+ *
+ *     provider unavailable (no capacity)
+ *
+ * while the actual answer from Google was
+ *
+ *     403 { "message": "Your project has been denied access. Please contact support.",
+ *           "status": "PERMISSION_DENIED" }
+ *
+ * A blocked account is not a busy one. "No capacity" sends a reader to a quota page to wait for a
+ * limit to reset, and the limit is not the problem — nothing resets, and waiting costs renders. It
+ * is the same wrong signpost RONDE 119 took down when a Groq token budget was being blamed for an
+ * image call Groq was never in.
+ *
+ * The statuses are already on the error; only the label was missing. Nothing here decides anything
+ * — no routing, no cooldown, no retry — it names what the provider said.
+ */
+export function describeProviderUnavailability(err: unknown): string {
+  const statuses: number[] = [];
+  const e = err as Partial<ProviderHttpError> & { providers?: ReadonlyArray<{ status: number }> };
+  if (typeof e?.llmStatus === "number") statuses.push(e.llmStatus);
+  for (const p of e?.providers ?? []) if (typeof p.status === "number") statuses.push(p.status);
+  if (statuses.length === 0) return "no provider could be reached";
+  /**
+   * Worst news first when a chain reports several. A denial is the one that will not clear on its
+   * own, so it must not be hidden behind a neighbour's rate limit — that ordering IS the message.
+   */
+  if (statuses.includes(403)) return "access denied by the provider (not a quota — the key or project is refused)";
+  if (statuses.includes(402)) return "billing/quota exhausted on the account";
+  if (statuses.includes(404)) return "the model is not available to this account";
+  if (statuses.includes(413)) return "the request was larger than the tier allows";
+  if (statuses.includes(429)) return "rate limit or quota reached";
+  return `provider refused with HTTP ${statuses[0]}`;
+}
+
+/**
  * True when no answer came back because no provider had capacity — including the pre-flight case,
  * where the chain was empty before a socket was opened.
  *

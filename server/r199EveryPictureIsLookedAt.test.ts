@@ -296,10 +296,19 @@ describe("R199b — 'never looked' stopped arriving dressed as 'could not tell'"
 describe("R199b — an outage must never be able to empty a film", () => {
   it("the three ways of having no editor all say so render-wide", async () => {
     const GATE = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
-    // Switched off, nothing contacted, and a provider with no capacity: the same statement.
+    /**
+     * Switched off, nothing contacted, and a provider that would not serve: the same statement.
+     *
+     * Asserted as THREE CALLS rather than three sentences. RONDE 238 reworded the third — "no
+     * capacity" was a wrong signpost for a 403 PERMISSION_DENIED — and the literal it used to match
+     * failed while the guarantee this test exists for was untouched. Counting the calls pins the
+     * guarantee; a fourth way of having no editor that forgets to say so still trips it.
+     */
+    const calls = [...GATE.matchAll(/noteAskImpossible\(state,/g)];
+    expect(calls, "every route to 'there is no editor' must announce it").toHaveLength(3);
     expect(GATE).toContain("noteAskImpossible(state, \"the beat image gate is switched off");
     expect(GATE).toContain("no provider could be asked");
-    expect(GATE).toContain("provider has no capacity");
+    expect(GATE).toContain("no provider served the call");
   });
 
   it("it is announced once, not once per picture", async () => {
