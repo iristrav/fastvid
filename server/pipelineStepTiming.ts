@@ -146,6 +146,61 @@ export class PipelineStepTiming {
     }
     return { rows: [...this.rows], totalsByCategory, totalsByScene };
   }
+
+  /**
+   * RONDE 237 — THE ONE REPORT THAT SAYS WHERE A RENDER'S TIME WENT, AND IT SAID `[object Object]`.
+   *
+   * `toReport()` returns a SHAPE — `{ rows, totalsByCategory, totalsByScene }` — and the caller
+   * treated it as a flat `{ step: ms }` map:
+   *
+   *     Object.entries(toReport()).map(([step, ms]) =>
+   *       `[Step] ${step}=${typeof ms === "number" ? ... : String(ms)}`)
+   *
+   * `String()` of an array of objects is `[object Object],[object Object],…`, and of an object is
+   * `[object Object]`. So every stored render report carries exactly three useless lines. Render
+   * 581's reads:
+   *
+   *     [Step] rows=[object Object],[object Object],[object Object],…
+   *     [Step] totalsByCategory=[object Object]
+   *     [Step] totalsByScene=[object Object]
+   *
+   * The measurements were taken. Every `record()` call fired, the numbers were summed by category
+   * and by scene, and the whole lot was thrown away one line before it was written down — while
+   * the question those lines exist to answer, "what ate the scene budget before YouTube's turn",
+   * went unanswered across renders 576, 580, 581 and 582 for want of them.
+   *
+   * The formatting lives HERE, next to the data, rather than at the call site: a caller that has
+   * to know the shape is a caller that can get the shape wrong, which is the defect above.
+   */
+  toReportLines(): string[] {
+    const report = this.toReport();
+    if (report.rows.length === 0) return ["[Step] nothing was instrumented for this render"];
+
+    const lines: string[] = [];
+    const total = report.rows.reduce((sum, r) => sum + r.ms, 0);
+    const pct = (ms: number) => (total > 0 ? ` ${Math.round((ms / total) * 100)}%` : "");
+    lines.push(`[Step] instrumented total=${formatSec(total)} across ${report.rows.length} step(s)`);
+
+    /** Biggest first: the bottleneck is the point, and a reader should not have to sort. */
+    for (const [cat, ms] of Object.entries(report.totalsByCategory).sort((a, b) => b[1] - a[1])) {
+      const label = CATEGORY_LABELS[cat as PipelineTimingCategory] ?? cat;
+      lines.push(`[Step] category ${label}=${formatSec(ms)}${pct(ms)}`);
+    }
+    for (const [scene, ms] of Object.entries(report.totalsByScene).sort(
+      (a, b) => Number(a[0]) - Number(b[0])
+    )) {
+      lines.push(`[Step] scene ${scene}=${formatSec(ms)}${pct(ms)}`);
+    }
+    /**
+     * The individual steps, worst first and capped. A render can run hundreds; the tail is noise
+     * beside the head, and an unbounded list is how a report stops being read at all.
+     */
+    for (const row of [...report.rows].sort((a, b) => b.ms - a.ms).slice(0, 15)) {
+      const where = row.sceneIndex != null ? `s${row.sceneIndex} ` : "";
+      lines.push(`[Step] slowest ${where}${row.label}=${formatSec(row.ms)}${pct(row.ms)}`);
+    }
+    return lines;
+  }
 }
 
 export function recordPipelineTiming(

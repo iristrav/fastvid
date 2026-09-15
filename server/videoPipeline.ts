@@ -44876,12 +44876,9 @@ async function _runVideoPipelineInner(
         );
       }
     }
-    pipelineReport.addAll(
-      "timing",
-      Object.entries(pipelineStepTiming.toReport() as Record<string, unknown>).map(
-        ([step, ms]) => `[Step] ${step}=${typeof ms === "number" ? `${Math.round(ms)}ms` : String(ms)}`
-      )
-    );
+    // RONDE 237: the report renders itself. This call site used to walk `toReport()`'s three keys
+    // as if they were `{ step: ms }` pairs and String()'d an array and two objects into the file.
+    pipelineReport.addAll("timing", pipelineStepTiming.toReportLines());
     /**
      * The glance, built where it is stored, so both writes state the same facts about one render.
      *
