@@ -456,8 +456,21 @@ describe("RONDE 77 §H — buildPersonCelebrityVideoQueries leads with the typed
     // "news conference" and "red carpet" to every person unconditionally, and those four are the
     // reason "Adolf Hitler red carpet" was measured going out to a provider. The rotation itself
     // is untouched — what shrank is the number of guesses it rotates through.
-    expect(qs.length).toBe(5);
-    expect(qs[0]).toBe("Adolf Hitler gave");
+    //
+    // RONDE 250: two, not five, and for the same kind of reason one round further in. The three
+    // that went were built by `tokenizeForRelevance(...).filter(t => t.length >= 4).slice(0, 3)`
+    // — the sentence's three longest words appended to the name, which on render 584 produced
+    // "Kris Jenner inside", "Kris Jenner angeles" and "Kris Jenner conference". Length is not
+    // meaning, and the count is what a guess-removal always moves.
+    expect(qs.length).toBe(2);
+    // The typed combination still leads, and now it leads in its OWN order. `qs[0]` was
+    // "Adolf Hitler gave" only because the bare name — typedQueryPrefix's own first element —
+    // was filtered out of the head for being present inside the rotation, and so came out sixth.
+    // RONDE 250 pins it to the front instead, which is what this route exists to ask for.
+    expect(qs.slice(0, 2)).toEqual(
+      typedQueryPrefix(PRONOUN_BEAT, { forcePerson: "Adolf Hitler" }).slice(0, 2)
+    );
+    expect(qs).toContain("Adolf Hitler gave");
   });
 });
 
@@ -492,15 +505,46 @@ describe("RONDE 77 §I — the rotation and the existing query set survive", () 
     }
   });
 
-  it("consecutive beats still get different search angles", () => {
-    const typed = typedQueryPrefix(BEAT_1, { forcePerson: "Adolf Hitler" }).slice(0, 2);
+  /**
+   * RONDE 250 — WHAT NOW KEEPS TWO BEATS OFF ONE CLIP, STATED HONESTLY.
+   *
+   * This asserted that the same beat at two rotation offsets yields different lists. After RONDE
+   * 250 removed the token-built queries, a beat whose only material is its typed prefix and the
+   * person's name has NOTHING left to rotate, and the two offsets are identical. That is a real
+   * reduction and pretending otherwise by weakening the assertion into nothing would hide it.
+   *
+   * So the claim is re-pointed to what actually carries the guarantee, which was checked rather
+   * than assumed: `tryBeatRealYouTubeFootage` passes `dedup.usedContentKeys` into the fetch, and a
+   * single query returns a list of candidates (`n50` in render 584's own log, `candidates=5` on
+   * the line that answered). Two beats asking the identical question therefore do not get the
+   * identical clip — the second one's first choice is already spent and the next is taken.
+   *
+   * The rotation is kept and still does its job wherever there is real material to rotate: a beat
+   * naming an occasion the script actually mentions. That is the case tested here now. What is no
+   * longer claimed is that variety exists for a beat that named nothing — because it does not, and
+   * the six queries it used to supply were "Kris Jenner inside" and its siblings.
+   */
+  it("a beat with real material still rotates its angles", () => {
+    const BEAT = "Adolf Hitler gave a speech at the rally in Nuremberg in 1934.";
+    const typed = typedQueryPrefix(BEAT, { forcePerson: "Adolf Hitler" }).slice(0, 2);
+    /** The head — typed prefix and the bare name — is pinned on purpose; the rotation is the rest. */
     const at = (i: number) =>
-      buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_1, i).filter((q) => !typed.includes(q));
-    expect(at(0)).not.toEqual(at(3));
-    // RONDE 93: the rotation still gives consecutive beats a different leading angle. With four
-    // invented suffixes removed the pool it rotates through is smaller, so two offsets can now
-    // cover the same set — the order differing is what stops two beats fetching one clip.
-    expect(at(0)[0]).not.toBe(at(3)[0]);
+      buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT, i).filter(
+        (q) => !typed.includes(q) && q !== "Adolf Hitler"
+      );
+    expect(at(0).length, "the beat names an occasion, so there is something to rotate").toBeGreaterThan(1);
+    expect(at(0)[0]).not.toBe(at(1)[0]);
+    expect(new Set(at(0)), "the same angles, in a different order").toEqual(new Set(at(1)));
+  });
+
+  it("and a beat that named nothing asks a short, stable, meaningful list", () => {
+    const at = (i: number) => buildPersonCelebrityVideoQueries("Adolf Hitler", BEAT_1, i);
+    /** No debris left to rotate — the same questions, in the same order, whichever beat it is. */
+    expect(at(0)).toEqual(at(3));
+    expect(at(0).length).toBeLessThanOrEqual(4);
+    /** And every one of them is about the person and what the beat actually said. */
+    expect(at(0)).toContain("Adolf Hitler");
+    expect(at(0).join(" | ")).toContain("Fuhrerbunker");
   });
 
   it("the result never contains a duplicate", () => {

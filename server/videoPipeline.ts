@@ -16430,20 +16430,60 @@ export function buildPersonCelebrityVideoQueries(
   const persons = [personName];
   const eventQs = scriptEventSearchQueries(clean, persons);
   const visualCues = extractInlineVisualCues(clean);
-  const beatTokens = tokenizeForRelevance(clean).filter((t) => t.length >= 4).slice(0, 3);
-  const mediaQs = buildPersonMediaQueries(personName, visualCues[0] || beatTokens.join(" "));
+  /**
+   * RONDE 250 — THE THREE LONGEST WORDS OF THE SENTENCE ARE NOT THREE THINGS TO FILM.
+   *
+   * What stood here was `tokenizeForRelevance(clean).filter((t) => t.length >= 4).slice(0, 3)`,
+   * appended to the name one by one AND joined into one string for the media cue. On render 584's
+   * sentence — "Inside a Los Angeles conference room, Kris Jenner watches…" — that is exactly
+   * where the render's own log lines came from:
+   *
+   *     "Kris Jenner inside"   "Kris Jenner angeles"   "Kris Jenner conference"
+   *     "Kris Jenner inside angeles conference"
+   *
+   * Position, not meaning: the rule was "long enough and early enough", which is the heuristic
+   * RONDE 71 removed from `extractBeatSubject` for producing "berlin under constant". It survived
+   * here. "angeles" is half a place name and "inside" is a preposition; neither is a thing a
+   * catalogue has ever been asked for.
+   *
+   * What remains are the sources that carry meaning rather than length:
+   *   · `scriptEventSearchQueries` — a closed list of event words the beat actually says, each
+   *     one a real filmable occasion (interview, keynote, red carpet, trial, protest, concert);
+   *   · `extractInlineVisualCues` — the `[visual: …]` markers, authored on purpose;
+   *   · the person's own name, which is the query this whole route exists to send.
+   *
+   * RONDE 248 removed a verb from the query path and RONDE 249 the wrong person. This is the same
+   * defect in the builder those two feed, and it was promoted to FIRST place by 249 without anyone
+   * looking at what it emits.
+   */
+  const mediaQs = buildPersonMediaQueries(personName, visualCues[0]);
 
   const combined = [
     ...eventQs,
     ...visualCues.map((c) => `${personName} ${c}`.trim()),
-    ...beatTokens.map((t) => `${personName} ${t}`),
     ...mediaQs,
   ].filter((q) => {
     const s = toQueryString(q);
     return s.length > 3 && !isBlockedStockQuery(s);
   });
 
-  const unique = [...new Set(combined)];
+  /**
+   * THE BARE NAME IS AN ANCHOR, NOT A ROTATION MEMBER.
+   *
+   * It was inside `combined`, so the rotation could push it to the back — on render 584's beat it
+   * came out sixth of seven, behind four queries built from sentence debris. The plainest question
+   * this route can ask is the one most likely to be answered, and it must not depend on which beat
+   * index happened to come up.
+   *
+   * The rotation itself is kept, but it is worth saying what it now has to work with. A beat that
+   * names no event and carries no visual cue is left with nothing beyond the name, so its list is
+   * three queries rather than nine and the rotation does nothing for it. That is the honest trade:
+   * the six it lost were "Kris Jenner inside" and its siblings, and variety made of debris is not
+   * variety. What still separates two beats about one person is the typed prefix, which differs by
+   * place, year and verb — and the dedup, which already refuses a clip the film has used.
+   */
+  const bare = coercePersonName(personName);
+  const unique = [...new Set(combined)].filter((q) => toQueryString(q) !== bare);
   const offset = beatIndex % Math.max(1, unique.length);
   const rotated = [...unique.slice(offset), ...unique.slice(0, offset)].slice(0, 7);
 
@@ -16456,8 +16496,9 @@ export function buildPersonCelebrityVideoQueries(
   const typed = typedQueryPrefix(clean, { forcePerson: personName })
     .filter((q) => !isBlockedStockQuery(toQueryString(q)))
     .slice(0, 2);
-  const head = typed.filter((q) => !rotated.includes(q));
-  return [...head, ...rotated];
+  /** Typed question first, then the bare name, then the rotation. No duplicates across the three. */
+  const head = [...typed, ...(bare ? [bare] : [])];
+  return [...new Set([...head, ...rotated])];
 }
 
 function scoreCelebrityCandidate(
