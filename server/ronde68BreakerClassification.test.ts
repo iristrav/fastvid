@@ -150,8 +150,23 @@ describe("RONDE 68 TEST 3 — one provider's cancellation cannot trip another's 
     expect(unguarded).toEqual([]);
   });
 
+  /**
+   * RONDE 251 renamed `gdeltAnyError` to `gdeltFault` when it split GDELT's batch outcome into
+   * SERVED / FAULT / REFUSED — a refusal of a query we malformed used to reset the breaker, so one
+   * fast refusal cancelled three 22-second timeouts standing beside it.
+   *
+   * The property RONDE 68 is here for is untouched and is what this now asserts: whatever the flag
+   * is called, a cancellation FastVid itself caused must not be charged to GDELT. Matched on the
+   * shape rather than on one spelling, so the next rename cannot pass silently or fail spuriously.
+   */
   it("GDELT's accumulated error flag is classified the same way", () => {
-    expect(SRC()).toContain("if (!isScopeAbortError(err)) gdeltAnyError = true;");
+    const src = SRC();
+    expect(src, "a scope abort must never be counted as a GDELT fault").toMatch(
+      /if \(!isScopeAbortError\(err\)\) gdelt[A-Za-z]* = true;/
+    );
+    expect(src, "and it must not be counted unguarded").not.toMatch(
+      /catch \(err\) \{\s*(?:\/\/[^\n]*\n\s*)*gdelt[A-Za-z]* = true;/
+    );
   });
 });
 

@@ -378,6 +378,7 @@ import {
   warnComposeTimeNetwork,
   isComposeNetworkBlocked,
 } from "./pipelineStepTiming";
+import { breakerVerdictForBatch } from "./providerBreakerVerdict";
 import { clipPassesDocumentaryBeatGate, judgeDocumentaryBeatGate, inferBeatGeoRegion, resolveSegmentGeoLock, type BeatGeoRegion } from "./vidrushQuality";
 import type { ClipRejectAudit } from "./clipRejectAudit";
 import {
@@ -12150,10 +12151,35 @@ export async function fetchGdeltTvNewsClips(
     // Fire all per-query searches concurrently — pure network fetches, results are merged
     // and globally re-sorted by score afterward, so query order doesn't matter.
     type GdeltRawClip = { preview_url?: string; snippet?: string; show?: string; station?: string };
-    // RONDE 19: track whether GDELT's endpoint actually responded this call so the breaker can trip
-    // on a run of pure timeouts. A query that responds (even with zero clips) counts as reachable.
-    let gdeltAnyResponse = false;
-    let gdeltAnyError = false;
+    /**
+     * RONDE 19: track whether GDELT's endpoint actually responded this call so the breaker can trip
+     * on a run of pure timeouts. A query that responds (even with zero clips) counts as reachable.
+     *
+     * ── RONDE 251 — WHY THE BREAKER NEVER TRIPPED, AND THE THREE FACTS IT NEEDED ─────────────
+     *
+     * Render 584 paid GDELT roughly eighty seconds in one eight-minute window — two searches that
+     * sat in their 22s timeout, twice — and the breaker did not fire once. `gdeltAnyResponse` was
+     * set after `cachedProviderSearch` returned WITHOUT THROWING, which includes every path that
+     * returns null: a non-ok status, an unparseable body, and GDELT's own "must contain at least
+     * one station" refusal of a query we malformed. Then `if (gdeltAnyResponse) mark(true)` reset
+     * the streak for the whole batch, so one fast refusal cancelled three 22-second timeouts
+     * standing beside it.
+     *
+     * A breaker that a malformed query can reset is a breaker that never closes. Same shape as the
+     * `[ClipValidation] OK` that could not fail and the `provider unavailable (no capacity)` on a
+     * blocked account: the check was built, wired, and fed by something that does not mean what it
+     * was read as meaning.
+     *
+     * Three outcomes, because they call for three different answers:
+     *   · SERVED — parseable data came back (zero clips included). GDELT works; reset the streak.
+     *   · FAULT — GDELT timed out, answered non-ok, or sent a body that is not JSON. Its problem;
+     *     advance the streak toward the cooldown.
+     *   · REFUSED — GDELT answered that our query was unusable. OUR problem, and evidence about
+     *     nothing: it neither proves the endpoint healthy nor accuses it. Leave the streak alone.
+     */
+    let gdeltServed = false;
+    let gdeltFault = false;
+    let gdeltRefusedOurQuery = false;
     const perQueryClips = await Promise.all(
       queryList.slice(0, queryCap).map(async (query) => {
         try {
@@ -12174,33 +12200,60 @@ export async function fetchGdeltTvNewsClips(
                 fastMode ? 14_000 : 22_000,
                 `GDELT TV search scene ${sceneIndex}`
               );
-              if (!resp.ok) return null;
+              /** A status GDELT chose — its fault, and it counts toward the cooldown. */
+              if (!resp.ok) { gdeltFault = true; return null; }
               const text = await resp.text();
-              if (text.includes("must contain at least one station")) return null;
+              /** GDELT telling us the query was unusable. Ours to fix; says nothing about GDELT. */
+              if (text.includes("must contain at least one station")) {
+                gdeltRefusedOurQuery = true;
+                return null;
+              }
               try {
                 return JSON.parse(text) as { clips?: GdeltRawClip[] };
               } catch {
+                /** A 200 whose body is not JSON is the endpoint misbehaving, not our query. */
+                gdeltFault = true;
                 return null;
               }
             },
             "fetchGdeltTvNewsClips"
           );
-          gdeltAnyResponse = true;
+          /**
+           * Parseable data — an empty `clips` array included — is the only thing that proves the
+           * endpoint served us. A cache hit lands here too, correctly: it worked when it was read.
+           */
+          if (data) gdeltServed = true;
           return (data?.clips ?? []).map((clip) => ({ clip, query }));
         } catch (err) {
           // RONDE 68: a cancellation FastVid caused is not a provider fault — see the note on
           // isScopeAbortError's use at the other provider catches.
-          if (!isScopeAbortError(err)) gdeltAnyError = true;
+          if (!isScopeAbortError(err)) gdeltFault = true;
           console.warn(`[Pipeline] GDELT TV query "${query}" failed:`, (err as Error).message);
           return [];
         }
       })
     );
-    // Trip/reset the breaker: reachable (any response) resets the streak; an all-timeout batch
-    // increments it toward the cooldown. A batch that neither responded nor errored (e.g. all
-    // cache hits) leaves the streak untouched.
-    if (gdeltAnyResponse) markGdeltSearchResult(true);
-    else if (gdeltAnyError) markGdeltSearchResult(false);
+    /**
+     * RONDE 251 — SERVED beats FAULT beats REFUSED, in that order.
+     *
+     * A batch that served real data resets the streak; a batch that only cost us faults advances
+     * it, even when a malformed query got a fast refusal alongside them — which is the reset that
+     * kept render 584 paying 22 seconds a query. A batch of nothing but refusals, or nothing but
+     * cache hits, leaves the streak where it was.
+     */
+    const verdict = breakerVerdictForBatch({
+      served: gdeltServed,
+      fault: gdeltFault,
+      refused: gdeltRefusedOurQuery,
+    });
+    if (verdict === "reset") markGdeltSearchResult(true);
+    else if (verdict === "advance") markGdeltSearchResult(false);
+    else if (gdeltRefusedOurQuery) {
+      console.warn(
+        `[Pipeline] GDELT scene ${sceneIndex}: every query was refused as unusable — ` +
+          `not counted against the provider, and nothing was learned about it`
+      );
+    }
 
     const flatClips = perQueryClips.flat();
     providerMetrics(sourcingCache, "gdelt_tv").resultCount += flatClips.length;
