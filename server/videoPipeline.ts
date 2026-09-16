@@ -6333,6 +6333,24 @@ function scopeAbortError(label: string, ownTimeoutMs: number): Error {
 }
 
 /**
+ * RONDE 263: the scope never opened, because its window had already closed.
+ *
+ * Carries the SAME flag as a scope abort, deliberately. A caller cannot act differently on "the
+ * budget ran out while I worked" and "the budget was gone before I started" — both mean the
+ * enclosing budget, not the provider — and a circuit breaker that counted either would disable a
+ * healthy source for being asked at the wrong moment.
+ */
+function scopeExpiredError(label: string, overrunMs: number): Error {
+  const err = pipelineError(
+    PIPELINE_ERROR.TIMEOUT,
+    `Aborted: ${label} was not started — the enclosing budget had already ended ` +
+      `${Math.round(overrunMs / 1000)}s earlier, so this scope had no window at all`
+  );
+  (err as unknown as Record<string, unknown>)[SCOPE_ABORT_FLAG] = true;
+  return err;
+}
+
+/**
  * True when this failure was the enclosing budget running out, not the provider failing.
  *
  * Circuit breakers must not count these: the provider did nothing wrong, and tripping on them
@@ -6642,6 +6660,47 @@ export function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label
   const parentSearchDeadline =
     sceneFetchScopeStorage.getStore()?.searchDeadlineAtMs ?? Number.POSITIVE_INFINITY;
   const deadlineAtMs = Math.min(openedAtMs + delayMs, parentDeadline);
+  /**
+   * RONDE 263 — A SCOPE THAT OPENS AFTER ITS OWN DEADLINE DOES NOT OPEN.
+   *
+   * ── What the render after RONDE 260 printed, three times for one beat ────────────────────
+   *
+   *     [YouTube] TURN_DECLINED scene=1 — 0s left …
+   *       clock="historical archival rescue s1 b3" granted=-25s used=0s
+   *
+   * MINUS twenty-five seconds. Not a window running low — a window that had closed half a minute
+   * before anyone opened it. `used=0s` says the same thing from the other side: nothing had
+   * elapsed yet, so this was not work that ran out of time. It was work scheduled into time that
+   * had already been spent.
+   *
+   * The clamp is what produces it and the clamp is correct: `min(now + ms, parentDeadline)` keeps
+   * a child inside its parent. When the parent is already past its deadline that expression is in
+   * the past, the window is negative, and every derived number follows it — `transferReserveFor`
+   * returns 0, the search deadline is behind the clock, and the whole scope is a formality. The
+   * work inside still RAN, because the abort timer is set on `delayMs` and not on the deadline:
+   * the rescue ladder spent real seconds the scene had already promised elsewhere.
+   *
+   * ── Why here and not at the rescue call site ─────────────────────────────────────────────
+   *
+   * The rescue ladder is where it was OBSERVED. It is not where it is caused: every one of the
+   * sixty-odd `withSceneFetchTimeout` call sites in this file inherits the same clamp and can
+   * open the same dead scope. Fixing the one that happened to print would leave the rule true in
+   * one place and absent in fifty-nine, which is how this codebase has acquired most of its
+   * defects.
+   *
+   * NOTHING IS LOOSENED AND NO BUDGET MOVES. A scope with time left is untouched, to the
+   * millisecond. What changes is that a scope with none is refused instead of pretending.
+   */
+  if (deadlineAtMs <= openedAtMs) {
+    /** Nothing to detach: the scope is refused before it is built or registered with its parent. */
+    const overrunMs = openedAtMs - deadlineAtMs;
+    console.warn(
+      `[SceneFetchScope] SCOPE_EXPIRED label="${label}" — opened ${Math.round(overrunMs / 1000)}s ` +
+        `after the enclosing budget had already ended, so nothing is started. ` +
+        `A scope with no window cannot finish what it begins`
+    );
+    return Promise.reject(scopeExpiredError(label, overrunMs));
+  }
   const reserveMs = transferReserveFor(deadlineAtMs - openedAtMs);
   const scope: SceneFetchScope = {
     controller,
