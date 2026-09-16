@@ -450,8 +450,33 @@ def _probe_egress() -> dict[str, object]:
 
 @app.get("/health/egress")
 def health_egress() -> JSONResponse:
-    """A live answer to 'can this machine actually fetch from YouTube right now?'."""
-    return JSONResponse(_probe_egress())
+    """
+    A live answer to 'can this machine actually fetch from YouTube right now?'.
+
+    ── RONDE 258: the status code says it too ──────────────────────────────────────────────────
+
+    This answered 200 whether the probe passed or failed, with the verdict in the body. The
+    deployment log shows what that costs:
+
+        13:55:48  ERROR: [youtube] …: Sign in to confirm you're not a bot.
+        13:55:48  INFO:  100.64.0.4:56122 - "GET /health/egress HTTP/1.1" 200 OK
+
+    A refusal and a 200 OK on the same second. Anything watching by status code — a dashboard, an
+    alert, a person skimming — reads a healthy service while YouTube is holding the door shut.
+
+    503 is the honest answer: this endpoint exists to say whether the machine can do the one job it
+    is deployed for, and right then it cannot.
+
+    THIS IS NOT THE LIVENESS ENDPOINT. `/health` above reports that the process is up, yt-dlp is
+    installed and ffmpeg is present, and it still answers 200 — that is the one an orchestrator
+    should be pointed at. A container must not be restarted because YouTube is rate-limiting it;
+    restarting changes nothing about the address it comes from.
+
+    The body is unchanged, so a client that reads `ok` rather than the status keeps working. The
+    pipeline's own probe reads the body for exactly that reason.
+    """
+    result = _probe_egress()
+    return JSONResponse(result, status_code=200 if result.get("ok") else 503)
 
 
 @app.on_event("startup")

@@ -77,6 +77,7 @@ import {
   youtubeDownloadRefusal,
   youtubeServiceRefusalReason,
 } from "./providerFailureClass";
+import { egressRefusalReason } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -14816,7 +14817,48 @@ export async function downloadYouTubeCCClip(
         }
       }
     } catch (err) {
-      note("cloud", classifyYoutubeDownloadError(err), (err as Error).message?.slice(0, 60) ?? "threw");
+      const thrownAs = classifyYoutubeDownloadError(err);
+      /**
+       * RONDE 258 — WHY THE TRANSFER DID NOT ARRIVE, ASKED OF THE ONE PARTY THAT KNOWS.
+       *
+       * Render 585 filed 103 failures here, every one `download_timeout`, and six rounds were spent
+       * looking at budgets because of that word. The service knew better the whole time — its own
+       * boot log, same deployment, seven minutes apart:
+       *
+       *     [Preflight] OK  youtube_egress  the yt-dlp service reached YouTube
+       *     [Preflight] NO  youtube_egress  … CANNOT reach YouTube (bot_check)
+       *     ERROR: [youtube] jNQXAC9IVRw: Sign in to confirm you're not a bot.
+       *
+       * The `!dlResp.ok` branch above already classifies a refusal correctly and arms the latch
+       * that skips the dead route for the rest of the render. It needs a RESPONSE. When yt-dlp
+       * meets the bot check it retries with backoff, the beat's budget expires first, the client
+       * aborts before anything arrives, and execution lands HERE — where the error object says
+       * "timeout" and nothing else was ever asked.
+       *
+       * So the answer existed, was published at `/health/egress`, and was not fetched at the moment
+       * a hundred later candidates depended on it.
+       *
+       * Asked only on a timeout, only while the latch is open, and through a probe that is short
+       * and cached — one question per render, against the hundred refusals it prevents. A probe
+       * that cannot be asked returns null and changes nothing: the timeout stands, because "the
+       * service did not answer" is not evidence that it is blocked.
+       */
+      let reason = (err as Error).message?.slice(0, 60) ?? "threw";
+      if (thrownAs === "DOWNLOAD_TIMEOUT" && !cloudEgressRefusal()) {
+        const blocked = await egressRefusalReason().catch(() => null);
+        if (blocked) {
+          reason = blocked;
+          if (noteCloudEgressBlocked(videoId, blocked)) {
+            console.error(
+              `[Pipeline] The yt-dlp service cannot reach YouTube (${blocked}) — confirmed by its ` +
+                `own egress probe after ${cloudEgressRefusalStreak()} refusal(s) in a row. The ` +
+                `cloud route is skipped for the rest of this render. This reached the pipeline as ` +
+                `a download timeout; it is a refusal. Check PROXY_URL on the download service`
+            );
+          }
+        }
+      }
+      note("cloud", thrownAs, reason);
       console.warn(
         `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
         (err as Error).message, "— falling back to RapidAPI"
