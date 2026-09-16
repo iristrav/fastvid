@@ -545,6 +545,63 @@ function logDocumentaryPlan(plan: DocumentaryPlan, videoTitle: string): void {
 
 // ─── Public: getRetrievalContract ────────────────────────────────────────────
 
+/**
+ * RONDE 262 — THE PLANNER THAT WAS BUILT FROM ZERO BEATS, EVERY RENDER.
+ *
+ * ── The line, and what it always evaluated to ───────────────────────────────────────────────
+ *
+ *     const scenesForPlan = scenes.map((s) => ({
+ *       index: s.index,
+ *       beats: ((s as { beats?: Array<{ index: number; text: string }> }).beats ?? []).map(…),
+ *     }));
+ *
+ * `Scene` has no `beats` field. Not an optional one — none at all, which is why the cast is there.
+ * So that expression is `[]` on every scene of every render, `buildDocumentaryPlan` iterates an
+ * empty list, and `contracts` comes back empty. Every later `getRetrievalContract(plan, s, b)` is
+ * a lookup in an empty map, and the whole Documentary Planning Engine — preferred shot, must/must
+ * not contain, the per-beat retrieval contract that RONDE 96 wired into ranking — has been inert.
+ *
+ * The plan still reported itself as built, with `hard=0 withPreferredShot=0`, which reads like a
+ * planner with nothing to say rather than a planner that was handed nothing.
+ *
+ * ── Why the contracts are attached here and not at plan time ────────────────────────────────
+ *
+ * Beats do not exist when the plan is built; that is the whole reason the field was empty. They
+ * are resolved later, per scene, and stored once in `sceneBeatsBySceneIndex` — "the one function
+ * every beat-resolving route calls".
+ *
+ * Rebuilding them early to satisfy the plan would produce a SECOND beat set, and a contract keyed
+ * `s2b3` derived from a different beat 3 than the one the render uses is worse than no contract:
+ * an absent contract is ignored, a wrong one is obeyed. So the plan is filled from the same array
+ * the render itself goes on to fetch clips for, at the moment that array is recorded.
+ *
+ * Same `deriveContract`, same blueprint, same keys. Nothing about a contract's content changes —
+ * only that there now is one.
+ */
+export function attachSceneContracts(
+  plan: DocumentaryPlan | null | undefined,
+  sceneIndex: number,
+  beats: ReadonlyArray<{ index: number; text: string }>,
+  storyboard?: { shots: ShotDescription[] } | null
+): number {
+  if (!plan || beats.length === 0) return 0;
+  let added = 0;
+  for (const beat of beats) {
+    const key = `s${sceneIndex}b${beat.index}`;
+    /**
+     * First writer wins. A scene whose beats are re-recorded (the alignment routes return early
+     * without touching the array, but a re-entry is not impossible) must not silently acquire a
+     * second reading of the same sentence — RONDE 96's cache makes the same guarantee one layer up.
+     */
+    if (plan.contracts.has(key)) continue;
+    const directive = plan.blueprint?.beatDirectives.get(`${sceneIndex}_${beat.index}`) ?? null;
+    const shot = storyboard?.shots.find((s) => s.beatIndex === beat.index) ?? null;
+    plan.contracts.set(key, deriveContract(sceneIndex, beat.index, directive, shot, beat.text));
+    added += 1;
+  }
+  return added;
+}
+
 export function getRetrievalContract(
   plan: DocumentaryPlan | null | undefined,
   sceneIndex: number,

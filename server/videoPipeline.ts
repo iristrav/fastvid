@@ -1247,6 +1247,7 @@ const niceCmd = (cmd: string): string =>
 import type { RenderWatchdog } from "./renderWatchdog";
 import type { RenderBudget } from "./renderBudget";
 import type { BudgetTracker } from "./renderBudgetTracker";
+import { attachSceneContracts } from "./documentaryPlanningEngine";
 import { AsyncLocalStorage } from "async_hooks";
 
 /**
@@ -19190,6 +19191,31 @@ async function applyVoiceAlignmentToBeats(
    */
   if (dedup && sceneIndex != null && beats.length > 0) {
     dedup.sceneBeatsBySceneIndex.set(sceneIndex, beats);
+    /**
+     * RONDE 262 — AND THE PLANNER FINALLY GETS THE BEATS IT WAS BUILT WITHOUT.
+     *
+     * `buildDocumentaryPlan` is handed `((s as { beats?: … }).beats ?? [])`, and `Scene` has no
+     * `beats` field at all — so that expression is `[]` on every scene of every render and the
+     * contracts map has always come back empty. Every `getRetrievalContract` since has been a
+     * lookup in an empty map.
+     *
+     * Attached HERE because this is the one place the real beats exist, recorded by the one
+     * function every beat-resolving route calls. Deriving a second beat set early to fill the plan
+     * would key contracts to a different beat 3 than the render uses, and an obeyed wrong contract
+     * is worse than an absent one.
+     *
+     * Synchronous, pure and keyed the same way `getRetrievalContract` reads — see
+     * `attachSceneContracts`. It costs one `deriveContract` per beat, once.
+     */
+    if (dedup.documentaryPlan) {
+      const added = attachSceneContracts(dedup.documentaryPlan, sceneIndex, beats);
+      if (added > 0) {
+        console.log(
+          `[DocumentaryPlan] scene ${sceneIndex}: ${added} retrieval contract(s) attached from the ` +
+            `beats this scene actually resolved (total=${dedup.documentaryPlan.contracts.size})`
+        );
+      }
+    }
   }
   if (dedup && sceneIndex != null && dedup.ttsSceneBeats.get(sceneIndex)?.length) {
     return;
@@ -47003,6 +47029,7 @@ async function _runVideoPipelineInner(
               `droppedAtCinematic=${count("DROPPED_AT_CINEMATIC")} ` +
               `droppedAtDownload=${count("DROPPED_AT_DOWNLOAD")} ` +
               `replaced=${count("REPLACED")} neverSelected=${count("NEVER_SELECTED")} ` +
+              `downloadedNeverJudged=${count("DOWNLOADED_NEVER_JUDGED")} ` +
               `unexplained=${count("UNEXPLAINED")} lineageErrors=${errors.length} ` +
               `finalOutputVerified=UNKNOWN`
           )

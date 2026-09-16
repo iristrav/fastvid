@@ -2360,6 +2360,37 @@ export type AssetTerminalStatus =
   | "DROPPED_AT_CINEMATIC"
   | "DROPPED_AT_DOWNLOAD"
   | "REPLACED"
+  /**
+   * RONDE 262 — THE ASSET THAT WAS PAID FOR IN FULL AND THEN LOST.
+   *
+   * ── Render 587, provider=youtube_cc providerAssetId=ODx7fCL6BHw, scene 2 beat 0 ───────────
+   *
+   *     YouTube fair-use found 5 relevant videos
+   *     ODx7fCL6BHw ok via watchpage dur=43s
+   *     ScriptGuided metadata @28.2s
+   *     Cloud DL failed — falling back to RapidAPI
+   *     ODx7fCL6BHw trim start 28.2s          ← bytes moved, ffmpeg ran, a clip exists
+   *
+   * And then nothing. No VISION, no APPROVED, no REJECTED, no ADOPTED, no PUSHED, no COMPOSED,
+   * no CINEMATIC, no DELIVERED.
+   *
+   * ── Why the ledger could not say so ─────────────────────────────────────────────────────
+   *
+   * The ladder below ends `adoptedAt == null && selectedAt == null → NEVER_SELECTED`, which is
+   * the healthy verdict for a candidate the render retrieved and did not use. A downloaded clip
+   * with no judgement fell into exactly that branch and was reported beside candidates nobody
+   * ever touched.
+   *
+   * So the ledger could not tell "we never bothered with this one" apart from "we spent a
+   * download slot, moved three and a half megabytes, ran ffmpeg, produced a clip, and then no
+   * step in the pipeline ever looked at it". One is a render working normally. The other is the
+   * most expensive way there is to lose an asset.
+   *
+   * A clip dropped before Vision FOR A REASON is not this: a REJECTED, REPLACED or REMOVED event
+   * is caught higher up the ladder and keeps its own status. This fires only when the bytes
+   * arrived and the record is otherwise silent — which is the state that must never be reached.
+   */
+  | "DOWNLOADED_NEVER_JUDGED"
   | "NEVER_SELECTED"
   | "UNEXPLAINED";
 
@@ -2448,8 +2479,13 @@ export function lifecyclesOf(
     else if (downloadDied) terminalStatus = "DROPPED_AT_DOWNLOAD";
     else if (rejected) {
       terminalStatus = r.composedAt != null ? "DROPPED_AT_COMPOSE" : "DROPPED_AT_PUSH";
-    } else if (r.adoptedAt == null && r.selectedAt == null) terminalStatus = "NEVER_SELECTED";
-    else terminalStatus = "UNEXPLAINED";
+    } else if (r.adoptedAt == null && r.selectedAt == null) {
+      /**
+       * RONDE 262: a candidate the render never used, and a candidate the render BOUGHT and never
+       * used, are two different facts. Both end here; only one of them is a render working.
+       */
+      terminalStatus = has("DOWNLOAD_SUCCEEDED") ? "DOWNLOADED_NEVER_JUDGED" : "NEVER_SELECTED";
+    } else terminalStatus = "UNEXPLAINED";
 
     out.push({
       lineageId: r.lineageId,
@@ -2512,6 +2548,21 @@ export function formatLifecycleInvariants(
      */
     if (a.composeInput && !a.composeSelected && !a.composeDropped && !a.finalVideo) {
       say(a, "ASSIGNED_ASSET_MISSING_COMPOSE_OUTCOME");
+    }
+    /**
+     * RONDE 262 (H) — the bytes arrived and no step ever judged them.
+     *
+     * Render 587 downloaded ODx7fCL6BHw, trimmed it, and then produced no VISION, no ADOPTED and
+     * no rejection for it. Unlike A, this asset never reached adoption at all, so A cannot see it;
+     * unlike NEVER_SELECTED, it was not merely retrieved — a download slot was spent, a transfer
+     * completed and ffmpeg ran.
+     *
+     * A drop BEFORE Vision is legitimate and is not this: a refusal writes REJECTED, REPLACED or
+     * REMOVED, all of which the ladder reads before it reaches this status. What this names is the
+     * one thing that may never happen — a finished download that nothing answered for.
+     */
+    if (a.terminalStatus === "DOWNLOADED_NEVER_JUDGED") {
+      say(a, "DOWNLOADED_ASSET_NEVER_JUDGED");
     }
     /** B — the planner saw it and neither kept nor refused it. */
     if (a.cinematicSelected && a.cinematicDropped) {
