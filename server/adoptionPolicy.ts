@@ -633,9 +633,49 @@ export function withAdoptionIntent<T>(source: string | undefined, fn: () => T): 
   return label ? adoptionIntentStorage.run(label, fn) : fn();
 }
 
+/**
+ * RONDE 266 — WHAT SATISFIED THE VISION REQUIREMENT, AND WHETHER ANYTHING DID.
+ *
+ * ── The one thing `allowed: true` could not say ─────────────────────────────────────────────
+ *
+ * `visionAvailable: false` suspends the vision requirement render-wide. That suspension is
+ * deliberate and RONDE 94 argues for it at length: when the picture editor cannot be reached at
+ * all, EVERY picture is unjudged, so enforcing the requirement refuses every real adoption for a
+ * reason that has nothing to do with any picture. The export gate still refuses the film, at the
+ * one place that can say why.
+ *
+ * But the guard returned `{ allowed: true }` for that case and for a genuine APPROVED alike. Two
+ * adoptions, one of them backed by an editor's yes and one by nothing at all, arrive at every
+ * caller wearing the same word — which is the exact shape RONDE 199 removed one layer down, where
+ * "the editor looked and could not tell" and "nobody looked" had collapsed into `unknown`.
+ *
+ * Nothing about WHO IS ALLOWED changes here. What changes is that a caller can no longer count a
+ * suspension as verification, and `verifiedWithoutVisionEvidence` becomes a number rather than an
+ * argument.
+ */
+export type AdoptionVisionEvidence =
+  /** The editor was shown this picture and said yes. */
+  | "APPROVED"
+  /** This route's policy does not require the editor, and did not claim it. */
+  | "NOT_REQUIRED"
+  /** The editor was reachable and this route's weaker requirement was met without a yes. */
+  | "SATISFIED_WITHOUT_APPROVAL"
+  /** No editor existed in this render. Allowed, and NOT evidence of anything. */
+  | "SUSPENDED_NO_EDITOR";
+
 export type AdoptionGuardVerdict =
-  | { allowed: true }
+  | { allowed: true; visionEvidence: AdoptionVisionEvidence }
   | { allowed: false; code: "UNDECLARED_ADOPT_ROUTE" | "FUNNEL_WITHOUT_EVIDENCE"; reason: string };
+
+/**
+ * Is this adoption backed by an editor's yes?
+ *
+ * The one question a caller should ask before calling something a verified visual. A suspension is
+ * not a yes, and neither is a policy that never asked for one.
+ */
+export function adoptionIsVisionVerified(verdict: AdoptionGuardVerdict): boolean {
+  return verdict.allowed && verdict.visionEvidence === "APPROVED";
+}
 
 /**
  * RONDE 94 — WHAT THE PICTURE EDITOR ACTUALLY SAID.
@@ -733,7 +773,7 @@ export function adoptionGuardVerdict(input: {
    */
   visionAvailable?: boolean;
 }): AdoptionGuardVerdict {
-  if (!input.source) return { allowed: true };
+  if (!input.source) return { allowed: true, visionEvidence: "NOT_REQUIRED" };
   const policy = adoptionPolicyFor(input.source);
 
   if (policy.category === "UNDECLARED") {
@@ -744,7 +784,21 @@ export function adoptionGuardVerdict(input: {
     };
   }
 
-  if (!funnelAdoptionEnforced()) return { allowed: true };
+  /**
+   * RONDE 266: enforcement off is not evidence either. The route's own policy still says whether
+   * it ever claimed an editor, so the answer here is the honest one rather than a blanket yes.
+   */
+  if (!funnelAdoptionEnforced()) {
+    return {
+      allowed: true,
+      visionEvidence:
+        input.vision === "APPROVED"
+          ? "APPROVED"
+          : policy.visionRequirement === "none"
+            ? "NOT_REQUIRED"
+            : "SATISFIED_WITHOUT_APPROVAL",
+    };
+  }
 
   const missing: string[] = [];
   if (policy.requiresEligibility && !input.eligible) missing.push("eligibility");
@@ -784,7 +838,23 @@ export function adoptionGuardVerdict(input: {
   if (visionAvailable && !visionRequirementMet(policy, input.vision)) {
     missing.push(`vision (${input.vision})`);
   }
-  if (missing.length === 0) return { allowed: true };
+  if (missing.length === 0) {
+    /**
+     * RONDE 266 — read in the order that makes the weakest claim win.
+     *
+     * A render with no editor may not report APPROVED even when a stale verdict says so, because
+     * the suspension is what let this adoption through; and a policy that never asked for an
+     * editor may not report one either. Only a live yes is a yes.
+     */
+    const visionEvidence: AdoptionVisionEvidence = !visionAvailable
+      ? "SUSPENDED_NO_EDITOR"
+      : policy.visionRequirement === "none"
+        ? "NOT_REQUIRED"
+        : input.vision === "APPROVED"
+          ? "APPROVED"
+          : "SATISFIED_WITHOUT_APPROVAL";
+    return { allowed: true, visionEvidence };
+  }
   return {
     allowed: false,
     code: "FUNNEL_WITHOUT_EVIDENCE",
