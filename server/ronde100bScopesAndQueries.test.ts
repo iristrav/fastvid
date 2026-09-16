@@ -26,9 +26,25 @@ import {
   validateSearchQuery,
 } from "./searchQueryContract";
 import { scriptStockSearchQueries } from "./videoPipeline";
+import { stripComments } from "./sourceScan.test.support";
 
 const SERVER_DIR = __dirname;
-const PIPELINE_SRC = fs.readFileSync(path.join(SERVER_DIR, "videoPipeline.ts"), "utf8");
+/**
+ * RONDE 254 — READ AS CODE, NOT AS TEXT.
+ *
+ * This scanned the raw file. A doc comment that NAMES a provider fetcher — as RONDE 254's note on
+ * `MULTI_CANDIDATE_FETCH_COUNT` does, quoting the call it repaired — was therefore counted as a
+ * call, attributed to whatever function declaration happened to precede it, and reported as an
+ * unscoped provider caller. The code was scoped; the prose was not code.
+ *
+ * `stripComments` is length-preserving, so every line number this file reports and every
+ * `enclosing(line)` lookup is unchanged. THIS MAKES THE TEST STRICTER: a declaration or a call that
+ * only ever appeared in a comment can no longer satisfy any assertion here, and a real unscoped
+ * call is still found exactly where it was.
+ */
+const PIPELINE_SRC = stripComments(
+  fs.readFileSync(path.join(SERVER_DIR, "videoPipeline.ts"), "utf8")
+);
 const CONTRACT_SRC = fs.readFileSync(path.join(SERVER_DIR, "searchQueryContract.ts"), "utf8");
 
 /**

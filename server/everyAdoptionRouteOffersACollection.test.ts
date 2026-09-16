@@ -21,6 +21,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
+import { stripComments } from "./sourceScan.test.support";
 
 const RAW = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -28,10 +29,16 @@ const RAW = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
  * Comments removed before anything is matched.
  *
  * Both RONDE 252 fixes carry a note QUOTING the line they replaced, and a matcher that reads prose
- * finds the defect in its own description. That happened twice while this round's tests were being
+ * finds the defect in its own description. That happened twice while RONDE 253's tests were being
  * written, which is why it is the first thing the file does.
+ *
+ * RONDE 254 replaced the one-line regex this used with `stripComments`. The regex matched from a
+ * block-comment opener to the next closer without asking whether the opener was code, and this file
+ * has one inside a string in a fetch header — so 3748 characters, including the whole
+ * `fetchPexelsClips` declaration, were invisible to a guard whose entire job is to see the whole
+ * file. Nothing about what this file asserts changed; it can now see everything it asserts over.
  */
-const CODE = RAW.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+const CODE = stripComments(RAW);
 
 /** Every `adoptClip(` whose first argument is an array LITERAL, with that literal's contents. */
 const arrayLiteralCalls = (): string[] =>
@@ -102,9 +109,15 @@ describe("3. adoptClip is still the one entry point", () => {
     expect([...CODE.matchAll(/async function adoptClip\(/g)]).toHaveLength(1);
   });
 
+  /**
+   * The window is measured on the file as written. RONDE 254's `stripComments` blanks comments in
+   * place instead of collapsing them, so a body that used to fit in 14000 characters now spans the
+   * comments too — the code is identical, the offsets are the file's own. Widened rather than
+   * loosened: every assertion below is the one that was here.
+   */
   it("it declares the beat's review pool from what it was handed", () => {
     const at = CODE.indexOf("async function adoptClip(");
-    const body = CODE.slice(at, at + 14000);
+    const body = CODE.slice(at, at + 45000);
     expect(body).toContain("declareVisionReviewPool(");
     expect(body).toContain("noteRanked(");
     expect(body, "the pool is cut to the beat's own cap").toContain("maxShortlistPerBeat()");
@@ -113,12 +126,16 @@ describe("3. adoptClip is still the one entry point", () => {
 
 describe("4. nothing here raises what a route may fetch", () => {
   /**
-   * THIS TEST CHANGES NO BUDGET AND MUST NOT BE READ AS PERMISSION TO. Fourteen adoption sites are
-   * still fed by a fetch asking `count=1`, and each of those counts bounds how many candidates are
-   * actually DOWNLOADED — `for (let i = 0; i < Math.min(pool.length, count); i++)`. Raising them
-   * multiplies real transfers per beat, which is a decision with evidence behind it, not a tidy-up.
+   * THIS TEST CHANGES NO BUDGET AND MUST NOT BE READ AS PERMISSION TO.
    *
-   * What is pinned is only that the two stock routes which already ask for more still do.
+   * RONDE 253 wrote here that fourteen adoption sites were still fed by a fetch asking `count=1`.
+   * RONDE 254 then measured it properly — fifteen sites hand the fetch's own result straight to
+   * `adoptClip`, and the difference was a scan that could not see 3748 characters of the file — and
+   * changed those fifteen to `MULTI_CANDIDATE_FETCH_COUNT`. The routes that fetch into a POOL still
+   * ask for one, because their cardinality was never one; `aChoiceAskedForAsAChoice` holds that
+   * line, both directions.
+   *
+   * What is pinned here is only that the two stock routes which already asked for more still do.
    */
   it("the last-resort stock routes still ask for the two they were asking for", () => {
     const at = CODE.indexOf("const stockTryCap");

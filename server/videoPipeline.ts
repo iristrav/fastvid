@@ -1622,6 +1622,56 @@ const TRAILING_SILENCE_TRIM_SEC = 2.0;
 /** Kept after the last sound so a final word is never clipped and a fade still has room. */
 const TRAILING_SILENCE_TAIL_SEC = 0.6;
 
+/**
+ * RONDE 254 — HOW MANY CANDIDATES A ROUTE THAT IS GOING TO CHOOSE ASKS A PROVIDER FOR.
+ *
+ * ── The third link in the chain 252 and 253 repaired ────────────────────────────────────────
+ *
+ * RONDE 252 fixed the SUPPLY: two adoption loops walked a list they already held and handed
+ * `adoptClip` one path at a time. RONDE 253 fixed the RECORD: the first route to declare a beat's
+ * vision review pool owned it, so a deliberately single-winner route running first froze the beat
+ * at `reviewPool=1` however much every later route aggregated.
+ *
+ * Neither reaches the link above both. Every provider fetcher in this file declares its own
+ * default — `count: number = 2` on Wikimedia video and images, Openverse, SerpAPI, NASA, Internet
+ * Archive and Pixabay, `3` on Pexels. That default is a decision: give the beat something to choose
+ * between. Fifteen call sites whose result goes STRAIGHT into `adoptClip` — which RANKS it,
+ * DECLARES the review pool from it, and WALKS it preferring a FIT — overrode that decision to ONE.
+ *
+ * So the ranking sorted a list of one, the pool declared a choice of one, and the FIT preference
+ * had nothing to prefer. Render 585 measured it: `ranked/rankRuns ≤ 1.00` on fifteen of fifteen.
+ *
+ * ── Where it is used, and where it is deliberately NOT ──────────────────────────────────────
+ *
+ * Forty `count=1` calls of these fetchers exist and only fifteen changed. The test is not "does an
+ * adoption happen somewhere below" — it is whether the VARIABLE the fetch assigns is what
+ * `adoptClip` is handed:
+ *
+ *     const wikiVid = await fetchWikimediaVideos(…, MULTI_CANDIDATE_FETCH_COUNT, …);
+ *     clip = await adoptClip(wikiVid.map((c) => c.path), …);   ← adoptClip gets this fetch's result
+ *
+ *     const ovPaths = await fetchOpenverseImages(…, 1, …);
+ *     addToPool(ovPaths, ovQ);                                 ← a pool spanning several sources,
+ *     const boundedPool = […].slice(0, 5);                       already capped at five
+ *
+ * On a pool route the cardinality reaching `adoptClip` was never one, and the per-source single is
+ * the pool's own design. The two intentional single-winner routes — Europeana and the Openverse
+ * web-wide fallback — fetch one and take `[0]`; there is no list to offer and manufacturing one
+ * would be a fiction.
+ *
+ * ── Why two, and why this is not a budget ───────────────────────────────────────────────────
+ *
+ * Two is not a number this round invented. It is what the fetchers themselves declare, so what
+ * changes is that fifteen routes stop overriding a default DOWNWARD — a smaller claim than picking
+ * a new ceiling, and one the signatures in this file already justify.
+ *
+ * It is not a budget because it bounds nothing. `MAX_BEAT_DOWNLOADS = 12` bounds the downloads and
+ * is untouched; `maxShortlistPerBeatPerSource()` bounds what one source may put on a beat and is
+ * untouched; `MAX_BEAT_IMAGE_JUDGEMENTS_PER_BEAT` bounds the looks and is untouched. This is the
+ * ASK. Every ceiling that answers it is where it was.
+ */
+const MULTI_CANDIDATE_FETCH_COUNT = 2;
+
 const VISUAL_PROVIDER_FAILURE_STREAK_TRIP = 3;
 
 /**
@@ -4048,6 +4098,12 @@ async function fetchBeatAuthenticStillsInner(
   // Bounded pool: cap the merged total at 5 candidates, same order of magnitude as the existing
   // per-source count=1 budgets above — not a new, larger download budget, just letting the
   // existing adoptClip ranking compare across sources instead of only within one.
+  //
+  // RONDE 254 deliberately did NOT raise those per-source asks to MULTI_CANDIDATE_FETCH_COUNT.
+  // This route already hands adoptClip a pool spanning several sources and queries, so the
+  // cardinality reaching the ranking was never one — the per-source single IS this pool's design,
+  // and raising it would buy downloads for a route that already had a choice. The sites RONDE 254
+  // changed are the ones where a fetch result goes STRAIGHT into adoptClip.
   const boundedPool = [...new Set(pool)].slice(0, 5);
   // Point: the pool spans candidates fetched under several different generated query strings
   // (buildHistoricalArchivalQueries's own variants, e.g. "${anchor} archival footage") — passing
@@ -4450,7 +4506,7 @@ async function tryBeatTopicRealFootageInner(
       return clip;
     }
   } else {
-    const wikiVid = await fetchWikimediaVideos(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`);
+    const wikiVid = await fetchWikimediaVideos(wikiQuery, clipFetchDur, workDir, sceneIndex, MULTI_CANDIDATE_FETCH_COUNT, `${tag}_wiki`);
     clip = await adoptClip(
       wikiVid.map((c) => c.path),
       dedup,
@@ -4468,7 +4524,7 @@ async function tryBeatTopicRealFootageInner(
   }
 
   if (!dedup.personTopicLock) {
-    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, 1, `${tag}_wiki`, { dedup, beatIndex: beat.index });
+    const wikiImg = await fetchWikimediaImages(wikiQuery, clipFetchDur, workDir, sceneIndex, MULTI_CANDIDATE_FETCH_COUNT, `${tag}_wiki`, { dedup, beatIndex: beat.index });
     clip = await adoptClip(
       wikiImg,
       dedup,
@@ -4496,7 +4552,7 @@ async function tryBeatTopicRealFootageInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1,
+      MULTI_CANDIDATE_FETCH_COUNT,
       `${tag}_ov`,
       { dedup, personPortrait: Boolean(primary) || dedup.personTopicLock }
     );
@@ -4526,7 +4582,7 @@ async function tryBeatTopicRealFootageInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1,
+      MULTI_CANDIDATE_FETCH_COUNT,
       `${tag}_serp`,
       {
         dedup,
@@ -4574,7 +4630,7 @@ async function tryBeatTopicRealFootageInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1
+      MULTI_CANDIDATE_FETCH_COUNT
     );
     clip = await adoptClip(
       nasaPaths,
@@ -4598,7 +4654,7 @@ async function tryBeatTopicRealFootageInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1,
+      MULTI_CANDIDATE_FETCH_COUNT,
       `${tag}_ia`
     );
     clip = await adoptClip(
@@ -16773,7 +16829,7 @@ async function fetchBeatScriptImageClipInner(
             clipFetchDur,
             workDir,
             sceneIndex,
-            1,
+            MULTI_CANDIDATE_FETCH_COUNT,
             `${tag}_img_serp`,
             {
               ...imageOpts,
@@ -16797,7 +16853,7 @@ async function fetchBeatScriptImageClipInner(
           clipFetchDur,
           workDir,
           sceneIndex,
-          1,
+          MULTI_CANDIDATE_FETCH_COUNT,
           `${tag}_img_ov`,
           imageOpts
         );
@@ -16813,7 +16869,7 @@ async function fetchBeatScriptImageClipInner(
       }
       if (primary) {
         const wikiPaths = await fetchWikimediaImages(
-          primary, clipFetchDur, workDir, sceneIndex, 1, `${tag}_img_wiki`, imageOpts
+          primary, clipFetchDur, workDir, sceneIndex, MULTI_CANDIDATE_FETCH_COUNT, `${tag}_img_wiki`, imageOpts
         );
         const clip = await adoptClip(
           wikiPaths, dedup, sceneIndex, beat.index, beat.text, workDir, primary, looseOpts
@@ -27624,7 +27680,7 @@ async function fetchPersonBeatClipInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1,
+      MULTI_CANDIDATE_FETCH_COUNT,
       `${tag}_person`,
       {
         dedup,
@@ -27647,7 +27703,7 @@ async function fetchPersonBeatClipInner(
       clipFetchDur,
       workDir,
       sceneIndex,
-      1,
+      MULTI_CANDIDATE_FETCH_COUNT,
       `${tag}_person`,
       { dedup, personPortrait: true }
     );
@@ -29466,7 +29522,7 @@ async function fetchBeatPersonStockVideoInner(
           clipFetchDur,
           workDir,
           sceneIndex,
-          1,
+          MULTI_CANDIDATE_FETCH_COUNT,
           undefined,
           true,
           tag,
@@ -29486,7 +29542,7 @@ async function fetchBeatPersonStockVideoInner(
         }
 
         const pix = await fetchPixabayClips(
-          q, clipFetchDur, workDir, sceneIndex, 1, tag, true, dedup.usedPixabayIds, off
+          q, clipFetchDur, workDir, sceneIndex, MULTI_CANDIDATE_FETCH_COUNT, tag, true, dedup.usedPixabayIds, off
         );
         clip = await adoptClip(
           pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, personAdopt
@@ -29633,7 +29689,7 @@ async function fetchBeatStockFallbackInner(
           clipFetchDur,
           workDir,
           sceneIndex,
-          1,
+          MULTI_CANDIDATE_FETCH_COUNT,
           undefined,
           true,
           tag,
@@ -29655,7 +29711,7 @@ async function fetchBeatStockFallbackInner(
         }
 
         const pix = await fetchPixabayClips(
-          q, clipFetchDur, workDir, sceneIndex, 1, tag, true, dedup.usedPixabayIds, off
+          q, clipFetchDur, workDir, sceneIndex, MULTI_CANDIDATE_FETCH_COUNT, tag, true, dedup.usedPixabayIds, off
         );
         clip = await adoptClip(
           pix, dedup, sceneIndex, beat.index, beat.text, workDir, q, loose
