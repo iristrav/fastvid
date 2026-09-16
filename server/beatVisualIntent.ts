@@ -472,3 +472,138 @@ export function queryIntentHints(
     ...(intent.preferredShot ? { preferredShot: intent.preferredShot } : {}),
   };
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * RONDE 265 — HARD CONSTRAINTS ARE NOT LOUD SOFT SIGNALS.
+ *
+ * ── The production measurement this exists to answer ────────────────────────────────────────
+ *
+ *     focus = event
+ *
+ *     primaryEntity   +0      narration   +96
+ *     secondaryEntity +5      visual      +44
+ *     event           +0
+ *     location        +0      negativeEvidence  -6
+ *     object          +0
+ *     date            +0      finalScore       +139
+ *     place           +0
+ *     eventPhrase     +0
+ *     action          +0
+ *
+ * A candidate that matched the beat on NOTHING the beat was about, ranked first on a score of 139.
+ * The two terms that carried it — how the narration reads and how the picture looks — are the two
+ * that say least about whether this is the right footage for this sentence.
+ *
+ * ── Why adding weight would not fix it ──────────────────────────────────────────────────────
+ *
+ * The sort is one flat sum. Raising the event term or lowering the narration term moves the
+ * threshold; it does not change the shape. Any soft signal large enough still buys its way past
+ * any hard one, and the next render finds a different pair of numbers that does it.
+ *
+ * What is missing is a KIND, not a WEIGHT. A beat that names an event, a place and a period has
+ * said three things that are true or false about a candidate — not more or less true. Those belong
+ * in front of the sum, not inside it.
+ *
+ * ── What this is, and the four things it deliberately is not ────────────────────────────────
+ *
+ * It is a comparison key: how many of the beat's STATED hard requirements a candidate satisfies,
+ * counted from signals `scoreCandidateAgainstBeat` already computes. The existing score decides
+ * everything within a tier, exactly as before.
+ *
+ *   · NOT a gate. A candidate satisfying none of them still ranks, still reaches the shortlist,
+ *     still gets a vision verdict. It ranks BELOW one that satisfies more. §4 of the test file is
+ *     that property, because a ranking term that learned to reject would be the second selection
+ *     engine the brief forbids.
+ *   · NOT a new weight. No number in the existing sum moves.
+ *   · NOT a second scorer. Every signal it reads is one the shared scorer already produced for
+ *     this same candidate against this same beat.
+ *   · NOT applied to beats that state nothing. A requirement the beat never made cannot be missed,
+ *     so a beat with no event, place, period or action is ordered exactly as it is today.
+ * ════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The scorer's output, structurally — so this module never has to import the pipeline it is read
+ * from, and a cycle cannot form. Every field is one `scoreCandidateAgainstBeat` returns.
+ */
+export type HardMatchSignals = {
+  event: number;
+  eventPhrase: number;
+  location: number;
+  place: number;
+  date: number;
+  action: number;
+};
+
+export type DocumentaryHardMatch = {
+  /** How many hard requirements this beat actually made. Zero means this key is inert. */
+  stated: number;
+  /** How many of those the candidate's own provider text supports. */
+  satisfied: number;
+  /** Which ones, for the log — a ranking decision nobody can read back is not reviewable. */
+  met: string[];
+  missed: string[];
+};
+
+/**
+ * What the beat requires, and whether this candidate shows it.
+ *
+ * "Stated" is the beat's own extraction being non-empty: a beat that never named a place cannot be
+ * refused for lacking one. "Satisfied" is the corresponding signal being positive, which is the
+ * same evidence the sum already pays for — read here as a fact instead of as an amount.
+ */
+export function documentaryHardMatch(
+  intent: BeatVisualIntent | null | undefined,
+  signals: HardMatchSignals
+): DocumentaryHardMatch {
+  const met: string[] = [];
+  const missed: string[] = [];
+  if (!intent) return { stated: 0, satisfied: 0, met, missed };
+
+  /** event and eventPhrase are one fact at two resolutions — the sum already treats them so. */
+  const checks: Array<[string, boolean, boolean]> = [
+    ["event", intent.event.length > 0, Math.max(signals.event, signals.eventPhrase) > 0],
+    ["place", intent.location.length > 0, Math.max(signals.location, signals.place) > 0],
+    ["period", intent.period.length > 0, signals.date > 0],
+    ["action", intent.action.length > 0, signals.action > 0],
+  ];
+  for (const [name, stated, satisfied] of checks) {
+    if (!stated) continue;
+    if (satisfied) met.push(name);
+    else missed.push(name);
+  }
+  return { stated: met.length + missed.length, satisfied: met.length, met, missed };
+}
+
+/**
+ * Order two candidates by hard requirements first, or report a tie so the existing score decides.
+ *
+ * Returns the comparator convention the sort already uses: negative when `a` should come first.
+ * Zero whenever the beat stated nothing, or both candidates satisfy equally many — and "equally
+ * many" is deliberately the whole test, because ranking one missed requirement against a different
+ * missed requirement is a judgement this key is not entitled to make.
+ */
+export function compareHardMatch(a: DocumentaryHardMatch, b: DocumentaryHardMatch): number {
+  if (a.stated === 0 && b.stated === 0) return 0;
+  if (a.satisfied === b.satisfied) return 0;
+  return b.satisfied - a.satisfied;
+}
+
+/** One line per beat, so a ranking that turned on a hard requirement can be read back. */
+export function formatHardMatch(
+  sceneIndex: number,
+  beatIndex: number,
+  winner: DocumentaryHardMatch,
+  runnerUp: DocumentaryHardMatch | null
+): string {
+  const side = (m: DocumentaryHardMatch) =>
+    `${m.satisfied}/${m.stated}` +
+    (m.met.length > 0 ? ` met=[${m.met.join(",")}]` : "") +
+    (m.missed.length > 0 ? ` missed=[${m.missed.join(",")}]` : "");
+  return (
+    `[HardMatch] s${sceneIndex}b${beatIndex} winner=${side(winner)}` +
+    (runnerUp ? ` runnerUp=${side(runnerUp)}` : "") +
+    (runnerUp && winner.satisfied > runnerUp.satisfied
+      ? " — the hard requirements decided this, not the score"
+      : "")
+  );
+}

@@ -1248,6 +1248,11 @@ import type { RenderWatchdog } from "./renderWatchdog";
 import type { RenderBudget } from "./renderBudget";
 import type { BudgetTracker } from "./renderBudgetTracker";
 import { attachSceneContracts } from "./documentaryPlanningEngine";
+import {
+  compareHardMatch,
+  documentaryHardMatch,
+  formatHardMatch,
+} from "./beatVisualIntent";
 import { AsyncLocalStorage } from "async_hooks";
 
 /**
@@ -25764,15 +25769,57 @@ async function adoptClip(
       _intent,
       [dedup.clipAnnotationMeta.get(p)?.providerText, path.basename(p)].filter(Boolean).join(" ")
     );
-  const sortedPaths = [...paths].sort((a, b) =>
+  /**
+   * RONDE 265 — THE BEAT'S HARD REQUIREMENTS COME BEFORE THE SUM.
+   *
+   * Render evidence: a candidate with `event +0 place +0 date +0 action +0` ranked first on
+   * `narration +96 visual +44 finalScore 139`. The two terms that carried it are the two that say
+   * least about whether this is the right footage for this sentence.
+   *
+   * Raising the event term or lowering the narration term would move a threshold, not change a
+   * shape: any soft signal large enough still buys its way past any hard one. What was missing is
+   * a KIND rather than a WEIGHT — a beat that names an event, a place and a period has said three
+   * things that are TRUE OR FALSE about a candidate, not more or less true.
+   *
+   * So they are compared first, and the existing score decides everything within a tier. Nothing
+   * is admitted or refused here: a candidate satisfying none still ranks, still reaches the
+   * shortlist, still gets a vision verdict — it ranks below one that satisfies more. A beat that
+   * states no requirement is ordered exactly as it was.
+   *
+   * Memoised per path because `scoreCandidateAgainstBeat` is not free and a sort calls its
+   * comparator O(n log n) times for n candidates.
+   */
+  const hardMatchCache = new Map<string, ReturnType<typeof documentaryHardMatch>>();
+  const hardMatchOf = (p: string) => {
+    let m = hardMatchCache.get(p);
+    if (!m) {
+      const sig = scoreCandidateAgainstBeat(
+        dedup.clipAnnotationMeta.get(p)?.providerText ?? undefined,
+        rankingCtx
+      );
+      hardMatchCache.set(p, (m = documentaryHardMatch(_intent, sig)));
+    }
+    return m;
+  };
+  const sortedPaths = [...paths].sort((a, b) => {
+    const hard = compareHardMatch(hardMatchOf(a), hardMatchOf(b));
+    if (hard !== 0) return hard;
     // Content decides; motion only breaks a tie. See compareBeatCandidates.
-    compareBeatCandidates(
+    return compareBeatCandidates(
       candidateScore(a) + intentScore(a),
       isStillPhotoClip(a),
       candidateScore(b) + intentScore(b),
       isStillPhotoClip(b)
-    )
-  );
+    );
+  });
+  if (sortedPaths.length > 1) {
+    const winnerHard = hardMatchOf(sortedPaths[0]!);
+    if (winnerHard.stated > 0) {
+      console.log(
+        formatHardMatch(sceneIndex, beatIndex, winnerHard, hardMatchOf(sortedPaths[1]!))
+      );
+    }
+  }
 
   // Point 9 (final multi-candidate visual selection patch — score explainability): log the
   // winning pre-AssetDirector candidate's full signal breakdown — entity/event/location/date
