@@ -240,7 +240,35 @@ describe("RONDE 52 — the wiring is where it needs to be", () => {
   it("the scope carries a deadline so inner calls can read it", async () => {
     const s = await src();
     expect(s).toContain("deadlineAtMs");
-    // The parent's deadline always wins when it is earlier.
-    expect(s).toContain("Math.min(Date.now() + delayMs, parentDeadline)");
+    /**
+     * The parent's deadline always wins when it is earlier. RONDE 259 reads the clock once into
+     * `openedAtMs` — the same expression, computed once instead of twice, because the reserve is
+     * sized against the window this scope actually got and the two readings must be one moment.
+     */
+    expect(s).toContain("const openedAtMs = Date.now();");
+    expect(s).toContain("Math.min(openedAtMs + delayMs, parentDeadline)");
+  });
+
+  /**
+   * The claim behind the line above, checked rather than spelled: a child asked for more than its
+   * parent has left gets the parent's deadline, not its own.
+   */
+  it("AND IT HOLDS WHEN RUN: an oversized child never outlives its parent", async () => {
+    const { withSceneFetchTimeout, remainingScopeMs } = await import("./videoPipeline");
+    await withSceneFetchTimeout(
+      async () => {
+        const parentLeft = remainingScopeMs();
+        await withSceneFetchTimeout(
+          async () => {
+            expect(remainingScopeMs()).toBeLessThanOrEqual(parentLeft);
+            expect(remainingScopeMs()).toBeLessThan(120_000);
+          },
+          600_000,
+          "r52 oversized child"
+        );
+      },
+      5_000,
+      "r52 parent"
+    );
   });
 });

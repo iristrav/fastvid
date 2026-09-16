@@ -45,6 +45,7 @@ import fs from "fs";
 import path from "path";
 
 import { termProvableFrom, validateSearchQuery } from "./searchQueryContract";
+import { callSitesOf, stripComments } from "./sourceScan.test.support";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -97,11 +98,20 @@ describe("R216 §2 — a cancelled scene stops issuing requests", () => {
   });
 
   it("it declines BEFORE the search runs, which is the whole point", () => {
-    const check = fn.indexOf("if (sceneScope?.controller.signal.aborted)");
-    const call = fn.indexOf("payload = await search();");
+    /**
+     * RONDE 259 moved the call itself behind `withinSearchWindow`, so `search()` is now reached
+     * through that wrapper rather than awaited bare. The claim this test makes is unchanged and
+     * is checked against whichever expression actually invokes the provider: the abort check
+     * stands in front of every one of them.
+     */
+    const code = stripComments(fn);
+    const check = code.indexOf("if (sceneScope?.controller.signal.aborted)");
     expect(check).toBeGreaterThan(0);
-    expect(call).toBeGreaterThan(0);
-    expect(check).toBeLessThan(call);
+    const invocations = callSitesOf(code, "search");
+    expect(invocations.length, "nothing in this function calls the provider any more").toBeGreaterThan(0);
+    for (const at of invocations) {
+      expect(at, "a provider call sits in front of the abort check").toBeGreaterThan(check);
+    }
   });
 
   it("A CUT-OFF PROVIDER IS STILL RECORDED AS CUT OFF, never as 'nothing found'", () => {

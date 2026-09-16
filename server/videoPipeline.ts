@@ -1562,10 +1562,22 @@ type SceneFetchScope = {
    */
   deadlineAtMs: number;
   /**
+   * RONDE 259: the moment this scope stops issuing SEARCHES, which is earlier than the moment it
+   * stops altogether. The difference is `transferReserveFor(window)` — the tail that belongs to
+   * the transfer, so a candidate found late is a candidate that can still be fetched.
+   *
+   * Clamped by the parent's search deadline for the same reason `deadlineAtMs` is clamped by the
+   * parent's: a child that searched past its parent's reserve would spend time the parent had
+   * already promised to a transfer.
+   */
+  searchDeadlineAtMs: number;
+  /**
    * RONDE 216: whether this scope has already said its budget is gone. One line per scope, not one
    * per refused search — see `cachedProviderSearch`.
    */
   budgetSpentReported?: boolean;
+  /** RONDE 259: the same discipline for the reserve — one line per scope, not one per refusal. */
+  transferReserveReported?: boolean;
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
 
@@ -1612,6 +1624,64 @@ function sceneFetchAborted(): boolean {
  * JSON search to answer.
  */
 const YOUTUBE_MIN_DOWNLOAD_WINDOW_MS = 12_000;
+
+/**
+ * RONDE 259 — THE SEARCH THAT SPENT THE DOWNLOAD'S BUDGET.
+ *
+ * ── What render 585 measured ────────────────────────────────────────────────────────────────
+ *
+ *     [YouTubeTrace] downloadSlots spent=3 returned=189   (claimed, but no bytes ever moved)
+ *     [YouTubeDownload] … scene_budget_0s_left                                    ×59
+ *     1751 search results,                                                        1 file
+ *
+ * And render 576 before it: seventy-nine YouTube downloads refused for a spent budget, seventy-five
+ * of them at literally `0s left`. Six rounds were spent on the size of the numbers. The numbers
+ * were never the fault — the ORDER of spending was.
+ *
+ * Searching and transferring share one clock. A beat's window is `beatVideoSearchWallMs`, at most
+ * forty seconds; every provider search inside it runs until that window ends; and the transfer,
+ * which is the only step that produces a file, is asked to start out of what is left. There never
+ * is any. `YOUTUBE_BEAT_BUDGET_MS` asks for 45–90s and cannot get it — `withSceneFetchTimeout`
+ * clamps every child to `Math.min(now + ms, parentDeadline)`, so raising it, as the previous round
+ * did from 30s to 45s, could not have changed a single outcome and did not.
+ *
+ * ── The reserve ─────────────────────────────────────────────────────────────────────────────
+ *
+ * The tail of a fetch scope belongs to the transfer. Searching may not spend it, and a search whose
+ * answer could only arrive inside it is not issued at all — that answer is a candidate nobody can
+ * fetch, which is what 1751 of them were.
+ *
+ * NO BUDGET IS RAISED. The scope's window, the download floor, the beat's wall clock and the
+ * render's wall clock are every one of them the number they were: this changes which half of an
+ * unchanged window pays for what. The precedent is RONDE 576's own, one level down —
+ * `shouldProbeYoutubeDuration` already refuses to let the duration PROBE eat the download's floor,
+ * for exactly this reason and in exactly these words: "a download is not an optimisation — without
+ * it there is no clip at all".
+ *
+ * ── Why twice the floor, and never more than half ───────────────────────────────────────────
+ *
+ * Twice, because the floor is measured at the moment the transfer STARTS, and something has to pay
+ * for the distance between the last search returning and that moment — validating the candidate,
+ * ranking it, writing its lineage. A reserve equal to the floor exactly is a reserve that is
+ * already spent by the time the guard reads it, and render 585 would have refused at `11s left`
+ * just as surely as it refused at `0s`.
+ *
+ * Never more than half, because a source that is never searched delivers nothing at all. The half
+ * is the same guarantee `youtubeBeatBudgetMs` states for itself: a source may not be switched off
+ * by arithmetic.
+ */
+export const TRANSFER_RESERVE_MS = YOUTUBE_MIN_DOWNLOAD_WINDOW_MS * 2;
+
+/**
+ * How much of a scope's window is the transfer's, given the window it actually got.
+ *
+ * Pure, and exported, because the rule is the claim: a caller reading `searchDeadlineAtMs` should
+ * be able to check the arithmetic rather than trust it.
+ */
+export function transferReserveFor(windowMs: number): number {
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return 0;
+  return Math.min(TRANSFER_RESERVE_MS, Math.floor(windowMs / 2));
+}
 
 /**
  * When silent picture after the narration is long enough to be a fault rather than a breath.
@@ -3346,6 +3416,18 @@ async function youtubeFirstBeatSlice(
     dedup.videoLength,
     get_activeBudgetTracker()?.remainingMs?.()
   );
+  /**
+   * RONDE 259 — WHAT THE SLICE ACTUALLY IS, NOT WHAT IT ASKED FOR.
+   *
+   * `youtubeBeatBudgetMs` returns 45–90s. `withSceneFetchTimeout` clamps every child scope to
+   * `Math.min(now + ms, parentDeadline)`, and the beat that contains this has at most forty
+   * seconds — so the slice is whatever the beat has left, and never once was it 45s.
+   *
+   * The two log lines below printed `ytBudget` anyway. That is how the previous round could raise
+   * this number from 30s to 45s, read the same log back, and see nothing change: the render was
+   * reporting the request and spending the grant. Printed here as the grant.
+   */
+  const sliceMs = Math.min(ytBudget, remainingScopeMs());
   try {
     const ytFirst = await withSceneFetchTimeout(
       () => fetchBeatYoutubeOnly(
@@ -3366,7 +3448,8 @@ async function youtubeFirstBeatSlice(
     if (ytFirst) {
       console.log(
         `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube answered first ` +
-          `(${Math.round(ytBudget / 1000)}s slice) — cascade not needed`
+          `(${Math.round(sliceMs / 1000)}s slice, asked for ${Math.round(ytBudget / 1000)}s) — ` +
+          `cascade not needed`
       );
       return ytFirst;
     }
@@ -3378,7 +3461,8 @@ async function youtubeFirstBeatSlice(
      */
     console.log(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: YouTube-first slice spent ` +
-        `(${Math.round(ytBudget / 1000)}s) — continuing with the archive cascade` +
+        `(${Math.round(sliceMs / 1000)}s of the ${Math.round(ytBudget / 1000)}s it asked for) — ` +
+        `continuing with the archive cascade` +
         (isScopeAbortError(err) ? " (scene scope ended)" : "")
     );
   }
@@ -6214,6 +6298,47 @@ export function remainingScopeMs(): number {
 }
 
 /**
+ * RONDE 259: milliseconds left for SEARCHING in the enclosing scope, which is less than what is
+ * left in the scope — the difference is the transfer reserve.
+ *
+ * Zero does not mean the scope is over. It means the only thing the scope still has time for is
+ * fetching something already found, which is what the rest of its window is for.
+ */
+export function remainingSearchMs(): number {
+  const deadline = sceneFetchScopeStorage.getStore()?.searchDeadlineAtMs;
+  if (deadline == null || !Number.isFinite(deadline)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, deadline - Date.now());
+}
+
+/** RONDE 259: what a search resolves to when its answer would land inside the transfer reserve. */
+export const SEARCH_WINDOW_SPENT = Symbol("searchWindowSpent");
+
+/**
+ * Wait for a provider search, but never past the moment this scope stops searching.
+ *
+ * Outside a scope there is no reserve to protect and the search is awaited exactly as before.
+ *
+ * The in-flight request is ABANDONED, not cancelled: `search()` is an opaque closure and there is
+ * no signal to hand it. That costs a socket the scope's own abort was always going to close, and
+ * it buys the thing render 585 never had — the beat stops waiting, with the download's share of
+ * the window still intact. The rejection handler stays attached, so a request that fails after
+ * being abandoned is still handled rather than escaping as an unhandled rejection.
+ */
+export function withinSearchWindow<T>(
+  work: Promise<T>
+): Promise<T | typeof SEARCH_WINDOW_SPENT> {
+  const leftMs = remainingSearchMs();
+  if (!Number.isFinite(leftMs)) return work;
+  return new Promise<T | typeof SEARCH_WINDOW_SPENT>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(SEARCH_WINDOW_SPENT), Math.max(1, leftMs));
+    work.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
+/**
  * The timeout a call should actually use: its own preference, capped by what the enclosing scope
  * can still give it, with a small margin so the inner call fails first and reports honestly
  * instead of being cut off from outside.
@@ -6432,11 +6557,22 @@ export function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label
   // RONDE 52: a nested scope can never outlive its parent, so the effective deadline is the
   // earlier of the two. Without this a child scope would advertise more time than it can spend.
   const parentDeadline = sceneFetchScopeStorage.getStore()?.deadlineAtMs ?? Number.POSITIVE_INFINITY;
+  /**
+   * RONDE 259: the reserve is computed from the window this scope ACTUALLY gets, not from the one
+   * it asked for. `youtubeFirstBeatSlice` asks for 45s inside a beat that has 40s; sizing the
+   * transfer's share against the 45s would reserve time the scope does not own.
+   */
+  const openedAtMs = Date.now();
+  const parentSearchDeadline =
+    sceneFetchScopeStorage.getStore()?.searchDeadlineAtMs ?? Number.POSITIVE_INFINITY;
+  const deadlineAtMs = Math.min(openedAtMs + delayMs, parentDeadline);
+  const reserveMs = transferReserveFor(deadlineAtMs - openedAtMs);
   const scope: SceneFetchScope = {
     controller,
     children: new Set(),
     childScopes: new Set(),
-    deadlineAtMs: Math.min(Date.now() + delayMs, parentDeadline),
+    deadlineAtMs,
+    searchDeadlineAtMs: Math.min(deadlineAtMs - reserveMs, parentSearchDeadline),
   };
   const parentScope = sceneFetchScopeStorage.getStore();
   parentScope?.childScopes.add(scope);
@@ -21406,8 +21542,48 @@ export async function cachedProviderSearch<T>(
     return [] as unknown as T;
   }
 
+  /**
+   * RONDE 259 — A SEARCH WHOSE ANSWER COULD ONLY ARRIVE INSIDE THE TRANSFER RESERVE.
+   *
+   * Render 585 found 1751 results and delivered one file. Every one of its 59 YouTube downloads was
+   * refused with `scene_budget_0s_left`, because searching had already spent the window they would
+   * have been fetched in — and the searching continued afterwards: twenty fresh candidates arrived
+   * immediately after four of those refusals, for a beat that could no longer fetch anything.
+   *
+   * The scope's reserve says the tail of its window belongs to the transfer. Inside that tail a new
+   * search cannot produce anything usable: whatever it returns must still be fetched, and there is
+   * only exactly enough time left to fetch something. So it is not issued.
+   *
+   * Recorded as CUT OFF rather than as "nothing found", exactly as the two branches around it do —
+   * RONDE 100B's distinction is what keeps the search memory from concluding a source is empty
+   * because the render ran out of clock.
+   */
+  const noteTransferReserve = (): void => {
+    const reserveCache = cache ?? get_activeSourcingCache() ?? undefined;
+    reserveCache?.budgetCancelledProviders.add(provider.trim().toLowerCase());
+    if (sceneScope && !sceneScope.transferReserveReported) {
+      sceneScope.transferReserveReported = true;
+      console.warn(
+        `[ProviderSearch] what is left of this scope is the transfer reserve — no further ` +
+          `searches will be issued in it (first declined: provider=${provider} route=${route}); ` +
+          `a candidate found now could not be fetched before the scope ends`
+      );
+    }
+  };
+  if (sceneScope && remainingSearchMs() <= 0) {
+    noteTransferReserve();
+    return [] as unknown as T;
+  }
+
   const activeCache = cache ?? get_activeSourcingCache() ?? undefined;
-  if (!activeCache) return search();
+  if (!activeCache) {
+    const uncached = await withinSearchWindow(search());
+    if (uncached === SEARCH_WINDOW_SPENT) {
+      noteTransferReserve();
+      return [] as unknown as T;
+    }
+    return uncached;
+  }
   const key = providerQueryCacheKey(provider, text);
   const m = providerMetrics(activeCache, provider);
   if (activeCache.queries.has(key)) {
@@ -21419,7 +21595,19 @@ export async function cachedProviderSearch<T>(
   const t0 = Date.now();
   let payload: T;
   try {
-    payload = await search();
+    /**
+     * RONDE 259: a search that is still running when the search window closes is abandoned, not
+     * waited on. It was started legitimately — the window was open — but its answer now arrives
+     * inside the transfer's share, where nobody can fetch it. The request itself is left to the
+     * scope's own abort, which was always going to end it; what changes is that the beat stops
+     * STANDING AND WAITING for it while the time a download needs runs out.
+     */
+    const answered = await withinSearchWindow(search());
+    if (answered === SEARCH_WINDOW_SPENT) {
+      noteTransferReserve();
+      return [] as unknown as T;
+    }
+    payload = answered;
   } catch (err) {
     // RONDE 100B: remember that this provider was cut off, so the search memory does not read a
     // cancellation as "this source has nothing" — see SourcingCache.budgetCancelledProviders.
