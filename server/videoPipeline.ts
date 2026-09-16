@@ -1572,6 +1572,20 @@ type SceneFetchScope = {
    */
   searchDeadlineAtMs: number;
   /**
+   * RONDE 260 — WHICH CLOCK RAN OUT.
+   *
+   * Render 586 says `0s left in the scene budget` ninety-four times and never once says whose
+   * budget. Five clocks nest here and three scenes run at once, so that sentence identifies
+   * nothing: the round that built the transfer reserve could prove it did not hold and could not
+   * prove where it leaked, which cost a whole round.
+   *
+   * The label and the granted window are what the scope already knows about itself. Carrying them
+   * costs two fields and turns "0s left" into a sentence an operator can act on.
+   */
+  label: string;
+  grantedMs: number;
+  openedAtMs: number;
+  /**
    * RONDE 216: whether this scope has already said its budget is gone. One line per scope, not one
    * per refused search — see `cachedProviderSearch`.
    */
@@ -1682,6 +1696,44 @@ export function transferReserveFor(windowMs: number): number {
   if (!Number.isFinite(windowMs) || windowMs <= 0) return 0;
   return Math.min(TRANSFER_RESERVE_MS, Math.floor(windowMs / 2));
 }
+
+/**
+ * RONDE 260: the two ways this build can fetch a YouTube video — the yt-dlp cloud service and the
+ * RapidAPI fallback. A count rather than a literal 2, because the share below is a division and a
+ * divisor that drifts from the number of routes silently stops being a share.
+ */
+export const YOUTUBE_DOWNLOAD_ROUTES = 2;
+
+/**
+ * What ONE download route may take out of what YouTube still has.
+ *
+ * The routes used to take what was left, in order, which is not a share: the first route drank the
+ * glass and the second — the one that worked, twice out of twice, in under four seconds — arrived
+ * to find it empty. This is a ceiling, so a route that finishes early gives the rest back.
+ */
+export function youtubeRouteShareMs(totalMs: number): number {
+  if (!Number.isFinite(totalMs) || totalMs <= 0) return 0;
+  return Math.floor(totalMs / YOUTUBE_DOWNLOAD_ROUTES);
+}
+
+/**
+ * RONDE 260: how long one YouTube search may take. Was a literal at `searchYoutubeViaRapidApi`'s
+ * fetch; named here because a second reader now needs it — the door check below has to know what a
+ * search COSTS before it can decide whether this beat can afford one plus a transfer.
+ */
+export const YOUTUBE_SEARCH_TIMEOUT_MS = 12_000;
+
+/**
+ * RONDE 260 — THE LEAST A YOUTUBE TURN CAN COST AND STILL PRODUCE A FILE.
+ *
+ * One search, then one transfer. Both numbers already existed and neither moves: this is their
+ * sum, which is the honest price of the smallest useful turn.
+ *
+ * Render 586 opened fifty of these turns with less than this and finished two. The other
+ * forty-eight found a video, opened a lineage record, wrote DOWNLOAD_STARTED, looked at the clock
+ * and stopped — the whole ceremony of a download, with the network never touched.
+ */
+export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;
 
 /**
  * When silent picture after the narration is long enough to be a fault rather than a breath.
@@ -6310,6 +6362,25 @@ export function remainingSearchMs(): number {
   return Math.max(0, deadline - Date.now());
 }
 
+/**
+ * RONDE 260 — the enclosing clock, named, for any line that reports running out of one.
+ *
+ * `0s left in the scene budget` was written when there was one budget. There are five now, nested,
+ * and three scenes running at once: without the label a refusal names no clock at all, and the
+ * previous round could prove its reserve did not hold without being able to say where.
+ *
+ * Reads the INNERMOST scope, which is the one that actually refused. Empty outside a scope, so a
+ * caller can interpolate it unconditionally.
+ */
+export function describeEnclosingScope(): string {
+  const scope = sceneFetchScopeStorage.getStore();
+  if (!scope) return "no enclosing scope";
+  const granted = Math.round(scope.grantedMs / 1000);
+  const used = Math.round((Date.now() - scope.openedAtMs) / 1000);
+  const reserve = Math.round((scope.deadlineAtMs - scope.searchDeadlineAtMs) / 1000);
+  return `clock="${scope.label}" granted=${granted}s used=${used}s transferReserve=${reserve}s`;
+}
+
 /** RONDE 259: what a search resolves to when its answer would land inside the transfer reserve. */
 export const SEARCH_WINDOW_SPENT = Symbol("searchWindowSpent");
 
@@ -6573,6 +6644,9 @@ export function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label
     childScopes: new Set(),
     deadlineAtMs,
     searchDeadlineAtMs: Math.min(deadlineAtMs - reserveMs, parentSearchDeadline),
+    label,
+    grantedMs: deadlineAtMs - openedAtMs,
+    openedAtMs,
   };
   const parentScope = sceneFetchScopeStorage.getStore();
   parentScope?.childScopes.add(scope);
@@ -14790,14 +14864,46 @@ export async function downloadYouTubeCCClip(
       remainingAtCheckMs = remainingForCloud;
       console.log(
         `[Pipeline] Scene ${sceneIndex}: not calling the yt-dlp cloud service for ${videoId} — ` +
-          `${Math.round(remainingForCloud / 1000)}s left in the scene budget, below the ` +
+          `${Math.round(remainingForCloud / 1000)}s left, below the ` +
           `${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s floor. The call would be cancelled ` +
-          `mid-flight and spend what is left`
+          `mid-flight and spend what is left — ${describeEnclosingScope()}`
       );
       note("cloud", "DOWNLOAD_TIMEOUT", `scene_budget_${Math.round(remainingForCloud / 1000)}s_left`);
       reportDownload("DOWNLOAD_TIMEOUT", "scene_budget_too_short_to_start");
       return false;
     }
+    /**
+     * RONDE 260 — YOUTUBE HANDS OUT SHARES; THE ROUTES DO NOT DRINK IN TURN.
+     *
+     * ── What render 586 measured ────────────────────────────────────────────────────────────
+     *
+     *     eigen yt-dlp service   8 real attempts   0 succeeded   6 cut off mid-transfer
+     *     RapidAPI fallback      2 real attempts   2 succeeded   1.4s and 4.1s, 7.3MB and 6.3MB
+     *
+     * A working YouTube transfer takes between one and four seconds. The floor that refused
+     * ninety-four of them is twelve, and the ceiling above it is a hundred and eighty — so the
+     * transfer's own clock was never the constraint, and no number here needs raising.
+     *
+     * What was wrong is that there were no shares. This route asked for everything the scope had
+     * left, and the fallback below took whatever survived that — `scopedTimeoutMs(…)` of a budget
+     * the first route had already drunk. The first route is currently the broken one, so the
+     * working one kept arriving at an empty glass: both successes happened only because the
+     * service answered 502 quickly enough to leave a few seconds behind.
+     *
+     * So this route may have HALF of what is left, and the other half stays for the fallback.
+     * Never less than the floor — below that a share is not a share, it is a refusal by
+     * arithmetic, and with one floor's worth left there is only room for one attempt anyway.
+     *
+     * NOTHING IS SPENT THAT IS NOT USED: a share is a ceiling, not an allocation. A cloud route
+     * that answers in two seconds leaves the remaining time to the fallback exactly as before.
+     *
+     * Deliberately NOT "try the fast one first". That bets on which route is broken today; this
+     * holds whichever of the two it turns out to be tomorrow.
+     */
+    const cloudWindowMs = Math.max(
+      YOUTUBE_MIN_DOWNLOAD_WINDOW_MS,
+      youtubeRouteShareMs(remainingForCloud)
+    );
     // F3-05: streams to a tmpPath (never directly to outPath) so a network drop mid-download
     // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
     // atomic fs.renameSync below, and only once the download is complete and size-validated.
@@ -14814,7 +14920,7 @@ export async function downloadYouTubeCCClip(
       const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
         cloudTmpPath,
-        youtubeDownloadTimeoutMs(budgetMs),
+        Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs),
         `YouTube CC cloud download scene ${sceneIndex}`,
         { headers: cloudHeaders },
         80 * 1024 * 1024
@@ -15065,7 +15171,8 @@ export async function downloadYouTubeCCClip(
           if (remainingMs < YOUTUBE_MIN_DOWNLOAD_WINDOW_MS) {
             console.log(
               `[Pipeline] Scene ${sceneIndex}: skipping YouTube download of ${videoId} — ` +
-                `${Math.round(remainingMs / 1000)}s left in the scene budget, not enough to finish`
+                `${Math.round(remainingMs / 1000)}s left, not enough to finish — ` +
+                describeEnclosingScope()
             );
             /**
              * §4 — this was a bare `return false`. Standing aside for the scene budget is a
@@ -15525,7 +15632,7 @@ async function searchYoutubeViaRapidApi(
     const url = `https://${RAPIDAPI_YT_SEARCH_HOST}/search?query=${encodeURIComponent(query)}&type=video`;
     const resp = await providerLimiter("youtube").run(() => fetchWithTimeout(
       url,
-      12_000,
+      YOUTUBE_SEARCH_TIMEOUT_MS,
       `YouTube RapidAPI search scene ${sceneIndex}`,
       { headers: { "x-rapidapi-host": RAPIDAPI_YT_SEARCH_HOST, "x-rapidapi-key": RAPIDAPI_KEY } }
     ));
@@ -15776,6 +15883,47 @@ export async function fetchYouTubeCCClips(
   if (!hasDownloader) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE in Railway`
+    );
+    return [];
+  }
+
+  /**
+   * RONDE 260 — THE DOOR, NOT THE TILL.
+   *
+   * ── What render 586 did fifty times ─────────────────────────────────────────────────────────
+   *
+   *     stage=FOUND             OK     ← a video was found
+   *     stage=DOWNLOAD_STARTED  OK     ← a record opened, a slot claimed
+   *     not calling the yt-dlp cloud service — 0s left, below the 12s floor
+   *     stage=DOWNLOAD_FAILED   FAILED reason=download_timeout
+   *     moved no bytes — download slot returned
+   *
+   * Nothing timed out and nothing was contacted. The whole ceremony of a download ran, in order,
+   * against a clock that had been at zero since before the search began — ninety-four times, and
+   * eighty-one of those at literally zero.
+   *
+   * The pipeline already asks "is there time to finish this?" — `YOUTUBE_MIN_DOWNLOAD_WINDOW_MS`,
+   * at the till, after searching has spent the beat. There the answer is always no. Asked at the
+   * door, before a single query goes out, it is usually yes: `youtubeFirstBeatSlice` opens a beat
+   * with a full slice, which is exactly when a turn should be started or declined.
+   *
+   * ── Why this is not a new limit ─────────────────────────────────────────────────────────────
+   *
+   * It is the SAME question and the SAME numbers, asked early enough to matter: one search plus
+   * one transfer, both constants that already governed this function. Nothing is raised, lowered
+   * or loosened, and a beat that can afford a turn is unaffected.
+   *
+   * The seconds it declines are not lost — they go to the sources that only need a JSON answer,
+   * which is what RONDE 68 said about the download floor and is no less true a step earlier.
+   */
+  const turnMs = remainingScopeMs();
+  if (Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS) {
+    console.warn(
+      `[YouTube] TURN_DECLINED scene=${sceneIndex} — ${Math.round(turnMs / 1000)}s left and a turn ` +
+        `costs ${Math.round(YOUTUBE_MIN_TURN_MS / 1000)}s (one ${Math.round(YOUTUBE_SEARCH_TIMEOUT_MS / 1000)}s ` +
+        `search plus the ${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s download floor). ` +
+        `Nothing is searched, so nothing is found that could not be fetched — ` +
+        describeEnclosingScope()
     );
     return [];
   }
@@ -21536,7 +21684,7 @@ export async function cachedProviderSearch<T>(
       console.warn(
         `[ProviderSearch] scene budget already spent — no further searches will be issued in ` +
           `this scope (first declined: provider=${provider} route=${route}); the requests that ` +
-          `would follow could only be cancelled on arrival`
+          `would follow could only be cancelled on arrival — ${describeEnclosingScope()}`
       );
     }
     return [] as unknown as T;
@@ -21566,7 +21714,8 @@ export async function cachedProviderSearch<T>(
       console.warn(
         `[ProviderSearch] what is left of this scope is the transfer reserve — no further ` +
           `searches will be issued in it (first declined: provider=${provider} route=${route}); ` +
-          `a candidate found now could not be fetched before the scope ends`
+          `a candidate found now could not be fetched before the scope ends — ` +
+          describeEnclosingScope()
       );
     }
   };
