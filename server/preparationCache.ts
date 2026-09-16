@@ -38,6 +38,16 @@ export type PreparationCounters = {
   reused: number;
   skippedDuplicate: number;
   failed: number;
+  /**
+   * RONDE 253 — ASKS THE PER-BEAT CEILING TURNED AWAY BEFORE ANY WORK BEGAN.
+   *
+   * Its own disposition because it is not one. A refusal is not a failed preparation: nothing was
+   * downloaded, no ffmpeg ran, and the asset is not implicated. Counting it under `failed` is what
+   * made render 585 report `OUTCOMES_EXCEED_STARTS` — outcomes filed against starts that never
+   * happened — and folding it into nothing at all would hide the more interesting fact, that a beat
+   * was stopped by its own budget rather than by a lack of candidates.
+   */
+  refusedBudget: number;
 };
 
 type Entry = {
@@ -60,7 +70,10 @@ function scopeFor(workDir: string): Scope {
   if (existing) return existing;
   const fresh: Scope = {
     entries: new Map(),
-    counters: { requested: 0, started: 0, succeeded: 0, reused: 0, skippedDuplicate: 0, failed: 0 },
+    counters: {
+      requested: 0, started: 0, succeeded: 0, reused: 0, skippedDuplicate: 0, failed: 0,
+      refusedBudget: 0,
+    },
   };
   scopes.set(key, fresh);
   return fresh;
@@ -151,7 +164,13 @@ export async function runPreparation(
    * reason in the message rather than a silent stop.
    */
   if (!chargeAmbientBudget("preparations")) {
-    scope.counters.failed += 1;
+    /**
+     * RONDE 253: `refusedBudget`, not `failed`. `started` is incremented four lines below, so
+     * charging an outcome here filed one against a start that never happened — which is exactly
+     * the arithmetic behind render 585's OUTCOMES_EXCEED_STARTS. The caller still gets FAILED,
+     * because a refusal and a failure need the same handling; the LEDGER tells them apart.
+     */
+    scope.counters.refusedBudget += 1;
     return {
       status: "FAILED",
       error: new Error(
@@ -202,8 +221,21 @@ export function formatPreparationCache(workDir: string): string[] {
   const saved = c.reused + c.skippedDuplicate;
   const lines = [
     `[Preparation] requested=${c.requested} started=${c.started} succeeded=${c.succeeded} ` +
-      `reused=${c.reused} skippedDuplicate=${c.skippedDuplicate} failed=${c.failed}`,
+      `reused=${c.reused} skippedDuplicate=${c.skippedDuplicate} failed=${c.failed} ` +
+      `refusedBudget=${c.refusedBudget}`,
   ];
+  /**
+   * RONDE 253 — a beat stopped by its own ceiling reads differently from one whose downloads
+   * failed, and until now the two arrived as one number. Named here so the distinction survives
+   * into the log rather than living only in the counter.
+   */
+  if (c.refusedBudget > 0) {
+    lines.push(
+      `[Preparation] ${c.refusedBudget} preparation(s) refused by the per-beat ceiling ` +
+        `(${BUDGETS.preparations()} per beat) — those beats stopped preparing, they did not run ` +
+        `out of candidates`
+    );
+  }
   if (saved > 0) {
     lines.push(
       `[Preparation] ${saved} preparation(s) avoided — the same asset was asked for more than once ` +
@@ -220,6 +252,23 @@ export function formatPreparationCache(workDir: string): string[] {
   if (c.succeeded + c.failed > c.started) {
     lines.push(
       `[PreparationInvariant] OUTCOMES_EXCEED_STARTS succeeded=${c.succeeded} failed=${c.failed} started=${c.started}`
+    );
+  }
+  /**
+   * RONDE 253 — THE STATEMENT THE TWO ABOVE COULD NOT MAKE.
+   *
+   * A request is served from a finished preparation, awaited on one already in flight, refused by
+   * the per-beat ceiling, or started. There is no fifth door. Stating that as arithmetic is what
+   * turns `refusedBudget` from a number beside the others into a number they are checked against —
+   * and it is how the next disposition added here gets caught instead of quietly unbalancing the
+   * ledger, which is precisely how the last one went unnoticed.
+   */
+  const accounted = c.reused + c.skippedDuplicate + c.refusedBudget + c.started;
+  if (accounted !== c.requested) {
+    lines.push(
+      `[PreparationInvariant] REQUESTS_UNACCOUNTED requested=${c.requested} ` +
+        `reused=${c.reused} skippedDuplicate=${c.skippedDuplicate} ` +
+        `refusedBudget=${c.refusedBudget} started=${c.started} accounted=${accounted}`
     );
   }
   return lines;

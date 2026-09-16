@@ -8,6 +8,7 @@ import {
   declareVisionReviewPool,
   noteVisionReviewed,
   createVisionReviewPoolState,
+  beatReviewPool,
 } from "./visionAwareSelection";
 
 /**
@@ -189,9 +190,32 @@ describe("the finding reaches the render log", () => {
      * This round measures; it changes no decision. Raising the look budget because the editor was
      * barely asked would be answering a question nobody has established yet — the count is what
      * says whether the cause is budget at all.
+     *
+     * ── RONDE 253 re-pointed this, and did not weaken it ────────────────────────────────────
+     *
+     * It used to assert two exact source lines, one of which — `if (pool.declared.length > 0)
+     * return;` — was itself a defect: a single-winner route running first froze the beat's pool at
+     * one candidate for every later route. That spelling is gone. The PROPERTY this test exists for
+     * is untouched and is what it now asserts, behaviourally rather than by quotation: the
+     * declaration is bounded by the cap it was given, and no number of routes can talk it upward.
      */
-    const src = readFileSync(join(__dirname, "visionAwareSelection.ts"), "utf8");
-    expect(src).toContain("if (pool.declared.length > 0) return;");
-    expect(src).toContain("pool.declared = buildVisionReviewPool(ranked, cap).map");
+    const state = createVisionReviewPoolState();
+    for (const route of ["a", "b", "c", "d", "e"]) {
+      declareVisionReviewPool(
+        state, 0, 0,
+        Array.from({ length: 6 }, (_, i) => ({ contentKey: `${route}:${i}`, cheapRank: i })),
+        8
+      );
+    }
+    const pool = beatReviewPool(state, 0, 0);
+    expect(pool.declared.length, "thirty offered, eight is the budget").toBe(8);
+    /**
+     * Only the budget invariants. This pool reviewed nothing, so POOL_DECLARED_NOTHING_REVIEWED is
+     * supposed to fire — it is the finding this very file was written for, and silencing it here
+     * would be the assertion removal the round forbids.
+     */
+    expect(
+      visionSelectionViolations(state).filter((v) => v.includes("OVER_BUDGET"))
+    ).toEqual([]);
   });
 });

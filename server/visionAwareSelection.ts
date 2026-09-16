@@ -237,6 +237,28 @@ export function beatReviewPool(
  * used — and never reach the editor at all, and the next-best candidate then takes the freed slot.
  * Recording only the asks would make that substitution invisible; recording both makes it a
  * number.
+ *
+ * ── RONDE 253: why a later route may add, where it used to be turned away ───────────────────
+ *
+ * This read `if (pool.declared.length > 0) return;` — the first route to declare owned the beat.
+ * A beat is not resolved by one route: render 585 measured thirteen `adoptClip` invocations on a
+ * single beat, and two of the routes that can run first are DELIBERATELY single-winner. Europeana
+ * and the Openverse web-wide fallback each fetch with `count=1`, take `[0]`, and offer one path.
+ * They are right to. But whichever of them ran first then froze the beat's declared pool at ONE,
+ * and every later route could aggregate ten, rank them and review them against a record that still
+ * said `reviewPool=1`. Render 585 printed the contradiction as `reviewed > declared`, which cannot
+ * happen under a model where a candidate is declared and then reviewed.
+ *
+ * So the declaration is now what its name always claimed: the candidates this beat nominated for
+ * the editor, across all of its routes, bounded by the beat's own cap.
+ *
+ * PRIORITY IS PRESERVED, EXCLUSIVITY IS NOT. A later route fills the room that is left and never
+ * displaces an earlier declaration, so the first cut keeps its place at the front of the list.
+ * Duplicates collapse, because two routes reaching the same Wikimedia file nominated one picture.
+ *
+ * NO BUDGET MOVES HERE. The cap is the caller's, `buildVisionReviewPool` still orders the
+ * additions deterministically, and `REVIEW_POOL_OVER_BUDGET` still guards the ceiling — a pool
+ * that is already full accepts nothing at all.
  */
 export function declareVisionReviewPool(
   state: VisionReviewPoolState | undefined,
@@ -247,9 +269,25 @@ export function declareVisionReviewPool(
 ): void {
   if (!state) return;
   const pool = beatReviewPool(state, sceneIndex, beatIndex, cap);
-  /** A route that runs after another has already declared adds nothing — the first cut stands. */
-  if (pool.declared.length > 0) return;
-  pool.declared = buildVisionReviewPool(ranked, cap).map((c) => c.contentKey);
+  /** The beat's ceiling, which `beatReviewPool` has already raised to the widest cap it was told. */
+  const room = pool.cap - pool.declared.length;
+  if (room <= 0) return;
+  const already = new Set(pool.declared);
+  /**
+   * Ordered by the same rule as a first declaration — cheap rank, then content key — and only then
+   * cut to the room that is left. Sorting before filtering is what makes a second route's best
+   * candidate its first addition rather than whichever one it happened to list first.
+   */
+  const additions: string[] = [];
+  for (const c of buildVisionReviewPool(ranked, ranked.length)) {
+    if (additions.length >= room) break;
+    /** One identity is one candidate, whether the repeat came from this route or an earlier one. */
+    if (already.has(c.contentKey)) continue;
+    already.add(c.contentKey);
+    additions.push(c.contentKey);
+  }
+  if (additions.length === 0) return;
+  pool.declared = [...pool.declared, ...additions];
 }
 
 /** One candidate was put to the editor and answered. Re-answering replaces, never appends. */
