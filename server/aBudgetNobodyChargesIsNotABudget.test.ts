@@ -180,13 +180,28 @@ describe("3. work that cannot be charged is counted, never refused", () => {
     expect(state.byBeat.size).toBe(0);
   });
 
-  it("a half-identified beat is unscoped too — a scene is not a beat", () => {
+  /**
+   * RONDE 256 RE-POINTED THIS, AND MADE IT STRICTER.
+   *
+   * The property is unchanged and is the one this test was written for: A SCENE IS NOT A BEAT. A
+   * scene-only scope must never be charged to a beat, must never be refused, and must never vanish.
+   * All three are asserted below, where the original asserted only that the count landed in
+   * `unscoped`.
+   *
+   * What changed is which counter it lands in. `unscoped` was carrying two different facts —
+   * "scene-level work, which correctly has no beat" and "work that cannot name even a scene, and has
+   * therefore lost its provenance" — and render 585's `UNSCOPED total=568` read as a third of the
+   * render escaping every ceiling when most of it was the scene candidate pool doing its job.
+   */
+  it("a half-identified beat is never charged to a beat — a scene is not a beat", () => {
     const state = createRetrievalBudgetState();
     setBudgetResolver(() => state);
     withQueryScope({ sceneIndex: 4 }, () => {
       expect(chargeAmbientBudget("downloads")).toBe(true);
     });
-    expect(state.unscoped.downloads).toBe(1);
+    expect(state.byBeat.size, "no beat may be invented to carry this").toBe(0);
+    expect(state.exhausted, "and no beat may be blamed for it").toEqual([]);
+    expect(state.sceneScoped.downloads, "counted, not lost").toBe(1);
   });
 
   it("the unscoped total is reported, so the hole is visible", () => {

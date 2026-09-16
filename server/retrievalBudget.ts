@@ -76,6 +76,26 @@ export type RetrievalBudgetState = {
    * it was not being charged. If this number is large, the bound is not covering what it claims.
    */
   unscoped: BeatSpend;
+  /**
+   * RONDE 256 — WORK THAT NAMED ITS SCENE AND HAS NO BEAT TO NAME.
+   *
+   * Split out of `unscoped`, because the two had opposite meanings and one number.
+   *
+   * `buildSceneCandidatePool` opens `withQueryScope({ videoId, sceneIndex })` — deliberately, with
+   * no beat. It is assembling a pool that several beats will draw from, so there IS no single beat
+   * to charge, and the note above says why inventing one would be worse than counting it: the spend
+   * would be filed against a beat that never asked.
+   *
+   * Render 585 reported `UNSCOPED total=568 downloads=227 preparations=341` beside twenty beats
+   * refused by their own ceilings, which reads as a third of the render escaping the rem. Most of it
+   * is scene-level work that never had a per-beat ceiling to escape. Counted apart so the number
+   * that IS alarming — work that cannot name even a scene, and has therefore lost its provenance —
+   * stops being buried in it.
+   *
+   * NO CEILING IS ATTACHED HERE. The scene pool bounds itself already, and a scene budget would be
+   * a number invented without evidence that a ceiling is the thing missing.
+   */
+  sceneScoped: BeatSpend;
 };
 
 export function createRetrievalBudgetState(): RetrievalBudgetState {
@@ -83,6 +103,7 @@ export function createRetrievalBudgetState(): RetrievalBudgetState {
     byBeat: new Map(),
     exhausted: [],
     unscoped: { queries: 0, downloads: 0, preparations: 0, rescues: 0 },
+    sceneScoped: { queries: 0, downloads: 0, preparations: 0, rescues: 0 },
   };
 }
 
@@ -213,7 +234,15 @@ export function chargeAmbientBudget(kind: BudgetKind): boolean {
   if (!state) return true;
   const { sceneIndex, beatIndex } = getQueryScope();
   if (sceneIndex == null || beatIndex == null) {
-    state.unscoped[kind] += 1;
+    /**
+     * RONDE 256 — a scene that named itself is not work that named nothing.
+     *
+     * Both are allowed through and neither is charged to a beat, which is unchanged. What changed
+     * is that they are counted apart: the scene pool legitimately has no beat, and work with no
+     * scene either has lost its provenance and is the number worth looking at.
+     */
+    if (sceneIndex != null) state.sceneScoped[kind] += 1;
+    else state.unscoped[kind] += 1;
     return true;
   }
   return budgetAllows(state, sceneIndex, beatIndex, kind);
@@ -231,7 +260,11 @@ export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined):
     (n, k) => n + state.unscoped[k],
     0
   );
-  if (state.byBeat.size === 0 && unscopedTotal === 0) return [];
+  const sceneScopedTotal = (Object.keys(state.sceneScoped) as BudgetKind[]).reduce(
+    (n, k) => n + state.sceneScoped[k],
+    0
+  );
+  if (state.byBeat.size === 0 && unscopedTotal === 0 && sceneScopedTotal === 0) return [];
   const total: BeatSpend = { queries: 0, downloads: 0, preparations: 0, rescues: 0 };
   for (const spend of state.byBeat.values()) {
     for (const kind of Object.keys(total) as BudgetKind[]) total[kind] += spend[kind];
@@ -246,6 +279,22 @@ export function formatRetrievalBudgets(state: RetrievalBudgetState | undefined):
    * because nothing said which beat it belonged to — so the per-beat caps above did not apply to
    * it, and a reader comparing the totals to the caps needs to know that.
    */
+  /**
+   * RONDE 256 — scene-level work, named as what it is.
+   *
+   * Printed BEFORE the unscoped line and worded differently on purpose. This is the scene candidate
+   * pool doing its job: it has a scene and no beat, because it is building a pool several beats will
+   * draw from. Render 585 reported it beside genuinely provenance-less work under one heading, and
+   * 568 of those read as a third of the render escaping every ceiling.
+   */
+  if (sceneScopedTotal > 0) {
+    const s = state.sceneScoped;
+    lines.push(
+      `[RetrievalBudget] SCENE_SCOPED total=${sceneScopedTotal} queries=${s.queries} ` +
+        `downloads=${s.downloads} preparations=${s.preparations} rescues=${s.rescues} — ` +
+        `scene-level work with no single beat to charge; the per-beat caps do not apply by design`
+    );
+  }
   if (unscopedTotal > 0) {
     const u = state.unscoped;
     lines.push(
