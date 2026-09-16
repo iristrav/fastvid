@@ -205,9 +205,19 @@ describe("§4 — the downloader has no silent exit left", () => {
     }
   });
 
-  /** Both success paths report too — a success nobody can grep for is the same blindness. */
-  it("both success routes report DOWNLOAD_SUCCESS", () => {
-    expect([...BODY.matchAll(/reportDownload\("DOWNLOAD_SUCCESS"/g)]).toHaveLength(2);
+  /**
+   * Every success path reports too — a success nobody can grep for is the same blindness.
+   *
+   * Written as "as many reports as there are successful exits" rather than as the literal 2 this
+   * asserted when there were two routes. RONDE 261 added a third successful exit (re-cutting from
+   * a source this render already fetched) and the count alone could not tell that apart from a
+   * route that had stopped reporting — which is the very thing this section exists to catch.
+   */
+  it("EVERY success route reports DOWNLOAD_SUCCESS, however many there are", () => {
+    const successfulExits = [...BODY.matchAll(/\n\s*return true;/g)].length;
+    const reported = [...BODY.matchAll(/reportDownload\("DOWNLOAD_SUCCESS"/g)].length;
+    expect(successfulExits, "the downloader stopped succeeding").toBeGreaterThanOrEqual(2);
+    expect(reported, "a success path that reports nothing").toBe(successfulExits);
   });
 
   /** And every status in the vocabulary is actually reachable from a real branch. */

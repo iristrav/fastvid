@@ -271,6 +271,91 @@ export function resetPermanentDownloadRefusals(): void {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * RONDE 261 — THE PIPELINE REMEMBERED ITS FAILURES AND FORGOT ITS SUCCESSES.
+ *
+ * ── What the render after RONDE 260 measured ────────────────────────────────────────────────
+ *
+ *     ODx7fCL6BHw   3 405 471 bytes   downloaded SIX times, scene 2
+ *     each one preceded by:  "Cloud DL failed … exceeded 21s — falling back to RapidAPI"
+ *
+ * Six identical transfers of one file, each paying twenty-odd seconds to the cloud route first.
+ * Two minutes and seventeen megabytes for a file that was on disk after the first one.
+ *
+ * ── Why it appeared only now ────────────────────────────────────────────────────────────────
+ *
+ * The memo above remembers what FAILED, and nothing remembers what worked. While the downloads
+ * were failing that asymmetry was invisible: the refusal memo skipped the repeats and did the job
+ * of a dedup by accident. RONDE 260 made the transfers succeed, the refusal memo stopped firing,
+ * and there was nothing underneath it.
+ *
+ * It is also why render 586 skipped a video it had successfully downloaded with the reason
+ * "already refused this render" — the only memory of that video was of its failed cloud leg.
+ *
+ * ── What is remembered, and what deliberately is not ────────────────────────────────────────
+ *
+ * The UNTRIMMED SOURCE, not the clip. Two beats asking for the same video ask for different
+ * seconds of it — `downloadYouTubeCCClip` takes `clipStart` and `duration` and cuts to them — so
+ * handing the second beat the first beat's clip would be a silent substitution, and this codebase
+ * forbids those for good reason. The source file is identical for every request; the cut is not.
+ *
+ * So a repeat request re-cuts from the file already on disk, at ITS OWN start and duration. The
+ * content of the render does not change by a frame. Only the transfer is skipped.
+ * ════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/** videoId → the untrimmed source this render already fetched. Cleared per render. */
+const youtubeSourceFiles = new Map<string, { path: string; bytes: number }>();
+
+/** How many transfers the memo has saved this render — the evidence that it does anything. */
+let youtubeSourceReuses = 0;
+
+/**
+ * Remember where this render put a video's untrimmed source.
+ *
+ * First writer wins, matching the refusal memo beside it: a second successful download of the
+ * same video is the thing this exists to prevent, so if one happens anyway the first path is
+ * still the one to re-cut from.
+ */
+export function noteYoutubeSourceFile(videoId: string, filePath: string, bytes: number): void {
+  if (!videoId || !filePath || !(bytes > 0)) return;
+  if (!youtubeSourceFiles.has(videoId)) youtubeSourceFiles.set(videoId, { path: filePath, bytes });
+}
+
+/**
+ * The source this render already has for this video, or null.
+ *
+ * Every hit is counted, for the same reason the refusal memo counts its own: an optimisation
+ * nobody can measure is one nobody can check.
+ */
+export function youtubeSourceFile(videoId: string): { path: string; bytes: number } | null {
+  if (!videoId) return null;
+  const hit = youtubeSourceFiles.get(videoId);
+  if (!hit) return null;
+  youtubeSourceReuses++;
+  return hit;
+}
+
+/** Start of a render: the files are in a work directory that is about to be deleted. */
+export function resetYoutubeSourceFiles(): void {
+  youtubeSourceFiles.clear();
+  youtubeSourceReuses = 0;
+}
+
+/** What the memo holds and what it saved — reported at the end of a render. */
+export function youtubeSourceReuseStats(): { held: number; reused: number } {
+  return { held: youtubeSourceFiles.size, reused: youtubeSourceReuses };
+}
+
+/** The line the render logs, so the saving is visible rather than merely believed. */
+export function formatYoutubeSourceReuse(): string | null {
+  const { held, reused } = youtubeSourceReuseStats();
+  if (held === 0) return null;
+  return (
+    `[YouTubeSourceReuse] ${held} source file(s) kept this render, ` +
+    `${reused} transfer(s) not repeated`
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
  * RONDE 235 — THE ONE DOWNLOAD ROUTE THE CHOKE POINT CANNOT SPEAK FOR.
  *
  * The memo above is written at exactly one place, `downloadToFileStreaming`, and RONDE 223 asserts

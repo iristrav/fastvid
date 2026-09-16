@@ -66,6 +66,7 @@ import {
   formatRetryGuard,
   notePermanentDownloadRefusal,
   noteYoutubeDownloadRefusal,
+  noteYoutubeSourceFile,
   permanentDownloadRefusal,
   resetPermanentDownloadRefusals,
   cloudEgressRefusal,
@@ -75,6 +76,9 @@ import {
   resetCloudEgressBlocked,
   shouldRetryAfterFailure,
   youtubeDownloadRefusal,
+  youtubeSourceFile,
+  formatYoutubeSourceReuse,
+  resetYoutubeSourceFiles,
   youtubeServiceRefusalReason,
 } from "./providerFailureClass";
 import { egressRefusalReason } from "./youtubeEgressProbe";
@@ -14851,6 +14855,43 @@ export async function downloadYouTubeCCClip(
    * this deliberately shares so the two read as one decision in the log.
    */
   /**
+   * RONDE 261 — THE FILE IS ALREADY HERE.
+   *
+   * Read before every route, including the latch below, because a transfer that does not need to
+   * happen is cheaper than the cheapest way of deciding which route should perform it. The render
+   * after RONDE 260 fetched one 3.4 MB video six times, and paid the cloud route its full
+   * twenty-second share before each one.
+   *
+   * THE CUT IS NOT REUSED, ONLY THE SOURCE. This request has its own `clipStart` and `duration`,
+   * and gets its own seconds of the same file — handing it the previous beat's clip would be a
+   * silent substitution. `resolveTrimStartSec` runs against the same file it always did, so the
+   * start is re-derived here exactly as it would have been after a fresh download.
+   *
+   * A miss, a vanished file or a trim that will not cut falls through to the routes below, which
+   * are untouched: this can save a download and can never be the reason one does not happen.
+   */
+  const heldSource = youtubeSourceFile(videoId);
+  if (heldSource && fs.existsSync(heldSource.path)) {
+    const reuseStart = await resolveTrimStartSec(
+      heldSource.path, clipStart, duration, videoId, startIsExact
+    );
+    if (
+      await trimRemoteVideoToClip(
+        heldSource.path, outPath, duration, reuseStart,
+        `YouTube source reuse scene ${sceneIndex}`
+      )
+    ) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex}: ✅ YouTube ${videoId} re-cut from the source this render ` +
+          `already fetched (${heldSource.bytes} bytes, start ${reuseStart.toFixed(1)}s) — no transfer`
+      );
+      note("rapidapi", "DOWNLOAD_SUCCESS", `${heldSource.bytes}_bytes_source_reused`);
+      reportDownload("DOWNLOAD_SUCCESS", "source_reuse");
+      return true;
+    }
+  }
+
+  /**
    * The latch is read here, before the budget check, because a dead route costs nothing to skip
    * and the budget it would have spent is worth more to the routes that still work.
    */
@@ -15216,6 +15257,12 @@ export async function downloadYouTubeCCClip(
               note("rapidapi", "DOWNLOAD_EMPTY", `below_size_floor_${rapidFileSize}_bytes`);
             }
             if (rapidFileSize >= 50_000 && rapidFileSize <= 80 * 1024 * 1024) {
+              /**
+               * RONDE 261: the whole source is on disk and validated. Remembered HERE, before the
+               * trim, because what the next beat needs is this file — not the clip about to be cut
+               * out of it for this one.
+               */
+              noteYoutubeSourceFile(videoId, tmpPath, rapidFileSize);
               // RONDE 64: the whole source is on disk here, so stop guessing its length.
               //
               // This route downloads the entire video and only then trims. Every attempt so far
@@ -42754,6 +42801,8 @@ async function _runVideoPipelineInner(
   resetPermanentDownloadRefusals();
   /** The cloud route's egress latch is render-scoped too — see noteCloudEgressBlocked. */
   resetCloudEgressBlocked();
+  /** RONDE 261: the sources it points at live in a work directory this render is about to make. */
+  resetYoutubeSourceFiles();
   getRenderCtx().watchdog = watchdog;
 
   // Per-stage budgets — initialised to fallback values, replaced with
@@ -47212,6 +47261,13 @@ async function _runVideoPipelineInner(
     {
       const refusalLine = formatPermanentDownloadRefusals();
       if (refusalLine) console.log(pipelineReport.add("summary", refusalLine));
+      /**
+       * RONDE 261: beside it, and for the same reason. The refusal memo has reported what it saved
+       * since RONDE 223; its counterpart for successful downloads had no memo at all, so a render
+       * could fetch one video six times and say nothing about it.
+       */
+      const reuseLine = formatYoutubeSourceReuse();
+      if (reuseLine) console.log(pipelineReport.add("summary", reuseLine));
     }
 
     const finalVideoSizeBytes = (await fs.promises.stat(finalVideoPath)).size;
