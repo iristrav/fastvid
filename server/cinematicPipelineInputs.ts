@@ -53,6 +53,7 @@ import {
 import type { Scene } from "./pipeline/types";
 import type { AssetSourceIdentity } from "./projectTimeline";
 import { identityFromAdoption, identityIsRehydratable } from "./assetIdentity";
+import { identityHasRehydrationRoute } from "./assetRehydrator";
 /** F-1 — the local-file check below asks the filesystem rather than trusting a name. */
 import fs from "node:fs";
 import type { CinematicBeatInput, CinematicSceneInput } from "./cinematicPipeline";
@@ -350,10 +351,33 @@ function assetLabel(adoption: AdoptionFacts | null | undefined): string {
   return `asset=${provider}:${sourceId} provider=${provider} sourceId=${sourceId}`;
 }
 
+/**
+ * The identity to plan a shot around, or null when the planner must look for another handle.
+ *
+ * ── RONDE 255: why this asks the VALIDATOR's question ───────────────────────────────────────
+ *
+ * This used to ask `identityIsRehydratable`, which answers "is there anything to go on" and counts a
+ * media URL as enough. The validator that judges the finished plan asks `identityHasRehydrationRoute`,
+ * which answers "is there a way back" and does not. Both are right about their own question, and the
+ * two disagreed about the same asset on render 585:
+ *
+ *     planner    identityIsRehydratable      → TRUE   (a mediaUrl is present)
+ *     validator  identityHasRehydrationRoute → FALSE  (serpapi has no route, no archiveAssetId)
+ *
+ * The beat was let through here and the whole plan was refused there. Worse, the fallback written
+ * for exactly this — `localOnlyIdentityFor` below — is only consulted when THIS returns null, so the
+ * one case it exists for could never reach it. `localOnly=0` in that render's stats is the receipt.
+ *
+ * Asking the stricter question makes the two agree, which is the only way the fallback can do its
+ * job. It rejects nothing the validator would have accepted: a provider with a real route still
+ * passes, unchanged.
+ */
 export function identityFrom(adoption: AdoptionFacts | null): AssetSourceIdentity | null {
   if (!adoption) return null;
   const identity = identityFromAdoption(adoption);
-  return identity && identityIsRehydratable(identity) ? identity : null;
+  if (!identity) return null;
+  if (!identityIsRehydratable(identity)) return null;
+  return identityHasRehydrationRoute(identity) ? identity : null;
 }
 
 /**
@@ -396,7 +420,20 @@ export function localOnlyIdentityFor(
     /** An unreadable path is not a usable one. Same answer as a missing file. */
     return null;
   }
-  return identityFromAdoption(adoption);
+  const identity = identityFromAdoption(adoption);
+  if (!identity) return null;
+  /**
+   * RONDE 255 — the conclusion this function just reached, written down.
+   *
+   * It verified the bytes are here and then handed back an identity that said nothing about it, so
+   * every later reader had to make the check again and none of them did. The validator in
+   * particular asked `identityHasRehydrationRoute`, got a truthful no, and discarded a plan built
+   * around a file sitting on disk.
+   *
+   * The flag says only what was checked: THIS render held it. It is not a re-fetch route and does
+   * not pretend to be one.
+   */
+  return { ...identity, heldLocallyAtRender: true };
 }
 
 /**

@@ -60,6 +60,24 @@ export type AssetSourceIdentity = {
   /** The human-facing page the media came from. For attribution and manual recovery, not fetching. */
   sourcePageUrl?: string;
   title?: string;
+  /**
+   * RONDE 255 — THE RENDER THAT BUILT THIS PLAN WAS HOLDING THE FILE.
+   *
+   * Set only after the bytes were found on disk and counted, never inferred from a path or a name.
+   * It is a statement about ONE moment — the render that planned this shot — and deliberately not a
+   * promise about any later one: `identityHasRehydrationRoute` still answers false for a provider
+   * with no way back, and it should.
+   *
+   * It exists because those two facts were being collapsed. Render 585 held a SerpAPI still on disk,
+   * used it in the delivered film through the legacy route, and threw away the entire cinematic plan
+   * because the clip could not be promised re-fetchable. `localOnlyIdentityFor` had already checked
+   * the file and returned an identity that said nothing about it — the conclusion computed and then
+   * dropped, which is the shape this codebase keeps producing.
+   *
+   * A stored plan carrying this flag is renderable today and names, per shot, what a re-render may
+   * not find. That is more than the plan said before, not less.
+   */
+  heldLocallyAtRender?: true;
 };
 
 /* ═══════════════════════ tracks ═══════════════════════ */

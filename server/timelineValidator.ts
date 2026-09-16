@@ -89,6 +89,16 @@ export type TimelineIssueCode =
   | "invalid_transition"
   | "out_of_track_range"
   | "missing_asset"
+  /**
+   * RONDE 255 — this render is holding the file, and nothing can fetch it again.
+   *
+   * NON-BLOCKING, and deliberately not a variety of `missing_asset`. That code means the clip
+   * cannot be sourced at all, which stops a render. This one renders perfectly today and is simply
+   * not guaranteed to a plan reopened months from now — so blocking on it throws away a whole
+   * timeline for a shot that works, which is exactly what render 585 did before falling back to the
+   * legacy route and using that same picture anyway.
+   */
+  | "local_only_asset"
   | "duplicate_element_id"
   | "invalid_gain"
   | "invalid_fade"
@@ -318,6 +328,31 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
       code: "missing_asset", track: "VIDEO", elementId: clip.id,
       start: clip.timelineStart, end: clip.timelineEnd,
       reason: `no way to fetch this asset: ${where}`,
+    });
+  } else if (clip.source.heldLocallyAtRender) {
+    /**
+     * RONDE 255 — RENDERABLE TODAY, NOT GUARANTEED TOMORROW. Reported, never blocking.
+     *
+     * Render 585 refused a whole plan — four camera moves, two transitions, the ambience bed and
+     * the ducking — over one SerpAPI still, and then delivered the film through the legacy route
+     * USING THAT SAME PICTURE. The asset was never lost; its bytes were on disk, and compose read
+     * them. What could not be promised was fetching it AGAIN, months later, from a third-party
+     * host. Those are two different facts and `missing_asset` was answering with one verdict.
+     *
+     * So the distinction is made here rather than the standard being lowered. A clip with no handle
+     * at all still blocks, above. A clip whose provider has no route and which this render is NOT
+     * holding still blocks, below. This branch is only the one we have in hand.
+     *
+     * `heldLocallyAtRender` is set by `localOnlyIdentityFor` after finding the file and measuring
+     * it — never by a provider, never from a name. And it changes no answer anywhere else:
+     * `identityHasRehydrationRoute` still says false for this clip, because it still is false.
+     */
+    issues.push({
+      code: "local_only_asset", track: "VIDEO", elementId: clip.id,
+      start: clip.timelineStart, end: clip.timelineEnd,
+      reason:
+        `this render is holding the file, and no route exists to fetch it again — ` +
+        `a re-render of this plan may not find it: ${where}`,
     });
   } else if (!identityHasRehydrationRoute(clip.source)) {
     /**
@@ -821,6 +856,15 @@ export const NON_BLOCKING_ISSUES: ReadonlySet<TimelineIssueCode> = new Set([
   "unsupported_effect",
   "unsupported_transition",
   "unsupported_graphic",
+  /**
+   * RONDE 255 — a shot we are holding is a shot we can render.
+   *
+   * The only reason to block would be to keep every stored plan re-renderable forever, and render
+   * 585 shows what that costs: the plan was discarded, the film fell back to the legacy route, and
+   * the very clip the validator refused went into the delivered video anyway. The durability is
+   * still reported — per shot, by name — which is more than the plan carried before.
+   */
+  "local_only_asset",
 ]);
 
 export function assertRenderableTimeline(timeline: ProjectTimeline): TimelineValidation {
