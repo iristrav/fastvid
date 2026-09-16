@@ -16585,30 +16585,55 @@ async function adoptBestCelebrityClip(
       scoreCelebrityCandidate(b, beatText, personName, keywords) -
       scoreCelebrityCandidate(a, beatText, personName, keywords)
   );
+  // P0/P1 image-quality patch — Fix 2: real, provider-authored text (not our own search
+  // query) is the only usable "external annotation" signal these providers actually return.
+  // Registering it here — the single point every CelebrityClipCandidate producer (Wikimedia,
+  // GDELT, SepiaSearch, Internet Archive, Vimeo CC, Europeana) already funnels through before
+  // adoptClip — gives both scoreAnnotationFingerprint (assetDirector.ts) and the entity gate
+  // (hasReliableEntityEvidence) something honest to check besides the query/filename.
   for (const c of sorted) {
-    // P0/P1 image-quality patch — Fix 2: real, provider-authored text (not our own search
-    // query) is the only usable "external annotation" signal these providers actually return.
-    // Registering it here — the single point every CelebrityClipCandidate producer (Wikimedia,
-    // GDELT, SepiaSearch, Internet Archive, Vimeo CC, Europeana) already funnels through before
-    // adoptClip — gives both scoreAnnotationFingerprint (assetDirector.ts) and the entity gate
-    // (hasReliableEntityEvidence) something honest to check besides the query/filename.
     if (c.title) {
       const existing = dedup.clipAnnotationMeta.get(c.path) ?? {};
       dedup.clipAnnotationMeta.set(c.path, { ...existing, providerText: { title: c.title } });
     }
-    const clip = await adoptClip(
-      [c.path],
-      dedup,
-      sceneIndex,
-      beatIndex,
-      beatText,
-      workDir,
-      c.query,
-      opts
-    );
-    if (clip) return clip;
   }
-  return null;
+  /**
+   * RONDE 252 — ONE SELECTION CONTEXT, NOT N SELECTIONS OF ONE.
+   *
+   * This walked `sorted` and called `adoptClip([c.path], …)` once per candidate. `adoptClip` says
+   * of itself that it "is the multi-candidate entry point: 29 call sites hand it the paths a
+   * route produced for one beat" — it ranks what it is given, declares the beat's vision review
+   * pool from that ranking, and walks the result preferring a FIT over a weaker verdict. Handing
+   * it one path at a time reduced every one of those decisions to a formality.
+   *
+   * Render 585 measured the cost: `ranked / rankRuns` never exceeded 1.00 on any of fifteen
+   * beats, and `reviewPool=1` on all fifteen against a cap of 8. The pool was correct; it was
+   * asked about one candidate at a time.
+   *
+   * ── Why this is safe to batch and costs no extra work ───────────────────────────────────
+   *
+   * `sorted` holds paths that are ALREADY FETCHED — `CelebrityClipCandidate.path` is a file on
+   * disk. Offering ten of them together starts no download that offering them one at a time did
+   * not already start; it changes which of the ten is chosen, not how many exist. Vision stays
+   * bounded by the beat's own cap inside `adoptClip`, untouched here.
+   *
+   * ── Why `beatText` and not `c.query` ────────────────────────────────────────────────────
+   *
+   * The two existing multi-candidate call sites both pass the beat text, and say why: a pool
+   * spans candidates found under different query strings, and passing any one of them would
+   * score every other candidate against a query it was never found under. The per-candidate
+   * query was correct while the call was per-candidate and is wrong for a pool.
+   */
+  return await adoptClip(
+    sorted.map((c) => c.path),
+    dedup,
+    sceneIndex,
+    beatIndex,
+    beatText,
+    workDir,
+    beatText,
+    opts
+  );
 }
 
 /** Script-aware Serp queries — event from narration first, then rotated portrait variants. */
@@ -28594,39 +28619,94 @@ async function researchBeatClipUnifiedInner(
       : [videoFirst, stillFallback, stockFallback]
     : [ranked];
 
+  /**
+   * RONDE 252 — THE POOL IS OFFERED AS A POOL.
+   *
+   * This walked `pool.slice(0, topN)` — up to twelve or twenty candidates — and called
+   * `adoptClip([candidate.path], …)` once for each. A list of twenty became twenty selections of
+   * one, and the beat's ranking, review pool and vision ordering each had a single candidate to
+   * decide between. Render 585: `ranked / rankRuns` never above 1.00 on any beat, `reviewPool=1`
+   * on all fifteen against a cap of 8.
+   *
+   * The candidates are already on disk, so offering them together starts no transfer that
+   * offering them singly did not. What changes is that `adoptClip` now gets to do the job it
+   * documents itself as doing.
+   *
+   * ── WHY THE LOOP SURVIVES, RATHER THAN BECOMING ONE CALL ────────────────────────────────
+   *
+   * Two checks below are about the candidate that WON, not about the pool: the licensed-stock
+   * cap fires only for a pexels/pixabay candidate, and the type checks fire per pool. With one
+   * call per candidate those were trivially attributable. With a pool they are not, so the winner
+   * is resolved back to its candidate through `clipContentKey`, which exists for exactly this and
+   * whose own note states the rule it relies on: "a derived asset keeps its parent's identity".
+   *
+   * A winner rejected by one of those checks is removed and the REMAINING pool is offered again,
+   * which preserves the old behaviour of trying the next candidate — while still asking about a
+   * pool rather than a single path. The rounds are bounded by the pool size, so this can never
+   * cost more `adoptClip` calls than the per-candidate loop it replaces, and normally costs one.
+   *
+   * A winner that cannot be resolved to a candidate is treated as licensed stock: the cap is the
+   * conservative reading, and a gate that cannot identify what it is admitting must not admit it
+   * freely.
+   */
   for (const pool of adoptPools) {
     if (!pool.length) continue;
-    for (const candidate of pool.slice(0, topN)) {
+    let selection = pool.slice(0, topN);
+    while (selection.length > 0) {
       let clip: string | null = null;
       try {
         clip = await withSceneFetchTimeout(
           () => adoptClip(
-            [candidate.path],
+            selection.map((c) => c.path),
             dedup,
             sceneIndex,
             beat.index,
             beat.text,
             workDir,
-            candidate.query,
+            /**
+             * The beat text, not one candidate's query: the pool spans candidates found under
+             * different query strings, and the two existing multi-candidate call sites both pass
+             * the beat text for that reason — scoring every candidate against a query it was
+             * never found under is worse than scoring none of them against their own.
+             */
+            beat.text,
             adoptOpts
           ),
           adoptMs,
           `media research adopt s${sceneIndex} b${beat.index}`
         );
       } catch {
-        continue;
+        break;
       }
-      if (!clip) continue;
-      if (archivalFirst && pool === videoFirst && !isAuthenticVideoClip(clip)) continue;
+      if (!clip) break;
+      const winnerKey = clipContentKey(clip);
+      const winnerIdx = selection.findIndex((c) => clipContentKey(c.path) === winnerKey);
+      const winner = winnerIdx >= 0 ? selection[winnerIdx]! : undefined;
+      /** Drop the winner and re-offer the rest; an unidentifiable winner ends the pool. */
+      const retryWithout = (): boolean => {
+        if (winnerIdx < 0) return false;
+        selection = selection.filter((_, i) => i !== winnerIdx);
+        return true;
+      };
+      if (archivalFirst && pool === videoFirst && !isAuthenticVideoClip(clip)) {
+        if (retryWithout()) continue;
+        break;
+      }
       if (archivalFirst && pool === stillFallback && !isStillPhotoClip(clip) && !isAuthenticVideoClip(clip)) {
-        continue;
+        if (retryWithout()) continue;
+        break;
       }
-      if (candidate.source === "pexels" || candidate.source === "pixabay") {
-        if (!canUseLicensedStockBeat(dedup)) continue;
+      if (!winner || winner.source === "pexels" || winner.source === "pixabay") {
+        if (!canUseLicensedStockBeat(dedup)) {
+          if (retryWithout()) continue;
+          break;
+        }
         markLicensedStockBeatUsed(dedup);
       }
       console.log(
-        `[MediaResearch] Scene ${sceneIndex} beat ${beat.index}: ${candidate.source} "${candidate.query}" (score ${candidate.score})`
+        `[MediaResearch] Scene ${sceneIndex} beat ${beat.index}: ` +
+          `${winner?.source ?? "unresolved"} "${winner?.query ?? beat.text}" ` +
+          `(score ${winner?.score ?? "n/a"}) from a pool of ${selection.length}`
       );
       return clip;
     }
