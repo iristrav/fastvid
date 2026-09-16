@@ -39,6 +39,7 @@ import {
   runCinematicPipeline,
 } from "./cinematicPipeline";
 import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./timelineValidator";
+import { repairTimelineForRender, formatTimelineRepairs } from "./timelineRepair";
 import { envFlagIsOn } from "./envFlag";
 import { formatCinematicAudio } from "./cinematicAmbient";
 import { formatCueSheet, type CurvePoint } from "./musicDirector";
@@ -410,13 +411,33 @@ export async function planAndStoreCinematicTimeline(
   log.push(formatQualitySummary(quality));
 
   const validation = validateTimeline(result.timeline);
-  const blocking = validation.issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
   for (const issue of validation.issues) {
     log.push(
       `[Validator] ${NON_BLOCKING_ISSUES.has(issue.code) ? "advisory" : "BLOCKING"} ` +
         formatTimelineIssue(issue)
     );
   }
+
+  /**
+   * RONDE 257 — A REFUSED PLAN IS REPAIRED WHERE THE FAULT IS ONE SHOT.
+   *
+   * Three renders lost their whole plan to a single clip: 563 to an overlap, 574 to four seconds of
+   * arithmetic, 585 to one SerpAPI still that could not be promised re-fetchable. Each time the
+   * CAUSE was repaired and this all-or-nothing was left standing, so the next cause cost the same
+   * thing again — and 585 then delivered the film through the legacy route USING THAT SAME PICTURE.
+   *
+   * `repairTimelineForRender` answers clip-scoped faults on their own clip and nothing else. A
+   * fault about the FILM — a format with no frame rate, a picture that ends before the narration —
+   * is not repaired, because deleting shots to answer it would make the film worse while claiming
+   * to fix it. Those still fall through to the fallback below, with the same reason as before.
+   *
+   * The validator is untouched and decides everything: it raises the issue, and the repaired plan
+   * is only used because it then returns clean. Every shot removed is named in the log, so the
+   * fallback line is not replaced by a quieter silence.
+   */
+  const repair = repairTimelineForRender(result.timeline);
+  log.push(...formatTimelineRepairs(repair.repairs));
+  const blocking = repair.remaining;
   if (blocking.length > 0) {
     return {
       ok: false,
@@ -425,6 +446,8 @@ export async function planAndStoreCinematicTimeline(
       log,
     };
   }
+  /** From here on the plan is the repaired one, so what is stored is what was proven renderable. */
+  result = { ...result, timeline: repair.timeline };
 
   /**
    * The version this plan is stored at.
