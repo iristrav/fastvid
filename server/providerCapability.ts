@@ -500,3 +500,87 @@ export function orderResearchTasksByNeed<T extends { provider?: string }>(
     .sort((a, b) => (b.fit ?? NEUTRAL) - (a.fit ?? NEUTRAL) || a.index - b.index)
     .map((s) => s.task);
 }
+
+/**
+ * P0-8 — WHICH SOURCES ARE ASKED FIRST, decided by what the beat needs rather than by a constant.
+ *
+ * ── The gap this closes ─────────────────────────────────────────────────────────────────────
+ *
+ * The registry was already a live input to two decisions: `contextualSourcePriority` reorders
+ * candidates AFTER they arrive, and `orderResearchTasksByNeed` orders a research round. Neither
+ * touches the one decision that happens FIRST and costs the most — which providers a scene
+ * actually queries, and in what order.
+ *
+ * `buildSceneCandidatePool` assigns every provider a fixed tier, the same tier on every beat of
+ * every topic, and `runTieredRetrieval` stops as soon as a tier satisfies the scene. So on a beat
+ * dated to 1945, Pexels and Pixabay — which the registry positively states cannot supply archival
+ * footage, because stock is shot now — sit in the same tier they occupy on a beat about a modern
+ * office, and a scene satisfied early may never reach the archives at all. The ranking fixed the
+ * order of what came back. It could not fix what was never fetched.
+ *
+ * ── The rule, and why it has no tunable threshold ───────────────────────────────────────────
+ *
+ * Only the two ends move anything, so there is no cut-point to argue about:
+ *
+ *   · the source supplies EVERY form this beat PREFERS — one tier earlier.
+ *   · the source supplies NONE of them — one tier later.
+ *   · anything in between, or a provider the registry has never heard of — exactly where the
+ *     author put it.
+ *
+ * ── Why the PREFERRED list and not `providerFitForNeed` ─────────────────────────────────────
+ *
+ * The first attempt used the blended score, and it could not fire on the case this exists for.
+ * `providerFitForNeed` mixes preferred and acceptable forms, so Pexels on a beat dated to 1945 —
+ * which supplies no archival footage at all — scores 0.500 on the strength of B_ROLL being
+ * acceptable, indistinguishable from a source that half-answers the beat.
+ *
+ * That blend is right where it is used: ranking a candidate that has already arrived should weigh
+ * everything the source can offer. It is wrong here, because this decides whether to spend a
+ * scene's earliest, most valuable retrieval slot on a source that cannot supply what the beat is
+ * actually asking for. So this reads the preferred list directly, through `providerSuppliesForm`,
+ * which keeps the same null rule: null is "no information" and never "no".
+ *
+ * ── What it may never do ────────────────────────────────────────────────────────────────────
+ *
+ * NOTHING IS REMOVED, and the movement is bounded at one tier in either direction. A source the
+ * registry mis-describes can therefore be asked a little later than it might have been, and can
+ * never be dropped, skipped or refused. The number of providers queried, every API key, every skip
+ * flag and every budget are untouched — this decides order, and only order.
+ *
+ * Tier 1 is the floor: a promotion never invents a tier above the first one the caller declared,
+ * because a task alone in a new tier 0 would run by itself and lose the parallelism that makes a
+ * tier a tier.
+ */
+export function tierTasksByNeed<T extends { tier: number; source: string }>(
+  tasks: readonly T[],
+  need: { preferred: readonly MediaForm[]; acceptable: readonly MediaForm[] } | undefined
+): T[] {
+  if (!need || need.preferred.length === 0) return [...tasks];
+  const floor = tasks.reduce((min, t) => Math.min(min, t.tier), Number.POSITIVE_INFINITY);
+  return tasks.map((task) => {
+    const supplies = need.preferred.map((form) => providerSuppliesForm(task.source, form));
+    /** null is "no information". One unknown answer is enough to leave the task where it was. */
+    if (supplies.some((s) => s == null)) return task;
+    if (supplies.every(Boolean)) return { ...task, tier: Math.max(floor, task.tier - 1) };
+    if (!supplies.some(Boolean)) return { ...task, tier: task.tier + 1 };
+    return task;
+  });
+}
+
+/**
+ * One line naming every source this need actually moved, and where to.
+ *
+ * Empty when nothing moved, because a line saying "no change" on every scene of every render is
+ * how a log stops being read. A moved source is the interesting case and the only one printed.
+ */
+export function describeTierChanges<T extends { tier: number; source: string }>(
+  before: readonly T[],
+  after: readonly T[]
+): string {
+  const was = new Map(before.map((t) => [t.source, t.tier]));
+  const moved = after
+    .filter((t) => was.get(t.source) !== t.tier)
+    .map((t) => `${t.source} ${was.get(t.source)}→${t.tier}`);
+  if (moved.length === 0) return "";
+  return `[Retrieval] tiers re-answered for this scene's need: ${moved.join(", ")}`;
+}

@@ -213,8 +213,20 @@ describe("R228 §2 — no verdict moved", () => {
   });
 
   it("the verdict-free pass still records itself — this reads the record, it does not stop it", () => {
-    expect(SRC).toContain("const pass = (verdict: BeatImageVerdict, reason: string, cached = false)");
-    expect(SRC).toContain("evaluated: false }");
+    /**
+     * P0-7 re-pointed this from the parameter list to what the parameter list was pinned FOR.
+     * `pass` gained a leading `declineCause` so a decline can name itself; what mattered here and
+     * still matters is that a verdict-free pass goes through `record()` and is written down as
+     * `evaluated: false` rather than being swallowed.
+     */
+    const at = SRC.indexOf("const pass = (");
+    expect(at, "the verdict-free pass is gone").toBeGreaterThan(0);
+    const block = SRC.slice(at, at + 500);
+    expect(block).toContain("record({");
+    expect(block).toContain("evaluated: false");
+    expect(block).toContain("reprieved: false");
+    /** And the fact P0-7 added, pinned in the same place so the two cannot drift apart. */
+    expect(block).toContain("declineCause");
   });
 
   it("the compose budget is untouched — finalSay's bypass is the one RONDE 215 already had", () => {

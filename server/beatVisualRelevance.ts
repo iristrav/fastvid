@@ -46,6 +46,7 @@ import path from "path";
 
 import {
   MAX_JUDGEMENTS_PER_BEAT,
+  type VisionDeclineCause,
   beatImageRelevanceGateEnabled,
   judgeBeatImage,
   judgementTally,
@@ -148,6 +149,20 @@ export type BeatRelevanceDecision = {
    * examined and found wanting.
    */
   evaluated: boolean;
+  /**
+   * P0-7 — AND WHICH DECLINE IT WAS, so the beat's funnel can count it by kind.
+   *
+   * `evaluated: false` is the signal that nobody looked. It says nothing about why, and the funnel
+   * needs the why: a spent budget, a blocked provider and an undecodable frame are three different
+   * findings that call for three different repairs, and all three arrived at `notAsked += 1`.
+   *
+   * Carried from the gate's own `declineCause` rather than re-derived from `reason` — see the note
+   * on `VisionDeclineCause` for why prose is the one thing a counter must never be built on. The
+   * two declines this file makes for itself name themselves the same way.
+   *
+   * Present exactly when `evaluated` is false.
+   */
+  declineCause?: VisionDeclineCause;
 };
 
 /**
@@ -469,8 +484,14 @@ export async function checkBeatRelevance(
    * A verdict-free pass. Every caller below is a case where the gate DID NOT LOOK, so `evaluated`
    * is false — see the field's note on `BeatRelevanceDecision`.
    */
-  const pass = (verdict: BeatImageVerdict, reason: string, cached = false): BeatRelevanceDecision =>
-    record({ verdict, allowed: true, reprieved: false, cached, depicts: "", reason, route, evaluated: false });
+  const pass = (
+    /** P0-7: WHICH decline this is. Leading and required, so no site can forget to say. */
+    declineCause: VisionDeclineCause,
+    verdict: BeatImageVerdict,
+    reason: string,
+    cached = false
+  ): BeatRelevanceDecision =>
+    record({ verdict, allowed: true, reprieved: false, cached, depicts: "", reason, route, evaluated: false, declineCause });
 
   /**
    * RONDE 199 — A CARD IS LOOKED AT TOO. THE ANSWER JUST CANNOT EMPTY THE BEAT.
@@ -489,8 +510,8 @@ export async function checkBeatRelevance(
    * can now say which of its cards the editor thought did not belong; it simply does not act on it
    * where acting means leaving a hole.
    */
-  if (!beatImageRelevanceGateEnabled()) return pass("unknown", "gate disabled");
-  if (!ctx.beatText?.trim()) return pass("unknown", "no narration to judge against");
+  if (!beatImageRelevanceGateEnabled()) return pass("GATE_DISABLED", "unknown", "gate disabled");
+  if (!ctx.beatText?.trim()) return pass("NO_NARRATION", "unknown", "no narration to judge against");
 
   const slot = beatSlotKey(ctx);
   const spentOnBeat = ledger.spendByBeat.get(slot) ?? 0;
@@ -502,7 +523,7 @@ export async function checkBeatRelevance(
   const alreadyKnown = state.seen.get(cacheKey);
   if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {
     state.judgementsSkipped++;
-    return pass("unknown", `per-beat look ceiling reached (${spentOnBeat})`);
+    return pass("BEAT_LOOK_CEILING", "unknown", `per-beat look ceiling reached (${spentOnBeat})`);
   }
   if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat()) {
     // RONDE 199: past the ceiling, deliberately, because this one is the beat's picture. See
@@ -604,6 +625,14 @@ export async function checkBeatRelevance(
     route,
     /** The gate's own answer to "did a model look at this", carried rather than re-derived. */
     evaluated: judgement.evaluated,
+    /**
+     * P0-7 — and the gate's own answer to "why not", carried the same way.
+     *
+     * Absent on an evaluated verdict, because there is no decline to name. The pairing with
+     * `evaluated` is asserted downstream: a decision that says nobody looked and cannot say why
+     * is the render-580 shape this round exists to make impossible.
+     */
+    ...(judgement.declineCause ? { declineCause: judgement.declineCause } : {}),
   };
   console.log(
     `[BeatRelevance] ${slot} ${route} ${decision.verdict}` +
@@ -762,6 +791,14 @@ export function relevanceVerdictForRenderedAsset(
   cached: boolean;
   reprieved: boolean;
   evaluated: boolean;
+  /**
+   * P0-7 — the same argument as `evaluated` one step further.
+   *
+   * `evaluated: false` stopped at this function once, and every reader had to treat "nobody
+   * looked" as one thing. It is not one thing: the funnel counts declines by kind, and the kind
+   * was already written on the decision. Absent when a model looked.
+   */
+  declineCause?: VisionDeclineCause;
   matchedBy: string;
 } | null {
   if (!ledger) return null;
@@ -789,6 +826,8 @@ export function relevanceVerdictForRenderedAsset(
      * qualifies rather than being re-derived from a counter somewhere else.
      */
     evaluated: entry.decision.evaluated,
+    /** Carried for the same reason `evaluated` is, and never re-derived from the reason string. */
+    ...(entry.decision.declineCause ? { declineCause: entry.decision.declineCause } : {}),
     matchedBy,
   });
 

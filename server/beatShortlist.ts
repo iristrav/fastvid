@@ -41,7 +41,7 @@
  * can consume shortlist slots without consuming its judgement budget. Twice the ceiling is the
  * headroom for exactly that, and it is where the brief's own example lands.
  */
-import { MAX_JUDGEMENTS_PER_BEAT } from "./beatImageRelevanceGate";
+import { MAX_JUDGEMENTS_PER_BEAT, type VisionDeclineCause } from "./beatImageRelevanceGate";
 
 function envInt(key: string, fallback: number, min: number, max: number): number {
   const raw = process.env[key];
@@ -148,7 +148,36 @@ export type NotAskedReason =
    * This reason grants NOTHING. It is recorded on the not-asked side precisely so the clip cannot
    * be counted as verified, and so the render's own numbers say how often the last resort ran.
    */
-  | "ADOPTED_WITHOUT_JUDGEMENT";
+  | "ADOPTED_WITHOUT_JUDGEMENT"
+  /**
+   * P0-7 — the gate is switched off by configuration. A CHOICE, NOT AN OUTAGE.
+   *
+   * Deliberately not folded into `VISION_UNAVAILABLE`. One says an operator turned the picture
+   * editor off and the render is doing exactly what it was told; the other says the editor was
+   * supposed to be there and could not be reached. Reading the first as the second sends somebody
+   * to check API keys that were never the problem.
+   */
+  | "VISION_GATE_DISABLED"
+  /**
+   * P0-7 — there was no narration to judge this picture against.
+   *
+   * A fact about the BEAT, not about the picture and not about the editor. It is the one decline
+   * no provider, budget or retry can fix, and it was previously indistinguishable from all three.
+   */
+  | "NO_NARRATION_TO_JUDGE"
+  /**
+   * P0-7 — A DECLINE THAT DID NOT SAY WHY. The bucket that exists to be empty.
+   *
+   * Render 580 recorded 228 declines and could attribute none of them, because `noteVisionOutcome`
+   * took an outcome and no cause: `NOT_ASKED` incremented a bare counter while the gate three
+   * layers down knew precisely which of eight things had happened.
+   *
+   * The honest repair is not to guess a reason at the call site. It is to make the absence of one
+   * COUNTABLE, so a route that forgets to name its cause shows up as a number rather than as
+   * silence distributed evenly over the reasons that did report. `everyDeclineIsAttributed` holds
+   * this at zero for the production paths; it is a defect detector, never a resting place.
+   */
+  | "DECLINE_CAUSE_NOT_REPORTED";
 
 /** The five states a candidate's vision outcome can be in. Only APPROVED is a positive selection. */
 export type BeatVisionOutcome =
@@ -638,7 +667,20 @@ export function noteVisionOutcome(
   state: BeatShortlistState | undefined,
   sceneIndex: number,
   beatIndex: number,
-  outcome: BeatVisionOutcome
+  outcome: BeatVisionOutcome,
+  /**
+   * P0-7 — WHY, on the one outcome that is not self-explaining.
+   *
+   * The four other outcomes carry their own reason: an approval, a refusal, an unclear answer and
+   * a render-wide outage each say what happened. `NOT_ASKED` says only that something did not, and
+   * for four hundred renders that was the end of it — `f.notAsked += 1` and no reason bumped, while
+   * `judgeBeatImage` three layers down had already distinguished eight causes.
+   *
+   * Read from the gate's own `declineCause` via `notAskedReasonForDecline`; never guessed here, and
+   * never parsed out of a message. An omission is recorded as `DECLINE_CAUSE_NOT_REPORTED` rather
+   * than as nothing, because a gap that can be counted gets fixed and a gap that cannot does not.
+   */
+  notAskedReason?: NotAskedReason
 ): void {
   if (!state) return;
   const f = beatFunnel(state, sceneIndex, beatIndex);
@@ -654,6 +696,43 @@ export function noteVisionOutcome(
     bumpReason(f, "VISION_UNAVAILABLE");
   } else {
     f.notAsked += 1;
+    bumpReason(f, notAskedReason ?? "DECLINE_CAUSE_NOT_REPORTED");
+  }
+}
+
+/**
+ * P0-7 — THE ONE PLACE A GATE DECLINE BECOMES A FUNNEL REASON.
+ *
+ * Total, so a cause added to `VisionDeclineCause` cannot quietly land in the unattributed bucket:
+ * the compiler refuses the switch until the new member is named here.
+ *
+ * The mapping is deliberately many-to-one in places and deliberately not in others. Both provider
+ * causes become `VISION_UNAVAILABLE` because the funnel's question is "could the editor be asked",
+ * and the difference between a blocked project and a spent quota is already carried in full by
+ * `judgementsProviderUnavailable` and the gate's own reason line. But a DISABLED gate does not
+ * join them, and a beat with no narration does not join anything — those are not outages, and
+ * reading them as one would send an operator to look at provider keys.
+ */
+export function notAskedReasonForDecline(cause: VisionDeclineCause): NotAskedReason {
+  switch (cause) {
+    case "GATE_DISABLED":
+      return "VISION_GATE_DISABLED";
+    case "NO_NARRATION":
+      return "NO_NARRATION_TO_JUDGE";
+    /** Both ceilings are the same finding for the funnel: the looks were spent before this one. */
+    case "RENDER_BUDGET_SPENT":
+    case "BEAT_LOOK_CEILING":
+      return "VISION_BUDGET_EXHAUSTED";
+    /**
+     * The bytes arrived and nothing showable came out of them. That is exactly what
+     * `PREPARATION_FAILURE` was declared for, and until now nothing produced it.
+     */
+    case "NO_FRAME":
+    case "FRAMES_UNREADABLE":
+      return "PREPARATION_FAILURE";
+    case "PROVIDER_UNREACHABLE":
+    case "PROVIDER_UNAVAILABLE":
+      return "VISION_UNAVAILABLE";
   }
 }
 
@@ -764,6 +843,115 @@ export function formatBeatShortlists(state: BeatShortlistState | undefined): str
 }
 
 /**
+ * P0-7 — WAS THIS RENDER BLIND, THRIFTY, OR STARVED? Three answers one number could not give.
+ *
+ * ── The question render 580 raised and could not settle ─────────────────────────────────────
+ *
+ *     [BeatImageGate] no verdict: 219x gate could not ask | 7x provider unavailable | 4x timeout
+ *     [BeatFunnel]    TOTAL … notAsked=228
+ *
+ * 228 candidates never reached the editor. Whether that render should have been fixed by restoring
+ * a provider, by re-ordering a shortlist, or by not shipping at all depends entirely on which of
+ * those 228 were which — and `notAsked` is one number, so it could not say.
+ *
+ * ── The partition, and why these three ──────────────────────────────────────────────────────
+ *
+ * Every named reason falls in exactly one bucket, and the buckets are chosen by WHAT THE OPERATOR
+ * WOULD DO about them, which is the only useful way to group a failure:
+ *
+ *   · BLIND — the editor could not be asked, or was switched off. Nothing about sourcing,
+ *     ordering or budget would have changed one of these. Restore the editor.
+ *   · STARVED — the editor WAS available and this candidate still never reached it: the beat's or
+ *     the render's look budget was spent, the shortlist was full, one source took the share, or
+ *     the bytes would not decode into a frame. These are the declines that are actually about
+ *     this pipeline's choices, and they are what P0-7 is named for.
+ *   · SETTLED — nothing was asked because there was nothing to ask: no candidates, none eligible,
+ *     no narration, the editor looked and answered, or a last-resort route took a clip knowingly.
+ *
+ * ── What this is NOT ────────────────────────────────────────────────────────────────────────
+ *
+ * Not a gate. Nothing here refuses a render, raises a budget or relaxes a bound; it reports what
+ * already happened, using causes written at the moment each decline occurred. `unattributed` is
+ * the count of declines that named no cause at all, and it is the one number here that is a bug
+ * report rather than a finding: on the production paths it is zero, and a test holds it there.
+ */
+export type DeclineCensus = {
+  blind: number;
+  starved: number;
+  settled: number;
+  /** Declines that reached the funnel with no cause. A defect counter — see its reason's note. */
+  unattributed: number;
+  /** Every reason with a non-zero count, so the three totals can always be checked against it. */
+  byReason: Map<NotAskedReason, number>;
+};
+
+/** Which bucket each reason belongs to. Total, so a new reason cannot be silently uncounted. */
+function declineBucket(reason: NotAskedReason): "blind" | "starved" | "settled" | "unattributed" {
+  switch (reason) {
+    case "VISION_UNAVAILABLE":
+    case "VISION_GATE_DISABLED":
+      return "blind";
+    case "SHORTLIST_FULL":
+    case "SHORTLIST_SOURCE_SHARE":
+    case "VISION_BUDGET_EXHAUSTED":
+    case "PREPARATION_FAILURE":
+      return "starved";
+    case "NO_CANDIDATES":
+    case "NO_ELIGIBLE_CANDIDATES":
+    case "SHORTLIST_EMPTY":
+    case "NO_NARRATION_TO_JUDGE":
+    case "DUPLICATE":
+    case "REJECTED_BY_EDITOR":
+    case "UNCLEAR_BY_EDITOR":
+    case "PROVIDER_FAILURE":
+    case "DOWNLOAD_FAILURE":
+    case "NOT_REACHED":
+    case "POLICY_BLOCKED":
+    case "ADOPTED_WITHOUT_JUDGEMENT":
+      return "settled";
+    case "DECLINE_CAUSE_NOT_REPORTED":
+      return "unattributed";
+  }
+}
+
+export function declineCensus(state: BeatShortlistState | undefined): DeclineCensus {
+  const census: DeclineCensus = {
+    blind: 0,
+    starved: 0,
+    settled: 0,
+    unattributed: 0,
+    byReason: new Map<NotAskedReason, number>(),
+  };
+  if (!state) return census;
+  for (const f of state.beats.values()) {
+    for (const [reason, n] of f.notAskedReasons) {
+      census.byReason.set(reason, (census.byReason.get(reason) ?? 0) + n);
+      census[declineBucket(reason)] += n;
+    }
+  }
+  return census;
+}
+
+/**
+ * One line naming the three, and the reasons behind them.
+ *
+ * Printed even when every bucket is zero would be noise, so an empty census prints nothing —
+ * but a render with declines always says which kind, because the whole point is that the operator
+ * should never again have to infer it from two logs that cannot be joined.
+ */
+export function formatDeclineCensus(state: BeatShortlistState | undefined): string {
+  const c = declineCensus(state);
+  const total = c.blind + c.starved + c.settled + c.unattributed;
+  if (total === 0) return "";
+  const rows = [...c.byReason.entries()].sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r}×${n}`);
+  return (
+    `[BeatFunnel] declines=${total} blind=${c.blind} starved=${c.starved} settled=${c.settled}` +
+    (c.unattributed > 0 ? ` UNATTRIBUTED=${c.unattributed}` : "") +
+    ` — ${rows.join(" ")}`
+  );
+}
+
+/**
  * The invariants this record exists to make checkable.
  *
  * Returns [] on a healthy render. Each finding is a statement that could not be made before,
@@ -773,6 +961,21 @@ export function beatShortlistViolations(state: BeatShortlistState | undefined): 
   if (!state) return [];
   const cap = maxShortlistPerBeat();
   const out: string[] = [];
+  /**
+   * P0-7 — A DECLINE THAT NAMED NO CAUSE IS A DEFECT IN THIS RECORD, NOT A FINDING ABOUT A BEAT.
+   *
+   * Every production path now reads the cause off the ledger entry the gate wrote. A count here
+   * above zero means a route reached `noteVisionOutcome` with NOT_ASKED and no cause — which is
+   * exactly the render-580 shape, and it is stated as an invariant violation rather than left to
+   * be noticed as an oddly-named row in the census.
+   */
+  const unattributed = declineCensus(state).unattributed;
+  if (unattributed > 0) {
+    out.push(
+      `[BeatFunnelInvariant] DECLINES_NOT_ATTRIBUTED n=${unattributed} — a candidate was recorded ` +
+        `as never asked about and the record cannot say why; see VisionDeclineCause`
+    );
+  }
   for (const f of state.beats.values()) {
     const at = `s${f.sceneIndex}b${f.beatIndex}`;
     if (f.shortlisted > cap) {

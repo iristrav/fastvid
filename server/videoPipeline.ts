@@ -262,6 +262,7 @@ import {
   formatQueryProvenance,
   queryIntentHints,
   mediaFormsForIntent,
+  mediaFormsForScene,
   queryProvenance,
   type BeatVisualIntent,
   createBeatVisualIntentState,
@@ -278,6 +279,7 @@ import {
   beatShortlistExhausted,
   maxShortlistPerBeat,
   beatShortlistViolations,
+  formatDeclineCensus,
   createBeatShortlistState,
   formatBeatShortlists,
   isShortlisted,
@@ -287,6 +289,8 @@ import {
   noteRetrieved,
   noteVisionAsked,
   noteVisionOutcome,
+  notAskedReasonForDecline,
+  type NotAskedReason,
   type BeatShortlistState,
 } from "./beatShortlist";
 import {
@@ -14629,6 +14633,40 @@ function beatVisionEvidenceFor(
   return found ? evidenceFromVerdict(found) : "UNREVIEWED";
 }
 
+/**
+ * P0-7 — AND WHY THE EDITOR DID NOT LOOK, from the same record, for the same beat.
+ *
+ * `beatVisionEvidenceFor` above answers "what did the editor say" and collapses every decline into
+ * `UNREVIEWED`. That collapse is correct for what the adopt loop does with it — an unreviewed
+ * candidate is an unreviewed candidate however it got there — and it is exactly wrong for the
+ * funnel, which has to be able to say whether a render was thrifty, blind or handed clips it could
+ * not decode. Render 580 recorded 228 declines and could attribute none of them.
+ *
+ * The cause is already on the ledger entry, written by the gate that declined. This reads it back
+ * and maps it once, through `notAskedReasonForDecline`, so no caller ever performs that mapping —
+ * or, worse, infers it from a message.
+ *
+ * Returns undefined for two distinct cases that are honestly the same here: no ledger entry at all,
+ * and an entry from a gate that looked. Neither is a decline this beat can attribute, and the
+ * funnel records that absence as `DECLINE_CAUSE_NOT_REPORTED` rather than inventing a reason.
+ */
+function beatDeclineReasonFor(
+  dedup: VisualDedupState,
+  clipPath: string,
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number
+): NotAskedReason | undefined {
+  const found = relevanceVerdictForRenderedAsset(dedup.beatRelevance, {
+    localPath: clipPath,
+    currentFilename: path.basename(clipPath),
+    contentKey,
+    sceneIndex,
+    beatIndex,
+  });
+  return found?.declineCause ? notAskedReasonForDecline(found.declineCause) : undefined;
+}
+
 
 
 
@@ -26538,7 +26576,15 @@ async function adoptClip(
           dedup.beatShortlist,
           sceneIndex,
           beatIndex,
-          beatEvidence === "FIT" ? "APPROVED" : beatEvidence === "UNCLEAR" ? "UNCLEAR" : "NOT_ASKED"
+          beatEvidence === "FIT" ? "APPROVED" : beatEvidence === "UNCLEAR" ? "UNCLEAR" : "NOT_ASKED",
+          /**
+           * P0-7 — the decline's own cause, read off the same ledger entry the evidence came from.
+           *
+           * Only meaningful on the NOT_ASKED branch, and `noteVisionOutcome` ignores it elsewhere;
+           * passed unconditionally because a reader should not have to check which branch is live
+           * to know the argument is the right one.
+           */
+          beatDeclineReasonFor(dedup, p, contentKey, sceneIndex, beatIndex)
         );
         noteReviewedCandidate(p, beatEvidence);
       }
@@ -31455,7 +31501,14 @@ async function beatClipPassesVisionGate(
     /** The key admission was granted on, so a repeat and a bypass cannot be confused. */
     noteVisionAsked(dedup.beatShortlist, scene.index, beat.index, shortlistKey);
   }
-  noteVisionOutcome(dedup.beatShortlist, scene.index, beat.index, gateVerdict);
+  noteVisionOutcome(
+    dedup.beatShortlist,
+    scene.index,
+    beat.index,
+    gateVerdict,
+    /** P0-7 — the gate just wrote why it declined; this is where the beat's account reads it. */
+    beatDeclineReasonFor(dedup, clipPath, clipContentKey(clipPath), scene.index, beat.index)
+  );
   if (gateVerdict === "NOT_ASKED") {
     /**
      * Nobody looked, so the place goes back. This is the route render 576 refused fifty candidates
@@ -36870,6 +36923,17 @@ async function refillSceneStrictVoiceMatch(
        */
       for (const line of formatBeatShortlists(dedup.beatShortlist)) console.error(line);
       /**
+       * P0-7 — and the one line that says which KIND of decline those totals are made of.
+       *
+       * Printed beside the funnel rather than in a separate report for the reason RONDE 227 gives
+       * two comments down: a number that can only be joined to its explanation in another log is a
+       * number nobody joins. Empty on a render with no declines.
+       */
+      {
+        const census = formatDeclineCensus(dedup.beatShortlist);
+        if (census) console.error(census);
+      }
+      /**
        * RONDE 227 — the invariants, for the third time on the same argument.
        *
        * `beatShortlistViolations` had exactly one reader, at line ~44225, inside the report. So
@@ -37541,6 +37605,17 @@ async function fetchSceneVisualsInner(
                * tiering at all.
                */
               beatCount: beats.length,
+              /**
+               * P0-8 — WHAT THIS SCENE NEEDS, so the tier table answers for this scene.
+               *
+               * The union of the needs of the sentences in it, from the same registry and the same
+               * intents the ranking already reads one layer down. Without it every provider keeps
+               * the tier a constant gave it, and a scene satisfied by tier 1 never asks the archives
+               * on a beat dated to 1945. See `tierTasksByNeed` — it reorders, never removes.
+               */
+              mediaFormNeed: mediaFormsForScene(
+                beats.map((b) => beatVisualIntent(dedup.beatIntent, scene.index, b.index))
+              ),
             }), 60_000, `buildSceneCandidatePool s${scene.index}`);
         console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
@@ -46915,6 +46990,11 @@ async function _runVideoPipelineInner(
       }
       for (const line of formatBeatShortlists(visualDedup.beatShortlist)) {
         console.log(pipelineReport.add("summary", line));
+      }
+      /** P0-7 — blind, starved or settled. See `formatDeclineCensus`. */
+      {
+        const census = formatDeclineCensus(visualDedup.beatShortlist);
+        if (census) console.log(pipelineReport.add("summary", census));
       }
       /**
        * And the four things that record makes checkable at runtime, none of which could be stated

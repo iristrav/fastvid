@@ -607,3 +607,32 @@ export function formatHardMatch(
       : "")
   );
 }
+
+/**
+ * P0-8 — ONE SCENE'S NEED, from the needs of the sentences in it.
+ *
+ * The candidate pool is built once per scene, before any beat is being filled, so it cannot use a
+ * beat's need directly. The union is the conservative answer and deliberately so: a source is only
+ * treated as unable to serve this scene when it can serve NO sentence in it, and a source is only
+ * treated as a perfect fit when it supplies every form ANY sentence prefers.
+ *
+ * That asymmetry is the point. Erring the other way — an intersection — would let one untyped
+ * sentence empty the scene's whole need and quietly restore the fixed order, or let one demanding
+ * sentence demote a source three other sentences wanted.
+ *
+ * A scene with no typed beats returns an empty `preferred`, which every reader already treats as
+ * "no information" and which leaves the order exactly as its author wrote it.
+ */
+export function mediaFormsForScene(
+  intents: ReadonlyArray<Parameters<typeof mediaFormsForIntent>[0]>
+): MediaFormNeed {
+  const preferred: MediaForm[] = [];
+  const acceptable: MediaForm[] = [];
+  for (const intent of intents) {
+    const need = mediaFormsForIntent(intent);
+    for (const form of need.preferred) if (!preferred.includes(form)) preferred.push(form);
+    for (const form of need.acceptable) if (!acceptable.includes(form)) acceptable.push(form);
+  }
+  /** A form some sentence PREFERS is not merely acceptable to the scene — see `providerFitForNeed`. */
+  return { preferred, acceptable: acceptable.filter((f) => !preferred.includes(f)) };
+}

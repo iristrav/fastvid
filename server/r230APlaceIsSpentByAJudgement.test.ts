@@ -277,7 +277,19 @@ describe("R230 §9 — visionAsked counts looks, not intentions", () => {
   });
 
   it("the outcome is still recorded for every candidate", () => {
-    expect(PIPE).toContain("noteVisionOutcome(dedup.beatShortlist, scene.index, beat.index, gateVerdict);");
+    /**
+     * P0-7 gave this call a fifth argument — the decline's own cause — so the single-line form it
+     * used to pin no longer exists. What it was pinning does: the ONE reading of the ledger held in
+     * `gateVerdict` is what gets recorded, rather than the outcome being re-derived here.
+     */
+    const at = PIPE.indexOf("noteVisionOutcome(\n    dedup.beatShortlist,");
+    expect(at, "the gate route stopped recording its outcome").toBeGreaterThan(0);
+    const call = PIPE.slice(at, at + 500);
+    expect(call).toContain("scene.index");
+    expect(call).toContain("beat.index");
+    expect(call).toContain("gateVerdict");
+    /** And P0-7's addition: a decline that cannot say why is the defect this now prevents. */
+    expect(call).toContain("beatDeclineReasonFor(");
   });
 });
 

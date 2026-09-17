@@ -49,6 +49,53 @@ import { lookupVerdict, persistVerdict } from "./beatRelevanceVerdictStore";
 
 export type BeatImageVerdict = "fits" | "does_not_fit" | "unknown";
 
+/**
+ * WHY THE GATE DID NOT LOOK — as a value, not as a sentence.
+ *
+ * ── What render 580 could not say ───────────────────────────────────────────────────────────
+ *
+ *     [BeatImageGate] no verdict: 219x gate could not ask: No vision-capable provider is
+ *                     available | 7x provider unavailable (gemini 403) | 4x timeout
+ *     [BeatFunnel]    s1b3 … notAsked=48
+ *
+ * Both lines are about the same 48 candidates, and neither can be joined to the other. The gate
+ * knew exactly why it declined each one; the beat's own account of itself recorded `notAsked += 1`
+ * and nothing else. So every decline — a spent budget, an unreadable frame, a blocked account —
+ * arrived at the funnel wearing the same undifferentiated silence that `NotAskedReason` was built
+ * to abolish, and three of that taxonomy's members had no producer anywhere in the codebase.
+ *
+ * ── Why a code and not the `reason` string that was already there ───────────────────────────
+ *
+ * This module's own RONDE 115 note is the reason: "a caller matching on message substrings rots
+ * the moment a message is reworded". `reason` is for a human reading a log. This is for the funnel,
+ * which has to be able to count declines by kind without ever parsing prose.
+ *
+ * Written at the one site each decline is produced, so it cannot drift from the decline it names.
+ */
+export type VisionDeclineCause =
+  /** The gate is switched off by configuration. A choice, not an outage. */
+  | "GATE_DISABLED"
+  /** The beat has no narration, so there is no question to ask about any picture. */
+  | "NO_NARRATION"
+  /** The render-wide judgement ceiling was already reached when this candidate arrived. */
+  | "RENDER_BUDGET_SPENT"
+  /** This beat's own look ceiling was already reached. See `maxRelevanceLooksPerBeat`. */
+  | "BEAT_LOOK_CEILING"
+  /** No frame could be sampled from the clip — nothing existed to show a model. */
+  | "NO_FRAME"
+  /** Frames existed on disk and none of them could be decoded into an image. */
+  | "FRAMES_UNREADABLE"
+  /**
+   * Nothing was ever contacted: no key, every provider in cooldown, the spend budget gone.
+   * `isLlmPreflightRefusal` — the request never opened a socket.
+   */
+  | "PROVIDER_UNREACHABLE"
+  /**
+   * A provider WAS reached and served nothing — a 429 on the day's tokens, a 403 on a blocked
+   * project. Deliberately distinct from the above: one waits for a reset, the other never resets.
+   */
+  | "PROVIDER_UNAVAILABLE";
+
 export type BeatImageJudgement = {
   verdict: BeatImageVerdict;
   /** What the model says is in the frame — logged so a wrong verdict is diagnosable. */
@@ -102,6 +149,13 @@ export type BeatImageJudgement = {
    * mid-answer, sets it true.
    */
   evaluated: boolean;
+  /**
+   * WHICH decline this was. Present exactly when `evaluated` is false, absent otherwise.
+   *
+   * The pairing is the point: `evaluated: false` says nobody looked and this says why, so a caller
+   * can never record the first without being able to record the second. See `VisionDeclineCause`.
+   */
+  declineCause?: VisionDeclineCause;
 };
 
 function envInt(key: string, fallback: number, min: number, max: number): number {
@@ -662,7 +716,11 @@ export async function judgeBeatImage(params: {
    * No verdict, from a model that DID look — an ambiguous frame, an answer with no verdict in it,
    * a provider that failed mid-call. `evaluated: true`: the picture was seen and settled nothing.
    */
-  const unknown = (reason: string, evaluated = true): BeatImageJudgement => {
+  const unknown = (
+    reason: string,
+    evaluated = true,
+    declineCause?: VisionDeclineCause
+  ): BeatImageJudgement => {
     // RONDE 115: every route out of here without a verdict is counted by its reason, so a render
     // that got none can say WHY in one line instead of forty-four identical ones.
     state.noVerdictReasons.set(reason, (state.noVerdictReasons.get(reason) ?? 0) + 1);
@@ -672,7 +730,11 @@ export async function judgeBeatImage(params: {
      * `declined` has already recorded that as skipped; recording again here would double-count.
      */
     if (evaluated) recordVisionAsk(asker, "unavailable");
-    return { verdict: "unknown", depicts: "", reason, evaluated };
+    /**
+     * The cause rides with the decline it belongs to and is absent on an evaluated non-verdict —
+     * a model that looked and settled nothing has no decline to name. See `declineCause`.
+     */
+    return { verdict: "unknown", depicts: "", reason, evaluated, ...(declineCause ? { declineCause } : {}) };
   };
   /**
    * A decline: the gate never looked. Counted so the render summary cannot claim it did.
@@ -681,17 +743,22 @@ export async function judgeBeatImage(params: {
    * whose picture was never looked at is a fact about the RENDER's budget, not about the picture,
    * and the two must not arrive at the caller wearing the same word.
    */
-  const declined = (reason: string): BeatImageJudgement => {
+  const declined = (cause: VisionDeclineCause, reason: string): BeatImageJudgement => {
     state.judgementsSkipped++;
     /** Deliberately not asked — a spent budget, a disabled gate, no usable frame. */
     recordVisionAsk(asker, "skipped");
-    return unknown(reason, false);
+    /**
+     * The cause is the FIRST argument on purpose: a decline that forgot to name itself is the
+     * defect this round closes, and a required leading parameter is the one way a call site
+     * cannot omit it.
+     */
+    return unknown(reason, false, cause);
   };
 
   if (!beatImageRelevanceGateEnabled()) {
     /** A switched-off editor is a fact about the render, not about this picture. See askImpossible. */
     noteAskImpossible(state, "the beat image gate is switched off by configuration");
-    return declined("gate disabled");
+    return declined("GATE_DISABLED", "gate disabled");
   }
   /**
    * The verdict belongs to a (picture, narration) pair, not to the picture. `beatIdentity` is
@@ -706,7 +773,7 @@ export async function judgeBeatImage(params: {
     recordVisionAsk(asker, "skipped");
     return { ...cached, cached: true, evaluated: true };
   }
-  if (!beatText?.trim()) return declined("no narration to judge against");
+  if (!beatText?.trim()) return declined("NO_NARRATION", "no narration to judge against");
 
   /**
    * RONDE 104 — ask the durable store before spending anything.
@@ -737,11 +804,11 @@ export async function judgeBeatImage(params: {
   }
 
   if (state.judgementAttempts >= maxBeatImageJudgementsPerRender() && !params.finalSay) {
-    return declined("render judgement budget spent");
+    return declined("RENDER_BUDGET_SPENT", "render judgement budget spent");
   }
 
   const usable = (framePaths ?? []).filter((p) => p && fs.existsSync(p));
-  if (usable.length === 0) return declined("no frame available");
+  if (usable.length === 0) return declined("NO_FRAME", "no frame available");
 
   const dataUrls: string[] = [];
   for (const framePath of usable) {
@@ -754,7 +821,7 @@ export async function judgeBeatImage(params: {
       // One unreadable frame does not sink the judgement — the others still describe the clip.
     }
   }
-  if (dataUrls.length === 0) return declined("frames not usable as images");
+  if (dataUrls.length === 0) return declined("FRAMES_UNREADABLE", "frames not usable as images");
 
   state.judgementAttempts++;
   const timeoutMs = params.timeoutMs ?? 12_000;
@@ -885,7 +952,7 @@ export async function judgeBeatImage(params: {
       state.judgementsProviderUnavailable++;
       /** Nothing was contacted, so no picture in this render can be judged. See askImpossible. */
       noteAskImpossible(state, `no provider could be asked: ${(err as Error).message?.slice(0, 90)}`);
-      return declined(`gate could not ask: ${(err as Error).message?.slice(0, 90)}`);
+      return declined("PROVIDER_UNREACHABLE", `gate could not ask: ${(err as Error).message?.slice(0, 90)}`);
     }
     /**
      * RONDE 119 — a provider with no capacity did not judge the picture badly. It did not judge.
@@ -921,7 +988,7 @@ export async function judgeBeatImage(params: {
        */
       const why = describeProviderUnavailability(err);
       noteAskImpossible(state, `no provider served the call — ${why}`);
-      return declined(`provider unavailable (${why}): ${(err as Error).message?.slice(0, 90)}`);
+      return declined("PROVIDER_UNAVAILABLE", `provider unavailable (${why}): ${(err as Error).message?.slice(0, 90)}`);
     }
     // Fail open, always. A model outage must not be able to empty a montage — but it is counted,
     // so a render whose verdicts were mostly unobtainable can say so.

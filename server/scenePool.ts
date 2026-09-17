@@ -37,6 +37,7 @@ import { youtubePoolCandidates, type YoutubeRowLike } from "./youtubePoolSource"
 import { archivePoolCandidates, type ArchiveRowLike } from "./archivePoolSource";
 import { enoughForEveryBeat, runTieredRetrieval, type RetrievalTask } from "./tieredRetrieval";
 import { youtubeRetrievalMode } from "./sourcingPolicy";
+import { tierTasksByNeed, describeTierChanges } from "./providerCapability";
 
 /**
  * RONDE 175 — the shape of the EXISTING YouTube search, as this module needs it.
@@ -282,6 +283,18 @@ export type BuildPoolRequest = {
    * that does not supply it.
    */
   archiveSearch?: ArchivePoolSearch;
+  /**
+   * P0-8 — WHAT KIND OF PICTURE THIS SCENE NEEDS, so the tier order can answer for THIS scene.
+   *
+   * The same `{ preferred, acceptable }` shape `selectCandidatesFromPool` already takes, and the
+   * same registry answers both — but this one arrives BEFORE any provider is asked, which is the
+   * decision the capability registry could not reach until now. See `tierTasksByNeed`.
+   *
+   * Absent means the tiers are exactly the constants the author wrote, which is what the prefetch
+   * route gets: it runs during TTS, before any beat's intent exists, and inventing a need there
+   * would be a guess driving real API calls.
+   */
+  mediaFormNeed?: { preferred: readonly MediaForm[]; acceptable: readonly MediaForm[] };
   maxPerSource?: number;
   maxTotal?: number;
 };
@@ -1803,8 +1816,26 @@ async function buildSceneCandidatePoolInner(
    * Measured on what has arrived so far, deduped the way the final pool will be, so a tier that
    * returned forty near-copies of one asset does not read as forty candidates.
    */
+  /**
+   * P0-8 — THE TIER TABLE, RE-ANSWERED FOR THIS SCENE'S NEED.
+   *
+   * Every `tier:` above is a constant: the same number on every beat of every topic. That is the
+   * defect `contextualSourcePriority` already names for the ranking table one layer down — pexels
+   * and pixabay outranking both archives on a beat dated to 1945 — except here it decides what is
+   * FETCHED rather than how what came back is ordered, and `runTieredRetrieval` stops as soon as a
+   * tier satisfies the scene, so a source in a late tier may not be asked at all.
+   *
+   * No source is added or dropped, no key is read, no skip flag is touched, and the movement is
+   * bounded at one tier. See `tierTasksByNeed` for the rule and for why it has no threshold to tune.
+   */
+  const tieredTasks = tierTasksByNeed(tasks, req.mediaFormNeed);
+  {
+    const changes = describeTierChanges(tasks, tieredTasks);
+    if (changes) console.log(`${changes} (scene ${sceneIndex})`);
+  }
+
   const tierReport = await runTieredRetrieval({
-    tasks,
+    tasks: tieredTasks,
     onTierResults: absorb,
     satisfied: () =>
       enoughForEveryBeat({
