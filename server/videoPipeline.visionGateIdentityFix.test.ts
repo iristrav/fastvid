@@ -12,6 +12,9 @@ import { describe, expect, it } from "vitest";
 // recorded that as a fresh "vision_gate" reject, inflating the reject counter for a candidate
 // CLIP never actually looked at.
 
+/** RC-3: the seeding rule's new home, shared by both rebuild branches. */
+const seedSource = (): string => extractFunctionSource("seedExistingProvenSceneClips");
+
 function extractFunctionSource(fnName: string): string {
   const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
   const candidates = [
@@ -96,6 +99,7 @@ describe("Vision Gate root-cause fix — Test B/D: cache identity threaded throu
 
 describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip protected from later guaranteed-fill overwrite", () => {
   const src = extractFunctionSource("refillSceneStrictVoiceMatch");
+  const SEED = seedSource();
 
   it("the already-attempted branch seeds `clips` from real (non-fallback) adopt-audit entries for this scene before topping up with guaranteed fill", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
@@ -107,10 +111,19 @@ describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip prote
      * the property whole. A window measured in characters guards the length of the code, not
      * its behaviour.
      */
+    /**
+     * RC-3 re-point: the seeding loop this asserted moved out of the branch and into
+     * `seedExistingProvenSceneClips`, because the EXPENSIVE branch needed the same rule and a
+     * second copy of it is what render 589 cost. Every property below is unchanged; it is read
+     * where the rule now lives, and `aRebuildDoesNotStartFromNothing.test.ts` asserts each of
+     * them behaviourally against the exported helper as well.
+     */
     const scoped = src.slice(idx);
-    expect(scoped).toContain('entry.source !== "fallback" && entry.source !== "rescue_placeholder"');
-    expect(scoped).toContain("fs.existsSync(candidate)");
+    expect(scoped).toContain("seedExistingProvenSceneClips({");
     expect(scoped).toContain("appendGuaranteedSceneClips(");
+    expect(SEED).toContain('entry.source !== "fallback" &&');
+    expect(SEED).toContain('entry.source !== "rescue_placeholder"');
+    expect(SEED).toContain("fs.existsSync(candidate)");
   });
 
   it("still calls appendGuaranteedSceneClips to top up any remaining gap (doesn't remove the guaranteed-fill safety net)", () => {
@@ -143,8 +156,15 @@ describe("Vision Gate root-cause fix round 2 — Test 6: adopted real clip prote
      * the property whole. A window measured in characters guards the length of the code, not
      * its behaviour.
      */
-    const scoped = src.slice(idx);
-    expect(scoped).toContain(".sort((a, b) => a.beatIndex - b.beatIndex)");
+    /**
+     * RC-3 re-point: the seeding loop this asserted moved out of the branch and into
+     * `seedExistingProvenSceneClips`, because the EXPENSIVE branch needed the same rule and a
+     * second copy of it is what render 589 cost. Every property below is unchanged; it is read
+     * where the rule now lives, and `aRebuildDoesNotStartFromNothing.test.ts` asserts each of
+     * them behaviourally against the exported helper as well.
+     */
+    expect(src.slice(idx)).toContain("seedExistingProvenSceneClips({");
+    expect(SEED).toContain(".sort((a, b) => a.beatIndex - b.beatIndex)");
   });
 });
 
@@ -190,6 +210,7 @@ describe("Vision Gate final hardening — Bug 1: appendGuaranteedSceneClips fill
 
 describe("Vision Gate final hardening — Test A: refillSceneStrictVoiceMatch threads real beatIndex gaps through to appendGuaranteedSceneClips", () => {
   const src = extractFunctionSource("refillSceneStrictVoiceMatch");
+  const SEED = seedSource();
 
   it("collects a parallel clipBeatIndices array alongside the seeded real clips (beat 0 and 2 missing, beat 1 and 3 real -> indices [1, 3], not [0, 1])", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
@@ -200,9 +221,17 @@ describe("Vision Gate final hardening — Test A: refillSceneStrictVoiceMatch th
      * the property whole. A window measured in characters guards the length of the code, not
      * its behaviour.
      */
+    /**
+     * RC-3 re-point: the seeding loop this asserted moved out of the branch and into
+     * `seedExistingProvenSceneClips`, because the EXPENSIVE branch needed the same rule and a
+     * second copy of it is what render 589 cost. Every property below is unchanged; it is read
+     * where the rule now lives, and `aRebuildDoesNotStartFromNothing.test.ts` asserts each of
+     * them behaviourally against the exported helper as well.
+     */
     const scoped = src.slice(idx);
     expect(scoped).toContain("const clipBeatIndices: number[] = [];");
-    expect(scoped).toContain("clipBeatIndices.push(entry.beatIndex);");
+    expect(scoped).toContain("seedExistingProvenSceneClips({");
+    expect(SEED).toContain("clipBeatIndices.push(entry.beatIndex);");
   });
 
   it("passes clipBeatIndices as the 7th argument to appendGuaranteedSceneClips so gap-filling knows the real beats' true positions", () => {
@@ -224,6 +253,7 @@ describe("Vision Gate final hardening — Test A: refillSceneStrictVoiceMatch th
 
 describe("Vision Gate final hardening — Test C: a real adopted clip is never replaced by a guaranteed placeholder on a repeated refillSceneStrictVoiceMatch call", () => {
   const src = extractFunctionSource("refillSceneStrictVoiceMatch");
+  const SEED = seedSource();
 
   it("seeds `clips` from real adopt-audit entries BEFORE calling appendGuaranteedSceneClips, so the real clip is already present when gap-filling runs (not replaced by it)", () => {
     const idx = src.indexOf("strictRefillAttemptedScenes.has(scene.index)");
@@ -234,12 +264,20 @@ describe("Vision Gate final hardening — Test C: a real adopted clip is never r
      * the property whole. A window measured in characters guards the length of the code, not
      * its behaviour.
      */
+    /**
+     * RC-3 re-point: the seeding loop this asserted moved out of the branch and into
+     * `seedExistingProvenSceneClips`, because the EXPENSIVE branch needed the same rule and a
+     * second copy of it is what render 589 cost. Every property below is unchanged; it is read
+     * where the rule now lives, and `aRebuildDoesNotStartFromNothing.test.ts` asserts each of
+     * them behaviourally against the exported helper as well.
+     */
     const scoped = src.slice(idx);
-    const seedLoopIdx = scoped.indexOf("for (const entry of realEntriesForScene)");
+    const seedCallIdx = scoped.indexOf("seedExistingProvenSceneClips({");
     const appendCallIdx = scoped.indexOf("await appendGuaranteedSceneClips(");
-    expect(seedLoopIdx).toBeGreaterThan(-1);
+    expect(seedCallIdx).toBeGreaterThan(-1);
     expect(appendCallIdx).toBeGreaterThan(-1);
-    expect(seedLoopIdx).toBeLessThan(appendCallIdx);
+    expect(seedCallIdx, "gap-filling must run on a list that already holds the real clips")
+      .toBeLessThan(appendCallIdx);
   });
 
   it("only seeds entries whose source is a real adoption, excluding fallback/rescue_placeholder — a previously-placeholder-filled beat is correctly left for gap-filling, not falsely protected", () => {
@@ -251,8 +289,16 @@ describe("Vision Gate final hardening — Test C: a real adopted clip is never r
      * the property whole. A window measured in characters guards the length of the code, not
      * its behaviour.
      */
-    const scoped = src.slice(idx);
-    expect(scoped).toContain('entry.source !== "fallback" && entry.source !== "rescue_placeholder"');
+    /**
+     * RC-3 re-point: the seeding loop this asserted moved out of the branch and into
+     * `seedExistingProvenSceneClips`, because the EXPENSIVE branch needed the same rule and a
+     * second copy of it is what render 589 cost. Every property below is unchanged; it is read
+     * where the rule now lives, and `aRebuildDoesNotStartFromNothing.test.ts` asserts each of
+     * them behaviourally against the exported helper as well.
+     */
+    expect(src.slice(idx)).toContain("seedExistingProvenSceneClips({");
+    expect(SEED).toContain('entry.source !== "fallback" &&');
+    expect(SEED).toContain('entry.source !== "rescue_placeholder"');
   });
 });
 

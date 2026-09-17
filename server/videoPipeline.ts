@@ -36745,6 +36745,122 @@ async function fetchArchiveSentenceMontage(
  * Sequential beat fill — every zin must get a CLIP-verified clip (archive → Wikimedia → stock).
  * Throws when strict match cannot be satisfied (no grey placeholders).
  */
+/**
+ * THE CLIPS THIS SCENE HAS ALREADY PROVED, CARRIED INTO A REBUILD THAT WOULD OTHERWISE FORGET THEM.
+ *
+ * ── RC-3, and why one helper rather than two copies ─────────────────────────────────────────
+ *
+ * `refillSceneStrictVoiceMatch` has two branches. The cheap one — "strict refill already attempted
+ * this render" — has seeded since a production finding caught it discarding an adopted Internet
+ * Archive clip and putting a guaranteed placeholder in its place. The expensive one, the full
+ * re-source of every beat, still began `const clips: string[] = []`.
+ *
+ * Render 589 took the expensive branch on scene 0. That scene held `youtube_cc:0fIJzO7EIYI` —
+ * the render's entire YouTube yield, judged FIT by the picture editor on beat 0 — and the rebuild
+ * started from nothing, found no archive candidate, drew a text card, and the scene shipped on
+ * colour. One rule, two copies, one of them wrong: the seam this codebase keeps splitting on.
+ *
+ * So the rule lives once. Both branches call this, and a third rebuild added later gets it by
+ * calling one function rather than by remembering twenty lines.
+ *
+ * ── What "proven" means here, and what it deliberately does not ─────────────────────────────
+ *
+ * A clip qualifies when the render ALREADY ADOPTED IT FOR THIS SCENE and it is still usable:
+ *
+ *   · it is in `clipAdoptAudit` for this scene — the existing adoption register, not a new one;
+ *   · it is not a placeholder (`fallback`, `rescue_placeholder`) — a generated card has no claim
+ *     on a slot it only ever held because nothing else did;
+ *   · its file is still on disk;
+ *   · the compose barrier would still admit it — `composeBarrierAllows`, the SAME reader the
+ *     montage uses, so a clip the editor refused without a reprieve is not smuggled back in by
+ *     the back door this function would otherwise be;
+ *   · its beat is not already taken in this rebuild.
+ *
+ * It does NOT mean "keep every old clip". It means a clip that already earned its place does not
+ * have to earn it again from an empty list. A rebuild may still replace it — through the ordinary
+ * routes, with `noteSceneClipsResourced` recording who and why, and only from a site the policy
+ * set permits.
+ *
+ * ── Beat ownership, and why cardinality cannot drift ────────────────────────────────────────
+ *
+ * `clipBeatIndices` is this function's own record of which beat owns which clip: `beatFilled()`
+ * reads it, and so do the two later top-up passes. Seeding writes all three arrays in step, so a
+ * seeded beat is a filled beat to every existing reader — its expensive sourcing is skipped and
+ * its slot cannot be filled twice. One entry per beat is enforced here as well, so two audit rows
+ * for one beat cannot both take it.
+ *
+ * `usedContentKeys` gets the seeded key, which is what stops `pushSceneClip` adding the same
+ * footage again under another path. Normally it is already there from the original adoption; it
+ * can be absent when `noteSceneClipsResourced` un-stranded this asset after an earlier rebuild
+ * dropped it, and that is exactly the case where a duplicate would otherwise appear.
+ */
+export function seedExistingProvenSceneClips(params: {
+  scene: Scene;
+  workDir: string;
+  dedup: VisualDedupState;
+  clips: string[];
+  beatDurations: number[];
+  clipBeatIndices: number[];
+  holdSecFor: (beatIndex: number) => number;
+  /** Which rebuild asked, for the one line this prints. */
+  branch: "guaranteed_fill_only" | "full_resource";
+}): number {
+  const { scene, workDir, dedup, clips, beatDurations, clipBeatIndices } = params;
+  const seenPaths = new Set(clips);
+  const takenBeats = new Set(clipBeatIndices);
+  const seeded: string[] = [];
+  /**
+   * Sorted by beatIndex, not by audit insertion order — that is chronological adoption order and
+   * differs from narrative order whenever beats were filled out of sequence.
+   */
+  const adoptedHere = dedup.clipAdoptAudit
+    .filter(
+      (entry) =>
+        entry.sceneIndex === scene.index &&
+        entry.source !== "fallback" &&
+        entry.source !== "rescue_placeholder"
+    )
+    .sort((a, b) => a.beatIndex - b.beatIndex);
+
+  for (const entry of adoptedHere) {
+    if (takenBeats.has(entry.beatIndex)) continue;
+    const candidate = path.join(workDir, entry.basename);
+    if (seenPaths.has(candidate)) continue;
+    try {
+      if (!fs.existsSync(candidate)) continue;
+    } catch {
+      continue;
+    }
+    const contentKey = clipContentKey(candidate);
+    /** The montage's own reader, so this door is no wider than the one every clip goes through. */
+    if (dedup.beatRelevance && !composeBarrierAllows(dedup.beatRelevance, candidate, contentKey).allow) {
+      continue;
+    }
+    seenPaths.add(candidate);
+    takenBeats.add(entry.beatIndex);
+    clips.push(candidate);
+    beatDurations.push(params.holdSecFor(entry.beatIndex));
+    clipBeatIndices.push(entry.beatIndex);
+    dedup.usedContentKeys.add(contentKey);
+    seeded.push(`s${scene.index}b${entry.beatIndex}:${path.basename(candidate)}`);
+    /**
+     * A writer of `clipBeatIndices` that is not a `pushSceneClip`, so a beat is assigned here
+     * without passing the push gates. Traced with the same line as the gated routes — a reader
+     * following one asset must see every moment it was given a beat, whichever door it came
+     * through.
+     */
+    tracePushOutcome(dedup, candidate, scene.index, entry.beatIndex, true, "accepted_reseed");
+  }
+  if (seeded.length > 0) {
+    console.log(
+      `[SceneSeed] scene=${scene.index} branch=${params.branch} carried=${seeded.length} ` +
+        `${seeded.join(" ")} — already adopted for this scene, so this rebuild tops up rather ` +
+        `than starts over`
+    );
+  }
+  return seeded.length;
+}
+
 async function refillSceneStrictVoiceMatch(
   scene: Scene,
   workDir: string,
@@ -36780,31 +36896,11 @@ async function refillSceneStrictVoiceMatch(
     const clips: string[] = [];
     const beatDurations: number[] = [];
     const clipBeatIndices: number[] = [];
-    const seenReal = new Set<string>();
-    // Sorted by beatIndex (not audit-insertion order, which is chronological adoption order and
-    // can easily differ from narrative beat order when beats are filled out of sequence) so the
-    // seeded real clips play back in the same beat order the scene's narration expects, instead
-    // of whatever order their recovery layers happened to adopt them in.
-    const realEntriesForScene = dedup.clipAdoptAudit
-      .filter((entry) => entry.sceneIndex === scene.index && entry.source !== "fallback" && entry.source !== "rescue_placeholder")
-      .sort((a, b) => a.beatIndex - b.beatIndex);
-    for (const entry of realEntriesForScene) {
-      const candidate = path.join(workDir, entry.basename);
-      if (seenReal.has(candidate) || !fs.existsSync(candidate)) continue;
-      seenReal.add(candidate);
-      clips.push(candidate);
-      beatDurations.push(seedHoldSec);
-      clipBeatIndices.push(entry.beatIndex);
-      /**
-       * The FIFTH writer of `clipBeatIndices`, and not a `pushSceneClip`.
-       *
-       * This loop re-seeds a scene's clip list from the adopt audit, so a beat can be assigned here
-       * without ever passing the push gates. Traced with the same line as the gated routes — a
-       * reader following one asset must see every moment it was given a beat, whichever door it
-       * came through.
-       */
-      tracePushOutcome(dedup, candidate, scene.index, entry.beatIndex, true, "accepted_reseed");
-    }
+    seedExistingProvenSceneClips({
+      scene, workDir, dedup, clips, beatDurations, clipBeatIndices,
+      holdSecFor: () => seedHoldSec,
+      branch: "guaranteed_fill_only",
+    });
     // Bug 1 fix: pass the seeded clips' real narrative beatIndex through so
     // appendGuaranteedSceneClips can fill exactly the missing beats in their correct positions
     // instead of appending every guaranteed clip after all the real ones regardless of order.
@@ -36853,6 +36949,25 @@ async function refillSceneStrictVoiceMatch(
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const clipBeatIndices: number[] = [];
+  /**
+   * RC-3 — AND THE EXPENSIVE BRANCH SEEDS TOO. It is the one render 589 took.
+   *
+   * The cheap branch above has seeded since a production finding caught it discarding an adopted
+   * Internet Archive clip. This branch — the FULL re-source, every beat from scratch — kept
+   * starting from nothing, and a blank `const clips: string[] = []` quietly meant "whatever this
+   * scene already proved is forfeit". Scene 0 of render 589 came through here: it held
+   * `youtube_cc:0fIJzO7EIYI`, FIT on beat 0, and rebuilt without it.
+   *
+   * Seeding before the beat loop is not a new rule bolted on; it is how this function already
+   * expresses beat ownership. `beatFilled()` two dozen lines down reads `clipBeatIndices`, and so
+   * do the two later passes — so a seeded beat is a filled beat to every reader that already
+   * exists, the expensive sourcing for it is skipped, and its slot cannot be taken twice.
+   */
+  seedExistingProvenSceneClips({
+    scene, workDir, dedup, clips, beatDurations, clipBeatIndices,
+    holdSecFor: (beatIndex) => beats.find((b) => b.index === beatIndex)?.holdSec ?? beatSec,
+    branch: "full_resource",
+  });
 
   const pushSceneClip = async (
     clipPath: string,
