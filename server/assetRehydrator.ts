@@ -33,7 +33,7 @@ import * as path from "path";
 import { createHash } from "crypto";
 import type { AssetSourceIdentity, ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
 import { videoTrack } from "./projectTimeline";
-import { identityIsRehydratable } from "./assetIdentity";
+import { identityIsRehydratable, wikimediaFileTitleFrom } from "./assetIdentity";
 
 const execFileAsync = promisify(execFile);
 const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
@@ -180,11 +180,22 @@ export function rehydrationUrlFor(
   const id = identity.providerAssetId?.trim();
 
   if (provider === "wikimedia" && id) {
-    const title = id.startsWith("File:") ? id.slice(5) : id;
-    return {
-      url: `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(title)}`,
-      kind: "derived",
-    };
+    /**
+     * The title, read out of whichever form the render recorded — see `wikimediaFileTitleFrom`.
+     * Render 589's identity was the media URL, and `File:` + that URL is a page Commons does not
+     * have; the fetch 404'd and `failFast` ended the cinematic render on its first clip.
+     *
+     * When no title can be read the derived route is declined rather than built wrong, and the
+     * stored `mediaUrl` below is tried instead — which for Wikimedia is a stable upload URL and is
+     * exactly the file we are asking for.
+     */
+    const title = wikimediaFileTitleFrom(id);
+    if (title) {
+      return {
+        url: `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(title)}`,
+        kind: "derived",
+      };
+    }
   }
   if (identity.mediaUrl) return { url: identity.mediaUrl, kind: "stored" };
   return null;
@@ -386,16 +397,30 @@ export async function rehydrateAsset(params: {
 
   // A file already on disk needs no network and no trust.
   if (params.existingLocalPath) {
+    let held = false;
     try {
-      if (fs.existsSync(params.existingLocalPath) && fs.statSync(params.existingLocalPath).size > 0) {
-        return done(params.existingLocalPath, {
-          cacheHit: false, downloaded: false, sourceUrl: null,
-          provenance: "already present in the work directory",
-        });
-      }
+      held =
+        fs.existsSync(params.existingLocalPath) && fs.statSync(params.existingLocalPath).size > 0;
     } catch {
       /* unreadable is the same as absent */
     }
+    if (held) {
+      return done(params.existingLocalPath, {
+        cacheHit: false, downloaded: false, sourceUrl: null,
+        provenance: "already present in the work directory",
+      });
+    }
+    /**
+     * A caller handed over a path for this asset and the file is not there. That is a fact about
+     * this render worth one line: the caller believes it holds the asset, the network is about to
+     * be asked for it anyway, and on render 589 the difference between those two beliefs was the
+     * whole cinematic route. Never the path itself — a work directory name is not for a log.
+     */
+    console.warn(
+      `[AssetRehydrator] provider=${provider} id=${assetId ?? "null"} ` +
+        "LOCAL_FILE_GONE — the caller offered a local file that is missing or empty; " +
+        "falling back to the provider routes"
+    );
   }
 
   /**

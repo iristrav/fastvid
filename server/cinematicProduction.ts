@@ -543,6 +543,22 @@ export type RenderRoute = "cinematic_timeline" | "legacy_compose";
  * compose path produced the file, so a deployment can grep for it and count exactly how many of
  * its renders still take the legacy route. A migration nobody can measure is a migration that
  * never finishes.
+ *
+ * ── VID-0589: the reason was handed in and thrown away ──────────────────────────────────────
+ *
+ * `why` used to branch on `planOk` ALONE, and the caller's `reason` was read only in the
+ * plan-failed arm. A plan can be perfectly good and the RENDER still fail — which is exactly what
+ * render 589 was: the plan validated, the cinematic job ran, one asset would not rehydrate, and
+ * `videoPipeline` passed `ASSET_NOT_REHYDRATABLE — clip vc_2c6cad7470` in as `reason`. This
+ * function looked at `planOk === true`, took the first arm, and printed
+ * `reason=CINEMATIC_RENDER_PATH is not enabled` — while the same deployment's preflight printed
+ * `ON CINEMATIC_RENDER_PATH` two hundred lines earlier. The one line built to be grepped was the
+ * one line that named the wrong cause.
+ *
+ * So the rule is on the REASON, which is the thing that knows: a caller that supplies one is
+ * telling us what happened and it is printed verbatim. The flag-is-off answer is what remains
+ * when there is nothing to report, which is the only case that answer was ever true for — no
+ * caller reaches the cinematic route far enough to produce a refusal while the flag is off.
  */
 export function formatRenderRoute(params: {
   videoId: number;
@@ -553,9 +569,14 @@ export function formatRenderRoute(params: {
   if (params.route === "cinematic_timeline") {
     return `[RenderJob] video=${params.videoId} route=cinematic_timeline`;
   }
-  const why = params.planOk
-    ? "CINEMATIC_RENDER_PATH is not enabled"
-    : `the cinematic plan was not usable: ${params.reason ?? "unknown"}`;
+  const reason = params.reason?.trim();
+  const why = reason
+    ? params.planOk
+      ? reason
+      : `the cinematic plan was not usable: ${reason}`
+    : params.planOk
+      ? "CINEMATIC_RENDER_PATH is not enabled"
+      : "the cinematic plan was not usable: unknown";
   return `[RenderJob] video=${params.videoId} route=legacy_compose RENDER_FALLBACK_USED reason=${why}`;
 }
 

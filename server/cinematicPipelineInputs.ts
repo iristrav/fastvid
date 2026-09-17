@@ -414,12 +414,8 @@ export function localOnlyIdentityFor(
   localPath: string | null | undefined
 ): AssetSourceIdentity | null {
   if (!adoption || !localPath) return null;
-  try {
-    if (!fs.existsSync(localPath) || fs.statSync(localPath).size <= 0) return null;
-  } catch {
-    /** An unreadable path is not a usable one. Same answer as a missing file. */
-    return null;
-  }
+  /** An unreadable path is not a usable one. Same answer as a missing file — see `fileHasBytes`. */
+  if (!fileHasBytes(localPath)) return null;
   const identity = identityFromAdoption(adoption);
   if (!identity) return null;
   /**
@@ -720,24 +716,55 @@ export function pairClipsToBeats(params: {
  * and those two numbers are the only key both sides already agree on. A clip missing either is
  * skipped rather than guessed at — it simply rehydrates as it always did.
  *
- * This does no I/O and asserts nothing about the files. `rehydrateAsset` re-checks that each path
- * exists and is non-empty before trusting it, so a path that has since been swept costs one
- * ordinary fetch.
+ * ── VID-0589: why this now looks at the disk ────────────────────────────────────────────────
+ *
+ * It used to do no I/O and say so: "`rehydrateAsset` re-checks that each path exists and is
+ * non-empty before trusting it, so a path that has since been swept costs one ordinary fetch."
+ * The re-check is real and still there. What the note missed is that this map's SIZE is reported —
+ * `alreadyLocal=` on `[RenderJob]` and `[FinalRenderInputs]`, and `local=` per clip on
+ * `[FinalRenderAsset]` — as a statement about files.
+ *
+ * Render 589 printed `clips=3 alreadyLocal=3`, and one of those three files was not there. The
+ * rehydrator went to Wikimedia for it, the fetch failed, `failFast` ended the render, and the log
+ * said the renderer had been handed everything it needed. Every reading of that failure started
+ * from a number that was an assumption presented as a count.
+ *
+ * So the question is answered where it is asked. The function is named for FILES and now returns
+ * the ones that are there: the same narrow check `localOnlyIdentityFor` above already makes — the
+ * path exists and holds bytes, verified now, not inferred from a name. A swept path still costs
+ * one ordinary fetch; the difference is that it is no longer counted as a file we hold, so the
+ * fetch is expected rather than a surprise.
+ *
+ * `exists` is injectable ONLY so tests can work on paths they never created. Its default is the
+ * real check, which is what every production caller gets without passing anything.
  */
 export function localFilesForTimelineClips(params: {
   /** The plan's video clips, each carrying the beat it illustrates. */
   clips: ReadonlyArray<{ id: string; sceneIndex?: number; beatIndex?: number }>;
   /** What the render used for that beat, or undefined where it used nothing. */
   localPathFor: (sceneIndex: number, beatIndex: number) => string | null | undefined;
+  /** Whether that file is on this disk with bytes in it. Defaults to asking the disk. */
+  exists?: (localPath: string) => boolean;
 }): Map<string, string> {
+  const exists = params.exists ?? fileHasBytes;
   const byClipId = new Map<string, string>();
   for (const clip of params.clips) {
     if (clip.sceneIndex == null || clip.beatIndex == null) continue;
     const localPath = params.localPathFor(clip.sceneIndex, clip.beatIndex);
     if (!localPath) continue;
+    if (!exists(localPath)) continue;
     byClipId.set(clip.id, localPath);
   }
   return byClipId;
+}
+
+/** The one check both this module's local-file readers make. An unreadable path is an absent one. */
+export function fileHasBytes(localPath: string): boolean {
+  try {
+    return fs.existsSync(localPath) && fs.statSync(localPath).size > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

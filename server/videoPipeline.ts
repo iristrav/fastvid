@@ -9142,17 +9142,27 @@ export async function fetchWikimediaImages(
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.jpg`);
         // RONDE 96: fetchWikimediaVideos has opened a record since RONDE 88; this sibling, which
-        // serves Commons IMAGES, never did. Same provider, same ledger. The file URL is Commons'
-        // own stable identity for the file — see the excludeUrls note on this function's opts.
+        // serves Commons IMAGES, never did. Same provider, same ledger.
+        /**
+         * VID-0589 — the identity is the TITLE, which is what this cache already stores.
+         *
+         * The note here used to call the file URL Commons' stable handle; `wikimediaFileTitleFrom`
+         * in assetIdentity.ts has what that cost. `assetId` on a cached candidate is the title —
+         * the pool below pushes `assetId: title` and always has — and `c.url` stays where it
+         * belongs, as `sourceUrl`. The URL is the last resort rather than nothing, because an
+         * empty id costs the lineage record entirely.
+         */
+        const cachedTitle = c.assetId?.trim() || c.title?.trim() || c.url;
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}wiki_cached_${i}.mp4`),
           "wikimedia",
-          c.url,
+          cachedTitle,
           opts.dedup?.sourcingCache,
           {
             sceneIndex,
             beatIndex: opts.beatIndex,
             sourceUrl: c.url,
+            title: cachedTitle,
             mediaType: "image",
             query,
             searchRoute: "fetchWikimediaImages",
@@ -9207,15 +9217,18 @@ export async function fetchWikimediaImages(
       // are returned rather than discarded, which is what the RONDE 50 fall-through guarantees.
       if (admitProviderQuery("wikimedia", query, "fetchWikimediaImages") === null) return results;
       /**
-       * DO NOT ADD PROSE ABOVE THIS LINE — put it here instead, or in a test file.
+       * The prose ban that used to be here is lifted, and this note records why it existed.
        *
-       * ronde89ProviderGate's TEST 3 proves no search-shaped call escapes the gate by slicing
-       * 6000 characters from `function fetchWikimediaImages(` and looking for this call inside
-       * them. This function reaches it at ~5940, so roughly sixty characters of comment anywhere
-       * above pushes the gate out of the window and the live search below is reported as ungated
-       * — a false finding produced by prose, which a fourteen-line note added here duly produced.
+       * ronde89ProviderGate's TEST 3 proves no search-shaped call escapes the gate. It used to do
+       * that by slicing 6000 characters from `function fetchWikimediaImages(` and looking for this
+       * call inside them — and this function reached it at 5941, so roughly sixty characters of
+       * comment anywhere above pushed the gate out of the window and reported the live search
+       * below as ungated. The answer at the time was a sign telling people not to write here.
        *
-       * Everything below this line is outside the window and costs nothing.
+       * VID-0589 walked into it: a note about Wikimedia identity, added above, produced a failure
+       * on a gate that had not moved. The window is now the function's REAL body — see `bodyOf` in
+       * that test — so the guard asks about the whole function and nothing else, and prose costs
+       * nothing wherever it goes.
        */
     }
 
@@ -9316,15 +9329,37 @@ export async function fetchWikimediaImages(
         // Download the image (check media cache first)
         const tag = fileTag ? `${fileTag}_` : "";
         const imgPath = path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.jpg`);
+        /**
+         * THE IDENTITY IS THE COMMONS TITLE, not the media URL this request happened to return.
+         *
+         * This call site passed `imageInfo.url`. `fetchWikimediaVideos` passes `title`, the cache
+         * push four lines above already stores `assetId: title`, and both readers of a Wikimedia
+         * identity — `sourcePageUrlFor` and the rehydrator's `rehydrationUrlFor` — are written
+         * against the title. The two image routes were the places that disagreed, so every
+         * Wikimedia PICTURE in the system carried a URL where a handle belonged.
+         *
+         * Render 589 is the bill: the rehydrator asked Commons for
+         * `Special:FilePath/https%3A%2F%2Fupload.wikimedia.org%2F…`, got nothing, and `failFast`
+         * ended the cinematic render on its first clip — the compose montage was delivered and the
+         * route line blamed a feature flag that was on.
+         *
+         * A media URL is also the exact thing this programme forbids as an identity: it is a
+         * temporary handle, and `?utm_source=…` in it is proof that it is a request artefact. The
+         * title survives a re-upload; the URL does not.
+         *
+         * `sourceUrl` keeps the URL, which is what `mediaUrl` is for and where the rehydrator
+         * already looks second.
+         */
         const outPath = tagPathWithProviderAsset(
           path.join(workDir, `scene_${sceneIndex}_${tag}wiki_${i}.mp4`),
           "wikimedia",
-          imageInfo.url,
+          title,
           opts.dedup?.sourcingCache,
           {
             sceneIndex,
             beatIndex: opts.beatIndex,
             sourceUrl: imageInfo.url,
+            title,
             mediaType: "image",
             query,
             searchRoute: "fetchWikimediaImages",
@@ -48382,6 +48417,24 @@ async function _runVideoPipelineInner(
                   localPathFor: (sceneIndex, beatIndex) =>
                     localFileByBeat.get(`${sceneIndex}:${beatIndex}`) ?? null,
                 });
+                /**
+                 * A beat whose file this render downloaded and no longer has is NAMED.
+                 *
+                 * `localFilesForTimelineClips` now verifies the bytes, so `alreadyLocal` is a count
+                 * of files rather than of paths — and the clips it left out would otherwise vanish
+                 * from the record entirely, which is how render 589 came to report that all three
+                 * of its clips were in hand while one was about to send the renderer to Commons.
+                 * A clip on this list will be re-fetched, and the fetch is now expected.
+                 */
+                const sweptClips = videoTrack(outcome.timeline)
+                  .filter(
+                    (c) =>
+                      c.sceneIndex != null &&
+                      c.beatIndex != null &&
+                      localFileByBeat.get(`${c.sceneIndex}:${c.beatIndex}`) &&
+                      !existingByClipId.has(c.id)
+                  )
+                  .map((c) => `${c.id}(s${c.sceneIndex}b${c.beatIndex})`);
                 console.log(
                   pipelineReport.add(
                     "summary",
@@ -48390,6 +48443,17 @@ async function _runVideoPipelineInner(
                       `alreadyLocal=${existingByClipId.size}`
                   )
                 );
+                if (sweptClips.length > 0) {
+                  console.warn(
+                    pipelineReport.add(
+                      "summary",
+                      `[RenderJob] video=${videoId} job=${cutover.renderJobId} ` +
+                        `LOCAL_FILE_GONE clips=${sweptClips.length} ${sweptClips.join(" ")} — ` +
+                        "this render downloaded these and no longer holds them; each one must be " +
+                        "fetched from its provider again"
+                    )
+                  );
+                }
                 /**
                  * §7 — THE RENDER'S INPUT, ASSET BY ASSET, BEFORE A FRAME IS DRAWN.
                  *

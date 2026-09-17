@@ -21,6 +21,7 @@
  * and every one of them is a line whose deletion would silently restore the 564 behaviour.
  */
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 
@@ -58,12 +59,20 @@ describe("a beat id can be read back as the numbers that made it", () => {
 
 describe("the clips a render already downloaded are addressed by clip id", () => {
   const clip = (id: string, sceneIndex?: number, beatIndex?: number) => ({ id, sceneIndex, beatIndex });
+  /**
+   * These cases are about PAIRING — which clip gets which beat's file — so they state that the
+   * files are there and test nothing else. The pairing and the holding are separate questions and
+   * the group below asks the second one. `exists` is injectable for exactly this; production
+   * passes nothing and gets the disk.
+   */
+  const held = () => true;
 
   it("pairs each clip with the file its own beat used", () => {
     const files = new Map([["0:0", "/w/a.mp4"], ["0:1", "/w/b.mp4"], ["1:0", "/w/c.mp4"]]);
     const got = localFilesForTimelineClips({
       clips: [clip("vc_a", 0, 0), clip("vc_b", 0, 1), clip("vc_c", 1, 0)],
       localPathFor: (s, b) => files.get(`${s}:${b}`) ?? null,
+      exists: held,
     });
     expect(Object.fromEntries(got)).toEqual({
       vc_a: "/w/a.mp4",
@@ -80,6 +89,7 @@ describe("the clips a render already downloaded are addressed by clip id", () =>
     const got = localFilesForTimelineClips({
       clips: [clip("vc_s0", 0, 0), clip("vc_s1", 1, 0)],
       localPathFor: (s, b) => (s === 0 && b === 0 ? "/w/scene0.mp4" : "/w/scene1.mp4"),
+      exists: held,
     });
     expect(got.get("vc_s0")).toBe("/w/scene0.mp4");
     expect(got.get("vc_s1")).toBe("/w/scene1.mp4");
@@ -89,6 +99,7 @@ describe("the clips a render already downloaded are addressed by clip id", () =>
     const got = localFilesForTimelineClips({
       clips: [clip("no_beat", 0, undefined), clip("no_scene", undefined, 0), clip("neither")],
       localPathFor: () => "/w/would-be-wrong.mp4",
+      exists: held,
     });
     expect(got.size).toBe(0);
   });
@@ -97,6 +108,7 @@ describe("the clips a render already downloaded are addressed by clip id", () =>
     const got = localFilesForTimelineClips({
       clips: [clip("vc_a", 0, 0), clip("vc_b", 0, 1)],
       localPathFor: (_s, b) => (b === 0 ? "/w/a.mp4" : null),
+      exists: held,
     });
     expect(Object.fromEntries(got)).toEqual({ vc_a: "/w/a.mp4" });
   });
@@ -109,13 +121,87 @@ describe("the clips a render already downloaded are addressed by clip id", () =>
     const got = localFilesForTimelineClips({
       clips: [clip("vc_first", 2, 3), clip("vc_second", 2, 3)],
       localPathFor: () => "/w/shared.mp4",
+      exists: held,
     });
     expect(got.get("vc_first")).toBe("/w/shared.mp4");
     expect(got.get("vc_second")).toBe("/w/shared.mp4");
   });
 
   it("an empty plan asks for nothing", () => {
-    expect(localFilesForTimelineClips({ clips: [], localPathFor: () => "/w/x.mp4" }).size).toBe(0);
+    expect(
+      localFilesForTimelineClips({ clips: [], localPathFor: () => "/w/x.mp4", exists: held }).size
+    ).toBe(0);
+  });
+});
+
+/* ═════════════ VID-0589: a file we hold is a file that is there ═════════════ */
+
+/**
+ * Render 589 reported `clips=3 alreadyLocal=3` and `local=true` on each of its three clips. One of
+ * those files was not on the disk. The rehydrator went to Commons for it, the fetch failed,
+ * `failFast` ended the cinematic render on its first clip, and the delivered file was the compose
+ * montage — while the log said the renderer had been handed everything it needed.
+ *
+ * The map was never wrong about the PATH. It was read as an answer about FILES, by three log lines
+ * and by everyone who then tried to explain the failure. So it answers about files.
+ */
+describe("VID-0589 — alreadyLocal counts files, not paths", () => {
+  const clip = (id: string, sceneIndex: number, beatIndex: number) => ({ id, sceneIndex, beatIndex });
+
+  it("a path whose file has been swept is not a file this render holds", () => {
+    const got = localFilesForTimelineClips({
+      clips: [clip("vc_here", 0, 0), clip("vc_gone", 0, 1)],
+      localPathFor: (_s, b) => (b === 0 ? "/w/here.mp4" : "/w/gone.mp4"),
+      exists: (p) => p === "/w/here.mp4",
+    });
+    expect(Object.fromEntries(got)).toEqual({ vc_here: "/w/here.mp4" });
+    expect(got.size, "the count is what alreadyLocal= prints").toBe(1);
+  });
+
+  it("asks the real disk when the caller does not answer for it", () => {
+    /**
+     * The production default, which is the whole point: `videoPipeline` passes `clips` and
+     * `localPathFor` and nothing else. A path nothing ever created must not be counted.
+     */
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vid589-"));
+    const real = path.join(dir, "real.mp4");
+    const empty = path.join(dir, "empty.mp4");
+    fs.writeFileSync(real, "bytes");
+    fs.writeFileSync(empty, "");
+    try {
+      const got = localFilesForTimelineClips({
+        clips: [clip("vc_real", 0, 0), clip("vc_empty", 0, 1), clip("vc_absent", 0, 2)],
+        localPathFor: (_s, b) => [real, empty, path.join(dir, "never-written.mp4")][b] ?? null,
+      });
+      expect([...got.keys()]).toEqual(["vc_real"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the check is the same one localOnlyIdentityFor already made", () => {
+    /**
+     * Two readers of the same fact drifting apart is the defect this repo keeps finding. One
+     * predicate, used by both, is what stops it happening a third time.
+     */
+    const src = fs.readFileSync(path.join(__dirname, "cinematicPipelineInputs.ts"), "utf8");
+    expect(src).toContain("export function fileHasBytes(");
+    const start = src.indexOf("export function localOnlyIdentityFor(");
+    expect(start).toBeGreaterThan(0);
+    const localOnly = src.slice(start, src.indexOf("\n}", start));
+    expect(localOnly, "localOnlyIdentityFor grew its own copy again").not.toContain("fs.statSync(");
+    expect(localOnly).toContain("fileHasBytes(localPath)");
+  });
+
+  it("the render names every beat whose file it no longer holds", () => {
+    /**
+     * A clip dropped from the map would otherwise vanish from the record entirely — the count goes
+     * down and nothing says which shot, which is the silence §20 forbids. It will be re-fetched,
+     * and the log says so before the fetch rather than after it fails.
+     */
+    const pipeline = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    expect(pipeline).toContain("LOCAL_FILE_GONE");
+    expect(pipeline).toContain("const sweptClips =");
   });
 });
 

@@ -45,6 +45,33 @@ const FORMERLY_BYPASSING = [
   "searchWebWideVideoClips",
 ];
 
+/**
+ * One named function's REAL body, from its declaration to the `}` that closes it.
+ *
+ * ── Why this replaced two magic windows ─────────────────────────────────────────────────────
+ *
+ * TEST 1 sliced 9000 characters from the declaration and TEST 3 sliced 6000, both asking the same
+ * question: does this function consult the gate. A fixed window answers it wrong in both
+ * directions. Too short and a gated function is reported as a bypass — VID-0589's round added a
+ * comment to `fetchWikimediaImages`, whose `admitProviderQuery` call sat 5941 characters in, and
+ * TEST 3 failed on a function whose gate had not moved and still ran before the search. Too long
+ * and the window runs past the closing brace into the NEXT function, so an ungated fetcher passes
+ * on its neighbour's gate — the false negative this suite exists to prevent.
+ *
+ * The boundary is not a guess: every provider fetcher in videoPipeline.ts is declared at the top
+ * level, so the first line that is exactly `}` after the declaration closes it.
+ *
+ * This does not weaken anything. The rule is unchanged — a search-shaped fetch must sit in a
+ * function that calls `admitProviderQuery` or `cachedProviderSearch` — and it is now asked of the
+ * whole function and of nothing else.
+ */
+const bodyOf = (src: string, fnName: string): string => {
+  const start = src.indexOf(`function ${fnName}(`);
+  if (start < 0) return "";
+  const end = src.indexOf("\n}\n", start);
+  return end < 0 ? src.slice(start) : src.slice(start, end + 2);
+};
+
 const provenCtx = () => {
   const ctx = emptyQueryContext();
   ctx.persons.push(provenToken("Hitler", "person", "beat_text"));
@@ -59,7 +86,7 @@ describe("RONDE 89 §1/§19 — every provider search passes the gate", () => {
     for (const fn of FORMERLY_BYPASSING) {
       const idx = PIPELINE_SRC.indexOf(`function ${fn}(`);
       expect(idx, `${fn} not found`).toBeGreaterThan(-1);
-      const body = PIPELINE_SRC.slice(idx, idx + 9000);
+      const body = bodyOf(PIPELINE_SRC, fn);
       expect(body, `${fn} still reaches a provider without the gate`).toContain("admitProviderQuery(");
     }
   });
@@ -114,13 +141,33 @@ describe("RONDE 89 §1/§19 — every provider search passes the gate", () => {
         const m = /^(?:export )?(?:async )?function (\w+)/.exec(lines[j]!);
         if (m) { fn = m[1]!; break; }
       }
-      const start = PIPELINE_SRC.indexOf(`function ${fn}(`);
-      const body = start >= 0 ? PIPELINE_SRC.slice(start, start + 6000) : "";
+      const body = bodyOf(PIPELINE_SRC, fn);
       const gated = body.includes("admitProviderQuery(") || body.includes("cachedProviderSearch(");
       // Voice synthesis is not a media provider search; it has no beat context by nature.
       if (!gated && !/^synthesize/.test(fn)) offenders.push(`${fn}:${i + 1}`);
     }
     expect(offenders, `ungated provider searches: ${offenders.join(", ")}`).toEqual([]);
+  });
+
+  /**
+   * The guard above is only as good as its boundary. A body that ran past its closing brace would
+   * let an ungated fetcher inherit the next function's gate, which is the exact false negative
+   * this suite exists to prevent — and a fixed-size window does that whenever the function is
+   * shorter than the window.
+   */
+  it("TEST 4 — a function's body stops at that function", () => {
+    const wikimedia = bodyOf(PIPELINE_SRC, "fetchWikimediaImages");
+    expect(wikimedia.length).toBeGreaterThan(0);
+    expect(wikimedia, "the body ran on into whatever is declared next").not.toMatch(
+      /\n(?:export )?(?:async )?function \w+\(/
+    );
+    expect(wikimedia, "the gate is inside the function, wherever prose puts it").toContain(
+      'admitProviderQuery("wikimedia", query, "fetchWikimediaImages")'
+    );
+    /** And a function that genuinely does not gate does not borrow one from its neighbour. */
+    const videos = bodyOf(PIPELINE_SRC, "fetchWikimediaVideos");
+    expect(videos.length).toBeGreaterThan(0);
+    expect(videos).not.toMatch(/\n(?:export )?(?:async )?function \w+\(/);
   });
 });
 
