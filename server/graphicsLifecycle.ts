@@ -153,6 +153,43 @@ export type GraphicsLifecycle = {
    * quietly shrinking a total.
    */
   unaccounted: string[];
+  /**
+   * Was a renderer report supplied at all?
+   *
+   * `graphicsLifecycle` already refuses to invent an ending when no render has happened — a graphic
+   * stops at TRANSLATED, which is exactly what is known. The FORMATTER did not carry that through:
+   * it printed `renderInput=0 drawn=0` either way, and two zeros read as a measurement. Render 589
+   * published
+   *
+   *     [Graphics] lifecycle planned=1 translated=1 renderInput=0 drawn=0
+   *
+   * from the plan-time call, before any render existed, and it reads as a renderer that received
+   * nothing and drew nothing. It was a question nobody had put yet.
+   *
+   * So the line says `n/a` instead, and this is the flag that decides which. The counts themselves
+   * are untouched — the repair is to what the number MEANS, not to the number.
+   */
+  rendererReported: boolean;
+  /**
+   * How many planned graphics the renderer's props actually carried.
+   *
+   * ── Why this is not `counts.RENDER_INPUT` ───────────────────────────────────────────────────
+   *
+   * `counts` is keyed by a graphic's ONE final outcome, and `RENDER_INPUT` is never that outcome:
+   * a graphic in the props is either DRAWN or DROPPED_RENDER_ERROR. So `counts.RENDER_INPUT` is
+   * zero in every case there has ever been — including a render that carried and drew everything —
+   * and the line printed it as the count of graphics that reached the renderer:
+   *
+   *     renderInput=0 drawn=1
+   *
+   * which says nothing reached the renderer and one was drawn. A reader can only conclude the
+   * numbers are broken, and a reader who does not notice concludes the renderer is.
+   *
+   * This is the cumulative measurement the name always promised: a graphic counted here was in the
+   * props, whatever became of it afterwards. The stage name stays — it is what the four-stage
+   * vocabulary is written in — and the number under it is now the one it claims to be.
+   */
+  reachedRenderInput: number;
 };
 
 function emptyCounts(): Record<GraphicOutcome, number> {
@@ -178,6 +215,7 @@ export function graphicsLifecycle(input: GraphicsLifecycleInput): GraphicsLifecy
   const lives: GraphicLife[] = [];
   const counts = emptyCounts();
   const unaccounted: string[] = [];
+  let reachedRenderInput = 0;
 
   for (const p of input.planned) {
     const rendererType = rendererGraphicType(p.graphicType);
@@ -233,6 +271,8 @@ export function graphicsLifecycle(input: GraphicsLifecycleInput): GraphicsLifecy
       });
       continue;
     }
+    /** Counted here, where it is known, rather than derived from outcomes that cannot express it. */
+    reachedRenderInput += 1;
     if (drawnIds?.has(id)) {
       lives.push({ ...base, rendererClass, outcome: "DRAWN" });
       continue;
@@ -251,7 +291,7 @@ export function graphicsLifecycle(input: GraphicsLifecycleInput): GraphicsLifecy
       unaccounted.push(life.id);
     }
   }
-  return { lives, counts, unaccounted };
+  return { lives, counts, unaccounted, rendererReported: inputIds !== null, reachedRenderInput };
 }
 
 /**
@@ -336,9 +376,19 @@ export function formatGraphicsLifecycle(
   const c = lifecycle.counts;
   const planned = lifecycle.lives.length;
   const dropped = GRAPHIC_DROPS.reduce((n, d) => n + c[d], 0);
+  /**
+   * `n/a` where no render has happened yet, and a number only where one has.
+   *
+   * Two zeros are a measurement, and printing them before any render exists says the renderer
+   * received nothing and drew nothing. It had not been asked. `graphicsLifecycle` already refuses
+   * to invent the ENDING in that case; this is the same refusal in the line people read.
+   */
+  const rendered = lifecycle.rendererReported
+    ? `renderInput=${lifecycle.reachedRenderInput} drawn=${c.DRAWN}`
+    : "renderInput=n/a drawn=n/a (no render reported yet)";
   const head =
     `[Graphics] lifecycle render=${renderId} planned=${planned} ` +
-    `translated=${c.TRANSLATED} renderInput=${c.RENDER_INPUT} drawn=${c.DRAWN} ` +
+    `translated=${c.TRANSLATED} ${rendered} ` +
     `dropped=${dropped} unaccounted=${lifecycle.unaccounted.length}` +
     (effects ? ` effectsCarried=${effects.carried} effectsDropped=${effects.dropped}` : "");
 
