@@ -134,10 +134,31 @@ describe("R199 §3 — a refusal needs something behind it before it can act", (
     // A reprieve overrules the judge; it must never rewrite what the judge said.
     const at = RELEVANCE.indexOf("const cardRefusalKept =");
     expect(at).toBeGreaterThan(0);
-    const block = RELEVANCE.slice(at, at + 700);
+    /**
+     * Widened from 700: the reprieve now asks whether anything stands behind the beat before it
+     * grants itself, so the decision literal sits further down. The rule under test is unchanged
+     * and is asserted on the same three lines.
+     */
+    const block = RELEVANCE.slice(at, at + 1600);
     expect(block).toContain('judgement.verdict === "does_not_fit"');
     expect(block).toContain("reprieved: cardRefusalKept");
     expect(block).toContain("verdict: judgement.verdict");
+  });
+
+  it("…and only when something does NOT stand behind the beat — this block's own title", () => {
+    /**
+     * VID-0589. The reprieve's justification is the sentence it prints — "nothing stands behind
+     * it" — and for rounds nothing asked it. Scene 0 beat 0 held `youtube_cc:0fIJzO7EIYI`, judged
+     * FIT by this same editor on this same beat, when a text card the editor had just called
+     * "only text with no relevant imagery" was kept anyway.
+     *
+     * This describe block has been named "a refusal needs something behind it before it can act"
+     * since R199. It now tests that.
+     */
+    const at = RELEVANCE.indexOf("const cardRefusalKept =");
+    const block = RELEVANCE.slice(at, at + 1600);
+    expect(block).toContain("!provenAlternative");
+    expect(RELEVANCE).toContain("beatAlreadyHasApprovedPicture(");
   });
 
   it("nothing exempts a card from being looked at any more", () => {

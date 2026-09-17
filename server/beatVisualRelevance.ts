@@ -341,6 +341,54 @@ export function beatRelevanceBeatKey(
 }
 
 /**
+ * Does this beat already hold a picture THIS EDITOR APPROVED, other than the one being asked about?
+ *
+ * The question "nothing stands behind it" made flesh — see `cardRefusalKept`, which asserted it
+ * for rounds without ever asking. Answered from `byBeat`, the register that already holds every
+ * verdict this beat has given, so there is one source of truth and no second register to drift
+ * from it.
+ *
+ * Returns the approved picture's handle, for the log line, or null. A handle rather than a boolean
+ * because a reader who sees a card refused deserves to know what outranked it — and the CONTENT
+ * handle in preference to the path, for two reasons: `record()` files the same entry under both,
+ * so returning whichever the map happened to yield first would make the line non-deterministic;
+ * and a content key names the ASSET while a path names a file in this render's temp directory,
+ * which this programme has ruled is not an identity.
+ *
+ * Three deliberate narrownesses:
+ *
+ *   · `fits` only. `unknown`, a decline and a reprieved `does_not_fit` are not approvals, and
+ *     treating them as one would let a card be refused in favour of a picture nobody vouched for.
+ *   · THIS beat only. The key's prefix is the beat, and a FIT earned under one sentence has never
+ *     been an approval under another — the whole reason `byBeat` exists.
+ *   · Not the clip being judged. A card cannot outrank itself, under either of its two handles.
+ */
+export function beatAlreadyHasApprovedPicture(
+  ledger: BeatRelevanceLedger,
+  sceneIndex: number,
+  beatIndex: number,
+  contentKey: string,
+  clipPath: string
+): string | null {
+  const prefix = beatRelevanceBeatKey(sceneIndex, beatIndex, "content", "").slice(0, -"content:".length);
+  const self = new Set([`content:${contentKey}`, `path:${clipPath}`]);
+  let byPath: string | null = null;
+  for (const [key, entry] of ledger.byBeat) {
+    if (!key.startsWith(prefix)) continue;
+    const handle = key.slice(prefix.length);
+    if (self.has(handle)) continue;
+    const d = entry.decision;
+    if (d.verdict !== "fits") continue;
+    /** A decline is not a verdict: `evaluated: false` means nobody looked. */
+    if (d.evaluated === false) continue;
+    if (handle.startsWith("content:")) return handle;
+    byPath ??= handle;
+  }
+  /** Only when the approved picture has no asset identity filed for this beat at all. */
+  return byPath;
+}
+
+/**
  * How many candidates ONE beat may pay to have looked at.
  *
  * Removing CLIP's content authority means many more candidates reach this gate than before, and
@@ -605,12 +653,62 @@ export async function checkBeatRelevance(
    * is the editor's real answer about this card and it goes to the ledger unchanged; `reprieved`
    * is what stops the compose barrier acting on it, and `reprieved` is already this module's word
    * for "refused, and kept on purpose".
+   *
+   * ── VID-0589: "nothing stands behind it" was a premise, not a check ──────────────────────────
+   *
+   * The reprieve's whole justification is the sentence it prints. It was never asked.
+   * `cardRefusalKept` looked at two things — is this a placeholder, and did the editor say no —
+   * and at nothing about the beat it was covering for.
+   *
+   * Render 589, scene 0 beat 0, in one second:
+   *
+   *     [BeatRelevance] s0b0 card refused and kept: scene_0_slot100_guaranteed.mp4 —
+   *       nothing stands behind it …
+   *     [BeatRelevance] s0b0 push does_not_fit clip=scene_0_slot100_guaranteed.mp4
+   *       depicts="The frames show plain text on a solid background."
+   *       reason="The frames only show text with no relevant imagery"
+   *     [SceneResourced] scene_0_resourced dropped a fetched asset nothing refused:
+   *       provider=youtube_cc:0fIJzO7EIYI scene=0 beat=0
+   *
+   * Something did stand behind it. That beat already held the render's entire YouTube yield —
+   * 1751 candidates, 104 download attempts, one success — judged FIT by this same editor on this
+   * same beat. A card the editor had just called "only text with no relevant imagery" was kept
+   * anyway, on the strength of a claim about the beat that nothing had verified.
+   *
+   * ── Where the answer comes from ─────────────────────────────────────────────────────────────
+   *
+   * From `ledger.byBeat`, which is already this module's per-beat register and already holds every
+   * verdict this beat has given — the map RONDE's own note calls "the same entry under THIS BEAT,
+   * which the next beat's question cannot overwrite". No second register, no new parameter for a
+   * call site to forget, and no reader outside this module has to be taught anything.
+   *
+   * It is deliberately PROVIDER-NEUTRAL. The rule is not "YouTube may not be replaced"; it is
+   * that a picture this editor approved for this beat outranks a card this editor refused for it,
+   * whoever supplied the picture.
+   *
+   * ── Why this is a tightening and not a relaxation ───────────────────────────────────────────
+   *
+   * The reprieve still exists for exactly the case it was built for: a beat with nothing behind
+   * it still keeps its card, because a plain card beats black. What changes is that the case is
+   * now established rather than assumed. Nothing is loosened, no threshold moves, and a refusal
+   * the editor issued is now obeyed in precisely the situation where obeying it costs nothing.
    */
-  const cardRefusalKept = Boolean(params.placeholder) && judgement.verdict === "does_not_fit";
+  const provenAlternative =
+    params.placeholder && judgement.verdict === "does_not_fit"
+      ? beatAlreadyHasApprovedPicture(ledger, ctx.sceneIndex, ctx.beatIndex, contentKey, clipPath)
+      : null;
+  const cardRefusalKept =
+    Boolean(params.placeholder) && judgement.verdict === "does_not_fit" && !provenAlternative;
   if (cardRefusalKept) {
     console.log(
       `[BeatRelevance] ${slot} card refused and kept: ${path.basename(clipPath)} — ` +
         `nothing stands behind it, so the answer is recorded rather than acted on`
+    );
+  } else if (provenAlternative) {
+    console.warn(
+      `[BeatRelevance] ${slot} card refused AND NOT KEPT: ${path.basename(clipPath)} — ` +
+        `this beat already has a picture the editor approved (${provenAlternative}), so the ` +
+        `refusal is acted on rather than only recorded`
     );
   }
   const decision: BeatRelevanceDecision = {

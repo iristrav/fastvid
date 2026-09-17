@@ -675,6 +675,7 @@ import {
   relevanceVerdictForRenderedAsset,
   withComposeJudgeScope,
   formatAdoptedFitDecision,
+  beatRelevanceBeatKey,
   type ComposeJudgeScope,
   type BeatRelevanceLedger,
   type BeatRelevanceDecision,
@@ -10766,6 +10767,49 @@ type SceneResourceSite =
   /** Beat durations only — the clip list is untouched. */
   | "visual_rhythm";
 
+/**
+ * WHICH REBUILDS MAY TRADE A PROVEN PICTURE FOR A GENERATED CARD — the permission, written down.
+ *
+ * §3's rule is that a rebuild may replace a bewezen asset only when the replacement is EXPLICITLY
+ * allowed and the reason is recorded. `b6d057f` gave every rebuild its name, which made the reason
+ * readable. This is the other half: the permission, as data rather than as whatever each of the
+ * fourteen sites happens to do.
+ *
+ * NONE of them has it. That is not an oversight in this table — it is the finding. No rebuild in
+ * this pipeline exists in order to put a colour card where a picture the editor approved already
+ * was; every one of them exists to fill a HOLE. A rebuild that does it anyway is doing something
+ * nobody designed, and `[SceneResourcePolicy]` is how the next render says so by name.
+ *
+ * The set is kept rather than inlined as `false`, because the shape is the point: when a rebuild
+ * one day genuinely needs that permission, it is granted here, in one place, visibly, instead of
+ * by an exception buried in the site that wanted it.
+ */
+const SITES_THAT_MAY_REPLACE_A_PROVEN_PICTURE: ReadonlySet<SceneResourceSite> = new Set();
+
+/**
+ * Did the picture editor approve THIS clip for THIS beat? The editor's own word, or null.
+ *
+ * Read from `beatRelevance`, the register that already holds every per-beat verdict — the same one
+ * `composeBarrierAllows` and `beatAlreadyHasApprovedPicture` consult. No second register, and no
+ * inference: a clip nobody looked at, a decline, an `unknown` and a reprieved refusal are all
+ * "not approved", because none of them is somebody vouching for this picture under this sentence.
+ */
+function beatPictureWasApproved(
+  dedup: VisualDedupState | undefined,
+  sceneIndex: number | undefined,
+  beatIndex: number | undefined,
+  contentKey: string
+): string | null {
+  const ledger = dedup?.beatRelevance;
+  if (!ledger || sceneIndex == null || beatIndex == null || !contentKey) return null;
+  const entry = ledger.byBeat.get(
+    beatRelevanceBeatKey(sceneIndex, beatIndex, "content", contentKey)
+  );
+  const d = entry?.decision;
+  if (!d || d.evaluated === false) return null;
+  return d.verdict === "fits" ? "fits" : null;
+}
+
 function noteSceneClipsResourced(
   dedup: VisualDedupState | undefined,
   previous: { clips?: string[] } | undefined,
@@ -10778,12 +10822,47 @@ function noteSceneClipsResourced(
   const lineage = dedup?.sourcingCache?.lineage;
   if (!lineage || !previous?.clips?.length) return;
   const kept = new Set(next?.clips ?? []);
+  /**
+   * PROVEN_BEAT_VISUAL_MUST_NOT_BE_REPLACED_BY_REJECTED_PLACEHOLDER
+   *
+   * Render 589's scene 0, in one second: a text card the editor had just refused — "only text with
+   * no relevant imagery" — was kept, and `youtube_cc:0fIJzO7EIYI`, judged FIT by that same editor
+   * on that same beat, left through this function. The scene then ran on colour cards.
+   *
+   * The card's reprieve is repaired at its source, in `checkBeatRelevance`: "nothing stands behind
+   * it" is now asked rather than asserted. This is the backstop for the same trade arriving by any
+   * other door, and it is deliberately PROVIDER-NEUTRAL — the rule is not that YouTube may not be
+   * replaced, it is that a picture the editor approved outranks a card it refused, whoever
+   * supplied the picture.
+   *
+   * Reported, not silently corrected. Rewriting `next` here would override a rebuild's judgement
+   * from a function that can see what left and not why it left — the same overreach RONDE 574
+   * declined, for the same reason. What changes is that the trade can no longer happen quietly:
+   * it is named, with the site, and a site that may do it says so in the table above.
+   */
+  const placeholdersIn = (next?.clips ?? []).filter((c) => c && isPipelineFallbackClip(c));
+  const mayReplaceProven = SITES_THAT_MAY_REPLACE_A_PROVEN_PICTURE.has(site);
   for (const clip of previous.clips) {
     if (!clip || kept.has(clip)) continue;
     const contentKey = clipContentKey(clip);
     // Already explained by whoever dropped it — a compose gate, a duplicate, a validation swap.
     if (lineage.hasOutcomeFor(clip, contentKey)) continue;
     recordAssetOutcome(lineage, clip, "scene_resourced", context, contentKey);
+    if (placeholdersIn.length > 0 && !mayReplaceProven) {
+      const rec = lineage.resolve(clip, contentKey);
+      const approved = beatPictureWasApproved(dedup, rec?.sceneIndex, rec?.beatIndex, contentKey);
+      if (approved) {
+        console.error(
+          `[SceneResourcePolicy] INVARIANT_BROKEN ` +
+            `PROVEN_BEAT_VISUAL_REPLACED_BY_PLACEHOLDER site=${site} ` +
+            `scene=${rec?.sceneIndex ?? "?"} beat=${rec?.beatIndex ?? "?"} ` +
+            `proven=${rec?.provider ?? "UNVERIFIED"}:` +
+            `${rec?.providerAssetId ?? rec?.archiveAssetId ?? "none"} ` +
+            `verdict=${approved} placeholders=${placeholdersIn.length} ` +
+            `— this rebuild has no permission to trade an approved picture for a generated card`
+        );
+      }
+    }
     /**
      * RENDER 574 — A FETCHED, PROVEN ASSET LEAVING BY THE BACK DOOR SAYS SO OUT LOUD.
      *
