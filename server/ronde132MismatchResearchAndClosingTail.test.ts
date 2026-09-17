@@ -434,7 +434,16 @@ describe("RONDE 132 — the research pass is actually wired in", () => {
     expect(tiers).toContain("youtube_cc");
     const fetchIdx = src.indexOf("const fetchTierPaths = async (tier: HistoricalSourceTier, q: string)");
     expect(fetchIdx).toBeGreaterThan(0);
-    expect(src.slice(fetchIdx, fetchIdx + 1400)).toContain("fetchYouTubeCCClips(");
+    /**
+     * RONDE 260B — the tier reaches the provider through the one central turn instead of calling it
+     * itself, so the chain is followed rather than the literal. Same guarantee, one link longer:
+     * tier → `cascadeYoutubeCandidates` → `runCentralYoutubeTurn` → the provider.
+     */
+    expect(src.slice(fetchIdx, fetchIdx + 1400)).toContain("cascadeYoutubeCandidates()");
+    const helper = src.indexOf("const cascadeYoutubeCandidates = async ()");
+    expect(helper, "the cascade's YouTube adapter moved").toBeGreaterThan(0);
+    expect(src.slice(helper, helper + 900)).toContain("runCentralYoutubeTurn({");
+    expect(src.slice(helper, helper + 900)).toContain("queries: allQueries");
   });
 
   it("21. the license flow is untouched by this round", () => {

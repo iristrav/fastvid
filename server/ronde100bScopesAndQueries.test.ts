@@ -64,6 +64,13 @@ const CONTRACT_SRC = fs.readFileSync(path.join(SERVER_DIR, "searchQueryContract.
 const SAFE_HELPERS = [
   "fetchBrollClips", "fetchBeatClipFromScript", "fetchBeatYoutubeThenPexels",
   "fetchBeatArchivalThenPexels", "fetchBeatYoutubeOnly", "tryBeatRealYouTubeFootage",
+  /**
+   * RONDE 260B — the central YouTube turn sits between the branches and the provider adapter, so
+   * the chain this loop walks now runs one link longer: `...Inner` → `runCentralYoutubeTurn` →
+   * `tryBeatRealYouTubeFootage` → the provider. Listing it here is not an exemption; it is what
+   * makes its own fifteen callers subject to the same "must be a scoped body" check below.
+   */
+  "runCentralYoutubeTurn",
   "youtubeFirstBeatSlice",
 ] as const;
 

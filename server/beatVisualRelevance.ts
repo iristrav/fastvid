@@ -341,6 +341,18 @@ export function beatRelevanceBeatKey(
 }
 
 /**
+ * The prefix every key for ONE beat starts with — for a caller that wants this beat's entries and
+ * has no handle to ask about.
+ *
+ * Here rather than at the caller, because the caller would have to re-spell the separator. A second
+ * copy of a key shape is a second thing to keep in step, and a prefix that is nearly right silently
+ * matches nothing.
+ */
+export function beatRelevanceBeatKeyPrefix(sceneIndex: number, beatIndex: number): string {
+  return beatRelevanceBeatKey(sceneIndex, beatIndex, "path", "").slice(0, -"path:".length);
+}
+
+/**
  * Does this beat already hold a picture THIS EDITOR APPROVED, other than the one being asked about?
  *
  * The question "nothing stands behind it" made flesh — see `cardRefusalKept`, which asserted it

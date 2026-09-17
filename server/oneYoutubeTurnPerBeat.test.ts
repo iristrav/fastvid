@@ -194,159 +194,212 @@ describe("§B — every turn ends exactly once", () => {
 /* ═══════════ 4 — §15: SKIPPED is not DECLINED is not ENDED ═══════════ */
 
 describe("§15 — the vocabulary an operator can act on", () => {
+  /**
+   * RONDE 260B moved this vocabulary. It used to live in `tryBeatRealYouTubeFootage`, which decided
+   * for itself whether a search was due; that function is now the provider adapter and owns no
+   * policy at all. The capability question, the ceiling, the terminal reason and the turn all
+   * belong to `runCentralYoutubeTurn`, so that is where these claims are checked.
+   */
   const turnFn = (): string => {
-    const at = PIPELINE.indexOf("async function tryBeatRealYouTubeFootage(");
-    expect(at, "tryBeatRealYouTubeFootage moved").toBeGreaterThan(-1);
+    const at = PIPELINE.indexOf("export async function runCentralYoutubeTurn(");
+    expect(at, "runCentralYoutubeTurn moved").toBeGreaterThan(-1);
     return PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
   };
 
   it("a missing capability is SKIPPED and names which capability", () => {
     const body = turnFn();
-    expect(body).toContain("YOUTUBE_TURN_SKIPPED");
-    expect(body).toContain("CAPABILITY_UNAVAILABLE:sourcing_disabled");
-    expect(body).toContain("CAPABILITY_UNAVAILABLE:not_ready");
+    expect(body).toContain("turn=SKIPPED");
+    expect(body).toContain("sourcing_disabled");
+    expect(body).toContain("not_ready");
+    expect(body).toContain("YOUTUBE_CAPABILITY_UNAVAILABLE");
   });
 
-  it("an exhausted budget is a separate outcome from a missing capability", () => {
-    expect(turnFn()).toContain("ENTITY_BUDGET_EXHAUSTED");
-  });
-
-  it("the started line comes AFTER the budget question, not before it", () => {
-    /** A turn that could not run has not started, and a log that says otherwise is a half-truth. */
+  it("an exhausted ceiling is a separate outcome from a missing capability", () => {
     const body = turnFn();
-    expect(body.indexOf("ENTITY_BUDGET_EXHAUSTED")).toBeLessThan(
-      body.indexOf("YOUTUBE_TURN_STARTED")
-    );
+    expect(body).toContain("YOUTUBE_BUDGET_EXHAUSTED");
+    expect(body).toContain("entity_ceiling");
   });
 
-  it("an empty query list consumes no turn", () => {
+  it("the started line comes BEFORE the work and the ceiling question after it", () => {
     /**
-     * Not a capability fact and not a budget fact — the query builder produced nothing, and a later
-     * route with a usable query must still be able to take the beat's turn.
+     * §13's ordering. START is printed once the turn is genuinely claimed, and the two SKIPPED
+     * reasons below it close that same turn — so a render log always carries a START with a
+     * matching END, including for a turn that did nothing.
      */
     const body = turnFn();
-    const noQueries = body.indexOf("if (youtubeQueries.length === 0) return null;");
-    expect(noQueries, "the empty-query guard moved").toBeGreaterThan(-1);
-    expect(noQueries, "a route with no queries can now hold the beat's turn").toBeLessThan(
-      body.indexOf("claimYoutubeTurn(")
-    );
+    expect(body.indexOf("turn=START")).toBeLessThan(body.indexOf("YOUTUBE_CAPABILITY_UNAVAILABLE"));
+    expect(body.indexOf("turn=START")).toBeLessThan(body.indexOf("YOUTUBE_BUDGET_EXHAUSTED"));
+    expect(body.indexOf("turn=START")).toBeLessThan(body.indexOf("turn=END"));
+  });
+
+  it("an empty query list does not consume the beat's turn", () => {
+    /**
+     * Not a capability fact and not a budget fact — the query builder produced nothing, and a later
+     * route with a usable query must still be able to take the beat's turn. The claim is given
+     * back rather than closed, which is what `releaseUnstartedYoutubeTurn` is for.
+     */
+    const body = turnFn();
+    expect(body).toContain('finish("YOUTUBE_NO_QUERY", null)');
+    expect(PIPELINE).toContain("YOUTUBE_OUTCOME_LEAVES_TURN_OPEN");
+    expect(PIPELINE).toContain("function releaseUnstartedYoutubeTurn(");
   });
 
   it("every ending is one of the recorded outcomes, and refusal has its own line", () => {
     const body = turnFn();
-    for (const outcome of ["ADOPTED", "NO_ADOPTABLE_CANDIDATE", "FAILED"]) {
+    for (const outcome of [
+      "YOUTUBE_ADOPTED",
+      "YOUTUBE_NO_RESULTS",
+      "YOUTUBE_NO_USABLE_CANDIDATE",
+      "YOUTUBE_TIMEOUT",
+      "YOUTUBE_SEARCH_FAILED",
+      "YOUTUBE_CANDIDATES_DELIVERED",
+    ]) {
       expect(body, outcome).toContain(outcome);
     }
     expect(PIPELINE).toContain("TURN_ALREADY_TAKEN");
-    expect(PIPELINE).toContain("YOUTUBE_TURN_ENDED");
+    expect(PIPELINE).toContain("turn=ALREADY_COMPLETED");
+  });
+
+  it("a rejection reason is only used where the code can prove it", () => {
+    /**
+     * §12 — `YOUTUBE_VISION_REJECTED` is measured, by counting this beat's `does_not_fit` verdicts
+     * across the turn. `RIGHTS_REJECTED` and `ADOPTION_REJECTED` are NOT here, and their absence is
+     * the point: `adoptClip` returns a path or null and does not say which gate refused, so those
+     * labels could only be guesses dressed as measurements.
+     */
+    expect(PIPELINE).toContain("function countBeatVisionRefusals(");
+    expect(PIPELINE).toContain('entry.decision.verdict === "does_not_fit"');
+    // As VALUES, not as words: the doc comment names them precisely to say they are not used.
+    expect(PIPELINE).not.toContain('"YOUTUBE_RIGHTS_REJECTED"');
+    expect(PIPELINE).not.toContain('"YOUTUBE_ADOPTION_REJECTED"');
   });
 });
 
-/* ═══════════ 5 — there is no ninth door ═══════════ */
+/* ═══════════ 5 — one door, and it is the only one ═══════════ */
 
-describe("§13 — no route reaches YouTube without holding the turn", () => {
-  /**
-   * Every `fetchYouTubeCCClips(` in the file, paired with the body of the top-level function it
-   * sits in.
-   *
-   * The enclosing function, not a fixed window of characters. A window is the wrong instrument
-   * twice over: too small and a guarded call reads as unguarded because a long comment pushed the
-   * claim out of view; too large and an unguarded call inherits its NEIGHBOUR's claim and the test
-   * passes while the door stands open. The function boundary is the scope the claim actually has.
-   */
-  const GUARDS = ["claimYoutubeTurn(", "askYoutubeOnceForThisBeat(", "claimCascadeYoutubeTurn()"];
-  const callSites = (): Array<{ index: number; body: string; near: string }> => {
-    const sites: Array<{ index: number; body: string; near: string }> = [];
+describe("§18 — the static audit: no route reaches YouTube on its own", () => {
+  /** Every `fetchYouTubeCCClips(` in the file that is a call rather than a declaration or prose. */
+  const providerCallSites = (): Array<{ index: number; host: string }> => {
+    const sites: Array<{ index: number; host: string }> = [];
     const re = /fetchYouTubeCCClips\(/g;
-    const fnStart = /\n(?:export )?(?:async )?function /g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(PIPELINE))) {
-      // The declaration itself and prose mentions in comments are not call sites.
       const lineStart = PIPELINE.lastIndexOf("\n", m.index) + 1;
       const line = PIPELINE.slice(lineStart, PIPELINE.indexOf("\n", m.index));
       if (line.includes("export async function")) continue;
       if (/^\s*(\*|\/\/)/.test(line)) continue;
-
-      let start = -1;
-      fnStart.lastIndex = 0;
-      let f: RegExpExecArray | null;
-      while ((f = fnStart.exec(PIPELINE)) && f.index < m.index) start = f.index;
-      expect(start, "no enclosing top-level function found").toBeGreaterThan(-1);
-      const end = PIPELINE.indexOf("\n}\n", m.index);
-      sites.push({
-        index: m.index,
-        body: PIPELINE.slice(start, end),
-        near: PIPELINE.slice(Math.max(0, m.index - 200), m.index),
-      });
+      sites.push({ index: m.index, host: enclosingFunction(m.index) });
     }
     return sites;
   };
 
-  /**
-   * A function with ONE call to the provider is guarded when the claim is anywhere in its body;
-   * the claim governs the whole function and may sit far above behind its own explanation.
-   *
-   * A function with SEVERAL calls has to show a guard at each one. Body scope is not enough there:
-   * the beat cascade holds four YouTube tiers, and if one of them loses its wrapper the other three
-   * keep the word `askYoutubeOnceForThisBeat` in the body and the unguarded tier reads as covered.
-   * That is the neighbour-inherits-the-guard failure, and a mutation proved this file had it.
-   */
-  const isGuarded = (site: { body: string; near: string }): boolean => {
-    const callsInBody = site.body.split("fetchYouTubeCCClips(").length - 1;
-    const scope = callsInBody > 1 ? site.near : site.body;
-    return GUARDS.some((g) => scope.includes(g));
+  /** The top-level function an offset sits in. */
+  const enclosingFunction = (index: number): string => {
+    const re = /\n(?:export )?(?:async )?function (\w+)/g;
+    let name = "?";
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(PIPELINE)) && m.index < index) name = m[1];
+    return name;
   };
 
-  it("there are call sites to check — the scan itself has not gone blind", () => {
-    expect(callSites().length).toBeGreaterThanOrEqual(6);
-  });
-
-  it("EVERY call to the provider is under a turn this beat holds", () => {
+  it("the provider has exactly ONE production call site, inside the adapter", () => {
     /**
-     * This is the test §13 asks for, and it is the one that fails when a ninth door is opened: a
-     * new `fetchYouTubeCCClips(` written without claiming the turn has no `claimYoutubeTurn` or
-     * `askYoutubeOnceForThisBeat` above it, and this assertion names the offending offset.
+     * This is the assertion §21 criterion 4 asks for, and the one that fails the day a new direct
+     * `fetchYouTubeCCClips(` is written anywhere in production code. It names the offending host.
      */
-    const unguarded = callSites().filter((s) => !isGuarded(s));
-    expect(
-      unguarded.map((s) => s.index),
-      "a route reaches YouTube without holding the beat's turn"
-    ).toEqual([]);
+    const hosts = providerCallSites().map((s) => s.host);
+    expect(hosts).toEqual(["tryBeatRealYouTubeFootage"]);
   });
 
-  it("each of the four formerly-independent routes now claims", () => {
+  it("the adapter has exactly ONE caller, and it is the central turn", () => {
+    const re = /(?<![\w.])tryBeatRealYouTubeFootage\s*\(/g;
+    const hosts: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(PIPELINE))) {
+      const lineStart = PIPELINE.lastIndexOf("\n", m.index) + 1;
+      const line = PIPELINE.slice(lineStart, PIPELINE.indexOf("\n", m.index));
+      if (line.includes("async function")) continue;
+      hosts.push(enclosingFunction(m.index));
+    }
+    expect(hosts).toEqual(["runCentralYoutubeTurn"]);
+  });
+
+  it("the four formerly independent routes now go through the central turn", () => {
+    /**
+     * Each of these used to call the provider itself. The check is not that the name survives — it
+     * is that the enclosing function now contains a `runCentralYoutubeTurn({` and no provider call.
+     */
     for (const route of [
-      "fetchBeatYoutubeOnly", // its own full YouTube route, looser adoption
-      "claimCascadeYoutubeTurn", // the historical cascade's youtube_cc tier
-      '"research race"', // the research race's merged task
-      "askYoutubeOnceForThisBeat", // the beat cascade's four tiers
+      "fetchBeatYoutubeOnly",
+      "fetchHistoricalBeatVideoInner",
+      "researchBeatClipUnifiedInner",
+      "fetchBeatClipInner",
     ]) {
-      expect(PIPELINE, route).toContain(route);
+      const at = PIPELINE.indexOf(`function ${route}(`);
+      expect(at, `${route} not found`).toBeGreaterThan(-1);
+      const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}\n", at));
+      expect(body, `${route} does not reach the central turn`).toContain("runCentralYoutubeTurn({");
+      expect(body, `${route} still calls the provider itself`).not.toContain("fetchYouTubeCCClips(");
     }
   });
 
-  it("the research race asks YouTube once, with the union of its query sets", () => {
+  it("no branch decides on its own that a YouTube search is due", () => {
     /**
-     * It used to push up to THREE tasks: the entity queries, then one per celebrity/topic query.
-     * Merging them is what makes one turn affordable without dropping a single query.
+     * The capability question is the tell. A branch that asks `youtubeCcReady()` before reaching the
+     * provider is a branch making a routing decision — which is exactly what this round removed.
+     * Only the central turn, the fetcher itself and the readiness reporting may ask.
      */
-    expect(PIPELINE).toContain("const unionQueries = [");
-    expect(PIPELINE).toContain("POOLED_INTO_RESEARCH:");
+    const re = /(?<![\w.])youtubeCcReady\s*\(\)/g;
+    const hosts = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(PIPELINE))) hosts.add(enclosingFunction(m.index));
+    /**
+     * The allowed hosts, and why each one is not routing:
+     *
+     *   runCentralYoutubeTurn   the one place that MAY decide — this round's whole point
+     *   youtubeCcReady          the function itself
+     *   downloadYouTubeCCClip   prose in a doc comment
+     *   probeYouTubeCcPipeline  the readiness probe, which reports and sources nothing
+     *   maxEntityYoutubeFetchesPerVideo  sizes the per-video ceiling, does not route
+     *   fetchUniqueStockForBeat sizes a WALL CLOCK for a mixed-provider path, does not route
+     *   fetchUniqueStockForBeatInner  refuses when NO provider at all is configured
+     *   _runVideoPipelineInner  reports whether any real-visual capability exists, at startup
+     */
+    for (const host of hosts) {
+      expect(
+        [
+          "runCentralYoutubeTurn",
+          "youtubeCcReady",
+          "downloadYouTubeCCClip",
+          "probeYouTubeCcPipeline",
+          "maxEntityYoutubeFetchesPerVideo",
+          "fetchUniqueStockForBeat",
+          "fetchUniqueStockForBeatInner",
+          "_runVideoPipelineInner",
+        ],
+        `${host} decides for itself whether to try YouTube`
+      ).toContain(host);
+    }
   });
 
-  it("the beat cascade's tiers keep their own relevance gates", () => {
+  it("the beat cascade's tiers keep their own relevance floors", () => {
     /**
-     * §5-style check. Folding the tiers into one query set would have meant one shared
-     * minRelevanceScore — either loosening the two strict tiers, which is forbidden outright, or
-     * tightening the lenient one, which silently changes what a beat may adopt. Neither happened:
-     * the tier order decides who takes the turn, and each tier keeps the gate it had.
+     * §11 — folding the tiers into one query set would have meant one shared `minRelevanceScore`:
+     * either loosening the two strict tiers, which is forbidden outright, or tightening the lenient
+     * one, which silently changes what a beat may adopt. The request carries the floor instead.
      */
-    const heroAt = PIPELINE.indexOf('askYoutubeOnceForThisBeat("hero"');
-    const archivalAt = PIPELINE.indexOf('askYoutubeOnceForThisBeat("archival early"');
-    const realEventAt = PIPELINE.indexOf('askYoutubeOnceForThisBeat("real-event YouTube"');
-    expect(Math.min(heroAt, archivalAt, realEventAt)).toBeGreaterThan(-1);
-    expect(PIPELINE.slice(archivalAt, archivalAt + 400)).toContain("beat.keywords, 2,");
-    expect(PIPELINE.slice(realEventAt, realEventAt + 400)).toContain("beat.keywords, 1,");
+    expect(PIPELINE).toContain("minRelevanceScore?: number;");
+    expect(PIPELINE).toContain("req.minRelevanceScore ?? 1");
+    const floorOf = (tier: string): string => {
+      const at = PIPELINE.indexOf(tier);
+      expect(at, `${tier} moved`).toBeGreaterThan(-1);
+      // To the end of the argument list, not the first `)` — a query expression has its own.
+      return PIPELINE.slice(at, PIPELINE.indexOf("\n", PIPELINE.indexOf('"', at + tier.length)));
+    };
+    expect(floorOf('"hero", "hero"'), "the hero tier lost its floor").toContain(", 2,");
+    expect(floorOf('"archival early", "archival"')).toContain(", 2,");
+    expect(floorOf('"archival", "archival"')).toContain(", 2,");
+    expect(floorOf('"real-event YouTube", "event"')).toContain(", 1,");
   });
 });
 
