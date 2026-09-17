@@ -113,9 +113,15 @@ describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured cli
       body.indexOf("if (sceneFetchAborted()) {"),
       body.indexOf("if (!(await isValidVideoFile(clipPath)))")
     );
-    expect(abortBlock).toContain("return false;");
+    /**
+     * Re-pointed, not relaxed: the gate's two exits now NAME themselves — `COMPOSE_GATE_PASS` and
+     * `composeGateRefusal("scope_aborted_unmeasured")` — because a bare boolean was standing for
+     * nine different refusals, five of which printed nothing anywhere. The branch's shape, and
+     * the guarantee this test is for, are unchanged.
+     */
+    expect(abortBlock).toContain('composeGateRefusal("scope_aborted_unmeasured")');
     // Every acceptance in the branch goes through the verdict; there is no other way out.
-    const accept = abortBlock.indexOf("return true;");
+    const accept = abortBlock.indexOf("return COMPOSE_GATE_PASS;");
     expect(accept).toBeGreaterThan(0);
     const beforeAccept = abortBlock.slice(0, accept);
     expect(beforeAccept).toContain('if (verdict.decision === "pass")');
@@ -162,7 +168,9 @@ describe("RONDE 138 §A1 — an abandoned scope no longer rejects a measured cli
   it("the rest of the gate is untouched — every other check still runs", () => {
     // The fix is about WHEN the gate can answer, not about what it checks.
     const body = composeGateBody();
-    expect(body).toContain("if (!(await isValidVideoFile(clipPath))) return false;");
+    expect(body).toContain(
+      'if (!(await isValidVideoFile(clipPath))) return composeGateRefusal("invalid_file");'
+    );
     expect(body).toContain("montageStreamMetaUsable(meta, trimStart)");
     expect(body).toContain("probeClipMeanLuma(clipPath, trimStart + 0.08)");
     expect(body).toContain("composeBarrierAllows(");

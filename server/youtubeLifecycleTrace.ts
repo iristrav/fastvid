@@ -109,6 +109,10 @@ export type YoutubeVisionOutcome =
  *   COMPOSE_DROPPED              the compose filter turned it down, with a reason
  *   REPLACED / REMOVED           swapped out or taken out, with a reason
  *   REJECTED_BEFORE_ADOPTION     a gate refused it before it could be used, with a reason
+ *   REJECTED_AFTER_ADOPTION      a gate refused it once it was already in use, with a reason —
+ *                                separate because the two call for opposite work, and because
+ *                                reading the second as the first is what let an adopted asset's
+ *                                disappearance be reported as explained (see `endingOf`)
  *   DOWNLOAD_FAILED              the bytes never arrived
  *   NOT_ADOPTED                  nothing refused it and nothing used it
  *   ADOPTED_NO_TERMINAL_OUTCOME  in use, then no ending at all
@@ -123,6 +127,7 @@ export type YoutubeLifecycleStatus =
   | "REPLACED"
   | "REMOVED"
   | "REJECTED_BEFORE_ADOPTION"
+  | "REJECTED_AFTER_ADOPTION"
   | "DOWNLOAD_FAILED"
   | "NOT_ADOPTED"
   | "ADOPTED_NO_TERMINAL_OUTCOME"
@@ -136,6 +141,7 @@ const EXPLAINED_STATUSES: ReadonlySet<YoutubeLifecycleStatus> = new Set<YoutubeL
   "REPLACED",
   "REMOVED",
   "REJECTED_BEFORE_ADOPTION",
+  "REJECTED_AFTER_ADOPTION",
   "DOWNLOAD_FAILED",
 ]);
 
@@ -359,17 +365,75 @@ function endingOf(
     if (e) return { status, reason: e.reason ?? "" };
   }
 
-  /** A refusal is filed as REJECTED on the stage the gate belongs to, never as its own stage. */
-  const rejected = [...events].reverse().find((e) => e.status === "REJECTED");
-  if (rejected) {
+  /**
+   * A refusal is filed as REJECTED on the stage the gate belongs to, never as its own stage.
+   *
+   * ── The word BEFORE was doing no work ───────────────────────────────────────────────────────
+   *
+   * This used to be `events.reverse().find((e) => e.status === "REJECTED")` and return
+   * `REJECTED_BEFORE_ADOPTION` — a name asserting an order that nothing checked. A YouTube record
+   * accumulates refusals: a candidate turned down on one beat, a derived copy a gate refused, an
+   * eligibility check that said no before a later route said yes. `eventsWithDescendants` folds
+   * every one of those in. So an asset REJECTED at some earlier moment, ADOPTED afterwards, and
+   * then lost with nothing recorded came back as "rejected before adoption" — an EXPLAINED status,
+   * which suppressed the very finding this module exists to make. The gap counter read zero
+   * because it could not fire, not because there was no gap.
+   *
+   * ── The order, now asked ────────────────────────────────────────────────────────────────────
+   *
+   * Adoption is the dividing line. A refusal AFTER it is a real ending and gets its own name — it
+   * says who refused and why, so it explains the asset. A refusal BEFORE it explains nothing about
+   * an asset that went on to be adopted, so for an adopted asset it is not an ending at all, and
+   * the row falls through to the missing-outcome finding it always should have made.
+   *
+   * `DOWNLOAD_FAILED` is read the same way for the same reason: one attempt failing does not
+   * account for an asset a later attempt delivered, adopted and then lost.
+   *
+   * ── Why the position and not the timestamp ──────────────────────────────────────────────────
+   *
+   * `recordEvent` stamps `Date.now()`, and a gate that refuses a clip it has just adopted files
+   * both inside the same millisecond — so a timestamp comparison decides those coin-flips by
+   * rounding. The array is the ledger's own filing order for a record, with each derived record's
+   * events appended after its parent's, and a derived file cannot exist before the adoption that
+   * produced it. That makes position the order these events actually happened in, for every shape
+   * this reader sees.
+   */
+  const adoptedIndex = events.findIndex((e) => e.stage === "ADOPTED" && e.status === "OK");
+  const adopted = adoptedIndex >= 0;
+  const refusal = (after: boolean) => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.status !== "REJECTED") continue;
+      if (!adopted) {
+        if (!after) return e;
+        continue;
+      }
+      if (after ? i > adoptedIndex : i < adoptedIndex) return e;
+    }
+    return undefined;
+  };
+
+  const rejectedAfter = adopted ? refusal(true) : undefined;
+  if (rejectedAfter) {
     return {
-      status: "REJECTED_BEFORE_ADOPTION",
-      reason: rejected.gate ? `${rejected.gate}: ${rejected.reason ?? ""}` : rejected.reason ?? "",
+      status: "REJECTED_AFTER_ADOPTION",
+      reason: rejectedAfter.gate
+        ? `${rejectedAfter.gate}: ${rejectedAfter.reason ?? ""}`
+        : rejectedAfter.reason ?? "",
     };
   }
+  if (!adopted) {
+    const rejected = refusal(false);
+    if (rejected) {
+      return {
+        status: "REJECTED_BEFORE_ADOPTION",
+        reason: rejected.gate ? `${rejected.gate}: ${rejected.reason ?? ""}` : rejected.reason ?? "",
+      };
+    }
 
-  const failed = last("DOWNLOAD_FAILED");
-  if (failed) return { status: "DOWNLOAD_FAILED", reason: failed.reason ?? "" };
+    const failed = last("DOWNLOAD_FAILED");
+    if (failed) return { status: "DOWNLOAD_FAILED", reason: failed.reason ?? "" };
+  }
 
   return null;
 }

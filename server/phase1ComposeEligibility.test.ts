@@ -201,7 +201,15 @@ describe("PHASE 1 / TEST C — an expired scope starts no new retrieval, probe o
     const pipeline = read("videoPipeline.ts");
     const start = pipeline.indexOf("    if (sceneFetchAborted()) {\n      const known = memoisedVideoStreamMeta(clipPath);");
     expect(start, "the abort branch moved — this test must be re-anchored").toBeGreaterThan(0);
-    const branch = pipeline.slice(start, pipeline.indexOf("if (!(await isValidVideoFile(clipPath))) return false;", start));
+    /**
+     * Re-anchored: the gate's refusals now name the check that produced them, so this branch ends
+     * at `isValidVideoFile` returning `composeGateRefusal("invalid_file")` rather than a bare
+     * `false`. The branch itself is unchanged — the anchor is, and an `indexOf` that misses runs
+     * the slice to the end of the file and fails on the rest of the gate's probes.
+     */
+    const endAt = pipeline.indexOf("if (!(await isValidVideoFile(clipPath)))", start);
+    expect(endAt, "the check after the abort branch moved").toBeGreaterThan(start);
+    const branch = pipeline.slice(start, endAt);
     expect(branch.length).toBeGreaterThan(200);
     expect(branch).toContain("memoisedVideoStreamMeta(clipPath)");
     expect(branch).toContain("composeScopeVerdict({");

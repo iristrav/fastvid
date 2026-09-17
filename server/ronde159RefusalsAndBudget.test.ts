@@ -365,8 +365,14 @@ describe("RONDE 159 §D — a dropped clip says what became of it", () => {
 
   it("both drop branches in the compose filter file an ending", () => {
     const idx = PIPE.indexOf("async function composeReadySceneClips(");
-    const body = PIPE.slice(idx, idx + 1800);
-    expect(body).toContain('dropped(clipPath, `compose_gate:s${sceneIndex}`);');
+    const body = PIPE.slice(idx, idx + 2600);
+    /**
+     * Re-pointed: the gate reason now carries the CHECK that refused, not only the fact that the
+     * barrier did. `montageClipPassesComposeGate` returned a boolean from nine different refusals
+     * and five of them printed nothing, so every one of them arrived here as `compose_gate:s<n>`.
+     * The ending this test guards is still filed at the same place, with strictly more in it.
+     */
+    expect(body).toContain('dropped(clipPath, `compose_gate:${gate.check}:s${sceneIndex}`);');
     expect(body).toContain('dropped(clipPath, `duplicate_content:s${sceneIndex}`);');
     expect(body).toContain('lineage?.recordEventForPath(clipPath, "REMOVED"');
   });

@@ -10713,12 +10713,68 @@ async function generateGuaranteedBeatClipInner(
  * keeps that ending; this never overwrites a specific reason with a vaguer one, and it is safe to
  * call at every assignment site including the ones that only refine a list.
  */
+/**
+ * WHICH REBUILD DROPPED IT — the half of `scene_resourced` that was missing.
+ *
+ * ── What render 589 could not answer ────────────────────────────────────────────────────────
+ *
+ *     [YouTubeLifecycle] asset=youtube_cc:0fIJzO7EIYI scene=0 beat=0 vision=FIT adopted=yes
+ *       prepared=yes compose=no … status=REPLACED reason=scene_resourced:scene_0_resourced
+ *
+ * That render's entire YouTube budget produced one clip: found, downloaded, fair-use transformed,
+ * judged FIT by the editor on its own beat, adopted. It then left at a scene rebuild, and scene 0
+ * ran on colour fallbacks instead — `realClipRatio=0.20`, six of them, and the cinematic planner
+ * later dropped every one of those beats for having no rehydratable identity.
+ *
+ * The event was filed correctly and named nothing useful. Fourteen call sites all passed the
+ * identical string `scene_<n>_resourced`, so the reason says a rebuild happened and cannot say
+ * WHICH rebuild — a compose-ready filter, a strict-voice refill, a guaranteed fill and a
+ * last-resort AI card are four different decisions with four different answers, and the record
+ * could not tell them apart. Deciding whether a rebuild was entitled to drop a proven asset is
+ * impossible while they are indistinguishable.
+ *
+ * ── Why the site is a required argument ─────────────────────────────────────────────────────
+ *
+ * A fifteenth rebuild is added by writing `sceneVisualResults[i] = …`, and the way this became
+ * anonymous is that the context string was boilerplate copied from the site above. A required
+ * parameter of a closed type cannot be copied wrongly without the compiler saying so, and a new
+ * rebuild cannot be anonymous at all: it does not compile until it names itself.
+ */
+type SceneResourceSite =
+  /** The local clip cache was finalised for this scene. */
+  | "local_clip_cache"
+  /** Only the clips that pass the compose barrier were kept. */
+  | "compose_ready_filter"
+  /** The fast-short compose rescue supplied the scene's clips. */
+  | "fast_compose_rescue"
+  /** Pre-compose recovery rebuilt an empty scene. */
+  | "pre_compose_recovery"
+  /** The scene's own sourcing result, possibly after a strict-voice refill. */
+  | "scene_sourcing_result"
+  /** A strict voice-match refill replaced the list. */
+  | "strict_voice_refill"
+  /** The recovery sweep rebuilt a scene that was empty after fetching. */
+  | "recovery_sweep"
+  /** A single generated card replaced the whole list. */
+  | "last_resort_ai_clip"
+  /** Guaranteed filler was appended and the list rewritten. */
+  | "guaranteed_fill"
+  /** The same clips, reordered against their beats. */
+  | "beat_reorder"
+  /** The same clips, reordered by the shot-sequence optimiser. */
+  | "shot_sequence"
+  /** Beat durations only — the clip list is untouched. */
+  | "visual_rhythm";
+
 function noteSceneClipsResourced(
   dedup: VisualDedupState | undefined,
   previous: { clips?: string[] } | undefined,
   next: { clips?: string[] } | undefined,
-  context: string
+  sceneIndex: number,
+  /** The rebuild that produced `next`. Required: an anonymous rebuild is what 589 could not read. */
+  site: SceneResourceSite
 ): void {
+  const context = `scene_${sceneIndex}_resourced:${site}`;
   const lineage = dedup?.sourcingCache?.lineage;
   if (!lineage || !previous?.clips?.length) return;
   const kept = new Set(next?.clips ?? []);
@@ -22663,7 +22719,63 @@ async function assertSceneVisualInventory(
   }
 }
 
+/**
+ * WHICH CHECK REFUSED THIS CLIP — the compose barrier's answer, not just its verdict.
+ *
+ * ── What a flat `compose_gate` cost ─────────────────────────────────────────────────────────
+ *
+ * The gate below returns a boolean from nine different refusals, and five of those return `false`
+ * without printing anything at all — a dark first frame, a mostly-black clip, a curated clip under
+ * the minimum length, a dark centre frame, an unreadable file. `composeReadySceneClips` then files
+ * one reason for all nine: `compose_gate:s<n>`.
+ *
+ * So "the compose barrier turned it down" has been the whole of the record. A clip refused because
+ * ffprobe could not read it and a clip refused because its opening frame is dark need opposite
+ * work — one is a broken download, the other is a real editorial judgement about the footage — and
+ * the ledger could not tell them apart for any asset in any render.
+ *
+ * ── One engine, two views ───────────────────────────────────────────────────────────────────
+ *
+ * `montageClipPassesComposeGate` keeps its boolean shape because eighteen call sites use it, and
+ * it is now DEFINED as `.pass` of this result. The two cannot drift: there is one set of checks
+ * and one place they are evaluated. Nothing here changes what passes — every threshold, probe and
+ * branch is exactly as it was, and the only new thing is which of them said no.
+ */
+type ComposeGateCheck =
+  /** The picture editor's barrier refused it, with its own reason. */
+  | "compose_barrier"
+  /** The scene's retrieval budget expired and this clip had no prior measurement. */
+  | "scope_aborted_unmeasured"
+  /** ffprobe could not read it as a video file at all. */
+  | "invalid_file"
+  /** Readable, and the montage cannot use this stream at this trim point. */
+  | "unusable_stream"
+  /** The frame the montage would open on is nearly black. */
+  | "dark_first_frame"
+  /** A curated clip shorter than the archive minimum, under strict no-repeat. */
+  | "curated_too_short"
+  /** A curated clip whose centre is nearly black at the midpoint. */
+  | "curated_dark_centre"
+  /** Nearly all black from end to end. */
+  | "mostly_black"
+  /** The gate itself ran out of time. */
+  | "gate_timeout";
+
+type ComposeGateResult = { pass: true } | { pass: false; check: ComposeGateCheck };
+
+const COMPOSE_GATE_PASS: ComposeGateResult = { pass: true };
+const composeGateRefusal = (check: ComposeGateCheck): ComposeGateResult => ({ pass: false, check });
+
 async function montageClipPassesComposeGate(
+  clipPath: string,
+  sceneIndex: number,
+  clipIndex: number,
+  relevance?: BeatRelevanceLedger
+): Promise<boolean> {
+  return (await montageClipComposeGate(clipPath, sceneIndex, clipIndex, relevance)).pass;
+}
+
+async function montageClipComposeGate(
   clipPath: string,
   sceneIndex: number,
   clipIndex: number,
@@ -22681,7 +22793,7 @@ async function montageClipPassesComposeGate(
    * unknown path is allowed to do.
    */
   relevance?: BeatRelevanceLedger
-): Promise<boolean> {
+): Promise<ComposeGateResult> {
   const GATE_TIMEOUT_MS = 25_000;
   const base = path.basename(clipPath);
 
@@ -22722,12 +22834,12 @@ async function montageClipPassesComposeGate(
       console.warn(
         `[ComposeBarrier] s${sceneIndex} clip ${clipIndex}: BLOCKED ${base} — ${barrier.reason}`
       );
-      return false;
+      return composeGateRefusal("compose_barrier");
     }
   }
 
   let resolved = false;
-  const work = (async (): Promise<boolean> => {
+  const work = (async (): Promise<ComposeGateResult> => {
     /**
      * RONDE 138 — an abandoned scope means "cannot check", not "reject".
      *
@@ -22792,12 +22904,12 @@ async function montageClipPassesComposeGate(
       });
       if (verdict.decision === "pass") {
         console.log(line);
-        return true;
+        return COMPOSE_GATE_PASS;
       }
       console.warn(line);
-      return false;
+      return composeGateRefusal("scope_aborted_unmeasured");
     }
-    if (!(await isValidVideoFile(clipPath))) return false;
+    if (!(await isValidVideoFile(clipPath))) return composeGateRefusal("invalid_file");
     const trimStart = montageClipStartSec(sceneIndex, clipIndex);
     const meta = await probeVideoStreamMeta(clipPath);
     if (!meta || !montageStreamMetaUsable(meta, trimStart)) {
@@ -22807,39 +22919,41 @@ async function montageClipPassesComposeGate(
             (meta ? ` (${meta.width}x${meta.height}, ${meta.durationSec.toFixed(2)}s)` : "")
         );
       }
-      return false;
+      return composeGateRefusal("unusable_stream");
     }
     const curatedId = curatedClipPathAssetId(clipPath);
     if (curatedId != null) {
       const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
-      if (startLuma !== null && startLuma < 14) return false;
+      if (startLuma !== null && startLuma < 14) return composeGateRefusal("dark_first_frame");
       if (strictNoVisualRepeat()) {
         // Reuse the duration already probed above (meta.durationSec) instead of re-probing the
         // same file with a second ffmpeg process — saves one subprocess per gate-check here.
         const probed = meta.durationSec;
-        if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) return false;
+        if (probed > 0.15 && probed < archiveVisualMinClipSec() - 0.5) {
+          return composeGateRefusal("curated_too_short");
+        }
         const midAt =
           trimStart + Math.min(Math.max(1.0, probed * 0.4), Math.max(0.5, probed - 0.25));
         const centerLuma = await probeClipRegionMeanLuma(clipPath, midAt, "center");
-        if (centerLuma !== null && centerLuma < 18) return false;
+        if (centerLuma !== null && centerLuma < 18) return composeGateRefusal("curated_dark_centre");
       }
-      return true;
+      return COMPOSE_GATE_PASS;
     }
     // Phase 12: meta.durationSec was already probed above (and validated by
     // montageStreamMetaUsable) — pass it through instead of letting isMostlyBlackClip re-probe
     // the same file a second time for this non-curated candidate.
-    if (await isMostlyBlackClip(clipPath, meta.durationSec)) return false;
+    if (await isMostlyBlackClip(clipPath, meta.durationSec)) return composeGateRefusal("mostly_black");
     const startLuma = await probeClipMeanLuma(clipPath, trimStart + 0.08);
-    if (startLuma !== null && startLuma < 14) return false;
-    return true;
+    if (startLuma !== null && startLuma < 14) return composeGateRefusal("dark_first_frame");
+    return COMPOSE_GATE_PASS;
   })().then((v) => { resolved = true; return v; });
 
-  const timeout = new Promise<boolean>((resolve) =>
+  const timeout = new Promise<ComposeGateResult>((resolve) =>
     setTimeout(() => {
       if (!resolved) {
         console.warn(`[ComposeGate] TIMEOUT s${sceneIndex}b${clipIndex} ${base} after ${GATE_TIMEOUT_MS}ms — skipping clip`);
       }
-      resolve(false);
+      resolve(composeGateRefusal("gate_timeout"));
     }, GATE_TIMEOUT_MS)
   );
 
@@ -27623,8 +27737,17 @@ async function composeReadySceneClips(
       dropped(clipPath, `placeholder_not_used:s${sceneIndex}`);
       continue;
     }
-    if (!(await montageClipPassesComposeGate(clipPath, sceneIndex, out.length, relevance))) {
-      dropped(clipPath, `compose_gate:s${sceneIndex}`);
+    /**
+     * The barrier's own answer reaches the ledger, not just its verdict.
+     *
+     * `compose_gate:s<n>` was the reason for all nine of the gate's refusals, five of which print
+     * nothing anywhere. A clip ffprobe could not read and a clip whose opening frame is dark are
+     * opposite problems — a broken download against a real judgement about the footage — and every
+     * asset in every render arrived at the audit with the same word for both.
+     */
+    const gate = await montageClipComposeGate(clipPath, sceneIndex, out.length, relevance);
+    if (!gate.pass) {
+      dropped(clipPath, `compose_gate:${gate.check}:s${sceneIndex}`);
       continue;
     }
     const key = clipContentKey(clipPath);
@@ -27935,7 +28058,7 @@ async function ensureFastShortScenesReadyForCompose(
         videoLength,
         audioPaths?.[si]
       );
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_0, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_0, sceneVisualResults[si], scenes[si]?.index ?? si, "local_clip_cache");
       const cached = sceneVisualResults[si]!.clips?.length ?? 0;
       const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
       console.log(
@@ -27948,7 +28071,7 @@ async function ensureFastShortScenesReadyForCompose(
     if (ready.length > 0) {
       const prevSceneVisual_1 = sceneVisualResults[si];
       sceneVisualResults[si] = { ...vr, clips: ready, beatDurations: vr.beatDurations?.slice(0, ready.length) };
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_1, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_1, sceneVisualResults[si], scenes[si]?.index ?? si, "compose_ready_filter");
       continue;
     }
 
@@ -27961,7 +28084,7 @@ async function ensureFastShortScenesReadyForCompose(
         clips: rescued,
         beatDurations: rescued.map(() => archiveVisualBeatSecForVideo(videoLength)),
       };
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_2, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_2, sceneVisualResults[si], scenes[si]?.index ?? si, "fast_compose_rescue");
       continue;
     }
 
@@ -27978,7 +28101,7 @@ async function ensureFastShortScenesReadyForCompose(
       if (ready.length > 0) {
         const prevSceneVisual_3 = sceneVisualResults[si];
         sceneVisualResults[si] = { ...recovered, clips: ready };
-        noteSceneClipsResourced(visualDedup, prevSceneVisual_3, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_3, sceneVisualResults[si], scenes[si]?.index ?? si, "pre_compose_recovery");
       }
     } catch (err) {
       console.warn(
@@ -44223,7 +44346,7 @@ async function _runVideoPipelineInner(
               }
               const prevSceneVisual_4 = sceneVisualResults[i];
               sceneVisualResults[i] = svr;
-              noteSceneClipsResourced(visualDedup, prevSceneVisual_4, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
+              noteSceneClipsResourced(visualDedup, prevSceneVisual_4, sceneVisualResults[i], scenes[i]?.index ?? i, "scene_sourcing_result");
               completedPipelineVisuals++;
               gantt(`Scene ${scene.index} retrieve END  (${svr.clips.length} clips)`, t2p);
               profiler.recordSceneRetrieve(i, scene.index, scene.duration, retrieveStartMs, Date.now(), 0, svr.clips.length);
@@ -44872,7 +44995,7 @@ async function _runVideoPipelineInner(
       sceneVisualResults[si] = await recoverSceneClipsIfEmpty(
         scenes[si], workDir, topicContext, visualDedup
       );
-      noteSceneClipsResourced(visualDedup, prevSceneVisual_5, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+      noteSceneClipsResourced(visualDedup, prevSceneVisual_5, sceneVisualResults[si], scenes[si]?.index ?? si, "recovery_sweep");
       if (
         sceneVisualResults[si].clips.length === 0 &&
         perf.enableAiFallback &&
@@ -44905,7 +45028,7 @@ async function _runVideoPipelineInner(
             clips: [aiClip],
             beatDurations: [Math.max(VIDRUSH_BEAT_SEC, scene.duration / 2)],
           };
-          noteSceneClipsResourced(visualDedup, prevSceneVisual_6, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_6, sceneVisualResults[si], scenes[si]?.index ?? si, "last_resort_ai_clip");
           console.warn(`[Pipeline] Scene ${scene.index}: last-resort AI clip`);
         }
       }
@@ -44957,7 +45080,7 @@ async function _runVideoPipelineInner(
           if (clips.length > 0) {
             const prevSceneVisual_7 = sceneVisualResults[si];
             sceneVisualResults[si] = { clips, beatDurations };
-            noteSceneClipsResourced(visualDedup, prevSceneVisual_7, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+            noteSceneClipsResourced(visualDedup, prevSceneVisual_7, sceneVisualResults[si], scenes[si]?.index ?? si, "guaranteed_fill");
           }
         } else if (strictVoiceVisualMatchEnabled()) {
           console.warn(
@@ -44971,7 +45094,7 @@ async function _runVideoPipelineInner(
             visualDedup,
             audioPaths[si]
           );
-          noteSceneClipsResourced(visualDedup, prevSceneVisual_8, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_8, sceneVisualResults[si], scenes[si]?.index ?? si, "strict_voice_refill");
         } else {
           console.warn(`[Pipeline] Scene ${scenes[si].index}: still empty — guaranteed scene fill`);
           const scene = scenes[si];
@@ -44987,7 +45110,7 @@ async function _runVideoPipelineInner(
           );
           const prevSceneVisual_9 = sceneVisualResults[si];
           sceneVisualResults[si] = { clips, beatDurations };
-          noteSceneClipsResourced(visualDedup, prevSceneVisual_9, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_9, sceneVisualResults[si], scenes[si]?.index ?? si, "guaranteed_fill");
         }
       }
     }
@@ -45026,7 +45149,7 @@ async function _runVideoPipelineInner(
           visualDedup,
           audioPaths[si]
         );
-        noteSceneClipsResourced(visualDedup, prevSceneVisual_10, sceneVisualResults[si], `scene_${scenes[si]?.index ?? si}_resourced`);
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_10, sceneVisualResults[si], scenes[si]?.index ?? si, "strict_voice_refill");
       }
     }
 
@@ -45084,7 +45207,7 @@ async function _runVideoPipelineInner(
               beatDurations: reordered.beatDurations,
               clipBeatIndices: reordered.clipBeatIndices,
             };
-            noteSceneClipsResourced(visualDedup, prevSceneVisual_11, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
+            noteSceneClipsResourced(visualDedup, prevSceneVisual_11, sceneVisualResults[i], scenes[i]?.index ?? i, "beat_reorder");
           })
         );
         console.log(`[Editorial] Reorder pass done in ${Date.now() - reorderT0}ms`);
@@ -45102,7 +45225,7 @@ async function _runVideoPipelineInner(
         if (sso.changes > 0) {
           const prevSceneVisual_12 = sceneVisualResults[i];
           sceneVisualResults[i] = { ...vr, clips: sso.clips, beatDurations: sso.beatDurations, clipBeatIndices: sso.clipBeatIndices };
-          noteSceneClipsResourced(visualDedup, prevSceneVisual_12, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
+          noteSceneClipsResourced(visualDedup, prevSceneVisual_12, sceneVisualResults[i], scenes[i]?.index ?? i, "shot_sequence");
         }
       }
     }
@@ -45117,7 +45240,7 @@ async function _runVideoPipelineInner(
         const rr = applyVisualRhythm(scenes[i].index, beatTexts, vr.beatDurations);
         const prevSceneVisual_13 = sceneVisualResults[i];
         sceneVisualResults[i] = { ...vr, beatDurations: rr.beatDurations };
-        noteSceneClipsResourced(visualDedup, prevSceneVisual_13, sceneVisualResults[i], `scene_${scenes[i]?.index ?? i}_resourced`);
+        noteSceneClipsResourced(visualDedup, prevSceneVisual_13, sceneVisualResults[i], scenes[i]?.index ?? i, "visual_rhythm");
       }
     }
 

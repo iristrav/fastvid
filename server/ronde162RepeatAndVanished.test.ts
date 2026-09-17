@@ -142,11 +142,53 @@ describe("RONDE 162 §2 — every drop names its reason", () => {
       "mostly_black:s",
       "placeholder_rejected:s",
       "placeholder_not_used:s",
-      "compose_gate:s",
+      "compose_gate:${gate.check}:s",
       "duplicate_content:s",
     ];
     for (const r of reasons) expect(PIPE, r).toContain(r);
     expect(new Set(reasons).size).toBe(reasons.length);
+  });
+
+  /**
+   * The same rule, one level down — and where it had stopped being true.
+   *
+   * `compose_gate:s<n>` satisfied the test above while standing for NINE different refusals inside
+   * `montageClipPassesComposeGate`, five of which printed nothing anywhere. "The compose barrier
+   * said no" is not which check refused the clip; an unreadable file and a dark opening frame are
+   * opposite problems wearing one word.
+   */
+  it("and the compose barrier's own nine refusals are distinct too", () => {
+    const checks = [
+      "compose_barrier",
+      "scope_aborted_unmeasured",
+      "invalid_file",
+      "unusable_stream",
+      "dark_first_frame",
+      "curated_too_short",
+      "curated_dark_centre",
+      "mostly_black",
+      "gate_timeout",
+    ];
+    const at = PIPE.indexOf("type ComposeGateCheck =");
+    expect(at, "the compose gate stopped naming its checks").toBeGreaterThan(-1);
+    const union = PIPE.slice(at, PIPE.indexOf(";", at));
+    for (const c of checks) expect(union, c).toContain(`"${c}"`);
+
+    const body = PIPE.slice(
+      PIPE.indexOf("async function montageClipComposeGate("),
+      PIPE.indexOf("async function estimateSceneMontageCoverageSec(")
+    );
+    expect(body.length).toBeGreaterThan(0);
+    expect(body, "a refusal is back to a bare false").not.toMatch(/\breturn false;/);
+    expect(body, "a pass is back to a bare true").not.toMatch(/\breturn true;/);
+    for (const c of checks) expect(body, c).toContain(`composeGateRefusal("${c}")`);
+  });
+
+  it("the boolean view is defined by the detailed one, so the two cannot disagree", () => {
+    const at = PIPE.indexOf("async function montageClipPassesComposeGate(");
+    const body = PIPE.slice(at, PIPE.indexOf("\n}", at));
+    expect(body).toContain("return (await montageClipComposeGate(");
+    expect(body).toContain(").pass;");
   });
 
   it("both validation call sites hand over the ledger, or nothing is recorded", () => {
