@@ -27792,7 +27792,7 @@ async function recoverSceneClipsIfEmptyInner(
  * Each drop now files the ending it actually is, with the reason that caused it. Nothing about
  * which clips survive changes — only whether the ledger can say what became of the others.
  */
-async function composeReadySceneClips(
+export async function composeReadySceneClips(
   clips: string[],
   sceneIndex: number,
   /** RONDE 103 phase 17: all three callers hold the render state, so the barrier applies here too. */
@@ -36833,8 +36833,27 @@ export function seedExistingProvenSceneClips(params: {
     }
     const contentKey = clipContentKey(candidate);
     /** The montage's own reader, so this door is no wider than the one every clip goes through. */
-    if (dedup.beatRelevance && !composeBarrierAllows(dedup.beatRelevance, candidate, contentKey).allow) {
-      continue;
+    if (dedup.beatRelevance) {
+      const barrier = composeBarrierAllows(dedup.beatRelevance, candidate, contentKey);
+      if (!barrier.allow) {
+        /**
+         * AND THE DECLINE IS RECORDED, because an adopted clip that quietly fails to be carried
+         * is the shape this whole programme exists to remove. The end-to-end test caught it: a
+         * clip the editor had refused was correctly left behind here and the ledger said nothing,
+         * so "adopted, then nothing" was reachable through the one function added to prevent it.
+         *
+         * `compose_gate` rather than a new reason — the barrier IS the compose gate, asked early.
+         * A clip something else already ended keeps that ending; `recordAssetOutcome` checks.
+         */
+        recordAssetOutcome(
+          dedup.sourcingCache?.lineage,
+          candidate,
+          "compose_gate",
+          `scene_seed:s${scene.index}b${entry.beatIndex}:${barrier.reason}`,
+          contentKey
+        );
+        continue;
+      }
     }
     seenPaths.add(candidate);
     takenBeats.add(entry.beatIndex);
