@@ -217,7 +217,12 @@ describe("RONDE 165 — wired into the routes render 554 lost assets on", () => 
      */
     const idx = PIPE.indexOf("const reconciliation = ledger.reconcile();");
     expect(idx).toBeGreaterThan(0);
-    const end = PIPE.indexOf("assertNoSelectedClipWithoutOutcome(ledger)", idx);
+    /**
+     * P0-9 moved the outcome invariant behind `reportLineageOutcomeInvariant`, so this anchor is
+     * that call rather than the assertion inside it. Same place in the report, same ordering being
+     * checked — the audit still sits between the reconciliation and the invariant.
+     */
+    const end = PIPE.indexOf("reportLineageOutcomeInvariant(ledger", idx);
     expect(end).toBeGreaterThan(idx);
     const block = PIPE.slice(idx, end);
     expect(block).toContain("formatAssetLifecycleAudit(ledger)");

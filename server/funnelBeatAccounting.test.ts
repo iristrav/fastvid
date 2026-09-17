@@ -157,7 +157,12 @@ describe("vision gate — a decline is not a verdict", () => {
 
   it("only a decline is marked as not evaluated", () => {
     const declined = GATE.slice(GATE.indexOf("const declined ="), GATE.indexOf("if (!beatImageRelevanceGateEnabled())"));
-    expect(declined, "a decline no longer marks itself unevaluated").toContain("unknown(reason, false)");
+    /**
+     * P0-7 gave the decline a leading cause, so the call gained a third argument. What is pinned
+     * is unchanged: a decline returns through `unknown` with `evaluated: false` rather than posing
+     * as a verdict. The cause is checked beside it so the two cannot drift apart.
+     */
+    expect(declined, "a decline no longer marks itself unevaluated").toContain("unknown(reason, false, cause)");
   });
 
   /** Every route that reached a model — including one that errored mid-answer — counts as looked. */
@@ -177,7 +182,7 @@ describe("vision gate — a decline is not a verdict", () => {
 
   /** The whole point is that a decline is distinguishable — not that declines stop happening. */
   it("the budget decline still exists and is still counted", () => {
-    expect(GATE).toContain('declined("render judgement budget spent")');
+    expect(GATE).toContain('declined("RENDER_BUDGET_SPENT", "render judgement budget spent")');
     expect(GATE).toContain("state.judgementsSkipped++");
   });
 });

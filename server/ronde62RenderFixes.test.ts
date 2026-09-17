@@ -80,8 +80,9 @@ describe("RONDE 62 #1 — the picture gate covers every route, not just the funn
     const mod = MODULE();
     // Every decline — gate off, no narration, no frame, budget spent, ceiling reached, a model
     // outage — returns allowed:true. Only a definite refusal does not.
-    expect(mod).toContain('if (!beatImageRelevanceGateEnabled()) return pass("unknown", "gate disabled");');
-    expect(mod).toContain('if (!ctx.beatText?.trim()) return pass("unknown", "no narration to judge against");');
+    /** P0-7: `pass` gained a leading cause. It still passes — that is what this guards. */
+    expect(mod).toContain('if (!beatImageRelevanceGateEnabled()) return pass("GATE_DISABLED", "unknown", "gate disabled");');
+    expect(mod).toContain('if (!ctx.beatText?.trim()) return pass("NO_NARRATION", "unknown", "no narration to judge against");');
     expect(mod).toContain("allowed: true");
     /**
      * `allowed` can be false in exactly one way — a definite refusal — and every place that builds

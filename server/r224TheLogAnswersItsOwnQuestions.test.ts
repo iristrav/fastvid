@@ -152,7 +152,8 @@ describe("R224 §2 — the seven causes remain distinguishable", () => {
   });
 
   it("a decline is still `evaluated: false`, so it still reads as NOT_ASKED", () => {
-    expect(GATE).toContain("return unknown(reason, false);");
+    /** P0-7: still `evaluated: false`, now carrying the cause that says WHICH decline it was. */
+    expect(GATE).toContain("return unknown(reason, false, cause);");
   });
 });
 

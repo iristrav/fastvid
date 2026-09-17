@@ -126,7 +126,12 @@ describe("R225 §2 — no frames is a finding", () => {
 
   it("the caller's own decline is untouched — this reports, it does not rescue", () => {
     const gate = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
-    expect(gate).toContain('if (usable.length === 0) return declined("no frame available");');
-    expect(gate).toContain('if (dataUrls.length === 0) return declined("frames not usable as images");');
+    /**
+     * P0-7 gave each decline a leading cause. The two this file guards now name themselves, which
+     * is what makes R225's finding countable: `NO_FRAME` and `FRAMES_UNREADABLE` both map to
+     * PREPARATION_FAILURE in the beat funnel instead of vanishing into an unattributed total.
+     */
+    expect(gate).toContain('if (usable.length === 0) return declined("NO_FRAME", "no frame available");');
+    expect(gate).toContain('if (dataUrls.length === 0) return declined("FRAMES_UNREADABLE", "frames not usable as images");');
   });
 });
