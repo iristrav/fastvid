@@ -4343,7 +4343,11 @@ function applyMinimizeStockProfile(
     maxStockQueriesPerBeat: 1,
     maxStockBeatsPerVideo: resolveMaxStockBeatsPerVideo(videoLength),
     maxEntityYoutubePerVideo: maxEntityYoutubeFetchesPerVideo(true),
-    enableNasa: profile.enableNasa || isShortVideoLength(videoLength),
+    /** The profile is the single source of truth for this now — see
+     *  LENGTH_INDEPENDENT_CAPABILITIES. The `|| isShortVideoLength(...)` that used to sit here
+     *  patched the short profile's `enableNasa: false` back on from downstream, which is why the
+     *  defect was survivable for so long: two places disagreed and one quietly won. */
+    enableNasa: profile.enableNasa,
     enableArchival: true,
   };
 }
@@ -5409,6 +5413,50 @@ function resolveAiFallbackConfig(videoLength: string): { enable: boolean; maxCli
   };
 }
 
+/**
+ * A CAPABILITY IS NOT A FUNCTION OF LENGTH.
+ *
+ * ── What the three profiles were doing ──────────────────────────────────────────────────────
+ *
+ * `getPipelinePerfProfile` picks one of three literals by video length, and three of their fields
+ * were not budgets at all — they were switches that turned whole capabilities off:
+ *
+ *                            1 min     8–10 min    10–20 min
+ *     enableArchival         true      true        FALSE
+ *     enableNasa             FALSE     true        true
+ *     skipFairUseTransform   TRUE      false       TRUE
+ *
+ * A fifteen-minute video could not reach the Internet Archive at all. A one-minute video could not
+ * reach NASA, whatever its subject. And the fair-use transform — a rights step — was skipped at
+ * one minute and again from ten to twenty, but ran in between, which is not a pattern any budget
+ * could explain. None of it follows from the length of the video: a beat about the Artemis launch
+ * needs NASA at one minute exactly as much as at twenty.
+ *
+ * ── What may still scale, and why that is different ─────────────────────────────────────────
+ *
+ * Everything with a number in it: wall-clock targets, beats per scene, queries per beat, retries,
+ * parallelism, per-beat and per-scene timeouts, the AI clip ceiling. A longer video has more beats
+ * and more time to fill them, so those are proportional, and proportional is not the same as
+ * absent. The rule this constant exists for is about the difference: a budget says HOW MUCH, a
+ * capability says WHETHER, and only the first may depend on duration.
+ *
+ * ── Why these values ────────────────────────────────────────────────────────────────────────
+ *
+ * The stricter side of each, every time. Archive and NASA ON means more sources reachable, never
+ * fewer; the transform NOT skipped means the rights step runs everywhere rather than nowhere. A
+ * length-independent capability set that switched things OFF to agree would satisfy the letter of
+ * the rule by losing the thing it protects.
+ *
+ * Spread into all three profiles rather than repeated in each, so a fourth profile added later
+ * cannot diverge by forgetting a field — and `aPipelineDoesNotShrinkWithItsVideo` fails if one
+ * tries to override a field back to a per-length value.
+ */
+const LENGTH_INDEPENDENT_CAPABILITIES = {
+  enableArchival: true,
+  enableNasa: true,
+  skipFairUseTransform: false,
+} as const;
+
 function applyAiFallbackToProfile(
   profile: PipelinePerfProfileBase,
   videoLength: string
@@ -5433,6 +5481,7 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
   let profile: PipelinePerfProfile;
   if (isShortVideoLength(videoLength)) {
     profile = applyAiFallbackToProfile({
+      ...LENGTH_INDEPENDENT_CAPABILITIES,
       targetWallClockMin: 10,
       maxBeatsPerScene: curatedArchiveOnlyVisuals() ? (IS_RAILWAY ? 16 : 18) : IS_RAILWAY ? 4 : 6,
       /**
@@ -5450,10 +5499,7 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
        * render shows the wall clock creeping toward its target.
        */
       maxTopicQueries: IS_RAILWAY ? 2 : 3,
-      skipFairUseTransform: true,
       transformTimeoutMs: 12_000,
-      enableArchival: true,
-      enableNasa: false,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: IS_RAILWAY ? 4 : 3,
@@ -5472,13 +5518,11 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
     }, videoLength);
   } else if (videoLength === "10-15" || videoLength === "15-20") {
     profile = applyAiFallbackToProfile({
+      ...LENGTH_INDEPENDENT_CAPABILITIES,
       targetWallClockMin: 90,
       maxBeatsPerScene: 5,
       maxTopicQueries: 3,
-      skipFairUseTransform: true,
       transformTimeoutMs: 40_000,
-      enableArchival: false,
-      enableNasa: true,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: railwayParallel,
@@ -5491,13 +5535,11 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
     }, videoLength);
   } else {
     profile = applyAiFallbackToProfile({
+      ...LENGTH_INDEPENDENT_CAPABILITIES,
       targetWallClockMin: 90,
       maxBeatsPerScene: 7,
       maxTopicQueries: 4,
-      skipFairUseTransform: false,
       transformTimeoutMs: 45_000,
-      enableArchival: true,
-      enableNasa: true,
       enableMuskHeroFetch: false,
       maxEntityYoutubePerVideo: maxEntityYoutube,
       sceneParallelism: railwayParallel,
@@ -5528,7 +5570,6 @@ export function getPipelinePerfProfile(videoLengthRaw: string): PipelinePerfProf
       // touching the primary per-beat path, which never reads this flag either way. NASA/Musk
       // stay off — out of scope for this fix, unrelated to the reported IA/YouTube CC symptom.
       enableArchival: curatedArchiveExternalFallbackEnabled() ? profile.enableArchival : false,
-      enableNasa: false,
       enableMuskHeroFetch: false,
       enableAiFallback: aiCfg.enable,
       maxAiClipsPerVideo: aiCfg.maxClips,
