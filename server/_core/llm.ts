@@ -362,6 +362,76 @@ export function isGroqDailyExhausted(): boolean {
 }
 
 /**
+ * RONDE 270 — A REJECTED CREDENTIAL IS NOT A COOLDOWN.
+ *
+ * ── What production printed, over and over ──────────────────────────────────────────────────
+ *
+ *     LLM invoke failed (groq, model=openai/gpt-oss-20b): 401 Unauthorized –
+ *     {"error":{"message":"Invalid API Key","type":"invalid_request_error",
+ *      "code":"expired_api_key"}}
+ *
+ * Sixteen production call sites pass `preferProvider: "groq"` — the script engine, the keyword
+ * extractor, the query generator, the clip annotator and the editorial planners — so Groq is asked
+ * FIRST on most of this system's work, whatever the configured primary is. With an expired key
+ * every one of those calls opened a socket, was refused, and fell through to the next provider.
+ *
+ * ── Why no existing mechanism caught it ─────────────────────────────────────────────────────
+ *
+ * `markGroqCooldown` is only reached behind `isRateLimitError(response.status)`, which is
+ * `status === 429`. A 401 is not 429, so the call was never made; and `markGroqCooldown` opens with
+ * `if (!isRateLimitError(status) && !daily) return`, so it would have refused anyway. Every
+ * classifier in this file describes a TEMPORARY condition — a burst limit, a day's tokens, a TPM
+ * ceiling, a model that 404s. The one condition that will NEVER clear by itself was the one with
+ * no handler at all, and therefore the one retried forever.
+ *
+ * ── Why this is a separate register and not another cooldown ────────────────────────────────
+ *
+ * A cooldown is a bet that waiting helps, and this file is careful about that bet: RONDE 117
+ * documents that a spent DAILY budget is the case where ignoring a cooldown "cannot pay off", and
+ * the all-blocked escape hatch further down deliberately resets `groqCooldownUntilMs` to retry
+ * anyway. A dead key must survive exactly that escape hatch — retrying a rejected credential is
+ * never worth a round trip, and no amount of waiting inside one process will mint a new key.
+ *
+ * So it is permanent for the process lifetime, and it is checked in `providersToTry` rather than
+ * expressed as a very long cooldown, which the reset above would wipe.
+ *
+ * ── What it deliberately does not do ────────────────────────────────────────────────────────
+ *
+ * It reads a STATUS, never a key. Nothing here logs, stores, compares or reports a credential —
+ * the provider's own refusal is the whole input, and the log line names the provider and the
+ * status, never the secret that was rejected.
+ */
+const deadKeyProviders = new Map<LlmProvider, string>();
+
+/** Has this provider refused our credential in this process? Permanent — see the note above. */
+export function isProviderKeyRejected(provider: LlmProvider): boolean {
+  return deadKeyProviders.has(provider);
+}
+
+/** A 401 is the unambiguous "your credential is not valid" answer for all three providers. */
+function isCredentialRejection(status: number): boolean {
+  return status === 401;
+}
+
+/**
+ * Take a provider out of the chain for good, once, with one line.
+ *
+ * Printed on the first occurrence only: the condition repeats on every call and a hundred
+ * identical lines would bury the one fact an operator has to act on.
+ */
+function markProviderKeyRejected(provider: LlmProvider, status: number, body: string): void {
+  if (deadKeyProviders.has(provider)) return;
+  /** The provider's own error code, truncated. Never the key, and never the request. */
+  const code = /"code"\s*:\s*"([a-z_]+)"/i.exec(body)?.[1] ?? `http_${status}`;
+  deadKeyProviders.set(provider, code);
+  console.error(
+    `[LLM] ${provider} REJECTED THIS DEPLOYMENT'S CREDENTIAL (${status}, ${code}) — removing it ` +
+      `from the provider chain for the lifetime of this process. Unlike a quota this does not ` +
+      `recover on its own: rotate the key and redeploy. Other providers continue to serve.`
+  );
+}
+
+/**
  * Clear the per-process provider cool-offs.
  *
  * These are module-level on purpose — a cooldown that reset per call would not be a cooldown —
@@ -374,6 +444,7 @@ export function __resetProviderCooldownsForTests(): void {
   geminiCooldownUntilMs = 0;
   geminiModelUnavailable = false;
   openAiCooldownUntilMs = 0;
+  deadKeyProviders.clear();
 }
 
 function isGroqDailyQuotaError(body: string): boolean {
@@ -601,6 +672,24 @@ export function shouldFallbackToNextProvider(status: number, body: string): bool
    */
   if (status === 403) return true;
   /**
+   * RONDE 270 — 401, AND THIS IS THE THIRD TIME THIS EXACT HOLE HAS BEEN FOUND.
+   *
+   * RONDE 116 found it for 413 and RONDE 120 for 403, both with the same sentence: the status was
+   * in none of the buckets above, so the call ended at `throw` while a provider that could have
+   * served it sat unused in the chain. 401 was the remaining one.
+   *
+   * Production, on an expired Groq key:
+   *
+   *     LLM invoke failed (groq, model=openai/gpt-oss-20b): 401 Unauthorized –
+   *     {"error":{"message":"Invalid API Key","code":"expired_api_key"}}
+   *
+   * Sixteen call sites pass `preferProvider: "groq"`, so that error was not merely noise — it was
+   * the END of those calls, with a funded OpenAI account one position further down the chain and
+   * never asked. A refused credential says this PROVIDER cannot serve us; it says nothing about
+   * the next one.
+   */
+  if (status === 401) return true;
+  /**
    * RONDE 116: 413 was in none of the buckets above, so it fell past this check to `throw
    * lastError` — ending the whole call at the first provider while a provider that could serve
    * the request sat unused in the chain. Confirmed in production against Groq's 8000 TPM tier.
@@ -654,9 +743,21 @@ export function rateLimitSleepSeconds(opts: {
 
 function providersToTry(primary: LlmProvider): LlmProvider[] {
   const out: LlmProvider[] = [];
-  const geminiAvailable = Boolean(geminiKeyFromEnv()) && !isGeminiInCooldown() && !geminiModelUnavailable;
-  const groqAvailable = Boolean(groqKeyFromEnv()) && !isGroqInCooldown();
-  const openAiAvailable = Boolean(openAiKeyFromEnv()) && !isOpenAiInCooldown();
+  /**
+   * RONDE 270 — a configured key that the provider REFUSES is not an available provider.
+   *
+   * `Boolean(groqKeyFromEnv())` asks whether a key is set, which an expired key still is. That is
+   * why sixteen `preferProvider: "groq"` call sites kept putting a dead provider first.
+   */
+  const geminiAvailable =
+    Boolean(geminiKeyFromEnv()) &&
+    !isGeminiInCooldown() &&
+    !geminiModelUnavailable &&
+    !isProviderKeyRejected("gemini");
+  const groqAvailable =
+    Boolean(groqKeyFromEnv()) && !isGroqInCooldown() && !isProviderKeyRejected("groq");
+  const openAiAvailable =
+    Boolean(openAiKeyFromEnv()) && !isOpenAiInCooldown() && !isProviderKeyRejected("openai");
 
   const push = (p: LlmProvider) => {
     if (p === "none" || out.includes(p)) return;
@@ -1171,7 +1272,15 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
      * and each one repeats the whole discovery (primary fails, fallback fails, Groq fails) for
      * the rest of the day.
      */
-    if (!hasVision && groqKey && !isGroqDailyExhausted()) {
+    /**
+     * RONDE 270 — and never when Groq REFUSED this deployment's credential.
+     *
+     * This branch exists because a cooldown is a soft guard and one more attempt may pay off. A
+     * rejected key is the case where it cannot: the reset below would wipe the only record that
+     * Groq is unusable, and every later call would repeat the whole discovery — which is exactly
+     * the failure mode RONDE 117 documents for a spent daily budget, one condition over.
+     */
+    if (!hasVision && groqKey && !isGroqDailyExhausted() && !isProviderKeyRejected("groq")) {
       console.warn("[LLM] All providers in cooldown/exhausted — retrying Groq ignoring cooldown.");
       groqCooldownUntilMs = 0; // reset cooldown so this request can proceed
       chain = ["groq"];
@@ -1428,6 +1537,18 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
         console.warn(`[LLM] Groq vision model "${payload.model}" returned 404 — retrying with fallback ${GROQ_VISION_FALLBACK_MODEL}`);
         payload.model = GROQ_VISION_FALLBACK_MODEL;
         continue;
+      }
+
+      /**
+       * RONDE 270 — checked for EVERY provider, not just Groq.
+       *
+       * Groq is where production found it, but the gap is in the classification and not in the
+       * provider: `markOpenAiCooldown` opens with `if (!quota && !isRateLimitError(status)) return`
+       * and Gemini's cooldown is reached on rate limits too, so an expired OpenAI or Gemini key
+       * would be retried forever in exactly the same way.
+       */
+      if (isCredentialRejection(response.status)) {
+        markProviderKeyRejected(provider, response.status, errorText);
       }
 
       if (provider === "groq" && isRateLimitError(response.status)) {

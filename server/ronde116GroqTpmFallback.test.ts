@@ -68,7 +68,25 @@ describe("RONDE 116 — 413 is recognised as a provider capacity ceiling", () =>
     // A malformed request is the caller's fault and must still stop at the first provider —
     // burning the whole chain on it would turn one bug into four failed requests.
     expect(shouldFallbackToNextProvider(400, '{"error":{"message":"bad tool schema"}}')).toBe(false);
-    expect(shouldFallbackToNextProvider(401, "unauthorized")).toBe(false);
+    /**
+     * SUPERSEDED BY RONDE 270: 401 moved to the fall-through side, on production evidence — the
+     * same correction 403 received below, for the same reason.
+     *
+     * It was grouped with 400 as "the caller's fault", and for 400 that is right: a malformed
+     * request is malformed at every provider. A 401 is not about the request at all. Production:
+     *
+     *   LLM invoke failed (groq, model=openai/gpt-oss-20b): 401 Unauthorized –
+     *   {"error":{"message":"Invalid API Key","code":"expired_api_key"}}
+     *
+     * That is a statement about THIS provider's credential, and sixteen call sites pass
+     * `preferProvider: "groq"` — so the chain ended there, with a funded OpenAI account one
+     * position further down and never asked. Identical to the 403 case: same request, served by
+     * another provider.
+     *
+     * 400 keeps its old answer, and that is the half of this assertion that still guards the
+     * original concern.
+     */
+    expect(shouldFallbackToNextProvider(401, "unauthorized")).toBe(true);
     /**
      * SUPERSEDED BY RONDE 120: 403 moved to the fall-through side, on production evidence.
      *
@@ -83,8 +101,9 @@ describe("RONDE 116 — 413 is recognised as a provider capacity ceiling", () =>
      * served by another provider one second later. Stopping the chain there left working providers
      * unused, which is the same bug this file was opened to fix for 413.
      *
-     * 400 and 401 keep their old answer, and that is the half of this assertion that still guards
-     * the original concern: a malformed request must not be re-sent to four providers in turn.
+     * 400 keeps its old answer, and that is what still guards the original concern: a malformed
+     * request must not be re-sent to four providers in turn. (401 followed 403 out of this group
+     * in RONDE 270 — see the note above it.)
      */
     expect(shouldFallbackToNextProvider(403, "forbidden")).toBe(true);
     // ...and the ones that were already fall-throughs still are.
