@@ -3316,6 +3316,22 @@ async function fetchBeatYoutubeOnly(
   const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
   if (!queries.length) return null;
   if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
+
+  /**
+   * RONDE 260 — this route adopts with `requireBeatMatch: false`, which is why it exists separately
+   * from `tryBeatRealYouTubeFootage`, and exactly why it has to share the same turn: a beat that
+   * was refused footage by the strict route must not be handed the looser one as a second attempt
+   * at the same provider. One turn, whichever route holds it.
+   */
+  const claim = claimYoutubeTurn(dedup, sceneIndex, beat.index, label);
+  if (!claim.granted) {
+    logYoutubeTurnRefused(youtubeTurnKey(sceneIndex, beat.index), label, claim.record);
+    return claim.record.clip;
+  }
+  const endTurn = (outcome: string, clip: string | null): string | null => {
+    endYoutubeTurnForBeat(dedup, claim.key, claim.token, outcome, clip);
+    return clip;
+  };
   dedup.entityYoutubeFetchesUsed++;
 
   const loose: VisualAdoptOptions = {
@@ -3356,9 +3372,9 @@ async function fetchBeatYoutubeOnly(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: ${label} fetch timeout:`,
       (err as Error).message
     );
-    return null;
+    return endTurn("FAILED", null);
   }
-  if (!paths.length) return null;
+  if (!paths.length) return endTurn("YOUTUBE_NO_RESULTS", null);
 
   const clip = await adoptClip(
     paths,
@@ -3370,7 +3386,8 @@ async function fetchBeatYoutubeOnly(
     queries[0],
     loose
   );
-  return isAuthenticVideoClip(clip ?? "") ? clip : null;
+  const kept = isAuthenticVideoClip(clip ?? "") ? clip : null;
+  return endTurn(kept ? "ADOPTED" : "NO_ADOPTABLE_CANDIDATE", kept);
 }
 
 async function fetchBeatYoutubeThenPexels(
@@ -4483,6 +4500,138 @@ function minClipsForScene(duration: number, beatCount: number, fast = false): nu
   return Math.max(1, Math.min(beatCount, floor));
 }
 
+/**
+ * What one beat's single YouTube turn ended with. See `youtubeTurnByBeat`.
+ *
+ * `clip` is the file the turn produced, or null. A later requester is handed it rather than being
+ * sent to YouTube again — the recorded result of one turn is not a second turn.
+ */
+export type YoutubeTurnRecord = {
+  startedAtMs: number;
+  /** null while the turn is still running. A turn is open, then it is over; there is no third state. */
+  endedAtMs: number | null;
+  /** `OPEN` until the holder closes it. */
+  outcome: string;
+  clip: string | null;
+  /** Which of the sixteen adapters asked first. Forensics only; it decides nothing. */
+  requestedBy: string;
+  /**
+   * Who holds the open turn. A route that searches several queries — the historical cascade, the
+   * research race — re-enters with the token it already has and keeps ONE turn; a route without
+   * the token is a second turn and is refused. This is what lets "one turn" mean one visit to
+   * YouTube rather than one query.
+   */
+  token: number;
+};
+
+/** The answer to "may I go to YouTube for this beat?" — a token, or the turn that already happened. */
+export type YoutubeTurnClaim =
+  | { granted: true; key: string; token: number }
+  | { granted: false; record: YoutubeTurnRecord };
+
+/** The one key a beat's turn is filed under, in the shape this file already uses. */
+export function youtubeTurnKey(sceneIndex: number, beatIndex: number): string {
+  return `s${sceneIndex}b${beatIndex}`;
+}
+
+let youtubeTurnTokenSeq = 0;
+
+/**
+ * THE ONE DOOR TO YOUTUBE — claimed once per beat, by whichever route arrives first.
+ *
+ * ── What this replaces ──────────────────────────────────────────────────────────────────────
+ *
+ * Sixteen call sites in this file could send the same beat to YouTube, in four enclosing routes
+ * that do not know about each other: the beat cascade's hero / real-event / archival tiers, the
+ * historical cascade's `youtube_cc` tier, the research race's two YouTube tasks, and
+ * `fetchBeatYoutubeOnly`. Render 589 measured what that costs — 1751 candidates examined and 104
+ * downloads attempted across the render, for one adopted clip.
+ *
+ * Nothing about the search was made weaker to fix that. The candidates each route would have asked
+ * for are merged into the queries the one turn searches with, so a beat still reaches the same
+ * corpus; what disappears is asking four times for it.
+ *
+ * ── Why a token and not a boolean ───────────────────────────────────────────────────────────
+ *
+ * A turn may legitimately span several queries — the historical cascade walks ten tiers per query,
+ * the research race runs its tasks in parallel. Re-entry with the holder's own token is the same
+ * turn continuing. Re-entry without it is a second turn, and that is what this refuses.
+ */
+export function claimYoutubeTurn(
+  dedup: Pick<VisualDedupState, "youtubeTurnByBeat">,
+  sceneIndex: number,
+  beatIndex: number,
+  requestedBy: string,
+  heldToken?: number
+): YoutubeTurnClaim {
+  const key = youtubeTurnKey(sceneIndex, beatIndex);
+  const register = dedup.youtubeTurnByBeat;
+  /**
+   * No register means a caller built a dedup state by hand — a test double, or an older shape.
+   * Granting is the honest answer: this function may not invent a refusal it cannot record.
+   */
+  if (!register) return { granted: true, key, token: ++youtubeTurnTokenSeq };
+
+  const existing = register.get(key);
+  if (existing) {
+    if (existing.endedAtMs === null && heldToken !== undefined && existing.token === heldToken) {
+      return { granted: true, key, token: heldToken };
+    }
+    return { granted: false, record: existing };
+  }
+  const token = ++youtubeTurnTokenSeq;
+  register.set(key, {
+    startedAtMs: Date.now(),
+    endedAtMs: null,
+    outcome: "OPEN",
+    clip: null,
+    requestedBy,
+    token,
+  });
+  return { granted: true, key, token };
+}
+
+/**
+ * Close the turn this token opened. Idempotent, and it refuses to close someone else's turn:
+ * a turn that ended twice with two outcomes would be a register that cannot be read.
+ */
+export function endYoutubeTurnForBeat(
+  dedup: Pick<VisualDedupState, "youtubeTurnByBeat">,
+  key: string,
+  token: number,
+  outcome: string,
+  clip: string | null
+): void {
+  const record = dedup.youtubeTurnByBeat?.get(key);
+  if (!record || record.token !== token || record.endedAtMs !== null) return;
+  record.endedAtMs = Date.now();
+  record.outcome = outcome;
+  record.clip = clip;
+  console.log(
+    `[YouTube] YOUTUBE_TURN_ENDED ${key} takenBy=${record.requestedBy} outcome=${outcome} ` +
+      `clip=${clip ? "yes" : "none"} ms=${record.endedAtMs - record.startedAtMs}`
+  );
+}
+
+/** The single line every refused route prints, so a render reads as one turn with many askers. */
+export function logYoutubeTurnRefused(
+  key: string,
+  askedBy: string,
+  record: YoutubeTurnRecord
+): void {
+  console.log(
+    `[YouTube] TURN_ALREADY_TAKEN ${key} askedBy=${askedBy} takenBy=${record.requestedBy} ` +
+      `outcome=${record.outcome} clip=${record.clip ? "yes" : "none"} — one turn per beat`
+  );
+}
+
+/**
+ * THE CENTRAL YOUTUBE TURN — one per beat, whichever adapter asks for it.
+ *
+ * Every route to YouTube in this pipeline arrives here, so this is where "has this beat already
+ * had its turn" can be asked once and cannot be bypassed. See `youtubeTurnByBeat` for what the
+ * fifteen call sites were doing before, and why the gate is here rather than in each of them.
+ */
 /** YouTube CC clip for one beat (interviews, news, entity-named footage). */
 async function tryBeatRealYouTubeFootage(
   beat: SceneBeat,
@@ -4496,15 +4645,77 @@ async function tryBeatRealYouTubeFootage(
   label: string,
   timeoutMs: number
 ): Promise<string | null> {
-  if (!youtubeSourcingEnabled()) return null;
-  if (!youtubeCcReady() || youtubeQueries.length === 0) return null;
-  if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) return null;
+  const turnKey = youtubeTurnKey(sceneIndex, beat.index);
+  /**
+   * No queries is NOT a turn and must not consume one. The beat produced nothing to search for,
+   * which is the query builder's business; a later route with a usable query must still be able to
+   * take the beat's turn. Asked before the claim so an empty asker cannot hold the door.
+   */
+  if (youtubeQueries.length === 0) return null;
+
+  /**
+   * §13's hard invariant, enforced where it cannot be forgotten. If the beat has had its turn it
+   * is handed the outcome, not sent back to YouTube. `requestedBy` names who took the turn and
+   * `label` who is asking now, so a render can be read for which routes compete for a beat.
+   */
+  const claim = claimYoutubeTurn(dedup, sceneIndex, beat.index, label);
+  if (!claim.granted) {
+    logYoutubeTurnRefused(turnKey, label, claim.record);
+    return claim.record.clip;
+  }
+  const startedAtMs = Date.now();
+  const finishTurn = (outcome: string, clip: string | null): string | null => {
+    endYoutubeTurnForBeat(dedup, claim.key, claim.token, outcome, clip);
+    return clip;
+  };
+
+  /**
+   * §15 — SKIPPED is not DECLINED, and the difference is what an operator can act on.
+   *
+   * A missing capability is a configuration fact: no key, no downloader, the branch switched off.
+   * A decline is a budget fact. Both used to be a bare `return null` from here, which is how a
+   * render could contain no YouTube at all and say nothing about why.
+   *
+   * These are recorded as the beat's turn. That is deliberate: a beat cannot be offered to a
+   * capability that does not exist by a second adapter any more than by the first, and fifteen
+   * adapters each discovering the same missing key is fifteen identical log lines.
+   */
+  if (!youtubeSourcingEnabled()) {
+    console.log(
+      `[YouTube] YOUTUBE_TURN_SKIPPED ${turnKey} askedBy=${label} ` +
+        `reason=CAPABILITY_UNAVAILABLE:sourcing_disabled`
+    );
+    return finishTurn("CAPABILITY_UNAVAILABLE:sourcing_disabled", null);
+  }
+  if (!youtubeCcReady()) {
+    console.log(
+      `[YouTube] YOUTUBE_TURN_SKIPPED ${turnKey} askedBy=${label} ` +
+        `reason=CAPABILITY_UNAVAILABLE:not_ready`
+    );
+    return finishTurn("CAPABILITY_UNAVAILABLE:not_ready", null);
+  }
+  /**
+   * The per-video entity budget, asked BEFORE the turn is declared started — a turn that cannot
+   * run has not started, and a log that says otherwise is the kind of half-truth §21 is about.
+   *
+   * It is recorded as the beat's ending because the counter only ever rises: a second adapter
+   * arriving later for this same beat would meet the same exhausted budget, so sending it back to
+   * YouTube buys nothing and costs another round of query building.
+   */
+  if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) {
+    console.log(
+      `[YouTube] YOUTUBE_TURN_SKIPPED ${turnKey} askedBy=${label} ` +
+        `reason=ENTITY_BUDGET_EXHAUSTED used=${dedup.entityYoutubeFetchesUsed}/${dedup.perf.maxEntityYoutubePerVideo}`
+    );
+    return finishTurn("ENTITY_BUDGET_EXHAUSTED", null);
+  }
+  console.log(`[YouTube] YOUTUBE_TURN_STARTED ${turnKey} askedBy=${label} queries=${youtubeQueries.length}`);
   dedup.entityYoutubeFetchesUsed++;
   const ytKeywords = [
     ...new Set([...(adoptOpts.keywords ?? []), ...beat.keywords]),
   ].slice(0, 22);
   try {
-    return await withSceneFetchTimeout(
+    const clip = await withSceneFetchTimeout(
       () => tryStockSources(
         [{
           query: youtubeQueries[0],
@@ -4539,12 +4750,28 @@ async function tryBeatRealYouTubeFootage(
       timeoutMs,
       `${label} s${sceneIndex} b${beat.index}`
     );
+    console.log(
+      `[YouTube] YOUTUBE_TURN_ENDED ${turnKey} askedBy=${label} ` +
+        `outcome=${clip ? "ADOPTED" : "NO_ADOPTABLE_CANDIDATE"} ms=${Date.now() - startedAtMs}`
+    );
+    return finishTurn(clip ? "ADOPTED" : "NO_ADOPTABLE_CANDIDATE", clip);
   } catch (err) {
+    /**
+     * A failure ends the turn too. The beat is not offered to YouTube a second time by the next
+     * adapter in the hope of a different answer: whatever failed — a timeout on this scene's clock,
+     * a provider error, a cancelled scope — is a fact about this render, not about this caller, and
+     * RONDE 260's whole point is that "ask again with a different label" is not a retry strategy.
+     */
+    const reason = (err as Error).message;
     console.warn(
       `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: ${label} skipped:`,
-      (err as Error).message
+      reason
     );
-    return null;
+    console.log(
+      `[YouTube] YOUTUBE_TURN_ENDED ${turnKey} askedBy=${label} outcome=FAILED ` +
+        `ms=${Date.now() - startedAtMs}`
+    );
+    return finishTurn("FAILED", null);
   }
 }
 
@@ -20310,6 +20537,48 @@ export interface VisualDedupState {
    *  doesn't get a different answer on a 2nd or 3rd identical attempt minutes later — it just
    *  pays the full cost again. See refillSceneStrictVoiceMatch's callers. */
   strictRefillAttemptedScenes: Set<number>;
+  /**
+   * RONDE 260 — ONE YOUTUBE TURN PER BEAT, AND THE OUTCOME IT ENDED WITH.
+   *
+   * ── What twenty-four decision points cost ───────────────────────────────────────────────────
+   *
+   * `tryBeatRealYouTubeFootage` has sixteen call sites across eight enclosing functions:
+   * `tryBeatTopicRealFootageInner`, `resolveBeatClipFastInner` (×2), `fetchUniqueStockForBeatInner`
+   * (×2), `fetchLastResortRealClipInner`, `fetchPersonBeatClipInner`, `researchBeatClipUnifiedInner`,
+   * `fetchBeatClipFromScript` (×3), `fetchBeatAuthenticVideoInner` and `resolveBeatClipTurboInner`
+   * (×3). Each decided for itself whether YouTube was due, so one beat could be offered to YouTube
+   * by the fast path, then the script path, then the turbo path, then the last-resort path — a
+   * fresh search and a fresh download window every time, against a clock they all share.
+   *
+   * And that function was never the only door. EIGHT further sites called `fetchYouTubeCCClips`
+   * directly, in four routes that know nothing of each other: `fetchBeatYoutubeOnly`, the historical
+   * cascade's `youtube_cc` tier, the research race's entity and celebrity tasks, and the beat
+   * cascade's hero / real-event / archival-early / archival-late tiers. A single beat could be sent
+   * to YouTube by three of those in one pass. Render 589 is the measurement: 1751 candidates
+   * examined and 104 downloads attempted across the render, for ONE adopted clip.
+   *
+   * That is the same already-exhausted-search-space problem `historicalCascadeAttemptedBeats`
+   * below was built for, at the same granularity, and it is solved the same way: the beat is the
+   * key, and the turn happens once.
+   *
+   * ── Why the gate lives in a register and not in the callers ─────────────────────────────────
+   *
+   * Sixteen callers remembering a rule is sixteen chances to forget it, and the site added next
+   * round would not know the rule exists. So no caller is trusted with it: every route to YouTube
+   * — `tryBeatRealYouTubeFootage` and all eight direct ones — must first hold this beat's turn,
+   * taken through `claimYoutubeTurn` and closed through `endYoutubeTurnForBeat`. The call sites
+   * become what they should always have been: adapters that may REQUEST the turn, not routers that
+   * decide when it happens.
+   *
+   * A repeat request is answered with the outcome the turn already reached, never with a second
+   * turn. When the first turn produced a clip the requester gets that clip: the recorded result of
+   * one turn is not a new turn, and withholding it would lose footage the render already paid for.
+   *
+   * A route that searches several queries — the historical cascade, the research race — holds ONE
+   * turn across all of them by re-entering with its own token. One turn means one visit to the
+   * provider, not one query, and nothing in any route's query set was dropped to achieve it.
+   */
+  youtubeTurnByBeat: Map<string, YoutubeTurnRecord>;
   /** F3-49: "s{sceneIndex}b{beatIndex}" keys for which fetchHistoricalBeatVideo's full
    *  HISTORICAL_SOURCE_TIER_ORDER cascade (Internet Archive, YouTube CC, Wikimedia, NARA,
    *  Flickr, SepiaSearch, Vimeo, media.ccc, NASA — up to 27 external search/metadata/
@@ -20622,6 +20891,7 @@ export function createVisualDedupState(
       beatText: "",
     },
     strictRefillAttemptedScenes: new Set(),
+    youtubeTurnByBeat: new Map(),
     historicalCascadeAttemptedBeats: new Set(),
     sourcingCache: createSourcingCache(topic?.videoId),
     movingClipCount: 0,
@@ -28881,6 +29151,35 @@ async function fetchHistoricalBeatVideoInner(
   const archiveHitsPerQuery = dedup.perf.fastStockMode ? 1 : 2;
   const youtubeReady = !opts.skipYoutube && youtubeSourcingEnabled() && youtubeCcReady();
 
+  /**
+   * RONDE 260 — the cascade's YouTube tier takes the beat's turn, once, for all of its queries.
+   *
+   * The tier is called once per query per tier, so claiming per call would make "one turn" mean
+   * "one query" and cost this cascade the query variety that is its whole point. Instead the first
+   * youtube_cc call claims, later calls re-enter with the token they already hold, and the turn is
+   * closed once after the tier loop with how many candidates YouTube actually contributed.
+   *
+   * The clip is recorded as null deliberately: adoption here happens ONCE over a pool merged from
+   * ten providers, so no honest attribution of the adopted file to this turn is available. Null is
+   * what this register knows, and §21 says a register may not report what it did not measure.
+   */
+  let ytTurn: { key: string; token: number } | null = null;
+  let ytTurnBlocked = false;
+  let ytCandidates = 0;
+  const claimCascadeYoutubeTurn = (): boolean => {
+    if (ytTurnBlocked) return false;
+    const claim = claimYoutubeTurn(
+      dedup, sceneIndex, beat.index, `historical cascade ${tag}`, ytTurn?.token
+    );
+    if (!claim.granted) {
+      ytTurnBlocked = true;
+      logYoutubeTurnRefused(youtubeTurnKey(sceneIndex, beat.index), `historical cascade ${tag}`, claim.record);
+      return false;
+    }
+    ytTurn = { key: claim.key, token: claim.token };
+    return true;
+  };
+
   // Visual dedup: dedup.usedContentKeys is the SAME set adoptClip checks/populates on actual
   // acceptance (see clipContentKey's PROVIDER_ASSET_TAG_RE branch) — passing it into every tier
   // here lets a provider skip a search hit whose provider:hash(id) key was already accepted
@@ -28896,14 +29195,18 @@ async function fetchHistoricalBeatVideoInner(
           dedup.usedContentKeys,
           dedup.sourcingCache
         )).map((h) => h.path);
-      case "youtube_cc":
+      case "youtube_cc": {
         if (!youtubeReady) return [];
-        return fetchYouTubeCCClips(
+        if (!claimCascadeYoutubeTurn()) return [];
+        const ytPaths = await fetchYouTubeCCClips(
           q, clipFetchDur, workDir, sceneIndex, 1, beatKeywords, 1, "",
           { beatText: beat.text, beatIndex: beat.index, videoTitle: adoptOpts.videoTitle, fastMode: dedup.perf.fastStockMode },
           dedup.usedContentKeys,
           dedup.sourcingCache
         );
+        ytCandidates += ytPaths.length;
+        return ytPaths;
+      }
       case "wikimedia":
         return (await fetchWikimediaVideos(
           q, clipFetchDur, workDir, sceneIndex, 2, `${tag}_hist`, "", beatKeywords, dedup.usedContentKeys, dedup.sourcingCache
@@ -28997,6 +29300,21 @@ async function fetchHistoricalBeatVideoInner(
         break;
       }
     }
+  }
+
+  /**
+   * The turn is over the moment the cascade stops fetching — before the pool is ranked, and before
+   * any of the three exits below. Holding it open past this point would leave the register saying
+   * OPEN for the rest of the render and block every later route on a turn that had already ended.
+   */
+  if (ytTurn) {
+    endYoutubeTurnForBeat(
+      dedup,
+      (ytTurn as { key: string; token: number }).key,
+      (ytTurn as { key: string; token: number }).token,
+      ytCandidates > 0 ? `POOLED_INTO_CASCADE:${ytCandidates}` : "YOUTUBE_NO_RESULTS",
+      null
+    );
   }
 
   if (!pool.length) return null;
@@ -29246,65 +29564,76 @@ async function researchBeatClipUnifiedInner(
     youtubeSourcingEnabled() &&
     (process.env.YOUTUBE_API_KEY || RAPIDAPI_KEY || process.env.YOUTUBE_CC_DL_SERVICE);
   if (ytAvailable) {
+    /**
+     * RONDE 260 — the research race asked YouTube up to THREE times for one beat: once with the
+     * entity queries, then once per celebrity/topic query. Three tasks, three searches, three sets
+     * of downloads, all for the same beat and all ranked together afterwards anyway.
+     *
+     * They are now one task holding the beat's one turn, searching with the union of exactly the
+     * queries the three tasks would have used. Nothing is dropped from the query set and nothing is
+     * ranked differently — `toCandidates` still labels each candidate with the query it was found
+     * under, because the race's ranking reads that.
+     */
     const entityYt = realEntityYoutubeQueriesForBeat(beat.text, scene.text, videoTitle);
-    if (
-      entityYt.length > 0 &&
-      dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo
-    ) {
-      const eq = entityYt[0];
-      ytTasks.push({
-        provider: "youtube_cc",
-        run: async () => {
-          dedup.entityYoutubeFetchesUsed++;
-          const paths = await fetchYouTubeCCClips(
-            entityYt.slice(0, 2),
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            beatKeywords,
-            1,
-            primary ?? "",
-            {
-              beatText: beat.text,
-              beatIndex: beat.index,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            },
-            dedup.usedContentKeys,
-            dedup.sourcingCache
-          );
-          return toCandidates(paths, eq, "youtube_cc", true);
-        },
-      });
-    }
-
+    const entityUsable =
+      entityYt.length > 0 && dedup.entityYoutubeFetchesUsed < perf.maxEntityYoutubePerVideo;
     const ytQueries = primary?.trim()
       ? buildPersonCelebrityVideoQueries(primary, beat.text, beat.index).slice(0, 2)
       : queries.slice(0, 2);
-    for (const q of ytQueries) {
+    const unionQueries = [
+      ...new Set([...(entityUsable ? entityYt.slice(0, 2) : []), ...ytQueries].filter(Boolean)),
+    ];
+    if (unionQueries.length > 0) {
       ytTasks.push({
         provider: "youtube_cc",
         run: async () => {
-          const paths = await fetchYouTubeCCClips(
-            q,
-            clipFetchDur,
-            workDir,
-            sceneIndex,
-            1,
-            beatKeywords,
-            1,
-            primary ?? "",
-            {
-              beatText: beat.text,
-              beatIndex: beat.index,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            },
-            dedup.usedContentKeys,
-            dedup.sourcingCache
+          /**
+           * Claimed here and not while the task list is built: a task the race never reaches (the
+           * `maxTasks` cap, a cancelled scope) must not leave the beat's turn open and hand every
+           * later route a refusal for a search that never ran.
+           */
+          const claim = claimYoutubeTurn(dedup, sceneIndex, beat.index, "research race");
+          if (!claim.granted) {
+            logYoutubeTurnRefused(youtubeTurnKey(sceneIndex, beat.index), "research race", claim.record);
+            return [];
+          }
+          if (entityUsable) dedup.entityYoutubeFetchesUsed++;
+          let paths: string[] = [];
+          try {
+            paths = await fetchYouTubeCCClips(
+              unionQueries,
+              clipFetchDur,
+              workDir,
+              sceneIndex,
+              1,
+              beatKeywords,
+              1,
+              primary ?? "",
+              {
+                beatText: beat.text,
+                beatIndex: beat.index,
+                videoTitle,
+                fastMode: perf.fastStockMode,
+              },
+              dedup.usedContentKeys,
+              dedup.sourcingCache
+            );
+          } catch (err) {
+            endYoutubeTurnForBeat(dedup, claim.key, claim.token, "FAILED", null);
+            throw err;
+          }
+          /**
+           * Null clip, like the historical cascade: the race adopts ONCE across candidates from
+           * every provider, so this turn cannot honestly claim the adopted file as its own.
+           */
+          endYoutubeTurnForBeat(
+            dedup,
+            claim.key,
+            claim.token,
+            paths.length > 0 ? `POOLED_INTO_RESEARCH:${paths.length}` : "YOUTUBE_NO_RESULTS",
+            null
           );
-          return toCandidates(paths, q, "youtube_cc", true);
+          return toCandidates(paths, unionQueries[0], "youtube_cc", true);
         },
       });
     }
@@ -30254,6 +30583,45 @@ async function fetchBeatClipInner(
     return null;
   }
 
+  /**
+   * RONDE 260 — the beat cascade's four YouTube tiers, reduced to the beat's one turn.
+   *
+   * Hero, real-event, archival-early and archival-late each called `fetchYouTubeCCClips` directly,
+   * and for one beat up to three of them could fire: the same provider searched three times, with
+   * three query sets, three rounds of metadata and download attempts, before anything was ranked.
+   *
+   * The tiers are NOT merged into one query set. Two of them search at `minRelevanceScore=2` and
+   * one at 1, and folding them together would mean either loosening a gate or tightening one —
+   * the first is forbidden outright and the second is a silent change to what a beat may adopt.
+   * Instead the tier order already written here decides: the highest-priority YouTube tier that
+   * applies to this beat takes the turn, with its own gate intact, and the rest are handed its
+   * outcome. Every tier's non-YouTube fetchers are untouched.
+   */
+  const askYoutubeOnceForThisBeat = async (
+    who: string,
+    run: () => Promise<string[]>
+  ): Promise<string[]> => {
+    const claim = claimYoutubeTurn(dedup, sceneIndex, beat.index, who);
+    if (!claim.granted) {
+      logYoutubeTurnRefused(youtubeTurnKey(sceneIndex, beat.index), who, claim.record);
+      return [];
+    }
+    try {
+      const paths = await run();
+      endYoutubeTurnForBeat(
+        dedup,
+        claim.key,
+        claim.token,
+        paths.length > 0 ? `POOLED_INTO_CASCADE:${paths.length}` : "YOUTUBE_NO_RESULTS",
+        null
+      );
+      return paths;
+    } catch (err) {
+      endYoutubeTurnForBeat(dedup, claim.key, claim.token, "FAILED", null);
+      throw err;
+    }
+  };
+
   // 0a) Hero beat: YouTube CC + NASA for recognizable SpaceX/Tesla (once per video)
   if (
     muskTopic &&
@@ -30269,12 +30637,14 @@ async function fetchBeatClipInner(
         {
           query: "SpaceX Falcon 9 launch",
           fetch: () =>
-            fetchYouTubeCCClips(HERO_YOUTUBE_QUERIES, clipFetchDur, workDir, sceneIndex, 1, heroKw, 2, "", {
-              beatText: beat.text,
-              beatIndex: beat.index,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            }, dedup.usedContentKeys, dedup.sourcingCache),
+            askYoutubeOnceForThisBeat("hero", () =>
+              fetchYouTubeCCClips(HERO_YOUTUBE_QUERIES, clipFetchDur, workDir, sceneIndex, 1, heroKw, 2, "", {
+                beatText: beat.text,
+                beatIndex: beat.index,
+                videoTitle,
+                fastMode: perf.fastStockMode,
+              }, dedup.usedContentKeys, dedup.sourcingCache)
+            ),
         },
         {
           query: "SpaceX Starship",
@@ -30324,12 +30694,14 @@ async function fetchBeatClipInner(
       [{
         query: entityYt[0],
         fetch: () =>
-          fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1, "", {
-            beatText: beat.text,
-            beatIndex: beat.index,
-            videoTitle,
-            fastMode: perf.fastStockMode,
-          }, dedup.usedContentKeys, dedup.sourcingCache),
+          askYoutubeOnceForThisBeat("real-event YouTube", () =>
+            fetchYouTubeCCClips(entityYt.slice(0, 2), clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 1, "", {
+              beatText: beat.text,
+              beatIndex: beat.index,
+              videoTitle,
+              fastMode: perf.fastStockMode,
+            }, dedup.usedContentKeys, dedup.sourcingCache)
+          ),
       }],
       dedup, sceneIndex, beat.index, beat.text, workDir, "real-event YouTube", adoptOpts
     );
@@ -30347,12 +30719,14 @@ async function fetchBeatClipInner(
         {
           query: q,
           fetch: () =>
-            fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
-              beatText: beat.text,
-              beatIndex: beat.index,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            }, dedup.usedContentKeys, dedup.sourcingCache),
+            askYoutubeOnceForThisBeat("archival early", () =>
+              fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
+                beatText: beat.text,
+                beatIndex: beat.index,
+                videoTitle,
+                fastMode: perf.fastStockMode,
+              }, dedup.usedContentKeys, dedup.sourcingCache)
+            ),
         },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "archival early", adoptOpts
@@ -30433,12 +30807,14 @@ async function fetchBeatClipInner(
         {
           query: q,
           fetch: () =>
-            fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
-              beatText: beat.text,
-              beatIndex: beat.index,
-              videoTitle,
-              fastMode: perf.fastStockMode,
-            }, dedup.usedContentKeys, dedup.sourcingCache),
+            askYoutubeOnceForThisBeat("archival", () =>
+              fetchYouTubeCCClips(q, clipFetchDur, workDir, sceneIndex, 1, beat.keywords, 2, "", {
+                beatText: beat.text,
+                beatIndex: beat.index,
+                videoTitle,
+                fastMode: perf.fastStockMode,
+              }, dedup.usedContentKeys, dedup.sourcingCache)
+            ),
         },
       ],
       dedup, sceneIndex, beat.index, beat.text, workDir, "archival", adoptOpts

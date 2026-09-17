@@ -215,8 +215,17 @@ describe("a search that does not happen says so", () => {
    * So it was not that RapidAPI failed. It was never asked.
    */
   it("the disabled flag says so instead of returning silently", () => {
-    const at = PIPE.indexOf("if (!youtubeSourcingEnabled()) {");
+    /**
+     * Anchored inside `fetchYouTubeCCClips`, not at the first match in the file. RONDE 260 put an
+     * earlier `if (!youtubeSourcingEnabled())` in `tryBeatRealYouTubeFootage` — a different guard,
+     * for a different thing, with its own line — and a search from the top of the file silently
+     * moved this test onto it. The claim being made here is about the FETCHER's exit.
+     */
+    const fn = PIPE.indexOf("export async function fetchYouTubeCCClips(");
+    expect(fn, "fetchYouTubeCCClips moved").toBeGreaterThan(-1);
+    const at = PIPE.indexOf("if (!youtubeSourcingEnabled()) {", fn);
     expect(at, "the flag guard returns silently again").toBeGreaterThan(-1);
+    expect(at, "the guard left the fetcher").toBeLessThan(PIPE.indexOf("\n}\n", fn));
     const block = PIPE.slice(at, at + 700);
     expect(block).toContain("SOURCING_DISABLED");
     expect(block).toContain("ENABLE_YOUTUBE_SOURCING is not true");
