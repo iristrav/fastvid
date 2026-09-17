@@ -1607,6 +1607,35 @@ type SceneFetchScope = {
   budgetSpentReported?: boolean;
   /** RONDE 259: the same discipline for the reserve — one line per scope, not one per refusal. */
   transferReserveReported?: boolean;
+  /**
+   * THE YOUTUBE TURN'S OWN RESERVE — the tail no other provider may spend.
+   *
+   * ── What the shared clock did ───────────────────────────────────────────────────────────────
+   *
+   *     [YouTube] TURN_DECLINED scene=2 — 20s left and a turn costs 24s
+   *
+   * That is not YouTube failing. It is YouTube arriving at a clock that archive searches and their
+   * retries had already spent, and being refused for the cost of a turn it never got to take. The
+   * decline itself is correct — RONDE 260 asks the question at the door precisely so nothing is
+   * started that cannot finish — but the answer was decided before YouTube was ever asked.
+   *
+   * ── Why a second reserve and not a bigger budget ────────────────────────────────────────────
+   *
+   * RONDE 259 already established the shape: `searchDeadlineAtMs` holds back the tail that belongs
+   * to the transfer, so a candidate found late can still be fetched. This is the same idea one
+   * tier up — a slice of the scene's window that belongs to the YouTube turn from the moment the
+   * scope opens, so the question "is there time" has the same answer whether it is asked first or
+   * last. Nothing is raised, no timeout is lengthened, and the scene's total window is unchanged:
+   * what changes is who may spend which part of it.
+   *
+   * Zero when no turn is reserved. Released by `endYoutubeTurn` the moment the turn is over,
+   * whatever its outcome, so unused reservation goes back to the pool rather than being burnt.
+   */
+  youtubeReservedMs: number;
+  /** Set once the turn has ended. After this the reservation is no longer withheld from anyone. */
+  youtubeTurnEndedAtMs?: number;
+  /** One line per scope when a non-YouTube caller is held back, not one per call. */
+  youtubeReserveReported?: boolean;
 };
 const sceneFetchScopeStorage = new AsyncLocalStorage<SceneFetchScope>();
 
@@ -6383,6 +6412,73 @@ export function remainingScopeMs(): number {
 }
 
 /**
+ * Milliseconds a NON-YOUTUBE caller may spend: what is left, less the YouTube turn's reserve.
+ *
+ * The invariant this exists for, in one line:
+ *
+ *     NON_YOUTUBE_SPEND <= TOTAL_BUDGET - YOUTUBE_RESERVED_BUDGET
+ *
+ * `remainingScopeMs` above is unchanged and remains the whole truth about the clock — the YouTube
+ * turn reads it, because the reserve is its own and it may spend all of what is left. Every other
+ * caller sizes itself against this, and there is exactly one of them that matters:
+ * `scopedTimeoutMs`, the funnel every provider timeout in this pipeline goes through. Holding the
+ * reserve back there holds it back everywhere, without fifty call sites having to remember.
+ *
+ * Once the turn has ended the reserve is nothing and this is `remainingScopeMs` again, so time
+ * YouTube did not need is time the next tier gets.
+ */
+export function remainingNonYoutubeScopeMs(): number {
+  const scope = sceneFetchScopeStorage.getStore();
+  const raw = remainingScopeMs();
+  if (!scope || !Number.isFinite(raw)) return raw;
+  return Math.max(0, raw - unspentYoutubeReserveMs(scope));
+}
+
+/** The part of the reservation still being withheld: zero once the turn is over. */
+function unspentYoutubeReserveMs(scope: SceneFetchScope): number {
+  if (scope.youtubeTurnEndedAtMs != null) return 0;
+  return Math.max(0, scope.youtubeReservedMs ?? 0);
+}
+
+/**
+ * Reserve this scope's YouTube turn, BEFORE any provider has spent anything.
+ *
+ * §20's ordering made explicit: the reservation exists from the moment the scope opens, so it can
+ * never be the case that YouTube is refused for time an earlier provider was allowed to take. The
+ * amount is the turn's real cost — one search plus the download floor — which are the same two
+ * constants that already governed `fetchYouTubeCCClips`, not a new number.
+ *
+ * Never more than half the window. A scene whose whole budget would go to one provider's turn is a
+ * scene with no budget for anything else, and the reservation is meant to guarantee YouTube a fair
+ * turn rather than to hand it the scene.
+ */
+export function reserveYoutubeTurn(scope: SceneFetchScope, wantMs = YOUTUBE_MIN_TURN_MS): number {
+  const window = Math.max(0, scope.deadlineAtMs - Date.now());
+  const reserved = Number.isFinite(window) ? Math.min(wantMs, Math.floor(window / 2)) : wantMs;
+  scope.youtubeReservedMs = Math.max(0, reserved);
+  return scope.youtubeReservedMs;
+}
+
+/**
+ * The turn is over — with a reason — and the reserve goes back to the pool.
+ *
+ * §21's distinction made readable: a decline after this line is YouTube having spent its own
+ * reserve and failed, which is legitimate; a decline before it would be the bug this reserve
+ * exists to remove. The line names which, so the next render cannot be ambiguous about it.
+ */
+export function endYoutubeTurn(outcome: string): void {
+  const scope = sceneFetchScopeStorage.getStore();
+  if (!scope || scope.youtubeTurnEndedAtMs != null) return;
+  scope.youtubeTurnEndedAtMs = Date.now();
+  const reserved = scope.youtubeReservedMs ?? 0;
+  if (reserved <= 0) return;
+  console.log(
+    `[YouTube] YOUTUBE_TURN_COMPLETED reserved=${reserved}ms result=${outcome} — ` +
+      `the reserve is released to the remaining tiers (${describeEnclosingScope()})`
+  );
+}
+
+/**
  * RONDE 259: milliseconds left for SEARCHING in the enclosing scope, which is less than what is
  * left in the scope — the difference is the transfer reserve.
  *
@@ -6448,7 +6544,11 @@ export function withinSearchWindow<T>(
  * instead of being cut off from outside.
  */
 export function scopedTimeoutMs(preferredMs: number, floorMs = 1_000): number {
-  const remaining = remainingScopeMs();
+  /**
+   * The one funnel every non-YouTube provider timeout goes through, so the one place the YouTube
+   * reserve has to be honoured. See `remainingNonYoutubeScopeMs`.
+   */
+  const remaining = remainingNonYoutubeScopeMs();
   if (!Number.isFinite(remaining)) return preferredMs;
   return Math.max(floorMs, Math.min(preferredMs, Math.floor(remaining * 0.9)));
 }
@@ -6721,7 +6821,16 @@ export function withSceneFetchTimeout<T>(fn: () => Promise<T>, ms: number, label
     label,
     grantedMs: deadlineAtMs - openedAtMs,
     openedAtMs,
+    /**
+     * §20 — RESERVED BEFORE ANY PROVIDER HAS SPENT ANYTHING.
+     *
+     * The reservation is part of opening the scope, not something a later tier remembers to ask
+     * for. That ordering is the whole guarantee: a turn refused for want of time can then only be
+     * a turn that spent its own reserve, never one whose window an earlier provider had taken.
+     */
+    youtubeReservedMs: 0,
   };
+  reserveYoutubeTurn(scope);
   const parentScope = sceneFetchScopeStorage.getStore();
   parentScope?.childScopes.add(scope);
   const detachFromParent = () => { parentScope?.childScopes.delete(scope); };
@@ -16229,6 +16338,7 @@ export async function fetchYouTubeCCClips(
           "YouTube branch is skipped before any key is read"
       );
     }
+    endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:sourcing_disabled");
     return [];
   }
   // RONDE 16: bail on the official-API quota cooldown ONLY when there is no quota-free fallback to
@@ -16241,6 +16351,7 @@ export async function fetchYouTubeCCClips(
       `[Pipeline] Scene ${sceneIndex}: YouTube skipped — the official API is in quota cooldown ` +
         "and the RapidAPI search fallback is not enabled (ENABLE_YOUTUBE_RAPID_SEARCH)"
     );
+    endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:quota_cooldown");
     return [];
   }
   const results: string[] = [];
@@ -16250,12 +16361,15 @@ export async function fetchYouTubeCCClips(
 
   if (!youtubeApiKey) {
     console.warn(`[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — missing YOUTUBE_API_KEY`);
+    /** §3's "explicit technical capability condition", logged, and the reserve goes back at once. */
+    endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:no_api_key");
     return [];
   }
   if (!hasDownloader) {
     console.warn(
       `[Pipeline] Scene ${sceneIndex}: YouTube CC skipped — set RAPIDAPI_KEY or YOUTUBE_CC_DL_SERVICE in Railway`
     );
+    endYoutubeTurn("YOUTUBE_CAPABILITY_UNAVAILABLE:no_downloader");
     return [];
   }
 
@@ -16288,15 +16402,35 @@ export async function fetchYouTubeCCClips(
    * The seconds it declines are not lost — they go to the sources that only need a JSON answer,
    * which is what RONDE 68 said about the download floor and is no less true a step earlier.
    */
+  /**
+   * §21 — WHICH KIND OF DECLINE THIS IS.
+   *
+   * `remainingScopeMs` is the whole clock, which is what the turn may spend: its reserve is its
+   * own. So reaching this line with too little time now means one of two things, and they are not
+   * the same fault:
+   *
+   *   the reserve was never taken   the scope opened without one, or it has already been released
+   *                                 by an earlier turn on this scope — a legitimate decline
+   *   the reserve is gone           the turn itself spent it
+   *
+   * What it can no longer mean is "an archive search took the time YouTube was going to need",
+   * because that time was never available to the archive search. The line says which.
+   */
   const turnMs = remainingScopeMs();
   if (Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS) {
+    const scope = sceneFetchScopeStorage.getStore();
+    const reserved = scope?.youtubeReservedMs ?? 0;
+    const released = scope?.youtubeTurnEndedAtMs != null;
     console.warn(
-      `[YouTube] TURN_DECLINED scene=${sceneIndex} — ${Math.round(turnMs / 1000)}s left and a turn ` +
+      `[YouTube] TURN_DECLINED scene=${sceneIndex} reserved=${reserved}ms ` +
+        `reserveState=${reserved <= 0 ? "NONE" : released ? "ALREADY_RELEASED" : "HELD"} — ` +
+        `${Math.round(turnMs / 1000)}s left and a turn ` +
         `costs ${Math.round(YOUTUBE_MIN_TURN_MS / 1000)}s (one ${Math.round(YOUTUBE_SEARCH_TIMEOUT_MS / 1000)}s ` +
         `search plus the ${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s download floor). ` +
         `Nothing is searched, so nothing is found that could not be fetched — ` +
         describeEnclosingScope()
     );
+    endYoutubeTurn("TURN_DECLINED_NO_WINDOW");
     return [];
   }
 
@@ -16855,6 +16989,15 @@ export async function fetchYouTubeCCClips(
       }
     }
   }
+  /**
+   * §8/§20 — THE TURN IS OVER, WITH A REASON, AND THE RESERVE GOES BACK.
+   *
+   * The one exit every completed turn leaves through, so the release cannot be forgotten by a
+   * branch added later. An outcome is named even when nothing was found: "searched and found
+   * nothing" and "never searched" need opposite work, and a reserve that is silently held after
+   * the turn would starve the tiers behind it.
+   */
+  endYoutubeTurn(results.length > 0 ? `ADOPTABLE_CANDIDATES:${results.length}` : "YOUTUBE_NO_RESULTS");
   return results;
 }
 
