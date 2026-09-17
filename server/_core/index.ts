@@ -178,6 +178,19 @@ function printDeploymentReport(opts: {
   console.log("[Fastvid] ── Deployment Report ──────────────────────────────────");
   if (m) {
     console.log(`[Fastvid]   Recorded migrations : ${m.recordedAfter}/${m.totalMigrations}`);
+    /**
+     * RONDE 269 — the physical row count, beside the canonical one rather than instead of it.
+     *
+     * This line used to read `1457/53`, because it counted ROWS against a denominator of
+     * migrations. The ratio was unreadable and the duplicate count — the actual finding — had no
+     * line of its own. Printed only when there are duplicates; silence means none.
+     */
+    if (m.duplicateRows > 0) {
+      console.log(
+        `[Fastvid]   __drizzle_migrations: ${m.physicalRows} row(s), ${m.duplicateRows} redundant` +
+          (m.hashConflicts > 0 ? `, ${m.hashConflicts} with conflicting hashes ⚠` : "")
+      );
+    }
     console.log(`[Fastvid]   Executed this deploy: ${m.dryRun ? "0 (dry run)" : String(m.executedThisDeploy)}`);
     console.log(`[Fastvid]   Ghosts repaired     : ${m.ghostsRepaired}`);
     console.log(`[Fastvid]   Partial migrations  : ${m.partialsCompleted}`);

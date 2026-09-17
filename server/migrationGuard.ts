@@ -36,6 +36,21 @@ export interface IntegrityViolation {
 
 export interface MigrationResult {
   totalMigrations: number;
+  /**
+   * RONDE 269 — how many PHYSICAL rows `__drizzle_migrations` holds, and how many of them are
+   * redundant copies of an identity already recorded.
+   *
+   * `recordedBefore`/`recordedAfter` count CANONICAL migrations, which is what "N/53 recorded"
+   * was always meant to say. Production printed `1457/53` because it counted rows, and a
+   * denominator of 53 against a numerator of 1457 is not a ratio anybody can read.
+   *
+   * The duplicate count is not hidden by that repair — it is reported here, on purpose, because
+   * it is the finding. Zero on a healthy database.
+   */
+  physicalRows: number;
+  duplicateRows: number;
+  /** Identities recorded more than once with DIFFERENT hashes. See `canonicaliseRecorded`. */
+  hashConflicts: number;
   recordedBefore: number;
   recordedAfter: number;
   executedThisDeploy: number;
@@ -162,8 +177,29 @@ export function createDbOps(db: any): MigrationDbOps {
     },
 
     async insertRecord(hash: string, folderMillis: number) {
+      /**
+       * RONDE 269 — RECORD AN IDENTITY ONCE, NOT ONCE PER DEPLOY.
+       *
+       * Production reached 1457 rows for 53 migrations: ~27 redundant copies each, one round per
+       * deploy. A plain INSERT cannot tell "record this migration" from "record it again", and the
+       * table has no unique key on `created_at` to refuse the second one — so every ghost repair
+       * that re-recorded an already-recorded identity added a row, and the guard's own startup cost
+       * grew with the deployment history.
+       *
+       * The conditional insert makes this operation idempotent, which is what the caller always
+       * meant by it. It does not add a constraint and does not rewrite the table: a schema change
+       * on the migration bookkeeping table is exactly the kind of destructive repair this round is
+       * forbidden to make, and it would fail anyway while the duplicates are still there.
+       *
+       * This stops the guard from adding duplicates. It cannot stop drizzle's own migrator from
+       * inserting its record, which is by design — that write is drizzle's to make.
+       */
       await db.execute(
-        sql`INSERT INTO \`__drizzle_migrations\` (\`hash\`, \`created_at\`) VALUES (${hash}, ${folderMillis})`
+        sql`INSERT INTO \`__drizzle_migrations\` (\`hash\`, \`created_at\`)
+            SELECT ${hash}, ${folderMillis} FROM DUAL
+            WHERE NOT EXISTS (
+              SELECT 1 FROM \`__drizzle_migrations\` WHERE \`created_at\` = ${folderMillis}
+            )`
       );
     },
 
@@ -325,6 +361,79 @@ function recoveryHint(code: string | undefined, message: string | undefined): st
   }
 }
 
+/**
+ * RONDE 269 — ONE MIGRATION IDENTITY, HOWEVER MANY ROWS RECORD IT.
+ *
+ * ── What production measured ────────────────────────────────────────────────────────────────
+ *
+ *     [Fastvid]   Recorded migrations : 1457/53
+ *     [Fastvid]   Guard time          : 447903ms
+ *     [Fastvid]   Drizzle migrate     : 648ms
+ *     [Fastvid] Server running on port 8080      ← 7 min 29 s after boot
+ *     Railway healthcheckTimeout: 180s           → container killed, restart loop
+ *
+ * `__drizzle_migrations` held 1457 rows for 53 migrations. Every loop below that walked `recorded`
+ * therefore ran 27× more often than there are migrations — and the false-record cleanup runs one
+ * remote INFORMATION_SCHEMA query PER SCHEMA OBJECT PER ROW. At ~2.2 objects per migration that is
+ * roughly 3200 sequential round trips at ~140ms each, which is the 448 seconds almost exactly.
+ *
+ * The database was never slow. The query COUNT was 27× too high, and it grows by ~53 rows every
+ * deploy — so the startup time grows with the deployment history until it crosses the healthcheck
+ * window, which is what happened.
+ *
+ * ── Why canonicalise rather than de-duplicate the table ─────────────────────────────────────
+ *
+ * Deleting rows is a separate, data-touching decision that needs its own evidence. This makes the
+ * GUARD correct regardless of how many redundant rows exist: the work it does is bounded by the
+ * number of migrations, which is what it was always meant to be bounded by. A database that is
+ * never cleaned up still starts in seconds.
+ *
+ * ── The one thing this must not do ──────────────────────────────────────────────────────────
+ *
+ * A plain `new Map(rows.map(r => [r.created_at, r.hash]))` would collapse these rows in one line
+ * and SILENTLY DISCARD every hash but the last. That is exactly the failure this codebase keeps
+ * finding: the answer is computed, and the disagreement is thrown away before anyone can read it.
+ * Two rows for one identity carrying DIFFERENT hashes is an integrity problem and has to stay
+ * visible, so every distinct hash is kept and the conflict is counted.
+ */
+export type CanonicalRecord = {
+  created_at: number;
+  /** Every DISTINCT stored hash for this identity, in first-seen order. Never collapsed to one. */
+  hashes: string[];
+  /** Physical rows carrying this identity. 1 on a healthy database. */
+  rowCount: number;
+};
+
+export type CanonicalRecorded = {
+  canonical: CanonicalRecord[];
+  /** Rows beyond the first for each identity — pure bookkeeping redundancy. */
+  duplicateRows: number;
+  /** Identities whose duplicate rows DISAGREE about the hash. A real integrity problem. */
+  hashConflicts: number;
+};
+
+export function canonicaliseRecorded(
+  recorded: ReadonlyArray<{ hash: string; created_at: number }>
+): CanonicalRecorded {
+  const byIdentity = new Map<number, CanonicalRecord>();
+  for (const row of recorded) {
+    const existing = byIdentity.get(row.created_at);
+    if (!existing) {
+      byIdentity.set(row.created_at, { created_at: row.created_at, hashes: [row.hash], rowCount: 1 });
+      continue;
+    }
+    existing.rowCount += 1;
+    /** Kept, not overwritten — a second hash for one identity is the thing worth knowing. */
+    if (!existing.hashes.includes(row.hash)) existing.hashes.push(row.hash);
+  }
+  const canonical = [...byIdentity.values()].sort((a, b) => a.created_at - b.created_at);
+  return {
+    canonical,
+    duplicateRows: recorded.length - canonical.length,
+    hashConflicts: canonical.filter((c) => c.hashes.length > 1).length,
+  };
+}
+
 // ─── Main guard ───────────────────────────────────────────────────────────────
 
 export async function runMigrationsWithGuard(
@@ -359,21 +468,65 @@ export async function runMigrationsWithGuard(
   const milliToEntry = new Map(journal.entries.map((e) => [e.when, e]));
 
   // Query current DB state
-  const recorded = await ops.getRecordedMigrations();
-  const recordedMillisSet = new Set(recorded.map((r) => r.created_at));
-  const recordedBefore = recorded.length;
+  const recordedRows = await ops.getRecordedMigrations();
+  /**
+   * RONDE 269 — collapse rows to IDENTITIES before anything expensive reads them.
+   *
+   * Everything below walks `canonical`, so the guard's cost is bounded by the number of
+   * migrations rather than by how many redundant rows the deployment history has accumulated.
+   * See `canonicaliseRecorded` for the 448-second production measurement that forced this, and
+   * for why the distinct hashes are kept instead of collapsed.
+   */
+  const { canonical, duplicateRows, hashConflicts } = canonicaliseRecorded(recordedRows);
+  const recordedMillisSet = new Set(canonical.map((r) => r.created_at));
+  const recordedBefore = canonical.length;
+
+  if (duplicateRows > 0) {
+    console.warn(
+      `[Migration] ⚠  ${recordedRows.length} rows in __drizzle_migrations for ${canonical.length} ` +
+        `migration(s) — ${duplicateRows} redundant row(s). The guard works on identities, so this ` +
+        `costs no startup time, but the table is carrying history it does not need.`
+    );
+  }
 
   // ── Integrity verification ─────────────────────────────────────────────────
   const integrityViolations: IntegrityViolation[] = [];
-  for (const row of recorded) {
-    const entry = milliToEntry.get(row.created_at);
+  for (const rec of canonical) {
+    const entry = milliToEntry.get(rec.created_at);
     if (!entry) continue;
     const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
     if (!fs.existsSync(sqlPath)) continue;
     const currentHash = sha256(fs.readFileSync(sqlPath, "utf-8"));
-    if (currentHash !== row.hash) {
-      integrityViolations.push({ tag: entry.tag, storedHash: row.hash, currentHash });
+    /**
+     * Two different questions, kept apart:
+     *
+     *   · the identity's rows DISAGREE with each other  → a conflict, reported as such and never
+     *     silently resolved in favour of whichever row happened to be read last;
+     *   · the rows agree and disagree with the FILE     → the ordinary "modified after execution"
+     *     violation this check has always reported.
+     *
+     * Both are violations. Only the wording differs, and one violation is now raised per IDENTITY
+     * rather than per row — production printed 0047 twice for one file, which read as two problems.
+     */
+    if (rec.hashes.length > 1) {
+      integrityViolations.push({
+        tag: entry.tag,
+        storedHash: `CONFLICT(${rec.hashes.join(" | ")})`,
+        currentHash,
+      });
+      continue;
     }
+    if (currentHash !== rec.hashes[0]) {
+      integrityViolations.push({ tag: entry.tag, storedHash: rec.hashes[0]!, currentHash });
+    }
+  }
+
+  if (hashConflicts > 0) {
+    console.warn(
+      `[Migration] ⚠  ${hashConflicts} migration identity(ies) recorded with MORE THAN ONE hash — ` +
+        `the duplicate rows disagree about what was executed. Listed above; nothing is chosen ` +
+        `automatically.`
+    );
   }
 
   if (integrityViolations.length > 0) {
@@ -411,7 +564,12 @@ export async function runMigrationsWithGuard(
   // so Drizzle will re-run the missing DDL on this startup.
   if (!dryRun) {
     let falseRecordsFound = 0;
-    for (const row of recorded) {
+    /**
+     * RONDE 269 — `canonical`, not `recordedRows`. THIS is the loop that cost 448 seconds: it
+     * runs a remote INFORMATION_SCHEMA query per schema object, and it used to do that once per
+     * physical row. 53 identities instead of 1457 rows is the whole repair.
+     */
+    for (const row of canonical) {
       const entry = milliToEntry.get(row.created_at);
       if (!entry) continue;
       const sqlPath = path.join(migrationsFolder, `${entry.tag}.sql`);
@@ -463,6 +621,9 @@ export async function runMigrationsWithGuard(
       partialsCompleted: 0,
       integrityViolations,
       dryRun,
+      physicalRows: recordedRows.length,
+      duplicateRows,
+      hashConflicts,
       guardMs: Date.now() - t0,
       migrateMs: 0,
     };
@@ -565,6 +726,9 @@ export async function runMigrationsWithGuard(
     const guardMs = Date.now() - t0;
     return {
       totalMigrations: total,
+      physicalRows: recordedRows.length,
+      duplicateRows,
+      hashConflicts,
       recordedBefore,
       recordedAfter: recordedBefore,
       executedThisDeploy: 0,
@@ -646,7 +810,16 @@ export async function runMigrationsWithGuard(
   const migrateMs = Date.now() - t1;
 
   // ── Count what was applied ─────────────────────────────────────────────────
-  const recordedAfter = (await ops.getRecordedMigrations()).length;
+  /**
+   * RONDE 269 — counted the same way `recordedBefore` is, or the subtraction is meaningless.
+   *
+   * This used to be a ROW count while `recordedBefore` is now an IDENTITY count, and subtracting
+   * one from the other would report 1404 migrations "executed this deploy" on the production
+   * database. Both sides are canonical; the physical total is reported separately, not mixed in.
+   */
+  const afterRows = await ops.getRecordedMigrations();
+  const afterCanonical = canonicaliseRecorded(afterRows);
+  const recordedAfter = afterCanonical.canonical.length;
   const executedThisDeploy = Math.max(0, recordedAfter - recordedBefore - ghosts.length);
 
   console.log(
@@ -658,6 +831,9 @@ export async function runMigrationsWithGuard(
 
   return {
     totalMigrations: total,
+    physicalRows: afterRows.length,
+    duplicateRows: afterCanonical.duplicateRows,
+    hashConflicts: afterCanonical.hashConflicts,
     recordedBefore,
     recordedAfter,
     executedThisDeploy,
