@@ -412,26 +412,55 @@ export async function rehydrateAsset(params: {
    * the truth there. So a clip whose bytes were sitting on our own disk fell through to the
    * external routes, found no fetchable URL, and failed. The id is the route; the name is not.
    */
+  /**
+   * P0-4 — AND WHEN THE ARCHIVE CANNOT DELIVER, THE IDENTITY'S OTHER ROUTES STILL EXIST.
+   *
+   * ── The two defects this branch had ─────────────────────────────────────────────────────
+   *
+   * It was a dead end. `identityHasRehydrationRoute` answers true on the archive id ALONE, so a
+   * caller is told the asset is recoverable — and this branch then committed the whole attempt to
+   * one route and returned a failure if it did not work. An identity that also carries
+   * `provider: "internet_archive"` with a stable `mediaUrl`, which the rest of this function would
+   * have fetched without difficulty, was abandoned because an archive id happened to be present
+   * too. Being MORE identifiable made an asset LESS recoverable.
+   *
+   * And it misnamed its own failure. When the row has no storage URL and the identity has no
+   * canonical one, `storageUrl` is null, both attempts are skipped, and the function returned
+   * REHYDRATION_DOWNLOAD_FAILED — a download that never happened, reported as a download that
+   * failed. That is the same confusion this programme removed from the picture editor twice: "we
+   * could not ask" and "we asked and it failed" need opposite work.
+   *
+   * ── What changes ────────────────────────────────────────────────────────────────────────
+   *
+   * Nothing about what SUCCEEDS. The archive is still tried first, still preferred, still read
+   * from our own storage before any external fetch, and a success returns exactly as before. What
+   * changes is the failure: it is recorded, named for what it actually was, and the function
+   * continues to the routes the identity still carries instead of stopping. A failure is only
+   * final once nothing is left to try, and it then says every route that was attempted.
+   */
+  const archiveAttempts: string[] = [];
   if (identity.archiveAssetId != null) {
     const row = await deps.archiveAsset?.(identity.archiveAssetId).catch(() => null);
     const storageUrl = row?.storageUrl ?? identity.canonicalUrl ?? null;
     if (!row && !identity.canonicalUrl) {
-      return fail(
-        identity, "ASSET_NOT_FOUND",
-        `archiveAssetId=${identity.archiveAssetId} is not in media_archive_assets any more`
+      archiveAttempts.push(
+        `archive:${identity.archiveAssetId} not in media_archive_assets any more`
       );
-    }
-    if (storageUrl && deps.readStorage) {
-      const got = await deps.readStorage(storageUrl, destPath).catch(() => false);
-      if (got) {
-        return done(destPath, {
-          cacheHit: false, downloaded: false, sourceUrl: storageUrl,
-          storagePath: row?.storageKey ?? null,
-          provenance: `read from this system's own archive storage (asset ${identity.archiveAssetId})`,
-        });
+    } else if (!storageUrl) {
+      /** Nothing was attempted, and this says so rather than calling it a failed download. */
+      archiveAttempts.push(`archive:${identity.archiveAssetId} has no storage URL to read`);
+    } else {
+      if (deps.readStorage) {
+        const got = await deps.readStorage(storageUrl, destPath).catch(() => false);
+        if (got) {
+          return done(destPath, {
+            cacheHit: false, downloaded: false, sourceUrl: storageUrl,
+            storagePath: row?.storageKey ?? null,
+            provenance: `read from this system's own archive storage (asset ${identity.archiveAssetId})`,
+          });
+        }
+        archiveAttempts.push(`archive:${identity.archiveAssetId} storage read failed`);
       }
-    }
-    if (storageUrl) {
       const got = await deps.download(storageUrl, destPath).catch(() => false);
       if (got) {
         return done(destPath, {
@@ -440,10 +469,28 @@ export async function rehydrateAsset(params: {
           provenance: `fetched from archive storage URL (asset ${identity.archiveAssetId})`,
         });
       }
+      archiveAttempts.push(`archive:${identity.archiveAssetId} storage download failed`);
     }
-    return fail(
-      identity, "REHYDRATION_DOWNLOAD_FAILED",
-      `archiveAssetId=${identity.archiveAssetId} could not be read from storage`
+    /**
+     * Only now is the archive out of options. If the identity carries no OTHER route, this is
+     * where it ends — and it ends naming what was tried, which is what the old message could not.
+     *
+     * `providerIsRehydratable` rather than `identityHasRehydrationRoute`: the latter answers true
+     * on the archive id we have just exhausted, so asking it here would always say "keep going"
+     * and turn the honest ending below into an unreachable branch.
+     */
+    if (!providerIsRehydratable(provider)) {
+      return fail(
+        identity,
+        archiveAttempts.some((a) => a.includes("failed"))
+          ? "REHYDRATION_DOWNLOAD_FAILED"
+          : "ASSET_NOT_FOUND",
+        `${archiveAttempts.join("; ")} — and provider=${provider} offers no further route`
+      );
+    }
+    console.warn(
+      `[Rehydrate] ${archiveAttempts.join("; ")} — falling through to provider=${provider}, ` +
+        `which this identity also names`
     );
   }
 
@@ -520,10 +567,12 @@ export async function rehydrateAsset(params: {
     target = { url: resolved.url, kind: "derived" };
   }
 
+  /** P0-4: an archive attempt that came this far is part of this failure's account of itself. */
+  const alsoTried = archiveAttempts.length > 0 ? ` (after ${archiveAttempts.join("; ")})` : "";
   if (!target) {
     return fail(
       identity, "ASSET_NOT_FOUND",
-      `provider=${provider} providerAssetId=${assetId ?? "null"} has no fetchable URL`
+      `provider=${provider} providerAssetId=${assetId ?? "null"} has no fetchable URL${alsoTried}`
     );
   }
 
@@ -531,7 +580,7 @@ export async function rehydrateAsset(params: {
   if (!downloaded) {
     return fail(
       identity, "REHYDRATION_DOWNLOAD_FAILED",
-      `provider=${provider} host=${hostOf(target.url)} (${target.kind})`
+      `provider=${provider} host=${hostOf(target.url)} (${target.kind})${alsoTried}`
     );
   }
   return done(destPath, {

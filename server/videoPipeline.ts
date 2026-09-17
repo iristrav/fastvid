@@ -14634,6 +14634,58 @@ function beatVisionEvidenceFor(
 }
 
 /**
+ * P0-9 — THE OUTCOME INVARIANT, AT THE EXIT THE FAILING RENDERS ACTUALLY TAKE.
+ *
+ * ── The fourth time this exact defect has been found ────────────────────────────────────────
+ *
+ * `assertNoSelectedClipWithoutOutcome` had one reader, inside the end-of-render report. A scene
+ * with no usable clips THROWS nine thousand lines earlier, so every render that failed that way —
+ * which is the failure mode this programme has spent its last twenty rounds on — never learned
+ * whether the assets it had chosen ended anywhere.
+ *
+ * RONDE 226 found this for `[BeatFunnel]` and RONDE 227 found it again for
+ * `beatShortlistViolations`, both with the same sentence: checking a thing and never reading the
+ * answer where it matters is the same defect as not checking it. This is the lineage ledger's
+ * instance of it, and it is the one that answers "where did this render's pictures go".
+ *
+ * ── One implementation, two readers ─────────────────────────────────────────────────────────
+ *
+ * Deliberately a function rather than a copied block. Two copies of an invariant's reporting is
+ * how the audit and the rule came to disagree about DOWNLOAD_FAILED, which `unaccountedRecords`
+ * documents and shares an implementation to prevent. `emit` is the only difference between the
+ * call sites: the report route routes its lines through `pipelineReport`, the failure route has no
+ * report to route them through.
+ *
+ * Reporting only. Nothing is thrown, nothing is retried, and no record is given an ending it did
+ * not earn — the offenders are named exactly as the ledger holds them.
+ */
+function reportLineageOutcomeInvariant(
+  ledger: VisualSourceLedger | undefined,
+  emit: { ok: (line: string) => void; fail: (line: string) => void }
+): void {
+  /**
+   * No ledger is not a pass. A render with no lineage at all has nothing to say about outcomes,
+   * and saying `selectedWithoutOutcome=0` there would be a green light nobody earned.
+   */
+  if (!ledger) return;
+  const outcome = assertNoSelectedClipWithoutOutcome(ledger);
+  if (outcome.ok) {
+    emit.ok("[OutcomeInvariant] OK selectedWithoutOutcome=0");
+    return;
+  }
+  emit.fail(
+    `[OutcomeInvariant] FAILED selectedWithoutOutcome=${outcome.offenders.length}` +
+      " — every chosen asset must have an outcome"
+  );
+  for (const o of outcome.offenders.slice(0, 12)) {
+    emit.fail(
+      `[OutcomeInvariant] asset=${o.lineageId} provider=${o.provider} ` +
+        `scene=${o.sceneIndex} beat=${o.beatIndex} route=${o.route} file=${o.filename}`
+    );
+  }
+}
+
+/**
  * P0-7 — AND WHY THE EDITOR DID NOT LOOK, from the same record, for the same beat.
  *
  * `beatVisionEvidenceFor` above answers "what did the editor say" and collapses every decline into
@@ -36944,6 +36996,18 @@ async function refillSceneStrictVoiceMatch(
        */
       for (const line of beatShortlistViolations(dedup.beatShortlist)) console.error(line);
       /**
+       * P0-9 — AND WHERE THIS RENDER'S CHOSEN PICTURES WENT.
+       *
+       * Same argument as the two lines above, one ledger further down. A render that dies here has
+       * usually chosen and downloaded a great many assets, and until now the only place that asked
+       * whether any of them ended anywhere was the report this throw never reaches. See
+       * `reportLineageOutcomeInvariant` — one implementation, and this is its second reader.
+       */
+      reportLineageOutcomeInvariant(dedup.sourcingCache?.lineage, {
+        ok: (line) => console.log(line),
+        fail: (line) => console.error(line),
+      });
+      /**
        * RONDE 247 — THE TIME REPORT, FOR THE FOURTH TIME ON THE SAME ARGUMENT.
        *
        * RONDE 241 attached the step meter to the three retrieval stages that spend a render, to
@@ -47355,29 +47419,10 @@ async function _runVideoPipelineInner(
        * must not be able to destroy a finished video. The line is an error so it cannot be read as
        * routine, and each offender is named so the route can be found.
        */
-      const outcomeInvariant = assertNoSelectedClipWithoutOutcome(ledger);
-      if (outcomeInvariant.ok) {
-        console.log(
-          pipelineReport.add("sourcing", "[OutcomeInvariant] OK selectedWithoutOutcome=0")
-        );
-      } else {
-        console.error(
-          pipelineReport.add(
-            "sourcing",
-            `[OutcomeInvariant] FAILED selectedWithoutOutcome=${outcomeInvariant.offenders.length}` +
-              " — every chosen asset must have an outcome"
-          )
-        );
-        for (const o of outcomeInvariant.offenders.slice(0, 12)) {
-          console.error(
-            pipelineReport.add(
-              "sourcing",
-              `[OutcomeInvariant] asset=${o.lineageId} provider=${o.provider} ` +
-                `scene=${o.sceneIndex} beat=${o.beatIndex} route=${o.route} file=${o.filename}`
-            )
-          );
-        }
-      }
+      reportLineageOutcomeInvariant(ledger, {
+        ok: (line) => console.log(pipelineReport.add("sourcing", line)),
+        fail: (line) => console.error(pipelineReport.add("sourcing", line)),
+      });
       console.log(formatGlobalBudget());
       console.log(
         pipelineReport.add(
