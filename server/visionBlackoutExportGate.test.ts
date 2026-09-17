@@ -225,11 +225,16 @@ describe("providerUnavailable counts outages and nothing else", () => {
     const fs = await import("fs");
     const path = await import("path");
     const src = fs.readFileSync(path.join(__dirname, "beatImageRelevanceGate.ts"), "utf8");
+    /**
+     * P0-7 gave `declined` a leading cause argument, so these are matched on the cause rather than
+     * on the message. That is the stronger anchor anyway: the cause is a value the compiler checks,
+     * and the message is prose that may legitimately be reworded.
+     */
     for (const decline of [
-      'declined("gate disabled")',
-      'declined("render judgement budget spent")',
-      'declined("no frame available")',
-      'declined("no narration to judge against")',
+      'declined("GATE_DISABLED"',
+      'declined("RENDER_BUDGET_SPENT"',
+      'declined("NO_FRAME"',
+      'declined("NO_NARRATION"',
     ]) {
       const at = src.indexOf(decline);
       expect(at, `${decline} has moved`).toBeGreaterThan(-1);
