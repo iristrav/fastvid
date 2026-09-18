@@ -67,6 +67,31 @@ const PRODUCTION_TIERS = [
 const tierOf = (tasks: ReadonlyArray<{ tier: number; source: string }>, source: string): number =>
   tasks.find((t) => t.source === source)!.tier;
 
+/**
+ * ── THE STEP SHRANK, AND THAT IS THE POINT ──────────────────────────────────────────────────
+ *
+ * This file used to assert whole-tier movement: a demoted Pexels went 4→5, a promoted one 4→3.
+ * The integrity audit named that for what it is — a media-form preference deciding that a lower
+ * SOURCING tier may run before a higher one. Promoting Pexels out of tier 4 put licensed stock in
+ * with the open collections, and since the tiered run stops as soon as a tier covers the scene,
+ * tier 4 could then never be reached at all.
+ *
+ * The feature is unchanged in what it is FOR: a source that supplies every preferred form is still
+ * asked earlier than its tier-mates, one that supplies none is still asked after them. What it can
+ * no longer do is leave the tier the ladder placed it in. So the tests assert the same three facts
+ * — moved down, moved up, did not move — at a tenth of a tier, and `oneRouteToAPicture.test.ts`
+ * holds the property that no movement may ever cross a tier boundary.
+ *
+ * `STEP` is written here as a literal rather than imported, deliberately: a test that reads the
+ * implementation's constant cannot notice the implementation changing it.
+ */
+const STEP = 0.1;
+const FLOOR = 1;
+const round = (n: number): number => Math.round(n * 10) / 10;
+/** How far a source moved, rounded — 4.1 - 4 is 0.10000000000000053 in binary floating point. */
+const moved = (after: ReadonlyArray<{ tier: number; source: string }>, source: string): number =>
+  round(tierOf(after, source) - tierOf(PRODUCTION_TIERS, source));
+
 /* ═══════════ 1. a dated beat no longer asks stock at the same moment ═══════════ */
 
 describe("P0-8 §1 — the need reaches the fetch, not only the ranking", () => {
@@ -94,7 +119,7 @@ describe("P0-8 §1 — the need reaches the fetch, not only the ranking", () => 
   it("AND IT IS STILL ASKED — the movement is one tier, never a removal", () => {
     const after = tierTasksByNeed(PRODUCTION_TIERS, dated);
     expect(after.map((t) => t.source).sort()).toEqual(PRODUCTION_TIERS.map((t) => t.source).sort());
-    expect(tierOf(after, "pexels") - tierOf(PRODUCTION_TIERS, "pexels")).toBe(1);
+    expect(moved(after, "pexels")).toBe(STEP);
   });
 
   it("A BEAT THAT WANTS A PROCESS PROMOTES THE SAME STOCK THIS ONE DEMOTED", () => {
@@ -109,7 +134,7 @@ describe("P0-8 §1 — the need reaches the fetch, not only the ranking", () => 
     const process = mediaFormsForIntent({ action: ["mixing concrete"] });
     expect(process.preferred).toEqual(["PROCESS"]);
     const after = tierTasksByNeed(PRODUCTION_TIERS, process);
-    expect(tierOf(after, "pexels")).toBe(tierOf(PRODUCTION_TIERS, "pexels") - 1);
+    expect(moved(after, "pexels")).toBe(-STEP);
   });
 
   it("and a NAMED person demotes stock, which is what the registry actually claims", () => {
@@ -122,9 +147,7 @@ describe("P0-8 §1 — the need reaches the fetch, not only the ranking", () => 
      */
     const named = mediaFormsForIntent({ people: ["a chief executive"], objects: ["a laptop"] });
     expect(providerSuppliesForm("pexels", "PERSON")).toBe(false);
-    expect(tierOf(tierTasksByNeed(PRODUCTION_TIERS, named), "pexels")).toBe(
-      tierOf(PRODUCTION_TIERS, "pexels") + 1
-    );
+    expect(moved(tierTasksByNeed(PRODUCTION_TIERS, named), "pexels")).toBe(STEP);
   });
 
   it("AND A PERFECT FIT IS ASKED EARLIER", () => {
@@ -135,7 +158,7 @@ describe("P0-8 §1 — the need reaches the fetch, not only the ranking", () => 
     expect(perfect.length, "no source in the pool scores a perfect fit on any need").toBeGreaterThan(0);
     const after = tierTasksByNeed(PRODUCTION_TIERS, need);
     for (const t of perfect) {
-      expect(tierOf(after, t.source)).toBe(Math.max(1, t.tier - 1));
+      expect(tierOf(after, t.source)).toBe(Math.max(FLOOR, round(t.tier - STEP)));
     }
   });
 });
@@ -158,7 +181,9 @@ describe("P0-8 §2 — no threshold to argue about", () => {
         `${before.source} moved on a partial answer (${supplies.join(",")}) — that is a threshold, and there is not supposed to be one`
       ).toBe(true);
       /** And the direction follows from which end it was, never from the provider's name. */
-      expect(now).toBe(all ? Math.max(1, before.tier - 1) : before.tier + 1);
+      expect(now).toBe(
+        all ? Math.max(FLOOR, round(before.tier - STEP)) : round(before.tier + STEP)
+      );
     }
   });
 
@@ -216,9 +241,7 @@ describe("P0-8 §3 — a scene's need is the union of its sentences', not one of
 
   it("and a scene where NO sentence can be served still demotes, once", () => {
     const scene = mediaFormsForScene([datedBeat, personBeat]);
-    expect(tierOf(tierTasksByNeed(PRODUCTION_TIERS, scene), "pexels")).toBe(
-      tierOf(PRODUCTION_TIERS, "pexels") + 1
-    );
+    expect(moved(tierTasksByNeed(PRODUCTION_TIERS, scene), "pexels")).toBe(STEP);
   });
 
   it("AND ONE UNTYPED SENTENCE DOES NOT EMPTY THE SCENE'S NEED", () => {
@@ -309,8 +332,8 @@ describe("P0-8 §5 — a re-ordering nobody can see is a re-ordering nobody can 
   it("EVERY MOVED SOURCE IS NAMED, WITH WHERE IT WENT", () => {
     const dated = mediaFormsForIntent({ period: ["1945"] });
     const line = describeTierChanges(PRODUCTION_TIERS, tierTasksByNeed(PRODUCTION_TIERS, dated));
-    expect(line).toContain("pexels 4→5");
-    expect(line).toContain("pixabay 4→5");
+    expect(line).toContain("pexels 4→4.1");
+    expect(line).toContain("pixabay 4→4.1");
   });
 
   it("and a scene where nothing moved prints nothing", () => {

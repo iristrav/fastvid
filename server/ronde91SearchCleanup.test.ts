@@ -537,7 +537,12 @@ describe("RONDE 91 §13 — M1–M8: each mutation must turn something red", () 
   it("M1 — central gate bypass: a search that skips the decision is caught", () => {
     // Both pipeline entry points, and every out-of-file provider search, must reach it.
     expect((PIPELINE_SRC.match(/searchGateDecision\(provider, query, route\)/g) ?? []).length).toBe(2);
-    expect((POOL_SRC.match(/searchGateDecision\(/g) ?? []).length).toBe(8);
+    /**
+     * Nine since the integrity audit: `searchLibraryOfCongressCandidates` was the one external
+     * provider in the pipeline that reached the network with no gate at all, found by counting
+     * these call-sites against `sourcingTiers.PROVIDER_TIER` rather than by reading the code.
+     */
+    expect((POOL_SRC.match(/searchGateDecision\(/g) ?? []).length).toBe(9);
     expect(GEO_SRC).toContain("searchGateDecision(");
   });
 

@@ -339,7 +339,12 @@ describe("it sits in front of the download, not after it", () => {
     const orderAt = PIPE.indexOf("hoistBudgetSensitiveDownload(subjectScreened)");
     // RONDE 240 replaced the batch loop with a bounded-parallel pool; the loop that walks the
     // ordered list is now the compaction pass, and it iterates the same list in the same order.
-    const loopAt = PIPE.indexOf("for (let slotIdx = 0; slotIdx < downloadOrder.length");
+    //
+    // The integrity audit added one step between them: `tierAdmittedOrder` is `downloadOrder`
+    // minus the candidates whose TIER the central ladder refused. It is still a sub-sequence of
+    // the screened list in the screened order — the subject gate's guarantee is unaffected, and
+    // the assertion below still forbids downloading anything the screen did not pass.
+    const loopAt = PIPE.indexOf("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length");
     expect(screenAt, "the screening step is gone").toBeGreaterThan(-1);
     expect(orderAt, "the download order is no longer built from the screened list").toBeGreaterThan(-1);
     expect(loopAt, "the download loop no longer reads the ordered list").toBeGreaterThan(-1);

@@ -342,12 +342,19 @@ describe("the funnel's download loop uses that order", () => {
     const src = pipeline();
     const at = src.indexOf("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
     expect(at).toBeGreaterThan(-1);
-    const block = src.slice(at, at + 3400);
+    /** Widened from 3400: the ladder filter added ~30 lines between the order and the transfers. */
+    const block = src.slice(at, src.indexOf("noteBeatCandidatesOffered(", at));
     expect(block).toContain("youtubeFirstEnabled()");
     expect(block).toContain("hoistBudgetSensitiveDownload(subjectScreened)");
     // The downloads must run over the ORDERED list — submitting `subjectScreened` would compute an
     // order and then ignore it, which is the whole defect in a different shape.
-    expect(block).toContain("downloadOrder.map((candidate, slotIdx)");
+    //
+    // Since the integrity audit the list they run over is `tierAdmittedOrder`: `downloadOrder` in
+    // its own order, minus the candidates whose tier the central ladder refused. Still the order,
+    // still never the unordered screened list — which is what this test exists to forbid.
+    expect(block).toContain("const tierAdmittedOrder: FunnelCandidate[] = [];");
+    expect(block).toContain("for (const candidate of downloadOrder) {");
+    expect(block).toContain("tierAdmittedOrder.map((candidate, slotIdx)");
     expect(block).not.toContain("subjectScreened.map((candidate");
   });
 
@@ -365,7 +372,7 @@ describe("the funnel's download loop uses that order", () => {
     const at = src.indexOf("const FUNNEL_DOWNLOAD_CONCURRENCY = 3;");
     const block = src.slice(at, src.indexOf("noteBeatCandidatesOffered(", at));
     expect(block).toContain("downloadSlots[slotIdx] = { candidate, clipPath }");
-    expect(block).toContain("for (let slotIdx = 0; slotIdx < downloadOrder.length; slotIdx++)");
+    expect(block).toContain("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length; slotIdx++)");
     const bodyAt = block.indexOf("downloadLimit(async () => {");
     expect(bodyAt).toBeGreaterThan(0);
     expect(

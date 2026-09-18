@@ -569,15 +569,23 @@ export function tierTasksByNeed<T extends { tier: number; source: string }>(
   need: { preferred: readonly MediaForm[]; acceptable: readonly MediaForm[] } | undefined
 ): T[] {
   if (!need || need.preferred.length === 0) return [...tasks];
+  /**
+   * The floor is kept from the original: a promotion never invents a position above the first tier
+   * the caller declared, because a task alone in a new earliest group would run by itself and lose
+   * the parallelism that makes a tier a tier. With a tenth-of-a-tier step this matters more, not
+   * less — 0.9 would be a group of one ahead of tier 1.
+   */
+  const floor = tasks.reduce((min, t) => Math.min(min, t.tier), Number.POSITIVE_INFINITY);
+  const step = (tier: number, by: number): number => Math.round((tier + by) * 10) / 10;
   return tasks.map((task) => {
     const supplies = need.preferred.map((form) => providerSuppliesForm(task.source, form));
     /** null is "no information". One unknown answer is enough to leave the task where it was. */
     if (supplies.some((s) => s == null)) return task;
     if (supplies.every(Boolean)) {
-      return { ...task, tier: Math.round((task.tier - NEED_STEP) * 10) / 10 };
+      return { ...task, tier: Math.max(floor, step(task.tier, -NEED_STEP)) };
     }
     if (!supplies.some(Boolean)) {
-      return { ...task, tier: Math.round((task.tier + NEED_STEP) * 10) / 10 };
+      return { ...task, tier: step(task.tier, NEED_STEP) };
     }
     return task;
   });

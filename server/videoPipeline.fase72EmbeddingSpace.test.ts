@@ -185,7 +185,7 @@ describe("FASE 7.2 — observability", () => {
     // RONDE 5 batched the downloads; the per-candidate work now starts at the batch loop, which
     // iterates `downloadOrder` — the same screened set, with YouTube moved to the front.
     const logIdx = block.indexOf("[FunnelVisionGate]");
-    const loopIdx = block.indexOf("for (let slotIdx = 0; slotIdx < downloadOrder.length;");
+    const loopIdx = block.indexOf("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length;");
     expect(logIdx).toBeGreaterThan(-1);
     expect(loopIdx).toBeGreaterThan(-1);
     expect(logIdx).toBeLessThan(loopIdx);

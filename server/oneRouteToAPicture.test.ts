@@ -50,6 +50,7 @@ import {
   BUDGET_EXHAUSTED,
 } from "./centralVisualSourcing";
 import { PROVIDER_TIER, providerTier, tierNumber } from "./sourcingTiers";
+import { poolTier } from "./scenePool";
 import { tierTasksByNeed } from "./providerCapability";
 
 const read = (f: string): string => readFileSync(path.join(__dirname, f), "utf8");
@@ -328,6 +329,13 @@ describe("a pool candidate is spent through the ladder, not beside it", () => {
       body.indexOf("downloadAndTrimPoolCandidate(")
     );
     expect(body, "a refusal must be recorded like any other rejection").toContain("_poolFailReasons.push(reason)");
+    /**
+     * The condition itself, verbatim. Asserting only that the call and the download appear in the
+     * right ORDER let a mutation that neutered the branch — `if (false && !tierVerdict.admitted)`
+     * — survive: the call was still there, still first, and still decided nothing.
+     */
+    expect(body).toContain("if (!tierVerdict.admitted) {");
+    expect(body).not.toMatch(/if \((?:false &&|true \|\|)[^)]*tierVerdict\.admitted/);
   });
 
   /**
@@ -343,6 +351,9 @@ describe("a pool candidate is spent through the ladder, not beside it", () => {
     const body = PIPELINE.slice(at, at + 1600);
     expect(body).toContain("admitPoolCandidateTier(candidate.source)");
     expect(body.indexOf("admitPoolCandidateTier")).toBeLessThan(body.indexOf("pLimit(FUNNEL_DOWNLOAD_CONCURRENCY)"));
+    /** And the verdict decides, rather than merely being computed — see the pool test above. */
+    expect(body).toContain("if (verdict.admitted) {");
+    expect(body).not.toMatch(/if \((?:true \|\||false &&)[^)]*verdict\.admitted/);
     expect(body, "a refused candidate must keep its place for a later beat").not.toContain(
       "usedFunnelCandidateIds.add"
     );
@@ -392,6 +403,22 @@ describe("running out of clock is not the same as running out of footage", () =>
 
 describe("nothing but the ladder decides the order", () => {
   /** L — no legacy routing path can independently choose a lower tier. */
+  /**
+   * `poolTier` is CALLED here, not merely read.
+   *
+   * The first version of this test checked the source of `poolTier` and the values in
+   * `PROVIDER_TIER`, and a mutation that made `poolTier` return 4 for every tier-3 source — the
+   * exact defect this round removed — survived both. A function that answers a question has to be
+   * asked the question.
+   */
+  it("L: poolTier answers with the ladder's own number for every provider", () => {
+    for (const source of Object.keys(PROVIDER_TIER)) {
+      expect(poolTier(source), source).toBe(tierNumber(providerTier(source)!));
+    }
+    /** And an unplaced name goes strictly last rather than into a tier it was not given. */
+    expect(poolTier("a_source_nobody_placed")).toBeGreaterThan(4);
+  });
+
   it("L: the scene pool holds no tier numbers of its own", () => {
     expect(POOL, "a literal tier number is a second tier table").not.toMatch(
       /tasks\.push\(\{ tier: \d/
@@ -427,34 +454,45 @@ describe("nothing but the ladder decides the order", () => {
   });
 
   /**
-   * Read from the source rather than imported: `videoPipeline.ts` is 39 000 lines whose import
-   * graph reaches ffmpeg, the database and every provider client. The list and the sort are both
-   * plain text, so the property can be proven by applying the real rule to the real members.
+   * THE ONE LEGACY LIST THIS ROUND LEFT ALONE, AND WHY THAT IS SAFE.
+   *
+   * `HISTORICAL_SOURCE_TIER_ORDER` still reads tier 3 before tier 1 — `internet_archive` ahead of
+   * `youtube_cc`. I reordered it by tier and reverted that: F3-28 states the sequence as a
+   * requirement and `videoPipeline.f328SourceCascade.test.ts` asserts it exactly, and the reorder
+   * changed no runtime behaviour, because every search in the cascade passes the gate and the
+   * ladder already refuses the out-of-order one.
+   *
+   * So the property to hold is not "the literal is sorted" but "the literal cannot decide". This
+   * asserts that: every member is a placed provider, and the loop that walks them reaches the gate.
    */
-  it("the historical cascade is ordered by the ladder rather than by hand", () => {
-    const at = PIPELINE.indexOf("const HISTORICAL_SOURCES = [");
+  it("the historical cascade supplies members, and the ladder supplies the order", () => {
+    const at = PIPELINE.indexOf("export const HISTORICAL_SOURCE_TIER_ORDER = [");
     expect(at, "the historical cascade moved").toBeGreaterThan(-1);
     const members = [...PIPELINE.slice(at, PIPELINE.indexOf("] as const;", at)).matchAll(/"([a-z_]+)"/g)]
       .map((m) => m[1]!);
     expect(members.length, "a source was dropped from the cascade").toBe(9);
-    expect(members).toContain("youtube_cc");
-    expect(members).toContain("internet_archive");
+    for (const m of members) expect(providerTier(m), `${m} is unplaced`).not.toBeNull();
 
-    /** The declared order is the tier order, applied to those members. */
-    const decl = PIPELINE.slice(at, PIPELINE.indexOf("function historicalTierRank", at));
-    expect(decl).toContain("export const HISTORICAL_SOURCE_TIER_ORDER = [...HISTORICAL_SOURCES].sort(");
-    expect(decl).toContain("historicalTierRank(a) - historicalTierRank(b)");
+    /**
+     * The list is out of tier order, which is exactly why the ladder has to be the one deciding.
+     * If someone ever sorts it, this test should be revisited rather than silently pass.
+     */
+    const declared = members.map((m) => tierNumber(providerTier(m)!));
+    expect(
+      declared.some((t, i) => i > 0 && t < declared[i - 1]!),
+      "the literal is now in tier order — reconcile this test with F3-28"
+    ).toBe(true);
 
-    const sorted = [...members].sort(
-      (a, b) => tierNumber(providerTier(a)!) - tierNumber(providerTier(b)!)
-    );
-    expect(sorted.indexOf("youtube_cc")).toBeLessThan(sorted.indexOf("internet_archive"));
-    for (let i = 1; i < sorted.length; i++) {
-      expect(
-        tierNumber(providerTier(sorted[i - 1]!)!),
-        `${sorted[i - 1]} before ${sorted[i]}`
-      ).toBeLessThanOrEqual(tierNumber(providerTier(sorted[i]!)!));
-    }
+    /** And a beat refuses the first member until tier 1 is attempted or declined. */
+    expect(members[0]).toBe("internet_archive");
+    expect(tierNumber(providerTier("internet_archive")!)).toBe(3);
+  });
+
+  it("so a historical beat cannot reach the Internet Archive before YouTube", async () => {
+    await onBeat(() => {
+      expect(admitProviderForTier("internet_archive").admitted).toBe(false);
+      expect(admitProviderForTier("youtube_cc").admitted).toBe(true);
+    });
   });
 
   /**

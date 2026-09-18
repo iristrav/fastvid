@@ -274,8 +274,11 @@ describe("FIX 3 — wiring at the single call site", () => {
     // loop. Anchor on the batch loop start — the registration+continue shape is unchanged.
     // The iterated array was renamed to `downloadOrder` when YouTube was moved to the front of
     // the download order; it is a permutation of the same screened set, so this anchor only
-    // follows the rename.
-    const idx = pipelineSrc.indexOf("for (let slotIdx = 0; slotIdx < downloadOrder.length;");
+    // follows the rename. Then the integrity audit inserted the central ladder between the ranked order and the
+    // transfers, so the list the downloads and the compaction walk is `tierAdmittedOrder` —
+    // `downloadOrder` in its own order, minus the candidates whose TIER the ladder refused.
+    // Another anchor following another rename; the shape being asserted is unchanged.
+    const idx = pipelineSrc.indexOf("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length;");
     expect(idx).toBeGreaterThan(-1);
     const branch = codeOnly(pipelineSrc.slice(idx, idx + 3200));
     expect(branch).toMatch(
@@ -302,7 +305,7 @@ describe("FIX 3 — wiring at the single call site", () => {
   });
 
   it("downloadedCount still counts only real downloads", () => {
-    const idx = pipelineSrc.indexOf("for (let slotIdx = 0; slotIdx < downloadOrder.length;");
+    const idx = pipelineSrc.indexOf("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length;");
     const branch = pipelineSrc.slice(idx, idx + 3400);
     const addIdx = branch.indexOf("dedup.usedFunnelCandidateIds.add(candidate.id);");
     const countIdx = branch.indexOf("downloadedCount++;");

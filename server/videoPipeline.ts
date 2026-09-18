@@ -29401,9 +29401,28 @@ async function fetchPersonBeatClipInner(
 // has failed for a beat. Exported as plain data so the exact required order can be verified with
 // a direct assertion instead of mocking every underlying fetch function.
 /**
- * The historical cascade's members. The ORDER they are tried in is not decided here — see below.
+ * THE HISTORICAL CASCADE — A MEMBER LIST, NOT AN ORDERING AUTHORITY.
+ *
+ * ── What this literal is, and what it deliberately is NOT any more ──────────────────────────
+ *
+ * It reads tier 3 before tier 1: `internet_archive` ahead of `youtube_cc`. That is not an
+ * oversight — F3-28 states it as a requirement and `videoPipeline.f328SourceCascade.test.ts`
+ * asserts the exact sequence. It is an editorial judgement about which ARCHIVAL sources answer a
+ * historical beat best, made before the sourcing ladder existed.
+ *
+ * The integrity audit asked whether it is a second routing authority, and the honest answer is
+ * that it no longer is one. Every search in this cascade passes `searchGateDecision`, so the
+ * ladder decides which tier may run: on a beat whose tier 1 is neither attempted nor declined,
+ * the Internet Archive entry is refused with TIER_OUT_OF_ORDER and the loop moves to `youtube_cc`.
+ * The runtime order is the ladder's; this list supplies the MEMBERS and the preference among
+ * sources that share a tier.
+ *
+ * I did reorder it by tier in this round, and reverted that. It changed no runtime behaviour the
+ * ladder was not already deciding, and it overrode an explicit earlier requirement to buy nothing.
+ * If the two orderings should be reconciled in the literal as well, that is a product decision
+ * about F3-28 rather than a routing fix, and it belongs to whoever owns that requirement.
  */
-const HISTORICAL_SOURCES = [
+export const HISTORICAL_SOURCE_TIER_ORDER = [
   "internet_archive",
   "youtube_cc",
   "wikimedia",
@@ -29414,35 +29433,6 @@ const HISTORICAL_SOURCES = [
   "media_ccc",
   "nasa",
 ] as const;
-
-/**
- * THE HISTORICAL CASCADE, ORDERED BY THE ONE LADDER.
- *
- * ── What this was, and what it cost ─────────────────────────────────────────────────────────
- *
- * A hand-written order with `internet_archive` first and `youtube_cc` second — tier 3 ahead of
- * tier 1. It is a first-hit-wins cascade, so on every historical beat that the Internet Archive
- * could answer, YouTube was never asked at all. That is a routing decision, made in an array
- * literal, by a round that predates the ladder.
- *
- * Since the ladder now gates every one of these searches, the old literal no longer WON those
- * beats — it merely spent a refusal on each one and moved on. Ordering the list properly is what
- * turns that from "the gate corrects the cascade every time" into "the cascade and the gate agree".
- *
- * Nothing is removed and nothing is added: `HISTORICAL_SOURCES` still holds exactly the nine
- * sources it always did. `sortedByTier` is a stable sort, so sources sharing a tier keep the order
- * the author chose for them — tier 3's internal preference (Internet Archive, then Wikimedia, then
- * NARA…) is a real editorial judgement about archival quality and is left exactly as it was.
- */
-export const HISTORICAL_SOURCE_TIER_ORDER = [...HISTORICAL_SOURCES].sort(
-  (a, b) => historicalTierRank(a) - historicalTierRank(b)
-) as unknown as readonly (typeof HISTORICAL_SOURCES)[number][];
-
-function historicalTierRank(source: string): number {
-  const tier = providerTier(source);
-  /** Unplaced sources go last rather than into a default tier — see `poolTier` for the same rule. */
-  return tier ? tierNumber(tier) : SOURCING_TIERS.length + 1;
-}
 export type HistoricalSourceTier = (typeof HISTORICAL_SOURCE_TIER_ORDER)[number];
 
 /** Archival real video for historical beats, tried in HISTORICAL_SOURCE_TIER_ORDER (no
@@ -39457,10 +39447,10 @@ async function fetchSceneVisualsInner(
          * one — a nested scope is clamped to its parent's deadline, so a larger slice cannot buy
          * time a spent beat does not have.
          */
-        const rankedDownloadOrder = youtubeFirstEnabled()
+        const downloadOrder = youtubeFirstEnabled()
           ? hoistBudgetSensitiveDownload(subjectScreened)
           : subjectScreened;
-        if (rankedDownloadOrder[0] !== subjectScreened[0]) {
+        if (downloadOrder[0] !== subjectScreened[0]) {
           console.log(
             `[Funnel] s${scene.index}b${beat.index}: YouTube candidate moved to the front of the ` +
               `download order — it is the only source whose transfer the beat budget can refuse outright`
@@ -39507,7 +39497,7 @@ async function fetchSceneVisualsInner(
          * touched.
          */
         const tierAdmittedOrder: FunnelCandidate[] = [];
-        for (const candidate of rankedDownloadOrder) {
+        for (const candidate of downloadOrder) {
           const verdict = admitPoolCandidateTier(candidate.source);
           if (verdict.admitted) {
             tierAdmittedOrder.push(candidate);
@@ -39519,13 +39509,12 @@ async function fetchSceneVisualsInner(
               (verdict.skipped.length > 0 ? ` (skips ${verdict.skipped.join(",")})` : "")
           );
         }
-        const downloadOrder = tierAdmittedOrder;
         const downloadLimit = pLimit(FUNNEL_DOWNLOAD_CONCURRENCY);
         const downloadSlots: Array<{ candidate: FunnelCandidate; clipPath: string } | null> =
-          new Array(downloadOrder.length).fill(null);
+          new Array(tierAdmittedOrder.length).fill(null);
         const downloadsT0 = Date.now();
         await Promise.all(
-          downloadOrder.map((candidate, slotIdx) =>
+          tierAdmittedOrder.map((candidate, slotIdx) =>
             downloadLimit(async () => {
               const clipPath = await downloadFunnelCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec, dedup.sourcingCache);
               if (clipPath) downloadSlots[slotIdx] = { candidate, clipPath };
@@ -39536,13 +39525,13 @@ async function fetchSceneVisualsInner(
         recordPipelineTiming(
           dedup.stepTiming,
           "image_download",
-          `Funnel downloads (${downloadOrder.length} candidate(s), ${FUNNEL_DOWNLOAD_CONCURRENCY} at a time)`,
+          `Funnel downloads (${tierAdmittedOrder.length} candidate(s), ${FUNNEL_DOWNLOAD_CONCURRENCY} at a time)`,
           Date.now() - downloadsT0,
           scene.index
         );
         {
-          for (let slotIdx = 0; slotIdx < downloadOrder.length; slotIdx++) {
-            const candidate = downloadOrder[slotIdx]!;
+          for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length; slotIdx++) {
+            const candidate = tierAdmittedOrder[slotIdx]!;
             const clipPath = downloadSlots[slotIdx]?.clipPath ?? "";
             if (!clipPath) {
               // FIX 3 — register failed downloads too. Only the beat WINNER used to be recorded,

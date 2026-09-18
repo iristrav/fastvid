@@ -58,7 +58,7 @@ describe("1. the barrier is gone, the ceiling is not", () => {
 
   /** A finished slot starts the next candidate rather than waiting for its neighbours. */
   it("every candidate is submitted to the limiter, not to a batch", () => {
-    expect(block()).toContain("downloadOrder.map((candidate, slotIdx) =>");
+    expect(block()).toContain("tierAdmittedOrder.map((candidate, slotIdx) =>");
     expect(block()).toContain("downloadLimit(async () => {");
   });
 });
@@ -87,8 +87,8 @@ describe("2. the ranking order survives the change", () => {
 
   it("and the list is compacted in the order the ranking set", () => {
     const src = block();
-    expect(src).toContain("for (let slotIdx = 0; slotIdx < downloadOrder.length; slotIdx++)");
-    expect(src).toContain("const candidate = downloadOrder[slotIdx]!");
+    expect(src).toContain("for (let slotIdx = 0; slotIdx < tierAdmittedOrder.length; slotIdx++)");
+    expect(src).toContain("const candidate = tierAdmittedOrder[slotIdx]!");
   });
 
   /** The hoist itself is untouched — still one candidate moved, the rest in ranking order. */

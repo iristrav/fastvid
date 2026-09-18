@@ -85,7 +85,13 @@ describe("Test D — the timeout is scoped to the funnel await and nothing else"
     const block = funnelAwaitBlock();
     expect(block).toContain("const funnelTimeoutMs = funnelAwaitTimeoutMs();");
     expect(block).toContain("await withTimeout(prefetchFunnel, funnelTimeoutMs,");
-    expect(block).toContain("}), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);");
+    /**
+     * The inline build now sits inside `runSceneVisualDiscovery`, so the funnel's own object
+     * literal closes a line before the timeout arguments. The property this test holds is
+     * unchanged — the same `funnelTimeoutMs` bounds both awaits — so it matches the argument list
+     * rather than the brace that happens to precede it.
+     */
+    expect(block).toContain("), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);");
     // The two 60_000 literals this replaced are gone from the executable code of this block.
     expect(codeOnly(block)).not.toContain("60_000");
   });
@@ -101,7 +107,7 @@ describe("Test D — the timeout is scoped to the funnel await and nothing else"
     // 1 declaration + 2 withTimeout arguments + 2 log interpolations = 5.
     expect(uses).toHaveLength(5);
     expect(code).toContain("await withTimeout(prefetchFunnel, funnelTimeoutMs,");
-    expect(code).toContain("}), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);");
+    expect(code).toContain("), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);");
   });
 
   it("FASTVID_FUNNEL_TIMEOUT_MS is read in exactly one place in the whole server", () => {
