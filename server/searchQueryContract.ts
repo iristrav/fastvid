@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { admitProviderForTier } from "./centralVisualSourcing";
 
 import { foldSearchText } from "./searchTextNormalize";
 
@@ -2155,6 +2156,24 @@ export function searchGateDecision(
     }
   } else {
     searchGateAudit.record("queriesValidated", provider, ticket.route);
+  }
+
+  /**
+   * THE SOURCING LADDER, ASKED WHERE EVERY PROVIDER ALREADY PASSES.
+   *
+   * Last, and deliberately so. This is a question about ORDER — may this tier run yet — and it is
+   * only worth asking about a query the contract has already accepted. Asking it earlier would
+   * let a malformed query mark a tier as attempted.
+   *
+   * Outside a beat's sourcing scope the answer is always yes: the scene pool, a warm-up and a test
+   * have no ladder, and there is no order to enforce where there is no beat. See
+   * `admitProviderForTier`.
+   */
+  const tierVerdict = admitProviderForTier(provider);
+  if (!tierVerdict.admitted) {
+    searchGateAudit.record("queriesBlocked", provider, ticket.route);
+    console.warn(audit("BLOCKED", "TIER_OUT_OF_ORDER" as never));
+    return { admitted: false, text };
   }
 
   searchGateAudit.record("queriesSent", provider, ticket.route);

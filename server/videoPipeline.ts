@@ -159,6 +159,12 @@ import {
 } from "./cinematicEffectsEngine";
 import { PIPELINE_ERROR, matchesAppError, pipelineError } from "@shared/appErrors";
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
+import {
+  runCentralVisualSourcing,
+  declineTier,
+  noteTierAttempted,
+  type TierDecline,
+} from "./centralVisualSourcing";
 import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
 import { openAiKeyFromEnv } from "./_core/env";
@@ -32238,16 +32244,75 @@ async function resolveBeatClip(
     ?? resolveScenePersons(scene, videoTitle, dedup.primaryPerson || undefined);
   const personName = opts.personName ?? scenePersons[0] ?? dedup.primaryPerson ?? "";
 
-  if (primaryOnly) {
-    return beatPrimaryFetch(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
-      personName, videoTitle, adoptOpts, scenePersons, tag, stockReason
-    );
-  }
-  return resolveBeatClipForBeat(
-    beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
-    spaceTopic, personName, videoTitle, adoptOpts
+  /**
+   * THE ONE PRODUCTION ENTRY FOR A BEAT'S VISUAL SOURCING.
+   *
+   * Every route a beat can take to a provider runs inside this scope — both branches below, the
+   * thirty strategy functions beneath them, and every rescue and fallback they reach. That is what
+   * makes the tier ladder enforceable: `searchGateDecision`, which every external provider already
+   * passes, asks `admitProviderForTier` whether the tier may run yet, and a tier that would skip
+   * one above it is refused with `TIER_OUT_OF_ORDER`.
+   *
+   * The strategies are untouched. They still decide WHAT to search for — the query, the person,
+   * the visual need — and no longer decide the ORDER of the sources, which is the split this round
+   * is about: a strategy is not a sourcing route.
+   */
+  return runCentralVisualSourcing(
+    {
+      renderId: String(getActiveVideoId() ?? "-"),
+      sceneIndex,
+      beatIndex: beat.index,
+      declined: beatSourcingDeclines(dedup),
+    },
+    async () => {
+      if (primaryOnly) {
+        return beatPrimaryFetch(
+          beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
+          personName, videoTitle, adoptOpts, scenePersons, tag, stockReason
+        );
+      }
+      return resolveBeatClipForBeat(
+        beat, scene, workDir, sceneIndex, clipFetchDur, dedup,
+        spaceTopic, personName, videoTitle, adoptOpts
+      );
+    }
   );
+}
+
+/**
+ * The tiers this render can already prove are unavailable, before the beat starts.
+ *
+ * §6's distinction made structural. A tier that is absent from this list has NOT been declined,
+ * and a provider below it stays refused until something actually attempts it — "not called" and
+ * "declined" must not collapse into each other, because that is precisely how stock ends up first.
+ *
+ * Every entry is something the code KNOWS: a capability switch, a missing key, a ceiling already
+ * spent. Nothing here is a guess about whether a tier would have found anything.
+ */
+function beatSourcingDeclines(dedup: VisualDedupState): TierDecline[] {
+  const declines: TierDecline[] = [];
+
+  if (!youtubeSourcingEnabled()) {
+    declines.push({ tier: "YOUTUBE", reason: "ENABLE_YOUTUBE_SOURCING_OFF" });
+  } else if (!youtubeCcReady()) {
+    declines.push({ tier: "YOUTUBE", reason: "NO_YOUTUBE_CAPABILITY" });
+  } else if (dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) {
+    declines.push({ tier: "YOUTUBE", reason: "ENTITY_CEILING_SPENT" });
+  }
+
+  /**
+   * Tier 3 is a set of collections, most of which need no key at all — Internet Archive, Wikimedia
+   * and Openverse among them. It is declined only when the render has switched archival sourcing
+   * off, which is a decision rather than an absence.
+   */
+  if (!dedup.perf.enableArchival && !dedup.perf.enableNasa) {
+    declines.push({ tier: "OPEN_SOURCES", reason: "ARCHIVAL_AND_NASA_DISABLED" });
+  }
+
+  if (!PEXELS_API_KEY && !PIXABAY_API_KEY) {
+    declines.push({ tier: "STOCK", reason: "NO_STOCK_PROVIDER_CONFIGURED" });
+  }
+  return declines;
 }
 
 // ─── 3e. Fetch All Visuals for a Scene (beat-aligned) ───────────────────────
@@ -33983,6 +34048,19 @@ async function fetchCuratedArchiveBeatClipWithLineage(
   beatIndex: number,
   fetch: (pickedOut: { assetId?: number; storageUrl?: string; pick?: CuratedCandidatePick }) => Promise<string | null>
 ): Promise<string | null> {
+  /**
+   * TIER 2, RECORDED HERE BECAUSE IT PASSES NO SEARCH GATE.
+   *
+   * The own archive is a database query, not a provider search, so it never reaches
+   * `searchGateDecision` — which is where every external tier marks itself attempted. Without this
+   * line tier 2 would read NOT_REACHED on every beat and tier 3 would be refused for skipping it,
+   * which is the failure mode of enforcing an order through one door and forgetting a route that
+   * uses another.
+   *
+   * Recorded on entry rather than on success: attempting a tier is what the ladder asks about, and
+   * an archive that held nothing for this beat has still been asked.
+   */
+  noteTierAttempted("OWN_ARCHIVE", "curated");
   const pickedOut: { assetId?: number; storageUrl?: string; pick?: CuratedCandidatePick } = {};
   const clip = await fetch(pickedOut);
   if (!clip) return clip;

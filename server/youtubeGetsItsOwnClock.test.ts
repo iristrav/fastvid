@@ -57,7 +57,8 @@ describe("§1 — the reservation is made when the scope opens", () => {
     await inScope(() => {
       const whole = remainingScopeMs();
       const forOthers = remainingNonYoutubeScopeMs();
-      expect(whole - forOthers).toBe(YOUTUBE_MIN_TURN_MS);
+      /** Within a millisecond: both readings race `Date.now()` against the same deadline. */
+      expect(Math.abs(whole - forOthers - YOUTUBE_MIN_TURN_MS)).toBeLessThanOrEqual(2);
     });
   });
 
@@ -124,7 +125,7 @@ describe("§3 — the reserve returns to the pool when the turn ends", () => {
   it("unused budget is released ONLY after the turn finishes, and then in full", async () => {
     await inScope(() => {
       const before = remainingNonYoutubeScopeMs();
-      expect(remainingScopeMs() - before).toBe(YOUTUBE_MIN_TURN_MS);
+      expect(Math.abs(remainingScopeMs() - before - YOUTUBE_MIN_TURN_MS)).toBeLessThanOrEqual(2);
 
       endYoutubeTurn("YOUTUBE_NO_RESULTS");
 
@@ -150,7 +151,9 @@ describe("§3 — the reserve returns to the pool when the turn ends", () => {
       expect(remainingScopeMs() - remainingNonYoutubeScopeMs()).toBeLessThanOrEqual(2);
     });
     await inScope(() => {
-      expect(remainingScopeMs() - remainingNonYoutubeScopeMs()).toBe(YOUTUBE_MIN_TURN_MS);
+      expect(
+        Math.abs(remainingScopeMs() - remainingNonYoutubeScopeMs() - YOUTUBE_MIN_TURN_MS)
+      ).toBeLessThanOrEqual(2);
     });
   });
 });

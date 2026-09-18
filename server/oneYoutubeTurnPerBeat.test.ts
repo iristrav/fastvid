@@ -376,6 +376,11 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
           "fetchUniqueStockForBeat",
           "fetchUniqueStockForBeatInner",
           "_runVideoPipelineInner",
+          /**
+           * Declares tier 1 UNAVAILABLE for the sourcing ladder — the opposite of routing to
+           * it. Its answer can only make a beat skip YouTube, never reach it.
+           */
+          "beatSourcingDeclines",
         ],
         `${host} decides for itself whether to try YouTube`
       ).toContain(host);

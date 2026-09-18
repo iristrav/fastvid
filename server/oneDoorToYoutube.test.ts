@@ -217,7 +217,14 @@ describe("T4 — non-YouTube providers cannot spend the YouTube reserve", () => 
   it("a non-YouTube caller sees the clock less the turn's cost", async () => {
     await withSceneFetchTimeout(
       async () => {
-        expect(remainingScopeMs() - remainingNonYoutubeScopeMs()).toBe(YOUTUBE_MIN_TURN_MS);
+        /**
+         * Within a millisecond, not exactly equal. Both readings are computed from `Date.now()`
+         * against the scope's deadline, so a tick between the two calls shifts the difference by
+         * one — which made this fail about one run in fifty. The reserve is the claim; the
+         * millisecond is not.
+         */
+        const held = remainingScopeMs() - remainingNonYoutubeScopeMs();
+        expect(Math.abs(held - YOUTUBE_MIN_TURN_MS)).toBeLessThanOrEqual(2);
       },
       WINDOW_MS,
       "test scene"
@@ -457,6 +464,12 @@ describe("T10 — the central route is not an archival route", () => {
           "fetchUniqueStockForBeat", // sizes a wall clock for a mixed-provider path
           "fetchUniqueStockForBeatInner", // refuses when NO provider at all is configured
           "_runVideoPipelineInner", // reports capability at startup
+          /**
+           * Declares tier 1 UNAVAILABLE for the sourcing ladder, which is the opposite of routing
+           * to it: the answer can only ever make the beat skip YouTube, never reach it. It exists
+           * so "not called" and "declined" stay different states — see `beatSourcingDeclines`.
+           */
+          "beatSourcingDeclines",
         ],
         `${host} decides for itself whether to try YouTube`
       ).toContain(host);
