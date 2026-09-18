@@ -134,6 +134,27 @@ export function tierMayRun(
 ): { ok: true } | { ok: false; skipped: SourcingTier[] } {
   const tier = providerTier(provider);
   if (!tier) return { ok: true };
+  /**
+   * RENDER 592 — THE SENTENCE ABOVE SAID THIS AND THE CODE DID NOT DO IT.
+   *
+   * "Same tier … is always allowed" was written here from the first version and never implemented:
+   * the filter below only ever looked at tiers strictly ABOVE the provider's, so a tier already
+   * being attempted did nothing to admit the next query to that same tier.
+   *
+   * Render 592 is what that costs. Its scenes were built by the funnel, which searches tiers 2, 3
+   * and 4 at scene level and does NOT search YouTube, so every beat opened with
+   * `1=NOT_REACHED 2=ATTEMPTED 3=ATTEMPTED 4=ATTEMPTED`. Ninety-nine tier-3 queries — Internet
+   * Archive, Wikimedia, SepiaSearch, Europeana, GDELT, media.ccc, Openverse — were then refused as
+   * TIER_OUT_OF_ORDER for skipping a tier 1 that nothing was ever going to ask, while tier 3 stood
+   * marked as attempted. Not one Pexels or Pixabay query was refused. The ladder was holding back
+   * the archives and waving the stock through: the exact inverse of what it is for.
+   *
+   * Asking more of a tier that has ALREADY been attempted cannot skip anything. Whatever the first
+   * query to that tier did or did not skip was decided when it was admitted; the second query to
+   * the same tier adds no new ordering claim. So it is admitted, and the refusal is reserved for
+   * what it was built for: a tier being opened for the first time while a higher one is untouched.
+   */
+  if (attempted.has(tier)) return { ok: true };
   const skipped = SOURCING_TIERS.filter(
     (t) => tierNumber(t) < tierNumber(tier) && !attempted.has(t) && !declined.has(t)
   );

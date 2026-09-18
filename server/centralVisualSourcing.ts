@@ -89,10 +89,14 @@ export type BeatSourcingLadder = {
   admitted: Array<{ provider: string; tier: SourcingTier }>;
   /** Providers this scope refused because `sourcingTiers` has never heard of them. */
   unknown: string[];
-  /** How many times compose has re-entered this beat's sourcing after its loop iteration ended. */
-  composeEntries: number;
-  /** True once those entries are spent: further sourcing is refused, and no tier is declined. */
+  /** True once this beat's loop iteration has closed — everything after it is a continuation. */
+  loopClosed: boolean;
+  /** Provider searches admitted for this beat AFTER its loop iteration ended. */
+  composeSearches: number;
+  /** True once those searches are spent: further sourcing is refused, and no tier is declined. */
   composeBudgetSpent: boolean;
+  /** The cap this beat's continuations are held to, carried so the gate can charge against it. */
+  composeSearchCap: number;
 };
 
 const ladderStore = new AsyncLocalStorage<BeatSourcingLadder>();
@@ -131,17 +135,40 @@ function ladderKey(renderId: string, sceneIndex: number, beatIndex: number): str
 const rememberedBeatLadders = new Map<string, BeatSourcingLadder>();
 
 /**
- * How many times compose may re-enter ONE beat's sourcing before it is spent.
+ * The declines a render has computed, so a ladder opened at compose time starts from the same
+ * facts as one opened in the beat loop.
  *
- * The continuation budget §7 asks for, and no larger a mechanism than that. Without it a compose
- * rescue loop could re-enter the same beat without limit: the beat's wall clock is long gone by
- * then, and the ladder alone bounds ORDER, not attempts. Production passes `BUDGETS.rescues()`
- * so this shares the number the rescue ladder already uses rather than inventing a second one.
+ * `beatSourcingDeclines` needs the render's `VisualDedupState` — capability switches, API keys, the
+ * entity ceiling — and `withBeatProvenance`, where the continuation is opened, has no access to it.
+ * Without this a beat the loop never reached opened with NOTHING declined, so a render with YouTube
+ * switched off would sit at `1=NOT_REACHED` and refuse every tier below it forever.
+ *
+ * These are facts the render worked out, recorded once per beat by the loop and read back here —
+ * not invented, and not a way to unlock a tier nobody decided on.
+ */
+const renderDeclines = new Map<string, TierDecline[]>();
+
+/**
+ * How many PROVIDER SEARCHES compose may spend on one beat before it is spent.
+ *
+ * ── RENDER 592: what this counted before, and why that number was meaningless ────────────────
+ *
+ * It counted scope ENTRIES and was capped at `BUDGETS.rescues()` — three. But a scope is entered
+ * once per provider-touching leaf, and one compose rescue walks several: `fillBeatVisual` alone
+ * calls the stock fallback, the AI clip and the empty-beat rescue, and `refillSceneStrictVoiceMatch`
+ * calls the stock fallback four times. So a single rescue round blew a budget meant to bound
+ * several, and render 592 refused 931 provider searches with COMPOSE_BUDGET_EXHAUSTED — 274 of them
+ * Wikimedia — on `entries=4 cap=3`.
+ *
+ * I reused a number that counts rescue ROUNDS to bound something that is not a round. It now
+ * counts what its name says: provider searches actually admitted for this beat after its loop
+ * iteration ended. That is a quantity worth bounding, and one a reader can check against the
+ * `[SearchQueryAudit]` lines.
  *
  * Spending it REFUSES further sourcing; it does not decline a tier. A decline would unlock the
  * tiers below it, which is the opposite of what running out of budget means.
  */
-export const DEFAULT_COMPOSE_ENTRIES_PER_BEAT = 3;
+export const DEFAULT_COMPOSE_SEARCHES_PER_BEAT = 12;
 
 /* ═══════════════════════ what a scene actually asked ═══════════════════════ */
 
@@ -219,8 +246,10 @@ function newLadder(
     refusals: [],
     admitted: [],
     unknown: [],
-    composeEntries: 0,
+    loopClosed: false,
+    composeSearches: 0,
     composeBudgetSpent: false,
+    composeSearchCap: DEFAULT_COMPOSE_SEARCHES_PER_BEAT,
   };
 }
 
@@ -275,11 +304,16 @@ export function beginBeatSourcing(params: CentralVisualSourcingParams): () => vo
     ladderKey(params.renderId, params.sceneIndex, params.beatIndex),
     ladder
   );
+  if (params.declined && params.declined.length > 0) {
+    renderDeclines.set(params.renderId, [...params.declined]);
+  }
   ladderStore.enterWith(ladder);
   let closed = false;
   return () => {
     if (closed) return;
     closed = true;
+    /** Everything after this point is a continuation, and is charged as one. */
+    ladder.loopClosed = true;
     console.log(formatLadder(ladder));
     /**
      * Leave no ladder AMBIENT. Whatever runs next is not this beat, and inheriting its attempted
@@ -316,7 +350,7 @@ export function beginBeatSourcing(params: CentralVisualSourcingParams): () => vo
  *                                             through is the exact fake this round forbids.
  */
 export async function resumeBeatSourcing<T>(
-  params: CentralVisualSourcingParams & { maxComposeEntries?: number },
+  params: CentralVisualSourcingParams & { maxComposeSearches?: number },
   run: () => Promise<T>
 ): Promise<T> {
   const open = ladderStore.getStore();
@@ -328,26 +362,31 @@ export async function resumeBeatSourcing<T>(
   }
 
   const remembered = rememberedBeatLadders.get(key);
-  const ladder = remembered ?? newLadder("beat", params);
+  const ladder =
+    remembered ??
+    newLadder("beat", {
+      ...params,
+      /** The render's own declines — see `renderDeclines`. Nothing is attempted. */
+      declined: params.declined ?? renderDeclines.get(params.renderId),
+    });
   if (!remembered) {
     rememberedBeatLadders.set(key, ladder);
     console.log(
       `[CentralSourcing] render=${params.renderId} s${params.sceneIndex}b${params.beatIndex} ` +
         `LADDER_OPENED_AT_COMPOSE — no beat ladder was ever opened for this beat; ` +
-        `starting strict (nothing attempted)`
+        `starting strict (nothing attempted, ${ladder.declined.size} tier(s) declined by the render)`
     );
   }
 
-  ladder.composeEntries += 1;
-  const cap = params.maxComposeEntries ?? DEFAULT_COMPOSE_ENTRIES_PER_BEAT;
-  if (ladder.composeEntries > cap && !ladder.composeBudgetSpent) {
-    ladder.composeBudgetSpent = true;
-    console.warn(
-      `[CentralSourcing] render=${ladder.renderId} s${ladder.sceneIndex}b${ladder.beatIndex} ` +
-        `COMPOSE_BUDGET_EXHAUSTED entries=${ladder.composeEntries} cap=${cap} — ` +
-        `further compose-time sourcing for this beat is refused, no tier is declined`
-    );
-  }
+  /**
+   * The cap is CARRIED, not charged here. Entering this scope costs nothing: a compose rescue that
+   * opens it and asks no provider has spent nothing, and charging it would bound the number of
+   * FUNCTIONS a rescue walks rather than the work it does. `admitProviderForTier` charges, once per
+   * admitted search — see `DEFAULT_COMPOSE_SEARCHES_PER_BEAT`.
+   */
+  ladder.composeSearchCap = params.maxComposeSearches ?? ladder.composeSearchCap;
+  /** A beat opened for the first time at compose time is a continuation from its first breath. */
+  ladder.loopClosed = true;
 
   try {
     return await ladderStore.run(ladder, run);
@@ -361,6 +400,7 @@ export function forgetRenderSourcing(renderId: string): void {
   for (const key of [...rememberedBeatLadders.keys()]) {
     if (key.startsWith(`${renderId}|`)) rememberedBeatLadders.delete(key);
   }
+  renderDeclines.delete(renderId);
   forgetSceneDiscovery(renderId);
 }
 
@@ -518,15 +558,39 @@ export function admitProviderForTier(provider: string): TierAdmission {
   }
 
   /**
-   * The continuation budget, spent. Refused rather than declined — see `resumeBeatSourcing`: a
-   * decline would unlock every tier below it, which is the opposite of what running out means.
+   * THE CONTINUATION BUDGET, CHARGED AND DECIDED IN ONE PLACE.
+   *
+   * One per SEARCH, and only after the loop has closed — the beat's own iteration spends the beat's
+   * own budget, not this one. Charged before the ladder's order check so a beat cannot burn the
+   * budget on refusals it was never going to be allowed anyway.
+   *
+   * Written as a single decision rather than an early guard plus a charge: the first version had
+   * both, and a mutation that killed the guard survived because the charge refused on the same
+   * call. Two checks where one decides is not defence in depth, it is a check nothing tests.
+   *
+   * Refused rather than declined — a decline would unlock every tier below it, which is the
+   * opposite of what running out of budget means.
    */
-  if (ladder.composeBudgetSpent) {
-    console.log(
-      `[CentralSourcing] s${ladder.sceneIndex}b${ladder.beatIndex} ` +
-        `COMPOSE_BUDGET_EXHAUSTED provider=${provider} — refused`
-    );
-    return { admitted: false, tier, skipped: [], reason: "COMPOSE_BUDGET_EXHAUSTED" };
+  if (ladder.loopClosed) {
+    if (!ladder.composeBudgetSpent) {
+      ladder.composeSearches += 1;
+      if (ladder.composeSearches > ladder.composeSearchCap) {
+        ladder.composeBudgetSpent = true;
+        console.warn(
+          `[CentralSourcing] render=${ladder.renderId} s${ladder.sceneIndex}b${ladder.beatIndex} ` +
+            `COMPOSE_BUDGET_EXHAUSTED searches=${ladder.composeSearches} ` +
+            `cap=${ladder.composeSearchCap} — further compose-time sourcing for this beat is ` +
+            `refused, no tier is declined`
+        );
+      }
+    }
+    if (ladder.composeBudgetSpent) {
+      console.log(
+        `[CentralSourcing] s${ladder.sceneIndex}b${ladder.beatIndex} ` +
+          `COMPOSE_BUDGET_EXHAUSTED provider=${provider} — refused`
+      );
+      return { admitted: false, tier, skipped: [], reason: "COMPOSE_BUDGET_EXHAUSTED" };
+    }
   }
 
   const verdict = tierMayRun(provider, ladder.attempted, new Set(ladder.declined.keys()));

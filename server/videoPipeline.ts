@@ -3969,7 +3969,7 @@ function withBeatProvenance<T>(
               renderId: String(getActiveVideoId() ?? "-"),
               sceneIndex: scene.index as number,
               beatIndex: beat.index as number,
-              maxComposeEntries: BUDGETS.rescues(),
+              maxComposeSearches: BUDGETS.queries(),
             },
             run
           )
@@ -4020,7 +4020,7 @@ async function beatPrimaryFetch(
           renderId: String(getActiveVideoId() ?? "-"),
           sceneIndex,
           beatIndex: beat.index,
-          maxComposeEntries: BUDGETS.rescues(),
+          maxComposeSearches: BUDGETS.queries(),
         },
         () =>
           beatPrimaryFetchInner(
@@ -4908,6 +4908,26 @@ export async function runCentralYoutubeTurn(
       `[YOUTUBE_TURN] scene=${sceneIndex} beat=${beat.index} turn=END result=${outcome} ` +
         `usedMs=${Date.now() - startedAtMs} remainingReservedMs=${currentYoutubeReserveMs()}`
     );
+    /**
+     * AND TIER 1 IS CLOSED, so the ladder below it is not left waiting on a turn that is over.
+     *
+     * ── Render 592: a tier nobody ever answers for blocks everything under it ──────────────────
+     *
+     * `tierMayRun` refuses a tier while a higher one is neither ATTEMPTED nor DECLINED. That is
+     * right, and it needs every tier to eventually reach one of those two states. Tier 1 had no way
+     * to reach the second: `beatSourcingDeclines` only declines YouTube for a missing capability or
+     * a spent ceiling, so a beat whose turn ended for any OTHER reason left tier 1 on NOT_REACHED
+     * with nothing able to change it.
+     *
+     * A turn that searched marks tier 1 attempted through the gate, as any provider does. A turn
+     * that ended WITHOUT searching is the case this covers, and the outcome is the reason — the
+     * same vocabulary the turn register already reports. Outcomes that leave the turn open are
+     * deliberately excluded: the beat may still get a real turn later, and declining it now would
+     * close a door that is still ajar.
+     */
+    if (!YOUTUBE_OUTCOME_LEAVES_TURN_OPEN.has(outcome) && !clip) {
+      declineTier("YOUTUBE", outcome);
+    }
     return { clip, candidatePaths, outcome, alreadyCompleted: false };
   };
 
