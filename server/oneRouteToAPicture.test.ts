@@ -610,8 +610,9 @@ describe("a scene asks everything; a beat chooses in order", () => {
     expect(sceneDiscoverySeed(RENDER, 6)).toBeDefined();
     forgetSceneDiscovery(RENDER);
     expect(sceneDiscoverySeed(RENDER, 6)).toBeUndefined();
+    /** The render releases beat ladders and scene discoveries together — see `forgetRenderSourcing`. */
     expect(PIPELINE, "the render never releases them").toContain(
-      'forgetSceneDiscovery(String(videoId ?? "-"))'
+      'forgetRenderSourcing(String(videoId ?? "-"))'
     );
   });
 

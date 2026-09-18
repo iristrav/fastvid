@@ -165,8 +165,13 @@ describe("RONDE 100B §4 — the fallback ladders cannot reach a provider unprov
      *
      * Asserted as "returns without opening a provenance scope" rather than as one literal string,
      * so the guard is checked for what it does instead of how it is spelled.
+     *
+     * `ladderRun` is the third name this has worn. The compose-time round wrapped `run` in the
+     * beat's sourcing continuation, for the same structural reason RONDE 100B put the proof here:
+     * this is the function every beat-level provider search already passes. Still no provenance
+     * scope opened before the guard, which is the property.
      */
-    const earlyReturn = /if \(getSearchProvenance\(\)\) return (fn|run)\(\);/.exec(body);
+    const earlyReturn = /if \(getSearchProvenance\(\)\) return (fn|run|ladderRun)\(\);/.exec(body);
     expect(earlyReturn, "the reuse guard is gone").not.toBeNull();
     const beforeGuard = body.slice(0, earlyReturn!.index);
     expect(beforeGuard, "a scope is opened before the guard can reuse one").not.toContain(

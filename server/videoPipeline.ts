@@ -162,9 +162,10 @@ import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } 
 import {
   runCentralVisualSourcing,
   beginBeatSourcing,
+  resumeBeatSourcing,
   runSceneVisualDiscovery,
   sceneDiscoverySeed,
-  forgetSceneDiscovery,
+  forgetRenderSourcing,
   admitPoolCandidateTier,
   declineTier,
   noteTierAttempted,
@@ -3935,10 +3936,48 @@ function withBeatProvenance<T>(
       { videoId: getActiveVideoId(), sceneIndex: scene.index, beatIndex: beat.index },
       () => withPlannedShot(normaliseShotType(plannedShot), fn)
     );
-  if (getSearchProvenance()) return run();
+  /**
+   * AND THE BEAT'S SOURCING LADDER, CONTINUED — the compose-time gap, closed here.
+   *
+   * ── Why here and nowhere else ────────────────────────────────────────────────────────────
+   *
+   * RONDE 100B put every beat-attributed provider query behind this function, and SearchGate
+   * strict enforces it: a query built outside a provenance scope is BLOCKED as
+   * LEGACY_QUERY_BUILDER. That makes this the one place every beat-level provider search already
+   * passes — the same argument that put the tier check in `searchGateDecision`, one layer up.
+   *
+   * The integrity audit found the compose-time paths — the scene backfill, `fillBeatVisual`,
+   * `ensureBeatVisualFilled`, `refillSceneStrictVoiceMatch`, `recoverSceneClipsIfEmpty`,
+   * `rescueFastShortComposeClips`, `adoptStockBeatClipFallback`, `adoptEmergencyGeoStockClip` —
+   * and every one of them reaches a provider through a leaf wrapped in this function. Wrapping
+   * those eight entry points by hand would be eight chances to miss the ninth; wrapping this is
+   * exhaustive for the same structural reason the provenance itself is.
+   *
+   * `resumeBeatSourcing` is re-entrant, so inside the beat loop this costs a map lookup and
+   * changes nothing. Outside it, the beat CONTINUES — with the tiers it really attempted and the
+   * declines it really had — instead of a compose rescue opening a blank, more permissive ladder.
+   *
+   * A caller with no indices (generateGuaranteedBeatClip carries a beat's TEXT and not its
+   * numbers) opens no ladder, exactly as it opens no query scope: a colour card is not sourcing,
+   * and inventing a beat identity for it would put a fake entry in the register.
+   */
+  const ladderRun =
+    beat.index != null && scene.index != null
+      ? () =>
+          resumeBeatSourcing(
+            {
+              renderId: String(getActiveVideoId() ?? "-"),
+              sceneIndex: scene.index as number,
+              beatIndex: beat.index as number,
+              maxComposeEntries: BUDGETS.rescues(),
+            },
+            run
+          )
+      : run;
+  if (getSearchProvenance()) return ladderRun();
   return withSearchProvenance(
     beatSearchProvenance(beat, scene, opts?.personName ?? "", opts?.scenePersons ?? []),
-    run
+    ladderRun
   );
 }
 
@@ -3966,12 +4005,28 @@ async function beatPrimaryFetch(
   tag: string,
   stockReason: string
 ): Promise<string | null> {
+  /**
+   * The one beat leaf that opens its provenance directly rather than through
+   * `withBeatProvenance`, so it needs the ladder continuation stated here too. Its eleven call
+   * sites include compose-time ones — the scene backfill at the bottom of `fetchSceneVisualsInner`
+   * and `recoverSceneClipsIfEmpty` — which is exactly the case this exists for. Re-entrant, so
+   * inside the beat loop it changes nothing.
+   */
   return withSearchProvenance(
     beatSearchProvenance(beat, scene, personName, scenePersons),
     () =>
-      beatPrimaryFetchInner(
-        beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
-        adoptOpts, scenePersons, tag, stockReason
+      resumeBeatSourcing(
+        {
+          renderId: String(getActiveVideoId() ?? "-"),
+          sceneIndex,
+          beatIndex: beat.index,
+          maxComposeEntries: BUDGETS.rescues(),
+        },
+        () =>
+          beatPrimaryFetchInner(
+            beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle,
+            adoptOpts, scenePersons, tag, stockReason
+          )
       )
   );
 }
@@ -50499,13 +50554,13 @@ async function _runVideoPipelineInner(
     clearStoryboardCacheForVideo(videoId);
     clearVisualSearchPlanCacheForVideo(videoId);
     /**
-     * What each scene's discovery proved about its tiers, released with the render that proved it.
+     * Every beat's ladder and every scene's discovery, released with the render that built them.
      *
      * Per-video for the same reason as the two caches above: a worker process outlives a render and
      * may be running another one right now. Keyed on the render id, so this drops exactly this
      * render's scenes and no one else's.
      */
-    forgetSceneDiscovery(String(videoId ?? "-"));
+    forgetRenderSourcing(String(videoId ?? "-"));
     try {
       /**
        * RONDE 97 §3 — the preparation cache is keyed on this directory, so it goes with it.
