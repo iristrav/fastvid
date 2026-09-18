@@ -482,7 +482,8 @@ describe("FIX A — scope", () => {
    */
   it("and a task is not started until its tier is reached", () => {
     const code = codeOnly(src);
-    expect(code).toMatch(/tasks\.push\(\{ tier: \d+, source: "[a-z_]+", run: \(\) =>/);
+    /** The tier is `poolTier("…")` since the integrity audit — see `retrievalInTiers.test.ts`. */
+    expect(code).toMatch(/tasks\.push\(\{ tier: poolTier\("[a-z_]+"\), source: "[a-z_]+", run: \(\) =>/);
     expect(code, "a bare push would start the search immediately").not.toMatch(
       /tasks\.push\(\s*search[A-Z]/
     );

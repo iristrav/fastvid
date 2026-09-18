@@ -38,6 +38,25 @@ import { archivePoolCandidates, type ArchiveRowLike } from "./archivePoolSource"
 import { enoughForEveryBeat, runTieredRetrieval, type RetrievalTask } from "./tieredRetrieval";
 import { youtubeRetrievalMode } from "./sourcingPolicy";
 import { tierTasksByNeed, describeTierChanges } from "./providerCapability";
+import { SOURCING_TIERS, providerTier, tierNumber } from "./sourcingTiers";
+
+/**
+ * The tier this pool asks a source in — read from the central ladder, never decided here.
+ *
+ * A source the ladder has never heard of goes strictly LAST rather than into a default tier. That
+ * is the one behaviour the integrity audit forbids defaulting: a provider silently landing in
+ * tier 4 looks identical to a provider deliberately placed there, and `everyPoolSourceHasATier`
+ * fails on it instead. Last is the only position that cannot cause a classified tier to be skipped.
+ */
+export function poolTier(source: string): number {
+  const tier = providerTier(source);
+  if (tier) return tierNumber(tier);
+  console.warn(
+    `[ScenePool] provider "${source}" has no tier in sourcingTiers.PROVIDER_TIER — ` +
+      `asked last so it cannot displace a classified tier`
+  );
+  return SOURCING_TIERS.length + 1;
+}
 
 /**
  * RONDE 175 — the shape of the EXISTING YouTube search, as this module needs it.
@@ -1254,6 +1273,19 @@ export async function searchLibraryOfCongressCandidates(
       );
       break;
     }
+    /**
+     * THE ONE PROVIDER THAT NEVER PASSED THE GATE.
+     *
+     * Every other search in this file opens with `searchGateDecision`; the Library of Congress was
+     * written without one, so it was the single external provider in the pipeline whose queries
+     * were neither validated by the search contract nor visible to the tier ladder — the only
+     * `loc` row in `PROVIDER_TIER` that nothing ever consulted. Found by the integrity audit by
+     * counting gate call-sites against the provider table rather than by reading the code.
+     *
+     * Placed exactly where its neighbours put it: before the request, after the budget check, and
+     * `continue` rather than `return` so one refused query does not abandon the rest.
+     */
+    if (!searchGateDecision("loc", query, "scenePool:searchLibraryOfCongressCandidates").admitted) continue;
     const searchUrl = `https://www.loc.gov/search/?q=${encodeURIComponent(query)}&fo=json&c=${max}`;
     try {
       const searchResp = await withTimeoutFetch(searchUrl, UA, 10_000, `Library of Congress pool search "${query}"`);
@@ -1563,12 +1595,23 @@ async function buildSceneCandidatePoolInner(
    * push time: the list was already running before anyone could decide whether it should. Holding
    * thunks is what makes "do not ask tier 4 when tier 1 covered the scene" expressible at all.
    *
-   *   1  youtube_cc                    2  archive (the operator's own)
-   *   3  internet_archive, wikimedia   4  everything else
-   *
    * Within a tier nothing changes — its members still run together under `Promise.allSettled`, so
    * one slow or broken provider neither serialises its neighbours nor takes their results with it.
    * See `runTieredRetrieval` for the trade this makes and what pays for it.
+   *
+   * ── THE INTEGRITY AUDIT: these numbers used to be a SECOND tier table ──────────────────────
+   *
+   * They were written here as literals, and five of them disagreed with `sourcingTiers.ts`:
+   * europeana, openverse, nasa, nara and loc all sat at 4 — the same tier as Pexels and Pixabay.
+   * Since `runTieredRetrieval` stops as soon as a tier covers the scene, that is not a cosmetic
+   * disagreement. It meant the open collections could never be asked BEFORE licensed stock; they
+   * were asked beside it, and skipped with it. A render whose tier 3 came back thin went straight
+   * to a tier where a Pexels answer and a Library of Congress answer were equally likely to be the
+   * one it kept.
+   *
+   * `poolTier` reads the central ladder instead, so this list can no longer hold an opinion of its
+   * own about order. The grouping is still real work — it is what lets a covered scene stop early
+   * — but the grouping is now the pipeline's one ordering, not a copy of it that drifted.
    */
   const tasks: RetrievalTask<{ candidates: PoolCandidate[]; apiCalls: number; source: string; ms: number }>[] = [];
 
@@ -1597,7 +1640,7 @@ async function buildSceneCandidatePoolInner(
 
   // The guard keeps its own key check so the type still narrows; noteSkip only records WHY.
   if (!noteSkip("pexels", skipPexels, Boolean(pexelsApiKey)) && pexelsApiKey) {
-    tasks.push({ tier: 4, source: "pexels", run: () =>
+    tasks.push({ tier: poolTier("pexels"), source: "pexels", run: () =>
       searchPexelsCandidates(queries, pexelsApiKey, maxPerSource).then(r => ({
         ...r,
         source: "pexels",
@@ -1606,7 +1649,7 @@ async function buildSceneCandidatePoolInner(
     });
   }
   if (!noteSkip("pixabay", skipPixabay, Boolean(pixabayApiKey)) && pixabayApiKey) {
-    tasks.push({ tier: 4, source: "pixabay", run: () =>
+    tasks.push({ tier: poolTier("pixabay"), source: "pixabay", run: () =>
       searchPixabayCandidates(queries, pixabayApiKey, maxPerSource).then(r => ({
         ...r,
         source: "pixabay",
@@ -1614,7 +1657,7 @@ async function buildSceneCandidatePoolInner(
       }))
     });
   }
-  tasks.push({ tier: 3, source: "wikimedia", run: () =>
+  tasks.push({ tier: poolTier("wikimedia"), source: "wikimedia", run: () =>
     searchWikimediaCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "wikimedia",
@@ -1654,7 +1697,7 @@ async function buildSceneCandidatePoolInner(
      * guard is a text scan and cannot see that — and a guard that has to be reasoned around is one
      * people edit. Matching the established shape keeps it exact.
      */
-    tasks.push({ tier: 1, source: "youtube_cc", run: () =>
+    tasks.push({ tier: poolTier("youtube_cc"), source: "youtube_cc", run: () =>
       youtubePoolCandidates({
         /**
          * MASTER YOUTUBE BUILD — the whole query list, like every other provider in this file.
@@ -1702,7 +1745,7 @@ async function buildSceneCandidatePoolInner(
    */
   if (req.archiveSearch && !noteSkip("archive", false, true)) {
     const archiveSearch = req.archiveSearch;
-    tasks.push({ tier: 2, source: "archive", run: () =>
+    tasks.push({ tier: poolTier("archive"), source: "archive", run: () =>
       archivePoolCandidates({
         sceneIndex,
         maxResults: maxPerSource,
@@ -1720,7 +1763,7 @@ async function buildSceneCandidatePoolInner(
   }
 
   if (!noteSkip("internet_archive", skipInternetArchive, true)) {
-    tasks.push({ tier: 3, source: "internet_archive", run: () =>
+    tasks.push({ tier: poolTier("internet_archive"), source: "internet_archive", run: () =>
       searchInternetArchiveCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "internet_archive",
@@ -1729,7 +1772,7 @@ async function buildSceneCandidatePoolInner(
     });
   }
   if (!noteSkip("europeana", skipEuropeana, Boolean(europeanaApiKey)) && europeanaApiKey) {
-    tasks.push({ tier: 4, source: "europeana", run: () =>
+    tasks.push({ tier: poolTier("europeana"), source: "europeana", run: () =>
       searchEuropeanaCandidates(queries, europeanaApiKey, maxPerSource).then(r => ({
         ...r,
         source: "europeana",
@@ -1740,7 +1783,7 @@ async function buildSceneCandidatePoolInner(
   // FASE 3 — Priority A historical/open sources: Openverse/NASA/Library of Congress need no
   // API key (same shape as Internet Archive above); NARA needs a key, same shape as Europeana.
   if (!noteSkip("openverse", skipOpenverse, true)) {
-    tasks.push({ tier: 4, source: "openverse", run: () =>
+    tasks.push({ tier: poolTier("openverse"), source: "openverse", run: () =>
       searchOpenverseCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "openverse",
@@ -1749,7 +1792,7 @@ async function buildSceneCandidatePoolInner(
     });
   }
   if (!noteSkip("nasa", skipNasa, true)) {
-    tasks.push({ tier: 4, source: "nasa", run: () =>
+    tasks.push({ tier: poolTier("nasa"), source: "nasa", run: () =>
       searchNasaCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "nasa",
@@ -1758,7 +1801,7 @@ async function buildSceneCandidatePoolInner(
     });
   }
   if (!noteSkip("nara", skipNara, Boolean(naraApiKey)) && naraApiKey) {
-    tasks.push({ tier: 4, source: "nara", run: () =>
+    tasks.push({ tier: poolTier("nara"), source: "nara", run: () =>
       searchNaraCandidates(queries, naraApiKey, maxPerSource).then(r => ({
         ...r,
         source: "nara",
@@ -1767,7 +1810,7 @@ async function buildSceneCandidatePoolInner(
     });
   }
   if (!noteSkip("loc", skipLoc, true)) {
-    tasks.push({ tier: 4, source: "loc", run: () =>
+    tasks.push({ tier: poolTier("loc"), source: "loc", run: () =>
       searchLibraryOfCongressCandidates(queries, maxPerSource).then(r => ({
         ...r,
         source: "loc",

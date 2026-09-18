@@ -179,9 +179,23 @@ describe("§2 — outside a beat there is no order to enforce", () => {
     expect(currentBeatLadder(), "the scope leaked past the beat").toBeUndefined();
   });
 
-  it("an untiered provider is never refused by a rule that does not know it", async () => {
+  /**
+   * THE RULE THIS ROUND TIGHTENED.
+   *
+   * It used to read "an untiered provider is never refused by a rule that does not know it", and
+   * admitted `something_new` everywhere. The integrity audit called that what it is: a silent
+   * bypass. A provider name `sourcingTiers` has never heard of is a sourcing route nobody has
+   * placed, and admitting it inside a beat means the tier table is no longer the whole truth.
+   *
+   * Outside a beat the old answer still holds — there is no order to enforce — so this now asserts
+   * both halves rather than one.
+   */
+  it("an unplaced provider is refused inside a beat and admitted outside one", async () => {
+    expect(admitProviderForTier("something_new").admitted).toBe(true);
     await onBeat(async () => {
-      expect(admitProviderForTier("something_new").admitted).toBe(true);
+      const verdict = admitProviderForTier("something_new");
+      expect(verdict.admitted).toBe(false);
+      if (!verdict.admitted) expect(verdict.reason).toBe("TIER_UNKNOWN_PROVIDER");
     });
   });
 });
@@ -241,7 +255,13 @@ describe("§24 — the orchestrator is production-reachable, not a library", () 
     const at = CONTRACT.indexOf("export function searchGateDecision(");
     const body = CONTRACT.slice(at, CONTRACT.indexOf("\n}\n", at));
     expect(body).toContain("admitProviderForTier(provider)");
-    expect(body).toContain("TIER_OUT_OF_ORDER");
+    /**
+     * The refusal REASON comes from the verdict, not from a literal written here. The gate now has
+     * two of them to report — an out-of-order tier and an unplaced provider — and a hardcoded
+     * string would have printed the first for both.
+     */
+    expect(body).toContain("tierVerdict.reason");
+    expect(body).not.toContain('"TIER_OUT_OF_ORDER"');
     /** After the validator: a malformed query must not be able to mark a tier attempted. */
     expect(body.indexOf("if (!verdict.ok)")).toBeLessThan(body.indexOf("admitProviderForTier"));
     expect(body.indexOf("admitProviderForTier")).toBeLessThan(

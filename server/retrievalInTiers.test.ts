@@ -19,6 +19,7 @@ import {
   runTieredRetrieval,
   type RetrievalTask,
 } from "./tieredRetrieval";
+import { providerTier, tierNumber } from "./sourcingTiers";
 
 /** Records the order in which sources are actually asked. */
 const spy = () => {
@@ -184,22 +185,46 @@ describe("4. the pool uses it, on the operator's order", () => {
   const POOL = (): string =>
     require("fs").readFileSync(require("path").join(__dirname, "scenePool.ts"), "utf8");
 
-  it("YouTube first, the operator's archive second", () => {
+  /**
+   * ── WHY THESE THREE TESTS CHANGED SHAPE ─────────────────────────────────────────────────────
+   *
+   * They used to read the tier numbers out of `scenePool.ts` as literals and assert them one by
+   * one. That passed for as long as the literals were there — and the literals were the defect.
+   * Five of them disagreed with `sourcingTiers.ts`: europeana, openverse, nasa, nara and loc were
+   * written as tier 4, the same tier as Pexels and Pixabay, so the open collections could never be
+   * asked BEFORE licensed stock and were skipped together with it when a scene stopped early.
+   *
+   * A test that reads a copy can only ever confirm the copy. These now assert the property that
+   * makes the copy impossible: the pool asks `poolTier`, and `poolTier` answers from the central
+   * ladder. The numbers themselves are checked against `sourcingTiers` rather than against this
+   * file's memory of them, so moving a provider in the ladder moves it here and nowhere else.
+   */
+  it("the pool takes its tier numbers from the central ladder, not from its own literals", () => {
     const src = POOL();
-    expect(src).toMatch(/tasks\.push\(\{ tier: 1, source: "youtube_cc"/);
-    expect(src).toMatch(/tasks\.push\(\{ tier: 2, source: "archive"/);
+    expect(src, "a literal tier number is a second tier table").not.toMatch(
+      /tasks\.push\(\{ tier: \d/
+    );
+    expect(src).toMatch(/tasks\.push\(\{ tier: poolTier\("[a-z_]+"\), source: "[a-z_]+"/);
   });
 
-  it("Internet Archive and Wikimedia share the third", () => {
+  it("every source the pool asks is placed in the ladder", () => {
     const src = POOL();
-    expect(src).toMatch(/tasks\.push\(\{ tier: 3, source: "internet_archive"/);
-    expect(src).toMatch(/tasks\.push\(\{ tier: 3, source: "wikimedia"/);
+    const asked = [...src.matchAll(/tasks\.push\(\{ tier: poolTier\("([a-z_]+)"\), source: "([a-z_]+)"/g)];
+    expect(asked.length, "no tasks found — the push shape moved").toBeGreaterThan(8);
+    for (const [, tierArg, source] of asked) {
+      expect(tierArg, "poolTier asked about a different source than the task names").toBe(source);
+      expect(providerTier(source), `${source} has no tier`).not.toBeNull();
+    }
   });
 
-  it("and everything else is the fourth", () => {
-    const src = POOL();
-    for (const s of ["pexels", "pixabay", "europeana", "openverse", "nasa", "nara", "loc"]) {
-      expect(src, s).toMatch(new RegExp(`tasks\\.push\\(\\{ tier: 4, source: "${s}"`));
+  it("YouTube is first, the operator's archive second, and stock last", () => {
+    expect(tierNumber(providerTier("youtube_cc")!)).toBe(1);
+    expect(tierNumber(providerTier("archive")!)).toBe(2);
+    for (const s of ["internet_archive", "wikimedia", "europeana", "openverse", "nasa", "nara", "loc"]) {
+      expect(tierNumber(providerTier(s)!), s).toBe(3);
+    }
+    for (const s of ["pexels", "pixabay"]) {
+      expect(tierNumber(providerTier(s)!), s).toBe(4);
     }
   });
 

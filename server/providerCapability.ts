@@ -542,27 +542,43 @@ export function orderResearchTasksByNeed<T extends { provider?: string }>(
  *
  * ── What it may never do ────────────────────────────────────────────────────────────────────
  *
- * NOTHING IS REMOVED, and the movement is bounded at one tier in either direction. A source the
+ * NOTHING IS REMOVED, and the movement is bounded WITHIN the task's own tier. A source the
  * registry mis-describes can therefore be asked a little later than it might have been, and can
  * never be dropped, skipped or refused. The number of providers queried, every API key, every skip
  * flag and every budget are untouched — this decides order, and only order.
  *
- * Tier 1 is the floor: a promotion never invents a tier above the first one the caller declared,
- * because a task alone in a new tier 0 would run by itself and lose the parallelism that makes a
- * tier a tier.
+ * ── THE INTEGRITY AUDIT: the movement used to cross the ladder ──────────────────────────────
+ *
+ * It was `task.tier - 1` and `task.tier + 1`, whole tiers. On a beat whose preferred forms Pexels
+ * happens to supply, that promoted licensed stock out of tier 4 and into tier 3, where it ran
+ * beside the open collections — and since the tiered run stops as soon as a tier covers the scene,
+ * tier 4 could then never be reached at all. A media-form preference was silently deciding that a
+ * lower sourcing tier could run before a higher one, which is precisely the authority the central
+ * ladder is supposed to hold alone.
+ *
+ * The fix keeps the feature and takes away the authority: the step is now a TENTH of a tier, so a
+ * promoted source is asked before its tier-mates and a demoted one after them, and neither can
+ * leave the tier `sourcingTiers` placed it in. `3.9` and `4.1` read plainly in the retrieval log,
+ * and the integer part is still the ladder's own number.
  */
+/** One tenth of a tier: enough to order within a tier, never enough to leave it. */
+const NEED_STEP = 0.1;
+
 export function tierTasksByNeed<T extends { tier: number; source: string }>(
   tasks: readonly T[],
   need: { preferred: readonly MediaForm[]; acceptable: readonly MediaForm[] } | undefined
 ): T[] {
   if (!need || need.preferred.length === 0) return [...tasks];
-  const floor = tasks.reduce((min, t) => Math.min(min, t.tier), Number.POSITIVE_INFINITY);
   return tasks.map((task) => {
     const supplies = need.preferred.map((form) => providerSuppliesForm(task.source, form));
     /** null is "no information". One unknown answer is enough to leave the task where it was. */
     if (supplies.some((s) => s == null)) return task;
-    if (supplies.every(Boolean)) return { ...task, tier: Math.max(floor, task.tier - 1) };
-    if (!supplies.some(Boolean)) return { ...task, tier: task.tier + 1 };
+    if (supplies.every(Boolean)) {
+      return { ...task, tier: Math.round((task.tier - NEED_STEP) * 10) / 10 };
+    }
+    if (!supplies.some(Boolean)) {
+      return { ...task, tier: Math.round((task.tier + NEED_STEP) * 10) / 10 };
+    }
     return task;
   });
 }

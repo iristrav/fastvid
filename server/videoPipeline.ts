@@ -161,10 +161,17 @@ import { PIPELINE_ERROR, matchesAppError, pipelineError } from "@shared/appError
 import { isShortVideoLength, normalizeVideoLength, targetVideoDurationMinutes } from "@shared/videoLengths";
 import {
   runCentralVisualSourcing,
+  beginBeatSourcing,
+  runSceneVisualDiscovery,
+  sceneDiscoverySeed,
+  forgetSceneDiscovery,
+  admitPoolCandidateTier,
   declineTier,
   noteTierAttempted,
+  BUDGET_EXHAUSTED,
   type TierDecline,
 } from "./centralVisualSourcing";
+import { SOURCING_TIERS, providerTier, tierNumber } from "./sourcingTiers";
 import { PIPELINE_PROCESSING_STATUSES } from "@shared/videoQueue";
 import fetch from "node-fetch";
 import { openAiKeyFromEnv } from "./_core/env";
@@ -29393,7 +29400,10 @@ async function fetchPersonBeatClipInner(
 // tier in fetchBeatArchivalThenPexels/fetchBeatStockFallback, tried only after every tier below
 // has failed for a beat. Exported as plain data so the exact required order can be verified with
 // a direct assertion instead of mocking every underlying fetch function.
-export const HISTORICAL_SOURCE_TIER_ORDER = [
+/**
+ * The historical cascade's members. The ORDER they are tried in is not decided here — see below.
+ */
+const HISTORICAL_SOURCES = [
   "internet_archive",
   "youtube_cc",
   "wikimedia",
@@ -29404,6 +29414,35 @@ export const HISTORICAL_SOURCE_TIER_ORDER = [
   "media_ccc",
   "nasa",
 ] as const;
+
+/**
+ * THE HISTORICAL CASCADE, ORDERED BY THE ONE LADDER.
+ *
+ * ── What this was, and what it cost ─────────────────────────────────────────────────────────
+ *
+ * A hand-written order with `internet_archive` first and `youtube_cc` second — tier 3 ahead of
+ * tier 1. It is a first-hit-wins cascade, so on every historical beat that the Internet Archive
+ * could answer, YouTube was never asked at all. That is a routing decision, made in an array
+ * literal, by a round that predates the ladder.
+ *
+ * Since the ladder now gates every one of these searches, the old literal no longer WON those
+ * beats — it merely spent a refusal on each one and moved on. Ordering the list properly is what
+ * turns that from "the gate corrects the cascade every time" into "the cascade and the gate agree".
+ *
+ * Nothing is removed and nothing is added: `HISTORICAL_SOURCES` still holds exactly the nine
+ * sources it always did. `sortedByTier` is a stable sort, so sources sharing a tier keep the order
+ * the author chose for them — tier 3's internal preference (Internet Archive, then Wikimedia, then
+ * NARA…) is a real editorial judgement about archival quality and is left exactly as it was.
+ */
+export const HISTORICAL_SOURCE_TIER_ORDER = [...HISTORICAL_SOURCES].sort(
+  (a, b) => historicalTierRank(a) - historicalTierRank(b)
+) as unknown as readonly (typeof HISTORICAL_SOURCES)[number][];
+
+function historicalTierRank(source: string): number {
+  const tier = providerTier(source);
+  /** Unplaced sources go last rather than into a default tier — see `poolTier` for the same rule. */
+  return tier ? tierNumber(tier) : SOURCING_TIERS.length + 1;
+}
 export type HistoricalSourceTier = (typeof HISTORICAL_SOURCE_TIER_ORDER)[number];
 
 /** Archival real video for historical beats, tried in HISTORICAL_SOURCE_TIER_ORDER (no
@@ -34743,6 +34782,23 @@ function typedRetrievalQueriesForBeat(
    * point, so one charge covers every route that asks through it.
    */
   if (!budgetAllows(dedup.beatBudget, scene.index, beat.index, "queries")) {
+    /**
+     * A TIER THE CLOCK STOPPED IS NOT A TIER THAT HAD NOTHING.
+     *
+     * This beat has spent its query ceiling, so no tier it has not already attempted will be
+     * attempted — not because a provider answered badly, but because the pipeline stopped asking.
+     * Recording that as `BUDGET_EXHAUSTED` does two things the previous silence did not:
+     *
+     *   · the end-of-beat line says WHY a tier reads as unavailable, so a render log cannot be
+     *     read as "the open collections had no footage for this sentence" when the truth is that
+     *     nobody asked them;
+     *   · the tiers below become reachable, so a budget-starved beat can still be filled instead
+     *     of dropping to a colour card while a licensed clip sits one refusal away.
+     *
+     * `BUDGET_EXHAUSTED` is a constant rather than a string written here, precisely so this path
+     * cannot reach for a reason that reads like a provider verdict. See `centralVisualSourcing`.
+     */
+    for (const tier of SOURCING_TIERS) declineTier(tier, BUDGET_EXHAUSTED);
     return [];
   }
   const beatIntent = beatVisualIntent(dedup.beatIntent, scene.index, beat.index);
@@ -38837,7 +38893,9 @@ async function fetchSceneVisualsInner(
         }
         funnelResult = prefetchFunnel
           ? await withTimeout(prefetchFunnel, funnelTimeoutMs, `prefetchFunnel s${scene.index}`)
-          : await withTimeout(buildRetrievalFunnel({
+          : await withTimeout(runSceneVisualDiscovery(
+              { renderId: String(getActiveVideoId() ?? "-"), sceneIndex: scene.index },
+              () => buildRetrievalFunnel({
               sceneIndex: scene.index,
               sceneText: scene.text,
               primaryQuery: inlineFunnelQueries.primaryQuery,
@@ -38900,7 +38958,8 @@ async function fetchSceneVisualsInner(
                   })
                 );
               },
-            }), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
+            })
+            ), funnelTimeoutMs, `buildRetrievalFunnel s${scene.index}`);
         console.log(
           `[FunnelTimeout] scene=${scene.index} completed elapsedMs=${Date.now() - funnelAwaitT0} ` +
           `timeoutMs=${funnelTimeoutMs}`
@@ -38932,7 +38991,9 @@ async function fetchSceneVisualsInner(
         });
         scenePool = prefetchPromise
           ? await withTimeout(prefetchPromise, 60_000, `prefetchPool s${scene.index}`)
-          : await withTimeout(buildSceneCandidatePool({
+          : await withTimeout(runSceneVisualDiscovery(
+              { renderId: String(getActiveVideoId() ?? "-"), sceneIndex: scene.index },
+              () => buildSceneCandidatePool({
               sceneIndex: scene.index,
               sceneText: scene.text,
               primaryQuery: inlinePoolQueries.primaryQuery,
@@ -38972,7 +39033,8 @@ async function fetchSceneVisualsInner(
               mediaFormNeed: mediaFormsForScene(
                 beats.map((b) => beatVisualIntent(dedup.beatIntent, scene.index, b.index))
               ),
-            }), 60_000, `buildSceneCandidatePool s${scene.index}`);
+            })
+            ), 60_000, `buildSceneCandidatePool s${scene.index}`);
         console.log(`[Hang] AFTER pool await s${scene.index} candidates=${scenePool?.candidates?.length ?? 0}`);
         const waited = Date.now() - poolT0;
         console.log(
@@ -39034,8 +39096,51 @@ async function fetchSceneVisualsInner(
     return true;
   };
 
+  /**
+   * ONE LADDER PER BEAT, AROUND THE WHOLE BEAT.
+   *
+   * ── What the integrity audit found ──────────────────────────────────────────────────────────
+   *
+   * The ladder used to be opened by `resolveBeatClip`. That reads like the beat's entry point and
+   * is not: it is this loop's THIRD route to a picture. The funnel resolves a beat above it, the
+   * scene pool resolves a beat above that, and both ran with no ladder at all — which the gate
+   * treated as "always admitted". A Pexels clip could become a beat's picture with tiers 1, 2 and
+   * 3 reading NOT_REACHED, and the render log would not have said so. The stock fallbacks after
+   * the cascade sat outside it too.
+   *
+   * So the ladder moves up to the beat itself. Everything below is now inside one scope: the
+   * funnel's winner, the pool's candidates, the cascade, every rescue, every last-resort fetch.
+   * `runCentralVisualSourcing` inside `resolveBeatClip` re-enters this same ladder instead of
+   * starting a second one.
+   *
+   * ── Why a closer rather than a callback ─────────────────────────────────────────────────────
+   *
+   * This body is seventeen hundred lines of branches, `continue`s and early exits. Wrapping it in
+   * a callback would be the large rewrite this round is told not to do, and would change control
+   * flow that has nothing to do with sourcing. The closer is called at the TOP of the next
+   * iteration and once after the loop, so a `continue` — of which there are several — closes the
+   * previous beat's ladder rather than leaking it into the next one.
+   */
+  const renderIdForLadder = String(getActiveVideoId() ?? "-");
+  let closeBeatLadder: (() => void) | null = null;
+  try {
   for (let bi = 0; bi < beats.length; bi++) {
     const beat = beats[bi];
+    closeBeatLadder?.();
+    /**
+     * The scene's own discovery is carried IN, not re-derived. The funnel and the pool really did
+     * query these tiers for this scene, through this same gate; a beat that started from a blank
+     * ladder would report NOT_REACHED for a tier the log can show being asked, and would make the
+     * cascade re-ask it to earn a permission the render had already paid for.
+     */
+    const sceneSeed = sceneDiscoverySeed(renderIdForLadder, scene.index);
+    closeBeatLadder = beginBeatSourcing({
+      renderId: renderIdForLadder,
+      sceneIndex: scene.index,
+      beatIndex: beat.index,
+      declined: [...beatSourcingDeclines(dedup), ...(sceneSeed?.declined ?? [])],
+      seedAttempted: sceneSeed?.attempted,
+    });
     beatAdoptOpts.keywords = beat.keywords;
     onBeatProgress?.(bi, beats.length, "beat");
     const pushClip = (clipPath: string, holdSec = beat.holdSec): Promise<boolean> =>
@@ -39352,10 +39457,10 @@ async function fetchSceneVisualsInner(
          * one — a nested scope is clamped to its parent's deadline, so a larger slice cannot buy
          * time a spent beat does not have.
          */
-        const downloadOrder = youtubeFirstEnabled()
+        const rankedDownloadOrder = youtubeFirstEnabled()
           ? hoistBudgetSensitiveDownload(subjectScreened)
           : subjectScreened;
-        if (downloadOrder[0] !== subjectScreened[0]) {
+        if (rankedDownloadOrder[0] !== subjectScreened[0]) {
           console.log(
             `[Funnel] s${scene.index}b${beat.index}: YouTube candidate moved to the front of the ` +
               `download order — it is the only source whose transfer the beat budget can refuse outright`
@@ -39385,6 +39490,36 @@ async function fetchSceneVisualsInner(
          * every test still passed. So each result lands in its own slot and the list is compacted
          * in order afterwards: concurrency changes, ranking does not.
          */
+        /**
+         * THE LADDER, ASKED BEFORE THE TRANSFERS START.
+         *
+         * The funnel searched at SCENE scope, so its provider queries are long past by the time a
+         * beat gets here — there is nothing left for `searchGateDecision` to refuse. The download
+         * is where this beat actually spends the tier, so that is where the ladder gets its say.
+         *
+         * Filtered here rather than inside the concurrent download below, deliberately: three
+         * transfers running at once would ask the ladder at once, each seeing a different set of
+         * attempted tiers, and the answer would depend on which request happened to arrive first.
+         * In ranking order, one at a time, the walk is the walk.
+         *
+         * A refused candidate is SKIPPED, never punished: it keeps its place in the funnel for a
+         * later beat whose ladder has got further, and `usedFunnelCandidateIds` is deliberately not
+         * touched.
+         */
+        const tierAdmittedOrder: FunnelCandidate[] = [];
+        for (const candidate of rankedDownloadOrder) {
+          const verdict = admitPoolCandidateTier(candidate.source);
+          if (verdict.admitted) {
+            tierAdmittedOrder.push(candidate);
+            continue;
+          }
+          console.log(
+            `[Funnel] s${scene.index}b${beat.index}: ${candidate.source} candidate not downloaded — ` +
+              `${verdict.reason}` +
+              (verdict.skipped.length > 0 ? ` (skips ${verdict.skipped.join(",")})` : "")
+          );
+        }
+        const downloadOrder = tierAdmittedOrder;
         const downloadLimit = pLimit(FUNNEL_DOWNLOAD_CONCURRENCY);
         const downloadSlots: Array<{ candidate: FunnelCandidate; clipPath: string } | null> =
           new Array(downloadOrder.length).fill(null);
@@ -40471,6 +40606,29 @@ async function fetchSceneVisualsInner(
         let poolClip: string | null = null;
         let _poolFailReasons: string[] = [];
         for (const candidate of poolCandidates) {
+          /**
+           * THE LADDER, ASKED AT THE OTHER END OF THE POOL.
+           *
+           * A pool candidate's provider search happened one scope up, for the whole scene, so by
+           * the time a beat picks one there is no query left for `searchGateDecision` to refuse.
+           * This is the same question asked where the beat actually spends the tier: the download.
+           *
+           * Before the integrity audit this was the pipeline's main route to a picture and it
+           * asked nothing at all — a Pexels candidate became the beat's clip whether or not the
+           * scene had ever reached YouTube, the archive or the open collections. A refusal here
+           * skips the candidate; the loop simply tries the next one, which is by construction from
+           * a tier the ladder does allow, and an empty shortlist falls through to the cascade that
+           * walks the ladder properly.
+           */
+          const tierVerdict = admitPoolCandidateTier(candidate.source);
+          if (!tierVerdict.admitted) {
+            const reason =
+              `${candidate.source}:${candidate.assetId.slice(0, 20)} refused — ${tierVerdict.reason}` +
+              (tierVerdict.skipped.length > 0 ? ` (skips ${tierVerdict.skipped.join(",")})` : "");
+            _poolFailReasons.push(reason);
+            console.log(`[Retry] s${scene.index}b${beat.index} pool candidate rejected — ${reason}`);
+            continue;
+          }
           const _cT0 = Date.now();
           poolClip = await downloadAndTrimPoolCandidate(candidate, workDir, scene.index, beat.index, beat.holdSec, dedup.sourcingCache);
           if (poolClip) break;
@@ -40792,6 +40950,10 @@ async function fetchSceneVisualsInner(
         );
       }
     }
+  }
+  } finally {
+    /** The last beat's ladder, and any beat the loop left through a throw. */
+    closeBeatLadder?.();
   }
 
   if (archiveOnly) {
@@ -44540,7 +44702,9 @@ async function _runVideoPipelineInner(
               `year=${anchoredQueries.year || "n/a"} extras=${anchoredQueries.extraQueries.length}`
             );
           }
-          const funnelPromise = buildRetrievalFunnel({
+          const funnelPromise = runSceneVisualDiscovery(
+            { renderId: String(videoId ?? "-"), sceneIndex: scene.index },
+            () => buildRetrievalFunnel({
             sceneIndex: scene.index,
             sceneText: scene.text,
             primaryQuery: anchoredQueries.primaryQuery,
@@ -44570,7 +44734,8 @@ async function _runVideoPipelineInner(
           }).catch(err => {
             console.warn(`[Funnel P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
-          });
+          })
+          );
           prefetchFunnels.set(scene.index, funnelPromise);
         }
         console.log(`[Funnel P4] Hybrid retrieval prefetch started for ${scenes.length} scene(s) during TTS`);
@@ -44585,7 +44750,9 @@ async function _runVideoPipelineInner(
             videoTitle: topicContext || videoTitle,
             primaryPerson,
           });
-          const poolPromise = buildSceneCandidatePool({
+          const poolPromise = runSceneVisualDiscovery(
+            { renderId: String(videoId ?? "-"), sceneIndex: scene.index },
+            () => buildSceneCandidatePool({
             sceneIndex: scene.index,
             sceneText: scene.text,
             primaryQuery: anchoredPoolQueries.primaryQuery,
@@ -44597,7 +44764,8 @@ async function _runVideoPipelineInner(
           }).catch(err => {
             console.warn(`[Pool P4] Scene ${scene.index} prefetch failed:`, (err as Error).message?.slice(0, 80));
             return Promise.reject(err);
-          });
+          })
+          );
           prefetchPools.set(scene.index, poolPromise);
         }
         console.log(`[Pool P4] Prefetch started for ${scenes.length} scene(s) during TTS`);
@@ -50341,6 +50509,14 @@ async function _runVideoPipelineInner(
     // still-in-progress cached storyboards/search plans too.
     clearStoryboardCacheForVideo(videoId);
     clearVisualSearchPlanCacheForVideo(videoId);
+    /**
+     * What each scene's discovery proved about its tiers, released with the render that proved it.
+     *
+     * Per-video for the same reason as the two caches above: a worker process outlives a render and
+     * may be running another one right now. Keyed on the render id, so this drops exactly this
+     * render's scenes and no one else's.
+     */
+    forgetSceneDiscovery(String(videoId ?? "-"));
     try {
       /**
        * RONDE 97 §3 — the preparation cache is keyed on this directory, so it goes with it.

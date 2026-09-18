@@ -2172,7 +2172,7 @@ export function searchGateDecision(
   const tierVerdict = admitProviderForTier(provider);
   if (!tierVerdict.admitted) {
     searchGateAudit.record("queriesBlocked", provider, ticket.route);
-    console.warn(audit("BLOCKED", "TIER_OUT_OF_ORDER" as never));
+    console.warn(audit("BLOCKED", tierVerdict.reason as never));
     return { admitted: false, text };
   }
 
