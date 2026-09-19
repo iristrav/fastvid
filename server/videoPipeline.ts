@@ -686,6 +686,7 @@ import {
   beatClipSeverity,
   barrierCoverage,
   ensureVerdictBeforeCompose,
+  nothingToJudgeAgainst,
   maxComposePhaseJudgements,
   relevanceVerdictForRenderedAsset,
   withComposeJudgeScope,
@@ -693,6 +694,7 @@ import {
   beatRelevanceBeatKey,
   beatRelevanceBeatKeyPrefix,
   type ComposeJudgeScope,
+  type ComposeJudgeOutcome,
   type BeatRelevanceLedger,
   type BeatRelevanceDecision,
   type BeatRelevanceParams,
@@ -20536,6 +20538,21 @@ export interface VisualDedupState {
    */
   backfillRefusedNeverLookedAt: number;
   /**
+   * RENDER 592-B — HOW OFTEN THE BACKFILL'S APPROVAL REQUIREMENT WAS SUSPENDED, AND ON WHICH
+   * ANSWER, keyed by the `ComposeJudgeOutcome` that caused it.
+   *
+   * The counterpart of the two numbers above: those count pictures the rule turned away, this
+   * counts the ones it stopped turning away because no approval could be earned for them. Kept per
+   * outcome rather than as one total, because `no_narration` (a slot with no sentence behind it)
+   * and `no_scope` (the render judging outside its own compose scope) ask for different responses,
+   * and a single number would make them one problem.
+   *
+   * A suspension is not an approval. `formatSuspendedVisionAdoptions` reports the adoption guard's
+   * own door; this is the backfill's, and both exist so the exemption has a size instead of a
+   * footnote.
+   */
+  backfillApprovalSuspended: Map<ComposeJudgeOutcome, number>;
+  /**
    * PICTURES THAT ENTERED THE FILM WITHOUT A JUDGEMENT, BECAUSE THERE WAS NOTHING TO JUDGE THEM
    * AGAINST — counted per route, so the exemption has a size instead of a footnote.
    *
@@ -21224,6 +21241,7 @@ export function createVisualDedupState(
     sceneRescueColorFallbackCount: 0,
     backfillRefusedWithoutApproval: 0,
     backfillRefusedNeverLookedAt: 0,
+    backfillApprovalSuspended: new Map(),
     adoptedWithSuspendedVision: new Map(),
     stockLadderRunsByBeat: new Map(),
     stockQueriesAsked: new Set(),
@@ -21896,7 +21914,8 @@ function isAmbiguousRocketQuery(q: string): boolean {
   return !isMuskApprovedRocketQuery(q);
 }
 
-function isPipelineFallbackClip(filePath: string): boolean {
+/** Exported so the export gate's own rule can be asserted rather than restated in a test. */
+export function isPipelineFallbackClip(filePath: string): boolean {
   return /_fallback\.mp4$/i.test(path.basename(filePath));
 }
 
@@ -32972,7 +32991,12 @@ function beatVisualContext(
  * cannot judge, and pretending otherwise would empty montages on the routes that build their own
  * files. That gap is counted rather than assumed away — see barrierCoverage.
  */
-async function beatClipRefusedByRelevanceGate(
+/**
+ * Exported for the regression suite. RENDER 592-B's defect lives in this function's own branching
+ * — whether it reads the last look's outcome — and a test that cannot call it can only assert
+ * things about the source text, which is how the previous round's mutations survived.
+ */
+export async function beatClipRefusedByRelevanceGate(
   dedup: VisualDedupState,
   clipPath: string,
   sceneIndex: number,
@@ -32994,8 +33018,18 @@ async function beatClipRefusedByRelevanceGate(
    * Already-judged clips cost nothing, and every failure path leaves the barrier's answer exactly
    * as it was — see ensureVerdictBeforeCompose.
    */
+  /**
+   * RENDER 592-B — AND THE ANSWER IS KEPT THIS TIME.
+   *
+   * This call's return value was discarded. `ensureVerdictBeforeCompose` has seven outcomes and
+   * three of them say the look could not happen because there is no sentence behind the slot; the
+   * barrier below then refused the clip for the absence of the very look it had just been told
+   * about. Scene 2 of render 592-B did that forty-six times over four files, filled its beats with
+   * text overlays, and died on the export gate that rejects them. See `nothingToJudgeAgainst`.
+   */
+  let lastLook: ComposeJudgeOutcome | undefined;
   if (beatIndex != null) {
-    await ensureVerdictBeforeCompose({
+    const ensured = await ensureVerdictBeforeCompose({
       clipPath,
       contentKey: clipContentKey(clipPath),
       sceneIndex,
@@ -33012,6 +33046,7 @@ async function beatClipRefusedByRelevanceGate(
        */
       finalSay: true,
     });
+    lastLook = ensured.outcome;
   }
   const contentKey = clipContentKey(clipPath);
   /**
@@ -33039,6 +33074,105 @@ async function beatClipRefusedByRelevanceGate(
     demand
   );
   if (barrier.allow) return false;
+  /**
+   * RENDER 592-B — A DEMAND NOTHING CAN MEET IS NOT A STANDARD, AND THIS IS THE SECOND PLACE IT
+   * HAD TO BE SAID.
+   *
+   * ── What scene 2 did ────────────────────────────────────────────────────────────────────────
+   *
+   *     [BeatRelevance] s2b0: refusing to push scene_2_slot0_guaranteed.mp4 —
+   *         backfill needs an approval; nobody looked at this clip for s2b0
+   *     …forty-six times, over four files, for one sentence.
+   *
+   * Then `Scene 2 slot 0/100/200/300: text-overlay fallback OK`, and the export gate — which
+   * rejects exactly those, by `isPipelineFallbackClip` — ended the render on
+   * `4 zinnen maar 0 voice/script-matchende clips`.
+   *
+   * ── Why it could not recover ────────────────────────────────────────────────────────────────
+   *
+   * `adoptionGuardRefusesPush` has held the answer since RONDE 215: when the last look reports
+   * `no_scope`, `beat_unknown` or `no_narration` there is no sentence behind the slot, so no amount
+   * of asking can produce a verdict, and demanding one empties the film instead of raising the bar.
+   * This route made the same decision from the same information and did not apply that policy —
+   * because it threw the information away. One `await` without an assignment, and the whole of it.
+   *
+   * ── What is suspended, and what is not ──────────────────────────────────────────────────────
+   *
+   * ONLY the approval requirement, and only on those three outcomes. The barrier is asked again
+   * under the demand every other route uses, so a `does_not_fit` nobody reprieved still refuses
+   * here exactly as it did before — `no verdict` becomes `no approval required`, never `approved`.
+   * The picture then faces every later gate unchanged, the beat may not claim an approved picture,
+   * and the export gate still counts a pipeline fallback as unusable.
+   */
+  const approvalRefusal =
+    demand === "approval" && barrier.reason.startsWith("backfill needs an approval");
+  if (approvalRefusal && beatIndex != null && lastLook && nothingToJudgeAgainst(lastLook)) {
+    const relaxed = composeBarrierAllows(
+      dedup.beatRelevance,
+      clipPath,
+      contentKey,
+      { sceneIndex, beatIndex },
+      "no_refusal"
+    );
+    if (relaxed.allow) {
+      const seen = dedup.backfillApprovalSuspended.get(lastLook) ?? 0;
+      dedup.backfillApprovalSuspended.set(lastLook, seen + 1);
+      /**
+       * Counted every time, said once. Render 592-B printed its refusal forty-six times for one
+       * beat; an exemption that repeats itself that often is a transcript, not a report. Keyed the
+       * same way `adoptionGuardRefusesPush` keys its own repeats.
+       */
+      const repeats = noteRepeatedRefusal(
+        dedup.clipRejectAudit,
+        sceneIndex,
+        beatIndex,
+        contentKey || path.basename(clipPath),
+        `BACKFILL_APPROVAL_SUSPENDED:${lastLook}`
+      );
+      if (repeats === 0) {
+        console.warn(
+          `[BeatRelevance] s${sceneIndex}b${beatIndex}: backfill approval requirement suspended: ` +
+            `reason=${lastLook} file=${path.basename(clipPath)} — there is no narration to judge ` +
+            `this picture against, so no approval can be earned for it; the picture is NOT approved ` +
+            `and this beat may not claim one`
+        );
+      }
+      return false;
+    }
+    /** The relaxed demand refuses too, so this was a real editorial no. It falls through. */
+  }
+  /**
+   * AND WHEN THE LOOK FAILED FOR A REASON THAT IS NOT "THERE WAS NOTHING TO LOOK AT".
+   *
+   * `budget_spent`, or an `already_judged` that resolves to a recorded non-verdict, both mean the
+   * render could not obtain a verdict it was able to ask for. That is a fault in the render, not a
+   * judgement on the picture, and the refusal below is still correct — but it must not read as an
+   * editorial one. Said once per beat and clip, beside the refusal rather than instead of it.
+   */
+  if (
+    approvalRefusal &&
+    beatIndex != null &&
+    lastLook &&
+    !nothingToJudgeAgainst(lastLook) &&
+    lastLook !== "judged" &&
+    lastLook !== "placeholder" &&
+    barrier.reason.includes("nobody looked at this clip")
+  ) {
+    const repeats = noteRepeatedRefusal(
+      dedup.clipRejectAudit,
+      sceneIndex,
+      beatIndex,
+      contentKey || path.basename(clipPath),
+      `BACKFILL_VERDICT_UNAVAILABLE:${lastLook}`
+    );
+    if (repeats === 0) {
+      console.error(
+        `[BeatRelevance] s${sceneIndex}b${beatIndex}: backfill verdict unavailable: ` +
+          `reason=${lastLook} file=${path.basename(clipPath)} — the last look was asked for and did ` +
+          `not produce a verdict; this refusal is the render failing to judge, not the editor refusing`
+      );
+    }
+  }
   /** Only the refusals this rule actually caused — a `does_not_fit` would have been refused anyway. */
   if (demand === "approval" && barrier.reason.startsWith("backfill needs an approval")) {
     dedup.backfillRefusedWithoutApproval += 1;
@@ -33190,7 +33324,12 @@ function tracePushOutcome(
  * A refusal here is a real terminal outcome: the clip never reaches `clips[]`, and the lineage
  * records DROPPED_AT_PUSH with the guard's own reason rather than the clip vanishing.
  */
-async function adoptionGuardRefusesPush(
+/**
+ * Exported for the regression suite. RENDER 592-B: the claim that this guard suspends its vision
+ * requirement on exactly three outcomes was asserted by reading its source text for three string
+ * literals, which a mutation can leave intact while making them irrelevant. Asked of the function.
+ */
+export async function adoptionGuardRefusesPush(
   dedup: VisualDedupState,
   clipPath: string,
   sceneIndex: number,
@@ -33250,11 +33389,12 @@ async function adoptionGuardRefusesPush(
       /** The picture is about to be used, so it is judged — see `BeatRelevanceParams.finalSay`. */
       finalSay: true,
     });
-    if (
-      ensured.outcome === "no_scope" ||
-      ensured.outcome === "beat_unknown" ||
-      ensured.outcome === "no_narration"
-    ) {
+    /**
+     * RENDER 592-B: this triple used to be spelled out here and nowhere else, which is how the
+     * push/backfill route came to make the same decision without it. `nothingToJudgeAgainst` is
+     * the same three outcomes with the same meaning, read by both.
+     */
+    if (nothingToJudgeAgainst(ensured.outcome)) {
       askWasPossible = false;
       console.warn(
         `[AdoptionGuard] s${sceneIndex}b${beatIndex}: nothing to judge against ` +
@@ -33393,6 +33533,25 @@ async function adoptionGuardRefusesPush(
  * asserting — that a clean render says so in words rather than by staying quiet — is a property of
  * the sentence, not of a pipeline run.
  */
+/**
+ * The backfill's own suspensions, per outcome, as the tail of the `[BackfillApproval]` line.
+ *
+ * Empty string when nothing was suspended, so a render that never needed the exemption says
+ * nothing rather than printing a row of zeroes. Exported for the same reason its sibling above is:
+ * the claim worth asserting — that a suspension is never silent — is a property of this sentence.
+ */
+export function formatBackfillApprovalSuspensions(
+  byOutcome: ReadonlyMap<ComposeJudgeOutcome, number>
+): string {
+  const rows = [...byOutcome.entries()].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (rows.length === 0) return "";
+  const total = rows.reduce((sum, [, n]) => sum + n, 0);
+  return (
+    ` · approvalSuspended=${total} (${rows.map(([o, n]) => `${o}=${n}`).join(" ")}) — ` +
+    `no narration to judge those against, so no approval could be earned; they are not approved`
+  );
+}
+
 export function formatSuspendedVisionAdoptions(byRoute: ReadonlyMap<string, number>): string {
   const rows = [...byRoute.entries()].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
   const total = rows.reduce((sum, [, n]) => sum + n, 0);
@@ -48432,7 +48591,13 @@ async function _runVideoPipelineInner(
             `picture(s) the backfill would have used without an approval for the beat they would fill` +
             (visualDedup.backfillRefusedNeverLookedAt > 0
               ? ` — the neverLookedAt half is a spent look budget, not an editorial refusal`
-              : "")
+              : "") +
+            /**
+             * RENDER 592-B: and the other side of the same rule — where the requirement was
+             * suspended because no approval could be earned. Printed on the same line as the
+             * refusals it belongs beside, never in a report of its own that nobody joins.
+             */
+            formatBackfillApprovalSuspensions(visualDedup.backfillApprovalSuspended)
         )
       );
       /**

@@ -1366,6 +1366,35 @@ export type ComposeJudgeOutcome =
   | "budget_spent"
   | "judged";
 
+/**
+ * THE THREE OUTCOMES THAT MEAN "THERE WAS NOTHING TO ASK AGAINST" — written down once.
+ *
+ * ── Why this is a function and not three literals at each call site ──────────────────────────
+ *
+ * `adoptionGuardRefusesPush` has carried this triple inline since RONDE 215, with the reasoning
+ * beside it: no scope, no beat and no narration each mean there is no sentence behind the slot, so
+ * no amount of asking can produce a verdict, and demanding one "does not raise the standard, it
+ * empties the film". That reasoning is right and it is unchanged here.
+ *
+ * What it was not, until now, is SHARED. `beatClipRefusedByRelevanceGate` — the push/backfill route
+ * — called `ensureVerdictBeforeCompose` and discarded its answer, so the policy existed at one of
+ * the two places the same decision is made and not at the other. Render 592-B is what that cost:
+ * scene 2's backfill refused four files forty-six times for want of an approval that, by this very
+ * policy, could not be earned, and the scene ended on text overlays the export gate then rejected.
+ *
+ * One predicate, both readers. A future outcome added to `ComposeJudgeOutcome` has to be classified
+ * here rather than in two places that can disagree.
+ *
+ * ── What this does NOT say ──────────────────────────────────────────────────────────────────
+ *
+ * Nothing about whether the picture is any good. "No verdict was obtainable" is not "the editor
+ * approved it": a caller that suspends its approval requirement on this answer still has every
+ * other gate standing over it, and a `does_not_fit` on record is still a refusal.
+ */
+export function nothingToJudgeAgainst(outcome: ComposeJudgeOutcome): boolean {
+  return outcome === "no_scope" || outcome === "beat_unknown" || outcome === "no_narration";
+}
+
 export async function ensureVerdictBeforeCompose(params: {
   clipPath: string;
   contentKey: string;

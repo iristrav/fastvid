@@ -38,6 +38,11 @@
  *                             not raise the standard, it empties the film.
  */
 import { describe, expect, it } from "vitest";
+
+import {
+  nothingToJudgeAgainst,
+  type ComposeJudgeOutcome,
+} from "./beatVisualRelevance";
 import fs from "fs";
 import path from "path";
 
@@ -100,17 +105,45 @@ describe("R215 §1 — the guard asks for the evidence it refuses adoptions over
 describe("R215 §2 — 'nobody tried' and 'nothing to try against' are not the same answer", () => {
   const guard = bodyOf("adoptionGuardRefusesPush");
 
+  /**
+   * RENDER 592-B — THE SAME CLAIM, ASKED OF THE CODE INSTEAD OF THE TEXT.
+   *
+   * This read the guard's source for the three literals. That was the whole check, and it had a
+   * blind spot the size of the defect 592-B cost: the literals lived HERE and nowhere else, so a
+   * second route could make the same decision without them and this test would still pass. It did.
+   * `beatClipRefusedByRelevanceGate` refused four files forty-six times for an approval that by
+   * this very rule could not be earned, and scene 2 ended on text overlays the export gate rejects.
+   *
+   * The policy now lives in `nothingToJudgeAgainst`, which both routes consult. Neither half of the
+   * original claim is dropped — the three that suspend and the verdicts that must never suspend are
+   * both still asserted — and both are now asked of the function that decides rather than of the
+   * characters around it. The structural half below keeps the guard tied to that function, so a
+   * route that stops consulting it still fails here.
+   */
   it("only the three outcomes that mean NO NARRATION EXISTS suspend the requirement", () => {
     const at = guard.indexOf("askWasPossible = false;\n      console.warn");
     expect(at, "the suspension is not conditional on the outcome any more").toBeGreaterThan(0);
+
+    for (const outcome of ["no_scope", "beat_unknown", "no_narration"] as ComposeJudgeOutcome[]) {
+      expect(nothingToJudgeAgainst(outcome), `${outcome} no longer suspends`).toBe(true);
+    }
+    /** An answer the render actually obtained, or could still obtain, must never suspend it. */
+    for (const outcome of [
+      "judged",
+      "already_judged",
+      "budget_spent",
+      "placeholder",
+    ] as ComposeJudgeOutcome[]) {
+      expect(
+        nothingToJudgeAgainst(outcome),
+        `${outcome} must never suspend the requirement`
+      ).toBe(false);
+    }
+    /** And the guard must still take its answer from that one predicate. */
     const test = guard.slice(guard.indexOf("const ensured = await"), at);
-    for (const outcome of ["no_scope", "beat_unknown", "no_narration"]) {
-      expect(test, `${outcome} no longer suspends`).toContain(`"${outcome}"`);
-    }
-    // A verdict the model actually produced must NOT appear in that list.
-    for (const verdict of ["already_judged", "does_not_fit", "unknown"]) {
-      expect(test, `${verdict} must never suspend the requirement`).not.toContain(`"${verdict}"`);
-    }
+    expect(test, "the guard decides the suspension on something of its own again").toContain(
+      "nothingToJudgeAgainst(ensured.outcome)"
+    );
   });
 
   it("A MISSING BEAT INDEX IS NOT AN ANSWER EITHER", () => {
