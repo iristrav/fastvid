@@ -48,6 +48,7 @@ import {
   beginBeatSourcing,
   currentBeatLadder,
   declineTier,
+  declineTiersNotServedBy,
   forgetRenderSourcing,
   rememberedLadderFor,
   resumeBeatSourcing,
@@ -485,6 +486,96 @@ describe("render 592 — what the first production render caught", () => {
     expect(body).toContain('declineTier("YOUTUBE", outcome)');
     /** Never for an outcome that leaves the turn open — the beat may still get a real turn. */
     expect(body).toContain("!YOUTUBE_OUTCOME_LEAVES_TURN_OPEN.has(outcome) && !clip");
+  });
+});
+
+/* ═════════════════ render 592-B: a route cannot be asked for what it lacks ═════════════════ */
+
+describe("render 592-B — a tier no route can serve must not block the ones below it", () => {
+  /**
+   * The defect, in one sentence: `HISTORICAL_SOURCE_TIER_ORDER` has nine members, one of tier 1 and
+   * eight of tier 3, and NO tier-2 member — so the cascade could never attempt the own archive, and
+   * every one of its tier-3 members was refused for skipping it. Beats s2b4 and s2b5 ended with
+   * twenty-four refusals each and `providers=0`: two sentences that asked nobody anything.
+   */
+  it("the historical cascade genuinely has no tier-2 member — this is why the rule was unsatisfiable", () => {
+    const at2 = PIPELINE.indexOf("export const HISTORICAL_SOURCE_TIER_ORDER = [");
+    const members = [...PIPELINE.slice(at2, PIPELINE.indexOf("] as const;", at2)).matchAll(/"([a-z_]+)"/g)]
+      .map((m) => m[1]!);
+    expect(members.length).toBe(9);
+    expect(members.some((m) => providerTier(m) === "OWN_ARCHIVE"), "add an archive member and this test should be revisited").toBe(false);
+    expect(members.some((m) => providerTier(m) === "OPEN_SOURCES")).toBe(true);
+  });
+
+  it("a route declares the tiers it cannot serve, and the ones below it then run", async () => {
+    await resumeBeatSourcing(at(), async () => {
+      /** Before: tier 3 is refused for skipping tiers 1 and 2. */
+      expect(admitProviderForTier("internet_archive").admitted).toBe(false);
+
+      declineTiersNotServedBy(["youtube_cc", "internet_archive", "wikimedia", "nasa"], "historical_cascade");
+
+      const ladder = currentBeatLadder()!;
+      expect(ladder.declined.get("OWN_ARCHIVE")).toBe("NOT_SERVED_BY:historical_cascade");
+      expect(ladder.declined.get("STOCK")).toBe("NOT_SERVED_BY:historical_cascade");
+      /** Tiers the route DOES serve are untouched — they are for the walk to attempt. */
+      expect(ladder.declined.has("YOUTUBE")).toBe(false);
+      expect(ladder.declined.has("OPEN_SOURCES")).toBe(false);
+
+      /** After: its own members run. */
+      expect(admitProviderForTier("youtube_cc").admitted).toBe(true);
+      expect(admitProviderForTier("internet_archive").admitted).toBe(true);
+      expect(admitProviderForTier("wikimedia").admitted).toBe(true);
+    });
+  });
+
+  /**
+   * The declaration unlocks nothing on its own. A tier the route DOES serve still has to be
+   * attempted, and stock still waits for everything above it — which is the whole point of the
+   * ladder and the thing a careless fix here would destroy.
+   */
+  it("and it unlocks nothing on its own — the route's own tiers must still be walked in order", async () => {
+    await resumeBeatSourcing(at(1), async () => {
+      declineTiersNotServedBy(["youtube_cc", "internet_archive", "wikimedia"], "historical_cascade");
+
+      /** Stock is refused: tier 1 is served by this route and has not been asked yet. */
+      expect(admitProviderForTier("pexels").admitted, "stock ran before tier 1").toBe(false);
+      /** And so is tier 3, for the same reason — the decline of tier 2 did not excuse tier 1. */
+      expect(admitProviderForTier("wikimedia").admitted, "tier 3 ran before tier 1").toBe(false);
+
+      /** Walk the route's own first tier, and the rest follows in order. */
+      expect(admitProviderForTier("youtube_cc").admitted).toBe(true);
+      expect(admitProviderForTier("wikimedia").admitted).toBe(true);
+      /**
+       * Stock is admitted only now, and note what the decline did NOT do: `NOT_SERVED_BY` says this
+       * route has no stock member, not that stock is unavailable. A later stock fallback is a
+       * different route and is not barred by it.
+       */
+      expect(admitProviderForTier("pexels").admitted).toBe(true);
+    });
+  });
+
+  it("the production cascade declares itself before it walks", () => {
+    const at2 = PIPELINE.indexOf('declineTiersNotServedBy(HISTORICAL_SOURCE_TIER_ORDER, "historical_cascade")');
+    expect(at2, "the cascade no longer declares what it cannot serve").toBeGreaterThan(-1);
+    const walk = PIPELINE.indexOf("for (const tier of HISTORICAL_SOURCE_TIER_ORDER) {", at2);
+    expect(walk, "the walk moved away from the declaration").toBeGreaterThan(at2);
+    expect(walk - at2, "the declaration must sit immediately before the walk").toBeLessThan(1600);
+  });
+
+  it("the declaration is computed from the member list, not written down a second time", () => {
+    const at2 = CENTRAL.indexOf("export function declineTiersNotServedBy");
+    const body = CENTRAL.slice(at2, CENTRAL.indexOf("\n}\n", at2));
+    expect(body).toContain("providerTier(p)");
+    expect(body, "a hardcoded tier name is a second copy of the route's contents").not.toMatch(
+      /"(YOUTUBE|OWN_ARCHIVE|OPEN_SOURCES|STOCK)"/
+    );
+  });
+
+  it("a beat whose route serves every tier declines nothing", async () => {
+    await resumeBeatSourcing(at(2), async () => {
+      declineTiersNotServedBy(["youtube_cc", "archive", "wikimedia", "pexels"], "everything");
+      expect(currentBeatLadder()?.declined.size).toBe(0);
+    });
   });
 });
 

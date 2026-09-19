@@ -163,6 +163,7 @@ import {
   runCentralVisualSourcing,
   beginBeatSourcing,
   resumeBeatSourcing,
+  declineTiersNotServedBy,
   runSceneVisualDiscovery,
   sceneDiscoverySeed,
   forgetRenderSourcing,
@@ -29729,6 +29730,26 @@ async function fetchHistoricalBeatVideoInner(
   };
   const POOL_RAW_CANDIDATE_TARGET = 3;
   const POOL_MAX = 5;
+
+  /**
+   * WHAT THIS CASCADE CANNOT SERVE, SAID BEFORE IT WALKS.
+   *
+   * ── Render 592-B: two beats that asked no provider at all ───────────────────────────────────
+   *
+   * `HISTORICAL_SOURCE_TIER_ORDER` holds nine providers: one of tier 1 and eight of tier 3. Not a
+   * single tier-2 member. So this cascade could never attempt the operator's own archive, and the
+   * ladder — which refuses a tier while a higher one is neither attempted nor declined — refused
+   * every one of its own tier-3 members for skipping a tier 2 that this route has no way to ask.
+   *
+   * Beats s2b4 and s2b5 of render 592-B are the receipt: twenty-four TIER_OUT_OF_ORDER refusals
+   * each and `providers=0`. Two sentences whose route asked nothing of anybody.
+   *
+   * The declaration is a fact about the ROUTE, computed from its own member list rather than
+   * written down a second time: add an archive provider to the cascade and the decline disappears
+   * by itself. It cannot let stock through early — a route whose members stop at tier 3 unlocks
+   * tier 3, and tier 4 still waits on whatever tier 3 does.
+   */
+  declineTiersNotServedBy(HISTORICAL_SOURCE_TIER_ORDER, "historical_cascade");
 
   let stopPooling = false;
   for (const tier of HISTORICAL_SOURCE_TIER_ORDER) {

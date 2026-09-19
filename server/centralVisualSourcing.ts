@@ -466,6 +466,40 @@ export function declineTier(tier: SourcingTier, reason: string): void {
 }
 
 /**
+ * Decline every tier that has NO member among the providers a route is about to walk.
+ *
+ * ── RENDER 592-B: a route cannot be asked for what it does not contain ──────────────────────
+ *
+ * `tierMayRun` refuses a tier while a higher one is neither ATTEMPTED nor DECLINED, and that needs
+ * every tier to be able to reach one of those two states. A ROUTE can make that impossible:
+ * `HISTORICAL_SOURCE_TIER_ORDER` holds nine providers, one of tier 1 and eight of tier 3, and not
+ * a single tier-2 member. So the historical cascade could never attempt the own archive, tier 2
+ * sat on NOT_REACHED, and every one of its own tier-3 members was refused for skipping it.
+ *
+ * Measured on beats s2b4 and s2b5 of render 592-B: twenty-four refusals each and `providers=0`.
+ * Those two beats asked no provider at all. I fixed this shape for tier 1 one round earlier by
+ * teaching the YouTube turn to close its own tier, and fixed the instance rather than the class.
+ *
+ * This is the class. A route declares what it can serve; the tiers it cannot serve are declined
+ * with the route's name, which is a fact about the route and not a guess about the material. The
+ * reason is carried so a log reader can tell "this route has no archive" from "the archive was
+ * empty" — two findings with completely different fixes.
+ *
+ * Declining a tier here never admits STOCK earlier than it should: a route whose members stop at
+ * tier 3 unlocks tier 3, and tier 4 still waits for whatever tier 3 does.
+ */
+export function declineTiersNotServedBy(providers: readonly string[], route: string): void {
+  const served = new Set<SourcingTier>();
+  for (const p of providers) {
+    const tier = providerTier(p);
+    if (tier) served.add(tier);
+  }
+  for (const tier of SOURCING_TIERS) {
+    if (!served.has(tier)) declineTier(tier, `NOT_SERVED_BY:${route}`);
+  }
+}
+
+/**
  * The one reason a tier may be declined for running out of clock rather than out of material.
  *
  * Kept as a constant so the budget path cannot quietly reach for a reason that reads like a
