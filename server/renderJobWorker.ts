@@ -82,7 +82,12 @@ import {
   type PostRenderSpotCheckResult,
 } from "./postRenderSpotCheck";
 import { resolveLocalStorageFilePath } from "./storageLocal";
-import { downloadToFileStreaming } from "./videoPipeline";
+import { downloadToFileStreaming, isPipelineFallbackClip } from "./videoPipeline";
+import {
+  deliveryGate,
+  formatDeliveryBlock,
+  TIMELINE_ARCHIVE_REFERENCE,
+} from "./deliveryGate";
 import type { ProjectTimeline } from "./projectTimeline";
 import { audioTrackOf, videoTrack } from "./projectTimeline";
 
@@ -781,6 +786,95 @@ export async function runRenderJob(params: {
           console.warn(`[RenderJob] video=${job.videoId} job=${job.id} contentCheck: ${w}`);
         }
       }
+    }
+
+    /**
+     * 6d. THE DELIVERY GATE — the last thing asked before this file becomes a video.
+     *
+     * ── Why here, before the upload ─────────────────────────────────────────────────────────
+     *
+     * A file that may not be published should not be uploaded either. Blocking after the upload
+     * would leave an object in storage that nothing points at and that the next run would have to
+     * reason about.
+     *
+     * ── What it adds over the checks above, and what it does not repeat ─────────────────────
+     *
+     * `checkRenderedFile` is the container check and stays the authority on the file: exists,
+     * streams, size, duration against the TIMELINE. `spotCheckFinalVideo` describes the content and
+     * deliberately does not block. Neither has ever been able to answer the question this gate
+     * asks — can every picture in this film be produced again from FastVid's own archive, or does
+     * the render depend on a provider still being reachable? That question is about the TIMELINE
+     * and its assets, not about the bytes, and nothing was asking it.
+     *
+     * The facts are the ones already measured. Nothing is probed twice: `check` supplies the file,
+     * `rehydration` supplies what each clip resolved to and where from, and the voiceover length
+     * comes from the VOICE track the renderer just used. §12's "no second QC framework" is why
+     * this reads those three rather than opening ffprobe again.
+     */
+    const voiceEnd = audioTrackOf(timeline, "VOICE").reduce(
+      (max, c) => Math.max(max, c.end ?? 0),
+      0
+    );
+    const gate = deliveryGate({
+      videoId: job.videoId,
+      /** This worker renders the authoritative timeline; there is no other route through here. */
+      route: "cinematic_timeline",
+      cinematicRefusal: null,
+      timelineExists: true,
+      clips: videoTrack(timeline)
+        .filter((c) => !c.disabled)
+        .map((clip) => {
+          const local = rehydration.byClipId.get(clip.id) ?? null;
+          const result = rehydration.results.find((r) => r.clipId === clip.id)?.result;
+          /**
+           * "It came from our own storage" is read from the route that PRODUCED the bytes, never
+           * from the identity — the identity says what the rehydrator intended to do, and the
+           * provenance says what it did.
+           */
+          const fromArchive =
+            result?.status === "ok" && result.provenance.includes("archive");
+          return {
+            clipId: clip.id,
+            archiveAssetId: clip.source.archiveAssetId ?? null,
+            provider: clip.source.provider,
+            providerAssetId: clip.source.providerAssetId ?? null,
+            resolved: Boolean(local),
+            fromArchive,
+            /** One authority for "this depicts nothing" — the pipeline's own predicate. */
+            isPlaceholder: local ? isPipelineFallbackClip(local) : false,
+          };
+        }),
+      delivered: {
+        exists: check.fileExists,
+        readable: check.fileExists && check.sizeBytes > 0,
+        durationSec: check.durationSec,
+        hasVideoStream: check.hasVideo,
+        hasAudioStream: check.hasAudio,
+        sizeBytes: check.sizeBytes,
+      },
+      /** Null when this film has no narration — then there is nothing to align to. */
+      voiceoverSec: voiceEnd > 0 ? voiceEnd : null,
+    });
+    for (const line of gate.lines) {
+      if (gate.allow) console.log(line);
+      else console.error(`[RenderJob] job=${job.id} ${line}`);
+    }
+    /**
+     * §22 — one line per clip naming the archive asset the render actually used, so a production
+     * log can be read for the chain rather than inferred from its absence. Only on the pass path:
+     * a blocked delivery has already printed a line per failing clip and does not need both.
+     */
+    if (gate.allow) {
+      for (const clip of videoTrack(timeline).filter((c) => !c.disabled)) {
+        console.log(
+          `[RenderJob] ${TIMELINE_ARCHIVE_REFERENCE} video=${job.videoId} clip=${clip.id} ` +
+            `archiveAssetId=${clip.source.archiveAssetId ?? "none"} ` +
+            `provider=${clip.source.provider} ` +
+            `providerAssetId=${clip.source.providerAssetId ?? "none"}`
+        );
+      }
+    } else {
+      return await fail(RENDER_ERROR.RENDER_FAILED, formatDeliveryBlock(gate, job.videoId));
     }
 
     /* 7. upload to a key that belongs to this job alone */

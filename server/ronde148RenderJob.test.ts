@@ -149,11 +149,29 @@ afterAll(() => {
 
 /* ═══════════════════════ fixtures ═══════════════════════ */
 
+/**
+ * MEDIA ARCHIVE ROUND — a production clip now carries the archive handle it will have in life.
+ *
+ * These tests are about publishing, superseding and upload failure, not about archive policy, and
+ * their timelines were written before an external clip had a handle of FastVid's own. The delivery
+ * gate the render worker now runs refuses a production clip that depends on a provider still being
+ * reachable, so a fixture without one no longer describes a timeline this system would produce.
+ *
+ * `archiveAssetId` is added and nothing else changes: `provider` and `providerAssetId` stay exactly
+ * as they were, so every assertion about lineage, naming and the failure paths still reads the same
+ * facts. The one test that is ABOUT a clip with no route keeps its own source and is exempted
+ * there, on its own line, rather than by weakening this builder.
+ */
 function clip(i: number, url: string): TimelineVideoClip {
   return {
     id: `vc_${i}`,
     kind: "video",
-    source: { provider: "loc", providerAssetId: `item/${i}`, mediaUrl: url },
+    source: {
+      provider: "loc",
+      providerAssetId: `item/${i}`,
+      mediaUrl: url,
+      archiveAssetId: 59000 + i,
+    },
     timelineStart: i * 3,
     timelineEnd: (i + 1) * 3,
     motion: "none",

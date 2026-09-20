@@ -123,6 +123,8 @@ export function isFallbackDelivery(input: {
 /* ═══════════════════════ the gate ═══════════════════════ */
 
 export const DELIVERY_GATE_PASS = "DELIVERY_GATE_PASS";
+/** §22 — one line per clip, naming the archive asset the render actually used. */
+export const TIMELINE_ARCHIVE_REFERENCE = "TIMELINE_ARCHIVE_REFERENCE";
 export const DELIVERY_GATE_FAIL = "DELIVERY_GATE_FAIL";
 
 /**
