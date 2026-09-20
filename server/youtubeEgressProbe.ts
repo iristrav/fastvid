@@ -63,10 +63,35 @@ export function resetYoutubeEgressProbeCache(): void {
   inFlight = null;
 }
 
+/**
+ * HOW LONG THE ANSWER TOOK, BECAUSE THE NEXT DECISION DEPENDS ON IT AND NOBODY HAS MEASURED IT.
+ *
+ * The open question after the de1c88b audit is whether a BLOCKED service is slower to answer than
+ * a healthy one. If it is, and if it is slower than `YOUTUBE_EGRESS_PROBE_TIMEOUT_MS`, then the
+ * render-time probe returns null exactly when YouTube is blocking — and RONDE 258's latch, which
+ * exists for that case, never arms.
+ *
+ * That is a hypothesis. The honest response to a hypothesis is a measurement, not a larger
+ * timeout: raising the number would hide the question and cost every blocked beat three more
+ * seconds of the budget it has already overspent. So the duration is recorded and the timeout is
+ * untouched, and the next production log answers it.
+ *
+ * Nothing sensitive: a status code, the service's own one-word reason, and a duration. The bearer
+ * token is sent and never printed, here or anywhere.
+ */
+function noteProbeTiming(startedAt: number, status: number | "no_answer", reason?: string): void {
+  console.log(
+    `[YouTubeEgress] status=${status}` +
+      (reason ? ` reason=${reason}` : "") +
+      ` durationMs=${Date.now() - startedAt}`
+  );
+}
+
 async function probe(timeoutMs: number): Promise<YoutubeEgressVerdict> {
   const base = process.env.YOUTUBE_CC_DL_SERVICE?.trim().replace(/\/$/, "");
   if (!base) return null;
   const token = process.env.YOUTUBE_CC_DL_TOKEN?.trim();
+  const startedAt = Date.now();
   try {
     const res = await fetch(`${base}/health/egress`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -79,10 +104,15 @@ async function probe(timeoutMs: number): Promise<YoutubeEgressVerdict> {
      * discard the very verdict this call exists to fetch.
      */
     const body = (await res.json().catch(() => null)) as { ok?: boolean; reason?: string } | null;
-    if (typeof body?.ok !== "boolean") return null;
+    if (typeof body?.ok !== "boolean") {
+      noteProbeTiming(startedAt, res.status, "unreadable_body");
+      return null;
+    }
+    noteProbeTiming(startedAt, res.status, body.reason ?? (body.ok ? "reachable" : "blocked"));
     return { ok: body.ok, reason: body.reason ?? undefined };
   } catch {
     /** Could not ask. Nothing is claimed and nothing is remembered. */
+    noteProbeTiming(startedAt, "no_answer");
     return null;
   }
 }

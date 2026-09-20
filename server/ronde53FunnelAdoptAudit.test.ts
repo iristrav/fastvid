@@ -156,7 +156,19 @@ describe("RONDE 53 — both adoption routes are now covered", () => {
     const src = SRC();
     const idx = src.indexOf("if (poolClip) {\n          clip = poolClip;");
     expect(idx).toBeGreaterThan(-1);
-    expect(src.slice(idx, idx + 1400)).toContain("recordClipAdopt(");
+    /**
+     * Bounded by the block's own end rather than by a character count. The archive-first round put
+     * `storeExternalClipForTimeline` between the adoption and this call — the handle must exist
+     * before the clip is an adopted timeline asset — and a fixed 1400-character window then ended
+     * before `recordClipAdopt`, reporting a route that IS recorded as one that is not.
+     */
+    const block = src.slice(idx, src.indexOf("recordUse(", idx));
+    expect(block).toContain("recordClipAdopt(");
+    /** And the order the round established: archived first, then recorded as adopted. */
+    const storeAt = block.indexOf("await storeExternalClipForTimeline({");
+    const adoptAt = block.indexOf("recordClipAdopt(");
+    expect(storeAt).toBeGreaterThan(-1);
+    expect(adoptAt).toBeGreaterThan(storeAt);
   });
 
   it("downloadFunnelCandidate has exactly one caller, and that caller records", () => {

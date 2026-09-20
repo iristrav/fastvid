@@ -152,7 +152,11 @@ describe("RONDE 51 #2 — the pool path records its adoptions at all", () => {
     const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const idx = src.indexOf("if (poolClip) {\n          clip = poolClip;");
     expect(idx).toBeGreaterThan(-1);
-    const block = src.slice(idx, idx + 1400);
+    /**
+     * Bounded by the block's own end rather than by a character count — see the same note in
+     * ronde53FunnelAdoptAudit. The archive step now sits between the adoption and this call.
+     */
+    const block = src.slice(idx, src.indexOf("recordUse(", idx));
     expect(block).toContain("recordClipAdopt(");
     expect(block).toContain("dedup.clipAdoptAudit");
     // The source must come from the candidate, never be hardcoded to a placeholder label.

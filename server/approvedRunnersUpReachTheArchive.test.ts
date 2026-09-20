@@ -34,6 +34,8 @@ import { describe, expect, it } from "vitest";
 
 import { externalAssetIngestionEnabled } from "./sourcingPolicy";
 
+import { sourceMayEnterCuratedArchive } from "./videoPipeline";
+
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 /** The runner-up loop, bounded to itself so a match elsewhere cannot satisfy these. */
@@ -79,9 +81,18 @@ describe("stock footage is still never archive material", () => {
   });
 
   it("AND ON THE WINNER'S OWN PATH, exactly as RONDE 9 wrote it", () => {
-    /** The original guard is untouched; the new loop did not replace it. */
-    expect(PIPE).toContain('winningExternalCandidate.source !== "pexels" &&');
-    expect(PIPE).toContain('winningExternalCandidate.source !== "pixabay"');
+    /**
+     * ARCHIVE-FIRST ROUND — the inline source names became `sourceMayEnterCuratedArchive` when the
+     * scene-pool route needed the same rule. The guard is untouched in substance and now has two
+     * readers, so this asserts the RULE (by running it) and that the winner's path asks for it.
+     */
+    const at = PIPE.indexOf("const archiveEligible = !!(");
+    expect(at).toBeGreaterThan(-1);
+    expect(PIPE.slice(at, at + 900)).toContain(
+      "sourceMayEnterCuratedArchive(winningExternalCandidate.source)"
+    );
+    expect(sourceMayEnterCuratedArchive("pexels")).toBe(false);
+    expect(sourceMayEnterCuratedArchive("pixabay")).toBe(false);
   });
 
   it("THE INGESTION MODULE'S OWN REFUSAL IS ALSO STILL THERE — two independent guards", () => {
@@ -118,7 +129,7 @@ describe("the ingestion rule has a single writer", () => {
    */
   it("BOTH THE WINNER AND THE RUNNERS-UP GO THROUGH ONE METADATA WRITER", () => {
     expect((PIPE.match(/const archiveMetadataFor = \(/g) ?? []).length).toBe(1);
-    expect(PIPE).toContain("archiveMetadataFor(wec)");
+    expect(PIPE).toContain("archiveMetadataFor(winningExternalCandidate)");
     /** The runners-up keep their own best-effort helper, with its one call site. */
     expect((PIPE.match(/const queueArchiveIngestion = \(/g) ?? []).length).toBe(1);
     expect((PIPE.match(/queueArchiveIngestion\(/g) ?? []).length).toBe(2);
@@ -126,11 +137,28 @@ describe("the ingestion rule has a single writer", () => {
   });
 
   it("THE WINNER IS STORED AND AWAITED, so the timeline can reference an archive asset", () => {
+    /**
+     * ARCHIVE-FIRST ROUND — the store moved behind `storeExternalClipForTimeline` so the funnel,
+     * the scene-pool route and the two web-wide rescue routes share ONE persistence semantic.
+     * The claim is unchanged and tightened: the winner's clip is still passed, still awaited, and
+     * `storeForProduction` now has exactly one call site in the file rather than merely at least
+     * one — a second route cannot grow its own store without failing here.
+     */
     expect(PIPE, "the winner's archive handle is not obtained before the timeline is planned")
-      .toContain("await storeForProduction({");
-    const at = PIPE.indexOf("await storeForProduction({");
-    const call = PIPE.slice(at, at + 2000);
-    expect(call).toContain("localPath: funnelClip");
+      .toContain("await storeExternalClipForTimeline({");
+    /**
+     * Anchored on the FUNNEL's own guard: the shared wrapper now has four call sites, and the
+     * first one in the file is a web-wide rescue route. An unanchored search reads the wrong one.
+     */
+    const guard = PIPE.indexOf("if (archiveEligible && funnelClip && winningExternalCandidate) {");
+    expect(guard).toBeGreaterThan(-1);
+    const at = PIPE.indexOf("await storeExternalClipForTimeline({", guard);
+    expect(at).toBeGreaterThan(guard);
+    const call = PIPE.slice(at, at + 600);
+    expect(call).toContain("clipPath: funnelClip,");
+    expect(call).toContain('route: "funnel",');
+    expect((PIPE.match(/await storeForProduction\(\{/g) ?? []).length).toBe(1);
+    expect(PIPE).toContain("localPath: clipPath,");
     /** And the handle is CARRIED — the line whose absence caused the whole failure. */
     expect(PIPE).toContain("attachArchiveAssetToPath(");
   });
@@ -146,8 +174,9 @@ describe("the ingestion rule has a single writer", () => {
      * RONDE 9 again: those describe what is SAID, not what is SHOWN. Read at the single writer
      * both routes now use, so the rule is asserted once for both rather than once per route.
      */
-    const at = PIPE.indexOf("const archiveMetadataFor = (");
-    const body = PIPE.slice(at, PIPE.indexOf("\n        });", at));
+    const at = PIPE.indexOf("export function archiveMetadataForExternalClip(");
+    expect(at, "the single metadata writer is gone").toBeGreaterThan(-1);
+    const body = PIPE.slice(at, PIPE.indexOf("\n}", at));
     expect(body).toContain("tags: [],");
     expect(body).not.toContain("tags: beat.keywords");
   });

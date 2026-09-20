@@ -75,7 +75,13 @@ describe("R180 — the production selection passes a context", () => {
   it("records a use only where a candidate becomes the beat's clip", () => {
     const adoptAt = SRC.indexOf("clip = poolClip;");
     expect(adoptAt).toBeGreaterThan(-1);
-    const block = SRC.slice(adoptAt, adoptAt + 2000);
+    /**
+     * Bounded by the block's own end rather than by a character count. The archive-first round put
+     * `storeExternalClipForTimeline` between the adoption and this call — the archive handle has
+     * to exist before the clip is an adopted timeline asset — and a fixed 2000-character window
+     * then stopped short of `recordUse`, reporting a ledger write that happens as one that does not.
+     */
+    const block = SRC.slice(adoptAt, SRC.indexOf("const runnerUp = poolCandidates.find(", adoptAt));
     expect(block).toContain("recordUse(");
     expect(block).toContain("dedup.usageLedger");
     /** Identity, never the path — so two downloads of one source video collapse to one entry. */

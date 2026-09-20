@@ -3745,7 +3745,41 @@ export async function fetchBeatArchivalThenPexels(
     );
     if (isRealVideoClip(euroClip)) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: web-wide real video (Europeana) "${winner.query}"`);
-      void ingestExternalClipToArchive(euroClip!, {
+      /**
+       * AWAITED, BECAUSE THIS CLIP IS IN THE FILM — the same invariant as the funnel and the pool.
+       *
+       * It was `void ingestExternalClipToArchive(...)`, under a comment reading "never blocks the
+       * current video, which already has its clip". That reasoning is right for a runner-up and
+       * wrong here: the next line is `return euroClip`, so this IS the beat's picture. The assetId
+       * was computed at the only site that could produce one and thrown away, and the timeline got
+       * a provider identity with no handle of ours.
+       *
+       * The metadata below is UNCHANGED — this route's own provenance, passed through. Only the
+       * discarding stops.
+       */
+      await storeExternalClipForTimeline({
+        clipPath: euroClip!,
+        facts: {
+          /**
+           * The aggregated institution when Europeana named one, and Europeana itself when it did
+           * not. Naming the fetcher is not a guess; inventing an institution would be.
+           */
+          source: winner.sourcePlatform ?? "europeana",
+          /** This route has no stable provider asset id; the store then dedups by checksum alone. */
+          providerAssetId: null,
+          title: winner.title ?? winner.query,
+          mediaType: "video",
+          license: winner.license,
+          licenseUrl: winner.licenseUrl,
+          sourceCreator: winner.sourceCreator,
+          remoteUrl: winner.sourceUrl,
+        },
+        lineage: dedup.sourcingCache?.lineage,
+        workDir,
+        sceneIndex,
+        beatIndex: beat.index,
+        route: "rescue",
+        metadata: {
         title: winner.title ?? winner.query,
         tags: beat.keywords ?? [],
         sourceNote: `webwide:${winner.sourcePlatform}`,
@@ -3759,6 +3793,7 @@ export async function fetchBeatArchivalThenPexels(
         originalQuery: webWideQueries?.[0] ?? beat.text,
         matchedQuery: winner.query,
         topics: beat.keywords ?? [],
+        },
       });
       return euroClip;
     }
@@ -3777,10 +3812,33 @@ export async function fetchBeatArchivalThenPexels(
     );
     if (isRealVideoClip(webWideClip)) {
       console.log(`[Pipeline] Scene ${sceneIndex} beat ${beat.index}: web-wide discovery "${winner.matchedQuery}"`);
-      // Fire-and-forget, same pattern as the F3-26 funnel ingestion hook — never blocks the
-      // current video, which already has its clip. Ingestion also updates search memory
-      // internally (recordSearchMemoryForIngestion), so no separate memory call is needed here.
-      void ingestExternalClipToArchive(webWideClip!, {
+      /**
+       * Awaited for the same reason as the Europeana route above: `return webWideClip` is the next
+       * line, so this clip is the beat's picture and needs a handle of ours before the timeline
+       * names it. Ingestion still updates search memory internally
+       * (recordSearchMemoryForIngestion), so no separate memory call is needed here either.
+       *
+       * Metadata unchanged — only the discarding stops.
+       */
+      await storeExternalClipForTimeline({
+        clipPath: webWideClip!,
+        facts: {
+          /** Same rule as the Europeana route: the named platform, else the fetcher. */
+          source: winner.sourcePlatform ?? "openverse",
+          providerAssetId: null,
+          title: winner.title ?? winner.matchedQuery,
+          mediaType: "video",
+          license: winner.license,
+          licenseUrl: winner.licenseUrl,
+          sourceCreator: winner.sourceCreator,
+          remoteUrl: winner.sourceUrl,
+        },
+        lineage: dedup.sourcingCache?.lineage,
+        workDir,
+        sceneIndex,
+        beatIndex: beat.index,
+        route: "rescue",
+        metadata: {
         title: winner.title ?? winner.matchedQuery,
         tags: beat.keywords ?? [],
         sourceNote: `webwide:${winner.sourcePlatform}`,
@@ -3794,7 +3852,8 @@ export async function fetchBeatArchivalThenPexels(
         originalQuery: webWideQueries?.[0] ?? beat.text,
         matchedQuery: winner.matchedQuery,
         topics: beat.keywords ?? [],
-      }).catch(() => { /* best-effort, never blocks video production */ });
+        },
+      });
       return webWideClip;
     }
   }
@@ -39025,6 +39084,206 @@ async function ensureArchiveMontageVoiceCoverage(
   }
 }
 
+/**
+ * WHICH SOURCES MAY ENTER THE CURATED ARCHIVE — one predicate, because there are now two readers.
+ *
+ * RONDE 9 (render 519 + the admin screenshot) barred Pexels and Pixabay: a generic stock clip that
+ * happened to win a Hitler beat was ingested tagged "adolf hitler", and then outranked real
+ * archival footage on every later Hitler render. That is the self-poisoning loop, and this round
+ * does not touch it. `archive` is excluded for the opposite reason — those assets are already in
+ * the archive, so storing them again would be a copy of ourselves.
+ *
+ * It was an inline expression that only the funnel could read. The scene-pool route needed the
+ * same rule and had no way to ask for it, which is how the two routes came to disagree about
+ * whether a downloaded clip gets stored at all.
+ */
+export function sourceMayEnterCuratedArchive(source: string): boolean {
+  const s = source.trim().toLowerCase();
+  return s !== "pexels" && s !== "pixabay" && s !== "archive";
+}
+
+/**
+ * The candidate facts the archive needs, in the shape BOTH routes can produce.
+ *
+ * The funnel holds a `FunnelCandidate` wrapping a `PoolCandidate`; the scene-pool route holds the
+ * `PoolCandidate` itself. Rather than teach the archive about two candidate types, each route
+ * hands over this — the fields that were already being read, named once.
+ */
+export type ExternalClipArchiveFacts = {
+  source: string;
+  providerAssetId: string | null;
+  title: string;
+  mediaType: "video" | "image";
+  license?: string | null;
+  licenseUrl?: string | null;
+  durationSec?: number | null;
+  sourceCreator?: string | null;
+  remoteUrl?: string | null;
+};
+
+/**
+ * The provenance both archive routes send, built from ONE literal.
+ *
+ * This is RONDE 9's metadata, lifted out of the funnel branch unchanged — every field below is the
+ * one that was there, with its reasoning. It moved because a second route now needs it, and two
+ * copies of this literal is two chances for the same clip to be archived under different
+ * provenance depending on which route happened to win the beat.
+ */
+export function archiveMetadataForExternalClip(
+  c: ExternalClipArchiveFacts,
+  opts: { beatQuery: string; personContext: boolean; topics: string[] }
+): ProductionArchiveMetadata {
+  return {
+    title: c.title,
+    // RONDE 9: NEVER the narration keywords — those describe what is SAID, not what is SHOWN, and
+    // they poisoned the archive. Content-true tags come from Rekognition inside
+    // ingestExternalClipToArchive; the provider's own title above stays the searchable text.
+    tags: [],
+    // RONDE 9b: Rekognition person-tagging runs ONLY for person-locked renders.
+    personContext: opts.personContext,
+    sourceNote: `${c.source}:${c.providerAssetId ?? "unknown"}`,
+    mediaType: c.mediaType,
+    mimeType: c.mediaType === "video" ? "video/mp4" : "image/jpeg",
+    durationSec: c.durationSec ?? undefined,
+    // FASE 1: prefer the provider's own per-asset licence label over the generic per-source
+    // literal, which is only a fallback for sources that do not expose one.
+    licenseNote:
+      c.license ??
+      (c.source === "pexels" ? "Pexels license" :
+       c.source === "pixabay" ? "Pixabay license" :
+       c.source === "wikimedia" ? "CC BY-SA / CC0" :
+       c.source === "internet_archive" ? "Internet Archive — see licenseUrl" :
+       c.source === "europeana" ? "Europeana — see licenseUrl" :
+       c.source === "openverse" ? "Openverse — see licenseUrl" :
+       c.source === "nasa" ? "Public Domain (NASA / U.S. Government Work)" :
+       c.source === "nara" ? "Public Domain (NARA / U.S. Government Work)" :
+       c.source === "loc" ? "Library of Congress — see licenseUrl" : undefined),
+    sourceUrl: c.remoteUrl ?? undefined,
+    sourcePlatform: c.source,
+    sourceCreator: c.sourceCreator ?? undefined,
+    licenseUrl: c.licenseUrl ?? undefined,
+    originalQuery: opts.beatQuery,
+    // RONDE 28: the query that found it, never the asset's title. Search memory stores this as
+    // "the query that worked", and a title is not a query.
+    matchedQuery: opts.beatQuery,
+    topics: opts.topics,
+  };
+}
+
+/**
+ * THE ARCHIVE-FIRST INVARIANT, AT BOTH ENDS OF THE BEAT.
+ *
+ * ── What the audit proved ───────────────────────────────────────────────────────────────────
+ *
+ * `storeForProduction` is the only function that turns a downloaded external clip into an
+ * `archiveAssetId` attached to THIS render's lineage, and it had exactly one call site, behind
+ * `winningExternalCandidate` — which is set only for a funnel winner. The scene-pool route
+ * adopts through `recordClipAdopt` → `recordUse` → `formatSelection` and asked for no handle at
+ * all, so every clip it won reached the timeline carrying a provider id and nothing of ours.
+ *
+ * `assetRehydrator` tries `archiveAssetId` first and falls through to the provider without one.
+ * For YouTube — which lives in the scene pool since RONDE 175 — that means a later re-render has
+ * to reach YouTube again, and YouTube is measurably blocked at intervals.
+ *
+ * ── Why this is one function and not two ────────────────────────────────────────────────────
+ *
+ * The brief's requirement is that the funnel winner, the pool winner and any other clip entering
+ * the current timeline share ONE persistence semantic. Two call sites of `storeForProduction`
+ * with hand-written wrappers would be two semantics again by the next round. This is the wrapper,
+ * written once: store the file that is already on disk, and attach the handle to the ledger.
+ *
+ * ── What it deliberately does NOT do ────────────────────────────────────────────────────────
+ *
+ * It does not download. `storeForProduction` takes `localPath`, so the bytes the beat already
+ * fetched are the bytes that are stored — no second provider call.
+ *
+ * It does not re-archive. `storeForProduction` already answers that itself: it reports
+ * `reused: true` with `reusedBy: "checksum" | "provider_asset_id"`, and both lookups require
+ * `mediaStatus = READY`, so a half-written earlier attempt is not mistaken for a hit.
+ *
+ * It does not fail the render. A storage outage costs the render its archive handle and nothing
+ * else — the beat keeps the provider identity it already had, exactly as the funnel has behaved
+ * since the handle was first carried. What it must never do is fail SILENTLY, so the failure is
+ * named with its own code at the moment it happens.
+ */
+async function storeExternalClipForTimeline(params: {
+  clipPath: string;
+  facts: ExternalClipArchiveFacts;
+  metadata: ProductionArchiveMetadata;
+  lineage: VisualSourceLedger | undefined;
+  workDir: string;
+  sceneIndex: number;
+  beatIndex: number;
+  /** Which route won the beat, so the log says where a missing handle came from. */
+  route: "funnel" | "pool" | "rescue";
+}): Promise<ProductionArchiveOutcome> {
+  const { clipPath, facts, sceneIndex, beatIndex, route } = params;
+  const stored = await storeForProduction({
+    localPath: clipPath,
+    provider: facts.source,
+    providerAssetId: facts.providerAssetId,
+    metadata: params.metadata,
+    deps: productionArchiveDeps({
+      /**
+       * The pipeline's own downloader, so its timeout, its process-wide byte budget and its
+       * logging apply to the read-back unchanged — §16's "no second downloader".
+       */
+      download: async (url, dest) => {
+        await downloadToFileStreaming(url, dest, 120_000, "productionArchive:readBack");
+        return fs.existsSync(dest) && fs.statSync(dest).size > 0;
+      },
+    }),
+    ctx: {
+      projectId: getActiveVideoId() ?? null,
+      sceneIndex,
+      beatIndex,
+      provider: facts.source,
+      providerAssetId: facts.providerAssetId,
+    },
+    verifyDir: params.workDir,
+    expectVideo: facts.mediaType === "video",
+  }).catch((err): ProductionArchiveOutcome => ({
+    status: "failed",
+    code: "ARCHIVE_RECORD_FAILED",
+    message: (err as Error).message.slice(0, 200),
+    mediaStatus: "FAILED",
+  }));
+
+  /**
+   * THE HANDLE, CARRIED. This is the line the whole invariant is about.
+   *
+   * Without it the id is computed and discarded, and the only difference would be a prettier log.
+   * `attachArchiveAsset` fills and never overwrites, so a clip that already had a handle keeps
+   * the one it had.
+   */
+  if (stored.status === "stored") {
+    const attached = params.lineage?.attachArchiveAssetToPath(
+      clipPath, stored.archiveAssetId, clipContentKey(clipPath)
+    );
+    if (!attached) {
+      console.warn(
+        `[ProductionArchive] s${sceneIndex}b${beatIndex} ARCHIVE_ASSET_UNATTACHED route=${route} ` +
+          `archiveAssetId=${stored.archiveAssetId} file=${path.basename(clipPath)} — ` +
+          `the bytes are stored and READY, but the lineage ledger has no record for this path, ` +
+          `so the timeline cannot be told about it`
+      );
+    }
+  } else {
+    /**
+     * A clip entering the timeline without a handle is the defect this round closed. It is still
+     * possible — a storage outage is not a reason to fail a render — but it may never be silent
+     * again, on either route.
+     */
+    console.warn(
+      `[ProductionArchive] s${sceneIndex}b${beatIndex} TIMELINE_CLIP_WITHOUT_ARCHIVE_HANDLE ` +
+        `route=${route} provider=${facts.source} providerAssetId=${facts.providerAssetId ?? "none"} ` +
+        `code=${stored.code} status=${stored.mediaStatus} reason="${stored.message}" — this clip is ` +
+        `in the render and cannot be rehydrated from our own storage`
+    );
+  }
+  return stored;
+}
+
 // Thin wrapper so fetchSceneVisualsInner's own heartbeat entry always gets cleared on the way
 // out — success, thrown error, or cancellation — instead of lingering under whichever scene
 // happened to set it last (see the heartbeat tracking comment above setWorkerHeartbeat).
@@ -40646,8 +40905,13 @@ async function fetchSceneVisualsInner(
           funnelClip &&
           winningExternalCandidate &&
           externalAssetIngestionEnabled() &&
-          winningExternalCandidate.source !== "pexels" &&
-          winningExternalCandidate.source !== "pixabay"
+          /**
+           * Same rule, now asked of the one predicate the scene-pool route can ask too. The set is
+           * unchanged: `winningExternalCandidate` is only ever set for a non-archive candidate, so
+           * the `archive` arm of the predicate is a no-op here and carries the rule for the other
+           * caller.
+           */
+          sourceMayEnterCuratedArchive(winningExternalCandidate.source)
         );
         const willArchive = archiveEligible;
         // FASE 4: sourceDistribution reports which sources actually made the download
@@ -40725,56 +40989,27 @@ async function fetchSceneVisualsInner(
          * archived under different provenance. Lifted, not rewritten: every field below is the one
          * that was there, with its reasoning.
          */
+        const archiveFactsFor = (
+          wec: NonNullable<typeof winningExternalCandidate>
+        ): ExternalClipArchiveFacts => ({
+          source: wec.source,
+          providerAssetId: String(wec.poolCandidate?.id ?? wec.id ?? "").trim() || null,
+          title: wec.title,
+          mediaType: wec.mediaType,
+          license: wec.poolCandidate?.license ?? null,
+          licenseUrl: wec.poolCandidate?.licenseUrl ?? null,
+          durationSec: wec.poolCandidate?.durationSec ?? null,
+          sourceCreator: wec.poolCandidate?.sourceCreator ?? null,
+          remoteUrl: wec.poolCandidate?.remoteUrl ?? null,
+        });
         const archiveMetadataFor = (
           wec: NonNullable<typeof winningExternalCandidate>
-        ): ProductionArchiveMetadata => ({
-                title: wec.title,
-                // RONDE 9: NEVER the narration keywords — those describe what is SAID, not what
-                // is SHOWN, and they poisoned the archive (a stock clip tagged "adolf hitler").
-                // Content-true tags come from Rekognition inside ingestExternalClipToArchive;
-                // the provider's own title above stays the searchable text.
-                tags: [],
-                // RONDE 9b: Rekognition person-tagging runs ONLY for person-locked renders.
-                personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
-                sourceNote: `${wec.source}:${wec.poolCandidate?.id ?? wec.id}`,
-                mediaType: wec.mediaType,
-                mimeType: wec.mediaType === "video" ? "video/mp4" : "image/jpeg",
-                durationSec: wec.poolCandidate?.durationSec ?? undefined,
-                // FASE 1 fix: prefer the provider's own per-asset license label
-                // (wec.poolCandidate.license — e.g. Wikimedia's real "CC BY-SA 4.0") over the
-                // generic per-source literal, which is now only a fallback for sources that
-                // don't expose one (Pexels/Pixabay, which really are always "<name> license").
-                licenseNote: wec.poolCandidate?.license ??
-                             (wec.source === "pexels" ? "Pexels license" :
-                              wec.source === "pixabay" ? "Pixabay license" :
-                              wec.source === "wikimedia" ? "CC BY-SA / CC0" :
-                              // FASE 2/3: fallback only — poolCandidate.license already carries the
-                              // real per-item rights string for these sources in the normal case.
-                              wec.source === "internet_archive" ? "Internet Archive — see licenseUrl" :
-                              wec.source === "europeana" ? "Europeana — see licenseUrl" :
-                              wec.source === "openverse" ? "Openverse — see licenseUrl" :
-                              wec.source === "nasa" ? "Public Domain (NASA / U.S. Government Work)" :
-                              wec.source === "nara" ? "Public Domain (NARA / U.S. Government Work)" :
-                              wec.source === "loc" ? "Library of Congress — see licenseUrl" : undefined),
-                // F3-26: structured provenance — poolCandidate already carries the real remote
-                // URL/license/dimensions for every external source (see scenePool.ts), so this
-                // is a pure enrichment of data that was already being fetched, not a new call.
-                sourceUrl: wec.poolCandidate?.remoteUrl,
-                sourcePlatform: wec.source,
-                sourceCreator: wec.poolCandidate?.sourceCreator ?? undefined,
-                // FASE 1 fix: this used to reuse poolCandidate.license (a label like
-                // "pexels-free", not a URL) here. licenseUrl is now its own field on
-                // PoolCandidate, populated from real per-asset rights URLs where the provider
-                // exposes one (currently Wikimedia's extmetadata.LicenseUrl).
-                licenseUrl: wec.poolCandidate?.licenseUrl ?? undefined,
-                originalQuery: beatQuery,
-                // RONDE 28: was `wec.poolCandidate?.title || beatQuery` — the ASSET'S TITLE, not
-                // the query that found it. Search memory stores this as "the query that worked",
-                // so a later render asking what to search for got back things like "White Lives
-                // Matter Montana - Stickering Action". A title is not a query.
-                matchedQuery: beatQuery,
-          topics: beat.keywords ?? [],
-        });
+        ): ProductionArchiveMetadata =>
+          archiveMetadataForExternalClip(archiveFactsFor(wec), {
+            beatQuery,
+            personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
+            topics: beat.keywords ?? [],
+          });
         const queueArchiveIngestion = (
           clipPath: string,
           wec: NonNullable<typeof winningExternalCandidate>
@@ -40822,59 +41057,16 @@ async function fetchSceneVisualsInner(
          * to the cause.
          */
         if (archiveEligible && funnelClip && winningExternalCandidate) {
-          const wec = winningExternalCandidate;
-          const providerAssetId = String(wec.poolCandidate?.id ?? wec.id ?? "").trim() || null;
-          const stored = await storeForProduction({
-            localPath: funnelClip,
-            provider: wec.source,
-            providerAssetId,
-            metadata: archiveMetadataFor(wec),
-            deps: productionArchiveDeps({
-              /**
-               * The pipeline's own downloader, so its timeout, its process-wide byte budget and
-               * its logging apply here unchanged — §16's "no second downloader". Success is the
-               * file landing, because `downloadToFileStreaming` resolves to a response.
-               */
-              download: async (url, dest) => {
-                await downloadToFileStreaming(url, dest, 120_000, "productionArchive:readBack");
-                return fs.existsSync(dest) && fs.statSync(dest).size > 0;
-              },
-            }),
-            ctx: {
-              projectId: getActiveVideoId() ?? null,
-              sceneIndex: scene.index,
-              beatIndex: beat.index,
-              provider: wec.source,
-              providerAssetId,
-            },
-            verifyDir: workDir,
-            expectVideo: wec.mediaType === "video",
-          }).catch((err): ProductionArchiveOutcome => ({
-            status: "failed",
-            code: "ARCHIVE_RECORD_FAILED",
-            message: (err as Error).message.slice(0, 200),
-            mediaStatus: "FAILED",
-          }));
-          /**
-           * THE HANDLE, CARRIED. This is the line the whole round is about.
-           *
-           * Without it the id is computed and discarded exactly as before, and the only difference
-           * would be a prettier log. `attachArchiveAsset` fills and never overwrites, so a clip
-           * that already had an archive handle keeps the one it had.
-           */
-          if (stored.status === "stored") {
-            const attached = dedup.sourcingCache?.lineage?.attachArchiveAssetToPath(
-              funnelClip, stored.archiveAssetId, clipContentKey(funnelClip)
-            );
-            if (!attached) {
-              console.warn(
-                `[ProductionArchive] s${scene.index}b${beat.index} ARCHIVE_ASSET_UNATTACHED ` +
-                  `archiveAssetId=${stored.archiveAssetId} file=${path.basename(funnelClip)} — ` +
-                  `the bytes are stored and READY, but the lineage ledger has no record for this ` +
-                  `path, so the timeline cannot be told about it`
-              );
-            }
-          }
+          await storeExternalClipForTimeline({
+            clipPath: funnelClip,
+            facts: archiveFactsFor(winningExternalCandidate),
+            metadata: archiveMetadataFor(winningExternalCandidate),
+            lineage: dedup.sourcingCache?.lineage,
+            workDir,
+            sceneIndex: scene.index,
+            beatIndex: beat.index,
+            route: "funnel",
+          });
         }
 
         /**
@@ -41092,6 +41284,57 @@ async function fetchSceneVisualsInner(
             // ascii-safe: reproduces the filename written by the line below, character for character.
             (c) => poolClip!.includes(c.assetId.replace(/[^a-z0-9]/gi, "_").slice(0, 30))
           ) ?? poolCandidates[0];
+          /**
+           * THE ARCHIVE, BEFORE THE ADOPTION IS RECORDED — the invariant this route never had.
+           *
+           * The funnel has stored its winner and carried the handle since the handle existed. This
+           * route did not, and `storeForProduction`'s single call site was behind the funnel's own
+           * `winningExternalCandidate`, so a clip that won HERE reached the timeline with a
+           * provider id and nothing of ours. YouTube lives in this pool (RONDE 175), and
+           * `assetRehydrator` reads `archiveAssetId` first — so without it a later re-render has
+           * to reach YouTube again, through an egress that is measurably blocked at intervals.
+           *
+           * Awaited, and placed BEFORE `recordClipAdopt`, because the brief's requirement is that
+           * the handle exists before the clip is an adopted timeline asset — not that it is
+           * attempted afterwards and hoped for. It is the same function, the same predicate and
+           * the same provenance the funnel uses; nothing here is a second archive path.
+           *
+           * The file is the one the beat already downloaded and trimmed. Nothing is fetched twice,
+           * and `storeForProduction` answers the "already archived?" question itself — by checksum
+           * and by (provider, providerAssetId), both requiring `mediaStatus = READY`.
+           */
+          if (
+            adopted &&
+            externalAssetIngestionEnabled() &&
+            sourceMayEnterCuratedArchive(adopted.source)
+          ) {
+            const facts: ExternalClipArchiveFacts = {
+              source: adopted.source,
+              /** The pool's own stable key `${source}:${assetId}`, which is what the funnel stores too. */
+              providerAssetId: String(adopted.id ?? adopted.assetId ?? "").trim() || null,
+              title: adopted.title,
+              mediaType: adopted.mediaType,
+              license: adopted.license,
+              licenseUrl: adopted.licenseUrl,
+              durationSec: adopted.durationSec,
+              sourceCreator: adopted.sourceCreator,
+              remoteUrl: adopted.remoteUrl,
+            };
+            await storeExternalClipForTimeline({
+              clipPath: poolClip,
+              facts,
+              metadata: archiveMetadataForExternalClip(facts, {
+                beatQuery: beat.searchQuery?.trim() || beat.text,
+                personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
+                topics: beat.keywords ?? [],
+              }),
+              lineage: dedup.sourcingCache?.lineage,
+              workDir,
+              sceneIndex: scene.index,
+              beatIndex: beat.index,
+              route: "pool",
+            });
+          }
           recordClipAdopt(
             dedup.clipAdoptAudit, scene.index, beat.index, beat.text, poolClip,
             adopted?.source ?? "pool", adopted?.title, dedup.segmentGeoLock

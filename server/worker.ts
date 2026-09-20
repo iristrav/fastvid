@@ -10,6 +10,7 @@ import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartup
 import { startVideoQueueWorker, stopVideoQueueWorker } from "./queue";
 import { applyCalibrationGuard } from "./calibrationGuard";
 import { workerLocalActiveJobs } from "./videoQueue";
+import { askYoutubeEgress } from "./youtubeEgressProbe";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,16 @@ process.on("unhandledRejection", (reason) => {
 // bounded grace window to finish before exiting — most renders are much shorter than this, and
 // one that's already 95% done shouldn't be thrown away just because a deploy landed.
 const SHUTDOWN_DRAIN_MS = Math.max(0, parseInt(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "25000", 10) || 25000);
+
+/**
+ * How long the BOOT egress probe may wait — the value this file already used, kept.
+ *
+ * `YOUTUBE_EGRESS_PROBE_TIMEOUT_MS` is deliberately short (3s) because at render time the probe
+ * runs on a beat that has just lost its budget to a transfer that never arrived; it must answer or
+ * get out of the way. Startup has no such constraint and a blocked service is exactly what we want
+ * to hear about, so the boot probe keeps its own patience. Neither number is changed by this round.
+ */
+const WORKER_EGRESS_PROBE_TIMEOUT_MS = 25_000;
 let shuttingDown = false;
 function handleShutdownSignal(signal: NodeJS.Signals) {
   if (shuttingDown) return;
@@ -295,24 +306,39 @@ async function main() {
        * `null` on any failure to ASK, which the preflight reports differently from a failure to
        * REACH: "the service did not answer" and "the service answered that it is blocked" send an
        * operator to two different places.
+       *
+       * ── A SECOND READER OF ONE CONTRACT, AND IT HAD DRIFTED ─────────────────────────────
+       *
+       * This was an inline copy of the request, and it read the STATUS:
+       *
+       *     if (!res.ok) return null;
+       *
+       * RONDE 258 gives `/health/egress` an honest status code — 503 when the probe failed — and
+       * `youtubeEgressProbe.ts` says in as many words why that line is wrong: "The STATUS is not
+       * the answer; the BODY is … reading the status would discard the very verdict this call
+       * exists to fetch." A 503 is exactly what the service returns when YouTube blocks it, so
+       * the one case this probe exists for was the one case it threw away.
+       *
+       * Measured in production on de1c88b, 2026-09-20:
+       *
+       *     17:46:19  GET /health/egress  200 OK
+       *     17:46:22  GET /health/egress  200 OK
+       *     17:46:42  ERROR: [youtube] jNQXAC9IVRw: Sign in to confirm you're not a bot.
+       *     17:46:42  GET /health/egress  503 Service Unavailable
+       *     [Preflight] NO youtube_egress — the yt-dlp service did not answer its own egress probe
+       *
+       * The preflight has a branch that says "CANNOT reach YouTube (bot_check) … check PROXY_URL
+       * on the download service". It was unreachable from here, and the operator was told to
+       * restart a service that had answered correctly.
+       *
+       * RONDE 258's own note states the intent this now meets: "`worker.ts` already asks this
+       * endpoint at boot, inline. A second copy in the pipeline would be a second reader of one
+       * contract, free to drift; both now call this." There is one reader again.
+       *
+       * The boot probe keeps its own generous timeout: the render-time default is short because
+       * it runs on a beat that has already lost its budget, and startup has no such constraint.
        */
-      canReachYoutubeEgress: async () => {
-        const base = process.env.YOUTUBE_CC_DL_SERVICE?.trim().replace(/\/$/, "");
-        if (!base) return null;
-        const token = process.env.YOUTUBE_CC_DL_TOKEN?.trim();
-        try {
-          const res = await fetch(`${base}/health/egress`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            signal: AbortSignal.timeout(25_000),
-          });
-          if (!res.ok) return null;
-          const body = (await res.json()) as { ok?: boolean; reason?: string };
-          if (typeof body?.ok !== "boolean") return null;
-          return { ok: body.ok, reason: body.reason };
-        } catch {
-          return null;
-        }
-      },
+      canReachYoutubeEgress: async () => askYoutubeEgress(WORKER_EGRESS_PROBE_TIMEOUT_MS),
     });
     console.log(formatPreflight(report));
     if (report.verdict === "PRODUCTION_RENDER_BLOCKED") {

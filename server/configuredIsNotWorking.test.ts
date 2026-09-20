@@ -465,10 +465,32 @@ describe("3. the preflight reports what the service answered", () => {
   });
 
   it("the worker supplies the probe, and sends the token without logging it", () => {
+    /**
+     * ARCHIVE-FIRST / EGRESS ROUND — the worker's inline copy of this request was deleted.
+     *
+     * It read the STATUS (`if (!res.ok) return null;`) and therefore discarded the 503 the service
+     * returns when YouTube blocks it, which is the one case the probe exists for. RONDE 258's
+     * `askYoutubeEgress` is the canonical reader and reads the BODY; the worker now calls it.
+     *
+     * Both halves of the claim are kept and tightened: the worker still SUPPLIES the probe, the
+     * token is still sent and still never logged — and the request now exists in exactly one
+     * place, so a second reader cannot drift from the contract again.
+     */
     const WORKER = readFileSync(join(__dirname, "worker.ts"), "utf8");
+    const PROBE = readFileSync(join(__dirname, "youtubeEgressProbe.ts"), "utf8");
+    const code = (src: string) =>
+      src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
     expect(WORKER).toContain("canReachYoutubeEgress:");
-    expect(WORKER).toContain("/health/egress");
-    expect(WORKER).toContain("Authorization: `Bearer ${token}`");
-    expect(WORKER).not.toMatch(/console\.[a-z]+\([^)]*YOUTUBE_CC_DL_TOKEN/);
+    expect(WORKER).toContain("askYoutubeEgress(");
+    /** One reader of one contract: the endpoint is named in the canonical module and nowhere else. */
+    expect(code(WORKER)).not.toContain("/health/egress");
+    expect(PROBE).toContain("/health/egress");
+    expect(PROBE).toContain("Authorization: `Bearer ${token}`");
+
+    for (const src of [WORKER, PROBE]) {
+      expect(src).not.toMatch(/console\.[a-z]+\([^)]*YOUTUBE_CC_DL_TOKEN/);
+      expect(src).not.toMatch(/console\.[a-z]+\([^)]*\btoken\b/);
+    }
   });
 });

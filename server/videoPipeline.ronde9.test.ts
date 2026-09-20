@@ -15,6 +15,11 @@ import { describe, expect, it } from "vitest";
 //   4. a NEGATIVE curated score is an active mismatch and can no longer be laundered into the
 //      score=1 "no signal" floor (render 519 adopted assets scoring -65).
 
+import {
+  sourceMayEnterCuratedArchive,
+  archiveMetadataForExternalClip,
+} from "./videoPipeline";
+
 const pipelineSrc = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 const ingestionSrc = readFileSync(path.join(__dirname, "archiveIngestion.ts"), "utf8");
 const curatedSrc = readFileSync(path.join(__dirname, "curatedMediaSourcing.ts"), "utf8");
@@ -23,14 +28,33 @@ const scriptSrc = readFileSync(path.join(__dirname, "..", "scripts", "cleanup-po
 // ─── 1. Stock never enters the curated archive ───────────────────────────────────────────────
 
 describe("RONDE 9.1 — stock footage is never archived", () => {
+  /**
+   * ARCHIVE-FIRST ROUND — the same rule, asked of the one predicate TWO routes now read.
+   *
+   * The funnel tested the source names inline. The scene-pool route needed the same rule and had
+   * no way to ask for it, which is how the two routes came to disagree about whether a downloaded
+   * clip is stored at all — so the expression became `sourceMayEnterCuratedArchive`.
+   *
+   * The claim is not weakened, it is widened: the predicate is exercised directly here (so the
+   * rule itself is tested, not a spelling of it) AND both call sites are required to ask it. A
+   * route that grows its own copy of the source names no longer passes.
+   */
   it("the funnel call site refuses pexels/pixabay winners", () => {
     const idx = pipelineSrc.indexOf("const archiveEligible = !!(");
     expect(idx).toBeGreaterThan(-1);
-    const block = pipelineSrc.slice(idx, idx + 500);
-    expect(block).toContain('winningExternalCandidate.source !== "pexels"');
-    expect(block).toContain('winningExternalCandidate.source !== "pixabay"');
+    const block = pipelineSrc.slice(idx, idx + 900);
+    expect(block).toContain("sourceMayEnterCuratedArchive(winningExternalCandidate.source)");
+    expect(sourceMayEnterCuratedArchive("pexels")).toBe(false);
+    expect(sourceMayEnterCuratedArchive("pixabay")).toBe(false);
     expect(pipelineSrc).toContain("const willArchive = archiveEligible;");
     expect(pipelineSrc).toContain("if (archiveEligible && funnelClip && winningExternalCandidate) {");
+  });
+
+  it("AND THE SCENE-POOL ROUTE REFUSES THEM TOO — one rule, both routes", () => {
+    const at = pipelineSrc.indexOf("const adopted = poolCandidates.find(");
+    expect(at, "the pool adoption block is gone").toBeGreaterThan(-1);
+    const block = pipelineSrc.slice(at, pipelineSrc.indexOf("recordUse(", at));
+    expect(block).toContain("sourceMayEnterCuratedArchive(adopted.source)");
   });
 
   it("the ingestion itself blocks stock from EVERY caller (defense in depth)", () => {
@@ -58,13 +82,25 @@ describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => 
    * growing its own metadata block cannot slip past by not matching the old string.
    */
   it("the funnel call site no longer passes beat narration keywords as tags", () => {
-    const idx = pipelineSrc.indexOf("const archiveMetadataFor = (");
+    /**
+     * ARCHIVE-FIRST ROUND — the single writer became a module-level function when the scene-pool
+     * route needed the same provenance. Same claim, same single definition, now exercised by
+     * CALLING it rather than by reading the literal: a builder that is run cannot drift from the
+     * string this test greps for.
+     */
+    const idx = pipelineSrc.indexOf("export function archiveMetadataForExternalClip(");
     expect(idx, "the single metadata writer is gone — has a route grown its own again?").toBeGreaterThan(-1);
     const call = pipelineSrc.slice(idx, idx + 2400);
     expect(call).toContain("tags: [],");
     expect(call).not.toContain("tags: beat.keywords");
     /** And there is exactly one of them, so "the single writer" is measured rather than assumed. */
-    expect((pipelineSrc.match(/const archiveMetadataFor = \(/g) ?? []).length).toBe(1);
+    expect((pipelineSrc.match(/export function archiveMetadataForExternalClip\(/g) ?? []).length).toBe(1);
+
+    const md = archiveMetadataForExternalClip(
+      { source: "wikimedia", providerAssetId: "File:X.webm", title: "X", mediaType: "video" },
+      { beatQuery: "berlin 1945", personContext: false, topics: ["berlin"] }
+    );
+    expect(md.tags, "narration keywords reached the archive as tags").toEqual([]);
   });
 
   it("ingestion adds Rekognition-recognized person names as content-true tags", () => {
