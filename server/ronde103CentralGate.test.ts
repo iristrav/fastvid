@@ -542,7 +542,14 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
     }
     // And it refuses only a refusal — an unjudged clip still passes, or the routes that build
     // their own files would empty every montage.
-    const idx = SRC.indexOf("function beatClipRefusedByRelevanceGate(");
+    /**
+     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
+     *
+     * The exported function now asks the editorial question first and the archive question second;
+     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
+     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     */
+    const idx = SRC.indexOf("async function relevanceGateRefusesClip(");
     const body = SRC.slice(idx, SRC.indexOf("\n}", idx));
     /**
      * The content key is now computed once and reused, because the refusal is also RECORDED and

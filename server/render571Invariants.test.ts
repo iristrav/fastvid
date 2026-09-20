@@ -298,8 +298,14 @@ describe("P0-C: a refused push is an ending on the asset, not only on the beat",
     return out;
   };
 
-  it("all three refusal paths exist", () => {
-    expect(refusalSites()).toHaveLength(3);
+  it("all four refusal paths exist", () => {
+    /**
+     * ARCHIVE-FIRST ROUND — the fourth is `recordArchivePushRefusal`: an external clip that cannot
+     * be read back from our own storage is refused at the push, like any other refusal. The test
+     * below is the one that matters and it covers the new path unchanged — every refusal still
+     * files a rejection on the lineage before it traces the outcome.
+     */
+    expect(refusalSites()).toHaveLength(4);
   });
 
   it("EVERY ONE of them files a rejection on the lineage first", () => {

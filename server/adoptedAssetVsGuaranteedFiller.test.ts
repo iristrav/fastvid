@@ -161,7 +161,14 @@ describe("the guaranteed filler is still reached the way this audit traced it", 
 
   /** Both push refusals feed the tally the placeholder line reads. */
   it("both refusals record on the beat tally", () => {
-    const at = SRC.indexOf("async function beatClipRefusedByRelevanceGate(");
+    /**
+     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
+     *
+     * The exported function now asks the editorial question first and the archive question second;
+     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
+     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     */
+    const at = SRC.indexOf("async function relevanceGateRefusesClip(");
     const body = SRC.slice(at, SRC.indexOf("\n}", SRC.indexOf("return true;", at)));
     expect(body).toContain("recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, barrier.reason)");
     const dup = SRC.indexOf("function noteDuplicateClipRefused(");

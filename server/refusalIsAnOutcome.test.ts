@@ -105,7 +105,14 @@ describe("a refusal ends the asset's story on the ledger", () => {
 describe("every push route records its refusals", () => {
   /** The relevance barrier records at the one point all four routes call. */
   it("the relevance gate records before it returns true", () => {
-    const at = SRC.indexOf("async function beatClipRefusedByRelevanceGate(");
+    /**
+     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
+     *
+     * The exported function now asks the editorial question first and the archive question second;
+     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
+     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     */
+    const at = SRC.indexOf("async function relevanceGateRefusesClip(");
     expect(at).toBeGreaterThan(-1);
     const body = SRC.slice(at, SRC.indexOf("\n}", SRC.indexOf("return true;", at)));
     expect(body).toContain("recordRejection(clipPath, barrier.reason, contentKey)");

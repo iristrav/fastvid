@@ -199,7 +199,14 @@ describe("R199 §4 — the refusal and the evidence line cannot disagree", () =>
 
 describe("R199 §5 — tightening the rule without starving the render", () => {
   it("the push route asks before the guard reads, and says this one is the picture", () => {
-    const at = PIPE.indexOf("async function beatClipRefusedByRelevanceGate(");
+    /**
+     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
+     *
+     * The exported function now asks the editorial question first and the archive question second;
+     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
+     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     */
+    const at = PIPE.indexOf("async function relevanceGateRefusesClip(");
     expect(at).toBeGreaterThan(0);
     const body = PIPE.slice(at, at + 2600);
     expect(body).toContain("ensureVerdictBeforeCompose({");

@@ -111,8 +111,16 @@ describe("Test 2 — an archive failure is never silent, and never fails the ren
    * semantics again — the exact thing this round removes — and would let an S3 blip cost a render.
    * So both routes keep that behaviour, and what is pinned here is that the failure is NAMED.
    */
-  it("a failed store logs TIMELINE_CLIP_WITHOUT_ARCHIVE_HANDLE with its route and cause", () => {
-    expect(WRAPPER).toContain("TIMELINE_CLIP_WITHOUT_ARCHIVE_HANDLE");
+  it("a failed store is named, with its route and its cause", () => {
+    /**
+     * UNIVERSAL-INVARIANT ROUND — one message became two, because a failed store means two
+     * different things depending on where it happened. On the four EAGER routes the push gate will
+     * still decide; at the gate itself there is no second chance and the clip is refused. Saying
+     * the wrong one is how a log stops being evidence.
+     */
+    expect(WRAPPER).toContain("ARCHIVE_NOT_READY_AT_PUSH");
+    expect(WRAPPER).toContain("ARCHIVE_STORE_FAILED_BEFORE_PUSH");
+    expect(WRAPPER).toContain('route === "push_gate"');
     expect(WRAPPER).toContain("route=${route}");
     expect(WRAPPER).toContain("code=${stored.code}");
     expect(WRAPPER).toContain("status=${stored.mediaStatus}");

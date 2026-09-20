@@ -262,7 +262,14 @@ describe("both gates ask, and the diagnostic does not", () => {
 
   /** The push route knows its beat, so it hands it over rather than going through the audit. */
   it("the push gate asks before the barrier decides", () => {
-    const at = CODE.indexOf("async function beatClipRefusedByRelevanceGate(");
+    /**
+     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
+     *
+     * The exported function now asks the editorial question first and the archive question second;
+     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
+     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     */
+    const at = CODE.indexOf("async function relevanceGateRefusesClip(");
     expect(at, "the push gate has moved or is no longer async").toBeGreaterThan(-1);
     const body = CODE.slice(at, at + 1200);
     const ask = body.indexOf("ensureVerdictBeforeCompose({");

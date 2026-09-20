@@ -75,7 +75,14 @@ describe("the push trace names the asset, not its position", () => {
 describe("both outcomes are traced at every door", () => {
   /** Refusals: the two gates every pushSceneClip opens with. */
   it("traces the relevance-barrier refusal", () => {
-    const at = SRC.indexOf("async function beatClipRefusedByRelevanceGate(");
+    /**
+     * ARCHIVE-FIRST ROUND — `beatClipRefusedByRelevanceGate` became a two-part answer.
+     *
+     * The exported function now asks the editorial question first and the archive question second;
+     * the editorial gate's own body moved, unchanged, into `relevanceGateRefusesClip`. This claim
+     * is about that body, so it is read there. Nothing about what the gate decides changed.
+     */
+    const at = SRC.indexOf("async function relevanceGateRefusesClip(");
     const body = SRC.slice(at, SRC.indexOf("\n}", SRC.indexOf("return true;", at)));
     expect(body).toContain("tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, barrier.reason)");
   });

@@ -28824,6 +28824,26 @@ async function rescueFastShortComposeClips(
   const pushClip = async (clipPath: string, sec = holdSec): Promise<boolean> => {
     if (!clipPath || isPipelineFallbackClip(clipPath)) return false;
     if (!(await montageClipPassesComposeGate(clipPath, scene.index, collected.length, dedup.beatRelevance))) return false;
+    /**
+     * THE ONE ROUTE WITH ITS OWN GATE, ASKED THE SAME QUESTION.
+     *
+     * The structural sweep for this round found exactly one push closure that does not pass
+     * `beatClipRefusedByRelevanceGate`: this one. It is a compose-time rescue and it deliberately
+     * uses `montageClipPassesComposeGate` instead — a different editorial question, correctly so.
+     *
+     * But "it has its own editorial gate" is not a reason to be outside the ARCHIVE invariant. A
+     * picture placed here enters the same film as every other picture, and a clip that cannot be
+     * read back from our own storage may not be in it. Same decision, same refusal, same log.
+     */
+    {
+      const archived = await ensureArchiveBackedBeforePush(
+        dedup, clipPath, clipContentKey(clipPath), scene.index, undefined
+      );
+      if (!archived.ok) {
+        recordArchivePushRefusal(dedup, clipPath, scene.index, undefined, archived.reason);
+        return false;
+      }
+    }
     const key = clipContentKey(clipPath);
     if (collected.some((c) => clipContentKey(c) === key)) return false;
     collected.push(clipPath);
@@ -33072,6 +33092,113 @@ function beatVisualContext(
  * — whether it reads the last look's outcome — and a test that cannot call it can only assert
  * things about the source text, which is how the previous round's mutations survived.
  */
+/**
+ * THE ARCHIVE-FIRST INVARIANT, AT THE ONE BOUNDARY EVERY PICTURE CROSSES.
+ *
+ * ── Why here, and not in the twenty-five routes ─────────────────────────────────────────────
+ *
+ * The previous round gave the funnel, the scene pool and the two web-wide rescue routes an
+ * archive handle before adoption. That left the historical tier cascade — some twenty-five
+ * `adoptClip` call sites — still able to put a Wikimedia, NASA, Openverse or SerpAPI clip into the
+ * film with no handle of ours, and the honest report said so.
+ *
+ * Twenty-five patches would be twenty-four chances to forget. This codebase has already answered
+ * where the single point is, twice, in its own words:
+ *
+ *   RONDE 93: "The `clips.push` inside the four scene-push variants is where a picture actually
+ *   enters the film. The adopt recorder cannot be the guard: it runs after the push has already
+ *   returned true, so refusing there refuses a RECORD, not a PICTURE."
+ *
+ *   RONDE 232: "There are four `pushSceneClip` definitions and every one of them opens with this
+ *   call. Putting the recording in the callers means remembering it four times and a fifth time
+ *   for the next one; putting it here means the refusal cannot be made without recording it."
+ *
+ * So this is the boundary, and it is now five call sites, one of them inside
+ * `fetchSceneVisualsInner` — which is where the funnel, the pool, the cascade and the rescue
+ * ladders all end. A route cannot place a picture without passing here.
+ *
+ * ── What it decides ─────────────────────────────────────────────────────────────────────────
+ *
+ * Only about clips whose EXTERNAL PROVIDER THIS RENDER CAN PROVE, read from the lineage record's
+ * root — the identity a transformed or trimmed file inherits from the asset it was made from.
+ * Nothing is inferred from a filename or a content-key family; a clip the ledger cannot place is
+ * not turned into a claim.
+ *
+ * Four outcomes allow the push without storing anything, and each is a real category rather than
+ * a way round the rule:
+ *
+ *   not_external      no record, or no provable provider — a generated card, a guaranteed filler,
+ *                     a local file. There is no external asset here to archive.
+ *   already_archived  the root already carries an archiveAssetId: the curated archive's own
+ *                     material, and everything the four eager routes stored moments ago.
+ *   exempt_source     RONDE 9's standing exception. Pexels and Pixabay may not enter the curated
+ *                     archive — a stock clip ingested tagged "adolf hitler" outranked real archive
+ *                     footage on every later render — and `archive` is already in it.
+ *   ingestion_stopped the operator switched external ingestion off. Refusing every external clip
+ *                     because of a setting would turn a configuration choice into an outage.
+ *
+ * Everything else is stored, awaited, before the picture enters the film. A store that fails
+ * REFUSES THE PUSH: a clip that cannot be read back from our own storage is not a clip this
+ * architecture is willing to put in a timeline, and the beat falls through to the next candidate
+ * exactly as it would for any other refusal. That is a deliberate change of posture from the
+ * previous round, where a storage failure cost the handle and not the clip — and it is the point
+ * of the invariant: "archive later" is the thing being removed.
+ */
+type ArchivePushVerdict =
+  | { ok: true; reason: "not_external" | "already_archived" | "exempt_source" | "ingestion_stopped" | "stored" }
+  | { ok: false; reason: string };
+
+async function ensureArchiveBackedBeforePush(
+  dedup: VisualDedupState,
+  clipPath: string,
+  contentKey: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): Promise<ArchivePushVerdict> {
+  const ledger = dedup.sourcingCache?.lineage;
+  const record = ledger?.resolve(clipPath, contentKey) ?? null;
+  /** The asset this file was MADE FROM, because a trim or a fair-use transform has its own record. */
+  const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
+  const provider = root?.provider?.trim().toLowerCase() || null;
+  if (!root || !provider) return { ok: true, reason: "not_external" };
+  if (root.archiveAssetId != null) return { ok: true, reason: "already_archived" };
+  if (!sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };
+  if (!externalAssetIngestionEnabled()) return { ok: true, reason: "ingestion_stopped" };
+
+  const providerAssetId = root.providerAssetId?.trim() || null;
+  /** Provider-authored detail the fetcher cached, when it cached any. Never invented. */
+  const cached = providerAssetId
+    ? getCachedProviderAsset(dedup.sourcingCache, provider, providerAssetId)
+    : null;
+  const facts: ExternalClipArchiveFacts = {
+    source: provider,
+    providerAssetId,
+    title: root.assetTitle?.trim() || path.basename(clipPath),
+    mediaType: root.mediaType === "image" ? "image" : "video",
+    license: cached?.license?.reported ?? null,
+    licenseUrl: null,
+    durationSec: cached?.durationSec ?? null,
+    sourceCreator: null,
+    remoteUrl: root.sourceUrl ?? root.originalUrl ?? cached?.canonicalUrl ?? null,
+  };
+  const stored = await storeExternalClipForTimeline({
+    clipPath,
+    facts,
+    metadata: archiveMetadataForExternalClip(facts, {
+      beatQuery: root.query?.trim() || root.beatText?.slice(0, 80) || "",
+      personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
+      topics: [],
+    }),
+    lineage: ledger,
+    workDir: path.dirname(clipPath),
+    sceneIndex,
+    beatIndex: beatIndex ?? 0,
+    route: "push_gate",
+  });
+  if (stored.status === "stored") return { ok: true, reason: "stored" };
+  return { ok: false, reason: `${stored.code}:${stored.mediaStatus}` };
+}
+
 export async function beatClipRefusedByRelevanceGate(
   dedup: VisualDedupState,
   clipPath: string,
@@ -33081,6 +33208,58 @@ export async function beatClipRefusedByRelevanceGate(
    * RENDER 579 — only the two backfill push closures pass "approval"; every other caller keeps the
    * default and therefore keeps exactly the behaviour it had. See `composeBarrierAllows`.
    */
+  demand: "no_refusal" | "approval" = "no_refusal"
+): Promise<boolean> {
+  /**
+   * The editorial question first, unchanged, then the archive one.
+   *
+   * Order matters and is asserted: a picture the barrier refuses must never be stored, or every
+   * refused candidate would be ingested on its way out — which is the archive poisoning RONDE 9
+   * exists to prevent, arriving through the back door.
+   */
+  if (await relevanceGateRefusesClip(dedup, clipPath, sceneIndex, beatIndex, demand)) return true;
+  const archived = await ensureArchiveBackedBeforePush(
+    dedup, clipPath, clipContentKey(clipPath), sceneIndex, beatIndex
+  );
+  if (archived.ok) return false;
+  recordArchivePushRefusal(dedup, clipPath, sceneIndex, beatIndex, archived.reason);
+  return true;
+}
+
+/**
+ * One spelling of the refusal, because there are two gates that can make it.
+ *
+ * `beatClipRefusedByRelevanceGate` is the boundary for every route that has a beat. The fast-short
+ * compose rescue has its own gate — `montageClipPassesComposeGate` — and does not pass through it,
+ * so it asks the archive question itself. Both must refuse the same way, or the two routes would
+ * disagree about what a refused clip looks like in the ledger and in the log.
+ */
+function recordArchivePushRefusal(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined,
+  cause: string
+): void {
+  const reason = `archive not ready (${cause})`;
+  console.warn(
+    `[BeatRelevance] s${sceneIndex}b${beatIndex ?? "?"}: refusing to push ` +
+      `${path.basename(clipPath)} — ${reason}; an external clip that cannot be read back from ` +
+      `our own storage may not enter the timeline`
+  );
+  dedup.sourcingCache?.lineage?.recordRejection(clipPath, reason, clipContentKey(clipPath));
+  if (beatIndex != null) {
+    recordClipReject(dedup.clipRejectAudit, sceneIndex, beatIndex, clipPath, reason);
+  }
+  tracePushOutcome(dedup, clipPath, sceneIndex, beatIndex, false, reason);
+}
+
+/** The editorial gate exactly as it was — see `beatClipRefusedByRelevanceGate` above. */
+async function relevanceGateRefusesClip(
+  dedup: VisualDedupState,
+  clipPath: string,
+  sceneIndex: number,
+  beatIndex: number | undefined,
   demand: "no_refusal" | "approval" = "no_refusal"
 ): Promise<boolean> {
   /**
@@ -39214,8 +39393,14 @@ async function storeExternalClipForTimeline(params: {
   workDir: string;
   sceneIndex: number;
   beatIndex: number;
-  /** Which route won the beat, so the log says where a missing handle came from. */
-  route: "funnel" | "pool" | "rescue";
+  /**
+   * Which route won the beat, so the log says where a missing handle came from.
+   *
+   * `push_gate` is the universal backstop in `beatClipRefusedByRelevanceGate`: the other four are
+   * eager stores that run earlier and carry their route's own richer provenance, and the gate is
+   * what makes it impossible for a route to skip the step altogether.
+   */
+  route: "funnel" | "pool" | "rescue" | "push_gate";
 }): Promise<ProductionArchiveOutcome> {
   const { clipPath, facts, sceneIndex, beatIndex, route } = params;
   const stored = await storeForProduction({
@@ -39270,15 +39455,24 @@ async function storeExternalClipForTimeline(params: {
     }
   } else {
     /**
-     * A clip entering the timeline without a handle is the defect this round closed. It is still
-     * possible — a storage outage is not a reason to fail a render — but it may never be silent
-     * again, on either route.
+     * A failed store means two different things depending on where it happened, and saying the
+     * wrong one is how a log stops being evidence.
+     *
+     * On the four EAGER routes the clip may still be adopted — they run before the push, and the
+     * push gate will try again and decide. On the PUSH GATE itself there is no second chance: that
+     * is the boundary, and a clip that cannot be read back from our own storage does not enter the
+     * film. Neither may be silent.
      */
     console.warn(
-      `[ProductionArchive] s${sceneIndex}b${beatIndex} TIMELINE_CLIP_WITHOUT_ARCHIVE_HANDLE ` +
-        `route=${route} provider=${facts.source} providerAssetId=${facts.providerAssetId ?? "none"} ` +
-        `code=${stored.code} status=${stored.mediaStatus} reason="${stored.message}" — this clip is ` +
-        `in the render and cannot be rehydrated from our own storage`
+      route === "push_gate"
+        ? `[ProductionArchive] s${sceneIndex}b${beatIndex} ARCHIVE_NOT_READY_AT_PUSH ` +
+            `provider=${facts.source} providerAssetId=${facts.providerAssetId ?? "none"} ` +
+            `code=${stored.code} status=${stored.mediaStatus} reason="${stored.message}" — this ` +
+            `clip is refused; it cannot be read back from our own storage`
+        : `[ProductionArchive] s${sceneIndex}b${beatIndex} ARCHIVE_STORE_FAILED_BEFORE_PUSH ` +
+            `route=${route} provider=${facts.source} providerAssetId=${facts.providerAssetId ?? "none"} ` +
+            `code=${stored.code} status=${stored.mediaStatus} reason="${stored.message}" — the push ` +
+            `gate will decide whether this clip may still be used`
     );
   }
   return stored;
