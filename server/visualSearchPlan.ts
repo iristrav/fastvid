@@ -12,7 +12,7 @@ import {
   analyzeBeatSemanticsFallback,
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
-import { contentTermsFromText, visualTermsFromIntent } from "./searchQueryContract";
+import { contentTermsFromText, termProvableFrom, visualTermsFromIntent } from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 import { invokeLLM } from "./_core/llm";
 import { getActiveVideoId } from "./videoGenerationCancel";
@@ -174,6 +174,152 @@ function sortByConfidence(items: ScoredQuery[]): ScoredQuery[] {
   return [...items].sort((a, b) => b.confidence - a.confidence);
 }
 
+// ─── The subject anchor ───────────────────────────────────────────────────────
+
+/**
+ * A CATEGORY IS NOT A SEARCH. IT IS A CATEGORY *OF* SOMETHING.
+ *
+ * ── What render 593 sent ────────────────────────────────────────────────────────────────────
+ *
+ * `BeatSemanticProfile.searchTiers` is `string[][]` — each inner array is one PRIORITY TIER,
+ * assembled per entity category by `analyzeBeatSemanticsFallback` (persons, then companies, then
+ * objects, then locations, then events, …) or written whole by the model. A tier is a group of
+ * terms that belong to the same rung of specificity. It was never a list of finished queries.
+ *
+ * `planFromProfile` read it as one. `tier0.map((q) => scored(q, 0.9, …))` turns every TERM in the
+ * tier into its own standalone query, so
+ *
+ *     ["news", "kim kardashian", "medium"]
+ *
+ * reached the providers as three separate searches: `news`, `kim kardashian`, `medium`. Two of
+ * those three name a category and no subject. There is no degradation step to blame — the subject
+ * was never in that query, because the query was one word of a list.
+ *
+ * ── What this function does ─────────────────────────────────────────────────────────────────
+ *
+ * Puts the subject back in front, and only there. `ensureSubjectAnchor("news", "Kim Kardashian")`
+ * is `"Kim Kardashian news"`; `ensureSubjectAnchor("Kim Kardashian 2018", "Kim Kardashian")` is
+ * unchanged, because the query already says who it is about.
+ *
+ * Three properties it is built to hold, each with its own test:
+ *
+ *   · NEVER TWICE. A query that already names the anchor — in any casing, with any diacritics, at
+ *     any position — is returned exactly as it arrived. "Kim Kardashian Kim Kardashian 2018" is
+ *     not a better query, and `buildPrioritisedQueries` refuses the same shape for the same reason
+ *     ("a query that says the same word twice is not a better query").
+ *   · NEVER A SUBSET TWICE EITHER. A query whose words are all inside the anchor — `"kim"` under
+ *     the anchor "Kim Kardashian" — collapses to the anchor rather than becoming "Kim Kardashian
+ *     kim". The comparison is word-level and folded, so it survives case and punctuation.
+ *   · NEVER AN INVENTED ANCHOR. An empty anchor returns the query untouched (§6). The anchor is
+ *     chosen by `subjectAnchorForBeat` and has to pass the gate's own evidence measure first.
+ *
+ * ── Why this cannot loosen the Search Gate ──────────────────────────────────────────────────
+ *
+ * It adds words; it removes none. `validateSearchQuery` still judges every query afterwards, and
+ * every word this puts into one comes from an anchor the beat itself proves — so a composed query
+ * carries exactly the claims its two halves carried separately. The one thing that does change is
+ * `hasContentAnchor`: `"documentary archive"` has no subject and is refused, while
+ * `"Kim Kardashian documentary archive"` has one and is not. That is §7's whole point, and it is
+ * the gate answering correctly about a different query, not the gate being relaxed.
+ */
+export function ensureSubjectAnchor(query: string, anchor: string): string {
+  const q = (query ?? "").replace(/\s+/g, " ").trim();
+  const a = (anchor ?? "").replace(/\s+/g, " ").trim();
+  if (!q) return "";
+  /** §6 — no reliable subject, no anchor. A hallucinated one would be worse than none. */
+  if (!a) return q;
+  if (queryAlreadyNamesAnchor(q, a)) return q;
+  const anchorWords = new Set(a.split(/\s+/).map(anchorWordKey).filter(Boolean));
+  const rest = q.split(/\s+/).filter((w) => {
+    const key = anchorWordKey(w);
+    return key ? !anchorWords.has(key) : false;
+  });
+  return rest.length ? `${a} ${rest.join(" ")}` : a;
+}
+
+/**
+ * One word, compared the way the rest of this codebase compares words: folded, unpunctuated.
+ *
+ * The possessive is stripped because a narration writes "Kim Kardashian's 2018" and means the same
+ * person. Leaving it on produced "Kim Kardashian Kardashian's 2018" — precisely the doubling this
+ * function exists to prevent, arriving through an apostrophe. Only the trailing possessive goes;
+ * "O'Neill" and "Kylie's" as a word in its own right keep everything before it.
+ */
+function anchorWordKey(word: string): string {
+  return foldSearchText(word)
+    .replace(/[^\p{L}\p{N}'’-]/gu, "")
+    .replace(/['’]s$/u, "")
+    .replace(/['’]$/u, "");
+}
+
+/** Does the query already say the anchor, as a contiguous run of its own words? */
+function queryAlreadyNamesAnchor(query: string, anchor: string): boolean {
+  const q = query.split(/\s+/).map(anchorWordKey).filter(Boolean);
+  const a = anchor.split(/\s+/).map(anchorWordKey).filter(Boolean);
+  if (a.length === 0) return true;
+  for (let i = 0; i + a.length <= q.length; i++) {
+    if (a.every((w, j) => q[i + j] === w)) return true;
+  }
+  return false;
+}
+
+/**
+ * THE SUBJECT THIS BEAT PROVES — or nothing.
+ *
+ * The order is the codebase's own order of authority, the same one `visualTermsFromIntent` uses:
+ * the planner's stated subject, then the people it typed, then the persons and organisations the
+ * semantic profile extracted. Every candidate is put through `termProvableFrom` against the beat's
+ * own text plus its scene — the gate's own measure — so an anchor is only ever a thing the script
+ * actually says. A model that invents a person cannot become the anchor of twenty queries.
+ *
+ * ── What is deliberately NOT a candidate ────────────────────────────────────────────────────
+ *
+ *   `videoContext.people` / `videoContext.period` / `videoContext.locations`
+ *       Derived by an LLM from the video TITLE. RONDE 90 refused the title as evidence and this
+ *       round does not re-open it: a title-derived name prefixed onto every query of every beat is
+ *       precisely the contamination that rule exists to stop.
+ *
+ *   locations, objects, events, years
+ *       These answer "where / what / when", not "who or what is this about". An anchor is the
+ *       SUBJECT; a beat whose only proven noun is a place has no subject, and §6 says the honest
+ *       answer then is no anchor rather than a plausible one.
+ */
+export function subjectAnchorForBeat(
+  profile: Pick<BeatSemanticProfile, "entities">,
+  input: VisualSearchPlanInput
+): string {
+  const evidence = `${input.beatText ?? ""} ${input.sceneText ?? ""}`;
+  const candidates = [
+    input.intent?.subject ?? "",
+    ...(input.intent?.people ?? []),
+    ...profile.entities.persons,
+    ...profile.entities.companies,
+  ];
+  for (const raw of candidates) {
+    const term = (raw ?? "").replace(/\s+/g, " ").trim();
+    if (!term) continue;
+    /** The gate's own evidence measure, so this can only ever name a word the beat states. */
+    if (!termProvableFrom(term, evidence)) continue;
+    return term;
+  }
+  return "";
+}
+
+/**
+ * Apply the invariant to one band's worth of tier-derived queries.
+ *
+ * The reason string records that it happened, because a plan log that shows "Kim Kardashian news"
+ * without saying where the first two words came from is a log that hides a rewrite.
+ */
+function anchorTierQueries(items: ScoredQuery[], anchor: string): ScoredQuery[] {
+  if (!anchor) return items;
+  return items.map((item) => {
+    const anchored = ensureSubjectAnchor(item.query, anchor);
+    if (anchored === item.query) return item;
+    return { ...item, query: anchored, reason: `${item.reason} (subject-anchored)` };
+  });
+}
+
 // ─── Video Visual Context ─────────────────────────────────────────────────────
 
 /**
@@ -270,12 +416,26 @@ Return JSON:
 
 // ─── Plan builder ─────────────────────────────────────────────────────────────
 
-function planFromProfile(
+/**
+ * Turn one beat's semantic profile into its six rounds of queries.
+ *
+ * Exported so the invariant below can be tested through the real builder rather than through a
+ * re-implementation of it — the helper alone passing proves nothing about what reaches a provider.
+ * The LLM enrichment and the cache stay in `getOrGenerateSearchPlan`, which is what makes this
+ * callable from a test without a network.
+ */
+export function buildVisualSearchPlan(
   profile: BeatSemanticProfile,
-  input: VisualSearchPlanInput
+  input: VisualSearchPlanInput,
+  anchorIn?: string
 ): VisualSearchPlan {
   const e = profile.entities;
   const ctx = input.videoContext;
+  /**
+   * THE SUBJECT EVERY TIER-DERIVED QUERY IS ABOUT — see `ensureSubjectAnchor` for what went out
+   * without it. Empty when the beat proves no subject, and then nothing below changes at all.
+   */
+  const anchor = anchorIn ?? subjectAnchorForBeat(profile, input);
 
   const tier0 = dedupStrings(profile.searchTiers[0] ?? []);
   const tier1 = dedupStrings(profile.searchTiers[1] ?? []);
@@ -308,24 +468,53 @@ function planFromProfile(
    * answer it wrongly. See this module's own note: "a verb rarely narrows a search and often
    * widens it".
    */
-  const primary = dropActionOnlyQueries(
-    dedupScored([
-      ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
-      ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
-    ]),
-    input.intent
+  /**
+   * The order is the one §4 mandates, and each step has to be where it is:
+   *
+   *     validity (drop the action-only queries)  →  subject anchor  →  deduplicate  →  cap
+   *
+   * · `dropActionOnlyQueries` FIRST, because anchoring would otherwise rescue exactly what it
+   *   exists to refuse: "illuminate" is not allowed to become a legitimate search by acquiring a
+   *   subject it never had. Render 580's defect and this round's fix must not cancel out.
+   * · `dedupScored` AFTER the anchor, because anchoring MERGES queries. Under the anchor "Kim
+   *   Kardashian" the tier terms "kim" and "kardashian" both collapse onto it, and a dedup that
+   *   ran first would leave the duplicate standing.
+   *
+   * `dedupScored` keeps the first of each query, and the list is already in tier order, so the
+   * cap still takes the strongest.
+   */
+  const primary = dedupScored(
+    anchorTierQueries(
+      dropActionOnlyQueries(
+        [
+          ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
+          ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
+        ],
+        input.intent
+      ),
+      anchor
+    )
   ).slice(0, 6);
 
-  // Secondary: synonyms/variations + named persons
+  /**
+   * Secondary: synonyms/variations + named persons.
+   *
+   * Only the TIER half is anchored. `videoContext.people` is a SECOND person, and "Kim Kardashian
+   * Kanye West" asserts a meeting the beat may never have described — `buildPrioritisedQueries`
+   * refuses to join two people for exactly that reason ("a caller-supplied context person is a
+   * different claim … must ask about each SEPARATELY"). `e.events` names a happening the beat
+   * states, which is a subject in its own right and already a standalone question in the contract's
+   * own ladder.
+   */
   const secondary = dedupScored([
-    ...tier1.map((q) => scored(q, 0.75, "synonym or variation")),
+    ...anchorTierQueries(tier1.map((q) => scored(q, 0.75, "synonym or variation")), anchor),
     ...e.events.map((q) => scored(q, 0.7, "detected event")),
     ...(ctx?.people ?? []).map((p) => scored(p, 0.65, "main character from video context")),
   ]).slice(0, 8);
 
   // Concepts: abstracted from objects + tier2
   const concepts = dedupScored([
-    ...tier2.map((q) => scored(q, 0.6, "conceptual abstraction")),
+    ...anchorTierQueries(tier2.map((q) => scored(q, 0.6, "conceptual abstraction")), anchor),
     ...e.objects.map((q) => scored(q, 0.55, "detected object")),
   ]).slice(0, 8);
 
@@ -345,7 +534,31 @@ function planFromProfile(
     ...(nextTerms ? [scored(nextTerms, 0.45, "next beat context")] : []),
   ]).slice(0, 4);
 
-  // Historical: era, period, locations, companies
+  /**
+   * Historical: era, period, locations, companies — AND DELIBERATELY NOT ANCHORED. §5 C.
+   *
+   * This round is the one place the plan asks a geographic and chronological question on its own,
+   * and the answer to §5's "onderzoek eerst hoe locations worden gebruikt" is that it has to stay
+   * that way. Three findings, all from the code as it stands:
+   *
+   *   1. It is not built from `searchTiers` at all. Every other band here maps a tier; this one
+   *      maps the TYPED entity lists. The defect this round repairs — a tier read as if it were a
+   *      list of finished queries — does not exist on this path.
+   *   2. `searchQueryContract` already decided the same question the other way and wrote down why:
+   *      "Deliberately NO bare-place query: 'Berlin' on its own returns anything ever shot in
+   *      Berlin. The archival-footage variant at the end covers the place-only case." It emits
+   *      place+year, place+event and place+period as questions in their own right. A place asked
+   *      WITH its era is how era-correct establishing footage is found, and that is this round's
+   *      job in the ladder — `searchPlanRounds` consumes it as "context+historical" and
+   *      "period+style", behind every subject round.
+   *   3. Two of its six sources — `ctx.period` and `ctx.locations` — come from `videoContext`,
+   *      which an LLM derived from the video TITLE. Prefixing a beat-proven person onto a
+   *      title-derived place would manufacture a claim neither the beat nor the title makes:
+   *      "Kim Kardashian Paris" says she was in Paris. §5 C names that risk by name, and it is the
+   *      contamination RONDE 90 refused the title as evidence to prevent.
+   *
+   * So a location stays a standalone geographic question, and it stays BEHIND the anchored rounds.
+   */
   const historical = dedupScored([
     ...e.timePeriods.map((q) => scored(q, 0.5, "detected time period")),
     ...e.years.map((q) => scored(q, 0.45, "detected year")),
@@ -363,7 +576,25 @@ function planFromProfile(
     concepts,
     context: contextQueries,
     historical,
-    fallback: restTiers.map((q) => scored(q, 0.3, "broad fallback tier")).slice(0, 8),
+    /**
+     * §7 — THE DOMAIN FALLBACK STOPS GOING OUT UNGROUNDED.
+     *
+     * `domainFallbackTiers` appends `["documentary archive", "historical footage"]` to the end of
+     * every general-topic profile, and `restTiers` is `searchTiers.slice(3).flat()`, so those two
+     * phrases were the last two queries of most beats in the render — as themselves, naming
+     * nothing. `hasContentAnchor` refuses both (every word is production vocabulary), so they were
+     * built, gated and thrown away once per beat per provider.
+     *
+     * Behind a proven subject they become "Kim Kardashian documentary archive" — a question an
+     * archive can answer. Where there is no proven subject they are left exactly as they were and
+     * the gate refuses them exactly as it did.
+     *
+     * `dedupScored` is new here and is required by the anchoring, not by taste: two fallback terms
+     * that differ only inside the anchor collapse onto one query.
+     */
+    fallback: dedupScored(
+      anchorTierQueries(restTiers.map((q) => scored(q, 0.3, "broad fallback tier")), anchor)
+    ).slice(0, 8),
     people: dedupStrings(e.persons).slice(0, 4),
     objects: dedupStrings(e.objects).slice(0, 6),
     locations: dedupStrings(e.locations).slice(0, 5),
@@ -464,7 +695,12 @@ place, person, event or object that is not already in the narration above.`,
   }
 }
 
-function logPlan(sceneLabel: string, beatLabel: string, plan: VisualSearchPlan): void {
+function logPlan(
+  sceneLabel: string,
+  beatLabel: string,
+  plan: VisualSearchPlan,
+  anchor: string
+): void {
   const fmtRound = (items: ScoredQuery[]) =>
     items
       .slice(0, 3)
@@ -473,6 +709,8 @@ function logPlan(sceneLabel: string, beatLabel: string, plan: VisualSearchPlan):
 
   console.log(
     `\n[VisualSearchPlan] ${sceneLabel} "${beatLabel}"\n` +
+      /** §6 — a beat with no proven subject says so, rather than quietly searching for categories. */
+      `  Anchor:     ${anchor || "(none — tier queries left unanchored)"}\n` +
       `  Intent:     ${plan.intent || "(none)"}\n` +
       `  Reasoning:  ${plan.reasoning ? plan.reasoning.slice(0, 120) + (plan.reasoning.length > 120 ? "…" : "") : "(none)"}\n` +
       `  Round 1 (exact):       ${fmtRound(plan.primary)}\n` +
@@ -577,6 +815,10 @@ export async function getOrGenerateSearchPlan(
      * rescue ladder below it is what such a beat has always relied on.
      *
      * `intent` is a label for the log, not a query, so it keeps the readable sentence.
+     *
+     * Not subject-anchored, and it needs no anchoring: there is no profile and therefore no tier
+     * here, so the category query this round repairs cannot arise. The one query this route builds
+     * comes from `beatQueryTerms`, which leads with the intent's own subject already.
      */
     const planless = beatQueryTerms(input);
     const empty: VisualSearchPlan = {
@@ -603,10 +845,11 @@ export async function getOrGenerateSearchPlan(
     input.topic
   ).catch(() => analyzeBeatSemanticsFallback(input.sceneText || input.beatText, input.topic));
 
-  const plan = planFromProfile(profile, input);
+  const anchor = subjectAnchorForBeat(profile, input);
+  const plan = buildVisualSearchPlan(profile, input, anchor);
   await enrichWithLlm(plan, input);
 
-  logPlan(`s${cacheKey}`, input.beatText.slice(0, 60), plan);
+  logPlan(`s${cacheKey}`, input.beatText.slice(0, 60), plan, anchor);
 
   _planCache.set(cacheKey, plan);
   return plan;

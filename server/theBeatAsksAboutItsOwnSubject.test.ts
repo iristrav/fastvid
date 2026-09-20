@@ -244,9 +244,25 @@ describe("the primary retrieval route actually reads it", () => {
      */
     expect(PLAN).toContain("function dropActionOnlyQueries");
     expect(PLAN).toContain("dropActionOnlyQueries(");
-    const at = PLAN.indexOf("const primary = dropActionOnlyQueries(");
-    expect(at, "the primary round is no longer filtered").toBeGreaterThan(-1);
-    expect(PLAN.slice(at, at + 400)).toContain("tier0.map");
+    /**
+     * The anchor was `const primary = dropActionOnlyQueries(`. The primary round is now wrapped by
+     * the subject-anchor invariant (`aCategoryIsNotASearch.test.ts`), so the filter is no longer
+     * the outermost call of that assignment — the claim this test makes is unchanged and is now
+     * asserted on the whole assignment rather than on its first line.
+     *
+     * And it is asserted more strongly than before, because the ORDER is what keeps render 580's
+     * fix alive: the filter must run BEFORE the anchor, or "illuminate" would come back as
+     * "Kylie Jenner illuminate" — valid to build, and exactly what this round refused.
+     */
+    const at = PLAN.indexOf("const primary = ");
+    expect(at, "the primary round is no longer assembled here").toBeGreaterThan(-1);
+    const block = PLAN.slice(at, at + 700);
+    expect(block, "the primary round is no longer filtered").toContain("dropActionOnlyQueries(");
+    expect(block).toContain("tier0.map");
+    expect(
+      block.indexOf("dropActionOnlyQueries("),
+      "the action filter no longer runs before the subject anchor"
+    ).toBeGreaterThan(block.indexOf("anchorTierQueries("));
   });
 
   it("and the filter is narrow — only THIS beat's own typed actions", () => {
