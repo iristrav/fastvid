@@ -56,12 +56,23 @@ describe("YouTube's cap", () => {
   });
 
   it("the shortlist builder reads it for youtube_cc and nothing else", () => {
-    const at = FUNNEL.indexOf("const capFor = (source: FunnelCandidateSource): number => {");
+    /**
+     * The cap table moved out of `buildDownloadShortlist` into the exported
+     * `shortlistCapForSource`, because a SECOND route — the scene-pool download loop — had never
+     * been told about it and was downloading eight candidates from one stock library per beat.
+     * One definition, two readers. The claim here is unchanged: the shortlist builder gives
+     * youtube_cc its own configured cap and nobody else's.
+     */
+    const at = FUNNEL.indexOf("export function shortlistCapForSource");
     expect(at).toBeGreaterThan(0);
-    const body = FUNNEL.slice(at, FUNNEL.indexOf("};", at));
-    expect(body).toContain('if (source === "youtube_cc") return maxShortlistPerYoutubeSource();');
-    expect(body).toContain('if (source === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;');
-    expect(body).toContain("STOCK_SOURCES.has(source)");
+    const body = FUNNEL.slice(at, FUNNEL.indexOf("\n}", at));
+    expect(body).toContain('if (s === "youtube_cc") return maxShortlistPerYoutubeSource();');
+    expect(body).toContain('if (s === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;');
+    expect(body).toContain("isStockSource(s)");
+    /** And the builder still reads it, rather than keeping a second table of its own. */
+    expect(FUNNEL).toContain(
+      "const capFor = (source: FunnelCandidateSource): number => shortlistCapForSource(source);"
+    );
   });
 });
 

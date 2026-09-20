@@ -86,6 +86,46 @@ export type BeatFunnelRecord = {
    * from `visionUnclear`, which means it looked and could not decide. Three different facts.
    */
   visionNeverAsked: number;
+  /**
+   * THE CANDIDATES THIS BEAT HAS ALREADY COUNTED — and why the four numbers above needed it.
+   *
+   * ── The invariant this type declared and the code did not hold ───────────────────────────────
+   *
+   * The note above says: "Kept strictly disjoint. One candidate contributes to exactly one of the
+   * three … so they sum to the number of candidates the gate returned a verdict for, and never to
+   * more." That was a description of an intention. `noteBeatVisionVerdict` was called once per
+   * CALL to `judgeBeatClipRelevance`, and the same candidate is asked about repeatedly — by the
+   * adopt path, the compose barrier, the refill, the rescue ladder — so one picture could add
+   * fifteen to a counter that claims to count pictures.
+   *
+   * Render 593 is where it shows: per beat, `vision_evaluated` came out LARGER than `offered`. A
+   * subset cannot be bigger than the set it is drawn from; the two were counting different
+   * populations, and only one of them was counting candidates.
+   *
+   * ── The identity, which already existed ──────────────────────────────────────────────────────
+   *
+   * `clipContentKey` / the relevance ledger's content key — the same identity `byContentKey` uses
+   * to carry a verdict across a rename, and the one `providerVisionFunnel` is already unique on
+   * because it walks `byClipPath`. No new id is minted here and nothing random is used: a caller
+   * that has no identity to give passes none, and the call then counts as it always did.
+   */
+  countedCandidates?: Set<string>;
+  /**
+   * Every ASK, including the repeats — the number the four above used to be.
+   *
+   * Kept, because it is genuinely useful and because deleting it would hide the change rather than
+   * make it. `lookups` is the cost this beat put on the gate; `visionAccepted + visionRejected +
+   * visionUnclear + visionNeverAsked` is what the gate learned about distinct pictures. A beat
+   * where those two diverge sharply is a beat being asked the same question over and over.
+   */
+  lookups: number;
+  lookupsRepeated: number;
+  /**
+   * Why a lookup was declined, from the gate's own `VisionDeclineCause` — never re-derived from
+   * prose. Counted per LOOKUP, deliberately: "how often did the ceiling stop us" is a question
+   * about attempts, not about pictures.
+   */
+  lookupsByDecline: Map<string, number>;
 };
 
 export type BeatOutcomeAudit = {
@@ -124,6 +164,10 @@ export function beatRecord(
       visionRejected: 0,
       visionUnclear: 0,
       visionNeverAsked: 0,
+      countedCandidates: new Set<string>(),
+      lookups: 0,
+      lookupsRepeated: 0,
+      lookupsByDecline: new Map<string, number>(),
     };
     audit.beats.set(key, rec);
   }
@@ -202,14 +246,63 @@ export function noteBeatVisionVerdict(
   audit: BeatOutcomeAudit | undefined,
   sceneIndex: number,
   beatIndex: number,
-  outcome: "accepted" | "rejected" | "unclear" | "never_asked"
+  outcome: "accepted" | "rejected" | "unclear" | "never_asked",
+  /**
+   * WHICH PICTURE this verdict is about. See `countedCandidates`.
+   *
+   * The FIRST verdict for a candidate decides which of the four counters it joins; every later ask
+   * about the same picture is a lookup and nothing more. Omit it and the call counts exactly as it
+   * did before — a caller with no identity to offer has not been given a worse answer, only the
+   * old one.
+   */
+  candidateKey?: string | null,
+  /** The gate's own `VisionDeclineCause`, when it declined. Never derived from prose. */
+  declineCause?: string | null
 ): void {
   if (!audit) return;
   const rec = beatRecord(audit, sceneIndex, beatIndex);
+
+  /** Lookup-level, always: this is the cost, and every ask costs. */
+  rec.lookups++;
+  if (declineCause) {
+    rec.lookupsByDecline.set(declineCause, (rec.lookupsByDecline.get(declineCause) ?? 0) + 1);
+  }
+
+  const key = candidateKey?.trim();
+  if (key) {
+    const seen = rec.countedCandidates ?? (rec.countedCandidates = new Set<string>());
+    if (seen.has(key)) {
+      /**
+       * Already counted as a candidate. The picture has not changed and neither has what is known
+       * about it; only the number of times somebody asked. Counting it again is precisely the
+       * defect — one candidate reading as fifteen.
+       */
+      rec.lookupsRepeated++;
+      return;
+    }
+    seen.add(key);
+  }
+
   if (outcome === "accepted") rec.visionAccepted++;
   else if (outcome === "rejected") rec.visionRejected++;
   else if (outcome === "unclear") rec.visionUnclear++;
   else rec.visionNeverAsked++;
+}
+
+/**
+ * Does this beat's candidate accounting hold together?
+ *
+ * The four verdict counters claim to partition the DISTINCT candidates this beat's pictures were
+ * judged on, so their sum can never exceed the number of distinct candidates counted, and can
+ * never exceed the number of lookups either. Exported so a test can assert the invariant the type
+ * has always declared, rather than trusting the comment that declares it.
+ */
+export function beatCandidateAccountingHolds(rec: BeatFunnelRecord): boolean {
+  const verdicts = rec.visionAccepted + rec.visionRejected + rec.visionUnclear + rec.visionNeverAsked;
+  if (verdicts > rec.lookups) return false;
+  if (rec.lookups !== verdicts + rec.lookupsRepeated) return false;
+  const counted = rec.countedCandidates?.size;
+  return counted == null || verdicts <= counted;
 }
 
 export function noteBeatVision(
@@ -364,6 +457,18 @@ export function summarizeBeatCoverage(
  */
 export function formatBeatLedgerLine(rec: BeatFunnelRecord): string {
   const evaluated = rec.visionAccepted + rec.visionRejected + rec.visionUnclear;
+  /**
+   * CANDIDATES on the first line, LOOKUPS on the second — because they are different populations
+   * and putting them in one row is what let `vision_evaluated` come out larger than `offered`.
+   *
+   * The `vision_*` names are unchanged and now mean what they always claimed to mean: distinct
+   * pictures. `lookups` is the number they used to hold, kept rather than quietly dropped, so a
+   * reader comparing this render against an older log can see where the difference went.
+   */
+  const declines = [...rec.lookupsByDecline.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([cause, n]) => `${cause.toLowerCase()}=${n}`)
+    .join(" ");
   return (
     `[BeatLedger] beat=s${rec.sceneIndex}b${rec.beatIndex} ` +
     `offered=${rec.offered} vision_evaluated=${evaluated} ` +
@@ -371,7 +476,11 @@ export function formatBeatLedgerLine(rec: BeatFunnelRecord): string {
     `vision_unclear=${rec.visionUnclear} vision_never_asked=${rec.visionNeverAsked} ` +
     `vision_unavailable=${rec.visionUnavailable} vision_calls=${rec.visionJudged} ` +
     `eligible=${rec.eligible} adopted=${rec.adopted} ` +
-    `coverage=${resolveBeatCoverage(rec)} origin=${rec.origin || "none"}`
+    `coverage=${resolveBeatCoverage(rec)} origin=${rec.origin || "none"}` +
+    `\n[BeatLookups] beat=s${rec.sceneIndex}b${rec.beatIndex} ` +
+    `lookups=${rec.lookups} repeated=${rec.lookupsRepeated} ` +
+    `distinct_candidates=${rec.countedCandidates?.size ?? 0}` +
+    (declines ? ` | declined: ${declines}` : "")
   );
 }
 

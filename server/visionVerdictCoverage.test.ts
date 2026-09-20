@@ -151,8 +151,23 @@ describe("spend and verdict remain separate measurements", () => {
   /** `never_asked` is deliberately outside that sum — it is not a verdict. */
   it("never_asked is reported but not counted as a verdict", () => {
     expect(LEDGER).toContain("vision_never_asked=${rec.visionNeverAsked}");
+    /**
+     * BOUNDED TO THE LEDGER LINE ITSELF.
+     *
+     * This read the whole file, on the assumption that the four-way sum appears nowhere else. It
+     * now does: `beatCandidateAccountingHolds` adds all four deliberately, to assert that the
+     * verdict counters never exceed the distinct candidates behind them. That is the opposite of
+     * this defect — it is the check that the counters partition candidates — and a file-wide
+     * search cannot tell the two apart.
+     *
+     * The claim is unchanged and is now asserted where it is actually about: the line the render
+     * prints. `evaluated` is the three verdicts, and `never_asked` is printed beside them.
+     */
+    const at = LEDGER.indexOf("export function formatBeatLedgerLine");
+    expect(at).toBeGreaterThan(-1);
+    const fn = LEDGER.slice(at, LEDGER.indexOf("\n}", at));
     expect(
-      LEDGER,
+      fn,
       "never_asked was folded into evaluated — a beat nobody looked at now reads as judged"
     ).not.toContain("rec.visionUnclear + rec.visionNeverAsked");
   });

@@ -116,6 +116,10 @@ describe("what a bonus still cannot do", () => {
   it("the per-source cap and the download budget are untouched", () => {
     // Ranking decides the ORDER; these two still decide how many get downloaded at all.
     expect(FUNNEL).toContain("export const MAX_FUNNEL_CANDIDATES_TO_SCORE = 6;");
-    expect(FUNNEL).toContain('if (source === "youtube_cc") return maxShortlistPerYoutubeSource();');
+    /**
+     * The cap table moved into the exported `shortlistCapForSource` so the scene-pool download
+     * loop could read the same rule instead of having none. Same cap, same source, one definition.
+     */
+    expect(FUNNEL).toContain('if (s === "youtube_cc") return maxShortlistPerYoutubeSource();');
   });
 });

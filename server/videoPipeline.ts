@@ -796,6 +796,8 @@ import {
   buildDownloadShortlist,
   hoistBudgetSensitiveDownload,
   reorderShortlistForBeat,
+  /** P-593: the per-source download cap, so the pool route reads the rule the funnel already had. */
+  capCandidatesPerSource,
   MAX_FUNNEL_CANDIDATES_TO_SCORE,
   keepOnlyJudgedWinner,
   FUNNEL_CANDIDATE_POOL_LIMIT,
@@ -33657,7 +33659,17 @@ async function judgeBeatClipRelevance(
         ? "accepted"
         : decision.verdict === "does_not_fit"
           ? "rejected"
-          : "unclear"
+          : "unclear",
+    /**
+     * WHICH PICTURE, so one candidate cannot count as fifteen.
+     *
+     * The same identity the relevance ledger uses to carry a verdict across a rename, and the one
+     * `providerVisionFunnel` is already unique on. `params.contentKey` when the caller has it —
+     * that survives the file being copied or renamed — and the clip path otherwise, which is what
+     * the ledger itself keys on.
+     */
+    params.contentKey || params.clipPath,
+    decision.declineCause ?? null
   );
   /**
    * THE FRAMING THE JUDGE JUST SAW, filed where the ranking will look for it.
@@ -40956,6 +40968,33 @@ async function fetchSceneVisualsInner(
             beat.index
           );
           poolCandidates = poolCandidates.slice(0, 3);
+        }
+        /**
+         * THE DIVERSITY CAP THE SIBLING ROUTE HAS ALWAYS HAD — see `shortlistCapForSource`.
+         *
+         * This loop downloads until one file survives technically, and until now it did so with no
+         * per-source rule, so all of a beat's download attempts could come from one library. The
+         * funnel's shortlist has capped exactly this since FASE 4 (stock 1, non-stock 2, archive 3,
+         * YouTube by its own setting) and gives unused room back to the non-stock overflow.
+         *
+         * Render 593 is the measurement: 206 Pexels downloads and 0 Pexels adoptions across twenty
+         * beats. One slot per beat is twenty; the pool route is where the other ~186 came from.
+         *
+         * NO PROVIDER IS SWITCHED OFF, no key is read, no gate moves, and the budget below is
+         * unchanged. A beat whose pool holds nothing but one source still asks that source, and a
+         * beat this leaves empty falls through to the cascade and the rescue ladder exactly as a
+         * beat that found nothing always has.
+         */
+        {
+          const before = poolCandidates.length;
+          poolCandidates = capCandidatesPerSource(poolCandidates, before);
+          if (poolCandidates.length < before) {
+            console.log(
+              `[Pool] s${scene.index}b${beat.index} download slots capped by source diversity: ` +
+                `${before} → ${poolCandidates.length} ` +
+                `(${poolCandidates.map((c) => c.source).join(", ") || "none"})`
+            );
+          }
         }
         let poolClip: string | null = null;
         let _poolFailReasons: string[] = [];

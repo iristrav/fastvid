@@ -1051,6 +1051,89 @@ export const FUNNEL_CANDIDATE_POOL_LIMIT = 15;
 const MAX_SHORTLIST_PER_NON_STOCK_SOURCE = 2;
 const MAX_SHORTLIST_PER_STOCK_SOURCE = 1;
 
+/** Is this one of the commissioned stock libraries the diversity cap was written against? */
+export function isStockSource(source: string): boolean {
+  return STOCK_SOURCES.has(source.trim().toLowerCase() as FunnelCandidateSource);
+}
+
+/**
+ * HOW MANY CANDIDATES ONE SOURCE MAY CONTRIBUTE TO ONE BEAT'S DOWNLOADS.
+ *
+ * ── Why this is exported, and what render 593 cost ──────────────────────────────────────────
+ *
+ * Two routes download a beat's pictures, and until now only one of them knew this rule.
+ *
+ *   FUNNEL  `buildDownloadShortlist` — caps each source, then backfills unused slots from the
+ *           overflow, stock excluded. Pexels gets ONE slot per beat.
+ *   POOL    `videoPipeline`'s scene-pool loop — walks `selectCandidatesFromPool(..., 8)` and
+ *           downloads until one file survives technically. No per-source rule at all, so all
+ *           eight of a beat's download attempts could be, and were, the same stock library.
+ *
+ * Render 593: 206 Pexels downloads, 0 Pexels adoptions, across twenty beats. The funnel route
+ * alone cannot produce that number — one slot per beat is twenty. The pool route can, and the
+ * difference between the two routes is this function, which one of them had never been told about.
+ *
+ * That is this codebase's signature defect once more: a rule is written down, and read by one of
+ * the several places that decide.
+ *
+ * ── What it is NOT ──────────────────────────────────────────────────────────────────────────
+ *
+ * Not a ranking change, not a refusal, and not a provider being switched off. It is a DIVERSITY
+ * cap on which candidates are worth a download, and the numbers are exactly the ones the funnel
+ * has used since FASE 4. `pickBestFunnelCandidate` and the vision gate still decide the winner.
+ */
+export function shortlistCapForSource(source: string): number {
+  const s = source.trim().toLowerCase();
+  if (s === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;
+  /** The operator's chosen primary material — see `maxShortlistPerYoutubeSource`. */
+  if (s === "youtube_cc") return maxShortlistPerYoutubeSource();
+  return isStockSource(s) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
+}
+
+/**
+ * The cap applied to a plain candidate list, with the funnel's own backfill rule.
+ *
+ * Cap first, in the order the caller already ranked them; then, if the caller has room left,
+ * give the unused room back to the candidates the cap refused — NON-STOCK ONLY. That exclusion is
+ * the funnel's, kept verbatim and for its own stated reason: "six generic stock clips of the same
+ * query are interchangeable, so fetching six to fill a six-slot budget buys nothing but wall
+ * time". It is an argument about stock, and it does not apply to different holdings of different
+ * archival material.
+ *
+ * Pure, order-preserving, and it never invents a candidate: the result is always a subsequence of
+ * the input. A list that is entirely one source comes back with that source's cap — and when that
+ * is all a beat has, the routes below it (the cascade, the rescue ladder, the guaranteed fill) are
+ * what the beat has always fallen through to.
+ */
+export function capCandidatesPerSource<T extends { source: string }>(
+  candidates: readonly T[],
+  budget: number
+): T[] {
+  if (budget <= 0 || candidates.length === 0) return [];
+  const kept: T[] = [];
+  const overflow: T[] = [];
+  const perSource = new Map<string, number>();
+  for (const c of candidates) {
+    const key = c.source.trim().toLowerCase();
+    const used = perSource.get(key) ?? 0;
+    if (used >= shortlistCapForSource(key)) {
+      overflow.push(c);
+      continue;
+    }
+    kept.push(c);
+    perSource.set(key, used + 1);
+  }
+  const out = kept.slice(0, budget);
+  for (const c of overflow) {
+    if (out.length >= budget) break;
+    if (isStockSource(c.source)) continue;
+    out.push(c);
+  }
+  /** Restored to the caller's order, because the caller ranked them and this only removes. */
+  const chosen = new Set<T>(out);
+  return candidates.filter((c) => chosen.has(c));
+}
+
 /**
  * RONDE 163 — the curated archive is not one source among interchangeable peers.
  *
@@ -1254,12 +1337,7 @@ export function buildDownloadShortlist(
   const pool = unused.length > 0 ? unused : candidates;
   const sorted = [...pool].sort((a, b) => b.rankingScore - a.rankingScore);
 
-  const capFor = (source: FunnelCandidateSource): number => {
-    if (source === "archive") return MAX_SHORTLIST_PER_ARCHIVE_SOURCE;
-    /** The operator's chosen primary material — see `maxShortlistPerYoutubeSource`. */
-    if (source === "youtube_cc") return maxShortlistPerYoutubeSource();
-    return STOCK_SOURCES.has(source) ? MAX_SHORTLIST_PER_STOCK_SOURCE : MAX_SHORTLIST_PER_NON_STOCK_SOURCE;
-  };
+  const capFor = (source: FunnelCandidateSource): number => shortlistCapForSource(source);
 
   /**
    * RONDE 170 — the caps decide who goes FIRST, not how many slots are left empty.
