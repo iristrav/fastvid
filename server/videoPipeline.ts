@@ -359,6 +359,8 @@ import {
   visualSearchPlanEnabled,
   buildVideoVisualContext,
   clearVisualSearchPlanCacheForVideo,
+  ensureSubjectAnchor,
+  subjectAnchorForBeat,
   type VideoVisualContext,
 } from "./visualSearchPlan";
 import { normaliseShotType, shotSearchTerms, withPlannedShot } from "./shotVocabulary";
@@ -36013,6 +36015,53 @@ async function adoptStockBeatClipFallbackInner(
     beat.searchQuery?.trim() || beat.text.slice(0, 80),
     beat.index
   );
+  /**
+   * THE ANCHOR SURVIVED THE PLAN AND DIED IN THE SIMPLIFIER.
+   *
+   * ── What was measured ───────────────────────────────────────────────────────────────────────
+   *
+   * RONDE 14b7cc2 made a tier term ask about its subject, so `visualSearchPlan` stopped emitting
+   * `news`, `medium` and `documentary archive` as standalone provider searches. This ladder never
+   * read that plan — it builds its own queries — and every one of them is then handed to
+   * `simplifyStockSearchWord`, whose first act is to walk `STOCK_TOPIC_WORD_RULES` and RETURN A
+   * CATEGORY WORD. The table was evaluated directly against real anchored queries:
+   *
+   *     "Kim Kardashian"                    -> celebrity
+   *     "Kim Kardashian news conference"    -> celebrity
+   *     "Kim Kardashian 2018 interview"     -> celebrity
+   *     "Marie Curie laboratory Paris"      -> science
+   *
+   * `/\bkardashian\b/ -> "celebrity"` erases a named person by design, and the rule fires on the
+   * query's own words before any token ranking runs. Render 593 is the production half of the
+   * same measurement: `query="news" status=DOWNLOADED searchRoute=fetchPexelsClips` on a beat
+   * whose proven terms were `["Kim Kardashian"]`, and the stock library answered it with footage
+   * of somebody else. Both providers here are called with `strictQueries=true`, so this is the
+   * only place the collapse happens — one call site, not twelve.
+   *
+   * ── What this changes, and what it does not ─────────────────────────────────────────────────
+   *
+   * The simplifier is untouched: it still collapses, still returns exactly the word it returned
+   * before, and the category word is still what varies from query to query. The anchor is put
+   * BACK afterwards, by the same exported helper `visualSearchPlan` uses, on an anchor the beat's
+   * own sentence has to prove through `termProvableFrom` — so no word enters a query that the
+   * narration did not say, and a beat with no provable subject is left exactly as it was.
+   *
+   * Query diversity is arithmetically unchanged: the anchor is a constant prefix applied after
+   * the collapse, so two queries that survived the `Set` as distinct still do, and two that
+   * collapsed onto each other already had.
+   *
+   * It will cost coverage on subjects the stock libraries do not hold. "Kim Kardashian news"
+   * returns less than "news" does — that is the point. What "news" returned was a picture of
+   * something else, adopted onto the beat, which is the silent substitution this pipeline is not
+   * allowed to make. An honest empty answer sends the beat to the next rung of the ladder.
+   */
+  const stockSubjectAnchor = semanticProfile
+    ? subjectAnchorForBeat(semanticProfile, {
+        beatText: beat.text,
+        sceneText: scene.text,
+        topic: asVideoTitleString(videoTitle),
+      })
+    : "";
   const fastShortStock = isFastShortVideoLength(dedup.videoLength) && dedup.perf.fastStockMode;
   const queryCap = fastShortStock
     ? 3
@@ -36036,6 +36085,8 @@ async function adoptStockBeatClipFallbackInner(
       ]
         .filter((q) => toQueryString(q).length > 2 && !isBlockedStockQuery(toQueryString(q)))
         .map((q) => simplifyStockSearchWord(toQueryString(q), beat.text, true))
+        /** The category word the simplifier returned is put back in front of its subject. */
+        .map((q) => ensureSubjectAnchor(q, stockSubjectAnchor))
         /** An unsearchable sentence yields no query; it must not become an empty one. */
         .filter((q) => q.trim().length > 0)
     ),
@@ -42214,6 +42265,33 @@ export function sceneComposeOutputPath(sceneIndex: number, workDir: string): str
 }
 
 /**
+ * "FINISHED" WAS A STOPWATCH READING, AND IT READ AS A RESULT.
+ *
+ * `[Compose] Scene 2 finished (18.4s) — active=1, queued=0, done=3/5` says how long the task took
+ * and how busy the pool is. It says nothing about what the task produced, and that is exactly how
+ * it was read: render 593's investigation spent a pass on whether a scene reported finished while
+ * `scene_2_composed.mp4` was absent from disk, because the line gave no other way to tell. It was
+ * not a false success — the compose had published under a different name, the concat verifies
+ * every scene file and logs `Concat: scene file MISSING` for any that is not there — but nothing
+ * between the two lines said so.
+ *
+ * This is the missing half of the sentence, and only that: the file the compose returned, its
+ * size, and whether it is on disk AT THE MOMENT it is reported. Nothing is inferred from the
+ * name, no verdict is issued, and a compose that returns nothing says `out=none` rather than
+ * going quiet. The concat's own check is unchanged and remains the thing that decides.
+ */
+function formatComposeOutcome(result: unknown): string {
+  const p = typeof result === "string" ? result.trim() : "";
+  if (!p) return "out=none";
+  try {
+    const st = fs.statSync(p);
+    return `out=${path.basename(p)} bytes=${st.size}`;
+  } catch {
+    return `out=${path.basename(p)} bytes=ABSENT`;
+  }
+}
+
+/**
  * Minimum share of the scene's voice duration a salvaged compose output must actually cover.
  *
  * withSceneFetchTimeout rejects the CALLER without cancelling the work: hardAbortScope SIGKILLs
@@ -46431,7 +46509,8 @@ async function _runVideoPipelineInner(
                 gantt(`Scene ${scene.index} compose END   (${(composeElapsedMs[i] / 1000).toFixed(1)}s, active=${activeComposes})`, t2p);
                 console.log(
                   `[Compose] Scene ${scene.index} finished (${(composeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
-                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length}`
+                  `active=${activeComposes}, queued=${queuedComposes}, done=${completedPipelineCompose}/${scenes.length} ` +
+                  `${formatComposeOutcome(result)}`
                 );
                 if (composeElapsedMs[i] > 60_000) {
                   void diagnoseSlowCompose(
@@ -47341,7 +47420,8 @@ async function _runVideoPipelineInner(
           profiler.recordSceneCompose(i, scene.index, 0, seqComposeStartMs[i], Date.now());
           console.log(
             `[Compose] Scene ${scene.index} finished (${(seqComposeElapsedMs[i] / 1000).toFixed(1)}s) — ` +
-            `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length}`
+            `active=${seqActiveComposes}, queued=${seqQueuedComposes}, done=${completedCompose}/${scenes.length} ` +
+            `${formatComposeOutcome(result)}`
           );
           if (seqComposeElapsedMs[i] > 60_000) {
             void diagnoseSlowCompose(
