@@ -62,15 +62,23 @@ describe("the render job inspects the file it is about to deliver", () => {
    */
   it("does not fail the render on a content warning", () => {
     /**
-     * Bounded to the content-check block itself — up to the upload step that follows it. The
-     * upload's own `fail(OUTPUT_UPLOAD_FAILED)` is correct and must stay; a fixed character window
-     * would swallow it and turn this into a test of where the upload happens to sit.
+     * Bounded to the content-check block ITSELF.
+     *
+     * It used to end at the upload step, on the assumption that nothing sat between the two. The
+     * delivery gate now does — step 6d, which refuses a film whose pictures cannot be produced
+     * again from FastVid's own archive — and its `fail(RENDER_FAILED)` is correct and must stay.
+     * A window that swallowed it would turn this into a test of what happens to be next in the
+     * file rather than a test of the content check, which is what it is for.
+     *
+     * So the window ends where the content check does. Both `fail(` calls that follow it are
+     * deliberate and each is guarded by its own test: the gate's by
+     * `everyProductionRouteMeetsTheArchive`, the upload's by `OUTPUT_UPLOAD_FAILED` below.
      */
     const at = worker.indexOf("spotCheckFinalVideo(outputPath)");
-    const uploadAt = worker.indexOf("/* 7. upload to a key", at);
+    const nextStepAt = worker.indexOf("6d. THE DELIVERY GATE", at);
     expect(at).toBeGreaterThan(-1);
-    expect(uploadAt).toBeGreaterThan(at);
-    expect(worker.slice(at, uploadAt)).not.toContain("fail(");
+    expect(nextStepAt, "the content check is no longer followed by the delivery gate").toBeGreaterThan(at);
+    expect(worker.slice(at, nextStepAt)).not.toContain("fail(");
   });
 
   it("survives a check that throws, rather than losing a finished render to it", () => {
