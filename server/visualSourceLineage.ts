@@ -1359,6 +1359,46 @@ export class VisualSourceLedger {
     return record;
   }
 
+  /**
+   * MEDIA ARCHIVE ROUND — THE HANDLE THIS SYSTEM EARNED BY STORING THE FILE.
+   *
+   * ── Why `attributeProvider` could not do this ───────────────────────────────────────────────
+   *
+   * It opens with `if (!provider || record.provider) return record;` — it fills a record that has
+   * NO provider yet, and returns an attributed one untouched. That rule is right and stays: two
+   * providers claiming one asset is a finding, not something to overwrite away.
+   *
+   * But the asset this round is about has a provider and is missing something else. A Wikimedia
+   * clip that has just been archived reads `provider="wikimedia"` and `archiveAssetId=undefined`,
+   * so every call above returned early and the id had nowhere to go. That is why external assets
+   * reached the timeline with a provider handle and no archive handle, and why the renderer had to
+   * go back out to the network for a file sitting in this system's own storage.
+   *
+   * ── What it may and may not do ──────────────────────────────────────────────────────────────
+   *
+   * Fill only. An id already on the record wins, because two archive rows for one lineage record
+   * is the same kind of finding as two providers and must not be resolved by taking the newer. The
+   * provider is not touched, the status is not touched, and nothing is invented: the caller is
+   * holding a row id that `storeForProduction` obtained by putting the bytes in the archive and
+   * reading them back out again.
+   */
+  attachArchiveAsset(record: VisualLineageRecord, archiveAssetId: number): VisualLineageRecord {
+    if (!Number.isInteger(archiveAssetId) || archiveAssetId <= 0) return record;
+    record.archiveAssetId ??= archiveAssetId;
+    return record;
+  }
+
+  /** The same, by path, for a caller holding a file rather than a record. Null when unresolvable. */
+  attachArchiveAssetToPath(
+    clipPath: string,
+    archiveAssetId: number,
+    contentKey?: string
+  ): VisualLineageRecord | null {
+    const record = this.resolve(clipPath, contentKey);
+    if (!record) return null;
+    return this.attachArchiveAsset(record, archiveAssetId);
+  }
+
   /** Every event, in the order it happened. */
   allEvents(): readonly VisualLineageEvent[] {
     return this.events;

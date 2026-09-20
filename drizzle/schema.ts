@@ -193,6 +193,45 @@ export const mediaArchiveAssets = mysqlTable(
   sourceCreator: varchar("sourceCreator", { length: 256 }),
   licenseUrl: varchar("licenseUrl", { length: 512 }),
   downloadedAt: timestamp("downloadedAt"),
+  /**
+   * MEDIA ARCHIVE ROUND — THE PROVIDER'S OWN ID, AS A COLUMN.
+   *
+   * It was already being stored, inside `sourceNote`, as the free text `"pexels:12345"` or
+   * `"internet_archive:youtube-r6LB5toWr5I"`. A note is not a key: nothing can index it, nothing can
+   * join on it, and "have we already archived this provider asset" could only be answered through
+   * `sourceUrlHash` — which is null for every candidate whose remote URL the pool did not record.
+   *
+   * Split out so the archive can answer the question the rehydrator actually asks: given
+   * `provider` + `providerAssetId` from a stored timeline, which archive row holds the file?
+   * `sourceNote` is left exactly as it is, so every existing row and reader keeps working.
+   */
+  providerAssetId: varchar("providerAssetId", { length: 256 }),
+  /** SHA-256 of the stored bytes. File identity, for the deduplication §14 asks for. */
+  checksumSha256: varchar("checksumSha256", { length: 64 }),
+  /** Size of the stored file in bytes, measured after the upload rather than claimed before it. */
+  fileSizeBytes: int("fileSizeBytes"),
+  /**
+   * The §13 lifecycle, as one column.
+   *
+   * `isActive` says whether an operator wants this asset used; this says how far it got. They are
+   * different questions and were being answered by one flag: a row that exists is "in the archive"
+   * whether or not anybody ever proved its bytes readable.
+   *
+   * Only `READY` means production-ready: downloaded, validated, stored, and read back from storage
+   * at least once. Null is every row that predates this column — deliberately not backfilled to
+   * READY, because that would be this system claiming a check it never ran.
+   */
+  mediaStatus: mysqlEnum("mediaStatus", [
+    "DOWNLOADED",
+    "VALIDATED",
+    "ARCHIVED",
+    "READY",
+    "REJECTED",
+    "FAILED",
+    "MISSING",
+  ]),
+  /** When the stored file was last read back out of storage and proven readable. */
+  readableCheckedAt: timestamp("readableCheckedAt"),
   originalQuery: varchar("originalQuery", { length: 512 }),
   matchedQuery: varchar("matchedQuery", { length: 512 }),
   /** Recognized entities (people/orgs/places/events) tied to this asset, e.g. ["Justin Bieber"]. */
@@ -251,6 +290,17 @@ export const mediaArchiveAssets = mysqlTable(
     archiveIdIsActiveIdx: index("media_archive_assets_archiveId_isActive_idx").on(t.archiveId, t.isActive),
     // F3-26: fast "has this web source already been ingested" lookup before re-downloading.
     sourceUrlHashIdx: index("media_archive_assets_sourceUrlHash_idx").on(t.sourceUrlHash),
+    /**
+     * MEDIA ARCHIVE ROUND — the two lookups the production store makes on every accepted clip.
+     *
+     * "Do we already hold this provider asset" and "do we already hold these exact bytes" were
+     * both unanswerable without a scan, which is why the render re-downloaded material it had
+     * archived on a previous run.
+     */
+    providerAssetIdx: index("media_archive_assets_provider_assetId_idx").on(
+      t.sourcePlatform, t.providerAssetId
+    ),
+    checksumIdx: index("media_archive_assets_checksum_idx").on(t.checksumSha256),
   })
 );
 

@@ -854,6 +854,13 @@ import {
   formatRepeatReport,
 } from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
+import { DELIVERY_GATE_FAIL, legacyFallbackDeliveryAllowed } from "./deliveryGate";
+import {
+  productionArchiveDeps,
+  storeForProduction,
+  type ProductionArchiveMetadata,
+  type ProductionArchiveOutcome,
+} from "./productionMediaArchive";
 import { getDeadEndQueries, getVisualSearchMemoryForEntity, recordAdoptedClipSource, recordSearchMisses } from "./visualSearchMemory";
 import {
   createSearchMemoryRecallMetrics,
@@ -40640,13 +40647,18 @@ async function fetchSceneVisualsInner(
          * two, best-effort, never blocking a render.
          */
         const beatQuery = beat.searchQuery?.trim() || beat.text;
-        const queueArchiveIngestion = (
-          clipPath: string,
+        /**
+         * The metadata both archive routes send, built once.
+         *
+         * It used to live inside `queueArchiveIngestion`, which was the only caller. The winner now
+         * goes through `storeForProduction` instead — a different function with the same metadata —
+         * and two copies of this literal is two chances for the winner and the runners-up to be
+         * archived under different provenance. Lifted, not rewritten: every field below is the one
+         * that was there, with its reasoning.
+         */
+        const archiveMetadataFor = (
           wec: NonNullable<typeof winningExternalCandidate>
-        ): void => {
-          void (async () => {
-            try {
-              await ingestExternalClipToArchive(clipPath, {
+        ): ProductionArchiveMetadata => ({
                 title: wec.title,
                 // RONDE 9: NEVER the narration keywords — those describe what is SAID, not what
                 // is SHOWN, and they poisoned the archive (a stock clip tagged "adolf hitler").
@@ -40692,16 +40704,108 @@ async function fetchSceneVisualsInner(
                 // so a later render asking what to search for got back things like "White Lives
                 // Matter Montana - Stickering Action". A title is not a query.
                 matchedQuery: beatQuery,
-                topics: beat.keywords ?? [],
-              });
+          topics: beat.keywords ?? [],
+        });
+        const queueArchiveIngestion = (
+          clipPath: string,
+          wec: NonNullable<typeof winningExternalCandidate>
+        ): void => {
+          void (async () => {
+            try {
+              await ingestExternalClipToArchive(clipPath, archiveMetadataFor(wec));
             } catch {
               // best-effort: never block video production
             }
           })();
         };
 
+        /**
+         * THE WINNER IS STORED BEFORE THE TIMELINE IS ALLOWED TO NAME IT.
+         *
+         * ── The defect this replaces ────────────────────────────────────────────────────────
+         *
+         * This line used to be `queueArchiveIngestion(funnelClip, winningExternalCandidate)` — the
+         * same fire-and-forget call as the runners-up below. `ingestExternalClipToArchive` returns
+         * `{ assetId, storageKey }`, and that assetId is `AssetSourceIdentity.archiveAssetId`: the
+         * first branch `rehydrateAsset` tries, the one route that cannot fail because a provider's
+         * API changed. It was computed at the only site that could produce one for an external
+         * provider, thrown away, and not even waited for.
+         *
+         * So every external clip reached the renderer carrying a provider id and nothing of ours.
+         * When the pool had recorded no remote URL either, the identity had no fetchable handle at
+         * all, and the render died on `ASSET_NOT_FOUND … has no fetchable URL`.
+         *
+         * ── Why the winner is awaited and the runners-up are not ────────────────────────────
+         *
+         * The winner is the clip this beat is going to USE. Its archive id has to exist before the
+         * cinematic planner reads this beat's identity, which happens later in the same render —
+         * so the store is awaited, and its handle is attached to the lineage record the planner
+         * reads from. The runners-up are kept for FUTURE renders' searches; nothing in this render
+         * waits on them, and they stay exactly as best-effort as they were.
+         *
+         * ── What a failure does, and deliberately does not do ───────────────────────────────
+         *
+         * It does not stop the render and it does not invent a reference. The beat keeps the
+         * identity it already had — provider, id, media URL — which is precisely what it had before
+         * this round, so a storage outage costs the render its archive handle and nothing else.
+         * What it gains is that the failure is named: `ARCHIVE_STORE_FAILED` with its code, at the
+         * moment it happens, instead of an `ASSET_NOT_FOUND` twenty minutes later with no way back
+         * to the cause.
+         */
         if (archiveEligible && funnelClip && winningExternalCandidate) {
-          queueArchiveIngestion(funnelClip, winningExternalCandidate);
+          const wec = winningExternalCandidate;
+          const providerAssetId = String(wec.poolCandidate?.id ?? wec.id ?? "").trim() || null;
+          const stored = await storeForProduction({
+            localPath: funnelClip,
+            provider: wec.source,
+            providerAssetId,
+            metadata: archiveMetadataFor(wec),
+            deps: productionArchiveDeps({
+              /**
+               * The pipeline's own downloader, so its timeout, its process-wide byte budget and
+               * its logging apply here unchanged — §16's "no second downloader". Success is the
+               * file landing, because `downloadToFileStreaming` resolves to a response.
+               */
+              download: async (url, dest) => {
+                await downloadToFileStreaming(url, dest, 120_000, "productionArchive:readBack");
+                return fs.existsSync(dest) && fs.statSync(dest).size > 0;
+              },
+            }),
+            ctx: {
+              projectId: getActiveVideoId() ?? null,
+              sceneIndex: scene.index,
+              beatIndex: beat.index,
+              provider: wec.source,
+              providerAssetId,
+            },
+            verifyDir: workDir,
+            expectVideo: wec.mediaType === "video",
+          }).catch((err): ProductionArchiveOutcome => ({
+            status: "failed",
+            code: "ARCHIVE_RECORD_FAILED",
+            message: (err as Error).message.slice(0, 200),
+            mediaStatus: "FAILED",
+          }));
+          /**
+           * THE HANDLE, CARRIED. This is the line the whole round is about.
+           *
+           * Without it the id is computed and discarded exactly as before, and the only difference
+           * would be a prettier log. `attachArchiveAsset` fills and never overwrites, so a clip
+           * that already had an archive handle keeps the one it had.
+           */
+          if (stored.status === "stored") {
+            const attached = dedup.sourcingCache?.lineage?.attachArchiveAssetToPath(
+              funnelClip, stored.archiveAssetId, clipContentKey(funnelClip)
+            );
+            if (!attached) {
+              console.warn(
+                `[ProductionArchive] s${scene.index}b${beat.index} ARCHIVE_ASSET_UNATTACHED ` +
+                  `archiveAssetId=${stored.archiveAssetId} file=${path.basename(funnelClip)} — ` +
+                  `the bytes are stored and READY, but the lineage ledger has no record for this ` +
+                  `path, so the timeline cannot be told about it`
+              );
+            }
+          }
         }
 
         /**
@@ -50472,6 +50576,55 @@ async function _runVideoPipelineInner(
                 `${cinematicRefusal}`
             )
           );
+          /**
+           * §10 — AND THAT IS WHERE IT STOPS BEING A DELIVERY.
+           *
+           * ── What this line replaces ─────────────────────────────────────────────────────────
+           *
+           * The warning above, and then the render carried on and marked the video COMPLETE with
+           * the compose montage in it. The comment beside it argued "a real video beats no video",
+           * and the log was greppable, so this was never a SILENT fallback — it was a loud one that
+           * still shipped. §10's objection is not to the silence. It is that a film the authoritative
+           * timeline did not render was handed over as though it had.
+           *
+           * ── The distinction this depends on, and why it is safe ─────────────────────────────
+           *
+           * `cinematicRefusal` is set ONLY when a cinematic render was attempted and did not
+           * deliver. A deployment with `CINEMATIC_RENDER_PATH` switched off makes no attempt, records
+           * no refusal, and never reaches this branch — compose is that deployment's configured
+           * route, not a fallback, and refusing it would block every render. See `isFallbackDelivery`.
+           *
+           * ── The escape hatch, and why it is not the default ─────────────────────────────────
+           *
+           * §10 allows a fallback "for development/debugging if explicitly requested".
+           * `ALLOW_LEGACY_COMPOSE_FALLBACK=true` is that request. Off, this blocks; on, it delivers
+           * and says on its own line that it was allowed to, so a deployment that left the flag set
+           * cannot mistake the result for a clean render.
+           */
+          if (legacyFallbackDeliveryAllowed()) {
+            console.warn(
+              pipelineReport.add(
+                "summary",
+                `[DeliveryGate] video=${videoId} LEGACY_FALLBACK_ALLOWED — ` +
+                  `ALLOW_LEGACY_COMPOSE_FALLBACK is set, so a film the authoritative timeline did ` +
+                  `not render is being delivered on purpose`
+              )
+            );
+          } else {
+            console.error(
+              pipelineReport.add(
+                "summary",
+                `[DeliveryGate] ${DELIVERY_GATE_FAIL} video=${videoId} ` +
+                  `AUTHORITATIVE_RENDER_FAILED — ${cinematicRefusal}`
+              )
+            );
+            throw pipelineError(
+              PIPELINE_ERROR.FFMPEG,
+              `Delivery blocked for video ${videoId}: the authoritative timeline render did not ` +
+                `deliver (${cinematicRefusal}), and the compose montage may not be handed over in ` +
+                `its place. Set ALLOW_LEGACY_COMPOSE_FALLBACK=true only for development.`
+            );
+          }
         }
       }
     } catch (err) {

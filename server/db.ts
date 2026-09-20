@@ -1897,6 +1897,64 @@ export async function findMediaArchiveAssetBySourceUrlHash(sourceUrlHash: string
 }
 
 /**
+ * MEDIA ARCHIVE ROUND §14 — "do we already hold these exact bytes?"
+ *
+ * The checksum is the only one of the three identity questions that survives a provider changing
+ * an id, a CDN reissuing a URL, or the same film arriving from two different archives. Asked
+ * before any upload, so the same material is stored once however many routes find it.
+ *
+ * Only a row that reached READY answers yes. An earlier attempt that failed its read-back left a
+ * row with the right checksum and no usable file behind it, and treating that as a hit would hand
+ * the timeline a handle to nothing — the exact failure this round exists to end.
+ */
+export async function findMediaArchiveAssetByChecksum(
+  checksumSha256: string
+): Promise<MediaArchiveAsset | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(
+      and(
+        eq(mediaArchiveAssets.checksumSha256, checksumSha256),
+        eq(mediaArchiveAssets.mediaStatus, "READY")
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * MEDIA ARCHIVE ROUND §14 — "do we already hold this provider asset?"
+ *
+ * The second dedup question, and the one that can be asked before a byte is downloaded. Matched on
+ * the pair, because a provider id is unique only within its provider: `youtube-r6LB5toWr5I` is an
+ * Internet Archive identifier and `r6LB5toWr5I` is a YouTube one, and they are not the same asset.
+ *
+ * READY for the same reason as above.
+ */
+export async function findMediaArchiveAssetByProviderAsset(
+  provider: string,
+  providerAssetId: string
+): Promise<MediaArchiveAsset | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(mediaArchiveAssets)
+    .where(
+      and(
+        eq(mediaArchiveAssets.sourcePlatform, provider.trim().toLowerCase()),
+        eq(mediaArchiveAssets.providerAssetId, providerAssetId.trim()),
+        eq(mediaArchiveAssets.mediaStatus, "READY")
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
  * RONDE 127 — the single-asset delete never got RONDE 12's fix.
  *
  * From the admin:

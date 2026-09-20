@@ -44,12 +44,27 @@ describe("RONDE 9.1 — stock footage is never archived", () => {
 // ─── 2. Content-true tags ─────────────────────────────────────────────────────────────────────
 
 describe("RONDE 9.2 — tags describe what is SHOWN, never what is SAID", () => {
+  /**
+   * MEDIA ARCHIVE ROUND — the same claim, at the one place that now decides it.
+   *
+   * The metadata used to be written inline inside `queueArchiveIngestion`, which was the only
+   * caller, so this test read that call. The winner's clip now goes through `storeForProduction`
+   * instead — it must be archived and read back BEFORE its identity may enter the production
+   * timeline — and both routes take their metadata from `archiveMetadataFor`.
+   *
+   * That makes RONDE 9's rule easier to hold, not harder: one definition instead of one per route.
+   * Neither half of the claim is dropped — `tags: []` is still required and `beat.keywords` is
+   * still forbidden — and both are now asserted against the single writer, so a second route
+   * growing its own metadata block cannot slip past by not matching the old string.
+   */
   it("the funnel call site no longer passes beat narration keywords as tags", () => {
-    const idx = pipelineSrc.indexOf("await ingestExternalClipToArchive(clipPath, {");
-    expect(idx).toBeGreaterThan(-1);
-    const call = pipelineSrc.slice(idx, idx + 1600);
+    const idx = pipelineSrc.indexOf("const archiveMetadataFor = (");
+    expect(idx, "the single metadata writer is gone — has a route grown its own again?").toBeGreaterThan(-1);
+    const call = pipelineSrc.slice(idx, idx + 2400);
     expect(call).toContain("tags: [],");
     expect(call).not.toContain("tags: beat.keywords");
+    /** And there is exactly one of them, so "the single writer" is measured rather than assumed. */
+    expect((pipelineSrc.match(/const archiveMetadataFor = \(/g) ?? []).length).toBe(1);
   });
 
   it("ingestion adds Rekognition-recognized person names as content-true tags", () => {

@@ -680,16 +680,31 @@ export async function rehydrateTimelineAssets(params: {
  * A provider URL routinely carries a signed token or an API key in its query string, and this line
  * goes to a log that people read and paste. The host is enough to know where a picture came from.
  */
+export const ARCHIVE_REHYDRATE_SUCCESS = "ARCHIVE_REHYDRATE_SUCCESS";
+export const ARCHIVE_REHYDRATE_FAILED = "ARCHIVE_REHYDRATE_FAILED";
+export const RENDER_ARCHIVE_INPUT = "RENDER_ARCHIVE_INPUT";
+
 export function formatRehydration(clipId: string, result: RehydrationResult): string {
   const head = `[AssetRehydrator] clip=${clipId} provider=${result.provider} id=${result.providerAssetId ?? "null"}`;
   if (result.status === "ok") {
+    /**
+     * MEDIA ARCHIVE ROUND §22 — which of these two happened is the whole architecture.
+     *
+     * `ARCHIVE_REHYDRATE_SUCCESS` means the file came out of FastVid's own storage and no provider
+     * was contacted. Anything else means the render reached back out to the network for a clip it
+     * was supposed to hold, which is a fact about this render worth being able to count. The word
+     * is chosen off `provenance`, which `rehydrateAsset` sets at the route that actually produced
+     * the bytes — never inferred from the identity, which is what it INTENDED to do.
+     */
+    const viaArchive = result.provenance.includes("archive");
     return (
-      `${head} cache=${result.cacheHit ? "HIT" : "MISS"} downloaded=${result.downloaded} ` +
+      `${head} ${viaArchive ? ARCHIVE_REHYDRATE_SUCCESS : RENDER_ARCHIVE_INPUT}=provider ` +
+      `cache=${result.cacheHit ? "HIT" : "MISS"} downloaded=${result.downloaded} ` +
       `duration=${result.durationSec?.toFixed(2) ?? "null"}s ` +
       `${result.width ?? "?"}x${result.height ?? "?"} bytes=${result.sizeBytes}`
     );
   }
-  return `${head} status=${result.errorCode} reason="${result.errorMessage}"`;
+  return `${head} ${ARCHIVE_REHYDRATE_FAILED} status=${result.errorCode} reason="${result.errorMessage}"`;
 }
 
 export function formatRehydrationSummary(rehydration: TimelineRehydration): string[] {

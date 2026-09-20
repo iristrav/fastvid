@@ -102,16 +102,37 @@ describe("stock footage is still never archive material", () => {
 /* ═══════════ 3. one definition, not two ═══════════ */
 
 describe("the ingestion rule has a single writer", () => {
-  it("BOTH THE WINNER AND THE RUNNERS-UP GO THROUGH ONE FUNCTION", () => {
-    /**
-     * The defect this codebase keeps removing is a rule N call sites must follow, registered by a
-     * few. Two hand-written metadata blocks would drift the moment one gained a field.
-     */
+  /**
+   * MEDIA ARCHIVE ROUND — THE TWO ROUTES ARE NOW DIFFERENT ON PURPOSE, AND SHARE ONE WRITER.
+   *
+   * The claim this test has always made is that a rule many call sites must follow is not
+   * registered by a few — two hand-written metadata blocks drift the moment one gains a field. That
+   * claim is unchanged and is asserted harder below: there is exactly ONE metadata definition.
+   *
+   * What changed is why the two routes differ. The WINNER is the clip this beat will use, so it has
+   * to be in FastVid's archive, read back, and holding an `archiveAssetId` before the cinematic
+   * planner reads this beat's identity — otherwise the renderer has to go back to the provider for
+   * a file the system already holds, which is the failure this round exists to end. It is awaited.
+   * The RUNNERS-UP are kept for future renders' searches; nothing in this render waits on them, and
+   * they stay exactly as fire-and-forget as they were.
+   */
+  it("BOTH THE WINNER AND THE RUNNERS-UP GO THROUGH ONE METADATA WRITER", () => {
+    expect((PIPE.match(/const archiveMetadataFor = \(/g) ?? []).length).toBe(1);
+    expect(PIPE).toContain("archiveMetadataFor(wec)");
+    /** The runners-up keep their own best-effort helper, with its one call site. */
     expect((PIPE.match(/const queueArchiveIngestion = \(/g) ?? []).length).toBe(1);
-    /** Two call sites, and only two: the winner and the runner-up loop. */
     expect((PIPE.match(/queueArchiveIngestion\(/g) ?? []).length).toBe(2);
-    expect(PIPE).toContain("queueArchiveIngestion(funnelClip, winningExternalCandidate);");
     expect(PIPE).toContain("queueArchiveIngestion(s.clipPath, s.candidate);");
+  });
+
+  it("THE WINNER IS STORED AND AWAITED, so the timeline can reference an archive asset", () => {
+    expect(PIPE, "the winner's archive handle is not obtained before the timeline is planned")
+      .toContain("await storeForProduction({");
+    const at = PIPE.indexOf("await storeForProduction({");
+    const call = PIPE.slice(at, at + 2000);
+    expect(call).toContain("localPath: funnelClip");
+    /** And the handle is CARRIED — the line whose absence caused the whole failure. */
+    expect(PIPE).toContain("attachArchiveAssetToPath(");
   });
 
   it("AND STILL EXACTLY ONE CALL TO THE INGESTION HELPER ITSELF on this route", () => {
@@ -121,10 +142,14 @@ describe("the ingestion rule has a single writer", () => {
   });
 
   it("THE TAGS RULE IS UNCHANGED — narration keywords never become archive tags", () => {
-    /** RONDE 9 again: those describe what is SAID, not what is SHOWN. */
-    const at = PIPE.indexOf("const queueArchiveIngestion = (");
-    const body = PIPE.slice(at, PIPE.indexOf("\n        };", at));
+    /**
+     * RONDE 9 again: those describe what is SAID, not what is SHOWN. Read at the single writer
+     * both routes now use, so the rule is asserted once for both rather than once per route.
+     */
+    const at = PIPE.indexOf("const archiveMetadataFor = (");
+    const body = PIPE.slice(at, PIPE.indexOf("\n        });", at));
     expect(body).toContain("tags: [],");
+    expect(body).not.toContain("tags: beat.keywords");
   });
 });
 
