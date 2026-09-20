@@ -24,6 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { emptyTimeline, type ProjectTimeline } from "./projectTimeline";
 import { assAlignment, assMarginV, renderTimeline } from "./timelineRenderer";
 import { positionStyle } from "./remotion/components/Text";
+import { SAFE_MARGIN, boxForPosition } from "./captionLayout";
 import { LOOK_MODIFIERS, RENDERABLE_LOOKS, lookUnsupportedReason } from "./timelineFilters";
 import { resolveFFmpegBin } from "./ffmpegBinary";
 
@@ -145,13 +146,28 @@ describe("R160 §12 — an unrenderable LOOK is reported instead of silently dro
  * lower on the libass route than on the Remotion route.
  */
 describe("R160 §12 — libass and Remotion agree on where a text position is", () => {
-  /** Remotion states its geometry as CSS padding; this reads it back as a fraction of the frame. */
-  function remotionBottomFraction(position: string): number | null {
-    const style = positionStyle(position) as Record<string, unknown>;
+  /**
+   * Remotion states its geometry as CSS padding; this reads it back in PIXELS, for a given frame.
+   *
+   * ── Why pixels, and why this test used to pass while the renderers were 185px apart ────────
+   *
+   * It used to read `paddingBottom: "22%"`, pull the NUMBER out of the string and compare 0.22 to
+   * `assMarginV`'s fraction of the frame height. The two numbers matched, so the test was green
+   * for three rounds — and the browser was putting the lower third 185 pixels away from where
+   * libass put it, because CSS resolves a percentage padding against the containing block's WIDTH
+   * and nothing here ever asked what the percent was a percentage OF.
+   *
+   * A pixel cannot be ambiguous about that. `positionStyle` now takes the frame and answers in
+   * pixels, and this reads exactly what it answers.
+   */
+  function remotionBottomPx(
+    position: string,
+    frame: { widthPx: number; heightPx: number }
+  ): number | null {
+    const style = positionStyle(position, frame) as Record<string, unknown>;
     if (style.justifyContent !== "flex-end") return null;
-    const pad = (style.paddingBottom ?? String(style.padding ?? "").split(/\s+/)[2]) as string | undefined;
-    const m = /^([\d.]+)%$/.exec(pad ?? "");
-    return m ? Number(m[1]) / 100 : null;
+    const pad = style.paddingBottom;
+    return typeof pad === "number" ? pad : null;
   }
 
   /**
@@ -160,40 +176,85 @@ describe("R160 §12 — libass and Remotion agree on where a text position is", 
    * regress an existing video: no existing video could have been positioned there.
    */
   it("lower_third and lower_center land in the same place in both renderers", () => {
-    const HEIGHT = 1080;
+    const frame = { widthPx: 1920, heightPx: 1080 };
     for (const position of ["lower_third", "lower_center"] as const) {
-      const remotion = remotionBottomFraction(position);
+      const remotion = remotionBottomPx(position, frame);
       expect(remotion, `${position}: Remotion does not anchor it to the bottom`).not.toBeNull();
-      const ass = assMarginV(position, HEIGHT) / HEIGHT;
+      const ass = assMarginV(position, frame.heightPx);
       expect(
         Math.abs(ass - remotion!),
-        `${position}: libass says ${(ass * 100).toFixed(1)}% and Remotion says ${(remotion! * 100).toFixed(1)}%`
-      ).toBeLessThan(0.01);
+        `${position}: libass says ${ass}px and Remotion says ${remotion}px`
+      ).toBeLessThan(2);
     }
   });
 
   /**
-   * ── A divergence this round found and deliberately did NOT change ──────────────────────────
+   * AT MORE THAN ONE SHAPE OF FRAME — the assertion that would have caught the original defect.
    *
-   * Plain `bottom` is a fixed 40 PIXELS on the ASS route and 6 PERCENT on the Remotion route. One
-   * is absolute and the other is relative, so they do not merely differ — they differ by a
-   * different amount at every resolution: 3.7% apart at 1080p, and the ASS margin is nearly twice
-   * Remotion's at 360p in the other direction.
-   *
-   * It is left alone on purpose. `bottom` is the default position, so every caption in every video
-   * ever rendered on the libass route sits at that 40px margin; changing it would move the
-   * subtitles in all of them, and which of the two numbers is RIGHT is a design decision about
-   * what customers' videos should look like, not an audit finding to be fixed in passing.
-   *
-   * So this test pins the disagreement instead of hiding it. It fails the moment either number
-   * moves, which makes any future change to it deliberate and reviewed.
+   * Two anchors that disagree about whether a fraction is of the width or of the height agree
+   * exactly once: on a square. Checking 16:9, 9:16 and a square is what turns "these two numbers
+   * are equal" into "these two rules are the same rule".
    */
-  it("plain `bottom` still differs between the renderers — pinned, not fixed", () => {
-    expect(assMarginV("bottom", 1080)).toBe(40);
-    expect(remotionBottomFraction("bottom")).toBeCloseTo(0.06, 3);
-    /** Absolute versus relative: the gap is not a constant, which is what makes it a real defect. */
-    expect(assMarginV("bottom", 1080) / 1080).not.toBeCloseTo(0.06, 2);
-    expect(assMarginV("bottom", 360) / 360).not.toBeCloseTo(0.06, 2);
+  it("and they agree at every frame shape, not just the one they were checked at", () => {
+    for (const frame of [
+      { widthPx: 1920, heightPx: 1080 },
+      { widthPx: 1080, heightPx: 1920 },
+      { widthPx: 1080, heightPx: 1080 },
+      { widthPx: 640, heightPx: 360 },
+    ]) {
+      for (const position of ["bottom", "lower_third", "lower_center", "custom"] as const) {
+        const remotion = remotionBottomPx(position, frame);
+        const ass = assMarginV(position, frame.heightPx);
+        expect(
+          Math.abs(ass - (remotion ?? -1)),
+          `${position} at ${frame.widthPx}x${frame.heightPx}: libass ${ass}px, Remotion ${remotion}px`
+        ).toBeLessThan(2);
+      }
+    }
+  });
+
+  /**
+   * ── The divergence R160 pinned, and this round could finally close ─────────────────────────
+   *
+   * Plain `bottom` was a fixed 40 PIXELS on the ASS route and 6 PERCENT on the Remotion route.
+   * R160 left it alone on purpose and pinned it instead, reasoning that `bottom` is the default
+   * position, that every caption ever rendered on the libass route sat at that 40px margin, and
+   * that choosing between the two numbers was a design decision rather than an audit finding.
+   *
+   * What changed is that there is now a THIRD reader of the same fact, and it is the one that
+   * matters: `captionLayout.boxForPosition` places every caption against the action-safe margin,
+   * and the collision engine reasons about where things are from that box. So the question stopped
+   * being "which of two numbers looks better" and became "which of three is the one the layout
+   * engine already believes" — and that is the safe margin, which is also what `safeArea` means
+   * everywhere else in this codebase.
+   *
+   * It moves a caption on the libass route by 14px at 1080p, from 40 to 54. That route runs only
+   * where no browser is available, and a caption 1.3% of the frame lower is the price of the three
+   * readers agreeing. The Remotion route — which is what production renders with — moves the other
+   * way, from 6% of the WIDTH to 5% of the height.
+   */
+  it("plain `bottom` is the action-safe margin in BOTH renderers now", () => {
+    const frame = { widthPx: 1920, heightPx: 1080 };
+    expect(assMarginV("bottom", frame.heightPx)).toBe(Math.round(frame.heightPx * SAFE_MARGIN));
+    expect(remotionBottomPx("bottom", frame)).toBeCloseTo(frame.heightPx * SAFE_MARGIN, 3);
+    /** Relative in both, so the gap stays closed at every resolution rather than at one. */
+    for (const heightPx of [360, 720, 1080, 1920]) {
+      expect(assMarginV("bottom", heightPx) / heightPx).toBeCloseTo(SAFE_MARGIN, 2);
+    }
+  });
+
+  it("and it is the same margin `captionLayout` places a caption at", () => {
+    /**
+     * The third reader. A caption's box bottom sits at the safe area's bottom edge, which is what
+     * both renderers now draw — so the engine that decides a collision and the engines that draw
+     * the result are finally describing one frame.
+     */
+    const frame = { widthPx: 1920, heightPx: 1080 };
+    const box = boxForPosition("bottom", { width: 600, height: 120 }, frame);
+    expect(frame.heightPx - (box.y + box.height)).toBeCloseTo(
+      assMarginV("bottom", frame.heightPx),
+      0
+    );
   });
 
   /** And the three are genuinely different heights — otherwise the agreement above is trivial. */
@@ -213,15 +274,17 @@ describe("R160 §12 — libass and Remotion agree on where a text position is", 
    * it as a SHARED one: the day somebody implements it in one engine, this fails and says so.
    */
   it("custom falls back to the bottom in BOTH renderers, not just one", () => {
-    expect(assMarginV("custom", 1080)).toBe(assMarginV("bottom", 1080));
-    expect(remotionBottomFraction("custom")).toBe(remotionBottomFraction("bottom"));
+    const frame = { widthPx: 1920, heightPx: 1080 };
+    expect(assMarginV("custom", frame.heightPx)).toBe(assMarginV("bottom", frame.heightPx));
+    expect(remotionBottomPx("custom", frame)).toBe(remotionBottomPx("bottom", frame));
   });
 
   /** The non-bottom positions must not be silently treated as bottom either. */
   it("top and center are not bottom-anchored in either renderer", () => {
+    const frame = { widthPx: 1920, heightPx: 1080 };
     for (const position of ["top", "center"] as const) {
       expect(assAlignment(position), position).not.toBe(2);
-      expect(remotionBottomFraction(position), position).toBeNull();
+      expect(remotionBottomPx(position, frame), position).toBeNull();
     }
   });
 });

@@ -134,13 +134,39 @@ export function lineCountFor(text: string, style: TextStyle, frame: Frame): numb
   return lines;
 }
 
-/** The character budget per line: the style's own, or what the safe width allows. */
+/**
+ * The width a line of text is allowed, as a fraction of the frame.
+ *
+ * 0.84 is `Text.tsx`'s own `maxWidth: ${(style.maxWidthPct ?? 0.84) * 100}%`. It is read from the
+ * drawing code rather than derived from `SAFE_MARGIN` because the browser wraps at ITS number, and
+ * a layout engine that wrapped at a wider one would under-count lines for every caption.
+ */
+export const DEFAULT_TEXT_WIDTH_FRACTION = 0.84;
+
+/**
+ * The character budget per line: the style's own, capped by what the frame can actually hold.
+ *
+ * ── Why the cap ─────────────────────────────────────────────────────────────────────────────
+ *
+ * This used to return `style.maxCharsPerLine` unconditionally. `DEFAULT_CAPTION_STYLE` asks for 42,
+ * which at 46px needs about 1200px of line — more than a 640px frame has, and the browser wraps
+ * where the box ends whatever the style asked for. So a 30-character caption was measured as ONE
+ * line and drawn as two, and the box the collision engine reasoned about was half the height of the
+ * caption on screen. Captions were then placed in gaps only the short version fitted.
+ *
+ * A budget is a preference, not a licence to overflow the frame. The cap only ever SHORTENS a line,
+ * so a style whose number does fit is unaffected — which is every 1080p caption at these sizes.
+ */
 export function maxCharsPerLine(style: TextStyle, frame: Frame): number {
-  if (style.maxCharsPerLine && style.maxCharsPerLine > 0) return style.maxCharsPerLine;
-  const widthFraction = style.maxWidthPct != null ? style.maxWidthPct : 1 - 2 * SAFE_MARGIN;
+  const widthFraction =
+    style.maxWidthPct != null ? style.maxWidthPct : DEFAULT_TEXT_WIDTH_FRACTION;
   const usableWidthPx = frame.widthPx * Math.max(0.1, Math.min(1, widthFraction));
   const glyphPx = style.fontSizePx * AVG_GLYPH_EM * (1 + (style.letterSpacingEm ?? 0));
-  return Math.max(1, Math.floor(usableWidthPx / Math.max(1, glyphPx)));
+  const fits = Math.max(1, Math.floor(usableWidthPx / Math.max(1, glyphPx)));
+  if (style.maxCharsPerLine && style.maxCharsPerLine > 0) {
+    return Math.max(1, Math.min(style.maxCharsPerLine, fits));
+  }
+  return fits;
 }
 
 /** The box this text occupies, before any collision is considered. */
@@ -163,11 +189,62 @@ export function measureText(text: string, style: TextStyle, frame: Frame): { wid
 export type ResolvedPosition = TextStyle["position"];
 
 /**
+ * ── THE ANCHORS, AS ONE TABLE — AND THE PERCENT SIGN THAT MEANT TWO THINGS ──────────────────
+ *
+ * Three places used to encode where a `lower_third` sits, and all three said "22%":
+ *
+ *     captionLayout.boxForPosition   frame.heightPx * 0.78        22% of the frame HEIGHT
+ *     timelineRenderer.assMarginV    Math.round(heightPx * 0.22)  22% of the frame HEIGHT
+ *     Text.tsx/positionStyle         paddingBottom: "22%"         22% of the frame WIDTH
+ *
+ * The last one is not a typo. CSS resolves a percentage padding — vertical padding included —
+ * against the containing block's WIDTH, so the browser put the card 422px above the bottom of a
+ * 1920×1080 frame where the other two expected 238px. A 185-pixel disagreement, in the one of the
+ * three that actually draws.
+ *
+ * R160 §12 exists to stop precisely this, and it passed throughout: it read `"22%"` out of the
+ * style object and compared the NUMBER to `assMarginV`'s fraction, never asking what the percent
+ * was a percentage of.
+ *
+ * What it cost: the collision engine places captions against `boxForPosition`'s idea of where the
+ * card is, so on a beat with a lower third it moved the caption up into the band the card was
+ * really drawn in, and filed no collision — by its own arithmetic there was none. Two texts struck
+ * through each other and every count said the render was clean.
+ *
+ * So the fractions live here once, and the drawing code reads them instead of restating them.
+ * `topPct`/`bottomPct` are fractions of the frame HEIGHT and `leftPct` of its WIDTH, which is what
+ * the names in `TextPosition` have always meant.
+ */
+export type AnchorGeometry = {
+  /** The box's TOP edge, as a fraction of frame height. Null when the anchor is not top-relative. */
+  topPct: number | null;
+  /** The box's BOTTOM edge, as a distance from the frame's bottom, as a fraction of frame height. */
+  bottomPct: number | null;
+  /** The box's LEFT edge as a fraction of frame width; null means centred horizontally. */
+  leftPct: number | null;
+};
+
+export const ANCHOR_GEOMETRY: Readonly<Record<string, AnchorGeometry>> = {
+  top: { topPct: 0.06, bottomPct: null, leftPct: null },
+  center: { topPct: null, bottomPct: null, leftPct: null },
+  /** Left-aligned, a fifth up from the bottom — the broadcast lower-third anchor. */
+  lower_third: { topPct: null, bottomPct: 0.22, leftPct: 0.08 },
+  lower_center: { topPct: null, bottomPct: 0.28, leftPct: null },
+  /** Flush with the action-safe margin, which is the same margin `safeArea` keeps. */
+  bottom: { topPct: null, bottomPct: SAFE_MARGIN, leftPct: null },
+};
+
+/** The anchor a position resolves to; `custom` without a safe zone falls through to `bottom`. */
+export function anchorGeometry(position: string): AnchorGeometry {
+  return ANCHOR_GEOMETRY[position] ?? ANCHOR_GEOMETRY.bottom!;
+}
+
+/**
  * The box a named position produces, for text of a known size.
  *
  * These are the SAME anchors `positionStyle` uses in the Remotion components and `assAlignment`
- * uses on the libass route — expressed here as arithmetic so a collision can be computed against
- * them. If the two ever disagree the captions move between routes, so a test pins them together.
+ * uses on the libass route — and now literally so: all three read `ANCHOR_GEOMETRY` rather than
+ * restating its numbers, because restating them is what let one of the three drift.
  */
 export function boxForPosition(
   position: ResolvedPosition,
@@ -175,31 +252,13 @@ export function boxForPosition(
   frame: Frame,
   style?: TextStyle
 ): Box {
-  const safe = safeArea(frame);
   const centreX = (frame.widthPx - size.width) / 2;
 
   switch (position) {
-    case "top":
-      return { x: centreX, y: frame.heightPx * 0.06, width: size.width, height: size.height };
     case "center":
       return {
         x: centreX,
         y: (frame.heightPx - size.height) / 2,
-        width: size.width,
-        height: size.height,
-      };
-    case "lower_third":
-      /** Left-aligned, a fifth up from the bottom — the broadcast lower-third anchor. */
-      return {
-        x: frame.widthPx * 0.08,
-        y: frame.heightPx * 0.78 - size.height,
-        width: size.width,
-        height: size.height,
-      };
-    case "lower_center":
-      return {
-        x: centreX,
-        y: frame.heightPx * 0.72 - size.height,
         width: size.width,
         height: size.height,
       };
@@ -221,14 +280,22 @@ export function boxForPosition(
         height: size.height,
       };
     }
+    case "top":
+    case "lower_third":
+    case "lower_center":
     case "bottom":
-    default:
+    default: {
+      const anchor = anchorGeometry(position);
       return {
-        x: centreX,
-        y: safe.y + safe.height - size.height,
+        x: anchor.leftPct != null ? frame.widthPx * anchor.leftPct : centreX,
+        y:
+          anchor.topPct != null
+            ? frame.heightPx * anchor.topPct
+            : frame.heightPx * (1 - (anchor.bottomPct ?? SAFE_MARGIN)) - size.height,
         width: size.width,
         height: size.height,
       };
+    }
   }
 }
 

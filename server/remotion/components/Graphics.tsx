@@ -21,7 +21,7 @@
  * with no coordinate is still refused rather than faked — `chartPayloadIsRenderable` decides.
  */
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { animationAt } from "./animation";
 import { positionStyle, type TextStyleLike } from "./Text";
 import {
@@ -45,6 +45,8 @@ export type GraphicSpec = {
   fromFrame: number;
   durationInFrames: number;
   style: TextStyleLike | null;
+  /** How it enters and leaves, from the timeline. Absent means the component's own `fade_rise`. */
+  animation?: string;
   /**
    * RONDE 185 — where the layout engine put this graphic, when it had to move it out of another's
    * way. Absent when nothing collided, which is the ordinary case.
@@ -317,6 +319,12 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
         layout={g.layout}
         fontSizePx={fontSizePx}
         durationInFrames={g.durationInFrames}
+        /**
+         * The prop `GraphicBody` has taken since RONDE 155 and nobody ever passed. Without this
+         * line the component's whole animation vocabulary is unreachable from the GRAPHICS track
+         * and every graphic fades and rises, whatever the timeline says.
+         */
+        animation={g.animation}
       >
         {body}
       </GraphicBody>
@@ -393,6 +401,7 @@ const GraphicBody: React.FC<{
   animation?: string;
 }> = ({ position, layout, fontSizePx, durationInFrames, animation, children }) => {
   const frame = useCurrentFrame();
+  const { width: compositionWidth, height: compositionHeight } = useVideoConfig();
   /**
    * RONDE 155 — the same animation vocabulary the captions use, from the same pure functions.
    *
@@ -412,7 +421,13 @@ const GraphicBody: React.FC<{
    * `Text.tsx` already had the correct shape for the same job, so this is that shape.
    */
   const body = (
-    <AbsoluteFill style={{ ...positionStyle(position), display: "flex", fontSize: fontSizePx }}>
+    <AbsoluteFill
+      style={{
+        ...positionStyle(position, { widthPx: compositionWidth, heightPx: compositionHeight }),
+        display: "flex",
+        fontSize: fontSizePx,
+      }}
+    >
       <div
         style={{
           opacity: state.opacity,

@@ -361,7 +361,24 @@ describeHybrid("RONDE 150 §5 — FFmpeg picture + Remotion graphics → one MP4
     expect(fs.existsSync(overlayPath)).toBe(true);
     expect(result.graphicsDrawn).toBe(1);
     expect(result.captionsDrawn).toBe(1);
-    expect(result.skipped).toEqual([]);
+    /**
+     * ── Why this is no longer an empty list ────────────────────────────────────────────────
+     *
+     * A 46px caption is 13% of a 360px frame, and two lines of it plus a lower third genuinely do
+     * not both fit inside the safe area at this size. That was always true of this fixture; what
+     * changed is that the layout engine can now see it. Its model of where a lower third is drawn
+     * used to be 62px off — CSS resolves the component's `22%` bottom padding against the frame's
+     * WIDTH — and its model of the caption's height was one line where the browser drew two, so it
+     * found no overlap and reported none while the two struck through each other on screen.
+     *
+     * So the assertion is not relaxed, it is made specific: NOTHING was refused for being
+     * undrawable, and the one line present is the crowding this frame size really has.
+     */
+    expect(result.skipped).toEqual([
+      "caption_collision_unresolved c1 — no position inside the safe area was free; overlaps g1",
+    ]);
+    expect(result.skipped.join(" ")).not.toContain("unsupported_graphic");
+    expect(result.skipped.join(" ")).not.toContain("LOST:");
 
     const { stdout } = await execFileAsync("ffprobe", [
       "-v", "error", "-select_streams", "v:0",

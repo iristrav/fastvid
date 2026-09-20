@@ -47,6 +47,7 @@ import {
   type TimelineVideoClip,
 } from "./projectTimeline";
 import { docGradeSourceKindForProvider } from "./documentaryStyle";
+import { SAFE_MARGIN, anchorGeometry } from "./captionLayout";
 import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import {
   buildAudioGraph,
@@ -309,9 +310,17 @@ export function assAlignment(position: TextStyle["position"]): number {
  * two different videos depending on which graphics engine ran: Remotion's `positionStyle` puts it
  * at 28% of the frame height above the bottom, libass put it at 40 pixels.
  *
- * The fractions below are the ones `captionLayout.boxForPosition` already computes from (a
- * lower third is anchored at 0.78 of the frame, lower centre at 0.72) and the ones
- * `Text.tsx/positionStyle` already renders with. A test asserts the two renderers agree.
+ * ── And the disagreement that survived that round ───────────────────────────────────────────
+ *
+ * R160 restated the fractions here instead of reading them, and its test compared this function's
+ * number to the NUMBER inside Remotion's `paddingBottom: "22%"` — never asking what the percent
+ * was a percentage of. CSS resolves percentage padding against the containing block's WIDTH, so
+ * the browser drew a lower third 422px above the bottom of a 1080p frame while this returned 238.
+ * `ANCHOR_GEOMETRY` now holds the fractions once and all three readers take them from there.
+ *
+ * The plain bottom margin was the other half: a flat 40 pixels, which is 3.7% of a 1080p frame and
+ * 5.6% of a 720p one, against the 5% action-safe margin `boxForPosition` places captions at. It is
+ * now that same margin, so a caption sits in one place whichever engine draws it.
  *
  * `custom` is not here. `captionLayout` places it inside a caller-supplied `safeZone`, and NEITHER
  * renderer implements that — Remotion's `positionStyle` also falls through to the bottom. Giving
@@ -319,11 +328,8 @@ export function assAlignment(position: TextStyle["position"]): number {
  * stays at the bottom in both, which is what `TextPosition`'s own doc comment says it does.
  */
 export function assMarginV(position: TextStyle["position"], heightPx: number): number {
-  switch (position) {
-    case "lower_third": return Math.round(heightPx * 0.22);
-    case "lower_center": return Math.round(heightPx * 0.28);
-    default: return 40;
-  }
+  const anchor = anchorGeometry(position);
+  return Math.round(heightPx * (anchor.bottomPct ?? SAFE_MARGIN));
 }
 
 /** Wrap text to a maximum line length, on word boundaries. */

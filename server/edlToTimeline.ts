@@ -175,14 +175,21 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
  *
  * ── RONDE 160 §7 — the missing connection this closes ────────────────────────────────────────
  *
- * The planner names nine kinds of motion graphic. The renderer draws thirty-two. The two lists had
+ * When this map was written the planner named nine kinds of motion graphic and the renderer drew
+ * thirty-two, and the two lists had
  * NO NAME IN COMMON, so `graphicIsRenderable` answered "no" for every graphic the cinematic engine
  * ever planned, and `translateEdl` reported all of them as "kept on the GRAPHICS track, not drawn
  * by this renderer" — unconditionally, on every render. Nothing failed and nothing was silent; the
  * loss was reported honestly and completely, and the report was never read. The whole motion
  * graphics feature was inert on the live route.
  *
- * ── Why only three of the nine are here ──────────────────────────────────────────────────────
+ * ── Which of the THIRTEEN need an entry here, and which do not ───────────────────────────────
+ *
+ * The planner's union has grown to thirteen, and they divide three ways:
+ *
+ *   4  translated here            progress_bar, statistic_counter, map, timeline
+ *   5  already a component's name lower_third, date_card, location_card, quote, highlight_box
+ *   4  no component at all        chart, comparison, animated_icon, arrow
  *
  * A name is in this map only when a real component draws THAT PLANNER'S OWN PAYLOAD as it stands.
  * No field is renamed, added or synthesised to make an entry fit:
@@ -190,16 +197,28 @@ export const RENDERABLE_EFFECTS: ReadonlySet<string> = new Set([
  *   progress_bar       `{ toValue, suffix, label }`         → the percentage ring reads `toValue`
  *   statistic_counter  `{ fromValue, toValue, suffix, label }` → the counter reads from/to/suffix
  *   map                `{ locationName, normX, normY }`     → the abstract map reads normX/normY
+ *   timeline           `{ events[] }`                       → the event card reads the entry
  *
- * The other six stay untranslated and keep being reported, because translating them would mean
- * inventing content, which §11 forbids:
+ * ── "Untranslated" does NOT mean "undrawable" ────────────────────────────────────────────────
+ *
+ * `rendererGraphicType` falls through to the planner's own name, so a planner type that already
+ * SPELLS a component's name needs no entry and has never needed one. Five do.
+ *
+ * `highlight_box` is the one to be careful about. RONDE 124 wrote a `HighlightBox` component and
+ * put the name in `RENDERABLE_GRAPHICS`; this comment went on listing it among the types nothing
+ * draws for three rounds after that stopped being true. What it actually lacks is a REGION in the
+ * planner's payload — `readRegion` wants normX/normY/normW/normH and the planner emits a label and
+ * nothing else — so it is refused on its payload, exactly as an empty bar chart is. Whoever makes
+ * the planner emit `normX/normY/normW/normH` for a highlight box gets a drawn graphic with no
+ * change to this file.
+ *
+ * The four with no component stay untranslated and keep being reported, because translating them
+ * would mean inventing content, which §11 forbids:
  *
  *   chart          carries a keyword, not a series — a chart component with nothing to plot
- *   timeline       carries events[], and a text card would have to compose a sentence from them
  *   arrow          could be drawn as the `arrow` shape, but the shape draws no text and the
  *                  planner's whole payload is the label of the thing being pointed at
  *   comparison     no component draws a side-by-side
- *   highlight_box  no component draws a box around a region of the picture
  *   animated_icon  `icon` needs a name this build has a path for; a brand name is not one
  */
 export const RENDERER_GRAPHIC_TYPE: Readonly<Partial<Record<MotionGraphicType, string>>> = {
@@ -217,11 +236,12 @@ export const RENDERER_GRAPHIC_TYPE: Readonly<Partial<Record<MotionGraphicType, s
    * words survive: `graphicLabel` reads the year and label out of the `events` entry the planner
    * itself wrote, and the original name stays in `reason` as `[planned as "timeline"]`.
    *
-   * The other five planner types — chart, comparison, animated_icon, highlight_box, arrow — are
-   * deliberately NOT translated. There is no component that draws a highlight box or a side-by-side
-   * comparison, and pointing them at a text card would substitute one graphic for another. They
-   * stay on the GRAPHICS track and are reported as undrawn, which is the honest answer and the one
-   * `formatGraphics` now puts in the render log.
+   * The four planner types with no component — chart, comparison, animated_icon, arrow — are
+   * deliberately NOT translated. There is no component that draws a side-by-side comparison, and
+   * pointing them at a text card would substitute one graphic for another. They stay on the
+   * GRAPHICS track and are reported as undrawn, which is the honest answer and the one
+   * `formatGraphics` now puts in the render log. `highlight_box` is NOT one of them — see the note
+   * on the map above.
    */
   timeline: "timeline_event",
 };

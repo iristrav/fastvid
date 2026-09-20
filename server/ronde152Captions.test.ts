@@ -91,9 +91,30 @@ describe("RONDE 152 — text is measured, not guessed at", () => {
     expect(narrow).toBeGreaterThan(0);
   });
 
-  it("a style that names its own budget keeps it, whatever the font size", () => {
+  it("a style that names its own budget keeps it, as long as the line fits", () => {
     expect(maxCharsPerLine(style({ maxCharsPerLine: 32, fontSizePx: 20 }), HD)).toBe(32);
-    expect(maxCharsPerLine(style({ maxCharsPerLine: 32, fontSizePx: 200 }), HD)).toBe(32);
+    expect(maxCharsPerLine(style({ maxCharsPerLine: 32, fontSizePx: 46 }), HD)).toBe(32);
+  });
+
+  it("BUT A BUDGET IS NOT A LICENCE TO OVERFLOW THE FRAME", () => {
+    /**
+     * This used to read "whatever the font size", and asserted 32 at 200px — a line that would
+     * need about 3970px of a 1920px frame. The browser wraps where the box ends whatever the style
+     * asked for, so the caption was measured as one line and drawn as several, and the box the
+     * collision engine reasoned about was a fraction of the caption's real height. Captions were
+     * then placed in gaps only the short version fitted, which is how a lower third and a caption
+     * came to strike through each other with nothing reported.
+     *
+     * The cap only ever SHORTENS a line, so the precedence above is unchanged for every budget
+     * that fits — which is every caption this build ships at 1080p.
+     */
+    const huge = style({ maxCharsPerLine: 32, fontSizePx: 200 });
+    const capped = maxCharsPerLine(huge, HD);
+    expect(capped).toBeLessThan(32);
+    /** And the cap is the frame's own arithmetic, not a magic number: 84% of the width. */
+    expect(capped).toBe(Math.floor((HD.widthPx * 0.84) / (200 * AVG_GLYPH_EM)));
+    /** A budget that does fit is still honoured exactly, at the same font size. */
+    expect(maxCharsPerLine(style({ maxCharsPerLine: 5, fontSizePx: 200 }), HD)).toBe(5);
   });
 
   it("an empty caption occupies no lines", () => {

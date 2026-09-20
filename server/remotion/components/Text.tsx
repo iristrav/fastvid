@@ -22,13 +22,14 @@
  * second opinion about the same question, and the two would drift.
  */
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame } from "remotion";
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import {
   animationAt,
   chunkCaption,
   revealProgress,
   type CaptionWord,
 } from "./animation";
+import { anchorGeometry } from "../../captionLayout";
 
 export type TextStyleLike = {
   fontFamily?: string;
@@ -60,20 +61,45 @@ export type ResolvedLayout = { x: number; y: number; width: number; height: numb
 const DEFAULT_FONT = "DejaVu Sans, Liberation Sans, sans-serif";
 const DEFAULT_HIGHLIGHT = "#ffd54a";
 
-/** The vocabulary from projectTimeline's TextStyle, mapped to layout. Nothing invented. */
-export function positionStyle(position: string): React.CSSProperties {
-  switch (position) {
-    case "top":
-      return { justifyContent: "flex-start", alignItems: "center", paddingTop: "6%" };
-    case "center":
-      return { justifyContent: "center", alignItems: "center" };
-    case "lower_third":
-      return { justifyContent: "flex-end", alignItems: "flex-start", padding: "0 8% 22% 8%" };
-    case "lower_center":
-      return { justifyContent: "flex-end", alignItems: "center", paddingBottom: "28%" };
-    default:
-      return { justifyContent: "flex-end", alignItems: "center", paddingBottom: "6%" };
+/**
+ * The vocabulary from projectTimeline's TextStyle, mapped to layout. Nothing invented.
+ *
+ * ── Why this takes the frame, and why the paddings are pixels ───────────────────────────────
+ *
+ * These anchors used to be written as CSS percentages — `paddingBottom: "22%"` for a lower third.
+ * A percentage padding in CSS resolves against the containing block's WIDTH, vertical padding
+ * included, so on a 1920×1080 frame the browser read that as 422px while `boxForPosition` and
+ * `assMarginV` both meant 238px. See `ANCHOR_GEOMETRY` for what that cost: the collision engine
+ * placed captions against a card that was not where it thought, found no overlap, and reported
+ * none while the two struck through each other on screen.
+ *
+ * Pixels computed from the composition's real dimensions have no such ambiguity, and taking the
+ * fractions from `ANCHOR_GEOMETRY` means this cannot drift from the engine that reasons about it.
+ */
+export function positionStyle(
+  position: string,
+  frame: { widthPx: number; heightPx: number }
+): React.CSSProperties {
+  if (position === "center") return { justifyContent: "center", alignItems: "center" };
+  const anchor = anchorGeometry(position);
+  if (anchor.topPct != null) {
+    return {
+      justifyContent: "flex-start",
+      alignItems: "center",
+      paddingTop: frame.heightPx * anchor.topPct,
+    };
   }
+  return {
+    justifyContent: "flex-end",
+    alignItems: anchor.leftPct != null ? "flex-start" : "center",
+    paddingBottom: frame.heightPx * (anchor.bottomPct ?? 0),
+    ...(anchor.leftPct != null
+      ? {
+          paddingLeft: frame.widthPx * anchor.leftPct,
+          paddingRight: frame.widthPx * anchor.leftPct,
+        }
+      : {}),
+  };
 }
 
 /**
@@ -256,6 +282,7 @@ const TextBody: React.FC<
   chunkDurationInFrames,
 }) => {
   const frame = useCurrentFrame();
+  const { width: compositionWidth, height: compositionHeight } = useVideoConfig();
   const state = animationAt(animation, frame, chunkDurationInFrames);
   const reveal = revealProgress(animation, frame, chunkDurationInFrames);
 
@@ -317,6 +344,16 @@ const TextBody: React.FC<
   }
 
   return (
-    <AbsoluteFill style={{ ...positionStyle(style.position), display: "flex" }}>{inner}</AbsoluteFill>
+    <AbsoluteFill
+      style={{
+        ...positionStyle(style.position, {
+          widthPx: compositionWidth,
+          heightPx: compositionHeight,
+        }),
+        display: "flex",
+      }}
+    >
+      {inner}
+    </AbsoluteFill>
   );
 };

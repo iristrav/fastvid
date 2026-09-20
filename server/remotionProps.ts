@@ -40,6 +40,7 @@ import {
   type TextStyle,
 } from "./projectTimeline";
 import {
+  DEFAULT_LINE_HEIGHT,
   boxForPosition,
   formatUnresolvedCollision,
   layoutCaption,
@@ -48,6 +49,7 @@ import {
   type Frame,
   type Obstacle,
 } from "./captionLayout";
+import { readText } from "./graphicsVocabulary";
 
 /**
  * The style a graphic is measured at when it carries none of its own.
@@ -106,6 +108,14 @@ export type RemotionGraphic = {
   fromFrame: number;
   durationInFrames: number;
   style: TextStyle | null;
+  /**
+   * The entrance and exit, carried the way `RemotionTextElement.animation` already was.
+   *
+   * The default is named here rather than left to the component, for the same reason it is named
+   * for a text element: "fade_rise" in the props is a decision a reader can see, and a component
+   * silently supplying one is a decision nobody can.
+   */
+  animation: string;
   /**
    * RONDE 185 — where the layout engine put it, when it had to move it out of another's way.
    *
@@ -174,7 +184,8 @@ function graphicBoxSize(
   graphicType: string,
   label: string | null | undefined,
   style: TextStyle,
-  frame: Frame
+  frame: Frame,
+  data: Record<string, unknown>
 ): { width: number; height: number } {
   /**
    * Bounded by the SAFE AREA, not by the raw frame.
@@ -193,6 +204,33 @@ function graphicBoxSize(
   /** The round ones and the shapes share a 140px box in the component. */
   if (["percentage_ring", "progress", "shape", "icon"].includes(graphicType)) {
     return { width: Math.min(140, safe.width), height: Math.min(140, safe.height) };
+  }
+  /**
+   * ── A LOWER THIRD IS NOT ONE LINE OF TEXT ────────────────────────────────────────────────
+   *
+   * `LowerThird` in `Graphics.tsx` draws a plate — `padding: 0.5em 0.9em` — around a name line at
+   * `0.9em` and, whenever the payload carries a role, a second line at `0.5em` with a 2px gap.
+   * Measured as a plain caption it came out one 1em line tall, roughly HALF what is drawn, so the
+   * layout engine believed there was free frame directly above the card and moved captions into it.
+   *
+   * The ems below are the component's own declarations, read from it the way the chart sizes above
+   * are read from `Charts.tsx`. `em` is `fontSizePx` because the plate inherits the size that
+   * `GraphicBody` sets on the AbsoluteFill.
+   */
+  if (graphicType === "lower_third") {
+    const em = style.fontSizePx;
+    const lineHeight = style.lineHeight ?? DEFAULT_LINE_HEIGHT;
+    const name = measureText(
+      label?.trim() || graphicType,
+      /** The name's own size, and no caption plate — this card draws its own. */
+      { ...style, fontSizePx: em * 0.9, backgroundOpacity: 0 },
+      frame
+    );
+    const role = readText(data, "role", "subtitle", "description", "title");
+    return {
+      width: Math.min(frame.widthPx, name.width + em * 0.9 * 2),
+      height: name.height + (role ? em * 0.5 * lineHeight + 2 : 0) + em * 0.5 * 2,
+    };
   }
   /** Everything else is words on screen, measured the way a caption is. */
   return measureText(label?.trim() || graphicType, style, frame);
@@ -254,7 +292,7 @@ export function timelineToRemotionProps(params: {
     .slice()
     .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id))) {
     const style = g.style ?? graphicDefaultStyle(g.graphicType);
-    const size = graphicBoxSize(g.graphicType, g.label, style, frame);
+    const size = graphicBoxSize(g.graphicType, g.label, style, frame, g.data ?? {});
     const placed = layoutCaption({
       /** Its own words when it has them — the box comes from `size`, which is already correct. */
       text: g.label?.trim() || g.graphicType,
@@ -396,6 +434,8 @@ export function timelineToRemotionProps(params: {
           fromFrame: toFrames(g.start, fps),
           durationInFrames: Math.max(1, toFrames(Math.max(0, g.end - g.start), fps)),
           style: g.style ?? null,
+          /** The renderer's existing default when a planner expressed no preference. Named, not silent. */
+          animation: g.animation ?? "fade_rise",
           /**
            * RONDE 185 — the resolved BOX, exactly the way a moved caption already carries one.
            *
@@ -481,6 +521,13 @@ export function missingEditorialFields(
       missing.push(`graphic ${g.id} lost part of its payload`);
     }
     if (g.label && !made.label) missing.push(`graphic ${g.id} lost its label`);
+    /**
+     * And its animation, which is exactly the kind of field that went missing for three rounds by
+     * simply never being copied — no type complained and the render looked plausible.
+     */
+    if (g.animation && made.animation !== g.animation) {
+      missing.push(`graphic ${g.id} lost its animation`);
+    }
   }
 
   return missing;

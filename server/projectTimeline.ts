@@ -544,6 +544,21 @@ export type TimelineGraphic = {
   /** A caption-like label, when the graphic has one. Rendered through ASS like other text. */
   label?: string;
   style?: TextStyle;
+  /**
+   * How it enters and leaves — the same vocabulary `TimelineText.animation` uses.
+   *
+   * ── Why this was missing, and what that cost ─────────────────────────────────────────────
+   *
+   * `GraphicBody` in Graphics.tsx has taken an `animation` prop since RONDE 155, documented as
+   * "a graphic that wants to slide, pop or mask-reveal uses `animationAt`". Nothing could express
+   * that want: there was no field here, none on `RemotionGraphic`, and the component's only caller
+   * passed none — so every graphic in every video fell through to `fade_rise` and the rest of the
+   * vocabulary was unreachable from this track. A mutation that replaced the component's animation
+   * with a constant changed nothing, because a constant is what it already was.
+   *
+   * Absent still means `fade_rise`, so a timeline that names none renders exactly as before.
+   */
+  animation?: string;
   disabled?: boolean;
   /** Why the planner asked for it, carried so an unsupported graphic can say what was lost. */
   reason?: string;
