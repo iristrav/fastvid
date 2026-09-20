@@ -38,7 +38,13 @@ export async function assessArchiveCoverageForPrompt(
   const titleHay = asVideoTitleString(videoTitle ?? prompt);
   const topicAnchors = queryTags.filter((t) => titleHay.toLowerCase().includes(t));
 
-  const routedArchives = await resolveArchivesForVisualQuery(queryTags, topicAnchors);
+  /**
+   * Explicit, because the router's default narrowed when this estimator wants breadth: coverage
+   * is reported over every archive that could answer the prompt, not only the strongest one.
+   */
+  const routedArchives = await resolveArchivesForVisualQuery(queryTags, topicAnchors, {
+    allRelevant: true,
+  });
   const ranked = await rankArchivesForVisualQuery(queryTags, topicAnchors);
   const autoArchiveNames = ranked.filter((r) => r.score >= 8).map((r) => r.name);
 

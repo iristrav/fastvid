@@ -761,7 +761,7 @@ export type RankedArchive = {
 export async function rankArchivesForVisualQuery(
   queryTags: string[],
   anchorTags: string[] = [],
-  opts?: { assetSampleSize?: number }
+  opts?: { assetSampleSize?: number; assetsCache?: Map<number, ArchiveAssetRow[]> }
 ): Promise<RankedArchive[]> {
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
   if (!archives.length) return [];
@@ -772,7 +772,17 @@ export async function rankArchivesForVisualQuery(
   for (const archive of archives) {
     let score = scoreArchiveMetadata(archive, queryTags, anchorTags);
     if (score < 20 && combined.length > 0) {
-      const assets = await getMediaArchiveAssets(archive.id);
+      /**
+       * Through the render's own asset cache, not a fresh query.
+       *
+       * This sampling is the expensive half of routing, and routing now runs on the per-beat
+       * path (see `resolveArchivesForVisualQuery`). `getMediaArchiveAssets` is an uncached
+       * SELECT over every active asset of an archive, so asking it once per beat would add a
+       * full scan per sentence — and the budget is already the thing render 593 ran out of.
+       * `loadArchiveAssetsForSearch` is the same helper the candidate scan below uses and fills
+       * the same map, so the first beat pays for the read and the rest of the render does not.
+       */
+      const assets = await loadArchiveAssetsForSearch(archive.id, opts?.assetsCache);
       score += scoreArchiveAssetSample(assets, combined, opts?.assetSampleSize ?? 48);
     }
     ranked.push({ id: archive.id, name: archive.name, score });
@@ -784,21 +794,92 @@ export async function rankArchivesForVisualQuery(
 
 const ARCHIVE_ROUTE_MIN_SCORE = 8;
 
-/** Archives to search for clips — auto-routed from title/tags, not manually linked. */
+/**
+ * WHICH ARCHIVES MAY ANSWER THIS BEAT — and the outcome that used to be missing.
+ *
+ * ── What render 593 delivered ───────────────────────────────────────────────────────────────
+ *
+ * A one-minute video about Kim Kardashian in 2018 was offered clips from a WW2 archive, on
+ * every sentence. The picture editor refused each one and said exactly why:
+ *
+ *     s0b3  "The frames show Adolf Hitler, who is unrelated to the narration about the
+ *            Kardashians."
+ *     s1b0  "The clip shows historical footage of Adolf Hitler, which is unrelated to the
+ *            narration about Kim Kardashian and Khloe Kardashian."
+ *     s2b0  "a historical event likely from early 20th century Europe, unrelated to the
+ *            narration about a modern E! News interview with Kim Kardashian."
+ *
+ *     [Quality] bron ww2 leverde 7 beoordeelde kandidaten en geen enkele bruikbare (UNRELATED)
+ *     [Quality] score=0/100, clips=15 [ww2=1, UNVERIFIED=10, wikimedia=4]
+ *
+ * One WW2 clip reached the montage anyway, and the export gate refused the film for
+ * `10/16 beat(s) got ONLY a card`. The render spent 18 of its 25 minutes on sourcing.
+ *
+ * ── The two holes, and the one that mattered ────────────────────────────────────────────────
+ *
+ * The 593 log contains NO `[ArchiveRouter]` line at all. Every branch below prints one, so the
+ * function was never called: all four production call sites of `listCuratedArchiveCandidates`
+ * pass `searchAllArchives: true`, which used to take every active archive and skip routing
+ * entirely. The router was written, and no sourcing route read it.
+ *
+ * And it would not have helped if they had. There was no outcome meaning "nothing here fits":
+ * a score below the floor fell through to "using anyway", and no score at all fell through to
+ * `return archives` — every archive, which is the opposite of a routing decision. A router
+ * whose worst case is "all of them" cannot keep anything out.
+ *
+ * ── What changes, and what deliberately does not ────────────────────────────────────────────
+ *
+ * The scoring is untouched: `scoreArchiveMetadata`, `scoreArchiveAssetSample` and
+ * `ARCHIVE_ROUTE_MIN_SCORE` are exactly as they were. What is added is the fourth outcome —
+ * tags present, nothing scored above zero, so NO archive answers this beat — and the removal of
+ * the `archives.length <= 1` shortcut, which let a single archive through without ever being
+ * asked whether it fits.
+ *
+ * A beat with NO tags at all is left alone on purpose. Relevance cannot be judged without
+ * something to judge against, and this codebase's standing rule is that missing information is
+ * never a reason to refuse (see `providerCapability`'s note on UNKNOWN). Such a beat keeps the
+ * behaviour it had.
+ *
+ * Returning `[]` is not a coverage loss dressed up as a fix: the caller yields zero curated
+ * candidates, and the beat then walks the provider ladder, the rescue routes and the guaranteed
+ * fill exactly as a beat whose archive search found nothing always has. What it no longer does
+ * is spend the picture editor's budget refusing a different documentary.
+ */
 export async function resolveArchivesForVisualQuery(
   queryTags: string[],
-  anchorTags: string[] = []
+  anchorTags: string[] = [],
+  opts?: {
+    /** Every relevant archive (scene-wide pool), or only the strongest one. */
+    allRelevant?: boolean;
+    /** The render's asset cache, so routing does not re-read the archive per beat. */
+    assetsCache?: Map<number, ArchiveAssetRow[]>;
+  }
 ): Promise<Array<Awaited<ReturnType<typeof getAllMediaArchives>>[number]>> {
   const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
-  if (archives.length <= 1) return archives;
+  if (archives.length === 0) return [];
+  const allRelevant = opts?.allRelevant !== false;
 
-  const ranked = await rankArchivesForVisualQuery(queryTags, anchorTags);
+  /**
+   * Nothing to judge against. Not a match and not a refusal — see the note above on UNKNOWN.
+   * This is the one path that still hands back every archive, and it is the honest one.
+   */
+  if (normalizeMediaTags([...queryTags, ...anchorTags]).length === 0) {
+    console.log(
+      `[ArchiveRouter] no query tags — relevance cannot be judged, keeping all ${archives.length} active archive(s)`
+    );
+    return archives;
+  }
+
+  const ranked = await rankArchivesForVisualQuery(queryTags, anchorTags, {
+    ...(opts?.assetsCache ? { assetsCache: opts.assetsCache } : {}),
+  });
   const relevant = ranked.filter((r) => r.score >= ARCHIVE_ROUTE_MIN_SCORE);
   if (relevant.length > 0) {
-    const ids = new Set(relevant.map((r) => r.id));
+    const chosen = allRelevant ? relevant : relevant.slice(0, 1);
+    const ids = new Set(chosen.map((r) => r.id));
     const selected = archives.filter((a) => ids.has(a.id));
     console.log(
-      `[ArchiveRouter] Auto-routed to ${selected.length} archive(s): ${relevant
+      `[ArchiveRouter] Auto-routed to ${selected.length} archive(s): ${chosen
         .slice(0, 4)
         .map((r) => `"${r.name}" (${r.score})`)
         .join(", ")}` +
@@ -807,8 +888,8 @@ export async function resolveArchivesForVisualQuery(
     return selected;
   }
 
-  if (ranked[0]?.score > 0) {
-    const best = archives.find((a) => a.id === ranked[0].id);
+  if (ranked[0] && ranked[0].score > 0) {
+    const best = archives.find((a) => a.id === ranked[0]!.id);
     if (best) {
       console.log(
         `[ArchiveRouter] Best-match archive "${best.name}" (score ${ranked[0].score}) — weak tag overlap, using anyway`
@@ -817,8 +898,16 @@ export async function resolveArchivesForVisualQuery(
     }
   }
 
-  console.log("[ArchiveRouter] No strong archive match — searching all active archives");
-  return archives;
+  /**
+   * NO_RELEVANT_ARCHIVE — the outcome this router never had. See the note above.
+   */
+  console.log(
+    `[ArchiveRouter] NO_RELEVANT_ARCHIVE — none of ${archives.length} active archive(s) scored ` +
+      `above zero for this beat | tags: ${queryTags.slice(0, 6).join(", ") || "(none)"} ` +
+      `| best: ${ranked[0] ? `"${ranked[0].name}" (${ranked[0].score})` : "n/a"} ` +
+      `— no curated candidates, the beat uses its other routes`
+  );
+  return [];
 }
 
 /** Everything scoreCuratedAsset derives purely from beatText — identical for every candidate
@@ -1400,9 +1489,21 @@ export async function listCuratedArchiveCandidates(
   videoVisualTopic: VideoVisualTopic = "general"
 ): Promise<CuratedCandidatePick[]> {
   const queryTags = filterTags ?? normalizeMediaTags([...beatTags, ...topicAnchors]);
-  const archives = searchAllArchives
-    ? (await getAllMediaArchives()).filter((a) => a.isActive === 1)
-    : await resolveArchivesForVisualQuery(queryTags, topicAnchors);
+  /**
+   * ROUTED, ALWAYS. `searchAllArchives` no longer means "skip the router".
+   *
+   * It used to take every active archive and never call `resolveArchivesForVisualQuery` at all,
+   * and all four production call sites pass `true` — which is why render 593's log contains no
+   * `[ArchiveRouter]` line and why a WW2 archive answered a video about Kim Kardashian.
+   *
+   * The flag keeps the job its name describes, INSIDE relevance: `true` admits every archive the
+   * router finds relevant (the scene-wide pool wants breadth), `false` narrows to the strongest.
+   * Neither admits an archive that scored nothing. See `resolveArchivesForVisualQuery`.
+   */
+  const archives = await resolveArchivesForVisualQuery(queryTags, topicAnchors, {
+    allRelevant: searchAllArchives,
+    ...(assetsCache ? { assetsCache } : {}),
+  });
   if (!archives.length) return [];
 
   const geoRequired = beatText ? extractBeatGeoPlaceTags(beatText) : [];
