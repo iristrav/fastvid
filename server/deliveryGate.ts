@@ -70,6 +70,19 @@ export type DeliveryGateInput = {
   timelineExists: boolean;
   clips: DeliveryClipFact[];
   delivered: DeliveredFileFacts | null;
+  /**
+   * Run ONLY the asset checks, and say so on the line.
+   *
+   * The pipeline's final gate sits after the export gate, the stillness audit and the post-render
+   * spot check have all already read the delivered file. It has no fresh measurements of its own
+   * and passing invented ones — `exists: true, hasVideoStream: true` — would be this gate claiming
+   * a check it never made, which is the habit the whole programme exists to remove.
+   *
+   * So it declares what it is: the asset invariant, on a file whose bytes are somebody else's
+   * verdict. `delivered` is then ignored, and the log says `checks=assets` so nobody reads a pass
+   * here as a statement about the picture.
+   */
+  assetsOnly?: boolean;
   /** The voiceover's measured length, for the alignment check. Null when there is no voiceover. */
   voiceoverSec?: number | null;
   /** How far the delivered duration may sit from the voiceover before it is a fault. */
@@ -191,9 +204,11 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
     }
   }
 
-  /* §12 — the delivered MP4 itself. */
-  const d = input.delivered;
-  if (!d || !d.exists) {
+  /* §12 — the delivered MP4 itself, unless this caller has no measurement of its own. */
+  const d = input.assetsOnly ? null : input.delivered;
+  if (input.assetsOnly) {
+    /* the file is the export gate's and the spot check's verdict on this route — see `assetsOnly` */
+  } else if (!d || !d.exists) {
     failures.push({ code: "DELIVERED_FILE_MISSING", detail: "no delivered file was measured" });
   } else {
     if (!d.readable || d.sizeBytes <= 0) {
@@ -228,7 +243,8 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
   const fromArchive = input.clips.filter((c) => c.fromArchive).length;
   const summary =
     `clips=${input.clips.length} fromArchive=${fromArchive} route=${input.route} ` +
-    `timeline=${input.timelineExists ? "present" : "absent"}`;
+    `timeline=${input.timelineExists ? "present" : "absent"} ` +
+    `checks=${input.assetsOnly ? "assets" : "assets+file"}`;
 
   if (failures.length === 0) {
     lines.push(`[DeliveryGate] ${DELIVERY_GATE_PASS} ${at} ${summary}`);
@@ -237,6 +253,65 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
   lines.push(`[DeliveryGate] ${DELIVERY_GATE_FAIL} ${at} ${summary} failures=${failures.length}`);
   for (const f of failures) lines.push(`[DeliveryGate]   ${f.code} — ${f.detail}`);
   return { allow: false, failures, lines };
+}
+
+/* ═══════════════════════ the other production route ═══════════════════════ */
+
+/**
+ * THE CLIPS A COMPOSE RENDER ACTUALLY DELIVERED, AS THE GATE NEEDS TO SEE THEM.
+ *
+ * ── Why this exists beside the timeline path ────────────────────────────────────────────────
+ *
+ * Two routes in this codebase can publish a video, and only one of them has a `ProjectTimeline`:
+ *
+ *     cinematic_timeline   renderJobWorker → gate → upload → publish
+ *     legacy_compose       the pipeline composes scene files directly, uploads, and completes
+ *
+ * The compose route never builds a timeline, so it has no `clip.source.archiveAssetId` to read.
+ * Asking it for one would be asking for a document it does not produce — and leaving it ungated
+ * would mean the invariant holds on one of the two routes that can hand a film to a viewer, which
+ * is exactly the shape of defect this whole programme keeps removing.
+ *
+ * What it does have is the lineage ledger, and `record.finalVideoAt` is set only for the records
+ * `markFinalVideo` proved out of the input list of the concat that produced the validated output.
+ * That is a stronger list than a timeline: it is what the file is made of, rather than what it was
+ * planned to be made of.
+ *
+ * ── What `resolved` and `fromArchive` mean here ─────────────────────────────────────────────
+ *
+ * `resolved` is true by construction: a record with `finalVideoAt` is in the delivered file, so
+ * its bytes were read. There is nothing to rehydrate on this route and nothing to be unsure about.
+ * `fromArchive` is the archive handle's presence, which is the question the gate is really asking.
+ */
+export type DeliveredLineageRecord = {
+  lineageId: string;
+  provider?: string | null;
+  providerAssetId?: string;
+  archiveAssetId?: number;
+  route?: string;
+  /** Set by `markFinalVideo` for the records proven to be in the delivered file. */
+  finalVideoAt?: number | null;
+};
+
+export function deliveryClipFactsFromLedger(
+  records: readonly DeliveredLineageRecord[]
+): DeliveryClipFact[] {
+  return records
+    .filter((r) => r.finalVideoAt != null)
+    .map((r) => ({
+      clipId: r.lineageId,
+      archiveAssetId: r.archiveAssetId ?? null,
+      provider: r.provider?.trim() || "UNVERIFIED",
+      providerAssetId: r.providerAssetId ?? null,
+      resolved: true,
+      fromArchive: r.archiveAssetId != null,
+      /**
+       * The pipeline's own word for a clip it manufactured rather than sourced. A colour card or a
+       * guaranteed slot enters the ledger with `route: "fallback"`, and that is the one route whose
+       * output depicts nothing.
+       */
+      isPlaceholder: r.route === "fallback",
+    }));
 }
 
 /** The one sentence a blocked delivery reports to the operator and to the job row. */

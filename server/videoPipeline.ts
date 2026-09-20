@@ -854,7 +854,13 @@ import {
   formatRepeatReport,
 } from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
-import { DELIVERY_GATE_FAIL, legacyFallbackDeliveryAllowed } from "./deliveryGate";
+import {
+  DELIVERY_GATE_FAIL,
+  deliveryClipFactsFromLedger,
+  deliveryGate,
+  formatDeliveryBlock,
+  legacyFallbackDeliveryAllowed,
+} from "./deliveryGate";
 import {
   productionArchiveDeps,
   storeForProduction,
@@ -49793,6 +49799,15 @@ async function _runVideoPipelineInner(
      */
     let cinematicDeliveredUrl: string | null = null;
     /**
+     * The cinematic refusal, hoisted so the final gate can read it.
+     *
+     * `cinematicRefusal` itself lives inside the block that produces it, and the gate that has to
+     * tell a FALLBACK delivery from a CONFIGURED one runs below that block. Same value, carried to
+     * where the decision is made — the omission of exactly this carry is what this programme keeps
+     * finding.
+     */
+    let cinematicRefusalForGate: string | null = null;
+    /**
      * R195 — the two states between "the route is on" and "the viewer got its output".
      *
      * Recorded where they happen rather than inferred at the end from `cinematicDeliveredUrl`,
@@ -50568,6 +50583,11 @@ async function _runVideoPipelineInner(
             })
           )
         );
+        /**
+         * Carried out of this block, because the gate that has to tell a FALLBACK delivery from a
+         * CONFIGURED one runs below it. One assignment, at the point the value is final.
+         */
+        cinematicRefusalForGate = cinematicRefusal;
         if (!cinematicDeliveredUrl && cinematicRefusal) {
           console.warn(
             pipelineReport.add(
@@ -50804,6 +50824,57 @@ async function _runVideoPipelineInner(
      * carries the renderer's own reason.
      */
     const deliveredUrl = cinematicDeliveredUrl ?? url;
+
+    /**
+     * THE LAST GATE, AND THE ONLY POINT BOTH PRODUCTION ROUTES PASS THROUGH.
+     *
+     * ── Why here and not at the upload ──────────────────────────────────────────────────────
+     *
+     * Two routes can publish a video, and the gate wired into `renderJobWorker` covers one of
+     * them. The compose route never builds a `ProjectTimeline`, so it has no clip sources to
+     * check and never met that gate at all — the invariant held on one of the two ways a film
+     * reaches a viewer, which is the exact shape of defect this programme keeps removing.
+     *
+     * The upload above is deliberately NOT the place to stop it. It also serves a second purpose
+     * documented beside it: an export the quality gate refuses is still uploaded so the owner can
+     * look at the file that was judged, and blocking there would remove a behaviour built on
+     * purpose. `updateVideoStatus(…, "completed")` below is where a file becomes THE video, and
+     * that is what this refuses.
+     *
+     * ── What it reads ───────────────────────────────────────────────────────────────────────
+     *
+     * The lineage ledger, filtered to the records `markFinalVideo` proved out of the input list of
+     * the concat that produced the validated output. That is a stronger list than a timeline: what
+     * the file is made of rather than what it was planned to be made of. Nothing is probed again —
+     * the delivered file's own measurements come from the quality report this render already built.
+     */
+    {
+      const deliveredRecords = visualDedup.sourcingCache?.lineage?.allRecords() ?? [];
+      const finalGate = deliveryGate({
+        videoId,
+        route: cinematicDeliveredUrl ? "cinematic_timeline" : "legacy_compose",
+        /** Only set when a cinematic render was attempted and did not deliver — see §10. */
+        cinematicRefusal: cinematicDeliveredUrl ? null : cinematicRefusalForGate,
+        timelineExists: cinematicDeliveredUrl != null,
+        clips: deliveryClipFactsFromLedger(deliveredRecords),
+        /**
+         * No file facts. This gate runs after the export gate, the stillness audit and the
+         * post-render spot check have each read the delivered file; it has no measurement of its
+         * own, and inventing `exists: true` would be a claim nobody made. `assetsOnly` says so,
+         * and the log line carries `checks=assets`.
+         */
+        delivered: null,
+        assetsOnly: true,
+        voiceoverSec: null,
+      });
+      for (const line of finalGate.lines) {
+        if (finalGate.allow) console.log(pipelineReport.add("summary", line));
+        else console.error(pipelineReport.add("summary", line));
+      }
+      if (!finalGate.allow) {
+        throw pipelineError(PIPELINE_ERROR.FFMPEG, formatDeliveryBlock(finalGate, videoId));
+      }
+    }
 
     // Persist URL immediately so a crash during finalization cannot lose the finished video
     await updateVideoStatus(videoId, "completed", {
