@@ -349,9 +349,29 @@ describe("§10 — buildVisualSearchPlan no longer sends a category on its own",
      * Categories split in two accordingly, and BOTH halves are asserted, because "it was dropped"
      * would otherwise be indistinguishable from "it was lost".
      */
-    /** Words that name something filmable keep their place beside the subject, as before. */
-    for (const category of ["medium", "business", "celebrity"]) {
-      expect(everyPlannedQuery, category).toContain(`kim kardashian ${category}`);
+    /**
+     * ── AND SUPERSEDED AGAIN, ONE STEP FURTHER, FOR THE SAME REASON ─────────────────────────
+     *
+     * The step above dropped the words a padding LIST names. It could not reach `celebrity` or
+     * `medium`, which are on no list and name nothing photographable either — and a list long
+     * enough to hold them is the brittle query logic this programme has twice removed.
+     *
+     * The measure that does reach them is the beat itself. This beat says "Rumors about Kim
+     * Kardashian and her 2018 media business filled the news." It says `business`. It does not
+     * say `celebrity`, and it does not say `medium` — those arrive from semantic simplification
+     * and from `domainFallbackTiers`, which is exactly why render 593 sent them on beats whose
+     * scripts never contained the words.
+     *
+     * So: a word the beat can prove keeps its place beside the subject; a word it cannot does not.
+     */
+    /** `business` is in the narration, so it is this beat's concept and stays. */
+    expect(everyPlannedQuery, "business").toContain("kim kardashian business");
+    /** `celebrity` and `medium` are categories this beat never said. */
+    for (const category of ["celebrity", "medium"]) {
+      expect(
+        everyPlannedQuery,
+        `"${category}" is not in this beat's narration and became its search term anyway`
+      ).not.toContain(`kim kardashian ${category}`);
     }
     /** `news` is padding: it leaves, and the subject's own query is what remains. */
     expect(everyPlannedQuery).not.toContain("kim kardashian news");
@@ -410,12 +430,23 @@ describe("§10 — buildVisualSearchPlan no longer sends a category on its own",
     expect(asked).not.toContain("historical footage");
     expect(asked.every((q) => q.startsWith("kim kardashian"))).toBe(true);
     /**
-     * What the two-concept round changed: `documentary` and `footage` are padding — they describe
-     * the KIND of material wanted, not the thing to be seen in it — so each phrase is now asked as
-     * the subject plus its one substantive word. The query is shorter and names the same picture.
+     * What the narrowing rounds changed, in two steps.
+     *
+     * First `documentary` and `footage` went as padding — they name the KIND of material wanted,
+     * not the thing to be seen in it. That left `kim kardashian archive` and `kim kardashian
+     * historical`, which is shorter but no more answerable: this beat's narration contains neither
+     * `archive` nor `historical`. Both are `domainFallbackTiers` phrases, appended to a beat the
+     * extractors could say little about — the exact case this test was written for.
+     *
+     * So the whole phrase now leaves and the subject is asked on its own. That is a real question
+     * with a real answer; `kim kardashian documentary archive` was four words describing a
+     * filing cabinet.
      */
-    expect(asked).toContain("kim kardashian archive");
-    expect(asked).toContain("kim kardashian historical");
+    expect(asked).not.toContain("kim kardashian archive");
+    expect(asked).not.toContain("kim kardashian historical");
+    expect(asked).toContain("kim kardashian");
+    /** And the beat's own concept is still asked, so the narrowing did not empty the beat. */
+    expect(asked).toContain("kim kardashian Rumors");
   });
 
   it("every band keeps its confidences — this round changed query text, not ranking", () => {
@@ -426,12 +457,43 @@ describe("§10 — buildVisualSearchPlan no longer sends a category on its own",
     expect(plan.fallback.every((q) => q.confidence === 0.3)).toBe(true);
   });
 
-  it("and the plan still has all six rounds populated the way it did", () => {
+  it("a band whose only term was a category empties, and a band with a real object does not", () => {
+    /**
+     * OLD INVARIANT: every band is non-empty on this fixture.
+     * NEW INVARIANT: a band is non-empty when the beat gave it something; `concepts` on THIS
+     *   fixture is empty, because its only tier2 term was `celebrity` — a word this beat never
+     *   says — and what remained after narrowing was the subject alone, which `primary` already
+     *   asks.
+     *
+     * WHY: the rounds are consumed in order and stop at the first hit, so a later round runs only
+     * when the earlier ones found nothing. A `concepts` round re-sending `kim kardashian` would
+     * spend a retrieval round re-learning what round 1 had just reported. Empty is the honest
+     * state of a band that had one category in it, and the second half of this test shows the band
+     * is not broken — give the beat a real object and it fills.
+     */
     expect(plan.primary.length).toBeGreaterThan(0);
     expect(plan.secondary.length).toBeGreaterThan(0);
-    expect(plan.concepts.length).toBeGreaterThan(0);
     expect(plan.fallback.length).toBeGreaterThan(0);
     expect(plan.people).toEqual(["kim kardashian"]);
+    expect(plan.concepts.map((q) => q.query), "a category survived into the concepts band").toEqual([]);
+
+    /** The same builder, on a beat that names an object: the band fills, as it always did. */
+    const withObject = buildVisualSearchPlan(
+      profileOf(
+        "Kim Kardashian showed her perfume bottle to the cameras.",
+        [["kim kardashian"], [], ["perfume"]],
+        { persons: ["kim kardashian"], objects: ["perfume"] }
+      ),
+      {
+        beatText: "Kim Kardashian showed her perfume bottle to the cameras.",
+        sceneText: "Kim Kardashian showed her perfume bottle to the cameras.",
+        topic: "Kim Kardashian",
+      }
+    );
+    expect(
+      withObject.concepts.map((q) => q.query),
+      "a beat that names an object produced no concepts band"
+    ).not.toEqual([]);
   });
 
   it("A BEAT WITH NO PROVEN SUBJECT BEHAVES EXACTLY AS IT DID", () => {

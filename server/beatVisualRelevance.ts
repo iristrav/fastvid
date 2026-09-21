@@ -1321,6 +1321,30 @@ export type ComposeJudgeScope = {
   beatForClip: (clipPath: string) => { sceneIndex: number; beatIndex: number } | undefined;
   contextFor: (sceneIndex: number, beatIndex: number) => BeatVisualContext | undefined;
   /**
+   * HOW MANY BEATS THIS SCENE ACTUALLY HAS — so "no narration" can say which kind it is.
+   *
+   * ── The two things `no_narration` has been saying at once ───────────────────────────────────
+   *
+   * `contextFor` returns `undefined` for three different situations and the caller reported all
+   * three as `no_narration`:
+   *
+   *   1. the scene has no beat record at all;
+   *   2. the beat INDEX is past the end of the scene's beats — a montage slot, created because
+   *      `minClipsForScene` needed more pictures than the scene had sentences. There is no beat
+   *      there, so of course there is no narration;
+   *   3. the beat exists and its `text` is empty.
+   *
+   * Render 593 reported `no narration to judge against` on s1b5, s1b6 and s1b7 — three high beat
+   * indices in one scene, which is the signature of (2) and not of (3). An operator reading that
+   * line has every reason to think the script came back short, and would go looking at the script.
+   * The script is fine; those slots never had a sentence to begin with.
+   *
+   * Optional, so a scope that cannot answer behaves exactly as it did. It changes no decision:
+   * `nothingToJudgeAgainst` classifies the new outcome identically, because it IS the same
+   * situation — it just finally says which one.
+   */
+  beatCountFor?: (sceneIndex: number) => number | undefined;
+  /**
    * Is this file a card rather than a picture?
    *
    * THE HAZARD THIS EXISTS FOR. A colour fallback or a text overlay depicts nothing, so a vision
@@ -1362,6 +1386,15 @@ export type ComposeJudgeOutcome =
   | "no_scope"
   | "beat_unknown"
   | "no_narration"
+  /**
+   * There is no BEAT at this index — a montage slot past the end of the scene's sentences.
+   *
+   * Distinct from `no_narration`, which means a beat exists and has no words. Both mean nothing
+   * can be asked, and `nothingToJudgeAgainst` treats them identically; they differ in what a
+   * person should do about it, which is "nothing" for this one and "look at the script" for the
+   * other. See `beatCountFor`.
+   */
+  | "slot_without_beat"
   | "placeholder"
   | "budget_spent"
   | "judged";
@@ -1392,7 +1425,17 @@ export type ComposeJudgeOutcome =
  * other gate standing over it, and a `does_not_fit` on record is still a refusal.
  */
 export function nothingToJudgeAgainst(outcome: ComposeJudgeOutcome): boolean {
-  return outcome === "no_scope" || outcome === "beat_unknown" || outcome === "no_narration";
+  return (
+    outcome === "no_scope" ||
+    outcome === "beat_unknown" ||
+    outcome === "no_narration" ||
+    /**
+     * A slot with no beat behind it is the same finding as no narration and is classified the
+     * same way. Splitting the NAME without splitting the CLASSIFICATION is the whole point: the
+     * decision is unchanged, the log finally says which of the two it was.
+     */
+    outcome === "slot_without_beat"
+  );
 }
 
 export async function ensureVerdictBeforeCompose(params: {
@@ -1531,7 +1574,21 @@ export async function ensureVerdictBeforeCompose(params: {
   if (!at) return { outcome: "beat_unknown" };
 
   const ctx = scope.contextFor(at.sceneIndex, at.beatIndex);
-  if (!ctx?.beatText?.trim()) return { outcome: "no_narration" };
+  if (!ctx?.beatText?.trim()) {
+    /**
+     * Same decision, named for what it is. See `beatCountFor`: a scene with no record, or an index
+     * past its last sentence, is a SLOT rather than a beat — and render 593's three `no_narration`
+     * lines on s1b5/s1b6/s1b7 were that, not a script that came back short.
+     */
+    /**
+     * Only the case that can be PROVEN gets the new name. A scope that cannot count this scene's
+     * beats knows less, not more, and reports exactly what it reported before — claiming
+     * `slot_without_beat` on a missing count would be inventing a finding out of an absence.
+     */
+    const beatCount = scope.beatCountFor?.(at.sceneIndex);
+    const provablyPastTheLastBeat = beatCount != null && at.beatIndex >= beatCount;
+    return { outcome: provablyPastTheLastBeat ? "slot_without_beat" : "no_narration" };
+  }
 
   /**
    * RONDE 199 — a card is JUDGED, and the answer cannot empty the beat.

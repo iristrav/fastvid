@@ -2310,7 +2310,15 @@ export type NarrowedQuery = {
 export function narrowToSubjectPlusConcept(
   query: string,
   anchor: string,
-  intent?: ConceptSource | null
+  intent?: ConceptSource | null,
+  /**
+   * The beat's own narration, when the caller has it.
+   *
+   * Used for one thing only: deciding whether a word taken from the query is something this beat
+   * actually says, or a category that arrived from a fallback tier. See the note at the fallback
+   * loop. Omitted, the function behaves exactly as it did.
+   */
+  sourceText?: string | null
 ): NarrowedQuery {
   const q = (query ?? "").replace(/\s+/g, " ").trim();
   const a = (anchor ?? "").replace(/\s+/g, " ").trim();
@@ -2396,14 +2404,45 @@ export function narrowToSubjectPlusConcept(
   /**
    * Nothing typed survived, so the sentence's own remaining words are all there is. The first one
    * that can name a picture — which is not the same as the first one — and nothing if none can.
+   *
+   * ── A CATEGORY IS NOT A CONCEPT, AND THE BEAT ITSELF SAYS WHICH IS WHICH ────────────────────
+   *
+   * `celebrity` reaches this loop and passes every test above it: it is not a function word, it is
+   * not in the padding set, and it is one word long. `Kim Kardashian celebrity` then satisfies the
+   * two-concept rule while naming nothing anybody can photograph — which is the shape render 593
+   * sent and got generic results back from.
+   *
+   * The tempting fix is a longer padding list. That is the brittle query logic this programme has
+   * removed twice, and it cannot scale: every domain has its own category vocabulary and a list
+   * written today is wrong for the next topic.
+   *
+   * The distinction is already in the data. `beauty` and `rumors` are in the beat's own narration;
+   * `celebrity`, `documentary archive` and `historical footage` are not — they are appended by
+   * `domainFallbackTiers` and by semantic simplification, which is why render 593 sent them on
+   * beats whose scripts never contained the words. So the measure is the one the gate itself uses:
+   * a concept taken from the query's remaining words must be PROVABLE from the beat, by stem.
+   *
+   * Typed concepts do not go through this. They are the beat's own semantic model rather than a
+   * rendering of its grammar, they were put through `termProvableFrom` where they were built, and
+   * requiring provability again would break the case that proves the point: the planner types
+   * "The Titanic sank in 1912" as `event: sinking`, and `sank` does not stem to `sinking`.
+   *
+   * Without a `sourceText` nothing changes — a caller that cannot supply the beat has proven
+   * nothing, and refusing on that basis would be guessing rather than measuring.
    */
   if (picked.length < room) {
+    const source = (sourceText ?? "").trim();
     const taken = new Set(picked.flatMap((c) => conceptWords(c)));
     for (const w of remainder) {
       if (picked.length >= room) break;
       if (taken.has(w) || !wordCanBeConcept(w)) continue;
+      const surface = surfaceOf.get(w) ?? w;
+      if (source && !termProvableFrom(surface, source)) {
+        reasons.push(`"${surface}" is not in this beat — category, not concept`);
+        continue;
+      }
       taken.add(w);
-      picked.push(surfaceOf.get(w) ?? w);
+      picked.push(surface);
       reasons.push("strongest content word in the narration");
     }
   }

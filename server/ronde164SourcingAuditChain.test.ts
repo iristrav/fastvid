@@ -133,11 +133,21 @@ describe("RONDE 164 — the chain is counted end to end", () => {
     const line = formatArchiveSourcingAudit("s1b6", audit);
     for (const field of [
       "beat=", "candidatesFound=", "afterBeatDedup=", "afterMetadata=", "afterSourceCap=",
-      "downloadBudget=", "downloaded=", "visionJudged=", "visionAccepted=", "adopted=",
+      "downloadBudget=", "downloaded=", "funnelVisionJudged=", "funnelVisionAccepted=", "adopted=",
       "cutBySourceCap=", "cutByBudget=", "rejectedAfterDownload=",
     ]) {
       expect(line, field).toContain(field);
     }
+    /**
+     * OLD INVARIANT: the fields are named `visionJudged` / `visionAccepted`.
+     * NEW INVARIANT: they are named `funnelVisionJudged` / `funnelVisionAccepted`.
+     *
+     * WHY: `recordBeatOutcome` has exactly one caller — the funnel — and YouTube is not a
+     * `FunnelCandidateSource`. The old names claimed the beat, the numbers only ever covered one
+     * of its routes, and render 593's `s2b4 … visionJudged=0` on a beat whose YouTube candidate
+     * had been delivered was read as "nobody looked". The counts are byte-for-byte unchanged.
+     */
+    expect(line).not.toMatch(/[^l]visionJudged=/);
   });
 
   it("an unmeasured stage prints as unknown, never as zero", () => {

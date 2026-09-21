@@ -194,7 +194,21 @@ export function formatArchiveSourcingAudit(
     `candidatesFound=${n(audit.candidatesFound)} afterBeatDedup=${n(audit.afterBeatDedup)} ` +
     `afterMetadata=${n(audit.afterMetadata)} afterSourceCap=${n(audit.afterSourceCap)} ` +
     `downloadBudget=${n(audit.downloadBudget)} downloaded=${n(audit.downloaded)} ` +
-    `visionJudged=${n(audit.visionJudged)} visionAccepted=${n(audit.visionAccepted)} ` +
+    /**
+     * `funnelVisionJudged`, not `visionJudged` — because that is what it counts.
+     *
+     * Every number on this line comes from ONE route: the funnel, whose only writer is
+     * `recordBeatOutcome`. YouTube is not a `FunnelCandidateSource` (videoPipeline says so in its
+     * own words: "youtube_cc clips reach a beat through fetchYouTubeCCClips -> adoptClip, a route
+     * the gate never sees"), and neither is the pooled candidate route. Their judgements are
+     * recorded on the beat shortlist funnel instead.
+     *
+     * So render 593's `s2b4 … visionJudged=0 topRejects=none` on a beat whose YouTube candidate
+     * had been delivered was true of the funnel and silent about the route that clip was actually
+     * on — and it reads as "nobody looked at this beat's pictures", which sent the investigation
+     * to the vision budget. The count is unchanged; what it claims is now the size it always was.
+     */
+    `funnelVisionJudged=${n(audit.visionJudged)} funnelVisionAccepted=${n(audit.visionAccepted)} ` +
     `adopted=${n(audit.adopted)} ` +
     `cutBySourceCap=${n(audit.cutBySourceCap)} cutByBudget=${n(audit.cutByBudget)} ` +
     `backfilledFromCap=${n(audit.backfilledFromCap)} ` +

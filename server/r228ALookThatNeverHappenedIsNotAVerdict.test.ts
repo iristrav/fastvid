@@ -48,6 +48,7 @@ import {
   createBeatRelevanceLedger,
   ensureVerdictBeforeCompose,
   maxComposePhaseJudgements,
+  nothingToJudgeAgainst,
   withComposeJudgeScope,
   type BeatRelevanceDecision,
   type ComposeJudgeScope,
@@ -233,10 +234,29 @@ describe("R228 §2 — no verdict moved", () => {
     expect(SRC).toContain("if (!params.finalSay && scope.spent >= scope.budget) return { outcome: \"budget_spent\" };");
   });
 
-  it("the three 'nothing to ask against' outcomes still suspend the requirement, unchanged", () => {
+  it("the 'nothing to ask against' outcomes still suspend the requirement, unchanged", () => {
+    /**
+     * OLD INVARIANT: three outcomes, pinned as three source lines.
+     * NEW INVARIANT: the same three situations, with the third SPLIT BY NAME into
+     *   `no_narration` (a beat exists and has no words) and `slot_without_beat` (there is no beat
+     *   at this index at all). The classification is identical and is asserted here directly
+     *   rather than inferred from the source, which is the stronger check of the two.
+     *
+     * WHY: render 593 reported `no narration to judge against` on s1b5/s1b6/s1b7 — three high beat
+     * indices in one scene, which is a montage slot past the end of the scene's sentences, not a
+     * script that came back short. The two readings send a person to opposite places.
+     */
     expect(SRC).toContain('if (!scope) return { outcome: "no_scope" };');
     expect(SRC).toContain('if (!at) return { outcome: "beat_unknown" };');
-    expect(SRC).toContain('if (!ctx?.beatText?.trim()) return { outcome: "no_narration" };');
+    expect(SRC).toContain("if (!ctx?.beatText?.trim()) {");
+    /** The decision itself — unchanged for every one of them. */
+    for (const outcome of ["no_scope", "beat_unknown", "no_narration", "slot_without_beat"] as const) {
+      expect(nothingToJudgeAgainst(outcome), outcome).toBe(true);
+    }
+    /** And nothing else was swept in with them. */
+    for (const outcome of ["judged", "already_judged", "placeholder", "budget_spent"] as const) {
+      expect(nothingToJudgeAgainst(outcome), outcome).toBe(false);
+    }
   });
 });
 

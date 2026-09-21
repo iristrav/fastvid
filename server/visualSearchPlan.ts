@@ -351,10 +351,29 @@ function anchorTierQueries(items: ScoredQuery[], anchor: string): ScoredQuery[] 
  * A band with no anchor is not narrowed at all — see the §6 note inside the function, which is
  * where that decision is made and why.
  */
+/**
+ * A LATER ROUND MAY NOT RE-ASK WHAT AN EARLIER ONE ALREADY ASKED.
+ *
+ * Narrowing makes this necessary. A tier term that is a category — `celebrity`, `documentary
+ * archive` — collapses onto the subject, and three bands that each held one now each hold the same
+ * bare `kim kardashian`. The rounds are consumed in order and stop at the first hit, so a later
+ * round only runs when the earlier ones found NOTHING: re-sending a query that has already come
+ * back empty spends a retrieval round to learn what the render was told a minute ago.
+ *
+ * Only exact repeats go. A band that narrowed to something new keeps it, and `primary` is never
+ * filtered against anything — it is the first question asked.
+ */
+function withoutQueriesAlreadyAsked(items: ScoredQuery[], earlier: ScoredQuery[]): ScoredQuery[] {
+  const asked = new Set(earlier.map((q) => q.query.trim().toLowerCase()));
+  return items.filter((q) => !asked.has(q.query.trim().toLowerCase()));
+}
+
 function narrowBand(
   items: ScoredQuery[],
   anchor: string,
-  intent: VisualSearchPlanInput["intent"]
+  intent: VisualSearchPlanInput["intent"],
+  /** The beat's own words, so a category that this beat never said cannot become its concept. */
+  sourceText: string
 ): ScoredQuery[] {
   /**
    * §6 — A BEAT WITH NO PROVEN SUBJECT IS LEFT EXACTLY AS IT WAS.
@@ -377,7 +396,7 @@ function narrowBand(
 
   const out: ScoredQuery[] = [];
   for (const item of items) {
-    const narrowed = narrowToSubjectPlusConcept(item.query, anchor, intent);
+    const narrowed = narrowToSubjectPlusConcept(item.query, anchor, intent, sourceText);
     if (!narrowed.query) continue;
     out.push(
       narrowed.query === item.query
@@ -564,7 +583,8 @@ export function buildVisualSearchPlan(
         anchor
       ),
       anchor,
-      input.intent
+      input.intent,
+      input.beatText
     )
   ).slice(0, 6);
 
@@ -578,25 +598,33 @@ export function buildVisualSearchPlan(
    * states, which is a subject in its own right and already a standalone question in the contract's
    * own ladder.
    */
-  const secondary = dedupScored([
-    ...narrowBand(
-      anchorTierQueries(tier1.map((q) => scored(q, 0.75, "synonym or variation")), anchor),
-      anchor,
-      input.intent
-    ),
-    ...e.events.map((q) => scored(q, 0.7, "detected event")),
-    ...(ctx?.people ?? []).map((p) => scored(p, 0.65, "main character from video context")),
-  ]).slice(0, 8);
+  const secondary = withoutQueriesAlreadyAsked(
+    dedupScored([
+      ...narrowBand(
+        anchorTierQueries(tier1.map((q) => scored(q, 0.75, "synonym or variation")), anchor),
+        anchor,
+        input.intent,
+        input.beatText
+      ),
+      ...e.events.map((q) => scored(q, 0.7, "detected event")),
+      ...(ctx?.people ?? []).map((p) => scored(p, 0.65, "main character from video context")),
+    ]),
+    primary
+  ).slice(0, 8);
 
   // Concepts: abstracted from objects + tier2
-  const concepts = dedupScored([
-    ...narrowBand(
-      anchorTierQueries(tier2.map((q) => scored(q, 0.6, "conceptual abstraction")), anchor),
-      anchor,
-      input.intent
-    ),
-    ...e.objects.map((q) => scored(q, 0.55, "detected object")),
-  ]).slice(0, 8);
+  const concepts = withoutQueriesAlreadyAsked(
+    dedupScored([
+      ...narrowBand(
+        anchorTierQueries(tier2.map((q) => scored(q, 0.6, "conceptual abstraction")), anchor),
+        anchor,
+        input.intent,
+        input.beatText
+      ),
+      ...e.objects.map((q) => scored(q, 0.55, "detected object")),
+    ]),
+    [...primary, ...secondary]
+  ).slice(0, 8);
 
   /**
    * Context: adjacent beats + video-level context.

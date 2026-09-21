@@ -33803,7 +33803,15 @@ export function formatBackfillApprovalSuspensions(
   const total = rows.reduce((sum, [, n]) => sum + n, 0);
   return (
     ` · approvalSuspended=${total} (${rows.map(([o, n]) => `${o}=${n}`).join(" ")}) — ` +
-    `no narration to judge those against, so no approval could be earned; they are not approved`
+    /**
+     * "no sentence behind those slots", not "no narration".
+     *
+     * The outcomes counted here are not all the same finding: `slot_without_beat` is a montage
+     * slot past the end of a scene's sentences, `no_narration` is a beat whose text is empty, and
+     * `beat_unknown` is a clip nothing could place. The per-outcome breakdown above already says
+     * which; this sentence used to overwrite all three with the name of one of them.
+     */
+    `no sentence behind those slots, so no approval could be earned; they are not approved`
   );
 }
 
@@ -46046,6 +46054,14 @@ async function _runVideoPipelineInner(
         }
         return undefined;
       };
+      /**
+       * How many sentences this scene actually has, from the same record `contextFor` reads.
+       *
+       * Installed beside it so the barrier can tell a slot past the end of a scene's beats from a
+       * beat whose narration is empty — see `beatCountFor`. Reads only; decides nothing.
+       */
+      composeJudgeScope.beatCountFor = (sceneIndex) =>
+        visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.length;
       composeJudgeScope.contextFor = (sceneIndex, beatIndex) => {
         const beat = visualDedup.sceneBeatsBySceneIndex.get(sceneIndex)?.[beatIndex];
         if (!beat?.text?.trim()) return undefined;

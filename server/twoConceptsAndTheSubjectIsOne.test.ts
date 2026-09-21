@@ -28,6 +28,7 @@ import { join } from "path";
 
 import { narrowToSubjectPlusConcept, semanticConceptCount } from "./searchQueryContract";
 import { buildVisualSearchPlan, ensureSubjectAnchor, searchPlanRounds } from "./visualSearchPlan";
+import { buildBeatQueryEscalationTiers } from "./videoPipeline";
 
 /** A beat's typed concepts, in the shape the planner produces them. */
 function intent(over: Record<string, string[]> = {}) {
@@ -264,6 +265,130 @@ describe("§15 — no production query carries more than two concepts", () => {
   });
 });
 
+/* ═══════════════════════ §12 — a category is not a visual concept ═══════════════════════ */
+
+describe("§12 — the second term has to name something you could photograph", () => {
+  /**
+   * The beat every case below is judged against. It is one sentence, and it is the ONLY evidence
+   * admitted: a word this sentence does not contain cannot be this beat's visual concept, whatever
+   * tier or simplification supplied it.
+   */
+  const BEAT = "Kim Kardashian launched a new beauty collection and the rumors filled the news.";
+
+  const ACCEPTED: Array<[string, string]> = [
+    ["beauty", "Kim Kardashian beauty"],
+    ["rumors", "Kim Kardashian rumors"],
+  ];
+  const REFUSED = ["celebrity", "news", "documentary", "footage", "video", "official", "other"];
+
+  for (const [term, expected] of ACCEPTED) {
+    it(`Kim Kardashian + ${term} → "${expected}"`, () => {
+      const out = narrowToSubjectPlusConcept(
+        `Kim Kardashian ${term}`,
+        "Kim Kardashian",
+        intent(),
+        BEAT
+      );
+      expect(out.query).toBe(expected);
+      expect(semanticConceptCount(out.query, "Kim Kardashian")).toBe(2);
+    });
+  }
+
+  for (const term of REFUSED) {
+    it(`Kim Kardashian + ${term} → the subject alone, NOT "Kim Kardashian ${term}"`, () => {
+      const out = narrowToSubjectPlusConcept(
+        `Kim Kardashian ${term}`,
+        "Kim Kardashian",
+        intent(),
+        BEAT
+      );
+      expect(out.query, `"${term}" became this beat's visual concept`).toBe("Kim Kardashian");
+      /** §10 — and the subject is what survives, never the category. */
+      expect(out.query).not.toBe(term);
+      expect(out.concepts).toEqual(["Kim Kardashian"]);
+    });
+  }
+
+  it("THE DIFFERENCE IS THE BEAT, NOT A LIST OF WORDS", () => {
+    /**
+     * §9's requirement, made falsifiable. `celebrity` is refused above because THIS beat does not
+     * say it — not because the word is special. Give it a beat that does say it, and it is that
+     * beat's concept like any other word.
+     */
+    const saysIt = "The celebrity walked past Kim Kardashian without looking.";
+    const out = narrowToSubjectPlusConcept(
+      "Kim Kardashian celebrity",
+      "Kim Kardashian",
+      intent(),
+      saysIt
+    );
+    expect(out.query, "the rule is keyed on the word rather than on the evidence").toBe(
+      "Kim Kardashian celebrity"
+    );
+  });
+
+  it("NO HARDCODED CATEGORY COMPARISON ANYWHERE IN THE POLICY", () => {
+    /** §9 in the source: the distinction may not be `if (term === "celebrity")`. */
+    const contract = readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8");
+    const policy = contract.slice(contract.indexOf("export function narrowToSubjectPlusConcept"));
+    for (const word of ["celebrity", "fashion", "beauty", "rumors"]) {
+      expect(
+        policy.toLowerCase().includes(`"${word}"`),
+        `the policy names "${word}" — that is a blacklist, not a measure`
+      ).toBe(false);
+    }
+    /** It uses the gate's own evidence measure instead. */
+    expect(policy).toContain("termProvableFrom");
+  });
+
+  it("THE PADDING SET STAYS SMALL — §8", () => {
+    /**
+     * The set is allowed and is deliberately not the mechanism. It holds words that are empty in
+     * EVERY beat, including beats that contain them ("news" is in this file's own fixture). A set
+     * that grew past a few dozen would be the brittle list §8 forbids.
+     */
+    const contract = readFileSync(join(__dirname, "searchQueryContract.ts"), "utf8");
+    const block = contract.slice(
+      contract.indexOf("const EMPTY_CONCEPT_WORDS"),
+      contract.indexOf("/** Is this word capable of being the concept half")
+    );
+    const words = [...block.matchAll(/"([^"]+)"/g)].length;
+    expect(words, `the padding set has grown to ${words} words`).toBeLessThanOrEqual(60);
+  });
+
+  it("a subject-only query is a PASS, not a failure to find a second term", () => {
+    const out = narrowToSubjectPlusConcept(
+      "Kim Kardashian celebrity",
+      "Kim Kardashian",
+      intent(),
+      BEAT
+    );
+    expect(out.query).toBe("Kim Kardashian");
+    expect(semanticConceptCount(out.query, "Kim Kardashian")).toBe(1);
+    /** §13 — two is a ceiling, not a quota. */
+    expect(semanticConceptCount(out.query, "Kim Kardashian")).toBeLessThanOrEqual(2);
+  });
+
+  it("A TYPED CONCEPT IS NOT SILENCED BY THE EVIDENCE RULE", () => {
+    /**
+     * The case that decides where the rule may be applied. The planner types "The Titanic sank in
+     * 1912" as `event: sinking`; `sank` does not stem to `sinking`, so requiring the typed concept
+     * to be provable from the sentence would return `Titanic` and lose the beat entirely.
+     *
+     * Typed concepts are the beat's own semantic model and were put through `termProvableFrom`
+     * where they were built. The evidence rule applies to words scavenged from the QUERY.
+     */
+    const sentence = "The Titanic sank in 1912 after hitting an iceberg";
+    const out = narrowToSubjectPlusConcept(
+      sentence,
+      "Titanic",
+      intent({ event: ["sinking"], objects: ["iceberg"] }),
+      sentence
+    );
+    expect(out.query).toBe("Titanic sinking");
+  });
+});
+
 /* ═══════════════════════ §20 — the last hop before the adapters ═══════════════════════ */
 
 describe("§20 — nothing re-expands the query between the plan and the providers", () => {
@@ -343,6 +468,50 @@ describe("§20 — nothing re-expands the query between the plan and the provide
     expect(all.length).toBeGreaterThan(0);
     /** Nothing here may name a person the anchor never proved. */
     expect(all.filter((q) => /kardashian|elon musk|nasa/i.test(q))).toEqual([]);
+  });
+});
+
+/* ═══════════════════════ §15 — the OTHER query builders, measured not assumed ═══════════════════════ */
+
+describe("§15 — what the narrowing does and does not cover", () => {
+  /**
+   * `narrowBand` sits inside `buildVisualSearchPlan`, so it covers the plan's bands and everything
+   * that reads them. It is NOT the only builder in the pipeline, and claiming otherwise would be
+   * the kind of unverified coverage statement this programme keeps having to retract.
+   *
+   * `buildBeatQueryEscalationTiers` is the other one that reaches providers. This measures it
+   * rather than asserting about it.
+   */
+  it("the escalation tiers build two-part queries BY CONSTRUCTION, not by narrowing", () => {
+    const tiers = buildBeatQueryEscalationTiers(
+      "The Titanic sank in 1912 after hitting an iceberg near Newfoundland.",
+      "Titanic",
+      "Titanic"
+    );
+    expect(tiers.length, "the escalation tiers produced nothing to measure").toBeGreaterThan(0);
+    /**
+     * Its own shape is the guarantee: `entity + event`, `entity + location`, `location + year`,
+     * `location + object` — each assembled from exactly two extracted cues. The one exception is
+     * `location + event + year`, the historical-context tier, which is the same instrument as the
+     * plan's unanchored `Berlin 1945` round and is deliberately three.
+     */
+    const overTwo = tiers.filter((q) => semanticConceptCount(q, "Titanic") > 2);
+    for (const q of overTwo) {
+      expect(
+        /\b(1[0-9]{3}|20[0-9]{2})\b/.test(q),
+        `"${q}" carries more than two concepts and is not the dated historical tier`
+      ).toBe(true);
+    }
+  });
+
+  it("AND NO ESCALATION TIER IS A SENTENCE", () => {
+    /** The failure this round is about: a whole narration line arriving at a provider. */
+    const sentence = "The Titanic sank in 1912 after hitting an iceberg near Newfoundland.";
+    const tiers = buildBeatQueryEscalationTiers(sentence, "Titanic", "Titanic");
+    for (const q of tiers) {
+      expect(q.split(/\s+/).length, `"${q}" is a sentence, not a query`).toBeLessThanOrEqual(5);
+      expect(q).not.toBe(sentence);
+    }
   });
 });
 
