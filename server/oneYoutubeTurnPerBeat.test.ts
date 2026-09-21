@@ -381,6 +381,12 @@ describe("§18 — the static audit: no route reaches YouTube on its own", () =>
            * it. Its answer can only make a beat skip YouTube, never reach it.
            */
           "beatSourcingDeclines",
+          /**
+           * RONDE 600 — sizes a WALL CLOCK, exactly as `fetchUniqueStockForBeat` above it does,
+           * and is where that expression now lives so the rule is written once. Its answer can
+           * only change a number of seconds: true sends no beat to YouTube, false stops none.
+           */
+          "youtubeAvailableForBudgeting",
         ],
         `${host} decides for itself whether to try YouTube`
       ).toContain(host);

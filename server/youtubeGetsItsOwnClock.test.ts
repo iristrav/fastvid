@@ -37,7 +37,27 @@ import {
   endYoutubeTurn,
   YOUTUBE_MIN_TURN_MS,
   YOUTUBE_SEARCH_TIMEOUT_MS,
+  YOUTUBE_TURN_WINDOW_MS,
 } from "./videoPipeline";
+
+/**
+ * RONDE 600 — the reserve is sized by YOUTUBE_TURN_WINDOW_MS, not YOUTUBE_MIN_TURN_MS.
+ *
+ * Both constants are still here and neither moved a millisecond. They answer different questions,
+ * and this file was written when only one of them existed:
+ *
+ *   YOUTUBE_MIN_TURN_MS      what the door guard CHARGES — one search plus the download floor
+ *   YOUTUBE_TURN_WINDOW_MS   what a scope must HOLD to contain that turn — one search plus the
+ *                            transfer reserve, so the nesting and the hand-off from the last
+ *                            search to the transfer are paid for rather than borrowed
+ *
+ * Render 596 is why the second one exists: sixteen turns declined at `20s left and a turn costs
+ * 24s`, with the reserve HELD and the clock untouched. Reserving the charge rather than the
+ * window is what let a scope hold back time for a turn it could never have run.
+ *
+ * The claims below are unchanged — a reserve exists, other providers cannot spend it, it returns
+ * in full when the turn ends. Only the constant they measure against is the right one now.
+ */
 
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
@@ -58,7 +78,7 @@ describe("§1 — the reservation is made when the scope opens", () => {
       const whole = remainingScopeMs();
       const forOthers = remainingNonYoutubeScopeMs();
       /** Within a millisecond: both readings race `Date.now()` against the same deadline. */
-      expect(Math.abs(whole - forOthers - YOUTUBE_MIN_TURN_MS)).toBeLessThanOrEqual(2);
+      expect(Math.abs(whole - forOthers - YOUTUBE_TURN_WINDOW_MS)).toBeLessThanOrEqual(2);
     });
   });
 
@@ -82,7 +102,12 @@ describe("§1 — the reservation is made when the scope opens", () => {
   });
 
   it("a scene too small to share is not handed to one provider", async () => {
-    /** Never more than half the window: a guaranteed turn, not a guaranteed monopoly. */
+    /**
+     * A guaranteed turn, not a guaranteed monopoly — and RONDE 600 makes it stricter, not looser:
+     * a window that cannot pay for a whole turn now reserves NOTHING, because the turn would be
+     * declined at the door however the seconds are labelled and the held-back time is taken from
+     * sources that could have spent it. Ten seconds cannot pay for a turn, so nothing is withheld.
+     */
     await inScope(() => {
       const whole = remainingScopeMs();
       expect(whole - remainingNonYoutubeScopeMs()).toBeLessThanOrEqual(Math.ceil(whole / 2) + 50);
@@ -125,7 +150,7 @@ describe("§3 — the reserve returns to the pool when the turn ends", () => {
   it("unused budget is released ONLY after the turn finishes, and then in full", async () => {
     await inScope(() => {
       const before = remainingNonYoutubeScopeMs();
-      expect(Math.abs(remainingScopeMs() - before - YOUTUBE_MIN_TURN_MS)).toBeLessThanOrEqual(2);
+      expect(Math.abs(remainingScopeMs() - before - YOUTUBE_TURN_WINDOW_MS)).toBeLessThanOrEqual(2);
 
       endYoutubeTurn("YOUTUBE_NO_RESULTS");
 
@@ -152,7 +177,7 @@ describe("§3 — the reserve returns to the pool when the turn ends", () => {
     });
     await inScope(() => {
       expect(
-        Math.abs(remainingScopeMs() - remainingNonYoutubeScopeMs() - YOUTUBE_MIN_TURN_MS)
+        Math.abs(remainingScopeMs() - remainingNonYoutubeScopeMs() - YOUTUBE_TURN_WINDOW_MS)
       ).toBeLessThanOrEqual(2);
     });
   });

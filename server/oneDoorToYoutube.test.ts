@@ -40,6 +40,7 @@ import {
   remainingNonYoutubeScopeMs,
   scopedTimeoutMs,
   YOUTUBE_MIN_TURN_MS,
+  YOUTUBE_TURN_WINDOW_MS,
   type YoutubeTurnRecord,
 } from "./videoPipeline";
 
@@ -224,7 +225,8 @@ describe("T4 — non-YouTube providers cannot spend the YouTube reserve", () => 
          * millisecond is not.
          */
         const held = remainingScopeMs() - remainingNonYoutubeScopeMs();
-        expect(Math.abs(held - YOUTUBE_MIN_TURN_MS)).toBeLessThanOrEqual(2);
+        /** RONDE 600: the reserve holds the turn's WINDOW, not the price the door charges. */
+        expect(Math.abs(held - YOUTUBE_TURN_WINDOW_MS)).toBeLessThanOrEqual(2);
       },
       WINDOW_MS,
       "test scene"
@@ -470,6 +472,12 @@ describe("T10 — the central route is not an archival route", () => {
            * so "not called" and "declined" stay different states — see `beatSourcingDeclines`.
            */
           "beatSourcingDeclines",
+          /**
+           * RONDE 600 — sizes a WALL CLOCK, exactly as `fetchUniqueStockForBeat` does, and is
+           * where that expression now lives so the rule is written once. Its answer can only
+           * change a number of seconds: true sends no beat to YouTube, false stops none.
+           */
+          "youtubeAvailableForBudgeting",
         ],
         `${host} decides for itself whether to try YouTube`
       ).toContain(host);

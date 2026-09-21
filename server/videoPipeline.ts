@@ -1816,6 +1816,36 @@ export const YOUTUBE_SEARCH_TIMEOUT_MS = 12_000;
 export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;
 
 /**
+ * RONDE 600 — THE PRICE A GUARD CHECKS IS NOT THE WINDOW A TURN NEEDS.
+ *
+ * `YOUTUBE_MIN_TURN_MS` above is what the door guard charges: one search plus the download FLOOR.
+ * It is the right question to ask at the door and the wrong number to size a scope with, for two
+ * reasons that render 596 demonstrates from both sides.
+ *
+ * ── It cannot survive the nesting ───────────────────────────────────────────────────────────
+ *
+ * A YouTube turn sits three scopes deep — the beat's fill wall, then `youtube-first`, then the
+ * turn's own — and `withSceneFetchTimeout` clamps each child to `min(now + ms, parentDeadline)`.
+ * Every layer costs the milliseconds spent opening it, and the guard then reads the clock again.
+ * A window sized at exactly the price is therefore always a few milliseconds under it by the time
+ * anyone looks, and `20s left and a turn costs 24s` becomes `23.99s left and a turn costs 24s`.
+ * Sizing to the price does not fix the defect, it relocates it.
+ *
+ * ── And it leaves nothing between the search and the transfer ───────────────────────────────
+ *
+ * `TRANSFER_RESERVE_MS` exists because the download floor is measured when the transfer STARTS,
+ * and something has to pay for the distance from the last search returning to that moment —
+ * validating the candidate, ranking it, writing its lineage. In its own words: "a reserve equal to
+ * the floor exactly is a reserve that is already spent by the time the guard reads it". A scope
+ * sized at one search plus the floor makes that mistake one level up.
+ *
+ * So the window that CONTAINS a turn is one search plus the transfer's reserve. Both constants
+ * already govern this path and neither moves; this is their sum, and it is strictly larger than
+ * the price the guard charges, which is what leaves the nesting its room.
+ */
+export const YOUTUBE_TURN_WINDOW_MS = YOUTUBE_SEARCH_TIMEOUT_MS + TRANSFER_RESERVE_MS;
+
+/**
  * When silent picture after the narration is long enough to be a fault rather than a breath.
  *
  * Matches `avSyncCheck`'s own EDGE_SILENCE_SEC so the trim fires on exactly what the detector
@@ -4501,11 +4531,107 @@ function applyMinimizeStockProfile(
 }
 
 /** RapidAPI download + trim often exceeds 24s; outer beat timeout must allow that. */
-function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
+/**
+ * RONDE 600 — A WINDOW BELOW THE PRICE OF A TURN IS A REFUSAL WRITTEN AS A BUDGET.
+ *
+ * ── What render 596 printed on every beat ───────────────────────────────────────────────────
+ *
+ *     [YouTube] TURN_DECLINED scene=0 reserved=9996ms reserveState=HELD —
+ *       20s left and a turn costs 24s (one 12s search plus the 12s download floor).
+ *       Nothing is searched … clock="b0_fastyt-first s0 b0" granted=20s used=0s
+ *
+ * Sixteen turns, sixteen declines, `used=0s` and `reserveState=HELD` on every one of them — the
+ * clock was fresh and the reserve was still there. No provider had taken YouTube's time. The
+ * window it was handed had simply never been large enough to pay for a turn.
+ *
+ * The two numbers sit four thousand lines apart in THIS file and never met:
+ *
+ *     YOUTUBE_MIN_TURN_MS            24_000   what a turn costs (line ~1816)
+ *     this function, fastStockMode   22_000   what a turn is handed
+ *
+ * Twenty-two is less than twenty-four, so the door guard at `fetchYouTubeCCClips` refused before
+ * a single query went out — deterministically, every beat, every render, for as long as
+ * `fastStockMode` is on. `YOUTUBE_BEAT_BUDGET_MS` is worse: it accepts 15_000 from an operator,
+ * which switches YouTube off through a setting that says nothing about switching YouTube off.
+ *
+ * ── Why this is a floor and not a raise ─────────────────────────────────────────────────────
+ *
+ * NO NEW NUMBER IS INTRODUCED. The floor is `YOUTUBE_MIN_TURN_MS` — the same constant the guard
+ * reads, itself the sum of the same search timeout and the same download floor that already
+ * governed this path. A window that can already pay for a turn is untouched, to the millisecond:
+ * `realFootageFirstEnabled` (55s/70s) and the default (80s) do not move.
+ *
+ * What changes is that this function can no longer quote a price it refuses to pay. A caller that
+ * asks for a YouTube turn and hands it less than a turn costs is not budgeting — it is declining,
+ * without saying so, in a place nobody reads as a decline.
+ */
+/**
+ * Exported for the same reason `transferReserveFor` is: the rule IS the claim, and a reader should
+ * be able to check this arithmetic rather than trust it. Render 596 is what trusting it cost.
+ */
+export function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
+  return Math.max(YOUTUBE_TURN_WINDOW_MS, youtubeBeatFetchWindowAsked(fastStockMode));
+}
+
+/** The window each mode asks for, unchanged. The floor above is applied to all of them at once. */
+function youtubeBeatFetchWindowAsked(fastStockMode: boolean): number {
   if (youtubeOnlySourcingEnabled()) return youtubeBeatSearchBudgetMs();
   if (realFootageFirstEnabled()) return IS_RAILWAY ? 55_000 : 70_000;
   if (fastStockMode) return IS_RAILWAY ? 22_000 : 35_000;
   return 80_000;
+}
+
+/**
+ * RONDE 600 — YOUTUBE'S OWN SECONDS, ON TOP OF THE BEAT'S, NOT CARVED OUT OF THEM.
+ *
+ * A child scope can never outlive its parent — `withSceneFetchTimeout` clamps every one to
+ * `min(now + ms, parentDeadline)`, and that clamp is load-bearing. So flooring the window a
+ * YouTube turn ASKS for (above) cannot help while the beat that contains it is only twenty
+ * seconds wide: render 596's `youtube-first s0 b0` asked for 45s and was granted 20s, because 20s
+ * was the whole beat.
+ *
+ * The beat therefore has to be wide enough to hold a turn, and the honest way to widen it is to
+ * ADD the turn's price rather than to take it from the cascade. Carving it out would buy YouTube
+ * its seconds with the archive's, which is the trade RONDE 259's reserve exists to prevent.
+ *
+ * ── Why one turn's price is the whole exposure ──────────────────────────────────────────────
+ *
+ * `claimYoutubeTurn` already enforces ONE turn per beat — every route after the first is handed
+ * the first one's answer and takes no window of its own. So a beat can spend this supplement once
+ * and never twice, which is what makes an addition safe here and would not make it safe anywhere
+ * the count is open-ended.
+ *
+ * ── And why the panic tiers do not get it ───────────────────────────────────────────────────
+ *
+ * `forceExportMode` and `isPipelineEmergencyFinish` are the render landing: they are not sourcing
+ * modes with a small budget, they are the decision to stop sourcing. A render that has reached
+ * them should not be starting new provider turns, and their numbers do not move. That is also the
+ * governor on the tiers that DO get the supplement — a render that overruns escalates into those
+ * tiers by itself, so this cannot run away.
+ *
+ * Zero when YouTube is not available, so a build without a key or a downloader keeps exactly the
+ * beat wall it has today.
+ */
+export function youtubeBeatWallSupplementMs(): number {
+  return youtubeAvailableForBudgeting() ? YOUTUBE_TURN_WINDOW_MS : 0;
+}
+
+/**
+ * RONDE 600 — "IS THERE A YOUTUBE TO BUDGET FOR", ASKED IN ONE PLACE.
+ *
+ * This predicate is emphatically NOT a routing decision, and the distinction is the one the
+ * YouTube sweep enforces: `runCentralYoutubeTurn` alone decides whether a beat is sent to YouTube.
+ * All this can change is a NUMBER OF SECONDS on a wall clock. A true answer sends nobody to
+ * YouTube; a false answer stops nobody from going — it only declines to widen a wall for a source
+ * that is not there, so a build without a key keeps exactly the beat it has today.
+ *
+ * It exists as a function because the expression was already written twice — here and at
+ * `fetchUniqueStockForBeat`, which has sized its wall on this same pair since long before this
+ * round. Two copies of one rule is the defect this codebase keeps removing, and it is also what
+ * made the sweep read two hosts where there is one question.
+ */
+function youtubeAvailableForBudgeting(): boolean {
+  return youtubeSourcingEnabled() && youtubeCcReady();
 }
 
 /** Max time per beat for online/script image search before stock footage. */
@@ -4846,7 +4972,24 @@ export type CentralYoutubeOutcome =
   | "YOUTUBE_ADOPTED"
   /** `candidates` mode: the provider delivered, and the pooling route ranks them later. */
   | "YOUTUBE_CANDIDATES_DELIVERED"
+  /** The provider WAS asked and answered with nothing. Measured: the search counter moved. */
   | "YOUTUBE_NO_RESULTS"
+  /**
+   * RONDE 600 — the provider was never asked, and this is the difference render 596 could not say.
+   *
+   * Sixteen beats reported `YOUTUBE_NO_RESULTS clip=none ms=0`. Not one of them had issued a
+   * query: every turn was refused at `fetchYouTubeCCClips`'s door for want of a window, and the
+   * refusal's own reason — `TURN_DECLINED_NO_WINDOW` — died inside that function, which returns
+   * an empty array for "searched and found nothing" and for "never searched" alike.
+   *
+   * An operator reading `NO_RESULTS` goes and looks at YouTube, the queries, the licence flags and
+   * the API key. All four were fine. The fault was a budget four thousand lines away, and the
+   * label pointed away from it for as long as it existed.
+   *
+   * Measured, not asserted, and from a counter that already existed: the provider's own
+   * `searchCount` before and after the attempt. Nothing new is recorded to produce it.
+   */
+  | "YOUTUBE_NOT_SEARCHED"
   | "YOUTUBE_NO_USABLE_CANDIDATE"
   | "YOUTUBE_VISION_REJECTED"
   | "YOUTUBE_TIMEOUT"
@@ -5068,13 +5211,19 @@ export async function runCentralYoutubeTurn(
    * candidates — ranked against nine other providers, adopted or not — is that route's business and
    * not an outcome this turn may claim.
    */
+  /**
+   * RONDE 600 — which of the two empty answers this is. See `YOUTUBE_NOT_SEARCHED`: the turn
+   * reports "YouTube had nothing" only when a query actually reached YouTube.
+   */
+  const emptyOutcome: CentralYoutubeOutcome =
+    attempt.searched ? "YOUTUBE_NO_RESULTS" : "YOUTUBE_NOT_SEARCHED";
   if (req.deliver === "candidates") {
     return attempt.paths.length > 0
       ? finish("YOUTUBE_CANDIDATES_DELIVERED", null, attempt.paths)
-      : finish("YOUTUBE_NO_RESULTS", null);
+      : finish(emptyOutcome, null);
   }
   if (attempt.clip) return finish("YOUTUBE_ADOPTED", attempt.clip);
-  if (attempt.candidates === 0) return finish("YOUTUBE_NO_RESULTS", null);
+  if (attempt.candidates === 0) return finish(emptyOutcome, null);
   /**
    * Candidates arrived and none was adopted. If the editor refused one of them for THIS beat while
    * the turn was running, that is the reason and it is readable; otherwise the honest answer is
@@ -5140,6 +5289,14 @@ type YoutubeAttempt = {
   paths: string[];
   error: boolean;
   timedOut: boolean;
+  /**
+   * RONDE 600 — did a query actually reach the provider?
+   *
+   * Read from `youtube_cc`'s own `searchCount` either side of the attempt, so it reports what the
+   * render did rather than what this function believes it did. Without it an empty `paths` is two
+   * different facts wearing one label — see `YOUTUBE_NOT_SEARCHED`.
+   */
+  searched: boolean;
 };
 
 /**
@@ -5159,6 +5316,16 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
     ...new Set([...(adoptOpts.keywords ?? []), ...beat.keywords]),
   ].slice(0, 22);
   let found: string[] = [];
+  /**
+   * RONDE 600 — the provider's own search counter, read before anything is attempted.
+   *
+   * `fetchYouTubeCCClips` returns `[]` for "asked and got nothing" and for "never asked", and the
+   * five doors that produce the second answer are all inside it. Comparing this counter afterwards
+   * is how the turn learns which of the two happened, without a new record anywhere.
+   */
+  const searchesBefore = providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount;
+  const searchedSince = () =>
+    providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount > searchesBefore;
   /** THE ONE PRODUCTION CALL TO THE PROVIDER. Every route in this pipeline arrives at this line. */
   const search = async (): Promise<string[]> => {
     const paths = await fetchYouTubeCCClips(
@@ -5189,7 +5356,14 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
         timeoutMs,
         `${label} s${sceneIndex} b${beat.index}`
       );
-      return { clip: null, candidates: paths.length, paths, error: false, timedOut: false };
+      return {
+        clip: null,
+        candidates: paths.length,
+        paths,
+        error: false,
+        timedOut: false,
+        searched: searchedSince(),
+      };
     }
     const clip = await withSceneFetchTimeout(
       () => tryStockSources(
@@ -5205,7 +5379,14 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       timeoutMs,
       `${label} s${sceneIndex} b${beat.index}`
     );
-    return { clip, candidates: found.length, paths: found, error: false, timedOut: false };
+    return {
+      clip,
+      candidates: found.length,
+      paths: found,
+      error: false,
+      timedOut: false,
+      searched: searchedSince(),
+    };
   } catch (err) {
     /**
      * A failure ends the turn too. The beat is not offered to YouTube a second time by the next
@@ -5224,6 +5405,7 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       paths: found,
       error: true,
       timedOut: /timed? ?out/i.test(message),
+      searched: searchedSince(),
     };
   }
 }
@@ -7180,14 +7362,42 @@ function unspentYoutubeReserveMs(scope: SceneFetchScope): number {
  * amount is the turn's real cost — one search plus the download floor — which are the same two
  * constants that already governed `fetchYouTubeCCClips`, not a new number.
  *
- * Never more than half the window. A scene whose whole budget would go to one provider's turn is a
- * scene with no budget for anything else, and the reservation is meant to guarantee YouTube a fair
- * turn rather than to hand it the scene.
+ * ── RONDE 600 — A PART-RESERVE RESERVES NOTHING ─────────────────────────────────────────────
+ *
+ * This used to reserve `min(wantMs, window/2)`, and render 596 shows what that buys: a 20s window
+ * reserved 9996ms for a turn the same file prices at 24000ms. The turn was declined at the door
+ * anyway — the guard reads the whole clock, not the reserve — so the ten seconds were held back
+ * from the archive to pay for something that could never happen. Twice wrong: YouTube got no turn
+ * and the tiers behind it got less time than they could have had.
+ *
+ * So the reservation is now all-or-nothing, and both halves are the honest answer:
+ *
+ *   window >= the price   reserve the PRICE. Not half of it — half a turn buys no clip, and the
+ *                         half-rule was protecting other providers from a number that was never
+ *                         the danger: `wantMs` is one fixed turn, not a share of the scene.
+ *   window <  the price   reserve NOTHING. This scope cannot pay for a turn however the seconds
+ *                         are labelled, and holding some back only starves the sources that could
+ *                         have spent them. "Time YouTube did not need is time the next tier gets"
+ *                         is this function's own rule, applied to a turn that cannot happen.
+ *
+ * The scene-eating case the half-rule guarded is handled where it is actually created — see
+ * `youtubeBeatWallSupplementMs`: the beat is widened BY a turn, so the reserve is time that was
+ * never the cascade's to begin with, and what the cascade had before it still has.
  */
-export function reserveYoutubeTurn(scope: SceneFetchScope, wantMs = YOUTUBE_MIN_TURN_MS): number {
+export function reserveYoutubeTurn(
+  scope: SceneFetchScope,
+  /**
+   * RONDE 600 — the WINDOW a turn needs, not the PRICE the door guard charges, and deliberately
+   * the same constant `youtubeBeatFetchTimeoutMs` and `youtubeBeatWallSupplementMs` use. Holding
+   * back only the price would let the cascade spend the scope down to exactly that, and the
+   * turn's own nested scope would then open a few milliseconds short of it — which is the whole
+   * defect, arriving through the reserve instead of through the wall.
+   */
+  wantMs = YOUTUBE_TURN_WINDOW_MS
+): number {
+  const want = Math.max(0, wantMs);
   const window = Math.max(0, scope.deadlineAtMs - Date.now());
-  const reserved = Number.isFinite(window) ? Math.min(wantMs, Math.floor(window / 2)) : wantMs;
-  scope.youtubeReservedMs = Math.max(0, reserved);
+  scope.youtubeReservedMs = !Number.isFinite(window) || window >= want ? want : 0;
   return scope.youtubeReservedMs;
 }
 
@@ -28097,7 +28307,8 @@ async function fetchUniqueStockForBeat(
   videoTitle?: string,
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
-  const wallMs = youtubeSourcingEnabled() && youtubeCcReady()
+  /** RONDE 600: the same budget predicate the beat wall uses — see `youtubeAvailableForBudgeting`. */
+  const wallMs = youtubeAvailableForBudgeting()
     ? youtubeBeatFetchTimeoutMs(dedup.perf.fastStockMode) + 8_000
     : dedup.perf.fastStockMode
       ? 24_000
@@ -38768,13 +38979,20 @@ async function refillSceneStrictVoiceMatch(
       pushSceneClip(clipPath, holdSec, beat.index);
     const profile = semanticProfiles.get(bi);
     const beatFilled = () => clipBeatIndices.includes(beat.index);
+    /**
+     * RONDE 600 — the beat wall, plus YouTube's own turn when YouTube is available.
+     *
+     * The sourcing tiers keep the numbers they had: 12s under turbo/rush, 20s otherwise. What is
+     * added is `youtubeBeatWallSupplementMs()` — one YouTube turn's price, once, and only when
+     * there is a YouTube to ask. See that function for why it is an addition and why the two
+     * landing tiers below are deliberately left out of it.
+     */
     const beatBudgetMs = dedup.forceExportMode
       ? 5_000
       : isPipelineEmergencyFinish(dedup)
       ? 6_000
-      : visualSourcingTurbo(dedup) || isPipelineRushMode(dedup)
-        ? 12_000
-        : 20_000;
+      : (visualSourcingTurbo(dedup) || isPipelineRushMode(dedup) ? 12_000 : 20_000) +
+        youtubeBeatWallSupplementMs();
 
     const runFill = async () => {
       if (!(await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, profile, beat.holdSec))) {
