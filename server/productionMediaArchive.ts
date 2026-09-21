@@ -129,12 +129,37 @@ export type ProductionArchiveMetadata = {
   personContext?: boolean;
 };
 
+/**
+ * ROUND 596 §3 — the ingestion's own verdict, passed through without interpretation.
+ *
+ * Structural rather than an import of `archiveIngestion`'s type, for the same reason every other
+ * dependency here is structural: `storeForProduction` must remain testable without pulling in the
+ * database, the storage client and the vision path. The codes themselves are that module's — this
+ * one invents none and translates none.
+ */
+export type ArchiveIngestRefusal = {
+  reasonCode: string;
+  reasonDetail: string;
+  fileExists?: boolean;
+  fileSizeBytes?: number;
+  mimeType?: string;
+  durationSec?: number;
+};
+
 export type ProductionArchiveDeps = {
-  /** `ingestExternalClipToArchive`. Returns null when its own quality gate refused the clip. */
+  /**
+   * `ingestExternalClipToArchiveWithReason`. Null still means refused, for the fakes and the
+   * callers that have no reason to supply one; a `refusal` object says WHICH refusal it was, and
+   * §3 requires that to reach the log whenever the ingestion can produce it.
+   */
   ingest: (
     localPath: string,
     metadata: ProductionArchiveMetadata
-  ) => Promise<{ assetId: number; storageKey: string; reused?: boolean } | null>;
+  ) => Promise<
+    | { assetId: number; storageKey: string; reused?: boolean }
+    | { refusal: ArchiveIngestRefusal }
+    | null
+  >;
   /** `updateMediaArchiveAsset` — the columns this round added, written after the row exists. */
   updateAsset: (
     assetId: number,
@@ -406,25 +431,94 @@ export async function storeForProduction(params: {
   }
 
   /* 4 — the existing ingestion. Its quality gate is its own and is not second-guessed here. */
+  /**
+   * ROUND 596 §4 — THE GATE IS GIVEN THE DURATION THIS FUNCTION MEASURED.
+   *
+   * ── What it was judging ─────────────────────────────────────────────────────────────────
+   *
+   * `archiveIngestion`'s quality gate reads `metadata.durationSec`, and for a clip reaching it
+   * through `ensureArchiveBackedBeforePush` that number is `cached?.durationSec ?? null` — the
+   * PROVIDER's claim about the original asset, or nothing at all. For an `extend_*.mp4` it is the
+   * wrong number by construction: the file was looped or slowed to fill a beat, so its length is
+   * not the length the provider reported. For a YouTube clip, whose asset cache is often empty,
+   * it is absent, and `dur = 0` means neither duration bound can fire at all.
+   *
+   * So the gate that render 595 blamed for three refusals could not, on those clips, have been
+   * the duration rule — and nobody could tell, because the refusal did not say.
+   *
+   * ── Why this is not a relaxation ────────────────────────────────────────────────────────
+   *
+   * Step 2 above already ran ffprobe on these exact bytes. The thresholds, the comparisons and the
+   * verdicts in `archiveIngestion` are untouched; what changes is that they are applied to a
+   * reading of the file instead of a claim about a different file. That can refuse MORE — an
+   * extension genuinely longer than the 120-second bound is now seen — and it is the same defect
+   * this whole programme keeps closing: the answer was measured and not carried to the decision.
+   *
+   * A probe that produced no duration leaves the caller's value exactly as it was.
+   */
+  const measured = facts?.durationSec;
+  const metadata =
+    measured != null && measured > 0
+      ? { ...params.metadata, durationSec: measured }
+      : params.metadata;
   let ingested: Awaited<ReturnType<ProductionArchiveDeps["ingest"]>> = null;
   try {
-    ingested = await deps.ingest(localPath, params.metadata);
+    ingested = await deps.ingest(localPath, metadata);
   } catch (err) {
-    return reject(
-      failure("ARCHIVE_INGEST_REFUSED", `the archive ingestion threw: ${(err as Error).message}`, "FAILED")
-    );
-  }
-  if (!ingested) {
     return reject(
       failure(
         "ARCHIVE_INGEST_REFUSED",
-        `the archive ingestion refused ${path.basename(localPath)} (its own quality gate, or a storage failure)`,
+        `reasonCode=UNKNOWN reasonDetail="the archive ingestion threw: ${(err as Error).message}" ` +
+          diagnostics(localPath, sizeBytes, metadata.mimeType, facts),
+        "FAILED"
+      )
+    );
+  }
+  if (!ingested || "refusal" in ingested) {
+    /**
+     * ROUND 596 §3 — WHICH refusal, and what was measured, instead of a guess between two.
+     *
+     * The line used to read "(its own quality gate, or a storage failure)" for eleven different
+     * outcomes. `reasonCode` comes from the ingestion itself and is never inferred here: an
+     * ingestion that supplies none is reported as UNKNOWN rather than given a plausible one, which
+     * is the whole difference between a diagnosis and a guess.
+     */
+    const r = ingested?.refusal;
+    return reject(
+      failure(
+        "ARCHIVE_INGEST_REFUSED",
+        `reasonCode=${r?.reasonCode ?? "UNKNOWN"} ` +
+          `reasonDetail="${r?.reasonDetail ?? "the ingestion refused it and said nothing further"}" ` +
+          diagnostics(localPath, r?.fileSizeBytes ?? sizeBytes, r?.mimeType ?? metadata.mimeType, facts),
         "REJECTED"
       )
     );
   }
 
   return finish(ingested.assetId, ingested.storageKey, ingested.reused ? "checksum" : null);
+}
+
+/**
+ * §3's diagnostic set, taken from what this function actually measured.
+ *
+ * `facts` is the ffprobe result from step 2, so `ffprobeSuccess`, the duration and the dimensions
+ * are readings rather than provider claims. `sourcePath` is the BASENAME: a work directory name is
+ * not for a log, and the file's identity here is its content, not its location.
+ */
+function diagnostics(
+  localPath: string,
+  sizeBytes: number,
+  mimeType: string,
+  facts: MediaFacts | null
+): string {
+  return (
+    `sourcePath=${path.basename(localPath)} ` +
+    `fileExists=${fs.existsSync(localPath)} fileSize=${sizeBytes} mimeType=${mimeType} ` +
+    `ffprobeSuccess=${facts != null} ` +
+    `duration=${facts?.durationSec?.toFixed(2) ?? "null"} ` +
+    `width=${facts?.width ?? "null"} height=${facts?.height ?? "null"} ` +
+    `video=${facts?.hasVideoStream ?? "null"} audio=${facts?.hasAudioStream ?? "null"}`
+  );
 }
 
 /* ═══════════════════════ the wiring ═══════════════════════ */
@@ -442,10 +536,13 @@ export function productionArchiveDeps(params: {
 }): ProductionArchiveDeps {
   return {
     ingest: async (localPath, metadata) => {
-      const { ingestExternalClipToArchive } = await import("./archiveIngestion");
-      const result = await ingestExternalClipToArchive(localPath, metadata);
-      if (!result) return null;
-      return { assetId: result.assetId, storageKey: result.storageKey, reused: result.reused };
+      const { ingestExternalClipToArchiveWithReason } = await import("./archiveIngestion");
+      const outcome = await ingestExternalClipToArchiveWithReason(localPath, metadata);
+      if (outcome.status !== "ingested") {
+        const { status: _s, ...refusal } = outcome;
+        return { refusal };
+      }
+      return { assetId: outcome.assetId, storageKey: outcome.storageKey, reused: outcome.reused };
     },
     updateAsset: async (assetId, patch) => {
       const { updateMediaArchiveAsset } = await import("./db");

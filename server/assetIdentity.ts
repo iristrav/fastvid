@@ -186,35 +186,148 @@ export function identityFromAdoption(
 }
 
 /**
- * Can this identity be turned back into a file later?
+ * THE ROUTES THAT ACTUALLY EXIST FOR ONE IDENTITY — one definition, for every reader.
  *
- * §15 — an old manifest must not pretend. Three ways to be recoverable, in descending strength:
+ * ── Render 595, and the sentence two modules could not agree on ─────────────────────────────
  *
- *   · an archive asset id     this system holds the file and serves it itself
- *   · a media URL             a direct link that may or may not still resolve
- *   · provider + provider id  enough to ask the provider again, which is what the future
- *                             rehydrator will do
+ * A clip entered the timeline as `internet_archive` + `youtube-r6LB5toWr5I` with no archive handle
+ * and no media URL. Two answers were given about the same identity, minutes apart:
  *
- * A clip with only a provider NAME is none of those, and answering `false` for it is the point of
- * the function. UNVERIFIED is never rehydratable whatever else it carries: a provider FastVid
- * could not prove is not a provider it can go back to.
+ *     [AssetIdentity]    … rehydratable=true      identityIsRehydratable: provider + id is enough
+ *     [AssetRehydrator]  ASSET_NOT_FOUND — provider=internet_archive providerAssetId=youtube-…
+ *                        has no fetchable URL
+ *
+ * The first was `provider && providerAssetId` — "enough to ask the provider again". That is only
+ * true for the providers something is actually written to ask: the YouTube layer, the Pexels and
+ * Pixabay lookups, and Wikimedia's `Special:FilePath` on a File: title. For every OTHER provider
+ * the rehydrator has no id lookup at all — it fetches the STORED URL or it fails. So `provider +
+ * id` was a promise about work that does not exist, and the planner, the validator and the render
+ * log all repeated it.
+ *
+ * ── Why a route list rather than a second boolean ───────────────────────────────────────────
+ *
+ * The rule cannot live in the rehydrator: `assetRehydrator` imports this module, so the predicate
+ * has to be here or there are two of them again — which is the defect. Naming the routes instead
+ * of returning a bare true/false keeps `rehydrateAsset`'s branching and this answer readable as
+ * the same list, and lets a failure say which route it expected to have.
+ *
+ * Each entry corresponds to a branch that exists in `rehydrateAsset`, in its order:
+ *
+ *   archive          `deps.archiveAsset` + `deps.readStorage` — this system holds the file
+ *   youtube          `deps.youtubeResolver` — the existing licence/authorisation layer, by videoId
+ *   provider_api     `deps.providerResolver` — Pexels/Pixabay ids looked up through their API
+ *   wikimedia_title  `Special:FilePath/<File: title>`, derived in `rehydrationUrlFor`
+ *   stored_url       `identity.canonicalUrl ?? identity.mediaUrl`, fetched as it stands
+ *
+ * A provider NAME on its own is not on the list and never was.
  */
-export function identityIsRehydratable(
+export type RehydrationRoute =
+  | "archive"
+  | "youtube"
+  | "provider_api"
+  | "wikimedia_title"
+  | "stored_url";
+
+/**
+ * Providers the RONDE 145 audit proved rehydratable by reading each adapter.
+ *
+ * A provider is here only when its media is reachable from the stored identity — either because
+ * this system holds the file, or because the provider's URL is a documented function of the id, or
+ * because the stored media URL is stable for that provider.
+ *
+ * It lives here rather than in `assetRehydrator` because the route rule below needs it and that
+ * module imports this one. `assetRehydrator` re-exports both names, so every existing caller and
+ * every existing test reads the same list it always did.
+ */
+export const REHYDRATABLE_PROVIDERS: ReadonlyArray<string> = [
+  "curated", "archive",
+  "wikimedia",
+  "loc",
+  "internet_archive",
+  "pexels", "pixabay",
+  "youtube", "youtube_cc",
+  "nasa", "nara", "europeana", "openverse",
+];
+
+export function providerIsRehydratable(provider: string): boolean {
+  return REHYDRATABLE_PROVIDERS.includes(provider.trim().toLowerCase());
+}
+
+/** Providers whose id IS looked up again, because something is written to look it up. */
+const PROVIDER_ID_LOOKUP: ReadonlyMap<string, Extract<RehydrationRoute, "youtube" | "provider_api">> =
+  new Map([
+    ["youtube", "youtube"],
+    ["youtube_cc", "youtube"],
+    ["pexels", "provider_api"],
+    ["pixabay", "provider_api"],
+  ]);
+
+export function identityRehydrationRoutes(
   identity: AssetSourceIdentity | null | undefined
-): boolean {
-  if (!identity) return false;
-  if (identity.archiveAssetId != null) return true;
+): RehydrationRoute[] {
+  if (!identity) return [];
+  const routes: RehydrationRoute[] = [];
+  /**
+   * The archive handle first and regardless of the provider NAME.
+   *
+   * RONDE 148's finding, kept: an archive clip carries its archive's slug ("wwii_archive") and
+   * render 585 proved an UNVERIFIED clip with `archiveAssetId=57449` fetches perfectly. The id is
+   * the route; the name is not.
+   */
+  if (identity.archiveAssetId != null) routes.push("archive");
+
+  const provider = identity.provider?.trim().toLowerCase() ?? "";
   /**
    * Compared case-insensitively, and that is not fussiness.
    *
    * `UNVERIFIED_PROVIDER` is the string "UNVERIFIED", and `identityFromAdoption` lower-cases every
    * provider name on the way in — so a strict `===` never matched and an UNVERIFIED clip with a
-   * media URL was reported as recoverable. Caught by this round's own test, which is what the test
-   * was for.
+   * media URL was reported as recoverable.
    */
-  if (identity.provider?.toUpperCase() === UNVERIFIED_PROVIDER) return false;
-  if (identity.mediaUrl) return true;
-  return Boolean(identity.provider && identity.providerAssetId);
+  const unverified = provider.toUpperCase() === UNVERIFIED_PROVIDER;
+  if (unverified) return routes;
+
+  const id = identity.providerAssetId?.trim();
+  if (id) {
+    const lookup = PROVIDER_ID_LOOKUP.get(provider);
+    if (lookup) routes.push(lookup);
+    /**
+     * Wikimedia is the one provider whose URL is a documented function of the id — but only when a
+     * File: title can actually be read out of what this render recorded. `wikimediaFileTitleFrom`
+     * answers null for a media URL on a host it does not know, and a null title is not a route:
+     * that is render 589, where `Special:FilePath/https%3A%2F%2F…` 404'd on the first clip.
+     */
+    if (provider === "wikimedia" && wikimediaFileTitleFrom(id)) routes.push("wikimedia_title");
+  }
+  /**
+   * A stored URL is a route only for a provider whose stored URL is STABLE.
+   *
+   * The allow-list stays, and deliberately: render 585 refused a SerpAPI still carrying a media
+   * URL, and RONDE 145 refused an archive slug carrying one, both because a link from a host
+   * nothing has been written for identifies where a file was for a few hours rather than what it
+   * is. Dropping that condition here would have quietly readmitted every one of them — a
+   * relaxation wearing a refactor's clothes, and the first thing this round's own suite caught.
+   */
+  if ((identity.canonicalUrl || identity.mediaUrl) && providerIsRehydratable(provider)) {
+    routes.push("stored_url");
+  }
+  return routes;
+}
+
+/**
+ * Can this identity be turned back into a file later?
+ *
+ * §15 — an old manifest must not pretend. Exactly the routes above, and nothing else: a clip with
+ * only a provider NAME, or with a provider id nothing knows how to look up, is not recoverable,
+ * and answering `false` for it is the point of the function.
+ *
+ * It says nothing about a file THIS RENDER IS HOLDING — that is `heldLocallyAtRender`, a different
+ * question with a different answer, asked first by every reader that can use a local file.
+ */
+export function identityIsRehydratable(
+  identity: AssetSourceIdentity | null | undefined
+): boolean {
+  return identityRehydrationRoutes(identity).length > 0;
 }
 
 /** One line per adopted clip, for the render log. Never prints a key or a query string. */

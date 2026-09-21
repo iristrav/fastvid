@@ -2109,9 +2109,53 @@ export function narrowToCanonicalQuery(
   const verifiedTerms = (tokens: QueryToken[] | undefined): string[] =>
     (tokens ?? []).filter((t) => t.verified && t.term.trim()).map((t) => t.term.trim());
 
-  /** The subject is the beat's proven person. Without one there is nothing to anchor to. */
-  const anchor = verifiedTerms(ctx.persons)[0] ?? "";
+  /**
+   * ROUND 596 §8 — THE ANCHOR IS THE PERSON THIS QUERY IS ABOUT, NOT SIMPLY THE FIRST ONE.
+   *
+   * ── What render 595 sent ────────────────────────────────────────────────────────────────
+   *
+   *     [SearchQueryCanonical] was="Kylie Jenner" now="Kris Jenner Kylie"
+   *
+   * Two different people, merged into one query, by a function whose entire job is to make a
+   * query narrower. It took `persons[0]` — the render's primary subject — and completed the
+   * query "towards" it, and because `Kylie` was in the original and `Kris`/`Jenner` are the
+   * anchor's own words, the subset rule below saw nothing introduced and let it through.
+   *
+   * A beat about one member of a family carries several verified persons, and the query names
+   * which one. Reading that instead of assuming it is the whole of the first fix: overlap is
+   * counted in WORDS, so "Kylie Jenner" matches `Kylie Jenner` on two and `Kris Jenner` on one,
+   * and the query keeps its own subject. Ties and no-overlap keep the existing behaviour exactly
+   * — `Rumors kardashians Kardashians` shares no word with any person and still anchors to the
+   * render's primary subject, as it did in production.
+   */
+  const persons = verifiedTerms(ctx.persons);
+  if (persons.length === 0) return { query: original, narrowed: false };
+  const originalWords = conceptWords(original);
+  const originalSet = new Set(originalWords);
+  let anchor = persons[0]!;
+  let bestOverlap = -1;
+  for (const person of persons) {
+    const overlap = conceptWords(person).filter((w) => originalSet.has(w)).length;
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      anchor = person;
+    }
+  }
   if (!anchor) return { query: original, narrowed: false };
+  /**
+   * AND A SECOND PERSON THE QUERY NAMES IN FULL IS NEVER OVERWRITTEN.
+   *
+   * Whoever ends up chosen above, a query that already carries some other verified person's
+   * complete identity is left alone. That is the brief's rule stated directly: a complete subject
+   * identity may not be replaced, nor combined with another one.
+   */
+  const anchorWords = new Set(conceptWords(anchor));
+  const namesSomeoneElseInFull = persons.some((person) => {
+    if (person === anchor) return false;
+    const words = conceptWords(person);
+    return words.length > 0 && words.every((w) => originalSet.has(w));
+  });
+  if (namesSomeoneElseInFull) return { query: original, narrowed: false };
 
   const out = narrowToSubjectPlusConcept(
     original,
@@ -2147,7 +2191,50 @@ export function narrowToCanonicalQuery(
    * rather than a different one. Anything else and the query is left exactly as it arrived: made
    * smaller or left alone, never made into a different question.
    */
-  const allowed = new Set([...conceptWords(original), ...conceptWords(anchor)]);
+  /**
+   * ROUND 596 §8 — AND THE ANCHOR MAY COMPLETE A HALF-NAME, NEVER ABSORB A NEIGHBOUR'S.
+   *
+   * ── The case the person list cannot answer ──────────────────────────────────────────────
+   *
+   * The anchor choice above needs `Kylie Jenner` to be a VERIFIED person of this beat. When only
+   * `Kris Jenner` is verified, the query "Kylie Jenner" still shares `jenner` with the anchor, the
+   * anchor is still chosen, and completion still produces "Kris Jenner Kylie". The merge has to be
+   * impossible on the words alone, without knowing who is a person.
+   *
+   * ── The rule, in one sentence ───────────────────────────────────────────────────────────
+   *
+   * A WORD STANDING NEXT TO PART OF A NAME IS PART OF THAT NAME.
+   *
+   * So the anchor may only supply words the query does not have when no SURVIVING word of the
+   * query — one the narrowing judged meaningful rather than padding — sits beside an anchor word
+   * in the original. Measured on survivors and on the original's own word order, which is what
+   * separates the three real cases:
+   *
+   *   "kanye documentary footage" + Kanye West → the survivor is `kanye`, itself an anchor word;
+   *                                              `documentary` and `footage` were dropped as
+   *                                              padding and stand beside nothing. COMPLETES.
+   *   "Rumors kardashians Kardashians" + Kris Jenner → the original holds no anchor word at all,
+   *                                              so nothing of the query is beside a name part.
+   *                                              COMPLETES, exactly as it did in production.
+   *   "Kylie Jenner" + Kris Jenner            → the survivor `kylie` stands immediately beside
+   *                                              `jenner`, which IS an anchor word. REFUSED.
+   *
+   * A refusal here returns the query exactly as it arrived. It does NOT fall back to the subject
+   * alone: replacing "Kylie Jenner" with "Kris Jenner" is the same defect wearing the other face.
+   */
+  const outWords = new Set(conceptWords(out.query));
+  const completes = conceptWords(anchor).some((w) => !originalSet.has(w) && outWords.has(w));
+  if (completes) {
+    const absorbsANeighbour = originalWords.some((w, i) => {
+      if (anchorWords.has(w) || !outWords.has(w)) return false;
+      const before = i > 0 ? originalWords[i - 1] : undefined;
+      const after = originalWords[i + 1];
+      return (before != null && anchorWords.has(before)) || (after != null && anchorWords.has(after));
+    });
+    if (absorbsANeighbour) return { query: original, narrowed: false };
+  }
+
+  const allowed = new Set([...originalWords, ...conceptWords(anchor)]);
   const introduced = conceptWords(out.query).filter((w) => !allowed.has(w));
   if (introduced.length > 0) {
     /**

@@ -33,7 +33,11 @@ import * as path from "path";
 import { createHash } from "crypto";
 import type { AssetSourceIdentity, ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
 import { videoTrack } from "./projectTimeline";
-import { identityIsRehydratable, wikimediaFileTitleFrom } from "./assetIdentity";
+import {
+  identityIsRehydratable,
+  providerIsRehydratable,
+  wikimediaFileTitleFrom,
+} from "./assetIdentity";
 
 const execFileAsync = promisify(execFile);
 const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
@@ -97,25 +101,10 @@ export function rehydrationSucceeded(r: RehydrationResult): r is RehydratedAsset
 /* ═══════════════════════ providers ═══════════════════════ */
 
 /**
- * Providers the RONDE 145 audit proved rehydratable by reading each adapter.
- *
- * A provider is here only when its media is reachable from the stored identity — either because
- * this system holds the file, or because the provider's URL is a documented function of the id, or
- * because the stored media URL is stable for that provider.
+ * The RONDE 145 provider list, which now lives in `assetIdentity` beside the route rule that needs
+ * it — re-exported here so every existing caller and test reads exactly the same list it did.
  */
-export const REHYDRATABLE_PROVIDERS: ReadonlyArray<string> = [
-  "curated", "archive",
-  "wikimedia",
-  "loc",
-  "internet_archive",
-  "pexels", "pixabay",
-  "youtube", "youtube_cc",
-  "nasa", "nara", "europeana", "openverse",
-];
-
-export function providerIsRehydratable(provider: string): boolean {
-  return REHYDRATABLE_PROVIDERS.includes(provider.trim().toLowerCase());
-}
+export { REHYDRATABLE_PROVIDERS, providerIsRehydratable } from "./assetIdentity";
 
 /**
  * Is there a route to this asset — by provider OR because we hold the file ourselves?
@@ -130,10 +119,41 @@ export function providerIsRehydratable(provider: string): boolean {
  * So the question is asked about the IDENTITY, not the name: an archive id is a route on its own,
  * and the provider list decides the rest. Caught by RONDE 148's own replacement test, which put a
  * real archive slug in and watched the render refuse a file sitting on our own disk.
+ *
+ * ── RENDER 595: IT IS NOW THE SAME QUESTION AS `identityIsRehydratable`, ANSWERED ONCE ──────
+ *
+ * The body was `archiveAssetId != null || providerIsRehydratable(name)`, which asks whether a
+ * provider has a route IN GENERAL. `internet_archive` is on that list — correctly, its stored URLs
+ * are stable — so an `internet_archive` identity carrying only an id was told a route existed.
+ * There is none: this module's `internet_archive` route IS the stored URL, and that identity had
+ * no URL. The planner believed it, planned a 48-second shot around it, and `rehydrateAsset` then
+ * reported the truth as `ASSET_NOT_FOUND … has no fetchable URL`.
+ *
+ * RONDE 148's finding survives inside `identityRehydrationRoutes`, where the archive handle is
+ * still read before and independently of the provider name. What ends is the second copy of the
+ * rule: that function names the branches this module actually takes, so the planner, the
+ * validator, the render log and the rehydrator cannot disagree about one asset again.
  */
 export function identityHasRehydrationRoute(identity: AssetSourceIdentity): boolean {
+  return identityIsRehydratable(identity);
+}
+
+/**
+ * DOES THE RECORD CARRY A HANDLE AT ALL — a different question, kept separate on purpose.
+ *
+ * This is `rehydrateAsset`'s own first question, and it is narrower than the contract above: a
+ * clip with an archive id, a media URL or a provider id has SOMETHING written down; a clip with
+ * only a provider name has nothing, and `REHYDRATION_IDENTITY_MISSING` is the honest name for it.
+ *
+ * "Something is written down" and "a route exists to fetch it" used to be the same function, which
+ * is how `internet_archive` + an id — a handle with no route — was reported as recoverable. They
+ * are now two questions with two names, asked in the two places that need them, and neither is
+ * exported: the callers' question is `identityIsRehydratable`, and there is exactly one of those.
+ */
+function identityCarriesAHandle(identity: AssetSourceIdentity): boolean {
   if (identity.archiveAssetId != null) return true;
-  return providerIsRehydratable(identity.provider);
+  if (identity.canonicalUrl || identity.mediaUrl) return true;
+  return Boolean(identity.provider?.trim() && identity.providerAssetId?.trim());
 }
 
 /** Providers whose re-fetch needs a credential this process may not have. */
@@ -326,16 +346,6 @@ export async function rehydrateAsset(params: {
   const expectVideo = params.expectVideo ?? true;
   const cacheKey = cacheIdentityKey(identity);
 
-  if (!identityIsRehydratable(identity)) {
-    return fail(
-      identity, "REHYDRATION_IDENTITY_MISSING",
-      `provider=${provider} providerAssetId=${assetId ?? "null"} — no durable handle was recorded`
-    );
-  }
-  if (!identityHasRehydrationRoute(identity)) {
-    return fail(identity, "REHYDRATION_UNSUPPORTED_PROVIDER", `provider=${provider}`);
-  }
-
   fs.mkdirSync(workDir, { recursive: true });
   const isImage = /\.(jpe?g|png|gif|webp)(\?|$)/i.test(identity.mediaUrl ?? "");
   const destPath = path.join(workDir, rehydratedFileName(identity, isImage ? ".jpg" : ".mp4"));
@@ -421,6 +431,41 @@ export async function rehydrateAsset(params: {
         "LOCAL_FILE_GONE — the caller offered a local file that is missing or empty; " +
         "falling back to the provider routes"
     );
+  }
+
+  /**
+   * ROUND 596 — THE PROVIDER IS JUDGED HERE, BELOW THE FILE WE WERE HANDED.
+   *
+   * ── What moved, and what did not ────────────────────────────────────────────────────────
+   *
+   * This refusal used to open the function. That was survivable only while the identity predicate
+   * answered true for almost anything: once `identityIsRehydratable` names the routes that really
+   * exist, a clip marked `heldLocallyAtRender` — an identity with NO fetch route, kept on purpose
+   * because this render is holding the bytes (`localOnlyIdentityFor`) — would be refused before
+   * anyone looked at the file sitting on disk. That is the F-1 case turned inside out: the
+   * fallback written for exactly those clips would have failed every one of them.
+   *
+   * A file in hand outranks every route, so it is checked first, and this is only ever asked of a
+   * clip we do NOT have.
+   *
+   * ── Why the question is about the PROVIDER and not the identity ─────────────────────────
+   *
+   * `identityIsRehydratable` is the contract the planner, the validator and the render log read:
+   * "is there a route for this asset". `rehydrateAsset`'s own progression answers a longer
+   * question and has always distinguished its endings — an unknown provider is
+   * REHYDRATION_UNSUPPORTED_PROVIDER, a known provider with nothing fetchable is ASSET_NOT_FOUND,
+   * and those are different pieces of work. Asking the identity predicate here would collapse the
+   * second into the first, so the branch keeps the provider-list question it always asked. The
+   * archive id still excuses an unknown provider, exactly as RONDE 148 established.
+   */
+  if (!identityCarriesAHandle(identity)) {
+    return fail(
+      identity, "REHYDRATION_IDENTITY_MISSING",
+      `provider=${provider} providerAssetId=${assetId ?? "null"} — no durable handle was recorded`
+    );
+  }
+  if (identity.archiveAssetId == null && !providerIsRehydratable(provider)) {
+    return fail(identity, "REHYDRATION_UNSUPPORTED_PROVIDER", `provider=${provider}`);
   }
 
   /**

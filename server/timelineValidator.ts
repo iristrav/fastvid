@@ -323,13 +323,7 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
     `providerAssetId=${clip.source.providerAssetId ?? "null"} ` +
     `archiveAssetId=${clip.source.archiveAssetId ?? "null"} ` +
     `mediaUrl=${clip.source.mediaUrl ? "yes" : "null"}`;
-  if (!identityIsRehydratable(clip.source)) {
-    issues.push({
-      code: "missing_asset", track: "VIDEO", elementId: clip.id,
-      start: clip.timelineStart, end: clip.timelineEnd,
-      reason: `no way to fetch this asset: ${where}`,
-    });
-  } else if (clip.source.heldLocallyAtRender) {
+  if (clip.source.heldLocallyAtRender) {
     /**
      * RONDE 255 — RENDERABLE TODAY, NOT GUARANTEED TOMORROW. Reported, never blocking.
      *
@@ -346,6 +340,14 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
      * `heldLocallyAtRender` is set by `localOnlyIdentityFor` after finding the file and measuring
      * it — never by a provider, never from a name. And it changes no answer anywhere else:
      * `identityHasRehydrationRoute` still says false for this clip, because it still is false.
+     *
+     * ROUND 596 — AND IT IS ASKED FIRST, above the two `missing_asset` branches.
+     *
+     * It used to sit second, behind `if (!identityIsRehydratable(...))`. That was invisible only
+     * while that predicate answered true for a bare provider name; now that it names the routes
+     * that exist, a local-only clip — which by definition has none — matched the blocking branch
+     * and the whole render was refused over a file on our own disk. Holding the bytes is the
+     * strongest present-tense fact there is, so it is the first question, not the fallback.
      */
     issues.push({
       code: "local_only_asset", track: "VIDEO", elementId: clip.id,
@@ -353,6 +355,12 @@ function checkVideoClip(clip: TimelineVideoClip, issues: TimelineIssue[]): void 
       reason:
         `this render is holding the file, and no route exists to fetch it again — ` +
         `a re-render of this plan may not find it: ${where}`,
+    });
+  } else if (!identityIsRehydratable(clip.source)) {
+    issues.push({
+      code: "missing_asset", track: "VIDEO", elementId: clip.id,
+      start: clip.timelineStart, end: clip.timelineEnd,
+      reason: `no way to fetch this asset: ${where}`,
     });
   } else if (!identityHasRehydrationRoute(clip.source)) {
     /**

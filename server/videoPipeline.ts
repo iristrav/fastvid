@@ -33233,7 +33233,47 @@ async function ensureArchiveBackedBeforePush(
   const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
   const provider = root?.provider?.trim().toLowerCase() || null;
   if (!root || !provider) return { ok: true, reason: "not_external" };
-  if (root.archiveAssetId != null) return { ok: true, reason: "already_archived" };
+  if (root.archiveAssetId != null) {
+    /**
+     * RENDER 595 §1 — THE EXEMPTION READ ONE ROW AND THE TIMELINE READ ANOTHER.
+     *
+     * ── The two rows ────────────────────────────────────────────────────────────────────
+     *
+     * This gate resolves the clip's record and then walks to its ROOT — the asset a trim, an
+     * extension or a fair-use transform was made from — because that is where the provider
+     * identity lives. The cinematic planner does not walk: it reads
+     * `lineage.resolve(clipPath, clipContentKey(clipPath))` and builds the timeline identity out
+     * of THAT record's `archiveAssetId` (videoPipeline.ts, `adoption:`).
+     *
+     * `linkDerivedPath` copies the parent's handle when the derived record is CREATED. A root
+     * archived after that — archived on an earlier beat's push, or reused by checksum — never
+     * reaches its children. So the gate saw a handle, took the exemption, stored nothing, and the
+     * planner read a row that still said null:
+     *
+     *     no ARCHIVE_STORE_START for vc_999c384232, and archiveAssetId=null on the timeline
+     *
+     * ── The fix, and why it is not a new archive layer ──────────────────────────────────
+     *
+     * The handle is not invented here and nothing is stored: the root's own `archiveAssetId` is
+     * written onto the record the timeline will read. `attachArchiveAsset` fills and never
+     * overwrites, so a record that already had one keeps it. The rehydrator fetches that asset —
+     * the untrimmed original — and the timeline's `sourceIn`/`sourceOut` make this clip's cut out
+     * of it, which is exactly what those fields are for.
+     *
+     * Re-ingesting the derived file instead would store the same footage twice, which §14's
+     * checksum and provider-asset deduplication exists to prevent.
+     */
+    if (record && record.archiveAssetId == null && ledger) {
+      const attached = ledger.attachArchiveAsset(record, root.archiveAssetId);
+      console.log(
+        `[ProductionArchive] s${sceneIndex}b${beatIndex ?? "?"} ARCHIVE_HANDLE_INHERITED ` +
+          `archiveAssetId=${root.archiveAssetId} provider=${provider} ` +
+          `file=${path.basename(clipPath)} attached=${attached.archiveAssetId != null} — ` +
+          `this file was made from an asset the archive already holds`
+      );
+    }
+    return { ok: true, reason: "already_archived" };
+  }
   if (!sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };
   if (!externalAssetIngestionEnabled()) return { ok: true, reason: "ingestion_stopped" };
 

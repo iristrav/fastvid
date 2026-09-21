@@ -81,6 +81,68 @@ export type IngestResult = {
   reused?: boolean;
 };
 
+/**
+ * ROUND 596 §3 — WHY THE ARCHIVE SAID NO, IN A WORD THE CALLER CAN BRANCH ON.
+ *
+ * ── The sentence this replaces ──────────────────────────────────────────────────────────────
+ *
+ *     ARCHIVE_INGEST_REFUSED … the archive ingestion refused extend_s1b3_….mp4
+ *                              (its own quality gate, or a storage failure)
+ *
+ * Eleven different refusals in this function all returned the bare `null` that produced that line,
+ * and the line then guessed between two of them with an "or". Render 595 refused three
+ * `extend_*.mp4` clips and the log cannot say whether the file was too small, too long, carrying
+ * burnt-in subtitles, unreadable by the frame extractor, or whether the upload failed — and those
+ * need entirely different work. "Probably the quality gate" is not a diagnosis.
+ *
+ * ── The rule these codes follow ─────────────────────────────────────────────────────────────
+ *
+ * Every code below is returned by exactly one `return` in `ingestExternalClipToArchiveInner`, and
+ * no code exists that the code cannot produce. `reasonDetail` carries the measured number that
+ * decided it — the byte count, the duration, the ffmpeg message — never a restatement of the code.
+ */
+export type IngestRefusalCode =
+  /** RONDE 9's standing exception: stock footage is never archive material. */
+  | "EXEMPT_SOURCE"
+  /** `fs.statSync` threw: the file the caller says it has is not readable. */
+  | "SOURCE_FILE_UNREADABLE"
+  /** Below `MIN_FILE_BYTES` — a placeholder or a truncated download. */
+  | "FILE_TOO_SMALL"
+  /** Outside [`MIN_VIDEO_DURATION_SEC`, `MAX_VIDEO_DURATION_SEC`]. */
+  | "INVALID_DURATION"
+  /** RONDE 24: burnt-in subtitles or a news chyron. */
+  | "BAKED_EDIT_TEXT"
+  /** RONDE 118: no decodable picture could be pulled out of the file. */
+  | "PREVIEW_UNREADABLE"
+  /** No active archive exists to ingest into. Configuration, not content. */
+  | "NO_ACTIVE_ARCHIVE"
+  /** `storagePut` threw or the bytes could not be read off disk. */
+  | "STORAGE_WRITE_FAILED"
+  /** The row could not be created after the bytes were stored. */
+  | "RECORD_FAILED"
+  /** Something else threw. The message is carried in `reasonDetail`. */
+  | "UNKNOWN";
+
+export type IngestRefusal = {
+  status: "refused";
+  reasonCode: IngestRefusalCode;
+  /** The measurement that decided it. Never a restatement of the code. */
+  reasonDetail: string;
+  /** §3's diagnostic set, filled from what was actually observed. Absent means not measured. */
+  fileExists?: boolean;
+  fileSizeBytes?: number;
+  mimeType?: string;
+  durationSec?: number;
+};
+
+export type IngestOutcome = (IngestResult & { status: "ingested" }) | IngestRefusal;
+
+const refuse = (
+  reasonCode: IngestRefusalCode,
+  reasonDetail: string,
+  observed?: Omit<IngestRefusal, "status" | "reasonCode" | "reasonDetail">
+): IngestRefusal => ({ status: "refused", reasonCode, reasonDetail, ...observed });
+
 function hashSourceUrl(sourceUrl: string): string {
   return createHash("sha256").update(sourceUrl.trim()).digest("hex");
 }
@@ -94,19 +156,41 @@ const MIN_VIDEO_DURATION_SEC = 3;
 /** Maximum video duration — very long clips waste storage and encode time. */
 const MAX_VIDEO_DURATION_SEC = 120;
 
-function passesQualityGate(localPath: string, metadata: IngestMetadata): boolean {
+/**
+ * ROUND 596 §3 — the gate now says WHICH threshold, and what it measured.
+ *
+ * The three conditions are untouched — same constants, same comparisons, same verdicts. What is
+ * added is the answer to "which one", which the caller could previously only guess at.
+ */
+function qualityGateRefusal(localPath: string, metadata: IngestMetadata): IngestRefusal | null {
+  let sizeBytes: number;
   try {
-    const stat = fs.statSync(localPath);
-    if (stat.size < MIN_FILE_BYTES) return false;
-    if (metadata.mediaType === "video") {
-      const dur = metadata.durationSec ?? 0;
-      if (dur > 0 && dur < MIN_VIDEO_DURATION_SEC) return false;
-      if (dur > MAX_VIDEO_DURATION_SEC) return false;
-    }
-    return true;
-  } catch {
-    return false;
+    sizeBytes = fs.statSync(localPath).size;
+  } catch (err) {
+    return refuse("SOURCE_FILE_UNREADABLE", (err as Error).message?.slice(0, 160) ?? "statSync threw", {
+      fileExists: false,
+      mimeType: metadata.mimeType,
+    });
   }
+  const observed = {
+    fileExists: true,
+    fileSizeBytes: sizeBytes,
+    mimeType: metadata.mimeType,
+    ...(metadata.durationSec != null ? { durationSec: metadata.durationSec } : {}),
+  };
+  if (sizeBytes < MIN_FILE_BYTES) {
+    return refuse("FILE_TOO_SMALL", `${sizeBytes} bytes < ${MIN_FILE_BYTES}`, observed);
+  }
+  if (metadata.mediaType === "video") {
+    const dur = metadata.durationSec ?? 0;
+    if (dur > 0 && dur < MIN_VIDEO_DURATION_SEC) {
+      return refuse("INVALID_DURATION", `${dur.toFixed(2)}s < ${MIN_VIDEO_DURATION_SEC}s`, observed);
+    }
+    if (dur > MAX_VIDEO_DURATION_SEC) {
+      return refuse("INVALID_DURATION", `${dur.toFixed(2)}s > ${MAX_VIDEO_DURATION_SEC}s`, observed);
+    }
+  }
+  return null;
 }
 
 // ─── F3-26: query/entity/source learning loop ─────────────────────────────────
@@ -157,13 +241,31 @@ export async function ingestExternalClipToArchive(
   localPath: string,
   metadata: IngestMetadata
 ): Promise<IngestResult | null> {
+  const outcome = await ingestExternalClipToArchiveWithReason(localPath, metadata);
+  if (outcome.status !== "ingested") return null;
+  const { status: _ignored, ...result } = outcome;
+  return result;
+}
+
+/**
+ * The same ingestion, with the refusal it actually made.
+ *
+ * `storeForProduction` calls this one, because it is the caller that has to explain the refusal to
+ * an operator. Everything else keeps the null-returning shape above — the fire-and-forget callers
+ * in the pipeline have nothing to do with a reason, and giving them one would only invite a
+ * decision to be made in a place that must not make decisions.
+ */
+export async function ingestExternalClipToArchiveWithReason(
+  localPath: string,
+  metadata: IngestMetadata
+): Promise<IngestOutcome> {
   return ingestionLimiter.run(() => ingestExternalClipToArchiveInner(localPath, metadata));
 }
 
 async function ingestExternalClipToArchiveInner(
   localPath: string,
   metadata: IngestMetadata
-): Promise<IngestResult | null> {
+): Promise<IngestOutcome> {
   try {
     // RONDE 9 (render 519 + admin evidence): stock footage is never archive material. A generic
     // Pexels clip that won a Hitler beat was ingested tagged "adolf hitler" and then outranked
@@ -178,12 +280,11 @@ async function ingestExternalClipToArchiveInner(
       console.log(
         `[Ingestion] Skipping ${metadata.sourcePlatform ?? metadata.sourceNote.split(":")[0]} clip — stock footage is never ingested into the curated archive`
       );
-      return null;
+      return refuse("EXEMPT_SOURCE", `${platform || sourcePrefix.split(":")[0]} is stock footage`);
     }
 
-    if (!passesQualityGate(localPath, metadata)) {
-      return null;
-    }
+    const gate = qualityGateRefusal(localPath, metadata);
+    if (gate) return gate;
 
     // RONDE 24: never let footage with baked-in on-screen text into the archive.
     //
@@ -205,7 +306,9 @@ async function ingestExternalClipToArchiveInner(
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );
-      return null;
+      return refuse("BAKED_EDIT_TEXT", overlay.reason ?? "the on-screen-text check said has_text", {
+        mimeType: metadata.mimeType,
+      });
     }
     /**
      * RONDE 222 — a clip nobody looked at is not admitted as a clip that was cleared.
@@ -232,7 +335,12 @@ async function ingestExternalClipToArchiveInner(
           `(${metadata.sourceUrl})`
         );
         await recordSearchMemoryForIngestion(metadata, existing.id, true);
-        return { assetId: existing.id, storageKey: existing.storageKey ?? "", reused: true };
+        return {
+          status: "ingested",
+          assetId: existing.id,
+          storageKey: existing.storageKey ?? "",
+          reused: true,
+        };
       }
     }
 
@@ -241,7 +349,9 @@ async function ingestExternalClipToArchiveInner(
     if (!archiveId) {
       const archives = await getAllMediaArchives();
       const active = archives?.find(a => a.isActive !== 0) ?? archives?.[0];
-      if (!active) return null;
+      if (!active) {
+        return refuse("NO_ACTIVE_ARCHIVE", `${archives?.length ?? 0} archive(s) exist, none usable`);
+      }
       archiveId = active.id;
     }
 
@@ -287,11 +397,29 @@ async function ingestExternalClipToArchiveInner(
     });
     if (!preview.ok) {
       console.warn(formatPreviewRefusal(`"${metadata.title.slice(0, 60)}"`, preview));
-      return null;
+      return refuse("PREVIEW_UNREADABLE", preview.reason ?? "no decodable frame", {
+        mimeType: metadata.mimeType,
+        ...(metadata.durationSec != null ? { durationSec: metadata.durationSec } : {}),
+      });
     }
 
-    const data = await fs.promises.readFile(localPath);
-    const { key, url } = await storagePut(storageKey, data, metadata.mimeType);
+    let data: Buffer;
+    let key: string;
+    let url: string;
+    try {
+      data = await fs.promises.readFile(localPath);
+      ({ key, url } = await storagePut(storageKey, data, metadata.mimeType));
+    } catch (err) {
+      /**
+       * §3 — "its own quality gate, OR a storage failure" was one sentence for two opposite
+       * problems. This is the storage half, and it is now named separately: nothing about the clip
+       * is wrong, and re-judging the clip is the wrong response to it.
+       */
+      return refuse("STORAGE_WRITE_FAILED", (err as Error).message?.slice(0, 160) ?? "storagePut threw", {
+        fileExists: true,
+        mimeType: metadata.mimeType,
+      });
+    }
 
     const insertData: InsertMediaArchiveAsset = {
       archiveId,
@@ -342,7 +470,13 @@ async function ingestExternalClipToArchiveInner(
     };
 
     const assetId = await createMediaArchiveAsset(insertData);
-    if (!assetId) return null;
+    if (!assetId) {
+      return refuse("RECORD_FAILED", "createMediaArchiveAsset returned no id", {
+        fileExists: true,
+        fileSizeBytes: data.length,
+        mimeType: metadata.mimeType,
+      });
+    }
 
     // Index embedding in background — non-blocking
     void indexArchiveAssetEmbedding({
@@ -360,9 +494,11 @@ async function ingestExternalClipToArchiveInner(
       `[Ingestion] Admitted external clip to archive: assetId=${assetId} source=${metadata.sourceNote} ` +
       `size=${Math.round(data.length / 1024)}KB`
     );
-    return { assetId, storageKey: key };
+    return { status: "ingested", assetId, storageKey: key };
   } catch (err) {
     console.warn("[Ingestion] Failed to ingest external clip:", (err as Error).message?.slice(0, 100));
-    return null;
+    return refuse("UNKNOWN", (err as Error).message?.slice(0, 160) ?? "an unnamed error", {
+      mimeType: metadata.mimeType,
+    });
   }
 }

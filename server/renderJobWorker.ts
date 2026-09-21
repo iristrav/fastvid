@@ -363,6 +363,66 @@ export function renderOutputKey(videoId: number, jobId: number): string {
   return `videos/${videoId}/edits/render_${jobId}.mp4`;
 }
 
+export const RENDER_CLIP_DROPPED = "RENDER_CLIP_DROPPED";
+
+/**
+ * ROUND 596 — TAKE ONE REFUSED CLIP OUT OF THIS RENDER, LOUDLY.
+ *
+ * ── The rule it serves ──────────────────────────────────────────────────────────────────────
+ *
+ * "Een individuele video/clip die faalt, mag NOOIT de volledige productie laten falen." A clip
+ * that cannot be fetched, or that the validator refuses, is removed from THIS RENDER'S INPUT and
+ * the render continues on everything else. It is not accepted, not substituted and not repaired.
+ *
+ * ── Why `disabled` and not a splice ─────────────────────────────────────────────────────────
+ *
+ * `disabled` is the timeline's own word for a clip that is present in the plan and not in the
+ * render: `videoTrack(...).filter(c => !c.disabled)` is how every reader in this codebase already
+ * asks, and `renderTimeline` already skips a clip whose media is unavailable and records it under
+ * `skipped`. Removing the element instead would rewrite the stored plan — the timeline
+ * architecture §11 forbids touching — and would erase the evidence of what was lost.
+ *
+ * The neighbouring clips keep their own timeline positions. The film is shorter by this clip's
+ * slot and is correct everywhere else; it does not shift, stretch or reflow to hide the loss.
+ *
+ * ── The flag lives for this render only ─────────────────────────────────────────────────────
+ *
+ * `runRenderJob` loads the timeline and never writes it back, so a clip removed here is removed
+ * from THIS attempt and from nothing else. That is deliberate: a provider that was down for ten
+ * minutes must not permanently edit a plan the person can re-render tomorrow.
+ *
+ * ── What is written down ────────────────────────────────────────────────────────────────────
+ *
+ * One line per clip, with the asset's identity and the reason verbatim. A silently shorter film is
+ * exactly the "stille substitutie" this programme refuses, so the drop is never quiet.
+ *
+ * Returns how many clips were actually removed — a clip id the timeline does not carry removes
+ * nothing, and the caller's "is there anything left" check must be able to see that.
+ */
+export function disableClipsForRender(
+  timeline: ProjectTimeline,
+  drops: ReadonlyArray<{ clipId: string; reason: string }>,
+  jobId: number
+): number {
+  const byId = new Map(videoTrack(timeline).map((c) => [c.id, c]));
+  let removed = 0;
+  for (const drop of drops) {
+    const clip = byId.get(drop.clipId);
+    if (!clip || clip.disabled) continue;
+    clip.disabled = true;
+    removed++;
+    console.warn(
+      `[RenderJob] job=${jobId} ${RENDER_CLIP_DROPPED} clip=${drop.clipId} ` +
+        `provider=${clip.source.provider} ` +
+        `providerAssetId=${clip.source.providerAssetId ?? "null"} ` +
+        `archiveAssetId=${clip.source.archiveAssetId ?? "null"} ` +
+        `slot=${clip.timelineStart.toFixed(2)}-${clip.timelineEnd.toFixed(2)}s ` +
+        `reason="${drop.reason}" — removed from this render's input; the rest of the film continues`
+    );
+  }
+  return removed;
+}
+
 export async function runRenderJob(params: {
   jobId: number;
   deps?: Partial<RenderWorkerDeps>;
@@ -418,11 +478,47 @@ export async function runRenderJob(params: {
     /* 2. validate before spending ten minutes — the whole reason the validator sits here */
     const validation = validateTimeline(timeline);
     const blocking = validation.issues.filter((i) => !NON_BLOCKING_ISSUES.has(i.code));
-    if (blocking.length > 0) {
+    /**
+     * ROUND 596, ZERO-FAIL §1 — ONE BAD CLIP LEAVES THE FILM; IT DOES NOT END THE FILM.
+     *
+     * `missing_asset` is a fact about ONE video clip, and the whole render was refused over it.
+     * Renders 594 and 595 both died here or at the rehydration step below, each time naming a
+     * single clip, each time with a dozen good ones behind it that were never attempted.
+     *
+     * So a per-clip fault is now answered per clip: the clip is removed from this render's input
+     * and everything else proceeds. Nothing is relaxed to make that true — the clip is refused
+     * exactly as hard as before, and `disableClipsForRender` writes down which ones and why. What
+     * changes is the blast radius.
+     *
+     * The job still fails when the fault is GLOBAL: a structural problem that is not about one
+     * clip, or a timeline with no picture left at all. Those are handled below.
+     */
+    const perClipFaults = blocking.filter((i) => i.code === "missing_asset" && i.elementId);
+    const globalFaults = blocking.filter((i) => !(i.code === "missing_asset" && i.elementId));
+    if (globalFaults.length > 0) {
       return await fail(
         RENDER_ERROR.TIMELINE_INVALID,
-        `${blocking.length} blocking issue(s): ` + blocking.slice(0, 5).map(formatTimelineIssue).join("; ")
+        `${globalFaults.length} blocking issue(s): ` +
+          globalFaults.slice(0, 5).map(formatTimelineIssue).join("; ")
       );
+    }
+    if (perClipFaults.length > 0) {
+      const dropped = disableClipsForRender(
+        timeline,
+        perClipFaults.map((i) => ({ clipId: i.elementId!, reason: `${i.code}: ${i.reason}` })),
+        job.id
+      );
+      if (videoTrack(timeline).filter((c) => !c.disabled).length === 0) {
+        /**
+         * Nothing is left to photograph. This is the genuine global fault the zero-fail rule keeps
+         * — "geen bruikbare media/fallback meer" — and it names every clip that got it here.
+         */
+        return await fail(
+          RENDER_ERROR.TIMELINE_INVALID,
+          `every video clip was refused (${dropped} removed): ` +
+            perClipFaults.slice(0, 5).map(formatTimelineIssue).join("; ")
+        );
+      }
     }
 
     /* 3. §28 — every clip's ORIGINAL source, from its identity */
@@ -441,19 +537,48 @@ export async function runRenderJob(params: {
      * identities through the SAME resolver, so a Freesound id means the same thing to both.
      */
     const audioDeps = productionRehydrateDeps({ download: deps.download });
+    /**
+     * ROUND 596, ZERO-FAIL §2 — `failFast` WAS THE SECOND PLACE ONE CLIP ENDED A RENDER.
+     *
+     * It stopped at the FIRST unrecoverable asset and reported that one, so nobody ever learned
+     * what the other fourteen clips would have done, and one clip's provider outage was
+     * indistinguishable from a broken render. Render 595 ended on `clip vc_999c384232` with four
+     * archive-backed clips waiting behind it.
+     *
+     * `failFast: false` recovers everything recoverable and reports every failure. A clip that
+     * could not be recovered is then removed from this render's input — `renderTimeline` already
+     * skips a clip whose `resolveMedia` answers null and says so in `skipped`, so the film is
+     * shorter by that shot and complete everywhere else. No gate is softened: the clip is refused
+     * for exactly the reason it was refused before.
+     */
     const rehydration = await deps.rehydrate({
       timeline,
       workDir: path.join(workDir, "assets"),
       deps: audioDeps,
-      failFast: true,
+      failFast: false,
       existingByClipId: params.existingByClipId,
     });
     for (const line of formatRehydrationSummary(rehydration)) console.log(line);
-    if (!rehydration.ok) {
-      const first = rehydration.failures[0]!;
+    if (rehydration.failures.length > 0) {
+      disableClipsForRender(
+        timeline,
+        rehydration.failures.map((f) => ({
+          clipId: f.clipId,
+          reason: `${f.result.errorCode} — ${f.result.errorMessage}`,
+        })),
+        job.id
+      );
+    }
+    /**
+     * The one genuine global fault on this step: not a single clip came back. That is a storage or
+     * a network outage rather than a bad clip, and there is no film to make without a picture.
+     */
+    if (rehydration.byClipId.size === 0) {
+      const first = rehydration.failures[0];
       return await fail(
         RENDER_ERROR.ASSET_NOT_REHYDRATABLE,
-        `clip ${first.clipId}: ${first.result.errorCode} — ${first.result.errorMessage}`
+        `no clip could be recovered (${rehydration.failures.length} failed)` +
+          (first ? `; first: clip ${first.clipId}: ${first.result.errorCode} — ${first.result.errorMessage}` : "")
       );
     }
 
