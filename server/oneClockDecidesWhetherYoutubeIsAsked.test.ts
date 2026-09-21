@@ -34,6 +34,7 @@ import { join } from "path";
 
 import {
   affordsYoutubeTurn,
+  beatVisualWallMs,
   canAffordYoutubeTurn,
   beatWallWithYoutubeTurn,
   youtubeBeatWallSupplementMs,
@@ -226,5 +227,108 @@ describe("§4 — no silent starvation in tryStockSources", () => {
     expect(PIPELINE).toContain("const STOCK_CATEGORY_LIMITS: Record<string, number> = {");
     expect(PIPELINE).toContain("  generic: 4,");
     expect(PIPELINE).toContain("function categoryAtLimit(");
+  });
+});
+
+/* ═══════════ §5 — the three walls belong together ═══════════ */
+
+describe("§5 — every wall a YouTube turn can open under", () => {
+  /**
+   * RONDE 605 — THE REASON THIS SECTION EXISTS AT ALL.
+   *
+   * Render 597 declined ten turns from TWO wall families, and RONDE 604 repaired one of them. That
+   * looked like a success — nine of ten gone — and the tenth had a different wall behind it:
+   *
+   *     clock="b3_fastyt-first s1 b3"                    granted=20s   runBeatClipFetch   22s
+   *     clock="historical cascade s2b2_research s2 b2"   granted=8s    beatVisualWallMs   23s
+   *
+   * Three walls compute how long a beat may take, and a YouTube turn can open under any of them.
+   * They nest — `fetchSceneVisualsInner` opens the outer one, `runBeatClipFetch` the middle one,
+   * the repair passes the third — so widening one and not the others fixes nothing: a child can
+   * never outlive its parent.
+   *
+   * What follows is not three assertions about three numbers. It is ONE claim: a wall that a turn
+   * can open under is wide enough to hold one, and there is no fourth that quietly is not. A layer
+   * added later has to come past this test, which is the whole point — the defect this file is
+   * named for was never a number, it was five readers doing their own arithmetic.
+   */
+  const withYoutube = <T>(fn: () => T): T => {
+    const saved = { ...process.env };
+    try {
+      process.env.ENABLE_YOUTUBE_SOURCING = "true";
+      process.env.YOUTUBE_API_KEY = "test-key-present";
+      process.env.YOUTUBE_CC_DL_SERVICE = "https://example.invalid/dl";
+      delete process.env.YOUTUBE_ONLY_SOURCING;
+      return fn();
+    } finally {
+      process.env = saved;
+    }
+  };
+
+  /** The fast/Railway profile, which is the one render 597 ran and the narrowest of them. */
+  const FAST_PERF = { fastStockMode: true, beatClipTimeoutMs: 22_000, transformTimeoutMs: 25_000 };
+
+  it("THE DEFECT: the outer wall used to clamp the inner one RONDE 604 had just widened", () => {
+    /**
+     * 12s search + 6s stock fallback + 5s = 23s, and the inner wall is 58s. A child can never
+     * outlive its parent, so the repair could not reach the turn.
+     */
+    const outerBefore = 12_000 + 6_000 + 5_000;
+    expect(outerBefore).toBeLessThan(YOUTUBE_MIN_TURN_MS);
+    withYoutube(() => {
+      /** Inside the closure: the supplement is deliberately zero when no YouTube is configured. */
+      const innerAfter = beatWallWithYoutubeTurn(22_000);
+      expect(innerAfter, "RONDE 604 widened the inside of a box").toBeGreaterThan(outerBefore);
+    });
+  });
+
+  it("ALL THREE now hold a turn, and the nesting stays consistent", () => {
+    withYoutube(() => {
+      const outer = beatVisualWallMs(FAST_PERF as never);
+      const inner = beatWallWithYoutubeTurn(FAST_PERF.beatClipTimeoutMs);
+
+      for (const [name, wall] of [["scene wall", outer], ["beat wall", inner]] as const) {
+        expect(affordsYoutubeTurn(wall), `${name} cannot hold a turn`).toBe(true);
+        expect(wall, `${name} is under the price the door charges`).toBeGreaterThan(
+          YOUTUBE_MIN_TURN_MS
+        );
+      }
+      /** The outer must contain the inner, or the clamp makes the inner number a fiction. */
+      expect(outer, "the scene wall clamps the beat wall").toBeGreaterThanOrEqual(inner);
+    });
+  });
+
+  it("and every one of them reads the SAME helper — no fourth spelling of the sum", () => {
+    /**
+     * Three call sites, one addition. A wall that computes `+ YOUTUBE_TURN_WINDOW_MS` by hand is
+     * the fourth reader this round exists to prevent.
+     */
+    const uses = [...PIPELINE.matchAll(/beatWallWithYoutubeTurn\(/g)].length;
+    expect(uses, "a wall stopped using the helper, or a new one never started").toBeGreaterThanOrEqual(4);
+    expect(
+      PIPELINE.match(/\+\s*YOUTUBE_TURN_WINDOW_MS/g) ?? [],
+      "a wall added the window by hand instead of asking"
+    ).toHaveLength(0);
+  });
+
+  it("the YouTube-only branch is left alone — it already budgets a turn by name", () => {
+    const at = PIPELINE.indexOf("export function beatVisualWallMs(");
+    const body = PIPELINE.slice(at, PIPELINE.indexOf("\n}", at));
+    expect(body).toContain("youtubeBeatSearchBudgetMs()");
+    /** Paying twice for one turn is the mirror image of the defect being fixed. */
+    const onlyBranch = body.slice(body.indexOf("if (youtubeOnlySourcingEnabled())"), body.indexOf("return beatWallWithYoutubeTurn("));
+    expect(onlyBranch).not.toContain("beatWallWithYoutubeTurn(");
+  });
+
+  it("a build without YouTube keeps every wall exactly as it is today", () => {
+    const saved = { ...process.env };
+    try {
+      delete process.env.YOUTUBE_API_KEY;
+      delete process.env.YOUTUBE_ONLY_SOURCING;
+      expect(beatVisualWallMs(FAST_PERF as never)).toBe(12_000 + 6_000 + 5_000);
+      expect(beatWallWithYoutubeTurn(22_000)).toBe(22_000);
+    } finally {
+      process.env = saved;
+    }
   });
 });

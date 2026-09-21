@@ -4659,8 +4659,33 @@ function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
   return perf.fastStockMode ? 6_000 : 20_000;
 }
 
-/** Wall-clock cap for one beat: search + stock fallback. */
-function beatVisualWallMs(perf: PipelinePerfProfile): number {
+/**
+ * Wall-clock cap for one beat: search + stock fallback.
+ *
+ * ── RONDE 605 — THE THIRD WALL, AND THE LAST ONE RENDER 597 NAMED ───────────────────────────
+ *
+ * Render 597 declined ten YouTube turns. Nine came from `runBeatClipFetch`'s wall and RONDE 604
+ * repaired them. The tenth came from here:
+ *
+ *     [YouTube] TURN_DECLINED scene=2 — 8s left and a turn costs 24s
+ *       clock="historical cascade s2b2_research s2 b2" granted=8s
+ *
+ * This is the OUTER wall — `fetchSceneVisualsInner` opens it around `resolveBeatClip`, and
+ * `runBeatClipFetch`'s scope is nested inside it. A child can never outlive its parent, so a
+ * 23-second wall clamps the 58-second one that RONDE 604 just widened, and the turn arrives at a
+ * door it cannot pay whichever inner budget was repaired. Repairing the inside of a box does not
+ * make the box bigger.
+ *
+ * ── Why the YouTube-only branch is left alone ───────────────────────────────────────────────
+ *
+ * It already budgets for a turn, by name: `youtubeBeatSearchBudgetMs()` is 60s by default and
+ * never below 15s, plus 25s of transform and the stock fallback on top. Adding the supplement
+ * there would pay twice for the same turn, which is the mirror image of the defect this fixes.
+ *
+ * Nothing here is raised for its own sake: the supplement is zero when there is no YouTube to
+ * budget for, so a build without a key keeps exactly the wall it has today.
+ */
+export function beatVisualWallMs(perf: PipelinePerfProfile): number {
   if (youtubeOnlySourcingEnabled()) {
     return (
       youtubeBeatSearchBudgetMs() +
@@ -4669,7 +4694,9 @@ function beatVisualWallMs(perf: PipelinePerfProfile): number {
       8_000
     );
   }
-  return beatVisualSearchMaxMs(perf) + beatStockFallbackWallMs(perf) + 5_000;
+  return beatWallWithYoutubeTurn(
+    beatVisualSearchMaxMs(perf) + beatStockFallbackWallMs(perf) + 5_000
+  );
 }
 
 function backfillClipWallMs(perf: PipelinePerfProfile, sceneDurationSec = 60): number {
