@@ -167,9 +167,48 @@ export function effectChain(effect: ClipEffect): string | null {
     case "vignette":
       // The angle is the falloff: PI/5 is a heavy vignette, PI/2.6 barely visible.
       return `vignette=angle=${(Math.PI / 2.6 - (Math.PI / 2.6 - Math.PI / 5) * i).toFixed(4)}`;
+    /**
+     * The cinematic bar. Independent of intensity: it is on or it is not.
+     *
+     * ── RONDE 601 — TWO PIXELS THAT COST A WHOLE RENDER ──────────────────────────────────────
+     *
+     * This was `crop=iw:ih*0.836:0:ih*0.082,pad=iw:ih/0.836:0:(oh-ih)/2:color=black` — multiply the
+     * height by 0.836, then divide it back. That round trip does not return, because the crop in
+     * between is rounded to a whole number of rows:
+     *
+     *     crop : 1080 x 0.836 = 902.88  -> 902
+     *     pad  : 902 / 0.836  = 1078.94 -> 1078
+     *
+     * So a shot WITH this effect came out 1920x1078 and a shot without it 1920x1080. Measured, on
+     * a real encode, not derived. Nothing notices until two such shots meet in a transition, and
+     * then nothing survives:
+     *
+     *     [Parsed_xfade_6] First input link main parameters (size 1920x1078) do not match the
+     *       corresponding second input link xfade parameters (size 1920x1080)
+     *     Error reinitializing filters!
+     *
+     * Render 596 died there. Not a degraded picture — no file at all, and a delivery blocked on
+     * `AUTHORITATIVE_RENDER_FAILED`. It needs three things at once (the effect on some shots, not
+     * on others, and a transition between exactly those two), which is why it survived every test
+     * that rendered one clip or graded them all alike.
+     *
+     * ── Why bars are PAINTED rather than cropped ─────────────────────────────────────────────
+     *
+     * A letterbox is a LOOK, not a resize. Cutting the picture down and padding it back was always
+     * a round trip to arrive where it started, and a round trip through integer rounding is a
+     * round trip that can land somewhere else. `drawbox` changes no geometry at all, so there is
+     * no arithmetic left that could.
+     *
+     * The picture is unchanged where it shows: the top bar covers the same rows it always did
+     * (0..87 at 1080p, measured against the old chain), and the visible band still begins on row
+     * 88. The bottom box is deliberately asked for more height than remains — `drawbox` clips at
+     * the frame edge — because `ih*0.082` rounds DOWN and would have left the last row unpainted.
+     */
     case "letterbox":
-      // A 2.39:1 crop-and-pad, the cinematic bar. Independent of intensity: it is on or it is not.
-      return `crop=iw:ih*0.836:0:ih*0.082,pad=iw:ih/0.836:0:(oh-ih)/2:color=black`;
+      return (
+        `drawbox=x=0:y=0:w=iw:h=ih*0.082:color=black@1:t=fill,` +
+        `drawbox=x=0:y=ih*0.918:w=iw:h=ih:color=black@1:t=fill`
+      );
 
     /**
      * RONDE 149 — glow and bloom, as the classic split-blur-screen sandwich.

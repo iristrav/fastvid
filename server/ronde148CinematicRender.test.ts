@@ -385,7 +385,17 @@ describe("§15 — effects that run, and effects that are reported", () => {
   it("the three supported effects produce real filters", () => {
     expect(effectChain({ effectType: "film_grain", intensity: 0.5 })).toContain("noise=");
     expect(effectChain({ effectType: "vignette", intensity: 0.5 })).toContain("vignette=angle=");
-    expect(effectChain({ effectType: "letterbox", intensity: 1 })).toContain("crop=iw:ih*0.836");
+    /**
+     * RONDE 601 — this asserted `crop=iw:ih*0.836`, and that string was exactly what its author
+     * intended while the arithmetic inside it was wrong: multiplying the height by 0.836 and
+     * dividing it back returned 1078 rather than 1080, so a shot with the effect could not be
+     * joined to one without it and render 596 produced no file. The bars are painted now, and the
+     * claim this line makes — that letterbox produces a real filter — is unchanged.
+     *
+     * What the effect must NOT do is measured by rendering, in `anEffectMayNotResizeTheFrame`. A
+     * string assertion cannot tell a correct chain from a chain that rounds.
+     */
+    expect(effectChain({ effectType: "letterbox", intensity: 1 })).toContain("drawbox=");
   });
 
   it("intensity actually changes the filter", () => {

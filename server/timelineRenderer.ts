@@ -447,6 +447,61 @@ export async function probeHasStream(file: string, kind: "v" | "a"): Promise<boo
  * but the in-point lands at the start of the dissolve instead of at the cut. That is a real
  * difference and it is reported rather than absorbed.
  */
+/**
+ * RONDE 601 — FFMPEG'S OWN EXPLANATION, IN FRONT OF THE COMMAND THAT PRODUCED IT.
+ *
+ * Render 596's failure reached the operator like this:
+ *
+ *     Delivery blocked for video 596: 8 requirement(s) failed —
+ *     AUTHORITATIVE_RENDER_FAILED (the cinematic timeline render did not deliver
+ *     (RENDER_FAILED — Command failed: /usr/bin/ffmpeg -y -hide_banner -loglevel error
+ *     -i /tmp/render-15-8Mt865/render/seg_000.mp4 -i …
+ *
+ * and stopped there, nine hundred characters of invocation later. ffmpeg had in fact said exactly
+ * what was wrong — `First input link main parameters (size 1920x1078) do not match … (size
+ * 1920x1080)` — but that line sat behind the command in the same message, so every reader and
+ * every truncation got the question instead of the answer.
+ *
+ * Node puts stderr in the rejection. This puts the sentence that NAMES the fault at the front,
+ * keeps the original message behind it so nothing that already greps for it breaks, and leaves
+ * the exit behaviour untouched: the same failures fail, at the same moment.
+ */
+const FFMPEG_LINES_THAT_ONLY_REPORT_FAILURE: readonly RegExp[] = [
+  /^Error reinitializing filters!$/,
+  /^Failed to inject frame into filter network/,
+  /^Error while filtering/,
+  /^Conversion failed!$/,
+  /^\[.*@ 0x[0-9a-f]+\] Failed to configure output pad/,
+];
+
+/** The first stderr line that says WHAT was wrong, rather than that something was. */
+export function ffmpegComplaint(err: unknown): string {
+  const raw = (err as { stderr?: unknown } | null)?.stderr;
+  const lines = (typeof raw === "string" ? raw : "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const named = lines.find(
+    (l) => !FFMPEG_LINES_THAT_ONLY_REPORT_FAILURE.some((re) => re.test(l))
+  );
+  return named ?? lines[0] ?? "";
+}
+
+/**
+ * Every ffmpeg call this renderer makes goes through here, so the reporting cannot be true at one
+ * call site and absent at the next — which is how the transition graph came to be the one failure
+ * nobody could read.
+ */
+async function runFfmpeg(args: string[], what: string): Promise<void> {
+  try {
+    await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+  } catch (err) {
+    const said = ffmpegComplaint(err);
+    const original = (err as Error)?.message ?? String(err);
+    throw new Error(said ? `${what}: ${said} — ${original}` : `${what}: ${original}`);
+  }
+}
+
 async function renderSegment(
   clip: TimelineVideoClip,
   localMedia: string,
@@ -516,7 +571,7 @@ async function renderSegment(
     "-t", dur.toFixed(3),
     outPath
   );
-  await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+  await runFfmpeg(args, "segment encode");
   return { handleFromSource };
 }
 
@@ -818,7 +873,7 @@ export async function renderTimeline(params: {
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
       "-an", silent
     );
-    await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+    await runFfmpeg(args, "transition graph");
     transitionsRendered = rendered.filter(
       (r, i) => i > 0 && r.clip.transitionIn !== "hard_cut"
     ).length;
@@ -1085,7 +1140,7 @@ export async function renderTimeline(params: {
       "-shortest",
       outputPath
     );
-    await execFileAsync(ffmpeg(), args, { maxBuffer: 1024 * 1024 * 16 });
+    await runFfmpeg(args, "audio mux");
     commands++;
   }
   const ducked = resolvedAudio.filter(
