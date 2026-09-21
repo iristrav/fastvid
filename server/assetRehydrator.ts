@@ -519,6 +519,18 @@ export async function rehydrateAsset(params: {
     );
   }
 
+  /**
+   * P0-4: an archive attempt that came this far is part of this failure's account of itself.
+   *
+   * Declared HERE, where the archive is finally out of options, rather than further down — the
+   * YouTube branch below returns before that point, so every YouTube identity whose archive row
+   * had vanished used to report a bare `REHYDRATION_DOWNLOAD_FAILED videoId=…`. The attempt was
+   * computed, written to the console, and then not carried to the value the render actually
+   * records. An operator reading that failure could not tell "YouTube would not give us the file"
+   * from "our own archive lost it" — and those two need opposite work.
+   */
+  const alsoTried = archiveAttempts.length > 0 ? ` (after ${archiveAttempts.join("; ")})` : "";
+
   // The cache, before any provider. Optional: rehydration works with it switched off (§23).
   if (deps.cacheRestore) {
     const hit = await deps.cacheRestore(cacheKey, destPath).catch(() => false);
@@ -541,13 +553,14 @@ export async function rehydrateAsset(params: {
    */
   if (provider === "youtube" || provider === "youtube_cc") {
     if (!assetId) {
-      return fail(identity, "REHYDRATION_IDENTITY_MISSING", "no videoId recorded");
+      return fail(identity, "REHYDRATION_IDENTITY_MISSING", `no videoId recorded${alsoTried}`);
     }
     if (!deps.youtubeResolver) {
       return fail(
         identity, "REHYDRATION_NOT_AUTHORIZED",
         `videoId=${assetId} — no YouTube resolver supplied, so the existing licence and ` +
-          "operator-authorisation path could not be consulted; refusing rather than bypassing it"
+          "operator-authorisation path could not be consulted; refusing rather than bypassing it" +
+          alsoTried
       );
     }
     const answer = await deps.youtubeResolver(assetId, destPath).catch(() => false);
@@ -558,11 +571,11 @@ export async function rehydrateAsset(params: {
       });
     }
     if (answer === false) {
-      return fail(identity, "REHYDRATION_DOWNLOAD_FAILED", `videoId=${assetId}`);
+      return fail(identity, "REHYDRATION_DOWNLOAD_FAILED", `videoId=${assetId}${alsoTried}`);
     }
-    if (!answer.ok) return fail(identity, answer.code, answer.message);
+    if (!answer.ok) return fail(identity, answer.code, `${answer.message}${alsoTried}`);
     const got = await deps.download(answer.url, destPath).catch(() => false);
-    if (!got) return fail(identity, "REHYDRATION_DOWNLOAD_FAILED", `videoId=${assetId}`);
+    if (!got) return fail(identity, "REHYDRATION_DOWNLOAD_FAILED", `videoId=${assetId}${alsoTried}`);
     return done(destPath, {
       cacheHit: false, downloaded: true, sourceUrl: answer.url,
       provenance: `fetched through the existing YouTube layer (videoId=${assetId})`,
@@ -582,18 +595,16 @@ export async function rehydrateAsset(params: {
       return fail(
         identity, "REHYDRATION_AUTH_REQUIRED",
         `provider=${provider} providerAssetId=${assetId ?? "null"} — the API key needed to look ` +
-          "this id up again is not configured"
+          "this id up again is not configured" + alsoTried
       );
     }
     const resolved = await deps
       .providerResolver(identity)
       .catch((err) => ({ ok: false as const, code: "REHYDRATION_DOWNLOAD_FAILED" as const, message: String(err) }));
-    if (!resolved.ok) return fail(identity, resolved.code, resolved.message);
+    if (!resolved.ok) return fail(identity, resolved.code, `${resolved.message}${alsoTried}`);
     target = { url: resolved.url, kind: "derived" };
   }
 
-  /** P0-4: an archive attempt that came this far is part of this failure's account of itself. */
-  const alsoTried = archiveAttempts.length > 0 ? ` (after ${archiveAttempts.join("; ")})` : "";
   if (!target) {
     return fail(
       identity, "ASSET_NOT_FOUND",

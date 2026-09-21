@@ -12,7 +12,12 @@ import {
   analyzeBeatSemanticsFallback,
   type BeatSemanticProfile,
 } from "./semanticVisualMatching";
-import { contentTermsFromText, termProvableFrom, visualTermsFromIntent } from "./searchQueryContract";
+import {
+  contentTermsFromText,
+  narrowToSubjectPlusConcept,
+  termProvableFrom,
+  visualTermsFromIntent,
+} from "./searchQueryContract";
 import { foldSearchText } from "./searchTextNormalize";
 import { invokeLLM } from "./_core/llm";
 import { getActiveVideoId } from "./videoGenerationCancel";
@@ -320,6 +325,69 @@ function anchorTierQueries(items: ScoredQuery[], anchor: string): ScoredQuery[] 
   });
 }
 
+/**
+ * NARROW EVERY BAND TO TWO CONCEPTS, IN THE ONE PLACE THAT RUNS BEFORE ANY PROVIDER ADAPTER.
+ *
+ * ── Why here and not in each adapter ────────────────────────────────────────────────────────
+ *
+ * Render 593's queries did not come from one builder. `"masterclass other"` came out of the
+ * SerpAPI/Openverse fallback, `"sword tuned"` out of the YouTube query builder, `"Rumors
+ * kardashians Kardashians"` out of a tier read as a sentence. Narrowing each adapter separately
+ * would be five copies of one rule, and §13 names the outcome: the rule drifts and the long
+ * queries come back through whichever copy was forgotten.
+ *
+ * `buildVisualSearchPlan` is the last point where a query is still a semantic object rather than
+ * a provider's parameter. Everything downstream — `searchPlanRounds`, the tier fetchers, the
+ * YouTube turn — reads the bands this function returns. So the policy is applied once, to the
+ * plan, and the adapters below are left to do formatting and nothing else.
+ *
+ * ── The anchor is passed, not re-derived ────────────────────────────────────────────────────
+ *
+ * `narrowToSubjectPlusConcept` needs to know which words are the subject so it can keep them
+ * whole and count them as one concept. Re-deriving the anchor inside it would be a second
+ * `subjectAnchorForBeat` with its own opinion; passing the one this plan already chose is what
+ * keeps the two from disagreeing.
+ *
+ * A band with no anchor is not narrowed at all — see the §6 note inside the function, which is
+ * where that decision is made and why.
+ */
+function narrowBand(
+  items: ScoredQuery[],
+  anchor: string,
+  intent: VisualSearchPlanInput["intent"]
+): ScoredQuery[] {
+  /**
+   * §6 — A BEAT WITH NO PROVEN SUBJECT IS LEFT EXACTLY AS IT WAS.
+   *
+   * The shape this round enforces is `[MAIN SUBJECT] + [SENTENCE VISUAL CONCEPT]`, and without a
+   * subject there is no such shape to enforce: what is left is a set of terms the extractors could
+   * not attribute to anybody, and choosing two of them is a guess rather than a narrowing.
+   *
+   * Found by `aCategoryIsNotASearch`, which asserts that not one query changes when there is no
+   * anchor. It changed. The unanchored beat "It filled the news that year." lost `news` as a
+   * padding word and was given `filled` in its place — a verb, standing in for the picture,
+   * which is `sword tuned` and `shaped` from render 593 arriving through this round's own door.
+   * Narrowing coverage for the beats this round does not help was never part of it.
+   *
+   * `narrowToSubjectPlusConcept` keeps its unanchored branch — §12's "Berlin 1945" is two
+   * concepts and not a subject plus a concept, and the function still answers that correctly for
+   * any caller that has reason to ask. This is the PLAN deciding where the policy applies.
+   */
+  if (!anchor.trim()) return items;
+
+  const out: ScoredQuery[] = [];
+  for (const item of items) {
+    const narrowed = narrowToSubjectPlusConcept(item.query, anchor, intent);
+    if (!narrowed.query) continue;
+    out.push(
+      narrowed.query === item.query
+        ? item
+        : { ...item, query: narrowed.query, reason: `${item.reason} (2-concept: ${narrowed.reason})` }
+    );
+  }
+  return out;
+}
+
 // ─── Video Visual Context ─────────────────────────────────────────────────────
 
 /**
@@ -484,15 +552,19 @@ export function buildVisualSearchPlan(
    * cap still takes the strongest.
    */
   const primary = dedupScored(
-    anchorTierQueries(
-      dropActionOnlyQueries(
-        [
-          ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
-          ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
-        ],
-        input.intent
+    narrowBand(
+      anchorTierQueries(
+        dropActionOnlyQueries(
+          [
+            ...tier0.map((q) => scored(q, 0.9, "direct semantic match from narration")),
+            ...(beatTerms ? [scored(beatTerms, 0.85, "content terms from narration")] : []),
+          ],
+          input.intent
+        ),
+        anchor
       ),
-      anchor
+      anchor,
+      input.intent
     )
   ).slice(0, 6);
 
@@ -507,14 +579,22 @@ export function buildVisualSearchPlan(
    * own ladder.
    */
   const secondary = dedupScored([
-    ...anchorTierQueries(tier1.map((q) => scored(q, 0.75, "synonym or variation")), anchor),
+    ...narrowBand(
+      anchorTierQueries(tier1.map((q) => scored(q, 0.75, "synonym or variation")), anchor),
+      anchor,
+      input.intent
+    ),
     ...e.events.map((q) => scored(q, 0.7, "detected event")),
     ...(ctx?.people ?? []).map((p) => scored(p, 0.65, "main character from video context")),
   ]).slice(0, 8);
 
   // Concepts: abstracted from objects + tier2
   const concepts = dedupScored([
-    ...anchorTierQueries(tier2.map((q) => scored(q, 0.6, "conceptual abstraction")), anchor),
+    ...narrowBand(
+      anchorTierQueries(tier2.map((q) => scored(q, 0.6, "conceptual abstraction")), anchor),
+      anchor,
+      input.intent
+    ),
     ...e.objects.map((q) => scored(q, 0.55, "detected object")),
   ]).slice(0, 8);
 

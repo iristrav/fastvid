@@ -331,9 +331,39 @@ describe("§10 — buildVisualSearchPlan no longer sends a category on its own",
   });
 
   it("and each of them goes out asking about the subject instead", () => {
-    for (const category of CATEGORIES) {
+    /**
+     * ── SUPERSEDED IN PART, AND SAID SO RATHER THAN DELETED ─────────────────────────────────
+     *
+     * When this test was written, the answer to a bare category was to put the subject in front
+     * of it: `news` became `kim kardashian news`. That fixed the half of the defect this file is
+     * named for — a category never goes out alone — and that half is unchanged and still asserted
+     * directly above.
+     *
+     * The two-concept round that followed answers the other half. `[MAIN SUBJECT] + [SENTENCE
+     * VISUAL CONCEPT]` asks what the second term is FOR, and `news` is not something anybody can
+     * photograph: "kim kardashian news" carries the subject and then spends its only remaining
+     * slot on a word that returns generic newsroom footage. That is the query shape render 593
+     * sent and got nothing usable back from. So a padding word is now dropped rather than
+     * escorted, and the subject searches alone — which is a narrower question, not a broader one.
+     *
+     * Categories split in two accordingly, and BOTH halves are asserted, because "it was dropped"
+     * would otherwise be indistinguishable from "it was lost".
+     */
+    /** Words that name something filmable keep their place beside the subject, as before. */
+    for (const category of ["medium", "business", "celebrity"]) {
       expect(everyPlannedQuery, category).toContain(`kim kardashian ${category}`);
     }
+    /** `news` is padding: it leaves, and the subject's own query is what remains. */
+    expect(everyPlannedQuery).not.toContain("kim kardashian news");
+    expect(everyPlannedQuery).toContain("kim kardashian");
+    /**
+     * And the beat's actual visual concept — the one the narration supplies and a category never
+     * could — is now asked about, which is the point of the exchange.
+     */
+    expect(everyPlannedQuery).toContain("kim kardashian Rumors");
+    /** The unnarrowed fallback band still anchors its phrases whole; that band is not this round's. */
+    expect(everyPlannedQuery).toContain("kim kardashian documentary archive");
+    expect(everyPlannedQuery).toContain("kim kardashian historical footage");
   });
 
   it("the subject's own query survives, and is not doubled", () => {
@@ -372,10 +402,20 @@ describe("§10 — buildVisualSearchPlan no longer sends a category on its own",
       { beatText: BEAT, sceneText: BEAT, topic: "Kim Kardashian" }
     );
     const asked = searchPlanRounds(sparse).flatMap((r) => r.queries);
-    expect(asked).toContain("kim kardashian documentary archive");
-    expect(asked).toContain("kim kardashian historical footage");
+    /**
+     * The invariant this test exists for, unchanged: neither phrase goes out on its own, and both
+     * go out about the subject.
+     */
     expect(asked).not.toContain("documentary archive");
     expect(asked).not.toContain("historical footage");
+    expect(asked.every((q) => q.startsWith("kim kardashian"))).toBe(true);
+    /**
+     * What the two-concept round changed: `documentary` and `footage` are padding — they describe
+     * the KIND of material wanted, not the thing to be seen in it — so each phrase is now asked as
+     * the subject plus its one substantive word. The query is shorter and names the same picture.
+     */
+    expect(asked).toContain("kim kardashian archive");
+    expect(asked).toContain("kim kardashian historical");
   });
 
   it("every band keeps its confidences — this round changed query text, not ranking", () => {
@@ -438,7 +478,18 @@ describe("§4 TEST 5 — an action-only query is not rescued by acquiring a subj
   });
 
   it("while the tier's real term is still asked, now about the subject", () => {
-    expect(plan.primary.map((q) => q.query)).toContain("Kim Kardashian news");
+    /**
+     * The tier is `["illuminate", "news"]` — a verb and a padding word, which between them name no
+     * picture at all. The verb was already gone (above). `news` now goes too, and what is left is
+     * the subject, asked alone.
+     *
+     * That IS the tier's real term here: this beat gave the planner nothing filmable beyond the
+     * person, and searching for the person is the honest question. The failure mode this round
+     * closes is the opposite one — filling the second slot with whatever word was nearest so the
+     * query would look specific.
+     */
+    expect(plan.primary.map((q) => q.query)).toContain("Kim Kardashian");
+    expect(plan.primary.map((q) => q.query)).not.toContain("Kim Kardashian news");
   });
 });
 

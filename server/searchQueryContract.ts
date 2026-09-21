@@ -2180,3 +2180,261 @@ export function searchGateDecision(
   if (searchQueryAuditLogEnabled()) console.log(audit("ALLOWED"));
   return { admitted: true, text };
 }
+
+/* ═══════════════════════ SUBJECT + CONCEPT — the two-concept query policy ═══════════════════════ */
+
+/**
+ * WHAT A BEAT OFFERS A QUERY, RANKED THE WAY AN ARCHIVE ANSWERS IT.
+ *
+ * Structurally typed for the same reason `visualTermsFromIntent` is: `BeatVisualIntent`'s module
+ * imports this one, and the dependency may not run both ways.
+ */
+export type ConceptSource = {
+  subject?: string;
+  people?: readonly string[];
+  event?: readonly string[];
+  location?: readonly string[];
+  period?: readonly string[];
+  objects?: readonly string[];
+  action?: readonly string[];
+};
+
+/**
+ * The order the SECOND term is chosen in — and it is NOT `visualTermsFromIntent`'s order.
+ *
+ * That function ranks by what the beat is ABOUT, so `subject` and `people` lead. This one runs
+ * after the subject is already in hand and asks a different question: of everything left, which
+ * one word narrows an archive most? The answer is the concrete happening or thing, then where,
+ * then when.
+ *
+ * `action` is absent on purpose. `dropActionOnlyQueries` already records why — "a verb rarely
+ * narrows a search and often widens it" — and render 593 shipped `"sword tuned"` and
+ * `"masterclass other"` to providers because a verb and a filler noun were allowed to stand as
+ * queries. A verb may still ride along inside a concept the planner typed; it may not BE the
+ * concept.
+ *
+ * `people` is absent too, and for a sharper reason: a second person is a second subject. "Kim
+ * Kardashian Kanye West" asserts a meeting the beat may never have described, which is the exact
+ * claim `buildPrioritisedQueries` refuses to manufacture.
+ */
+const CONCEPT_RANK = ["event", "objects", "location", "period"] as const;
+
+/**
+ * Words that carry no picture, and may therefore never be the concept half of a query.
+ *
+ * Every one of these was measured in a production log, not imagined. Render 593 sent `"news
+ * other"`, `"masterclass other"`, `"single day"` and `"news kim"` to real providers; `other` and
+ * `day` are the words that made those queries unanswerable. A provider asked for "other" returns
+ * whatever it likes and the beat then fails its picture gate for a reason that has nothing to do
+ * with the beat.
+ *
+ * This is NOT a stopword list — `isFunctionWord` already owns that job and runs first. These are
+ * content words by grammar that name nothing to photograph.
+ */
+const EMPTY_CONCEPT_WORDS = new Set(
+  [
+    "other", "others", "thing", "things", "stuff", "item", "items",
+    "day", "days", "time", "times", "year", "years", "moment", "moments",
+    "way", "ways", "kind", "kinds", "sort", "sorts", "part", "parts",
+    "news", "video", "videos", "footage", "clip", "clips", "documentary",
+    "latest", "official", "single", "new", "old", "big", "small",
+    "masterclass", "tuned", "content", "media", "story", "stories",
+  ].map((w) => foldSearchText(w))
+);
+
+/** Is this word capable of being the concept half of a query at all? */
+function wordCanBeConcept(word: string): boolean {
+  const folded = foldSearchText(word).replace(/[^\p{L}\p{N}'’-]/gu, "");
+  if (!folded) return false;
+  if (isFunctionWord(word)) return false;
+  return !EMPTY_CONCEPT_WORDS.has(folded);
+}
+
+/** The words of a phrase, folded, with punctuation stripped — the codebase's own comparison. */
+function conceptWords(phrase: string): string[] {
+  return (phrase ?? "")
+    .split(/[^\p{L}\p{N}'’-]+/u)
+    .map((w) => foldSearchText(w).replace(/[^\p{L}\p{N}'’-]/gu, ""))
+    .filter(Boolean);
+}
+
+export type NarrowedQuery = {
+  /** `subject concept`, or just the subject when the beat offered no usable concept. */
+  query: string;
+  /** What it is built from, in order. Never more than two entries. */
+  concepts: string[];
+  /** Why the second concept is the one it is — for the plan log, never for a decision. */
+  reason: string;
+};
+
+/**
+ * ── MAXIMAAL TWEE BETEKENISVOLLE TERMEN: [MAIN SUBJECT] + [SENTENCE VISUAL CONCEPT] ─────────
+ *
+ * ── What render 593 actually sent ───────────────────────────────────────────────────────────
+ *
+ * Two failure shapes, both measured, and they need opposite repairs:
+ *
+ *     "Rumors kardashians Kardashians"            a sentence, with the subject said twice
+ *     "it's documentary footage"                  four words, no subject at all
+ *     "masterclass other" · "single day"          content words that name nothing
+ *     "sword tuned" · "shaped" · "evidence"       the sentence's grammar, not its picture
+ *
+ * The first is too long. The rest are the wrong two words. A cap alone fixes only the first, and
+ * `ensureSubjectAnchor` alone fixes only the last — this function is where the two meet.
+ *
+ * ── Why this is not a truncation ────────────────────────────────────────────────────────────
+ *
+ * `query.split(" ").slice(0, 2)` on "Kim Kardashian launched a new beauty collection" gives
+ * "Kim Kardashian" — the subject, and nothing about this beat. On "The Titanic sank in 1912" it
+ * gives "The Titanic". Position is not meaning, and every example in this codebase's logs where
+ * a query lost its point lost it to exactly that kind of arithmetic.
+ *
+ * So the subject is kept WHOLE, however many words it spans, and the second term is CHOSEN: the
+ * highest-ranked concept the planner typed whose words the remaining query actually contains.
+ * Only when the beat typed no usable concept does this fall back to reading the remainder, and
+ * even then it takes the first word that can name a picture rather than the first word.
+ *
+ * ── The subject is never traded away ────────────────────────────────────────────────────────
+ *
+ * `ensureSubjectAnchor` put it there and this may not take it out. A beat with a subject and no
+ * concept searches for the subject alone, which is a narrower question than the subject plus a
+ * word that means nothing. §9's rule — "het hoofdonderwerp mag NOOIT verloren gaan" — is the one
+ * thing this function has no branch to violate.
+ *
+ * ── An empty anchor changes nothing about that ──────────────────────────────────────────────
+ *
+ * With no proven subject there is nothing to protect and nothing to compose against, so the query
+ * is returned narrowed to its own strongest concept and no subject is invented. §6's rule, which
+ * `ensureSubjectAnchor` already holds, reaches this function unchanged.
+ */
+export function narrowToSubjectPlusConcept(
+  query: string,
+  anchor: string,
+  intent?: ConceptSource | null
+): NarrowedQuery {
+  const q = (query ?? "").replace(/\s+/g, " ").trim();
+  const a = (anchor ?? "").replace(/\s+/g, " ").trim();
+  if (!q) return { query: "", concepts: [], reason: "empty query" };
+
+  /**
+   * Surface forms are carried alongside the folded ones throughout.
+   *
+   * Folding is how this codebase compares words — case, diacritics and punctuation removed — and
+   * comparing any other way would miss "Kardashian's" against "Kardashian". But a query is also
+   * a string somebody reads in a log and a provider may index case-sensitively, so what comes
+   * OUT has to be the words as the narration wrote them. An earlier version returned the folded
+   * form and turned "Berlin 1945" into "berlin 1945": correct as a comparison, wrong as a query.
+   */
+  const qSurface = (q.match(/[\p{L}\p{N}'’-]+/gu) ?? []).filter((w) => conceptWords(w).length > 0);
+  const qWords = conceptWords(q);
+  const aWords = conceptWords(a);
+
+  /**
+   * The subject's own words come out first, so the concept search cannot pick one of them and
+   * hand back "Kim Kardashian kim". `ensureSubjectAnchor` refuses that doubling on the way in;
+   * this refuses it on the way out.
+   */
+  const anchorSet = new Set(aWords);
+  const surfaceOf = new Map<string, string>();
+  qWords.forEach((folded, i) => {
+    if (!surfaceOf.has(folded) && qSurface[i]) surfaceOf.set(folded, qSurface[i]!);
+  });
+  const remainder = qWords.filter((w) => !anchorSet.has(w));
+
+  /** The planner's own typed concepts, strongest first, filtered to what this query still says. */
+  const typed: Array<{ term: string; field: string }> = [];
+  if (intent) {
+    for (const field of CONCEPT_RANK) {
+      for (const raw of (intent[field] ?? []) as readonly string[]) {
+        const term = (raw ?? "").replace(/\s+/g, " ").trim();
+        if (term) typed.push({ term, field });
+      }
+    }
+  }
+
+  /**
+   * How many concepts there is room for. The subject already occupies one of the two, so an
+   * anchored query gets ONE more; an unanchored one gets both.
+   *
+   * §12 is the reason the second branch exists. The historical round deliberately asks a
+   * geographic and chronological question with no subject in front of it — "Berlin 1945" — and
+   * that is two concepts, not a subject plus a concept. Narrowing it to one would throw away the
+   * era, which is the half that makes archival footage era-correct.
+   */
+  const room = a ? 1 : 2;
+  const picked: string[] = [];
+  const reasons: string[] = [];
+
+  for (const { term, field } of typed) {
+    if (picked.length >= room) break;
+    const words = conceptWords(term).filter((w) => !anchorSet.has(w));
+    const kept = words.filter((w) => wordCanBeConcept(w));
+    if (kept.length === 0) continue;
+    /**
+     * A TYPED CONCEPT DOES NOT HAVE TO APPEAR IN THE QUERY VERBATIM.
+     *
+     * An earlier version required it, and "The Titanic sank in 1912 after hitting an iceberg"
+     * then searched for "Titanic iceberg": the planner had typed the event as `sinking`, the
+     * sentence says `sank`, and a word-containment check cannot see that those are the same
+     * happening. It fell through to the object, which is the thing the ship hit rather than the
+     * thing the beat is about.
+     *
+     * The intent is the beat's own model, not a rendering of its grammar, and it was already put
+     * through `termProvableFrom` where it was built. `validateSearchQuery` still judges whatever
+     * this composes, so the gate — not this function — remains the authority on admission.
+     */
+    /** The narration's spelling where the query has it, the planner's where it does not. */
+    const termSurface = term.match(/[\p{L}\p{N}'’-]+/gu) ?? [];
+    const concept = kept
+      .map((w) => surfaceOf.get(w) ?? termSurface.find((t) => conceptWords(t)[0] === w) ?? w)
+      .join(" ");
+    if (picked.includes(concept)) continue;
+    picked.push(concept);
+    reasons.push(`planner ${field}`);
+  }
+
+  /**
+   * Nothing typed survived, so the sentence's own remaining words are all there is. The first one
+   * that can name a picture — which is not the same as the first one — and nothing if none can.
+   */
+  if (picked.length < room) {
+    const taken = new Set(picked.flatMap((c) => conceptWords(c)));
+    for (const w of remainder) {
+      if (picked.length >= room) break;
+      if (taken.has(w) || !wordCanBeConcept(w)) continue;
+      taken.add(w);
+      picked.push(surfaceOf.get(w) ?? w);
+      reasons.push("strongest content word in the narration");
+    }
+  }
+
+  if (picked.length === 0) {
+    return a
+      ? { query: a, concepts: [a], reason: "no concept in this beat — subject alone" }
+      : { query: "", concepts: [], reason: "no subject and no concept" };
+  }
+  const concepts = a ? [a, ...picked] : picked;
+  return {
+    query: concepts.join(" "),
+    concepts,
+    reason: [...new Set(reasons)].join(" + "),
+  };
+}
+
+/**
+ * How many SEMANTIC concepts a query carries, counted against the subject it is about.
+ *
+ * The subject is one concept however many words it spans — "Kim Kardashian" is a person, not two
+ * search terms — so this cannot be a word count, and §15's invariant cannot be checked with one.
+ * Everything outside the subject is counted as content words, because a concept the planner typed
+ * as two words ("Los Angeles") is still one thing to find a picture of.
+ *
+ * Function words and the empty-concept vocabulary are not counted at all: they were never terms.
+ */
+export function semanticConceptCount(query: string, anchor = ""): number {
+  const qWords = conceptWords(query);
+  const aWords = new Set(conceptWords(anchor));
+  const namesAnchor = aWords.size > 0 && [...aWords].every((w) => qWords.includes(w));
+  const rest = qWords.filter((w) => !aWords.has(w) && wordCanBeConcept(w));
+  return (namesAnchor ? 1 : 0) + rest.length;
+}
