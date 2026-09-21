@@ -688,6 +688,7 @@ import {
   beatClipSeverity,
   barrierCoverage,
   ensureVerdictBeforeCompose,
+  getComposeJudgeScope,
   nothingToJudgeAgainst,
   maxComposePhaseJudgements,
   relevanceVerdictForRenderedAsset,
@@ -5021,6 +5022,22 @@ export async function runCentralYoutubeTurn(
     console.log(
       `[YOUTUBE_TURN] scene=${sceneIndex} beat=${beat.index} turn=SKIPPED ` +
         `reason=${youtubeSourcingEnabled() ? "not_ready" : "sourcing_disabled"}`
+    );
+    return finish("YOUTUBE_CAPABILITY_UNAVAILABLE", null);
+  }
+  /**
+   * §2 — A SLOT WITH NO SENTENCE GETS NO TURN.
+   *
+   * Render 594's only YouTube candidate — `LW9xaNF5iLs`, 36 seconds of download — was fetched for
+   * s1b6, a montage slot past the end of scene 1's sentences. Nothing found there could ever earn
+   * an approval, and the turn is refused before the search rather than after the bytes arrive.
+   *
+   * This is a SKIP, not a decline of YouTube: the reason is the slot, not the provider, and every
+   * other source is refused on this slot by the same predicate at the beat-fill entry.
+   */
+  if (slotHasNoBeatBehindIt(sceneIndex, beat.index)) {
+    console.log(
+      `[YOUTUBE_TURN] scene=${sceneIndex} beat=${beat.index} turn=SKIPPED reason=slot_without_beat`
     );
     return finish("YOUTUBE_CAPABILITY_UNAVAILABLE", null);
   }
@@ -28791,6 +28808,61 @@ function skipComposeNetworkFetch(
   return true;
 }
 
+/**
+ * A SLOT WITH NO SENTENCE BEHIND IT MAY NOT SPEND RETRIEVAL.
+ *
+ * ── What render 594 spent ───────────────────────────────────────────────────────────────────
+ *
+ *     [BeatRelevance]  s1b6: backfill approval requirement suspended: reason=slot_without_beat  (7×)
+ *     [BeatLookups]    beat=s1b6 lookups=13 … declined: no_narration=8
+ *     [YOUTUBE_TURN]   scene=1 beat=6 turn=START … result=YOUTUBE_CANDIDATES_DELIVERED usedMs=35533
+ *     [VisualLineageEvent] … providerAssetId=LW9xaNF5iLs stage=DOWNLOAD_SUCCEEDED
+ *
+ * `minClipsForScene` can need more pictures than a scene has sentences, and the extra places are
+ * montage slots. There is no beat at that index, so `contextFor` returns nothing, so no approval
+ * can ever be earned for anything put there — that rule is RONDE 215's and this round does not
+ * touch it. What render 594 showed is the COST of asking anyway: thirteen editor lookups and a
+ * thirty-six second YouTube download for a slot whose answer was decided before the search began.
+ * That was the only YouTube candidate of the whole render.
+ *
+ * ── Why the check is here and not at the end ────────────────────────────────────────────────
+ *
+ * Refusing the candidate after it has been fetched is what already happened. The point is to stop
+ * BEFORE provider acquisition, so the beat's turn, its download slot and its reserve stay with
+ * the beats that can use them.
+ *
+ * ── What it does NOT do ─────────────────────────────────────────────────────────────────────
+ *
+ * It refuses no picture and lowers no bar. The slot is left to the same guaranteed-fill and
+ * coverage logic that already handles a beat nothing was found for; it simply gets there without
+ * paying for a search first. A scope that cannot count this scene's beats returns false, so the
+ * behaviour is unchanged wherever the record is absent — never claim more than you know.
+ */
+function slotHasNoBeatBehindIt(sceneIndex: number, beatIndex: number | undefined): boolean {
+  if (beatIndex == null) return false;
+  const scope = getComposeJudgeScope();
+  const beatCount = scope?.beatCountFor?.(sceneIndex);
+  return beatCount != null && beatIndex >= beatCount;
+}
+
+/**
+ * The same question, asked where a route is about to spend on a provider, and logged once.
+ *
+ * Mirrors `skipComposeNetworkFetch`: a named reason, one line, and a boolean the caller returns on.
+ */
+function skipSourcingForBeatlessSlot(
+  source: string,
+  sceneIndex: number,
+  beatIndex: number | undefined
+): boolean {
+  if (!slotHasNoBeatBehindIt(sceneIndex, beatIndex)) return false;
+  console.warn(
+    `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: slot_without_beat — ${source} not started; ` +
+      `there is no sentence behind this slot, so no approval could be earned for anything found`
+  );
+  return true;
+}
+
 /** Archive → stock rescue when strict 1-min compose would otherwise have zero clips. */
 async function rescueFastShortComposeClips(
   scene: Scene,
@@ -37252,6 +37324,8 @@ async function ensureBeatVisualFilled(
   alreadyTriedFillBeatVisual = false
 ): Promise<void> {
   if (skipComposeNetworkFetch(dedup, "beat visual fill", scene.index, beat.index)) return;
+  /** §2 — a slot with no sentence behind it spends nothing on retrieval. See `slotHasNoBeatBehindIt`. */
+  if (skipSourcingForBeatlessSlot("beat visual fill", scene.index, beat.index)) return;
   if (
     !alreadyTriedFillBeatVisual &&
     (await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, semanticProfile, holdSec))
@@ -37690,6 +37764,8 @@ async function fillBeatVisual(
   semanticProfile?: BeatSemanticProfile,
   holdSec = beat.holdSec
 ): Promise<boolean> {
+  /** §2 — asked before anything is hydrated, searched or fetched. */
+  if (skipSourcingForBeatlessSlot("beat visual fill", scene.index, beat.index)) return false;
   hydrateSceneBeatInPlace(beat);
   videoTitle = coerceVisionString(videoTitle);
   const beatRegion = inferBeatGeoRegion(beat.text, videoTitle);

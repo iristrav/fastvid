@@ -371,10 +371,16 @@ async function searchPexelsCandidates(
   let apiCalls = 0;
   const seenIds = new Set<number>();
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("pexels", query, "scenePool:searchPexelsCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("pexels", rawQuery, "scenePool:searchPexelsCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const perPage = Math.min(15, max - candidates.length + 5);
     const url =
@@ -445,10 +451,16 @@ async function searchPixabayCandidates(
   let apiCalls = 0;
   const seenIds = new Set<number>();
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("pixabay", query, "scenePool:searchPixabayCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("pixabay", rawQuery, "scenePool:searchPixabayCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const url =
       `https://pixabay.com/api/videos/` +
@@ -519,10 +531,16 @@ async function searchWikimediaCandidates(
   const seenTitles = new Set<string>();
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("wikimedia", query, "scenePool:searchWikimediaCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("wikimedia", rawQuery, "scenePool:searchWikimediaCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const searchUrl =
       `https://commons.wikimedia.org/w/api.php?action=query&list=search` +
@@ -697,10 +715,16 @@ async function searchInternetArchiveCandidates(
   const seenIds = new Set<string>();
   const UA = { "User-Agent": "Fastvid/1.0 (video generation)" };
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("internet_archive", query, "scenePool:searchInternetArchiveCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("internet_archive", rawQuery, "scenePool:searchInternetArchiveCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const searchUrl =
       `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:movies` +
@@ -830,10 +854,16 @@ async function searchEuropeanaCandidates(
   const seenIds = new Set<string>();
   const authHeader = { Authorization: `ApiKey ${apiKey}`, "User-Agent": "Fastvid/1.0" };
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("europeana", query, "scenePool:searchEuropeanaCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("europeana", rawQuery, "scenePool:searchEuropeanaCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const searchUrl = new URL("https://api.europeana.eu/record/v2/search.json");
     searchUrl.searchParams.set("query", query);
@@ -951,10 +981,16 @@ export async function searchOpenverseCandidates(
   const seenIds = new Set<string>();
   const UA = { "User-Agent": "Fastvid/1.0 (video generation; contact@fastvid.ai)" };
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("openverse", query, "scenePool:searchOpenverseCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("openverse", rawQuery, "scenePool:searchOpenverseCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const searchUrl = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&license_type=commercial,modification&page_size=${max}&format=json`;
     try {
@@ -1026,10 +1062,16 @@ export async function searchNasaCandidates(
   const seenIds = new Set<string>();
   const UA = { "User-Agent": "Fastvid/1.0 (NASA public domain footage)" };
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("nasa", query, "scenePool:searchNasaCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("nasa", rawQuery, "scenePool:searchNasaCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const searchUrl = `https://images-api.nasa.gov/search?q=${encodeURIComponent(query)}&media_type=video`;
     try {
@@ -1134,10 +1176,16 @@ export async function searchNaraCandidates(
   const seenUrls = new Set<string>();
   const headers = { "x-api-key": apiKey, "User-Agent": "Fastvid/1.0 (NARA public archives)" };
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     // RONDE 91 (§4): the central gate, per query. A refused query is skipped — never
-    // repaired, widened or replaced. The pool simply has one candidate source fewer.
-    if (!searchGateDecision("nara", query, "scenePool:searchNaraCandidates").admitted) continue;
+    // widened, substituted or repaired into a different question. The pool simply has one
+    // candidate source fewer. The gate may NARROW a query to its canonical form, which asks
+    // something smaller rather than something else — see `narrowToCanonicalQuery`.
+    const gate = searchGateDecision("nara", rawQuery, "scenePool:searchNaraCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     if (candidates.length >= max) break;
     const searchUrl = `https://catalog.archives.gov/api/v2/records/search?q=${encodeURIComponent(query)}&limit=${max * 3}`;
     try {
@@ -1265,7 +1313,7 @@ export async function searchLibraryOfCongressCandidates(
   const deadline = Date.now() + budgetMs;
   const outOfTime = (): boolean => Date.now() >= deadline;
 
-  for (const query of queries) {
+  for (const rawQuery of queries) {
     if (candidates.length >= max) break;
     if (outOfTime()) {
       console.warn(
@@ -1285,7 +1333,11 @@ export async function searchLibraryOfCongressCandidates(
      * Placed exactly where its neighbours put it: before the request, after the budget check, and
      * `continue` rather than `return` so one refused query does not abandon the rest.
      */
-    if (!searchGateDecision("loc", query, "scenePool:searchLibraryOfCongressCandidates").admitted) continue;
+    const gate = searchGateDecision("loc", rawQuery, "scenePool:searchLibraryOfCongressCandidates");
+    if (!gate.admitted) continue;
+    /* §3: the CANONICAL text is what this provider is asked. The gate owns the
+       semantics; everything below adds only this provider's own syntax. */
+    const query = gate.text;
     const searchUrl = `https://www.loc.gov/search/?q=${encodeURIComponent(query)}&fo=json&c=${max}`;
     try {
       const searchResp = await withTimeoutFetch(searchUrl, UA, 10_000, `Library of Congress pool search "${query}"`);

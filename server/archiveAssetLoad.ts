@@ -55,6 +55,39 @@ async function downloadToTempFile(url: string, ext: string): Promise<string | nu
   }
 }
 
+/**
+ * THE ONE PLACE THAT TURNS A STORED ARCHIVE URL INTO SOMETHING FETCHABLE.
+ *
+ * ── What `storageUrl` actually holds ────────────────────────────────────────────────────────
+ *
+ * On the S3 backend `storagePut` returns `objectStorageUrl(key)` — `/manus-storage/<key>`, a
+ * RELATIVE path. It is a durable object KEY wearing a URL's clothes, and it cannot be fetched.
+ * Turning it into something that can be is this function's whole job: strip the prefix, ask
+ * `storageGetSignedUrl`, hand back the signed URL.
+ *
+ * ── Why it is exported (render 594) ─────────────────────────────────────────────────────────
+ *
+ * Five modules already carried these lines — this one, `archiveClipIndexBackfill`,
+ * `archiveMediaStream`, `archiveTrimToScene` and `curatedMediaSourcing`. The two that did NOT
+ * were the archive's own read-back and the rehydrator's `readStorage`, and those are the two the
+ * production timeline depends on. Both did this instead:
+ *
+ *     if (storageUrl.startsWith("/")) return download(storageUrl, dest);
+ *
+ * which hands a downloader a path where a URL belongs. Render 594 wrote five archive rows —
+ * 57758 to 57762 — and could read back none of them, so every clip reached the timeline with
+ * `archiveAssetId=null` and the delivery gate blocked the film. The bytes were in storage the
+ * whole time; the question was asked the wrong way.
+ *
+ * NULL IS AN HONEST ANSWER and is not the same as the relative path. "We cannot ask" and "we
+ * asked and it failed" need opposite work, and returning the unfetchable path collapses them.
+ */
+export async function resolveArchiveObjectFetchUrl(
+  asset: Pick<MediaArchiveAsset, "storageUrl" | "storageKey">
+): Promise<string | null> {
+  return resolveRemoteDownloadUrl(asset);
+}
+
 async function resolveRemoteDownloadUrl(
   asset: Pick<MediaArchiveAsset, "storageUrl" | "storageKey">
 ): Promise<string | null> {

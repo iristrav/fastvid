@@ -451,18 +451,40 @@ export function productionArchiveDeps(params: {
       const { updateMediaArchiveAsset } = await import("./db");
       await updateMediaArchiveAsset(assetId, patch);
     },
+    /**
+     * RENDER 594 — THE READ-BACK ASKED FOR THE FILE THE WRONG WAY.
+     *
+     * `storageUrl` on the S3 backend is `/manus-storage/<key>`: an object key, not a URL. This
+     * used to fall through to `download(storageUrl, …)` because the string begins with a slash,
+     * handing the downloader a path it could never fetch. Five archive rows were written and none
+     * could be read back, so the invariant refused every clip and the whole render reached the
+     * timeline with `archiveAssetId=null`.
+     *
+     * `resolveArchiveObjectFetchUrl` is the rule five other modules already applied. The ORDER is
+     * unchanged — our own disk first, then the object store — and so is every refusal: a key that
+     * cannot be resolved is still `false`, and a `false` still refuses the push.
+     */
     readBack: async (assetId, destPath) => {
       const { getMediaArchiveAssetById } = await import("./db");
       const row = await getMediaArchiveAssetById(assetId);
       const storageUrl = row?.storageUrl;
       if (!storageUrl) return false;
       const { resolveLocalStorageFilePath } = await import("./storageLocal");
-      const local = resolveLocalStorageFilePath({ storageUrl });
+      const local = resolveLocalStorageFilePath({ storageUrl, storageKey: row?.storageKey });
       if (local && fs.existsSync(local)) {
         fs.copyFileSync(local, destPath);
         return true;
       }
-      if (/^https?:\/\//i.test(storageUrl) || storageUrl.startsWith("/")) {
+      const { resolveArchiveObjectFetchUrl } = await import("./archiveAssetLoad");
+      const fetchable = await resolveArchiveObjectFetchUrl({
+        storageUrl,
+        storageKey: row?.storageKey ?? null,
+      }).catch(() => null);
+      if (fetchable && /^https?:\/\//i.test(fetchable)) {
+        return params.download(fetchable, destPath).catch(() => false);
+      }
+      /** An absolute http URL stored directly is still fetchable as it always was. */
+      if (/^https?:\/\//i.test(storageUrl)) {
         return params.download(storageUrl, destPath).catch(() => false);
       }
       return false;

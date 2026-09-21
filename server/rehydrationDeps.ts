@@ -70,7 +70,23 @@ function readStorageWith(
       fs.copyFileSync(local, destPath);
       return true;
     }
-    if (/^https?:\/\//i.test(storageUrl) || storageUrl.startsWith("/")) {
+    /**
+     * RENDER 594 — the same five lines, and the same defect, as the archive's own read-back.
+     *
+     * `/manus-storage/<key>` begins with a slash, so this used to hand the downloader a relative
+     * path. That made the archive route unusable on the S3 backend for the ONE reader the
+     * renderer goes through — see `resolveArchiveObjectFetchUrl`, which is the rule the rest of
+     * this codebase already applied. Nothing about what succeeds changes; what changes is that a
+     * stored object can now actually be fetched.
+     */
+    const { resolveArchiveObjectFetchUrl } = await import("./archiveAssetLoad");
+    const fetchable = await resolveArchiveObjectFetchUrl({ storageUrl, storageKey: null }).catch(
+      () => null
+    );
+    if (fetchable && /^https?:\/\//i.test(fetchable)) {
+      return download(fetchable, destPath).catch(() => false);
+    }
+    if (/^https?:\/\//i.test(storageUrl)) {
       return download(storageUrl, destPath).catch(() => false);
     }
     return false;

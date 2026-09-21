@@ -2054,6 +2054,117 @@ export function searchQueryAuditLogEnabled(): boolean {
  * rebuildFromVerifiedTokens builds a NEW query from proven tokens with new provenance, and it is
  * the caller's explicit choice to do so, never something that happens quietly inside the gate.
  */
+/**
+ * Provider syntax, which this boundary must not touch.
+ *
+ * `title:(Kris Jenner) AND mediatype:movies` and `"Kris Jenner" station:CNN` are STRUCTURE, not
+ * semantics: the field names and operators are how a provider is addressed, and narrowing them
+ * would break the query rather than sharpen it. §3's rule is that the policy owns the semantic
+ * content and the provider owns the syntax; this is the line between the two.
+ */
+function isProviderSyntax(text: string): boolean {
+  return /\w+:/.test(text) || /\s(AND|OR|NOT)\s/.test(text);
+}
+
+/**
+ * THE CANONICAL QUERY — ONE POLICY, AT THE ONE PLACE EVERY PROVIDER PASSES.
+ *
+ * ── What render 594 sent, with the policy already written ───────────────────────────────────
+ *
+ *     single documentary footage · kanye documentary footage · tweet documentary footage
+ *     Rumors kardashians Kardashian · kanye other
+ *     Kris Jenner New York City bombard · Kris Jenner Kardashian Rumors about the
+ *
+ * `narrowToSubjectPlusConcept` was applied in `buildVisualSearchPlan`, and the plan is ONE
+ * consumer. Every query above came from a different builder — the wikimedia rescue, the
+ * escalation tiers, the historical cascade — and reached `fetchWikimediaVideos`,
+ * `fetchEuropeanaVideos`, `fetchSepiaSearchVideos`, `fetchInternetArchiveClips`, `fetchPexelsClips`
+ * and the rest without ever meeting it. The previous round's claim that the policy sits "before
+ * every provider adapter" was measured and found false.
+ *
+ * ── Why here ────────────────────────────────────────────────────────────────────────────────
+ *
+ * `searchGateDecision` is the one function every provider route already calls — scenePool's nine
+ * sources and `admitProviderQuery`'s fetchers alike — which is why every one of those routes
+ * appears in the `[SearchQueryAudit]` lines. It has audited without rewriting until now; §3 asks
+ * for exactly one boundary, and a second one placed anywhere else would be a copy that drifts.
+ *
+ * It also already holds everything the policy needs, so nothing new is plumbed through: the
+ * ambient `VerifiedQueryContext` carries the typed persons, objects, events, places and time, and
+ * `evidence` is the beat's own words — the same ground truth `validateSearchQuery` checks against.
+ *
+ * ── What it will not do ─────────────────────────────────────────────────────────────────────
+ *
+ * No anchor, no narrowing — §6's rule, unchanged: a beat with no proven subject is left exactly
+ * as it was. Provider syntax is left alone. And the narrowed text is still put through
+ * `validateSearchQuery` afterwards, so this cannot admit anything the gate would have refused.
+ */
+export function narrowToCanonicalQuery(
+  text: string,
+  ctx: VerifiedQueryContext | undefined
+): { query: string; narrowed: boolean } {
+  const original = (text ?? "").trim();
+  if (!original || !ctx || isProviderSyntax(original)) return { query: original, narrowed: false };
+
+  const verifiedTerms = (tokens: QueryToken[] | undefined): string[] =>
+    (tokens ?? []).filter((t) => t.verified && t.term.trim()).map((t) => t.term.trim());
+
+  /** The subject is the beat's proven person. Without one there is nothing to anchor to. */
+  const anchor = verifiedTerms(ctx.persons)[0] ?? "";
+  if (!anchor) return { query: original, narrowed: false };
+
+  const out = narrowToSubjectPlusConcept(
+    original,
+    anchor,
+    {
+      subject: anchor,
+      event: verifiedTerms(ctx.events),
+      objects: verifiedTerms(ctx.objects),
+      location: [...verifiedTerms(ctx.places), ...verifiedTerms(ctx.countries)],
+      period: [...verifiedTerms(ctx.time), ...verifiedTerms(ctx.years)],
+      action: verifiedTerms(ctx.actions),
+    },
+    ctx.evidence
+  );
+  if (!out.query || out.query === original) return { query: original, narrowed: false };
+
+  /**
+   * NARROWING REMOVES. IT NEVER INTRODUCES.
+   *
+   * `narrowToSubjectPlusConcept` prefers the beat's TYPED concepts, and a typed concept need not
+   * stand in the query it is narrowing — that is deliberate and right where it lives, because the
+   * planner types "The Titanic sank" as `sinking`. At THIS boundary it is wrong: a mutation showed
+   * `Kanye West documentary` coming out as `Kanye West hurricane` on a beat typed `hurricane`
+   * whose words never say it. The caller asked one question and a different one went to the
+   * provider.
+   *
+   * That is the "substituted or repaired" case this gate has refused since RONDE 91, and the fact
+   * that the replacement would pass validation — a verified token is proof, by the gate's own
+   * standard — is exactly why the check has to be about the QUERY rather than about provability.
+   *
+   * So the canonical form must be built from the words that came in, plus the SUBJECT's own — a
+   * half-name legitimately completes (`kanye` → `Kanye West`), because that is the same subject
+   * rather than a different one. Anything else and the query is left exactly as it arrived: made
+   * smaller or left alone, never made into a different question.
+   */
+  const allowed = new Set([...conceptWords(original), ...conceptWords(anchor)]);
+  const introduced = conceptWords(out.query).filter((w) => !allowed.has(w));
+  if (introduced.length > 0) {
+    /**
+     * The chosen concept came from the planner rather than from this query, so it may not be
+     * sent. What is still true is that the query's OWN remaining words were judged padding — the
+     * policy reached past them for a reason — so the honest canonical form is the subject alone.
+     * That is a strict narrowing of what arrived, and it is what `kanye documentary footage`
+     * becomes: `Kanye West`.
+     */
+    const subjectOnly = anchor.trim();
+    if (!subjectOnly || subjectOnly === original) return { query: original, narrowed: false };
+    return { query: subjectOnly, narrowed: true };
+  }
+
+  return { query: out.query, narrowed: true };
+}
+
 export function searchGateDecision(
   provider: string,
   query: string | VerifiedSearchQuery,
@@ -2176,9 +2287,47 @@ export function searchGateDecision(
     return { admitted: false, text };
   }
 
+  /**
+   * §3 — THE CANONICAL QUERY, AND WHY IT IS DECIDED HERE AND NOT SOONER.
+   *
+   * ── The invariant this must not break ───────────────────────────────────────────────────
+   *
+   * RONDE 91 §5: "one unproven term blocks the WHOLE query", and its TEST 16 —
+   * "the proven prefix is NOT quietly sent instead". `Hitler Berlin Germany` on a beat that never
+   * says Germany is REFUSED; sending `Hitler Berlin` in its place would turn a refusal into a
+   * different, quieter search, which is the thing that round exists to prevent.
+   *
+   * Narrowing before validation does exactly that. It was written that way first and the RONDE
+   * 89/90/91 suites caught it: eight tests, all of them saying the same thing. So the order is
+   * the other way round — validate, refuse, and only THEN narrow what was already going to be
+   * sent. A refusal stays a refusal; an admission is made sharper.
+   *
+   * ── What this still fixes ───────────────────────────────────────────────────────────────
+   *
+   * Render 594's polluted queries were ADMITTED ones — `Kris Jenner New York City bombard` and
+   * `Kris Jenner Kardashian Rumors about the` both carry `status=ALLOWED` in the production log.
+   * Those are exactly what this narrows, at the one boundary every provider passes.
+   *
+   * Narrowing only ever REMOVES terms from an admitted query, so the result cannot contain a
+   * word the gate has not already proven — but it is re-validated rather than assumed, because
+   * "cannot" and "checked" are different claims and this is the line where that matters.
+   */
+  const canonical = narrowToCanonicalQuery(text, ambient);
+  let sent = text;
+  if (canonical.narrowed && canonical.query) {
+    const recheck = validateSearchQuery(canonical.query, preVerified ? undefined : ambient);
+    if (recheck.ok) {
+      sent = canonical.query;
+      console.log(
+        `[SearchQueryCanonical] provider=${provider} route=${ticket.route} ` +
+          `was="${text}" now="${sent}"`
+      );
+    }
+  }
+
   searchGateAudit.record("queriesSent", provider, ticket.route);
   if (searchQueryAuditLogEnabled()) console.log(audit("ALLOWED"));
-  return { admitted: true, text };
+  return { admitted: true, text: sent };
 }
 
 /* ═══════════════════════ SUBJECT + CONCEPT — the two-concept query policy ═══════════════════════ */
