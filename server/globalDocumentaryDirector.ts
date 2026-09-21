@@ -25,6 +25,7 @@
 
 import { invokeLLM } from "./_core/llm";
 import path from "path";
+import { MANUFACTURED_BASENAME_RE } from "./placeholderIdentity";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
 
@@ -103,7 +104,8 @@ export type GlobalDirectorReport = {
 // ─── Clip classification helpers ───────────────────────────────────────────────
 
 const ARCHIVAL_PATH_TOKENS = /map|engraving|painting|illustration|newspaper|document|diagram|poster|chart|wikimedia|archive/i;
-const FALLBACK_PATH_TOKENS = /color_fallback|fallback|guaranteed|placeholder|color_clip/i;
+/** One copy, in `placeholderIdentity` — this was byte-identical to `assetDirector`'s FALLBACK_RE. */
+const FALLBACK_PATH_TOKENS = MANUFACTURED_BASENAME_RE;
 const WIDE_TEXT_TOKENS = /wide|aerial|panorama|establishing|cityscape|landscape|overhead|drone|overview/i;
 const CLOSE_TEXT_TOKENS = /close|face|detail|extreme|macro|portrait/i;
 

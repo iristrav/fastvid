@@ -36,6 +36,7 @@ import {
   type BeatVisualContext,
 } from "./beatVisualRelevance";
 import { __resetVerdictStoreForTests } from "./beatRelevanceVerdictStore";
+import { isPlaceholderGuaranteedTier } from "./videoPipeline";
 
 const invoke = vi.hoisted(() => ({ fn: vi.fn() }));
 // RONDE 115: the gate now asks llm.ts whether a throw was a PRE-FLIGHT refusal (no key,
@@ -418,8 +419,21 @@ describe("RONDE 103 phase 18 — no route goes round the decider", () => {
       "const verdictBeatIndex = relevance.beatIndex ?? slotIndex;"
     );
     expect(body).toContain("placeholder: isPlaceholderGuaranteedTier(tier.tier)");
-    // isPlaceholderGuaranteedTier is what draws the line, and it draws it where phase 7 says.
-    expect(SRC).toContain('return tier !== "topical" && tier !== "wikimedia";');
+    /**
+     * isPlaceholderGuaranteedTier is what draws the line, and it draws it where phase 7 says.
+     *
+     * Asserted by CALLING it rather than by grepping for `return tier !== "topical" && …`. The
+     * body moved into `placeholderIdentity` when six disagreeing placeholder predicates were
+     * collapsed into one, and a text anchor would have failed for a refactor while a behavioural
+     * change slipped past. The claim is unchanged and now stronger: the line itself is checked,
+     * on all four rungs and on the unknown one.
+     */
+    expect(isPlaceholderGuaranteedTier("topical"), "a real rung became a card").toBe(false);
+    expect(isPlaceholderGuaranteedTier("wikimedia"), "a real rung became a card").toBe(false);
+    expect(isPlaceholderGuaranteedTier("text_overlay"), "a card became real media").toBe(true);
+    expect(isPlaceholderGuaranteedTier("color_fallback"), "a card became real media").toBe(true);
+    expect(isPlaceholderGuaranteedTier(undefined), "an unproven tier stopped counting as a card")
+      .toBe(true);
   });
 
   it("the barrier is on the widest chokepoint, and the routes hand it the ledger", () => {

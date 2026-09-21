@@ -23,6 +23,7 @@
  */
 
 import path from "path";
+import { clipPathLooksManufactured } from "./placeholderIdentity";
 import { getShotForBeat } from "./editorialSequencePlanner";
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
@@ -127,10 +128,16 @@ export function classifyClipCategory(
 
 // ─── Fallback detection ───────────────────────────────────────────────────────
 
-const FALLBACK_BASENAMES = /^(color_fallback|fallback|guaranteed|placeholder|color_clip)/i;
-
+/**
+ * THIS PREDICATE HAS NEVER RETURNED TRUE IN PRODUCTION.
+ *
+ * It held the same five fallback tokens the other three modules held, but ANCHORED with `^` at the
+ * start of the basename. Every clip this pipeline writes is named `scene_…`, so the anchor made it
+ * unmatchable, and `greedyOptimize` has been reordering shots while believing no scene contained a
+ * manufactured clip. The same tokens, unanchored, live in `placeholderIdentity`.
+ */
 function isFallbackClip(clipPath: string): boolean {
-  return FALLBACK_BASENAMES.test(path.basename(clipPath));
+  return clipPathLooksManufactured(clipPath);
 }
 
 // ─── Target sequence builder ──────────────────────────────────────────────────

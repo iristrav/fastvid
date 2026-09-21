@@ -381,7 +381,7 @@ import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequen
 import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
 import { planSceneAudio } from "./cinematicAudio/planner";
 import { buildRenderFeatureMatrix, formatFeatureMatrix } from "./renderContract";
-import { audioTrackOf, captionTrack, graphicsTrack } from "./projectTimeline";
+import { audioTrackOf, captionTrack, graphicsTrack, videoTrack } from "./projectTimeline";
 import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
@@ -709,6 +709,11 @@ import {
   formatVisualFitAudit,
   isGuaranteedClipName,
 } from "./beatVisualStatus";
+import {
+  beatClipIsPlaceholder,
+  clipPathIsFallbackFile,
+  tierIsPlaceholder,
+} from "./placeholderIdentity";
 import { burnedInTextAllowed, describeOnScreenTextPolicy } from "./onScreenTextPolicy";
 import { nameRunRegex, singleNameTokenRegex, stripToNameSafeText } from "./personNameChars";
 import { isNameParticleToken } from "./searchQueryContract";
@@ -11536,9 +11541,15 @@ export function guaranteedAdoptSource(tier: GuaranteedClipTier | undefined): str
   }
 }
 
-/** True when the guaranteed ladder produced a synthetic card rather than real media. */
+/**
+ * True when the guaranteed ladder produced a synthetic card rather than real media.
+ *
+ * One body, in `placeholderIdentity`. This is the AUTHORITY: it reads the rung that answered,
+ * which is the only thing that can tell `scene_0_slot2_guaranteed.mp4` the curated archive clip
+ * from `scene_0_slot2_guaranteed.mp4` the grey card. Every filename predicate is a guess beside it.
+ */
 export function isPlaceholderGuaranteedTier(tier: GuaranteedClipTier | undefined): boolean {
-  return tier !== "topical" && tier !== "wikimedia";
+  return tierIsPlaceholder(tier);
 }
 
 /**
@@ -22461,9 +22472,17 @@ function isAmbiguousRocketQuery(q: string): boolean {
   return !isMuskApprovedRocketQuery(q);
 }
 
-/** Exported so the export gate's own rule can be asserted rather than restated in a test. */
+/**
+ * Exported so the export gate's own rule can be asserted rather than restated in a test.
+ *
+ * The body now lives in `placeholderIdentity` beside the four predicates it used to disagree with.
+ * It is DELIBERATELY still the narrow one: it does not match `_guaranteed.mp4`, because all four
+ * rungs of the guaranteed ladder write that name and two of them fetch real footage. Widening it
+ * would make the export and delivery gates refuse genuine archive material. The hole it leaves is
+ * closed by the tier, at the planner — see `beatClipIsPlaceholder`.
+ */
 export function isPipelineFallbackClip(filePath: string): boolean {
-  return /_fallback\.mp4$/i.test(path.basename(filePath));
+  return clipPathIsFallbackFile(filePath);
 }
 
 /**
@@ -51147,6 +51166,15 @@ async function _runVideoPipelineInner(
          * that killed render 564. See `localFilesForTimelineClips`.
          */
         const localFileByBeat = new Map<string, string>();
+        /**
+         * §10's counter — how many beats reached the planner holding a card this pipeline drew.
+         *
+         * Counted rather than inferred from the plan's `dropped` total, which mixes this in with
+         * beats that had no clip at all and beats the planner refused for its own reasons. The
+         * three are different failures: no media was found, media was found and was nothing, and
+         * media was found and the plan could not use it.
+         */
+        let placeholdersRefusedFromTimeline = 0;
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           /** The render's own id, so an adapter refusal names the run that produced it. */
@@ -51272,6 +51300,77 @@ async function _runVideoPipelineInner(
                  * decides whether a beat survives into the cinematic plan at all, did not.
                  */
                 const record = lineage.resolve(clipPath, clipContentKey(clipPath));
+                /**
+                 * §10 — A CARD THIS PIPELINE DREW DOES NOT ENTER THE TIMELINE.
+                 *
+                 * ── What it was doing here ──────────────────────────────────────────────────
+                 *
+                 * Nothing filtered placeholders out of the planner's input. A beat that ended on
+                 * the guaranteed ladder's `text_overlay` or `color_fallback` rung arrived here as
+                 * an ordinary clip path, was paired to its beat, and became a TimelineVideoClip
+                 * like any other. `cinematicProduction` and `cinematicPipelineInputs` contain no
+                 * mention of fallback, filler, placeholder or guaranteed — there was no gate to
+                 * pass, because there was no gate.
+                 *
+                 * The two gates further down did not close it either. `renderJobWorker`'s delivery
+                 * gate asks `isPipelineFallbackClip`, which matches `_fallback.mp4` and NOT the
+                 * `_guaranteed.mp4` name this ladder actually writes; the FinalRenderInputs line
+                 * counts fallbackAssets with the same predicate, over a title rather than a path.
+                 * So a drawn card reached the renderer counted as a real asset.
+                 *
+                 * ── What happens instead ────────────────────────────────────────────────────
+                 *
+                 * The beat is handed `null`, which is the planner's existing word for "this beat
+                 * has no clip" — the same value an unfilled beat has always produced, travelling
+                 * the same path, dropped by the same code with `CINEMATIC_DROPPED` on the ledger.
+                 * No new failure mode is introduced; a beat that could not be filled with real
+                 * media is simply no longer filled with a picture of nothing.
+                 *
+                 * ── The consequence, stated rather than discovered ──────────────────────────
+                 *
+                 * A render whose beats are mostly cards now plans a shorter timeline, and if every
+                 * beat is a card it plans none — the route then falls back to the compose montage
+                 * with its reason logged, exactly as it does today for a plan that fails. That is
+                 * the honest outcome of "geen beeld gevonden" and it is visible in the counter
+                 * below rather than hidden inside a film.
+                 *
+                 * The verdict is taken from the ledger route, which is where `rescue_placeholder`
+                 * lands via `adoptRouteForSource`, with the narrow filename as a last resort. The
+                 * TIER is the strongest authority and is deliberately NOT available here — it goes
+                 * out of scope at the ladder — which is why the route is written down at all.
+                 */
+                const placeholderVerdict = beatClipIsPlaceholder({
+                  clipPath,
+                  /**
+                   * Matched on the BASENAME, which is the only path-like field an adopt entry
+                   * carries, and on the beat — `pushClip` appends, so one beat can hold a real
+                   * clip and a card, and the entry that speaks for this clip is the one naming
+                   * this file. A beat with no entry falls through to the ledger route.
+                   */
+                  adoptSource: visualDedup.clipAdoptAudit.find(
+                    (e) =>
+                      e.sceneIndex === scene.index &&
+                      e.basename === path.basename(clipPath)
+                  )?.source,
+                  lineageRoute: record?.route,
+                });
+                if (placeholderVerdict.placeholder) {
+                  placeholdersRefusedFromTimeline += 1;
+                  console.warn(
+                    `[PlaceholderRefused] video=${videoId} scene=${scene.index} beat=${beatIndex} ` +
+                      `authority=${placeholderVerdict.authority} ` +
+                      `evidence=${placeholderVerdict.evidence} ` +
+                      `file=${path.basename(clipPath)} — a card this pipeline drew is not media; ` +
+                      "the beat enters the plan unresolved"
+                  );
+                  visualDedup.sourcingCache?.lineage?.recordEventForPath(
+                    clipPath,
+                    "CINEMATIC_DROPPED",
+                    { status: "REJECTED", reason: "PLACEHOLDER_NOT_IN_TIMELINE" }
+                  );
+                  localFileByBeat.delete(`${scene.index}:${beatIndex}`);
+                  return null;
+                }
                 const meta = memoisedVideoStreamMeta(clipPath);
                 return {
                   facts: {
@@ -51356,6 +51455,54 @@ async function _runVideoPipelineInner(
           storedVersion: (await getStoredTimeline(videoId))?.timelineVersion ?? 0,
         });
         for (const line of outcome.log) console.log(pipelineReport.add("summary", line));
+        /**
+         * §23's two numbers, on every render, including the renders where both are zero.
+         *
+         * Printed unconditionally so "no placeholder reached the timeline" is a stated measurement
+         * rather than the absence of a warning — the same reason `[ProviderSkipped]` names a
+         * provider that was never asked.
+         */
+        {
+          /**
+           * `placeholdersOnTimeline` is COUNTED off the stored document, never asserted to be zero.
+           *
+           * The refusal above runs over the planner's INPUT; this runs over its OUTPUT. If they
+           * ever disagree, a clip reached the timeline by a path this gate does not stand in, and
+           * that is precisely the thing worth knowing — an invariant that reports itself satisfied
+           * without looking is the failure mode this whole programme keeps finding.
+           */
+          const onTimeline = outcome.ok ? videoTrack(outcome.timeline) : [];
+          const stillPlaceholder = onTimeline.filter((c) => {
+            const local =
+              c.sceneIndex != null && c.beatIndex != null
+                ? localFileByBeat.get(`${c.sceneIndex}:${c.beatIndex}`)
+                : undefined;
+            return beatClipIsPlaceholder({
+              clipPath: local ?? c.source.title ?? c.id,
+              lineageRoute: local
+                ? lineage.resolve(local, clipContentKey(local))?.route
+                : undefined,
+            }).placeholder;
+          }).length;
+          console.log(
+            pipelineReport.add(
+              "summary",
+              `[PlaceholderGate] video=${videoId} ` +
+                `refusedFromTimeline=${placeholdersRefusedFromTimeline} ` +
+                `clipsOnTimeline=${onTimeline.length} ` +
+                `placeholdersOnTimeline=${stillPlaceholder}`
+            )
+          );
+          if (stillPlaceholder > 0) {
+            console.error(
+              pipelineReport.add(
+                "summary",
+                `[PlaceholderGate] video=${videoId} INVARIANT_BREACHED — ${stillPlaceholder} ` +
+                  "clip(s) the refusal did not stand in front of reached the timeline"
+              )
+            );
+          }
+        }
         if (!outcome.ok) {
           console.warn(
             pipelineReport.add(

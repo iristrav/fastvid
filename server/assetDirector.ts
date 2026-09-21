@@ -30,6 +30,7 @@
  */
 
 import path from "path";
+import { MANUFACTURED_BASENAME_RE } from "./placeholderIdentity";
 import type {
   VideoBlueprint,
   VisualBudgetTracker,
@@ -447,7 +448,12 @@ export type AssetDirectorResult = {
 // ─── Path-based inference (fallback only) ─────────────────────────────────────
 
 const ARCHIVAL_RE = /map|engraving|painting|illustration|newspaper|document|diagram|poster|chart|wikimedia|archive/i;
-const FALLBACK_RE = /color_fallback|fallback|guaranteed|placeholder|color_clip/i;
+/**
+ * One copy, in `placeholderIdentity`. This module and `globalDocumentaryDirector` held byte-identical
+ * regexes; a shot-type inference is exactly the kind of caller the shared predicate is safe for —
+ * it sorts, it does not refuse.
+ */
+const FALLBACK_RE = MANUFACTURED_BASENAME_RE;
 const WIDE_RE     = /wide|aerial|panorama|establishing|cityscape|landscape|overhead|drone|overview/i;
 const CLOSE_RE    = /close|face|detail|extreme|macro|portrait/i;
 const MEDIUM_RE   = /medium|mid|waist|interview|talking|standing/i;

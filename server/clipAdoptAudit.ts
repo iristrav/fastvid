@@ -3,6 +3,7 @@
  */
 import * as path from "path";
 import { recordGoodClipAdoption } from "./clipGoodCache";
+import { adoptSourceIsPlaceholder } from "./placeholderIdentity";
 import {
   relevanceVerdictForRenderedAsset,
   type BeatRelevanceLedger,
@@ -736,9 +737,15 @@ export function adoptRouteForSource(source: string): "primary" | "fallback" | "r
  *
  * The two labels every per-beat guaranteed-fill site records — see `guaranteedAdoptSource` and the
  * placeholder rung beside it.
+ *
+ * Now read from `placeholderIdentity`, which carries those two plus the legacy pair `guaranteed`
+ * and `color_fallback` that three consumers still list. The widening is inert rather than a
+ * behaviour change: no writer in this pipeline emits either legacy label — the guaranteed ladder
+ * records `rescue_placeholder` for its card rungs and `rescue_archive`/`rescue_wikimedia`/`fallback`
+ * for the rest — so the set this function answers over is unchanged in production.
  */
 export function isFillerAdoptSource(source: string): boolean {
-  return source === "fallback" || source === "rescue_placeholder";
+  return adoptSourceIsPlaceholder(source);
 }
 
 /**

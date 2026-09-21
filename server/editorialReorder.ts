@@ -28,6 +28,7 @@
 
 import { invokeLLM, describeLlmFailure } from "./_core/llm";
 import { getShotForBeat } from "./editorialSequencePlanner";
+import { clipPathLooksManufactured } from "./placeholderIdentity";
 import path from "path";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -70,17 +71,13 @@ export function editorialReorderEnabled(): boolean {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const FALLBACK_PATTERNS = [
-  /guaranteed/i,
-  /placeholder/i,
-  /color_fallback/i,
-  /black_fill/i,
-  /fallback/i,
-];
-
+/**
+ * A fifth copy of the same token list, kept as an array of five regexes rather than one. Its
+ * `black_fill` token is the only one the other copies lacked and is carried into the shared
+ * pattern, so consolidating here narrows nothing.
+ */
 function isFallbackClip(clipPath: string): boolean {
-  const base = path.basename(clipPath);
-  return FALLBACK_PATTERNS.some((re) => re.test(base));
+  return clipPathLooksManufactured(clipPath);
 }
 
 function isCardClip(clipPath: string): boolean {
