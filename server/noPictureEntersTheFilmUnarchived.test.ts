@@ -261,7 +261,65 @@ describe("Tests 10–15 — the routes", () => {
      * route can skip the step. A clip they stored reaches the gate already archived.
      */
     expect((PIPELINE.match(/await storeExternalClipForTimeline\(\{/g) ?? []).length).toBe(5);
-    expect(DECIDER).toContain('if (root.archiveAssetId != null) return { ok: true, reason: "already_archived" };');
+  });
+
+  /**
+   * AN ALREADY-ARCHIVED CLIP IS EXEMPT — AND THE EXEMPTION NOW CARRIES THE HANDLE.
+   *
+   * ── What this assertion used to be ──────────────────────────────────────────────────────
+   *
+   * One exact line:
+   *
+   *     if (root.archiveAssetId != null) return { ok: true, reason: "already_archived" };
+   *
+   * Round 596 deliberately made that branch do more, because the line was the defect. The gate
+   * reads the lineage ROOT and the cinematic planner reads the record AT THE PATH, so a root
+   * archived after its child was created took the exemption while the timeline kept reading
+   * `archiveAssetId=null` — render 595's `vc_999c384232`, never offered to the archive at all.
+   *
+   * ── What is asserted instead ────────────────────────────────────────────────────────────
+   *
+   * The four properties the exemption must have, none of them tied to one line's formatting:
+   * it is decided on the root's handle, it answers `already_archived`, it stores NOTHING, and it
+   * passes the handle on. The `ARCHIVE_HANDLE_INHERITED` semantics are exercised against the real
+   * ledger in `theHandleReachesTheRowTheTimelineReads.test.ts`; `ensureArchiveBackedBeforePush`
+   * is not exported, so its own branching is read here.
+   */
+  describe("the already-archived exemption", () => {
+    /** The branch, by brace matching, so indentation and line breaks are not the contract. */
+    const BRANCH = (() => {
+      const at = DECIDER.indexOf("if (root.archiveAssetId != null)");
+      expect(at, "the already-archived exemption is gone").toBeGreaterThan(-1);
+      const end = DECIDER.indexOf('reason: "already_archived" }', at);
+      expect(end, "the exemption no longer answers already_archived").toBeGreaterThan(at);
+      return DECIDER.slice(at, end);
+    })();
+
+    it("is decided on the ROOT's handle, and answers ok:true / already_archived", () => {
+      expect(DECIDER).toMatch(/if \(root\.archiveAssetId != null\)/);
+      expect(DECIDER).toMatch(/ok:\s*true,\s*reason:\s*"already_archived"/);
+    });
+
+    it("STORES NOTHING — the asset is already held, and §14 keeps one row per file", () => {
+      expect(stripComments(BRANCH)).not.toContain("storeExternalClipForTimeline");
+      expect(stripComments(BRANCH)).not.toContain("storeForProduction");
+      expect(stripComments(BRANCH)).not.toContain("deps.ingest");
+    });
+
+    it("AND PASSES THE HANDLE TO THE ROW THE TIMELINE READS", () => {
+      /**
+       * The RC-1 fix. Without this the exemption is the render-595 defect again: a handle read
+       * from one row and a null delivered from another.
+       */
+      expect(BRANCH).toContain("attachArchiveAsset(record, root.archiveAssetId)");
+      expect(BRANCH).toContain("ARCHIVE_HANDLE_INHERITED");
+      /** Onto the record at the path — attaching to the root would change nothing. */
+      expect(BRANCH).not.toContain("attachArchiveAsset(root,");
+    });
+
+    it("and the gate still reads the record the planner reads", () => {
+      expect(PIPELINE).toContain("const record = lineage.resolve(clipPath, clipContentKey(clipPath));");
+    });
   });
 });
 

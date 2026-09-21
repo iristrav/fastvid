@@ -51,11 +51,28 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { identityFromAdoption, identityIsRehydratable } from "./assetIdentity";
+import {
+  REHYDRATABLE_PROVIDERS,
+  identityFromAdoption,
+  identityIsRehydratable,
+  providerIsRehydratable,
+} from "./assetIdentity";
 import { identityHasRehydrationRoute } from "./assetRehydrator";
 import { identityFrom, localOnlyIdentityFor } from "./cinematicPipelineInputs";
 import { NON_BLOCKING_ISSUES, validateTimeline } from "./timelineValidator";
 import type { AssetSourceIdentity } from "./projectTimeline";
+
+/**
+ * The providers this system has no documented way back to.
+ *
+ * RONDE 145 read every adapter and drew the line here; RONDE 96 established that SerpAPI results
+ * carry no id at all, so a normalised URL is the best handle that exists for one. Held in one
+ * place because two separate tests ask about it — "are they refused" and "are they absent" are
+ * different questions and both are asked below.
+ */
+const NO_ROUTE_PROVIDERS = [
+  "serpapi", "sepiasearch", "flickr", "vimeo", "media_ccc", "gdelt",
+] as const;
 
 /** The adoption record render 585 actually held for the Los Angeles still. */
 const SERPAPI_ADOPTION = {
@@ -101,10 +118,60 @@ function timelineWith(source: AssetSourceIdentity) {
 }
 
 describe("1. the two checks that disagreed about one asset", () => {
-  it("the planner's question says yes and the validator's says no", () => {
+  /**
+   * ROUND 596 ENDED THE DISAGREEMENT. This assertion is what replaced it.
+   *
+   * ── What this test used to say, and why it no longer can ────────────────────────────────
+   *
+   * It asserted the two answers DIFFER for this asset:
+   *
+   *     identityIsRehydratable(serpapi + mediaUrl)      → TRUE   ("a mediaUrl is present")
+   *     identityHasRehydrationRoute(serpapi + mediaUrl) → FALSE  ("serpapi has no route")
+   *
+   * That was a faithful record of render 585: one asset, two answers, and a plan discarded
+   * between them. RONDE 255 made the PLANNER ask the stronger question, which fixed the
+   * consequence — but it left the two predicates saying different things, and render 595 was
+   * billed to the half that was left. `internet_archive` + an id has no route either, and the
+   * weaker predicate called it recoverable right up until the rehydrator reported
+   * `ASSET_NOT_FOUND … has no fetchable URL`.
+   *
+   * So the weaker question was removed rather than routed around: `identityIsRehydratable` now
+   * names the routes that exist and `identityHasRehydrationRoute` is the same function. The
+   * disagreement this test was written to document cannot be expressed any more, and asserting
+   * it would be asserting the defect.
+   *
+   * ── What is asserted instead ────────────────────────────────────────────────────────────
+   *
+   * The same asset, the same verdict, from both names — and the verdict is still FALSE, which is
+   * the half of RONDE 255 that must never move. Nothing here says serpapi became recoverable.
+   */
+  it("the two questions are now one question, and it still answers no", () => {
     const identity = identityFromAdoption(SERPAPI_ADOPTION)!;
-    expect(identityIsRehydratable(identity), "a mediaUrl is present").toBe(true);
+    expect(identityIsRehydratable(identity), "serpapi has no route").toBe(false);
     expect(identityHasRehydrationRoute(identity), "serpapi has no route").toBe(false);
+    expect(
+      identityHasRehydrationRoute(identity),
+      "the two predicates disagree about one asset again"
+    ).toBe(identityIsRehydratable(identity));
+  });
+
+  /**
+   * AND THEY AGREE ABOUT EVERY PROVIDER THIS SYSTEM CANNOT GO BACK TO.
+   *
+   * One asset is an example; the rule is the point. Each of these carries a media URL — the thing
+   * that used to make the weaker predicate say yes — and none of them has a documented re-fetch
+   * route, so both names must answer false for all of them.
+   */
+  it("AND FOR EVERY PROVIDER WITH NO DOCUMENTED ROUTE", () => {
+    for (const provider of NO_ROUTE_PROVIDERS) {
+      const identity = identityFromAdoption({
+        provider,
+        providerAssetId: "an-id-nothing-can-look-up",
+        sourceUrl: `https://cdn.example.invalid/${provider}/still.jpg`,
+      })!;
+      expect(identityIsRehydratable(identity), `${provider} is not rehydratable`).toBe(false);
+      expect(identityHasRehydrationRoute(identity), `${provider} has no route`).toBe(false);
+    }
   });
 
   /**
@@ -207,11 +274,65 @@ describe("4. nothing was promised that is not true", () => {
     ).toBe(false);
   });
 
-  it("the provider list was not widened", () => {
-    const src = fs.readFileSync(path.join(__dirname, "assetRehydrator.ts"), "utf8");
-    const list = /REHYDRATABLE_PROVIDERS: ReadonlyArray<string> = \[([\s\S]*?)\]/.exec(src)![1]!;
-    for (const forbidden of ["serpapi", "sepiasearch", "flickr", "vimeo", "media_ccc", "gdelt"]) {
-      expect(list, `${forbidden} has no documented re-fetch route`).not.toContain(forbidden);
+  /**
+   * THE GUARD THAT WENT BLIND, AND WHY IT IS NOW A RUNTIME QUESTION.
+   *
+   * ── How it stopped guarding ─────────────────────────────────────────────────────────────
+   *
+   * It read `REHYDRATABLE_PROVIDERS` out of `assetRehydrator.ts` with a regex. Round 596 moved
+   * that literal to `assetIdentity.ts`, beside the route rule that needs it, and re-exported it —
+   * a correct move that the regex could not follow. The match returned nothing and the test threw
+   * instead of checking, which is the worst failure mode a safety net has: it looks red for the
+   * wrong reason, and while it is red it is protecting nothing.
+   *
+   * That mattered more here than anywhere else. Round 596's FIRST draft of the route rule dropped
+   * this very allow-list from the `stored_url` branch — which would have readmitted render 585's
+   * SerpAPI still without a word — and this list is the boundary RONDE 145 drew to prevent it.
+   *
+   * ── Why it asks the runtime and not the source ──────────────────────────────────────────
+   *
+   * A source-text assertion only ever proves a string is absent from one file. It cannot see a
+   * provider admitted through a second list, a normalisation that folds a name onto an allowed
+   * one, or a literal that has simply moved house again. The question this test exists to ask is
+   * "can this provider be fetched again", and `providerIsRehydratable` IS that question — so it
+   * is asked directly, of the real exported configuration, in both of the forms callers use.
+   */
+  it("THE PROVIDER LIST WAS NOT WIDENED — asked of the runtime, not of a source file", () => {
+    for (const forbidden of NO_ROUTE_PROVIDERS) {
+      expect(
+        providerIsRehydratable(forbidden),
+        `${forbidden} has no documented re-fetch route and must not be rehydratable`
+      ).toBe(false);
+      expect(
+        REHYDRATABLE_PROVIDERS,
+        `${forbidden} was added to the rehydration provider list`
+      ).not.toContain(forbidden);
+    }
+  });
+
+  it("and the providers that DO have a route are all still on it", () => {
+    /**
+     * The other direction, so the guard cannot be satisfied by emptying the list. These are the
+     * providers RONDE 145 proved reachable by reading each adapter.
+     */
+    for (const allowed of [
+      "curated", "archive", "wikimedia", "loc", "internet_archive",
+      "pexels", "pixabay", "youtube", "youtube_cc",
+      "nasa", "nara", "europeana", "openverse",
+    ]) {
+      expect(providerIsRehydratable(allowed), `${allowed} lost its route`).toBe(true);
+    }
+  });
+
+  it("the list is matched on the whole name, not on a fragment of one", () => {
+    /**
+     * `providerIsRehydratable` trims and lower-cases and then asks for an exact member. A
+     * substring test would let `serpapi_images` or `archive.org_scrape` in through a name that
+     * merely contains an allowed one, which is how allow-lists usually leak.
+     */
+    expect(providerIsRehydratable("  WIKIMEDIA  ")).toBe(true);
+    for (const nearMiss of ["archive.org", "wikimedia_scrape", "youtube_cc_mirror", "pexels_cdn"]) {
+      expect(providerIsRehydratable(nearMiss), `${nearMiss} slipped in on a partial name`).toBe(false);
     }
   });
 
