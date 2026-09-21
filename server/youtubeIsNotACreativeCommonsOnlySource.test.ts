@@ -167,7 +167,7 @@ describe("R268 §4 — what a clip may honestly claim about its own licence", ()
      * has to be eligible, still has to be ranked, and still has to earn a Vision FIT.
      */
     expect(PIPE).toContain("const alreadyRefused = youtubeDownloadRefusal(videoId);");
-    expect(PIPE).toContain("if (Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS) {");
+    expect(PIPE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
   });
 });
 

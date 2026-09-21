@@ -198,7 +198,7 @@ describe("R261 §5 — the rest of the download path is untouched", () => {
   });
 
   it("RONDE 260's door check still stands in front of the search", () => {
-    expect(CODE).toContain("if (Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS) {");
+    expect(CODE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
   });
 
   it("RONDE 68's two floors still stand", () => {

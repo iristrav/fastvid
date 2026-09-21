@@ -224,9 +224,21 @@ describe("§2 — a turn opened three scopes deep still has a window", () => {
      * would read `Math.max(...)` or a smaller literal here; an addition is what keeps the archive
      * whole.
      */
+    /**
+     * RONDE 604 — still an addition, now through `beatWallWithYoutubeTurn` so the beat's fill wall
+     * and its STOCK wall read one helper. The sourcing tiers keep their own numbers inside it.
+     */
     expect(PIPELINE).toContain(
-      "      : (visualSourcingTurbo(dedup) || isPipelineRushMode(dedup) ? 12_000 : 20_000) +\n" +
-        "        youtubeBeatWallSupplementMs();"
+      "      : beatWallWithYoutubeTurn(\n" +
+        "          visualSourcingTurbo(dedup) || isPipelineRushMode(dedup) ? 12_000 : 20_000\n" +
+        "        );"
+    );
+    const helper = PIPELINE.slice(
+      PIPELINE.indexOf("export function beatWallWithYoutubeTurn("),
+      PIPELINE.indexOf("\n}", PIPELINE.indexOf("export function beatWallWithYoutubeTurn("))
+    );
+    expect(helper, "a carve-out would read Math.max or a smaller literal").toContain(
+      "baseMs + youtubeBeatWallSupplementMs()"
     );
   });
 
@@ -368,7 +380,12 @@ describe("§5 — no gate, floor or price moved", () => {
   });
 
   it("the door guard still charges the same price it always did", () => {
-    expect(PIPELINE).toContain("turnMs < YOUTUBE_MIN_TURN_MS");
+    /**
+     * RONDE 604 — the same question, now asked through `canAffordYoutubeTurn` so the door, the
+     * reserve and the two beat walls cannot drift apart again. The PRICE is untouched: still
+     * `YOUTUBE_MIN_TURN_MS`, still one search plus the download floor.
+     */
+    expect(PIPELINE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
   });
 
   it("the download ceiling and the entity ceiling are untouched", () => {

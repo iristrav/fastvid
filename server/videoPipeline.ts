@@ -5977,18 +5977,30 @@ async function runBeatClipFetch(
   personName: string,
   videoTitle: string | undefined
 ): Promise<string | null> {
+  /**
+   * RONDE 604 — this wall can host a YouTube turn, so it is wide enough to hold one.
+   *
+   * Render 597: `TURN_DECLINED … 20s left and a turn costs 24s clock="b3_fastyt-first s1 b3"`.
+   * The central turn opens UNDER this scope, and `beatClipTimeoutMs` (22s on Railway) has never
+   * known RONDE 600's supplement exists — so the turn was clamped to a wall that could not pay and
+   * the door refused it, for a window nobody meant to withhold. `searches=1` over a whole render.
+   *
+   * The profile's own number is unchanged and still governs the stock work; see
+   * `beatWallWithYoutubeTurn` for why one turn's window may be added once and never compounds.
+   */
   const { beatClipTimeoutMs } = dedup.perf;
+  const wallMs = beatWallWithYoutubeTurn(beatClipTimeoutMs);
   try {
     return await withSceneFetchTimeout(
       () => fetchBeatClip(
         beat, scene, workDir, sceneIndex, clipFetchDur, dedup, spaceTopic, personName, videoTitle
       ),
-      beatClipTimeoutMs,
+      wallMs,
       `Scene ${sceneIndex} beat ${beat.index} stock`
     );
   } catch (err) {
     console.warn(
-      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock timed out after ${Math.round(beatClipTimeoutMs / 1000)}s —`,
+      `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: stock timed out after ${Math.round(wallMs / 1000)}s —`,
       (err as Error).message
     );
     // fetchBeatClip's own exec/fetch calls are now hard-killed by withSceneFetchTimeout above,
@@ -7398,8 +7410,66 @@ export function reserveYoutubeTurn(
 ): number {
   const want = Math.max(0, wantMs);
   const window = Math.max(0, scope.deadlineAtMs - Date.now());
-  scope.youtubeReservedMs = !Number.isFinite(window) || window >= want ? want : 0;
+  scope.youtubeReservedMs = affordsYoutubeTurn(window, want) ? want : 0;
   return scope.youtubeReservedMs;
+}
+
+/**
+ * RONDE 604 — CAN THIS CLOCK PAY FOR A YOUTUBE TURN? ONE ANSWER, ONE PLACE.
+ *
+ * ── The five that used to answer it separately ──────────────────────────────────────────────
+ *
+ *   beatBudgetMs                  how wide the beat's fill wall is          videoPipeline
+ *   runBeatClipFetch              how wide the beat's STOCK wall is         videoPipeline
+ *   youtubeBeatFetchTimeoutMs     how wide the turn's own scope asks to be  videoPipeline
+ *   the door guard                is there room, against YOUTUBE_MIN_TURN_MS
+ *   reserveYoutubeTurn            how much to hold back
+ *
+ * RONDE 600 repaired the first, the third and the fifth, and render 597 shows what the second cost:
+ *
+ *     TURN_DECLINED … 20s left and a turn costs 24s   clock="b3_fastyt-first s1 b3" granted=20s
+ *     youtube_cc: searches=1 over the whole render
+ *
+ * `runBeatClipFetch` opens its own scope on `dedup.perf.beatClipTimeoutMs` — 22s on Railway — and
+ * that number has never known the supplement exists. A turn opened underneath it is clamped to a
+ * wall that cannot pay, so the door refuses it, correctly, for a window nobody meant to withhold.
+ *
+ * ── Why a predicate and not another constant ────────────────────────────────────────────────
+ *
+ * Every number here already exists and none of them moves. What was missing is that the five
+ * readers each did their own arithmetic on them, so repairing one left the others intact — which
+ * is precisely how RONDE 600 could be true and render 597 still search once.
+ */
+export function affordsYoutubeTurn(windowMs: number, needMs = YOUTUBE_TURN_WINDOW_MS): boolean {
+  /** No enclosing clock is not a short clock: outside a scope there is nothing to protect. */
+  if (!Number.isFinite(windowMs)) return true;
+  return windowMs >= Math.max(0, needMs);
+}
+
+/**
+ * The same question asked of the scope the caller is standing in.
+ *
+ * `remainingScopeMs` is the WHOLE clock deliberately — the reserve is YouTube's own and the turn
+ * may spend all of what is left. That is `remainingNonYoutubeScopeMs`'s entire reason for existing
+ * separately, and reading the reduced number here would charge the turn for its own reservation.
+ */
+export function canAffordYoutubeTurn(needMs = YOUTUBE_TURN_WINDOW_MS): boolean {
+  return affordsYoutubeTurn(remainingScopeMs(), needMs);
+}
+
+/**
+ * RONDE 604 — a wall that may host a YouTube turn is wide enough to hold one.
+ *
+ * The supplement is `youtubeBeatWallSupplementMs()`, which is zero when there is no YouTube to
+ * budget for — so a build without a key keeps exactly the wall it has today, and every caller
+ * below keeps its own base number.
+ *
+ * ONE turn per beat is enforced by `claimYoutubeTurn`, so this can be added once per wall and
+ * never compounds. That bound is what makes an addition safe here and would not make it safe
+ * anywhere the count is open-ended.
+ */
+export function beatWallWithYoutubeTurn(baseMs: number): number {
+  return baseMs + youtubeBeatWallSupplementMs();
 }
 
 /**
@@ -17494,8 +17564,12 @@ export async function fetchYouTubeCCClips(
    * What it can no longer mean is "an archive search took the time YouTube was going to need",
    * because that time was never available to the archive search. The line says which.
    */
+  /**
+   * RONDE 604 — the same predicate the reserve and the walls use. The PRICE stays what it was:
+   * `YOUTUBE_MIN_TURN_MS`, one search plus the download floor, unchanged since RONDE 260.
+   */
   const turnMs = remainingScopeMs();
-  if (Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS) {
+  if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {
     const scope = sceneFetchScopeStorage.getStore();
     const reserved = scope?.youtubeReservedMs ?? 0;
     const released = scope?.youtubeTurnEndedAtMs != null;
@@ -28404,13 +28478,48 @@ async function tryStockSources(
   adoptOpts: VisualAdoptOptions = {}
 ): Promise<string | null> {
   const maxFetchers = Math.max(2, dedup.perf.maxStockQueriesPerBeat + 1);
+  /**
+   * RONDE 604 — A SOURCE THAT IS NOT ASKED SAYS SO.
+   *
+   * These three refusals were bare `continue`s, and with ONE fetcher in the array — which is what
+   * `tryBeatRealYouTubeFootage` passes — any of them ends the loop and returns null. The caller then
+   * reads `candidates === 0` and reports "the provider had nothing", for a provider that was never
+   * asked. That is the same mislabel RONDE 600 removed one layer up, surviving one layer down.
+   *
+   * `categoryAtLimit` is the one that bites hardest and the hardest to see: `usedCategories` is
+   * RENDER-wide and `STOCK_CATEGORY_LIMITS.generic` is 4, so on a documentary — where practically
+   * every query classifies as `generic` — this source closes after the fourth adopted clip of the
+   * WHOLE video and never says a word. Render 596's later beats ran against a door that had
+   * already shut.
+   *
+   * NOTHING IS RELAXED. Every limit is the number it was; a refusal that happened silently now
+   * happens out loud, which is the difference between a budget and a disappearance.
+   */
+  const declineSource = (reason: string, query: string, detail = ""): void => {
+    console.log(
+      `[SourceSkipped] scene=${sceneIndex} beat=${beatIndex} provider=${logLabel} ` +
+        `reason=${reason} query=${JSON.stringify(query.slice(0, 60))}${detail}`
+    );
+  };
   for (const { query, fetch } of fetchers.slice(0, maxFetchers)) {
-    if (isBlockedStockQuery(query)) continue;
-    const category = stockVisualCategory(query);
-    if (adoptOpts.muskTopic && (category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(query)) {
+    if (isBlockedStockQuery(query)) {
+      declineSource("BLOCKED_QUERY", query);
       continue;
     }
-    if (categoryAtLimit(dedup, category, adoptOpts.muskTopic)) continue;
+    const category = stockVisualCategory(query);
+    if (adoptOpts.muskTopic && (category === "rocket" || category === "space") && !isMuskApprovedRocketQuery(query)) {
+      declineSource("MUSK_CATEGORY_NOT_APPROVED", query, ` category=${category}`);
+      continue;
+    }
+    if (categoryAtLimit(dedup, category, adoptOpts.muskTopic)) {
+      declineSource(
+        "CATEGORY_AT_LIMIT",
+        query,
+        ` category=${category} used=${dedup.usedCategories.get(category) ?? 0}` +
+          `/${categoryLimitFor(dedup, category, adoptOpts.muskTopic)} scope=render`
+      );
+      continue;
+    }
     const fetchMs = dedup.perf.fastStockMode ? 12_000 : 35_000;
     let paths: string[] = [];
     try {
@@ -39134,8 +39243,9 @@ async function refillSceneStrictVoiceMatch(
       ? 5_000
       : isPipelineEmergencyFinish(dedup)
       ? 6_000
-      : (visualSourcingTurbo(dedup) || isPipelineRushMode(dedup) ? 12_000 : 20_000) +
-        youtubeBeatWallSupplementMs();
+      : beatWallWithYoutubeTurn(
+          visualSourcingTurbo(dedup) || isPipelineRushMode(dedup) ? 12_000 : 20_000
+        );
 
     const runFill = async () => {
       if (!(await fillBeatVisual(beat, scene, workDir, videoTitle, dedup, pushClip, profile, beat.holdSec))) {

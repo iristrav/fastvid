@@ -39,7 +39,8 @@ import fs from "fs";
 import path from "path";
 
 import {
-  YOUTUBE_DOWNLOAD_ROUTES,
+  affordsYoutubeTurn,
+YOUTUBE_DOWNLOAD_ROUTES,
   YOUTUBE_MIN_TURN_MS,
   YOUTUBE_SEARCH_TIMEOUT_MS,
   describeEnclosingScope,
@@ -130,7 +131,13 @@ describe("R260 §2 — a turn is declined before it is performed", () => {
       CODE.indexOf("export async function fetchYouTubeCCClips("),
       CODE.indexOf("export async function fetchYouTubeCCClips(") + 20_000
     );
-    const door = fn.indexOf("if (Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS) {");
+    /**
+     * RONDE 604 — the same guard, now inside `canAffordYoutubeTurn` so the door, the reserve and
+     * the two beat walls cannot drift apart again. RONDE 600 repaired three of those five readers
+     * and render 597 still searched once, because the two it missed were enough to keep the source
+     * shut. The PRICE is untouched: `YOUTUBE_MIN_TURN_MS`, one search plus the download floor.
+     */
+    const door = fn.indexOf("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
     expect(door, "no door check").toBeGreaterThan(-1);
     const firstSearch = fn.indexOf("uniqueQueryStrings(");
     expect(firstSearch).toBeGreaterThan(-1);
@@ -145,10 +152,18 @@ describe("R260 §2 — a turn is declined before it is performed", () => {
 
   it("outside a scope nothing is declined — the prefetch case is untouched", () => {
     expect(CODE).toContain("const turnMs = remainingScopeMs();");
+    /**
+     * RONDE 604 — asserted by BEHAVIOUR rather than by text now, which is the stronger claim and
+     * the one this test was always making: a budget of Infinity is no enclosing clock, not a short
+     * one, and reading it as a number would switch YouTube off in exactly the case that has no
+     * deadline to protect.
+     */
     expect(
-      CODE,
+      affordsYoutubeTurn(Number.POSITIVE_INFINITY, YOUTUBE_MIN_TURN_MS),
       "an Infinity budget would fail a numeric comparison and switch YouTube off entirely"
-    ).toContain("Number.isFinite(turnMs) && turnMs < YOUTUBE_MIN_TURN_MS");
+    ).toBe(true);
+    const fn = CODE.slice(CODE.indexOf("export function affordsYoutubeTurn("));
+    expect(fn).toContain("if (!Number.isFinite(windowMs)) return true;");
   });
 
   it("THE TILL IS STILL THERE — the door does not replace the floor, it precedes it", () => {

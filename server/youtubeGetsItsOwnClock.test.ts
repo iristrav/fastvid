@@ -248,7 +248,12 @@ describe("§5 — no budget was raised and no gate moved", () => {
 
   it("the door question RONDE 260 built is still asked", () => {
     expect(PIPELINE).toContain("TURN_DECLINED");
-    expect(PIPELINE).toContain("turnMs < YOUTUBE_MIN_TURN_MS");
+    /**
+     * RONDE 604 — the same question, now asked through `canAffordYoutubeTurn` so the door, the
+     * reserve and the two beat walls cannot drift apart again. The PRICE is untouched: still
+     * `YOUTUBE_MIN_TURN_MS`, still one search plus the download floor.
+     */
+    expect(PIPELINE).toContain("if (!canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS)) {");
   });
 
   it("the transfer reserve RONDE 259 built is untouched", () => {
