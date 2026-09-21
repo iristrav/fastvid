@@ -502,6 +502,54 @@ async function runFfmpeg(args: string[], what: string): Promise<void> {
   }
 }
 
+
+/**
+ * How far the audio mix reaches, which is the span `-shortest` actually compares the picture
+ * against. Arithmetic, not a probe: a probe measures one input file, and the mix is every input
+ * laid out at its own start.
+ */
+export function audioMixExtentSec(inputs: readonly MixInput[]): number {
+  return inputs.reduce((end, i) => Math.max(end, i.startSec + Math.max(0, i.durationSec)), 0);
+}
+
+/**
+ * Does `-shortest` bind on the PICTURE rather than on the audio?
+ *
+ * Its comment at the mux accounts for one direction — a music bed may not make the file longer
+ * than the edit. The flag binds both: a mix that ends before the picture truncates the picture,
+ * `-c:v copy` and all. Half a second of slack, because a mix that ends a frame early is the
+ * ordinary case and not a fault.
+ */
+export function shortestTruncatesPicture(
+  pictureSec: number | null,
+  audioExtentSec: number,
+  muxed: boolean
+): boolean {
+  if (!muxed || pictureSec == null || audioExtentSec <= 0) return false;
+  return audioExtentSec < pictureSec - 0.5;
+}
+
+/** The one line render 597 needed and did not have. */
+export function formatMuxSpan(p: {
+  pictureSec: number | null;
+  audioExtentSec: number;
+  timelineSec: number;
+  tracks: number;
+  muxed: boolean;
+}): string {
+  const binds = shortestTruncatesPicture(p.pictureSec, p.audioExtentSec, p.muxed);
+  return (
+    `[MuxSpan] picture=${p.pictureSec?.toFixed(2) ?? "unknown"}s ` +
+    `audioMix=${p.audioExtentSec.toFixed(2)}s timeline=${p.timelineSec.toFixed(2)}s ` +
+    `tracks=${p.tracks} mux=${p.muxed ? "yes" : "copy"} ` +
+    `shortestWouldTruncatePicture=${binds ? "YES" : "no"}` +
+    (binds
+      ? ` — the mix ends ${((p.pictureSec ?? 0) - p.audioExtentSec).toFixed(2)}s before the ` +
+        `picture does, and -shortest cuts the file at the shorter of the two`
+      : "")
+  );
+}
+
 async function renderSegment(
   clip: TimelineVideoClip,
   localMedia: string,
@@ -1121,6 +1169,49 @@ export async function renderTimeline(params: {
   }
 
   const audioGraph = buildAudioGraph(resolvedAudio.map((a) => a.input));
+
+  /**
+   * RONDE 603 — THE MEASUREMENT `-shortest` HAS NEVER BEEN ASKED FOR.
+   *
+   * ── What render 597 delivered ───────────────────────────────────────────────────────────────
+   *
+   *     [RenderJob] job=16 video=597 status=failed
+   *       duration 47.73s differs from the timeline's 62.01s by 14.27s
+   *
+   * No clip was skipped — that render logged no `could not be recovered`, no `segment was empty`
+   * and no `encode failed`, and it planned a VIDEO clip at [47.093s → 53.933s], well past where
+   * the file stops. So the picture existed and the file does not contain it.
+   *
+   * The mux below runs `-map 0:v -c:v copy … -shortest`, and its own comment accounts for exactly
+   * one direction: a music bed may not make the file longer than the picture. `-shortest` binds
+   * BOTH — an audio mix that ends before the picture truncates the picture, copy codec and all.
+   *
+   * That is the same shape as the two defects before it: a guard written for one direction that
+   * silently acts in two. It is a HYPOTHESIS, and this line is what turns it into an answer.
+   *
+   * ── Why it measures rather than fixes ───────────────────────────────────────────────────────
+   *
+   * Nothing here changes what is rendered. If the mix really is short, the repair is a decision
+   * about what SHOULD happen — pad the audio, drop `-shortest`, or bound the mux explicitly — and
+   * each of those is a different film. Guessing which, before knowing whether the mix is even the
+   * cause, is how a week goes into the wrong half of the pipeline.
+   *
+   * `audioExtentSec` is the mix's own arithmetic, not a probe: every input's start plus its length,
+   * which is precisely the span `buildAudioGraph` lays out. A probe would measure one file; this
+   * measures the thing `-shortest` actually compares against.
+   */
+  const pictureSec = await probeDurationSec(withText);
+  const audioExtentSec = audioMixExtentSec(resolvedAudio.map((a) => a.input));
+  console.log(
+    formatMuxSpan({
+      pictureSec,
+      audioExtentSec,
+      timelineSec: params.timeline.durationSec,
+      tracks: resolvedAudio.length,
+      muxed: audioGraph != null,
+    })
+  );
+
   if (!audioGraph) {
     fs.copyFileSync(withText, outputPath);
   } else {

@@ -50,6 +50,7 @@ import {
   recordShortlistStage,
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
+import type { YoutubePoolSearch, ArchivePoolSearch } from "./scenePool";
 import {
   buildSceneCandidatePool,
   type PoolCandidate,
@@ -812,6 +813,35 @@ export type RetrievalFunnelRequest = BuildPoolRequest & {
    * remembered candidate apart later — specifically, to count the ones a gate then refused.
    */
   memoryRecalledInto?: Set<number>;
+  /**
+   * RONDE 603 — THE TWO PROVIDERS THIS FUNNEL HAS NEVER ASKED.
+   *
+   * ── What render 597 printed, once per scene ─────────────────────────────────────────────────
+   *
+   *     [ProviderSkipped] scene=0 archive=not_wired nara=no_api_key
+   *                       youtube_cc=no_search_function_supplied
+   *
+   * `buildSceneCandidatePool` takes both of these as injected search functions, and refuses to ask
+   * a provider it was not handed one for — deliberately, because "nobody supplied a search" and "a
+   * search found nothing" are different facts. Both of `videoPipeline`'s own pool call sites supply
+   * them. This funnel is the THIRD caller and supplied neither, so on the route production actually
+   * takes — `ENABLE_RETRIEVAL_FUNNEL` defaults on — YouTube and the operator's archive were never
+   * in the pool the ranking runs over.
+   *
+   * That is not a budget problem and no amount of time would have fixed it: a source that is not in
+   * the pool cannot win, cannot lose, and cannot be ranked. RONDE 169 built YouTube as a pool
+   * source, RONDE 175 put it in the task list and RONDE 177 wired the search — and this route went
+   * around all three.
+   *
+   * ── Why they are injected rather than imported ──────────────────────────────────────────────
+   *
+   * Exactly as `buildSceneCandidatePool` already requires: this module holds no key, opens no
+   * client and knows no provider. The caller owns the search; the pool owns the asking. Optional,
+   * so a caller that has no YouTube or no archive behaves precisely as it does today and the pool
+   * keeps reporting which of the two it was.
+   */
+  youtubeSearch?: YoutubePoolSearch;
+  archiveSearch?: ArchivePoolSearch;
 };
 
 /**
@@ -854,6 +884,9 @@ export async function buildRetrievalFunnel(
       skipPexels, skipPixabay, skipInternetArchive, skipEuropeana,
       skipOpenverse, skipNasa, skipNara, skipLoc,
       maxPerSource, maxTotal,
+      /** RONDE 603 — see the two fields on the request: this caller supplied neither. */
+      youtubeSearch: req.youtubeSearch,
+      archiveSearch: req.archiveSearch,
     }).then(r => r.candidates),
   ]);
 

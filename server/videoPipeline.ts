@@ -40239,6 +40239,19 @@ async function fetchSceneVisualsInner(
               sceneText: scene.text,
               primaryQuery: inlineFunnelQueries.primaryQuery,
               extraQueries: inlineFunnelQueries.extraQueries,
+              /**
+               * RONDE 603 — the two providers this funnel never asked. Render 597 logged
+               * `archive=not_wired … youtube_cc=no_search_function_supplied` once per scene,
+               * because this route is `buildSceneCandidatePool`'s third caller and the only one
+               * that supplied neither. The same functions the direct pool call site below uses.
+               */
+              youtubeSearch: scenePoolYoutubeSearch(dedup.sourcingCache),
+              archiveSearch: scenePoolArchiveSearch(
+                scene.text,
+                dedup,
+                inlineFunnelQueries.primaryQuery ? [inlineFunnelQueries.primaryQuery] : [],
+                [dedup.primaryPerson || personName].filter(Boolean)
+              ),
               pexelsApiKey: PEXELS_API_KEY || undefined,
               pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
               europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
@@ -46182,6 +46195,18 @@ async function _runVideoPipelineInner(
             sceneText: scene.text,
             primaryQuery: anchoredQueries.primaryQuery,
             extraQueries: anchoredQueries.extraQueries,
+            /**
+             * RONDE 603 — YouTube, which this funnel has never asked. See the fields on
+             * `RetrievalFunnelRequest`.
+             *
+             * No `archiveSearch` here, and that is not an omission: this prefetch runs BEFORE
+             * `createVisualDedupState` — the comment below says so for the same reason the
+             * deficit and the metrics are absent — and `scenePoolArchiveSearch` needs that state
+             * to read the render's used-asset sets. The sibling pool prefetch supplies exactly
+             * this pair for exactly this reason. The inline funnel, which runs per scene with the
+             * state in hand, supplies both.
+             */
+            youtubeSearch: scenePoolYoutubeSearch(),
             pexelsApiKey: PEXELS_API_KEY || undefined,
             pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
             europeanaApiKey: europeanaSourcingEnabled() ? (EUROPEANA_API_KEY || undefined) : undefined,
