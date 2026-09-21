@@ -38454,7 +38454,43 @@ async function fetchArchiveSentenceMontage(
  * can be absent when `noteSceneClipsResourced` un-stranded this asset after an earlier rebuild
  * dropped it, and that is exactly the case where a duplicate would otherwise appear.
  */
-export function seedExistingProvenSceneClips(params: {
+/**
+ * RENDER 595 §1 — THE ONE DOOR THAT DID NOT ASK THE ARCHIVE QUESTION.
+ *
+ * ── What this function's own comment already said ───────────────────────────────────────────
+ *
+ *     "A writer of `clipBeatIndices` that is not a `pushSceneClip`, so a beat is assigned here
+ *      without passing the push gates."
+ *
+ * That was written about the TRACE — and it was literally true about the gates. This route asked
+ * `composeBarrierAllows`, the editorial question, and nothing else. The archive question was
+ * never put to it.
+ *
+ * ── What that cost, from render 595's own log ───────────────────────────────────────────────
+ *
+ *     11:41:57  [PushTrace] scene=0 beat=0 asset=internet_archive:youtube-r6LB5toWr5I
+ *                 accepted=false reason=archive not ready (ARCHIVE_INGEST_REFUSED:REJECTED)
+ *     12:04:43  [PushTrace] scene=0 beat=0 asset=internet_archive:youtube-r6LB5toWr5I
+ *                 accepted=true  reason=accepted_reseed
+ *
+ * The same clip, the same beat. Refused by the archive-first invariant, and then carried into the
+ * film anyway twenty-three minutes later by a scene rebuild. It reached the timeline with
+ * `archiveAssetId=null`, and delivery ended on
+ * `ASSET_NOT_FOUND — provider=internet_archive providerAssetId=youtube-r6LB5toWr5I has no
+ * fetchable URL`. The invariant did its job at the front door and this door had no lock.
+ *
+ * ── Why the question belongs here and not in the callers ────────────────────────────────────
+ *
+ * RONDE 93's rule, unchanged: the place a picture actually becomes a beat's clip is the narrowest
+ * place that is true, and putting the check in the callers means remembering it in each of them.
+ * `rescueFastShortComposeClips` — the other route with its own editorial gate — already asks the
+ * archive question for exactly this reason. This one now does too, with the same call, the same
+ * refusal and the same log line.
+ *
+ * This makes the function async. Its two production callers already await inside
+ * `refillSceneStrictVoiceMatch`; nothing else about the seeding changes.
+ */
+export async function seedExistingProvenSceneClips(params: {
   scene: Scene;
   workDir: string;
   dedup: VisualDedupState;
@@ -38464,7 +38500,7 @@ export function seedExistingProvenSceneClips(params: {
   holdSecFor: (beatIndex: number) => number;
   /** Which rebuild asked, for the one line this prints. */
   branch: "guaranteed_fill_only" | "full_resource";
-}): number {
+}): Promise<number> {
   const { scene, workDir, dedup, clips, beatDurations, clipBeatIndices } = params;
   const seenPaths = new Set(clips);
   const takenBeats = new Set(clipBeatIndices);
@@ -38483,7 +38519,31 @@ export function seedExistingProvenSceneClips(params: {
     .sort((a, b) => a.beatIndex - b.beatIndex);
 
   for (const entry of adoptedHere) {
-    if (takenBeats.has(entry.beatIndex)) continue;
+    if (takenBeats.has(entry.beatIndex)) {
+      /**
+       * RENDER 595 §2 — A BEAT SOMEBODY ELSE HOLDS IS A REASON, NOT A SILENT `continue`.
+       *
+       * Render 595's scene 0 had two assets adopted for beat 0: the Internet Archive clip that
+       * `accepted_reseed` carried in above, and `youtube_cc:gPOOfUxvc0w` — downloaded, validated,
+       * vision FIT, adopted. Sorted order gave the beat to the first, and the second fell through
+       * this line without a word. What the render then printed was:
+       *
+       *     [SceneResourced] scene_0_resourced:strict_voice_refill dropped a fetched asset
+       *       nothing refused: provider=youtube_cc:gPOOfUxvc0w scene=0 beat=0
+       *
+       * "Nothing refused" was correct and was the problem: the ledger had no ending for the clip,
+       * so the loss could not be explained by anything but this absence. Something DID happen to
+       * it — another candidate won its beat — and `superseded_by_winner` is the name this ledger
+       * already has for that. The outcome does not change; only the silence does.
+       */
+      recordAssetOutcome(
+        dedup.sourcingCache?.lineage,
+        path.join(workDir, entry.basename),
+        "superseded_by_winner",
+        `scene_seed:s${scene.index}b${entry.beatIndex}:beat_already_held`
+      );
+      continue;
+    }
     const candidate = path.join(workDir, entry.basename);
     if (seenPaths.has(candidate)) continue;
     try {
@@ -38514,6 +38574,26 @@ export function seedExistingProvenSceneClips(params: {
         );
         continue;
       }
+    }
+    /**
+     * AND THE ARCHIVE QUESTION, at the same door and on the same terms as every other route.
+     *
+     * Provider-agnostic by construction: `ensureArchiveBackedBeforePush` reads the clip's proven
+     * provider out of the lineage ledger and applies RONDE 9's standing exemptions. A YouTube
+     * clip, a Wikimedia clip and an Internet Archive clip are judged identically — there is no
+     * branch on a provider name anywhere in this decision, and adding one would be the special
+     * case this round forbids.
+     *
+     * A refusal is not a failure of the rebuild. The beat simply stays unfilled and the passes
+     * below source for it, which is what a "top up rather than start over" rebuild is for — so
+     * zero-fail holds: one refused clip costs one beat, never the scene and never the render.
+     */
+    const archived = await ensureArchiveBackedBeforePush(
+      dedup, candidate, contentKey, scene.index, entry.beatIndex
+    );
+    if (!archived.ok) {
+      recordArchivePushRefusal(dedup, candidate, scene.index, entry.beatIndex, archived.reason);
+      continue;
     }
     seenPaths.add(candidate);
     takenBeats.add(entry.beatIndex);
@@ -38575,7 +38655,7 @@ async function refillSceneStrictVoiceMatch(
     const clips: string[] = [];
     const beatDurations: number[] = [];
     const clipBeatIndices: number[] = [];
-    seedExistingProvenSceneClips({
+    await seedExistingProvenSceneClips({
       scene, workDir, dedup, clips, beatDurations, clipBeatIndices,
       holdSecFor: () => seedHoldSec,
       branch: "guaranteed_fill_only",
@@ -38642,7 +38722,7 @@ async function refillSceneStrictVoiceMatch(
    * do the two later passes — so a seeded beat is a filled beat to every reader that already
    * exists, the expensive sourcing for it is skipped, and its slot cannot be taken twice.
    */
-  seedExistingProvenSceneClips({
+  await seedExistingProvenSceneClips({
     scene, workDir, dedup, clips, beatDurations, clipBeatIndices,
     holdSecFor: (beatIndex) => beats.find((b) => b.index === beatIndex)?.holdSec ?? beatSec,
     branch: "full_resource",

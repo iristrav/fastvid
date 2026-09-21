@@ -135,7 +135,28 @@ type World = {
  * registers, with the real stages, in the real order. Nothing here is a stand-in for a lifecycle
  * event: `recordEvent` is the ledger's own writer and these are its own stage names.
  */
-const adoptedWorld = (specs: Array<{ file: string; provider: string; assetId: string; beat: number; verdict?: "fits" | "does_not_fit" }>): World => {
+const adoptedWorld = (
+  specs: Array<{
+    file: string;
+    provider: string;
+    assetId: string;
+    beat: number;
+    verdict?: "fits" | "does_not_fit";
+    /**
+     * ROUND 598 — AN ADOPTED EXTERNAL CLIP IS AN ARCHIVE-BACKED CLIP.
+     *
+     * The world this helper builds is "the moment a clip has been adopted", and adoption happens
+     * at a push gate, which under the archive-first invariant has already stored the clip and
+     * written its handle onto the lineage record. A fixture that reached ADOPTED with
+     * `archiveAssetId` still null was describing a state production does not produce.
+     *
+     * It mattered once the scene-seed route started asking the archive question: every clip in
+     * here looked unarchived, so the seed correctly refused them all. The fixture was wrong, not
+     * the gate. `archiveAssetId: null` is available for the tests that need the other case.
+     */
+    archiveAssetId?: number | null;
+  }>
+): World => {
   const lineage = new VisualSourceLedger({ renderId: "e2e-1" });
   const relevance = createBeatRelevanceLedger();
   const fixtures: Fixture[] = [];
@@ -157,6 +178,9 @@ const adoptedWorld = (specs: Array<{ file: string; provider: string; assetId: st
       "ELIGIBLE", "RANKED", "SELECTED", "DOWNLOAD_STARTED", "DOWNLOAD_SUCCEEDED", "ADOPTED",
     ];
     for (const stage of stages) lineage.recordEvent(record.lineageId, stage, { status: "OK", currentPath: clipPath });
+    /** The handle the push gate wrote when it stored this clip — see the note on `archiveAssetId`. */
+    const handle = spec.archiveAssetId === undefined ? 57000 + fixtures.length : spec.archiveAssetId;
+    if (handle != null) lineage.attachArchiveAsset(record, handle);
     recordExternalRelevanceVerdict(
       relevance, clipPath, contentKey,
       { sceneIndex: 0, beatIndex: spec.beat } as BeatVisualContext,
@@ -207,7 +231,7 @@ const runToRenderInput = async (world: World, opts: { beats?: number } = {}) => 
   const clips: string[] = [];
   const beatDurations: number[] = [];
   const clipBeatIndices: number[] = [];
-  const seeded = seedExistingProvenSceneClips({
+  const seeded = await seedExistingProvenSceneClips({
     scene, workDir: dir, dedup: world.dedup, clips, beatDurations, clipBeatIndices,
     holdSecFor: (beatIndex) => beats.find((b) => b.index === beatIndex)?.holdSec ?? 4,
     branch: "full_resource",
@@ -447,7 +471,7 @@ describe("E2E §D — the quality gate is not bypassed to make this pass", () =>
       { file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0, verdict: "does_not_fit" },
     ]);
     const clips: string[] = [];
-    const seeded = seedExistingProvenSceneClips({
+    const seeded = await seedExistingProvenSceneClips({
       scene, workDir: dir, dedup: world.dedup, clips, beatDurations: [], clipBeatIndices: [],
       holdSecFor: () => 4, branch: "full_resource",
     });
@@ -494,7 +518,7 @@ describe("E2E §E — beat ownership survives the journey", () => {
       const world = adoptedWorld([{ file: YT_FILE, provider: "youtube_cc", assetId: YT_ID, beat: 0 }]);
       const clips: string[] = [];
       const clipBeatIndices: number[] = [];
-      const seeded = seedExistingProvenSceneClips({
+      const seeded = await seedExistingProvenSceneClips({
         scene, workDir: dir, dedup: world.dedup, clips, beatDurations: [], clipBeatIndices,
         holdSecFor: () => 4, branch,
       });

@@ -154,9 +154,32 @@ describe("§18 — THE SWEEP: no push closure exists outside the invariant", () 
     expect(rescue!.body).toContain("recordArchivePushRefusal(dedup, clipPath, scene.index, undefined, archived.reason)");
   });
 
-  it("both gates refuse in ONE spelling", () => {
+  it("EVERY GATE REFUSES IN ONE SPELLING, and the callers are named", () => {
+    /**
+     * ROUND 598 — this used to be a bare count: one definition plus two callers, three in total.
+     * It did its job when a third door appeared: `seedExistingProvenSceneClips`, the scene-rebuild
+     * route that render 595 carried a refused Internet Archive clip through. Bumping the number to
+     * four would have made the test agree with the code and stop saying anything about it.
+     *
+     * So the callers are enumerated instead. A new route that refuses must add itself here, which
+     * is the same demand the sweep above makes of a new push closure — and an ungated route is
+     * still caught by that sweep, not by this count.
+     */
     expect((PIPELINE.match(/function recordArchivePushRefusal\(/g) ?? []).length).toBe(1);
-    expect((PIPELINE.match(/recordArchivePushRefusal\(/g) ?? []).length).toBe(3); // 1 definition + 2 callers
+
+    const EXPECTED_CALLERS = [
+      /** The universal push gate, for every route that has a beat. */
+      "beatClipRefusedByRelevanceGate",
+      /** The fast-short compose rescue, which has its own editorial gate. */
+      "rescueFastShortComposeClips",
+      /** The scene rebuild's seeding route — render 595's unlocked door. */
+      "seedExistingProvenSceneClips",
+    ];
+    /** Every call site, resolved to the function it sits in, through this file's own reader. */
+    const callers = [...PIPELINE.matchAll(/recordArchivePushRefusal\(dedup, /g)].map(
+      (m) => enclosingBody(PIPELINE.slice(0, m.index!).split("\n").length - 1).name
+    );
+    expect([...new Set(callers)].sort()).toEqual([...EXPECTED_CALLERS].sort());
   });
 });
 
