@@ -2264,14 +2264,30 @@ function settleRepetition<T extends { source: PoolCandidateSource; assetId: stri
  *
  * Requires ENABLE_LOCAL_VISION != false (checked by caller).
  */
-export async function rankCandidatesByThumbnailClip(
-  candidates: PoolCandidate[],
+/**
+ * RONDE 602 — what the thumbnail ranker actually reads.
+ *
+ * It was typed `PoolCandidate[]`, and it touches four of that type's twenty-odd fields. The
+ * difference stopped mattering the moment a second caller appeared: the YouTube cascade route has
+ * rows the existing mapper turns into a `YoutubePoolCandidate`, which carries every field this
+ * function reads and four fewer than `PoolCandidate` declares. Widening the parameter to the shape
+ * the body uses lets that caller in without inventing `sourceCreator: null` to satisfy a compiler.
+ *
+ * Generic, so every existing caller still gets its own type back.
+ */
+export type ThumbnailRankable = Pick<
+  PoolCandidate,
+  "id" | "assetId" | "thumbnailUrl" | "clipSimilarity"
+>;
+
+export async function rankCandidatesByThumbnailClip<T extends ThumbnailRankable>(
+  candidates: T[],
   beatText: string,
   visualDescription: string | undefined,
   videoTitle: string | undefined,
   sceneIndex: number,
   beatIndex: number
-): Promise<PoolCandidate[]> {
+): Promise<T[]> {
   if (candidates.length === 0) return candidates;
 
   let embedImageFromPath: (p: string) => Promise<number[] | null>;
@@ -2298,7 +2314,7 @@ export async function rankCandidatesByThumbnailClip(
   const tmpDir = os.tmpdir();
   const MAX_THUMB_CONCURRENT = 5;
 
-  const downloadThumb = async (candidate: PoolCandidate): Promise<void> => {
+  const downloadThumb = async (candidate: T): Promise<void> => {
     if (!candidate.thumbnailUrl) return;
     const ext = candidate.thumbnailUrl.includes(".png") ? ".png" : ".jpg";
     const tmpPath = path.join(

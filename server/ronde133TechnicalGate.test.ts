@@ -419,7 +419,17 @@ describe("checks that only rank never remove a candidate", () => {
      * is written that way: an unscored candidate keeps its place rather than being dropped.
      */
     const src = read("server/scenePool.ts");
-    const fn = src.slice(src.indexOf("export async function rankCandidatesByThumbnailClip("));
+    /**
+     * RONDE 602 widened the parameter to `<T extends ThumbnailRankable>` so the YouTube cascade
+     * route could hand it the candidates its own mapper already produces, without inventing the
+     * four `PoolCandidate` fields this body never reads. The anchor stops at the name for that
+     * reason; every claim below is the claim it always was, and the same rule is now also
+     * asserted at RUNTIME in youtubeLooksBeforeItSpendsADownload — a ranking pass returns as many
+     * candidates as it was given.
+     */
+    const at = src.indexOf("export async function rankCandidatesByThumbnailClip");
+    expect(at, "the ranker was renamed or removed").toBeGreaterThan(-1);
+    const fn = src.slice(at);
     expect(fn).toContain("if (!candidate.thumbnailUrl) return;");
     expect(fn).toContain("then unscored (preserve keyword order)");
     expect(fn, "a ranking pass must not filter the pool").not.toContain("candidates.splice(");

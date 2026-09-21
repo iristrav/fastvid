@@ -781,6 +781,7 @@ import { pickBeatSegmentStartSec, pickLongVideoStartSec, JUDGEMENT_FRAME_FRACTIO
 import { peekYoutubeVideoContext } from "./youtubeVideoContext";
 import { getCandidatePool, putCandidatePool } from "./sceneCandidateCache";
 import { buildSceneCandidatePool, selectCandidatesFromPool, rankCandidatesByThumbnailClip, type PoolCandidate } from "./scenePool";
+import { youtubeRowToPoolCandidate } from "./youtubePoolSource";
 /**
  * RONDE 180 — the duplicate ledger and the intent builder, both already owned elsewhere.
  *
@@ -17022,7 +17023,7 @@ type ScriptGuidedBeatContext = {
   fastMode?: boolean;
 };
 
-type YoutubeSearchRow = {
+export type YoutubeSearchRow = {
   item: {
     id?: { videoId?: string };
     snippet?: {
@@ -17246,6 +17247,141 @@ export async function searchYoutubeVideoCandidates(
     })
     .filter((row) => row.rel >= minRelevanceScore)
     .sort((a, b) => b.rel - a.rel);
+}
+
+
+/**
+ * RONDE 602 — THE LOOK THAT COMES BEFORE THE DOWNLOAD.
+ *
+ * ── What render 597 spent ten seconds on ────────────────────────────────────────────────────
+ *
+ *     18:07:56  DOWNLOAD_STARTED    youtube_cc:najx50IzqnU   query="Adolf Hitler Berlin"
+ *     18:08:06  DOWNLOAD_SUCCEEDED
+ *     18:08:14  BeatRelevance s0b2 does_not_fit
+ *                 depicts="Taxidermied animals in a display setting with text about
+ *                          taxidermied pigeons and a horse."
+ *
+ * Ten seconds of transfer, a vision pass and a beat's download slot, for a video of taxidermied
+ * pigeons — and then the same file again for s0b3. Its TITLE scored well on "Adolf Hitler Berlin";
+ * nobody looked at the PICTURE until the bytes had already arrived.
+ *
+ * ── Why this is not a new capability ────────────────────────────────────────────────────────
+ *
+ * `rankCandidatesByThumbnailClip` has done exactly this since RONDE 103, and `youtube_cc` has been
+ * a pool source with a `thumbnailUrl` since RONDE 169 — the pool route already looks at YouTube
+ * thumbnails before it fetches anything. This cascade route simply never asked. So nothing new is
+ * built here: the rows are mapped with the mapper that already exists and handed to the ranker that
+ * already exists.
+ *
+ * ── It ranks, it does not reject ────────────────────────────────────────────────────────────
+ *
+ * RONDE 103's rule, kept exactly: CLIP decides WHICH candidate is worth the one download slot, not
+ * WHETHER the beat may have one. Every row still reaches the loop, and a row the ranker could not
+ * score keeps its place behind the scored ones rather than being dropped. A refusal gate would need
+ * a threshold nobody has measured yet, and a threshold guessed here would throw away good footage
+ * on the beats where the thumbnail flatters nothing.
+ *
+ * ── And it cannot spend the download's budget ───────────────────────────────────────────────
+ *
+ * The same question `shouldProbeYoutubeDuration` already asks one step further down, in that
+ * function's own words: "the probe does not get to spend the download's budget". No new number is
+ * introduced for it — the look is capped at what one SEARCH may cost, and never touches the
+ * download floor. Out of time, the rows go out in the order the search returned them, and the
+ * skipped step says so rather than being silent.
+ */
+export async function youtubeRowsRankedByThumbnail(
+  rows: YoutubeSearchRow[],
+  mode: YoutubeLicenseMode,
+  scriptGuided: ScriptGuidedBeatContext | undefined,
+  sceneIndex: number
+): Promise<YoutubeSearchRow[]> {
+  const beatText = scriptGuided?.beatText?.trim();
+  /** Nothing to compare a picture against, or nothing to reorder. */
+  if (!beatText || rows.length < 2) return rows;
+
+  const beatIndex = scriptGuided?.beatIndex ?? 0;
+  const remaining = remainingScopeMs();
+  const spare = Number.isFinite(remaining)
+    ? remaining - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS
+    : Number.POSITIVE_INFINITY;
+  if (spare <= 0) {
+    console.log(
+      `[YouTubeThumbRank] scene=${sceneIndex} beat=${beatIndex} SKIPPED ` +
+        `reason=BUDGET_RESERVED_FOR_DOWNLOAD remaining=${Math.round(remaining / 1000)}s ` +
+        `floor=${Math.round(YOUTUBE_MIN_DOWNLOAD_WINDOW_MS / 1000)}s — ` +
+        `the rows go out in the order the search returned them`
+    );
+    return rows;
+  }
+  /** A look may never cost more than the search that produced the rows. */
+  const lookMs = Math.min(YOUTUBE_SEARCH_TIMEOUT_MS, spare);
+
+  const rowById = new Map<string, YoutubeSearchRow>();
+  /** Typed by the mapper, not widened to `PoolCandidate`: see `ThumbnailRankable`. */
+  const candidates: NonNullable<ReturnType<typeof youtubeRowToPoolCandidate>>[] = [];
+  for (const row of rows) {
+    const candidate = youtubeRowToPoolCandidate(row, mode);
+    /** No id, no thumbnail to fetch, nothing the ranker could say — it keeps its place below. */
+    if (!candidate) continue;
+    rowById.set(candidate.id, row);
+    candidates.push(candidate);
+  }
+  if (candidates.length < 2) return rows;
+
+  /**
+   * `null` is the one answer the ranker can never give, so it carries "no order came back" without
+   * a sentinel whose type widens on the way through `.catch`. Which of the two ways it failed is
+   * kept separately, because "it ran out of time" and "it threw" are different operational facts.
+   */
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let why = "";
+  const ranked = await Promise.race([
+    rankCandidatesByThumbnailClip(
+      candidates,
+      beatText,
+      undefined,
+      scriptGuided?.videoTitle,
+      sceneIndex,
+      beatIndex
+    ).catch((err: Error) => {
+      why = `LOOK_FAILED:${(err?.message ?? "").slice(0, 60)}`;
+      return null;
+    }),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => {
+        why = "LOOK_SPENT";
+        resolve(null);
+      }, lookMs);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+
+  if (!ranked) {
+    console.log(
+      `[YouTubeThumbRank] scene=${sceneIndex} beat=${beatIndex} SKIPPED reason=${why} ` +
+        `budget=${Math.round(lookMs / 1000)}s — the rows go out in the order the search returned them`
+    );
+    return rows;
+  }
+
+  /**
+   * The scores, per candidate, so the next render can be read for the SEPARATION between a
+   * thumbnail that went on to fit and one that did not. That measurement is what a refusal
+   * threshold would have to be built on, and it does not exist yet.
+   */
+  console.log(
+    `[YouTubeThumbRank] scene=${sceneIndex} beat=${beatIndex} looked=${candidates.length} ` +
+      ranked
+        .map((c) => `${c.assetId}=${c.clipSimilarity == null ? "none" : c.clipSimilarity.toFixed(4)}`)
+        .join(" ")
+  );
+
+  const reordered = ranked
+    .map((c) => rowById.get(c.id))
+    .filter((r): r is YoutubeSearchRow => r != null);
+  /** Nothing is dropped: a row the mapper could not represent follows the ranked ones. */
+  const seen = new Set(reordered);
+  return [...reordered, ...rows.filter((r) => !seen.has(r))];
 }
 
 export async function fetchYouTubeCCClips(
@@ -17528,7 +17664,14 @@ export async function fetchYouTubeCCClips(
         let guidedAttempts = 0;
         const maxGuidedAttempts = scriptGuided?.fastMode ? 2 : 3;
 
-        for (const row of items.slice(0, 5)) {
+        /**
+         * RONDE 602 — the picture is looked at before the slot is spent. See
+         * `youtubeRowsRankedByThumbnail`: this reorders, it never refuses, and out of budget it
+         * hands back exactly the order the search produced.
+         */
+        const ordered = await youtubeRowsRankedByThumbnail(items, pass.license, scriptGuided, sceneIndex);
+
+        for (const row of ordered.slice(0, 5)) {
           if (fetched >= count) break;
           if (Date.now() > ytDeadline) break;
           if (downloadsSoFar() >= maxDownloadAttempts) {
