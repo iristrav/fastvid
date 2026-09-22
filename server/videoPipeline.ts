@@ -1852,6 +1852,49 @@ export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNL
 export const YOUTUBE_TURN_WINDOW_MS = YOUTUBE_SEARCH_TIMEOUT_MS + TRANSFER_RESERVE_MS;
 
 /**
+ * RONDE 618 — HOW MANY CANDIDATES ONE TURN BRINGS BACK, AND WHY IT WAS NEVER MORE THAN ONE.
+ *
+ * ── The two halves of this design disagreed ─────────────────────────────────────────────────
+ *
+ * `youtubeMaxDownloadsPerRender()` is 60, and its own note says that at the measured rates it
+ * "yields roughly 10-27 — enough for YouTube to be a real supplier rather than a garnish".
+ *
+ * It cannot. `runCentralYoutubeTurn` passes `req.maxPerQuery ?? 1` to the one production call to
+ * the provider, and `maxPerQuery` is a declared field that NO route sets — it is 1 everywhere,
+ * always. `claimYoutubeTurn` grants one turn per beat for the whole render. So a fourteen-beat
+ * film can never exceed FOURTEEN downloads, the ceiling of 60 is unreachable by construction, and
+ * reaching even the bottom of "10-27" would need ten of those fourteen to survive REAL_FUNNEL —
+ * the strictest adoption route there is, where only an explicit APPROVED counts.
+ *
+ * Render 597 is the same arithmetic at its floor: one search, one download, nothing adopted.
+ *
+ * ── Why two, and why this is not a budget increase ──────────────────────────────────────────
+ *
+ * The room is already granted. 60 downloads per render is the authorisation that exists today and
+ * does not move here; two per beat over fourteen beats is 28, still well under it. What changes is
+ * that the authorisation is used.
+ *
+ * The time is already there too, which is the part that had to be checked rather than assumed:
+ * the turn's scope was MEASURED at 55s against a price of 24s, and a second transfer costs one
+ * more download floor — 12s search + 12s + 12s = 36s. No wall moves, and none needed to.
+ *
+ * ── What makes a second candidate safe here and not elsewhere ───────────────────────────────
+ *
+ * The download loop already guards every iteration with the turn deadline and the render-wide
+ * ceiling, so a second transfer that does not fit simply does not happen — the turn returns what
+ * it has instead of overrunning. And RONDE 602 ranks the rows by thumbnail before any slot is
+ * spent, so candidate two is the second-BEST row, not the next one the API happened to return.
+ *
+ * The door's price is deliberately left at `YOUTUBE_MIN_TURN_MS`. Charging for two transfers would
+ * decline turns that can comfortably afford one, which is the render-586 failure inverted: a
+ * requirement that cannot be met does not raise the standard, it empties the film.
+ *
+ * NOTHING HERE ADOPTS ANYTHING. A second candidate is a second thing for the editor to look at,
+ * judged by the same gates at the same thresholds; if both are refused, both stay out.
+ */
+export const YOUTUBE_CANDIDATES_PER_TURN = 2;
+
+/**
  * When silent picture after the narration is long enough to be a fault rather than a breath.
  *
  * Matches `avSyncCheck`'s own EDGE_SILENCE_SEC so the trim fires on exactly what the detector
@@ -5366,7 +5409,7 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
       clipFetchDur,
       workDir,
       sceneIndex,
-      req.maxPerQuery ?? 1,
+      req.maxPerQuery ?? YOUTUBE_CANDIDATES_PER_TURN,
       ytKeywords,
       req.minRelevanceScore ?? 1,
       adoptOpts.personTopic ? adoptOpts.primaryPerson ?? "" : "",
