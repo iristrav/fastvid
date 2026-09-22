@@ -491,6 +491,69 @@ export function isAbstractionWord(token: string): boolean {
  * `führerbunker`, `Fuhrerbunker` and `fuhrerbunker` are one word, and every one of them still has
  * to be IN the evidence to be proven. Nothing becomes allowed that the script does not say.
  */
+/**
+ * THE SHORTEST PART OF A COMPOUND THAT STILL MEANS SOMETHING.
+ *
+ * Five, so `bunker` (6) and `fuhrer` (6) qualify and `ear`, `art`, `war` do not. Both halves must
+ * clear it, which is what makes this a compound rule rather than a substring rule.
+ */
+const COMPOUND_MIN_PART = 5;
+
+/**
+ * DOES A WORD THE SCRIPT ACTUALLY SAYS PROVE THIS QUERY TERM AS ONE OF ITS PARTS?
+ *
+ * ── The refusal this answers ────────────────────────────────────────────────────────────────
+ *
+ * Render 597, twice:
+ *
+ *     [SearchQueryRejected] query="hitler bunker"                term="bunker" UNVERIFIED_TERM
+ *     [SearchQueryRejected] query="fuhrer historical photograph" term="fuhrer" UNVERIFIED_TERM
+ *
+ * The narration says "Führerbunker". Folded, the evidence holds `fuhrerbunker`; the query holds
+ * `bunker` and `fuhrer`. `evidenceStems` compares WHOLE WORDS and strips suffixes, so a German
+ * compound proves neither of the two words it is made of — and the contextual query collapses to
+ * `Adolf`, which is what put a baby on a chair in front of the picture editor.
+ *
+ * This is RONDE 568's failure from one level down. That round made `führerbunker` and
+ * `fuhrerbunker` one word; this makes `Führerbunker` prove the words it contains.
+ *
+ * ── Why this cannot become a sieve ──────────────────────────────────────────────────────────
+ *
+ * ONE DIRECTION ONLY. The evidence word must be LONGER than the term, so `Führerbunker` in the
+ * script proves `bunker` in a query and `bunker` in the script proves nothing about
+ * `Führerbunker`. That asymmetry is the whole safety property: a query may never be broader than
+ * the script.
+ *
+ * ON COMPOUND BOUNDARIES, not anywhere. The term must sit at the START or the END of the evidence
+ * word, and the REMAINDER must itself be a meaningful length. `research` therefore proves nothing:
+ * the leftover after `research` is `er`, two letters. An arbitrary-substring rule would have let
+ * `research` prove `ear` and this module would stop being a gate.
+ *
+ * FROM THE SAME EVIDENCE AS BEFORE. The caller passes the words it already proved — narration,
+ * scene, verified entities, the user's own prompt. No new source is admitted. Nothing becomes
+ * allowed that the script does not say; what changes is that the script saying it as part of a
+ * compound now counts as saying it.
+ *
+ * Returns the evidence word that did the proving, so the decision can be logged rather than felt.
+ */
+export function compoundEvidenceFor(
+  term: string,
+  evidenceWords: Iterable<string>
+): string | null {
+  const t = foldSearchText(term.trim()).replace(/[^\p{L}\p{N}'-]/gu, "");
+  if (t.length < COMPOUND_MIN_PART) return null;
+  for (const word of evidenceWords) {
+    if (word.length <= t.length) continue;
+    const rest = word.startsWith(t)
+      ? word.slice(t.length)
+      : word.endsWith(t)
+        ? word.slice(0, word.length - t.length)
+        : null;
+    if (rest != null && rest.length >= COMPOUND_MIN_PART) return word;
+  }
+  return null;
+}
+
 export function evidenceStems(word: string): string[] {
   const w = foldSearchText(word.trim()).replace(/[^\p{L}\p{N}'-]/gu, "");
   if (!w) return [];
@@ -1422,11 +1485,22 @@ export function validateSearchQuery(
 
   // Everything the context proves, by stem, so "canals" in the query is proven by "canal".
   const proven = new Set<string>();
+  /**
+   * The same evidence, kept as WHOLE FOLDED WORDS rather than stems.
+   *
+   * `proven` holds stems, and a stem cannot answer "is this term one of my parts" — `fuhrerbunker`
+   * and `bunker` are two different stems. `compoundEvidenceFor` needs the intact word. Same
+   * source, same moment, no second registry: every word written here was written to `proven` on
+   * the line above it.
+   */
+  const provenWords = new Set<string>();
   const addProven = (term: string) => {
     for (const w of term.toLowerCase().split(/\s+/)) {
       const clean = w.replace(/[^\p{L}\p{N}'’-]/gu, "");
       if (!clean) continue;
       for (const form of evidenceStems(clean)) proven.add(form);
+      const folded = foldSearchText(clean).replace(/[^\p{L}\p{N}'-]/gu, "");
+      if (folded) provenWords.add(folded);
     }
   };
   for (const list of allTokenLists(ctx)) {
@@ -1465,10 +1539,35 @@ export function validateSearchQuery(
   const blocked: string[] = [];
   let firstReason: QueryRejectReason | undefined;
   let firstTerm: string | undefined;
+  /**
+   * Terms admitted only because a compound in the script contains them, and the word that did it.
+   *
+   * Collected rather than waved through, because two rules below need to see the whole query
+   * before any of them may be trusted — see `compoundAdmissionRefusal`.
+   */
+  const compoundAdmitted = new Map<string, { raw: string; evidence: string }>();
+  /** Content words the evidence proved OUTRIGHT. A compound part may add to these, never replace them. */
+  let wholeProvenCount = 0;
   for (const raw of words) {
     const w = foldSearchText(raw);
     if (isProductionWord(w) || isFunctionWord(w)) continue;
-    if (evidenceStems(w).some((form) => proven.has(form))) continue;
+    if (evidenceStems(w).some((form) => proven.has(form))) {
+      wholeProvenCount += 1;
+      continue;
+    }
+    /**
+     * AND THE SCRIPT'S OWN COMPOUNDS PROVE THE WORDS THEY ARE MADE OF — see `compoundEvidenceFor`.
+     *
+     * Tried only AFTER the whole-word test, so it changes nothing for a term the evidence already
+     * proved outright. Admission is PROVISIONAL: the two rules after the loop can still refuse it,
+     * because whether a compound part is a legitimate refinement depends on what else is in the
+     * query, and that is not knowable one word at a time.
+     */
+    const compound = compoundEvidenceFor(w, provenWords);
+    if (compound) {
+      compoundAdmitted.set(w, { raw, evidence: compound });
+      continue;
+    }
     const source = rejected.get(w);
     const reason: QueryRejectReason =
       source === "title_inference" ? "TITLE_INFERENCE_NOT_ALLOWED"
@@ -1481,6 +1580,66 @@ export function validateSearchQuery(
     }
   }
   if (firstReason) return { ok: false, reason: firstReason, offendingTerm: firstTerm, blockedTerms: blocked };
+
+  /**
+   * ── E2. THE TWO WAYS A COMPOUND PART IS NOT A REFINEMENT.
+   *
+   * `compoundEvidenceFor` answers "does the script contain this word inside another one". That is
+   * necessary and not sufficient, and two existing tests said so before this rule existed:
+   *
+   *     searchTextIsFolded            "still refuses a fragment of a compound the script does say"
+   *     historicalEntityAndPreflight  refuses the fragment "fuhrer bunker Berlin"
+   *
+   * Both were RIGHT, and a first version of this rule broke them. They are kept, and what they
+   * protect is now stated rather than implied:
+   *
+   * 1. A COMPOUND PART MAY NOT STAND ALONE. `bunker` as the whole query fetches golf bunkers and
+   *    Cold War bunkers; the script said `Führerbunker`, which is a place. A part narrows a query
+   *    that some outright-proven word already anchors — it may never BE the anchor.
+   *
+   * 2. TWO PARTS OF ONE COMPOUND IS A SPLIT, NOT A QUERY. `fuhrer bunker` is `Führerbunker` cut in
+   *    half with a space, which is the same family as the ASCII-truncation artefact `hrebunker`
+   *    that RONDE 568 caught. A query that takes both halves has not added context; it has
+   *    damaged a word.
+   *
+   * What survives is the case render 597 actually lost: `hitler bunker`, where `hitler` is proven
+   * outright and `bunker` narrows it. That query was refused, the beat fell back to `Adolf`, and a
+   * baby on an upholstered chair was offered to the picture editor.
+   */
+  const compoundRefusal = ((): { term: string; why: string } | null => {
+    if (compoundAdmitted.size === 0) return null;
+    const first = [...compoundAdmitted.values()][0]!;
+    if (wholeProvenCount === 0) {
+      return { term: first.raw, why: "a compound part cannot be the query's only content word" };
+    }
+    const byEvidence = new Map<string, string[]>();
+    for (const { raw, evidence } of compoundAdmitted.values()) {
+      byEvidence.set(evidence, [...(byEvidence.get(evidence) ?? []), raw]);
+    }
+    for (const [evidence, terms] of byEvidence) {
+      if (terms.length > 1) {
+        return {
+          term: terms[0]!,
+          why: `"${terms.join('" and "')}" are both parts of "${evidence}" — that is the word split, not a query`,
+        };
+      }
+    }
+    return null;
+  })();
+  if (compoundRefusal) {
+    return {
+      ok: false,
+      reason: "UNVERIFIED_TERM",
+      offendingTerm: compoundRefusal.term,
+      blockedTerms: [compoundRefusal.term],
+    };
+  }
+  for (const { raw, evidence } of compoundAdmitted.values()) {
+    console.log(
+      `[QueryTermProvenByCompound] term="${raw}" provenBy="${evidence}" — the script says the ` +
+        "compound, so the part it is built from is not a guess"
+    );
+  }
 
   // ── F. Ordering: a proven person must not appear after a proven place.
   const firstIndexOf = (list: QueryToken[]): number => {
