@@ -43,6 +43,8 @@ import {
   remainingNonYoutubeScopeMs,
   YOUTUBE_MIN_TURN_MS,
   YOUTUBE_TURN_WINDOW_MS,
+  youtubeBeatFetchTimeoutMs,
+  historicalRescueBudgetMs,
 } from "./videoPipeline";
 
 const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
@@ -330,5 +332,127 @@ describe("§5 — every wall a YouTube turn can open under", () => {
     } finally {
       process.env = saved;
     }
+  });
+});
+
+/* ═══════════ §6 — ASK THE REAL DOOR, STANDING IN THE REAL NEST ═══════════ */
+
+describe("§6 — the nest render 597 declined in, opened for real", () => {
+  /**
+   * RONDE 615 — WHY §5 WAS NOT YET PROOF.
+   *
+   * §5 compares numbers: each wall is wider than the price, and the outer contains the inner. That
+   * is true and it is not the same claim. `withSceneFetchTimeout` clamps every child to
+   * `min(now + ms, parentDeadline)`, so what the door actually reads is the remainder of the
+   * INNERMOST scope after its ancestors have clamped it — a quantity no comparison of the inputs
+   * produces. Render 597's whole defect was exactly that gap: every number looked adequate and the
+   * clock the door read was 20s.
+   *
+   * So this section stops describing the nest and builds it — the real `withSceneFetchTimeout`,
+   * the real wall functions, the real `canAffordYoutubeTurn` — then asks the real door.
+   *
+   * ── What it measured ────────────────────────────────────────────────────────────────────────
+   *
+   *     price (YOUTUBE_MIN_TURN_MS)                24000ms
+   *     scene   beatVisualWallMs                   59000ms   granted 58999ms
+   *     beat    beatWallWithYoutubeTurn(22s)       58000ms   granted 58000ms
+   *     slice   youtubeBeatFetchTimeoutMs(fast)    55000ms   granted 55000ms   DOOR=OPEN
+   *
+   * Render 597 was granted 20s at that same innermost point. The wall it named is closed; the
+   * render that named it ran on a build older than RONDE 604 and 605. That is a CODE-PROVEN
+   * result and nothing more — only a render makes it RENDER-PROVEN.
+   */
+  const withYoutubeEnv = async (fn: () => Promise<void>) => {
+    const saved = { ...process.env };
+    try {
+      process.env.ENABLE_YOUTUBE_SOURCING = "true";
+      process.env.YOUTUBE_API_KEY = "test-key-present";
+      process.env.YOUTUBE_CC_DL_SERVICE = "https://example.invalid/dl";
+      delete process.env.YOUTUBE_ONLY_SOURCING;
+      await fn();
+    } finally {
+      process.env = saved;
+    }
+  };
+
+  const PERF = { fastStockMode: true, beatClipTimeoutMs: 22_000, transformTimeoutMs: 25_000 };
+
+  it("THE DOOR OPENS at the innermost point of scene -> beat -> youtube-first", async () => {
+    await withYoutubeEnv(async () => {
+      let verdict: { left: number; ok: boolean } | null = null;
+      await withSceneFetchTimeout(
+        () =>
+          withSceneFetchTimeout(
+            () =>
+              withSceneFetchTimeout(
+                async () => {
+                  verdict = { left: remainingScopeMs(), ok: canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS) };
+                  return null;
+                },
+                youtubeBeatFetchTimeoutMs(true),
+                "b3_fastyt-first s1 b3"
+              ),
+            beatWallWithYoutubeTurn(PERF.beatClipTimeoutMs),
+            "Scene 1 beat 3 stock"
+          ),
+        beatVisualWallMs(PERF as never),
+        "scene 1 visuals"
+      );
+      expect(verdict, "the innermost scope never ran").not.toBeNull();
+      expect(verdict!.ok, `the door declined with ${verdict!.left}ms left`).toBe(true);
+      expect(verdict!.left, "render 597 stood here with 20000ms").toBeGreaterThanOrEqual(
+        YOUTUBE_MIN_TURN_MS
+      );
+    });
+  });
+
+  it("THE HARNESS CAN FAIL — one narrow wall anywhere in the nest and the door shuts", async () => {
+    /**
+     * Without this, the test above proves nothing: a door that never shuts is not a door. The
+     * narrow wall is put in the MIDDLE, because a parent clamping a wide child is the exact shape
+     * of render 597's defect and the shape a numbers-only comparison cannot see.
+     */
+    await withYoutubeEnv(async () => {
+      let ok: boolean | null = null;
+      await withSceneFetchTimeout(
+        () =>
+          withSceneFetchTimeout(
+            () =>
+              withSceneFetchTimeout(
+                async () => {
+                  ok = canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS);
+                  return null;
+                },
+                youtubeBeatFetchTimeoutMs(true),
+                "b3_fastyt-first s1 b3"
+              ),
+            20_000,
+            "a wall that has not been widened"
+          ),
+        beatVisualWallMs(PERF as never),
+        "scene 1 visuals"
+      );
+      expect(ok, "a 20s wall in the middle should have shut the door").toBe(false);
+    });
+  });
+
+  it("and the historical cascade nest opens too — the other family render 597 declined in", async () => {
+    await withYoutubeEnv(async () => {
+      let ok: boolean | null = null;
+      await withSceneFetchTimeout(
+        () =>
+          withSceneFetchTimeout(
+            async () => {
+              ok = canAffordYoutubeTurn(YOUTUBE_MIN_TURN_MS);
+              return null;
+            },
+            historicalRescueBudgetMs({ perf: PERF }),
+            "historical cascade s2b2_research s2 b2"
+          ),
+        beatVisualWallMs(PERF as never),
+        "scene 2 visuals"
+      );
+      expect(ok, "the historical cascade was granted 8s in render 597").toBe(true);
+    });
   });
 });
