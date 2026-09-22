@@ -241,7 +241,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, blockExportOnVisualMismatch, allowDegradedVisualExport, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -49127,10 +49127,40 @@ async function _runVideoPipelineInner(
       if (!critical.ok) {
         sceneCriticalFailed.push(scenes[i]!.index);
         const msg = `Scene ${scenes[i]!.index} critical review: ${critical.summary}`;
-        if (strictVoiceVisualMatchEnabled()) {
+        /**
+         * RONDE 620 — THIS LINE READ THE FLAG THAT DOES NOT DECIDE.
+         *
+         * Render 597 printed, and then delivered the film:
+         *
+         *     [Pipeline] Scene 0 critical review: 1/4 clip(s) failed critical review
+         *                — blocks export (strict voice↔visual)
+         *
+         * It did not block. Two different flags, and the message asked the wrong one:
+         *
+         *     strictVoiceVisualMatchEnabled()   default ON     ← what this line read
+         *     blockExportOnVisualMismatch()     default FALSE  ← what actually decides
+         *
+         * The second returns the first, but only after `allowDegradedVisualExport()`, which is
+         * `beatVisualRescueEnabled()`, which defaults ON. So in the shipped configuration the
+         * export gate treats a failed critical review as non-blocking while this line called it
+         * fatal — and a reader watching the log had no way to know the film was about to ship.
+         *
+         * A log that claims an effect the configuration prevents is the same fault as a counter
+         * that reports a refusal it never made. NOTHING about the gate changes here: the flags,
+         * the thresholds and the export decision are exactly what they were. The line now asks the
+         * flag that owns the answer, and when it is not blocking it says WHY, so the remedy is
+         * visible instead of having to be traced through three functions.
+         */
+        const blocks = blockExportOnVisualMismatch();
+        if (blocks) {
           console.error(`[Pipeline] ${msg} — blocks export (strict voice↔visual)`);
         } else {
-          console.warn(`[Pipeline] ${msg} — continuing export (CLIP QA warning, not blocking)`);
+          console.warn(
+            `[Pipeline] ${msg} — NOT blocking export in this configuration ` +
+              `(strictVoiceVisual=${strictVoiceVisualMatchEnabled()} ` +
+              `degradedVisualExportAllowed=${allowDegradedVisualExport()}) — ` +
+              `the film ships with this scene as it is`
+          );
         }
       }
     }
