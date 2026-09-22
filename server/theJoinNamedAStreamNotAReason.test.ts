@@ -145,7 +145,7 @@ describe("§3 — the probe is wired to the failure, and repairs nothing", () =>
     expect(at).toBeGreaterThan(-1);
     const body = SRC.slice(at, at + 1400);
     expect(body).toContain("catch (graphErr)");
-    expect(body).toContain("await diagnoseSegmentShapes();");
+    expect(body).toContain("await diagnoseSegmentShapes(graphErr);");
     expect(body, "a diagnosed failure must still fail").toContain("throw firstFailure;");
   });
 

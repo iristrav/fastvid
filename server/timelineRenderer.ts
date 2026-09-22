@@ -50,6 +50,11 @@ import { docGradeSourceKindForProvider } from "./documentaryStyle";
 import { SAFE_MARGIN, anchorGeometry } from "./captionLayout";
 import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import {
+  classifyFfmpegFailure,
+  formatFfmpegFailure,
+  geometryEvidenceFromShapes,
+} from "./ffmpegFailureClass";
+import {
   buildAudioGraph,
   buildTransitionGraph,
   TRANSITION_LADDER,
@@ -1097,11 +1102,27 @@ export async function renderTimeline(params: {
      * `renderSegment`, and guessing at a normalisation here would hide the cause the next render
      * needs to show.
      */
-    const diagnoseSegmentShapes = async (): Promise<void> => {
+    const diagnoseSegmentShapes = async (graphErr: unknown): Promise<void> => {
       const shapes = await Promise.all(
         segments.map(async (seg) => ({ name: path.basename(seg), shape: await probeSegmentShape(seg) }))
       );
       const { reference, odd } = oddSegmentsOut(shapes);
+      /**
+       * RONDE 629 — the class, decided from ffmpeg's own words and checked against the measurement.
+       *
+       * The classification and the probe are printed together on purpose. A GEOMETRY verdict where
+       * every segment measured identical is the classifier reading a symptom, and saying so is more
+       * use to the next reader than a confident label. `geometryEvidenceFromShapes` is what writes
+       * that sentence.
+       */
+      const diagnosis = classifyFfmpegFailure(graphErr);
+      console.error(
+        formatFfmpegFailure(
+          "transition graph",
+          diagnosis,
+          geometryEvidenceFromShapes({ cls: diagnosis.cls, reference, odd })
+        )
+      );
       console.error(
         `[SegmentShape] the transition graph failed — reference=${reference ?? "UNPROBEABLE"} ` +
           `segments=${shapes.length} odd=${odd.length}`
@@ -1163,7 +1184,7 @@ export async function renderTimeline(params: {
       } catch (graphErr) {
         if (firstFailure == null) {
           firstFailure = graphErr;
-          await diagnoseSegmentShapes();
+          await diagnoseSegmentShapes(graphErr);
         }
         console.error(
           `[TransitionLadder] ${step} failed — ${(graphErr as Error).message.slice(0, 200)}`

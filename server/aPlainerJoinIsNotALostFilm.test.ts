@@ -164,7 +164,7 @@ describe("§4 — wired into the failure, and loud about it", () => {
 
   it("the shapes are probed once, on the first failure", () => {
     expect(SRC).toContain("if (firstFailure == null) {");
-    expect(SRC).toContain("await diagnoseSegmentShapes();");
+    expect(SRC).toContain("await diagnoseSegmentShapes(graphErr);");
   });
 
   it("A FILM THAT TOOK A LOWER RUNG SAYS SO where its other compromises are recorded", () => {
