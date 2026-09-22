@@ -48,7 +48,8 @@ import {
   countMediaArchiveAssets, filterMediaArchiveAssets, listMediaArchiveAssetsPaginated, normalizeMediaTags, readVideoMetadataObject,
   isGenerationRunSuperseded, bumpGenerationAttempt,
   getVideoScenes,
-  updateVideoScenes,} from "./db";
+  updateVideoScenes,
+  affectedRowCount,} from "./db";
 import { resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import type { ProgressLogEntry } from "./db";
 import { videoLengthSchema, normalizeVideoLength, isShortVideoLength, videoLengthAllowedForRole } from "@shared/videoLengths";
@@ -2580,7 +2581,12 @@ export const appRouter = router({
             eq(videos.status, "generating_effects"),
           )
         );
-      return { reset: (result as { rowsAffected?: number }).rowsAffected ?? 0 };
+      /**
+       * The fourth site that read libSQL's spelling on a mysql2 result. It is only a count
+       * reported back to an operator — not a lock — so the cost was a tool that always said it
+       * had reset zero videos while resetting them. One reader now, in `db.ts`.
+       */
+      return { reset: affectedRowCount(result) ?? 0 };
     }),
   }),
 });

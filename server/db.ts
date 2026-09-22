@@ -1355,9 +1355,15 @@ export async function saveVideoTimeline(params: {
     .update(videos)
     .set({ videoTimeline: params.timeline, timelineVersion: params.nextVersion })
     .where(and(eq(videos.id, params.id), eq(videos.timelineVersion, params.expectedVersion)));
-  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
-  // A driver that does not report rowsAffected must not be read as "it worked" — re-read instead.
-  if (typeof affected === "number") return { saved: affected > 0 };
+  /**
+   * Read through `affectedRowCount`: this used to look for `rowsAffected` on the tuple, which is
+   * libSQL's spelling, so on mysql2 it was always undefined and the optimistic check fell through
+   * to the re-read below on EVERY save. The re-read is a weaker test — two saves writing the same
+   * nextVersion would both read `saved: true` — so it is now the fallback it was meant to be.
+   */
+  const affected = affectedRowCount(result);
+  if (affected != null) return { saved: affected > 0 };
+  // A driver that does not report a row count must not be read as "it worked" — re-read instead.
   const after = await getStoredTimeline(params.id);
   return { saved: after?.timelineVersion === params.nextVersion };
 }
@@ -1453,9 +1459,24 @@ export async function listActiveRenderJobsForVideo(videoId: number): Promise<Ren
  * Take one queued job, and only if it is still queued.
  *
  * The `WHERE status = 'queued'` is the claim: two workers polling at the same instant both see the
- * row, both try to move it, and MySQL lets one win. The loser gets rowsAffected 0 and moves on —
- * the same claim-by-update pattern `claimQueuedVideo` already uses for the generation queue, so
- * there is one concurrency idiom in this codebase rather than two.
+ * row, both try to move it, and MySQL lets one win. The loser's UPDATE matches zero rows and it
+ * moves on — the same claim-by-update pattern `claimQueuedVideo` already uses for the generation
+ * queue, so there is one concurrency idiom in this codebase rather than two.
+ *
+ * ── WHY THERE IS NO RE-READ HERE ANY MORE ───────────────────────────────────────────────────
+ *
+ * There was one, and it is what let render 597 render job 17 twice. It asked, after the UPDATE,
+ * "is this row running?" — and the answer is YES FOR THE LOSER TOO, because the winner had just
+ * set it to running one millisecond earlier. A re-read cannot distinguish my own write from
+ * someone else's; only the row count can, and it was being read under the wrong name.
+ *
+ * So the count decides, and an UNKNOWN count loses. That is the only safe direction for mutual
+ * exclusion: a claim that cannot be proven is not a claim. Both callers already handle losing —
+ * the pipeline delivers the compose montage with a stated reason, the poll loop tries the next
+ * job — so failing closed costs a render nothing and costs a double render everything.
+ *
+ * mysql2 reports `affectedRows` on every UPDATE, so the unknown branch is a guard against a
+ * future driver swap, not a path this build takes.
  */
 export async function claimQueuedRenderJob(jobId: number): Promise<RenderJob | null> {
   const db = await getDb();
@@ -1464,8 +1485,16 @@ export async function claimQueuedRenderJob(jobId: number): Promise<RenderJob | n
     .update(renderJobs)
     .set({ status: "running", progressStep: "rehydrating", startedAt: new Date() })
     .where(and(eq(renderJobs.id, jobId), eq(renderJobs.status, "queued")));
-  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
-  if (typeof affected === "number" && affected === 0) return null;
+  const affected = affectedRowCount(result);
+  if (affected == null) {
+    console.error(
+      `[RenderJob] job=${jobId} CLAIM_UNPROVABLE — the driver reported no row count for the ` +
+        "claiming UPDATE, so this caller cannot show it won the row and does not render it. " +
+        "Two renders of one job is worse than none."
+    );
+    return null;
+  }
+  if (affected === 0) return null;
   const job = await getRenderJobById(jobId);
   return job && job.status === "running" ? job : null;
 }
@@ -1540,8 +1569,9 @@ export async function publishEditedVideo(params: {
       editedVideoTimelineVersion: params.timelineVersion,
     })
     .where(and(eq(videos.id, params.videoId), eq(videos.renderAttempt, params.attempt)));
-  const affected = (result as unknown as { rowsAffected?: number })?.rowsAffected;
-  if (typeof affected === "number") return { published: affected > 0 };
+  /** Same misread as `saveVideoTimeline` had — the fencing token's whole point is this count. */
+  const affected = affectedRowCount(result);
+  if (affected != null) return { published: affected > 0 };
   const rows = await db
     .select({ url: videos.editedVideoUrl })
     .from(videos)
@@ -2435,14 +2465,50 @@ export const dbRenderLockStore: RenderLockStore = {
 };
 
 /**
+ * HOW MANY ROWS DID THAT CONDITIONAL WRITE ACTUALLY CHANGE? — one reader, two spellings.
+ *
+ * ── The defect this replaces ────────────────────────────────────────────────────────────────
+ *
+ * Three call sites read `result.rowsAffected` — the libSQL/Turso spelling, on the tuple itself.
+ * This process runs `drizzle-orm/mysql2`, which returns `[ResultSetHeader, FieldPacket[]]` and
+ * spells it `affectedRows` on element ZERO. So on every one of those three, the read was
+ * `undefined`, the `typeof affected === "number"` guard was skipped, and the function fell
+ * through to a re-read that cannot tell a win from a loss.
+ *
+ * `claimQueuedRenderJob` is the one that bit. Its fallback asked "is the row running?" — and the
+ * LOSER sees the winner's own write and reports victory. Render 597 rendered job 17 twice, and
+ * the two runs raced on one job's rehydrated assets; one died on the transition graph while the
+ * other published a good film, so the pipeline reported AUTHORITATIVE_RENDER_FAILED over a video
+ * that exists.
+ *
+ * ── Returns ────────────────────────────────────────────────────────────────────────────────
+ *
+ * The count when the driver reports one, `null` when it genuinely does not. Null means UNKNOWN,
+ * never zero and never "it worked" — what a caller does with an unknown depends on what it is
+ * protecting, and only the caller knows that.
+ */
+export function affectedRowCount(result: unknown): number | null {
+  const head = Array.isArray(result) ? result[0] : result;
+  const box = head as { affectedRows?: unknown; rowsAffected?: unknown } | undefined;
+  /** mysql2 first, because that is what this process runs; libSQL's spelling is kept for tests. */
+  for (const v of [box?.affectedRows, box?.rowsAffected]) {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  /**
+   * The tuple is sometimes handed over un-nested. Checking it too costs nothing and closes the
+   * one shape that would otherwise read as unknown on a driver that does report.
+   */
+  const bare = result as { rowsAffected?: unknown } | undefined;
+  return typeof bare?.rowsAffected === "number" ? bare.rowsAffected : null;
+}
+
+/**
  * Did that statement change exactly one row?
  *
- * mysql2 reports it as `affectedRows` on the first element of the driver's result tuple. Read
- * defensively rather than cast: a conditional write whose result is misread is a lock that
- * silently stops locking, and this is the value the whole mechanism turns on.
+ * Reads through `affectedRowCount`, so the render lock and the render-job claim turn on the same
+ * arithmetic. An unknown count is FALSE here: a lock that cannot prove it was taken was not taken.
  */
 function affectedOne(result: unknown): boolean {
-  const head = Array.isArray(result) ? result[0] : result;
-  const affected = (head as { affectedRows?: number } | undefined)?.affectedRows;
-  return typeof affected === "number" && affected > 0;
+  const affected = affectedRowCount(result);
+  return affected != null && affected > 0;
 }
