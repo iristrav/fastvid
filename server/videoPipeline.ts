@@ -22476,8 +22476,81 @@ function hasMuskBrandSignal(sourceQuery: string, filePath: string): boolean {
 
 function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
   if (category === "blocked_model" || category === "blocked_offtopic") return true;
+  /**
+   * RONDE 617 — "GENERIC" IS NOT A CATEGORY, IT IS THE CLASSIFIER SAYING NOTHING.
+   *
+   * ── What render 597 measured ────────────────────────────────────────────────────────────
+   *
+   *     [SourceSkipped] provider=… reason=CATEGORY_AT_LIMIT category=generic used=4/4 scope=render
+   *
+   * RONDE 604 made this line audible and deliberately changed no number, which was right: a
+   * refusal that happens out loud is the precondition for deciding whether it should happen at
+   * all. This is that decision.
+   *
+   * `stockVisualCategory` is a regex ladder whose whole vocabulary is Musk/Tesla/SpaceX —
+   * gigafactory, solar, tesla, rocket, robot, factory, space — and everything else falls through
+   * to `generic`. On a documentary about 1945 there is nothing else it CAN say: every query
+   * classifies as `generic`, and `STOCK_CATEGORY_LIMITS.generic` is 4 against a RENDER-wide
+   * counter. So the stock source closes after the fourth adopted clip of the whole video.
+   *
+   * ── Why that is a defect and not a budget ───────────────────────────────────────────────
+   *
+   * Every entry in that table names a thing you can see, and its number is an editorial decision
+   * about how often one KIND of shot may recur in a Musk video. `generic` is the fall-through of
+   * that ladder, and its 4 was chosen when `generic` meant "a Musk clip that is none of the seven
+   * named kinds". Applied to a topic the ladder knows no words for, it stops being a diversity
+   * rule — it cannot tell four bunker shots from four different things — and becomes a quota on
+   * stock footage per render that nobody chose.
+   *
+   * ── What this does NOT do ───────────────────────────────────────────────────────────────
+   *
+   * No limit moves. `STOCK_CATEGORY_LIMITS` is the table it was and `generic` is still 4 — and
+   * still 2 — on a Musk topic, where the ladder's words mean what they say. The named categories
+   * keep their quotas on every topic. `blocked_model` and `blocked_offtopic` are untouched above:
+   * those are content refusals, not counts, and this round does not weaken one.
+   *
+   * Nor does it accept a worse clip. This gate counts; it does not judge. Vision, beat relevance,
+   * the documentary beat gate, adoption and asset dedup all still decide what may be used, and
+   * every one of them still runs. What stops is refusing a candidate for a reason that was never
+   * about this video.
+   *
+   * The counter is still incremented for `generic`, so the diagnostics keep reporting the real
+   * number — a count that is no longer read as a limit is not a count worth losing.
+   *
+   * ── TWO NEIGHBOURS FOUND HERE AND DELIBERATELY NOT FIXED ────────────────────────────────
+   *
+   *   1. `rocket` and `space` are capped at 2 and 1 render-wide on EVERY topic, so a documentary
+   *      about the space race or the V-2 meets the same wall one category over.
+   *   2. `blocked_model` matches `saturn|apollo|lunar|moon-landing|space shuttle`, and
+   *      `categoryAtLimit` refuses that unconditionally — on a film about the moon landing the
+   *      subject itself is blocked.
+   *
+   * Both are this defect one notch further, and neither has a render behind it. They belong to
+   * their own round with their own measurement, not to this one.
+   */
+  if (!muskTopic && category === "generic") return false;
   const limit = categoryLimitFor(dedup, category, muskTopic);
   return (dedup.usedCategories.get(category) ?? 0) >= limit;
+}
+
+/**
+ * The real classifier and the real gate, for the same reason
+ * `poolClipRequiresFairUseTransformForTest` exists one file-section up: a test that only greps the
+ * source can pass while the behaviour it names is wrong. `categoryAtLimit` reads nothing from
+ * `dedup` but `usedCategories`, and `categoryLimitFor` reads nothing from it at all.
+ */
+export function stockCategoryGateForTest(
+  usedCategories: Map<string, number>,
+  query: string,
+  muskTopic: boolean
+): { category: string; limit: number; atLimit: boolean } {
+  const dedup = { usedCategories } as VisualDedupState;
+  const category = stockVisualCategory(query);
+  return {
+    category,
+    limit: categoryLimitFor(dedup, category, muskTopic),
+    atLimit: categoryAtLimit(dedup, category, muskTopic),
+  };
 }
 
 function pickMuskGoldenQuery(globalBeat: number, beatIndex = 0): string {
