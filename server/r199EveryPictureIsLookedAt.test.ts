@@ -228,7 +228,11 @@ describe("R199 §5 — tightening the rule without starving the render", () => {
     const at = RELEVANCE.indexOf("maxRelevanceLooksPerBeat() && !params.finalSay");
     expect(at, "the ceiling no longer has exactly one named exemption").toBeGreaterThan(0);
     // The ceiling still stops an ordinary candidate: the exemption is the flag, not the removal.
-    expect(RELEVANCE).toContain("state.judgementsSkipped++");
+    //
+    // RONDE 619 moved the increment into `noteJudgementSkipped`, which raises the total AND names
+    // the cause in one call — the claim here is unchanged and is now stated more precisely: the
+    // ceiling still produces a skip, and that skip is the one labelled BEAT_LOOK_CEILING.
+    expect(RELEVANCE).toContain('noteJudgementSkipped(state, "BEAT_LOOK_CEILING")');
     expect(RELEVANCE).toContain("per-beat look ceiling reached");
   });
 

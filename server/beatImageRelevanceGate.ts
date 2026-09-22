@@ -340,6 +340,29 @@ export type BeatImageGateState = {
    */
   judgementsSkipped: number;
   /**
+   * RONDE 619 — WHICH OF THOSE DECLINES, WHICH `judgementsSkipped` ALONE CANNOT SAY.
+   *
+   * Render 597's summary line:
+   *
+   *     [BeatRelevance] attempts=118 answered=117 fits=21 does_not_fit=96 never_asked=60
+   *
+   * Sixty pictures never put to the editor, and one number for all of them. "The render ran out of
+   * budget" and "there was no readable frame" and "the gate is switched off" are three different
+   * findings with three different fixes, and they arrived wearing the same word — which is the
+   * exact complaint the `judgementsSkipped` note above makes about `judgementsFailed`, one level
+   * down.
+   *
+   * The causes were never missing. `declined()` takes a `VisionDeclineCause` as its FIRST argument
+   * precisely so no call site can omit one, and the per-beat `[BeatLookups]` line already prints
+   * its own breakdown. Nothing carried them to the render's summary — this codebase's signature
+   * defect: an answer computed on one side and never handed to the side that reports.
+   *
+   * A typed counter rather than a match on `noVerdictReasons`, for the reason the note below
+   * already gives: prose rots the moment a message is reworded, and `noVerdictReasons` mixes the
+   * evaluated non-verdicts in with the declines, so it cannot answer this question anyway.
+   */
+  judgementsSkippedByCause: Map<string, number>;
+  /**
    * RENDER 562 — the declines that mean NO VISION PROVIDER COULD BE REACHED.
    *
    * A strict subset of `judgementsSkipped`, counted separately because it is the only decline the
@@ -404,6 +427,21 @@ function noteAskImpossible(state: BeatImageGateState, why: string): void {
   );
 }
 
+/**
+ * RONDE 619 — THE ONE PLACE `judgementsSkipped` MOVES.
+ *
+ * The total and the breakdown are incremented together, by the same call, so they cannot disagree
+ * — which is what lets `formatRelevanceSummary` treat a mismatch as a wiring fault rather than as
+ * a number it has to trust. A skip whose caller has no cause to give is recorded as `UNNAMED`
+ * rather than dropped: a decline this module cannot explain is itself the finding, and hiding it
+ * inside the total is how sixty of them came to look like one.
+ */
+export function noteJudgementSkipped(state: BeatImageGateState, cause: string): void {
+  state.judgementsSkipped++;
+  const key = cause.trim() || "UNNAMED";
+  state.judgementsSkippedByCause.set(key, (state.judgementsSkippedByCause.get(key) ?? 0) + 1);
+}
+
 export function createBeatImageGateState(): BeatImageGateState {
   return {
     seen: new Map(),
@@ -412,6 +450,7 @@ export function createBeatImageGateState(): BeatImageGateState {
     judgementsMismatch: 0,
     judgementsFailed: 0,
     judgementsSkipped: 0,
+    judgementsSkippedByCause: new Map(),
     judgementsProviderUnavailable: 0,
     askImpossible: false,
     noVerdictReasons: new Map(),
@@ -744,7 +783,7 @@ export async function judgeBeatImage(params: {
    * and the two must not arrive at the caller wearing the same word.
    */
   const declined = (cause: VisionDeclineCause, reason: string): BeatImageJudgement => {
-    state.judgementsSkipped++;
+    noteJudgementSkipped(state, cause);
     /** Deliberately not asked — a spent budget, a disabled gate, no usable frame. */
     recordVisionAsk(asker, "skipped");
     /**

@@ -50,6 +50,7 @@ import {
   beatImageRelevanceGateEnabled,
   judgeBeatImage,
   judgementTally,
+  noteJudgementSkipped,
   type BeatImageGateState,
   type BeatImageVerdict,
   type BeatSubjectAnchors,
@@ -582,7 +583,11 @@ export async function checkBeatRelevance(
   // fit — the budget exists to bound spending, not to launder verdicts already earned.
   const alreadyKnown = state.seen.get(cacheKey);
   if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat() && !params.finalSay) {
-    state.judgementsSkipped++;
+    /**
+     * RONDE 619 — the cause was already named on the very next line and never counted with the
+     * skip. Render 597's `never_asked=60` held this decline and four others in one number.
+     */
+    noteJudgementSkipped(state, "BEAT_LOOK_CEILING");
     return pass("BEAT_LOOK_CEILING", "unknown", `per-beat look ceiling reached (${spentOnBeat})`);
   }
   if (!alreadyKnown && spentOnBeat >= maxRelevanceLooksPerBeat()) {
@@ -1653,10 +1658,35 @@ export function formatRelevanceSummary(
    * says both — so "the model answered nothing" cannot read as "the model answered half".
    */
   const t = judgementTally(state);
+  /**
+   * RONDE 619 — WHICH sixty, not just sixty.
+   *
+   * Render 597 read `never_asked=60` and stopped there. "The render's budget was spent", "this
+   * beat had already been looked at twice", "there was no readable frame" and "the gate is off"
+   * are four findings with four different fixes, and one number cannot tell them apart — so a
+   * reader cannot know whether the editor was overworked or never wired up.
+   *
+   * The causes were always there: `declined()` requires one as its first argument. They were
+   * simply never carried here. Printed most frequent first, so the line leads with the thing worth
+   * fixing.
+   *
+   * `noteJudgementSkipped` moves the total and the breakdown together, so a disagreement between
+   * them is a wiring fault and not a rounding one — said out loud rather than smoothed over, the
+   * same way `COUNTERS_INCONSISTENT` already treats the tally.
+   */
+  const byCause = [...state.judgementsSkippedByCause.entries()].sort((a, b) => b[1] - a[1]);
+  const skippedParts = byCause.reduce((n, [, c]) => n + c, 0);
+  const skippedDetail = byCause.length
+    ? ` (${byCause.map(([cause, n]) => `${cause.toLowerCase()}=${n}`).join(" ")}` +
+      `${skippedParts !== t.skipped ? ` SKIP_CAUSES_INCOMPLETE parts=${skippedParts}` : ""})`
+    : t.skipped > 0
+      ? " (NO_CAUSE_RECORDED)"
+      : "";
   return (
     `[BeatRelevance] render summary — attempts=${t.attempts} answered=${t.answered} ` +
     `(fits=${t.fits} does_not_fit=${t.mismatch}) failed=${t.failed} ` +
-    `never_asked=${t.skipped}${t.inconsistent ? " COUNTERS_INCONSISTENT" : ""} | ` +
+    `never_asked=${t.skipped}${skippedDetail}` +
+    `${t.inconsistent ? " COUNTERS_INCONSISTENT" : ""} | ` +
     `clips: fits=${fits} does_not_fit=${refused} (reprieved=${reprieved}) unknown=${unknown}`
   );
 }
