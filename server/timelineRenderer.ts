@@ -390,6 +390,60 @@ export async function probeDurationSec(file: string): Promise<number | null> {
   }
 }
 
+/**
+ * RONDE 627 — THE SHAPE OF A SEGMENT, SO A FAILED JOIN CAN NAME THE ODD ONE OUT.
+ *
+ * `xfade` and `concat` refuse two inputs that differ in size, pixel format, sample aspect or
+ * timebase, and ffmpeg reports that refusal by naming the INPUT it was decoding rather than the
+ * property that did not match. Render 596 got a size line and was solved in an afternoon; render
+ * 599 got no property line at all and cost three rounds of reading budgets.
+ *
+ * Every field here is one of the four the join actually compares. Returned as a string because the
+ * only thing done with it is comparing segments to each other and printing the ones that differ —
+ * a shape that parses is a shape somebody will be tempted to branch on.
+ *
+ * Null when the file cannot be probed, which is not evidence of anything and is reported as such.
+ */
+export async function probeSegmentShape(file: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height,pix_fmt,sample_aspect_ratio,time_base,r_frame_rate",
+      "-of", "default=nw=1",
+      file,
+    ]);
+    const shape = stdout.trim().split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+    return shape || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The segments that do not look like the majority, named with what they are instead.
+ *
+ * The majority is the reference rather than the first segment: a graph of eleven inputs where
+ * seg_000 is the odd one would otherwise report the other ten as broken. Ties keep the earliest
+ * shape, which only matters when the segments are split evenly and every one of them is then worth
+ * printing anyway.
+ */
+export function oddSegmentsOut(
+  shapes: ReadonlyArray<{ name: string; shape: string | null }>
+): { reference: string | null; odd: Array<{ name: string; shape: string | null }> } {
+  const counts = new Map<string, number>();
+  for (const s of shapes) {
+    if (s.shape == null) continue;
+    counts.set(s.shape, (counts.get(s.shape) ?? 0) + 1);
+  }
+  let reference: string | null = null;
+  let best = 0;
+  for (const [shape, n] of counts) {
+    if (n > best) { best = n; reference = shape; }
+  }
+  return { reference, odd: shapes.filter((s) => s.shape !== reference) };
+}
+
 export async function probeHasStream(file: string, kind: "v" | "a"): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -472,6 +526,25 @@ const FFMPEG_LINES_THAT_ONLY_REPORT_FAILURE: readonly RegExp[] = [
   /^Error while filtering/,
   /^Conversion failed!$/,
   /^\[.*@ 0x[0-9a-f]+\] Failed to configure output pad/,
+  /**
+   * RONDE 627 — the line this file already said names an input rather than a mismatch.
+   *
+   * The comment above `rendered` in this same module says it in so many words: "ffmpeg then names
+   * an INPUT rather than the mismatch: `Error while processing the decoded data for stream #10:0`,
+   * which is what render 597 died on." It was never added here, so it kept winning `ffmpegComplaint`
+   * — it is the only one of the four lines ffmpeg emits that this list does not recognise.
+   *
+   * Render 599 is the cost. Its stderr was exactly four lines, three of them already listed:
+   *
+   *     [auto_scale_11 @ 0x…] Failed to configure output pad on auto_scale_11   (listed)
+   *     Error reinitializing filters!                                           (listed)
+   *     Failed to inject frame into filter network: Resource temporarily …      (listed)
+   *     Error while processing the decoded data for stream #10:0                (NOT listed)
+   *
+   * so the one line carrying no cause became "the line that says what was wrong", and the operator
+   * read a stream number where RONDE 601 had promised them a reason.
+   */
+  /^Error while processing the decoded data for stream/,
 ];
 
 /** The first stderr line that says WHAT was wrong, rather than that something was. */
@@ -1001,7 +1074,54 @@ export async function renderTimeline(params: {
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
       "-an", silent
     );
-    await runFfmpeg(args, "transition graph");
+    /**
+     * RONDE 627 — when the join fails, measure the things the join compares.
+     *
+     * `[SegmentSpan]` already reports the one property the graph is BUILT on, and render 599 proved
+     * that is not enough: it printed `unprobed=0 drifted=0`, so every segment was the length the
+     * graph thought, and the join failed anyway. Length was the only property anybody could see.
+     *
+     * So the other four are measured here, at the moment they are known to matter, and the odd
+     * segment is named with what it is instead of the majority. Only on failure: eleven ffprobes on
+     * every successful render would be a cost paid for nothing, and the failure path has already
+     * spent minutes by the time it arrives here.
+     *
+     * This diagnoses; it does not repair. A segment that differs is a defect upstream in
+     * `renderSegment`, and guessing at a normalisation here would hide the cause the next render
+     * needs to show.
+     */
+    try {
+      await runFfmpeg(args, "transition graph");
+    } catch (graphErr) {
+      const shapes = await Promise.all(
+        segments.map(async (seg) => ({ name: path.basename(seg), shape: await probeSegmentShape(seg) }))
+      );
+      const { reference, odd } = oddSegmentsOut(shapes);
+      console.error(
+        `[SegmentShape] the transition graph failed — reference=${reference ?? "UNPROBEABLE"} ` +
+          `segments=${shapes.length} odd=${odd.length}`
+      );
+      for (const o of odd) {
+        console.error(`[SegmentShape]   ${o.name} ${o.shape ?? "UNPROBEABLE"}`);
+      }
+      if (reference == null) {
+        /**
+         * Not one segment could be probed, so this says nothing about geometry either way. Claiming
+         * the shapes matched here would be the same failure this round exists to remove: a line
+         * that reports a measurement nobody took.
+         */
+        console.error(
+          "[SegmentShape]   no segment could be probed — this render says NOTHING about whether " +
+            "the join failed on geometry"
+        );
+      } else if (odd.length === 0) {
+        console.error(
+          "[SegmentShape]   every segment has the same size, pixel format, aspect and timebase — " +
+            "the join did not fail on geometry"
+        );
+      }
+      throw graphErr;
+    }
     transitionsRendered = rendered.filter(
       (r, i) => i > 0 && r.clip.transitionIn !== "hard_cut"
     ).length;
