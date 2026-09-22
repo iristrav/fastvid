@@ -396,6 +396,49 @@ const NAMED_EVENT_RE = new RegExp(
   "u"
 );
 
+/**
+ * RONDE 626 — GRAMMAR IS NOT AN EVENT. A QUESTION IS NOT A DECLARATIVE SENTENCE.
+ *
+ * Rule 2 below reads "the run of lower-case words between the action and the next preposition"
+ * as the verb's direct object. That reading holds for a declarative sentence and collapses for
+ * an interrogative one, because a question moves the auxiliary and the subject into exactly the
+ * position the object occupies. Render 599, scene 1 beat 1:
+ *
+ *     narration  "Yet, in his darkest hour, what orders did he issue?"
+ *     action     "orders"
+ *     rule 2     \borders\b\s+(…)  ->  "did he issue"  ->  last two words  ->  "he issue"
+ *
+ * And then, measured in the same render:
+ *
+ *     [VisualIntent]     s1b1 subject=he issue event=he issue action=orders
+ *     [MismatchResearch] s1b1 correctedQuery="Heinrich Himmler Führerbunker he issue"
+ *                             results=2 eligible=0 adopted=0
+ *
+ * Every provider was asked for "he issue", and every candidate was ranked against it. The two
+ * YouTube clips that came back were a young soldier wearing an Iron Cross and a map of the 1st
+ * Belorussian Front; the picture editor refused both, correctly, and the beat took a placeholder.
+ * Nothing downstream was broken — the question the whole pipeline was answering was.
+ *
+ * These words END the phrase rather than being dropped from it. Their presence is the evidence
+ * that what follows is not the verb's object at all, so reading past them would assemble a phrase
+ * out of the next clause — "he issue" is precisely what dropping them and continuing produces. A
+ * run that ends with fewer than two content words falls through to rule 3, which is the path a
+ * beat with no object phrase has always taken.
+ *
+ * Possessives stay in EVENT_PHRASE_SKIP and are deliberately NOT repeated here: "dictated his
+ * final political testament" must keep yielding "political testament", so `his`, `her` and `its`
+ * go on being stepped over rather than stopping the run.
+ */
+const EVENT_PHRASE_STOP = new Set([
+  // Auxiliaries and modals — they carry tense, never content.
+  "did", "do", "does", "was", "were", "is", "are", "am", "be", "been", "being",
+  "has", "have", "had", "will", "would", "can", "could", "shall", "should", "may", "might", "must",
+  // Pronouns standing where an object would stand.
+  "he", "she", "it", "they", "we", "you", "i", "him", "them", "us", "me",
+  // Interrogatives and expletives, the words a question is built out of.
+  "who", "whom", "what", "which", "why", "how", "when", "where", "there", "here",
+]);
+
 /** Determiners, possessives and time filler that can never be the event itself. */
 const EVENT_PHRASE_SKIP = new Set([
   "a", "an", "the", "his", "her", "its", "their", "our", "my", "your", "this", "that", "these",
@@ -422,6 +465,8 @@ export function extractEventPhraseForQuery(beatText: string, action = ""): strin
       // A preposition or a capitalised name ends the object phrase — "in the Führerbunker" is the
       // place, and the place has its own field.
       if (/^(?:in|at|on|over|from|into|to|of|by|with|near|across|through|after|before|during|as|while|and|or|inside|outside|toward|towards|against|beneath|below|above|beyond|under)$/.test(lower)) break;
+      // An auxiliary or a pronoun means this is not the verb's object — see EVENT_PHRASE_STOP.
+      if (EVENT_PHRASE_STOP.has(lower)) break;
       if (w[0] !== w[0]!.toLowerCase()) break;
       if (EVENT_PHRASE_SKIP.has(lower)) continue;
       words.push(lower);

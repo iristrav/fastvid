@@ -16480,6 +16480,39 @@ export async function downloadYouTubeCCClip(
     // can never leave a corrupt/partial file at outPath — outPath is only ever touched by the
     // atomic fs.renameSync below, and only once the download is complete and size-validated.
     const cloudTmpPath = outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
+    /**
+     * RONDE 626 — WHAT THIS ROUTE NEEDS WHEN IT WORKS, WHICH NOBODY HAS EVER MEASURED.
+     *
+     * `cloudWindowMs` is half of whatever the scene has left (RONDE 260), and the comment above it
+     * is right that a share is a ceiling and not an allocation — while the route ANSWERS. When it
+     * hangs, the whole ceiling is spent. Render 599, scene 1, four attempts in a row:
+     *
+     *     Cloud DL failed z2kp1wkRE8o: … exceeded 117s — falling back to RapidAPI
+     *     Cloud DL failed FLal-KvTNAQ: … exceeded 117s — falling back to RapidAPI
+     *     Cloud DL failed aZbpVsQzBeU: … exceeded  84s — falling back to RapidAPI
+     *     Cloud DL failed 7bx_yqMF3jc: … exceeded  54s — falling back to RapidAPI
+     *
+     * RapidAPI then delivered every one of them in seconds. The scene's wall was 276s and it used
+     * 280s, so five later YouTube candidates were refused before they started, under the 12s floor.
+     *
+     * The obvious response — try the fast route first, or latch this one shut — is one this file
+     * has already argued against twice, and render 582 is the cost of having done it: RapidAPI
+     * fetches the WHOLE source before trimming, so closing this route closed the only one that
+     * fetches just the seconds a beat needs. Neither is changed here.
+     *
+     * What is missing before that ceiling can be argued about at all is the one number nobody has:
+     * how long this route takes WHEN IT SUCCEEDS. This line records it, on both outcomes, against
+     * the window it was granted. It decides nothing and changes no behaviour — it is the evidence
+     * a later round needs so the ceiling is set from measurement instead of from arithmetic.
+     */
+    const cloudStartedAtMs = Date.now();
+    const reportCloudTiming = (outcome: string): void => {
+      console.log(
+        `[YouTubeCloudTiming] video=${videoId} scene=${sceneIndex} outcome=${outcome} ` +
+          `ms=${Date.now() - cloudStartedAtMs} grantedMs=${cloudWindowMs} ` +
+          `scopeLeftAtStartMs=${remainingForCloud}`
+      );
+    };
     try {
       const dlUrl = `${cloudDlService}/download?id=${videoId}&duration=${duration}&start=${clipStart}`;
       // RONDE 10b: the ytdlp-service requires `Authorization: Bearer <SERVICE_TOKEN>` and returns
@@ -16572,6 +16605,7 @@ export async function downloadYouTubeCCClip(
         } else if (cloudFileSize > 10_000) {
           fs.renameSync(cloudTmpPath, outPath);
           note("cloud", "DOWNLOAD_SUCCESS", `${cloudFileSize}_bytes`);
+          reportCloudTiming("DOWNLOAD_SUCCESS");
           /**
            * The route answered, so whatever it was refused for earlier is not what it is now — see
            * `noteCloudEgressOk`. Without this the refusal count is a lifetime tally instead of a
@@ -16673,6 +16707,7 @@ export async function downloadYouTubeCCClip(
         }
       }
       note("cloud", thrownAs, reason);
+      reportCloudTiming(thrownAs);
       console.warn(
         `[Pipeline] Scene ${sceneIndex}: Cloud DL failed for ${videoId}:`,
         (err as Error).message, "— falling back to RapidAPI"
