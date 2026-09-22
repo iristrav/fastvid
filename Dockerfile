@@ -35,6 +35,38 @@ RUN pnpm run build
 # Copy drizzle migrations to dist
 RUN cp -r drizzle dist/drizzle
 
+# ─── the Remotion composition SOURCE, which the render bundles at runtime ────
+# RONDE 616. Render 597:
+#
+#   [RenderJob] job=17 not carried: graphics overlay unavailable, fell back to
+#     the libass route — ENOENT: no such file or directory, open
+#     '/app/dist/remotion/index.ts'
+#   [FeatureMatrix] graphics EXECUTED_WITHOUT_PLAN
+#
+# All thirteen graphics fell back, silently. `bundleFastVid` webpacks the
+# composition when the render asks for it, so unlike every other server file
+# this one is needed as SOURCE at runtime — and the runtime stage ships "no
+# TypeScript source" by design, while the build only bundles _core/index.ts and
+# worker.ts. So the entry point existed at no path in the image.
+#
+# The layout is what makes this work without touching the code: copied to
+# dist/remotion, the existing entryPoint (dist + remotion/index.ts) resolves,
+# and the components' own "../../graphicsVocabulary" lands on dist/ — the same
+# two levels up that server/remotion/components/ has to server/.
+#
+# MEASURED, not assumed: this exact file set was laid out in a scratch copy of
+# the dist layout and put through the real @remotion/bundler, which bundled it.
+# projectTimeline.ts is deliberately NOT here — captionLayout's reference to it
+# is `import type` and is erased, which the same experiment confirmed by
+# bundling successfully without it. Every package the bundle needs
+# (@remotion/bundler, remotion, react, react-dom) is a production dependency,
+# so `pnpm prune --prod` below keeps them.
+RUN cp -r server/remotion dist/remotion \
+  && cp server/graphicsVocabulary.ts server/captionLayout.ts dist/ \
+  && test -f dist/remotion/index.ts \
+  || { echo "=== the Remotion entry point is not in dist/ — every graphic would"; \
+       echo "=== fall back to libass at runtime. server/remotion moved?"; exit 1; }
+
 # Drop devDependencies (TypeScript, Vite, Vitest, esbuild, ...) — the built
 # dist/ output no longer needs them, only whatever the bundled server code
 # imports at runtime (kept via --packages=external in the build script).
