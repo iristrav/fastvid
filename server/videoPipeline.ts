@@ -29893,9 +29893,23 @@ async function finalizeLocalClipCacheForScene(
   try {
     const refilled = await withSceneFetchTimeout(
       () => refillSceneStrictVoiceMatch(scene, workDir, topicContext, dedup, sceneAudioPath),
-      (dedup.pipelineStartedMs ?? 0) > 0 && Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
-        ? 25_000
-        : 45_000,
+/**
+       * RONDE 622 — a pre-compose wall may host a YouTube turn, so it is wide enough to hold one.
+       *
+       * `recoverSceneClipsIfEmpty` reaches `beatPrimaryFetch` through its own Inner, and
+       * `refillSceneStrictVoiceMatch` reaches it the same way — so a turn can open under both. In
+       * the hurried branch they were 20s and 25s against a price of 24s: one that can never pay
+       * and one that cannot survive a second of its own work. Found by walking every scope in this
+       * file to a `runCentralYoutubeTurn`, after render 598 proved the first wall by measurement;
+       * the other nine narrow walls are provider-specific and cannot host a turn at all.
+       *
+       * The base numbers do not move, and the supplement is zero without YouTube.
+       */
+      beatWallWithYoutubeTurn(
+        (dedup.pipelineStartedMs ?? 0) > 0 && Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
+          ? 25_000
+          : 45_000
+      ),
       `Scene ${scene.index} pre-compose strict refill`
     );
     await mergeIntoResult(refilled.clips);
@@ -29910,10 +29924,12 @@ async function finalizeLocalClipCacheForScene(
   try {
     const recovered = await withSceneFetchTimeout(
       () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, dedup),
-      (dedup.pipelineStartedMs ?? 0) > 0 &&
-        Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
-        ? 20_000
-        : 35_000,
+      beatWallWithYoutubeTurn(
+        (dedup.pipelineStartedMs ?? 0) > 0 &&
+          Date.now() - (dedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(dedup.videoLength)
+          ? 20_000
+          : 35_000
+      ),
       `Scene ${scene.index} pre-compose recovery`
     );
     await mergeIntoResult(recovered.clips);
@@ -29986,10 +30002,12 @@ async function ensureFastShortScenesReadyForCompose(
     try {
       const recovered = await withSceneFetchTimeout(
         () => recoverSceneClipsIfEmpty(scene, workDir, topicContext, visualDedup),
-        (visualDedup.pipelineStartedMs ?? 0) > 0 &&
-          Date.now() - (visualDedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(visualDedup.videoLength)
-          ? 20_000
-          : 35_000,
+        beatWallWithYoutubeTurn(
+          (visualDedup.pipelineStartedMs ?? 0) > 0 &&
+            Date.now() - (visualDedup.pipelineStartedMs ?? 0) > visualSourcingTurboMs(visualDedup.videoLength)
+            ? 20_000
+            : 35_000
+        ),
         `Scene ${scene.index} pre-compose recovery`
       );
       ready = await composeReadySceneClips(recovered.clips, scene.index, visualDedup.beatRelevance, visualDedup.sourcingCache?.lineage);
@@ -32712,7 +32730,45 @@ async function resolveBeatClipFastTurbo(
   );
   if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
 
-  const primaryMs = historicalDoc ? 15_000 : 20_000;
+  /**
+   * RONDE 622 — THE WALL THAT COULD NEVER PAY, MEASURED IN PRODUCTION.
+   *
+   * ── Render 598, on the deploy that carried every fix of this session ────────────────────────
+   *
+   *     [YouTube] TURN_DECLINED scene=0 — 20s left and a turn costs 24s
+   *         clock="b0_fastyt-first s0 b0" granted=20s
+   *
+   * Eleven beats, one number: `granted=20s`, every time. Render 597 printed the identical figure
+   * months of rounds earlier. That repetition is the tell — a clock clamped by traffic varies, and
+   * this one never did, because it is not traffic. It is this literal.
+   *
+   * `beatPrimaryFetch` is the function that opens a YouTube turn on this route, and the window it
+   * is given here is 20s — or 15s for a historical documentary, which is the case this pipeline
+   * exists for. A turn costs `YOUTUBE_MIN_TURN_MS`: one 12s search plus the 12s download floor.
+   * Twenty is less than twenty-four and fifteen is less. The door therefore refuses EVERY turn on
+   * this route, correctly, for a window nobody meant to withhold — and no render on this path has
+   * ever searched YouTube.
+   *
+   * ── Why this is not a budget increase ───────────────────────────────────────────────────────
+   *
+   * `beatWallWithYoutubeTurn` is the shared answer eleven other walls already use, and RONDE 600
+   * wrote it for exactly this: the turn's window is ADDED to the wall rather than carved out of
+   * it, so the cascade loses nothing. Its supplement is zero when there is no YouTube to budget
+   * for, which means a build without a key keeps 15s and 20s to the millisecond.
+   *
+   * The base numbers do not move. `historicalDoc ? 15_000 : 20_000` is still what this route
+   * spends on its own work; what changes is that a beat which may ALSO open a YouTube turn is now
+   * wide enough to hold one, exactly as `runBeatClipFetch` and the scene wall already are.
+   *
+   * ── What was measured, and what it cost to find ─────────────────────────────────────────────
+   *
+   * RONDE 615 declared this wall closed after building the nest in a test and reading 55s at the
+   * innermost point. The nest was constructed from the layers I believed production used; the
+   * route production actually takes is this one. That test proves what it describes and did not
+   * describe this — which is why the anchor below is a literal-free assertion against the helper,
+   * not another reconstruction.
+   */
+  const primaryMs = beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000);
   try {
     clip = await withSceneFetchTimeout(
       () => beatPrimaryFetch(
