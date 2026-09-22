@@ -19650,7 +19650,57 @@ function extractBeatSubject(beatText: string, persons: string[] = []): string {
      */
     const notPerson = (w: string) =>
       !foldSearchText(w).split(/\s+/).filter(Boolean).every((part) => personWords.has(part));
-    const extra = proper.find(notPerson) ?? common.find(notPerson) ?? "";
+    /**
+     * RONDE 613 — A BARE MONTH IS THE LAST PROPER NOUN TO REACH FOR, NOT THE FIRST.
+     *
+     * ── What render 597 searched for ────────────────────────────────────────────────────────
+     *
+     * Beat: "April 30th, 1945. In the austere confines of the Führerbunker, Adolf Hitler and Eva
+     * Braun spent their last hours." Measured through this function:
+     *
+     *     "Adolf Hitler april"
+     *
+     * `proper` is built in sentence order, `find` takes the first entry that is not the person,
+     * and "April" opens the sentence. So the place the beat is ABOUT — Führerbunker — was one
+     * entry further down and never reached.
+     *
+     * The picture editor then said, ninety-six times across that render:
+     *
+     *     "The clip shows Adolf Hitler at a public event, which does not match the description of
+     *      him huddling with Eva Braun in the Führerbunker."
+     *
+     * That is not a strict judge. `Adolf Hitler april` returns Hitler in some April, of some year,
+     * in some place, and the judge is describing exactly what it was handed.
+     *
+     * ── Why a month alone, and nothing else ─────────────────────────────────────────────────
+     *
+     * A bare month names no thing an archive can photograph: every year has one. It earns its
+     * place beside a year ("April 1945") and almost nowhere else, and the budget here has no room
+     * for both. Every other proper noun — a place, an organisation, a second person — is a subject.
+     *
+     * So the ORDER changes and nothing else. A month is still taken when it is all the beat has,
+     * `MONTH_NAMES` is RONDE 71's existing list rather than a new one, and no word is filtered out
+     * that was not filtered before. Topic-agnostic by construction: this is a fact about calendars.
+     */
+    const isBareMonth = (w: string) =>
+      w.split(/\s+/).length === 1 && MONTH_NAMES.has(w.trim().toLowerCase());
+    /**
+     * THE PROPER TIER ONLY, AND THAT ASYMMETRY IS MEASURED, NOT AN OVERSIGHT.
+     *
+     * The same demotion in the `common` tier reads as the consistent thing to do, so it was
+     * written and measured. On "in april hitler returned to berlin" it moved the query from
+     * `Adolf Hitler april` to `Adolf Hitler returned` — a bare verb, which is the one thing
+     * `aVerbYouCannotFilmAndHalfAPlaceName` exists to keep out of a query. A date is a poor
+     * subject; a verb is not a subject at all, so that trade is a loss and it was reverted.
+     *
+     * The measured defect is in `proper`, in properly-cased narration, which is what a script
+     * arrives as. `common` is left exactly as it was.
+     */
+    const extra =
+      proper.find((w) => notPerson(w) && !isBareMonth(w)) ??
+      proper.find(notPerson) ??
+      common.find(notPerson) ??
+      "";
     return extra ? `${person} ${extra}` : person;
   }
 
