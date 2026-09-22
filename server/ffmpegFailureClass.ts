@@ -188,3 +188,32 @@ export function formatFfmpegFailure(
     (shapeNote ? ` shapes="${shapeNote}"` : "")
   );
 }
+
+/**
+ * The failure classes a SIMPLER TREATMENT can answer — RONDE 630.
+ *
+ * SAFE_RENDER removes effects, camera moves and transitions. That is a real answer to a graph that
+ * could not be built or executed, and to the geometry family, because an auto-scaler is only
+ * inserted between links a filter chain created.
+ *
+ * It is NOT an answer to anything else, and the omissions are the point:
+ *
+ *   · INPUT_MISSING and DECODE — the bytes are the problem. A missing or undecodable asset is
+ *     exactly as missing without a zoompan in front of it; this is rehydration's job.
+ *   · RESOURCE — a full disk does not become emptier.
+ *   · CODEC — an encoder this build does not have stays absent.
+ *   · MUX, AUDIO_VIDEO_MISMATCH — these happen after the picture is joined, so simplifying the
+ *     picture changes nothing about them.
+ *   · TIMEOUT — a second full render is the most expensive possible response to running out of time.
+ *   · UNKNOWN — by definition no strategy has been shown to answer it, and guessing one here is what
+ *     `UNKNOWN` exists to prevent.
+ *
+ * Attempting a safe render for any of these would spend a whole second render to fail the same way.
+ */
+export const SAFE_RENDER_ANSWERS: ReadonlySet<FfmpegFailureClass> = new Set<FfmpegFailureClass>([
+  "FILTER_GRAPH",
+  "GEOMETRY",
+  "PIXEL_FORMAT",
+  "TIMEBASE",
+  "STREAM_MAPPING",
+]);

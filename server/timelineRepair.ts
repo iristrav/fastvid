@@ -196,3 +196,119 @@ export function formatTimelineRepairs(repairs: readonly TimelineRepair[]): strin
       `transitionsNormalised=${normalised} — the plan was kept; these shots were not`,
   ];
 }
+
+/* ═══════════════════════ RONDE 630 — SAFE RENDER ═══════════════════════ */
+
+/**
+ * THE SIMPLEST TECHNICALLY ROBUST VERSION OF THE SAME REAL FILM.
+ *
+ * ── What this is for ────────────────────────────────────────────────────────────────────────
+ *
+ * Render 599 held eleven segments of validated real media and delivered nothing, because the graph
+ * that JOINS them refused. RONDE 628 gave that join a ladder to climb down. This is the rung below
+ * the ladder: when the flourishes themselves are implicated — an effect chain, a camera move, a
+ * transition mode — the film is rendered without them rather than not at all.
+ *
+ * The principle is already this module's, stated at the top for a single clip: "an unexecutable
+ * transition is normalised to a hard cut — the shot survives, the flourish does not". SAFE_RENDER
+ * is that sentence applied to the whole timeline on purpose, instead of one clip at a time in
+ * response to a validator complaint.
+ *
+ * ── What it removes, and why exactly these three ────────────────────────────────────────────
+ *
+ * Only what the VIDEO segment pass and the JOIN pass execute, because those are the passes that
+ * have actually failed in production:
+ *
+ *   · `effects`   — `effectChain` builds split/blend/gblur/noise graphs per clip;
+ *   · `camera`    — `cameraChain` builds a zoompan with an upscale in front of it;
+ *   · transitions — every join becomes `hard_cut`.
+ *
+ * ── What it deliberately KEEPS, which is the part that makes it honest ──────────────────────
+ *
+ * Every clip, in the same order, at the same `timelineStart`/`timelineEnd`, from the same source,
+ * with the same `sourceIn`/`sourceOut`. The VOICE, MUSIC, SFX and AMBIENT tracks untouched. The
+ * captions, the text and the graphics untouched.
+ *
+ * So the film is the same film: same story, same narration, same real footage, same length, same
+ * sync. Someone watching it sees a documentary cut plainly, not a shorter or emptier one.
+ *
+ * Audio and text are not stripped because they do not run through the passes that failed, and
+ * removing them would be taking content away from the viewer to make a render easier — which is
+ * the thing SAFE_RENDER must never become. Graphics are kept for the same reason; a graphics
+ * failure is its own class and gets its own answer, not this one.
+ *
+ * ── What it is NOT ──────────────────────────────────────────────────────────────────────────
+ *
+ * Not a quality gate. Nothing here admits media that was refused, relaxes a threshold, fills a gap,
+ * shortens the story or touches a placeholder. A timeline whose PICTURES are wrong is exactly as
+ * wrong after this function as before it, and must still fail. SAFE_RENDER answers "the renderer
+ * could not execute this treatment"; it has no answer at all for "we never found a valid shot",
+ * and pretending otherwise would turn a content failure into a delivered video.
+ */
+export type SafeRenderChange =
+  | "effects_removed"
+  | "camera_removed"
+  | "transition_normalised";
+
+export type SafeRenderResult = {
+  timeline: ProjectTimeline;
+  /** What was taken off which clip. Empty when the timeline was already this plain. */
+  changes: Array<{ clipId: string; change: SafeRenderChange }>;
+};
+
+export function safeRenderTimeline(timeline: ProjectTimeline): SafeRenderResult {
+  const changes: Array<{ clipId: string; change: SafeRenderChange }> = [];
+
+  const tracks = timeline.tracks.map((track): TimelineTrack => {
+    if (track.kind !== "VIDEO") return track;
+    return {
+      ...track,
+      clips: track.clips.map((clip) => {
+        const next = { ...clip };
+        if (next.effects && next.effects.length > 0) {
+          changes.push({ clipId: clip.id, change: "effects_removed" });
+          delete next.effects;
+        }
+        if (next.camera) {
+          changes.push({ clipId: clip.id, change: "camera_removed" });
+          delete next.camera;
+        }
+        /**
+         * `transitionOut` is normalised with `transitionIn`: the renderer reads the INCOMING
+         * transition, but a plan left carrying an outgoing dissolve it can no longer execute would
+         * describe a film that was not made.
+         */
+        if (next.transitionIn !== "hard_cut" || next.transitionOut !== "hard_cut") {
+          changes.push({ clipId: clip.id, change: "transition_normalised" });
+          next.transitionIn = "hard_cut";
+          next.transitionOut = "hard_cut";
+          delete next.transitionInSec;
+          delete next.transitionOutSec;
+        }
+        return next;
+      }),
+    } as TimelineTrack;
+  });
+
+  return { timeline: { ...timeline, tracks }, changes };
+}
+
+/** Whether SAFE_RENDER would actually change anything — a plain timeline needs no second attempt. */
+export function safeRenderWouldChangeAnything(timeline: ProjectTimeline): boolean {
+  return safeRenderTimeline(timeline).changes.length > 0;
+}
+
+/** The render log's account of what the safe pass gave up, and what it kept. */
+export function formatSafeRender(result: SafeRenderResult): string[] {
+  if (result.changes.length === 0) {
+    return ["[SafeRender] the timeline carries no effects, camera moves or transitions — nothing to simplify"];
+  }
+  const count = (c: SafeRenderChange) => result.changes.filter((x) => x.change === c).length;
+  const clips = new Set(result.changes.map((c) => c.clipId)).size;
+  return [
+    `[SafeRender] SAFE_RENDER_STARTED clips=${clips} effectsRemoved=${count("effects_removed")} ` +
+      `cameraRemoved=${count("camera_removed")} transitionsNormalised=${count("transition_normalised")}`,
+    "[SafeRender] every clip, its source, its in/out points, its position and the whole audio, " +
+      "caption, text and graphics content are unchanged — this is the same film, cut plainly",
+  ];
+}

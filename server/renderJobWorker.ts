@@ -65,6 +65,12 @@ import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./ti
 import { rehydrateTimelineAssets, formatRehydrationSummary } from "./assetRehydrator";
 import { productionRehydrateDeps } from "./rehydrationDeps";
 import { renderTimeline, checkRenderedFile, type GraphicsOverlayFile } from "./timelineRenderer";
+import {
+  classifyFfmpegFailure,
+  formatFfmpegFailure,
+  SAFE_RENDER_ANSWERS,
+} from "./ffmpegFailureClass";
+import { safeRenderTimeline, formatSafeRender } from "./timelineRepair";
 import { formatOverlayInk } from "./graphicsOverlayInk";
 import { graphicsOverlayAvailable, productionGraphicsOverlay } from "./graphicsOverlayDeps";
 import { storagePutFromFile } from "./storage";
@@ -654,28 +660,87 @@ export async function runRenderJob(params: {
       );
     }
 
+    /** RONDE 630 — what the safe pass gave up, printed beside the renderer's own `skipped` list. */
+    const skippedFromSafeRender: string[] = [];
+
     /* 5. ffmpeg, with the Remotion graphics layer laid over it when there is one */
     await phase("rendering");
     const outputPath = path.join(workDir, "out.mp4");
     const renderDir = path.join(workDir, "render");
     const overlay = deps.graphicsOverlay({ workDir: renderDir });
-    const rendered = await deps.render({
-      timeline,
-      workDir: renderDir,
-      outputPath,
-      resolveMedia: async (clip) => rehydration.byClipId.get(clip.id) ?? null,
-      resolveAudio: async (id) => audioByClip.get(id) ?? null,
-      graphicsOverlay: overlay
-        ? async (t) => {
-            /**
-             * The phase moves HERE, at the moment ffmpeg actually asks for the overlay — not
-             * before the render, when we would only be predicting that it will.
-             */
-            await phase("compositing");
-            return overlay(t);
-          }
-        : undefined,
-    });
+    const renderWith = (t: typeof timeline) =>
+      deps.render({
+        timeline: t,
+        workDir: renderDir,
+        outputPath,
+        resolveMedia: async (clip) => rehydration.byClipId.get(clip.id) ?? null,
+        resolveAudio: async (id) => audioByClip.get(id) ?? null,
+        graphicsOverlay: overlay
+          ? async (tl) => {
+              /**
+               * The phase moves HERE, at the moment ffmpeg actually asks for the overlay — not
+               * before the render, when we would only be predicting that it will.
+               */
+              await phase("compositing");
+              return overlay(tl);
+            }
+          : undefined,
+      });
+
+    /**
+     * RONDE 630 — SAFE_RENDER, which is where a technical failure stops costing the film.
+     *
+     * Render 599 reached this line with eleven segments of validated real media and produced
+     * nothing, because the graph that joins them refused. RONDE 628 gave that join a ladder to climb
+     * down; this is the rung below it, for when the flourishes themselves are implicated — an effect
+     * chain, a camera move, a transition mode this footage will not take.
+     *
+     * The second attempt renders the SAME timeline with those three removed and everything else
+     * untouched: every clip, its source, its in and out points, its position, and the whole audio,
+     * caption, text and graphics content. Same story, same narration, same footage, same length.
+     *
+     * Two conditions, and both matter:
+     *
+     *   · `safeRenderWouldChangeAnything` — a timeline that is already plain gets no second attempt,
+     *     because re-running an identical render to hear the same refusal is the blind retry this
+     *     round is explicitly not;
+     *   · the failure is CLASSIFIED first, and a class that a simpler treatment cannot answer is
+     *     re-thrown immediately. A missing input file, an exhausted disk or an undecodable asset is
+     *     not made renderable by dropping a zoompan, and attempting it would spend a second full
+     *     render to fail the same way.
+     *
+     * If the safe attempt also fails, the FIRST error is thrown. That one names the original fault;
+     * the second names whatever the simplified graph tripped over on the way past it.
+     */
+    let rendered: Awaited<ReturnType<typeof renderTimeline>>;
+    try {
+      rendered = await renderWith(timeline);
+    } catch (renderErr) {
+      const diagnosis = classifyFfmpegFailure(renderErr);
+      const safe = safeRenderTimeline(timeline);
+      const treatable = SAFE_RENDER_ANSWERS.has(diagnosis.cls);
+      console.error(
+        formatFfmpegFailure("render", diagnosis) +
+          ` safeRenderApplicable=${treatable && safe.changes.length > 0}`
+      );
+      if (!treatable || safe.changes.length === 0) throw renderErr;
+      for (const line of formatSafeRender(safe)) console.warn(line);
+      await phase("rendering");
+      try {
+        rendered = await renderWith(safe.timeline);
+      } catch {
+        throw renderErr;
+      }
+      console.warn(
+        `[SafeRender] SAFE_RENDER_SUCCEEDED job=${job.id} — the film was rendered without its ` +
+          `effects, camera moves and transitions after ${diagnosis.cls}; the pictures and the ` +
+          `audio are the ones the plan chose`
+      );
+      skippedFromSafeRender.push(
+        `safe_render: the planned treatment would not render (${diagnosis.cls}), so the film was ` +
+          `cut plainly — same clips, same sources, same length, no effects or transitions`
+      );
+    }
     console.log(
       `[RenderJob] job=${job.id} graphics drawn by ${rendered.graphicsRenderer}` +
         (rendered.graphicsRenderer === "ffmpeg_ass" && overlay
@@ -802,7 +867,7 @@ export async function runRenderJob(params: {
      * renderer cannot execute, an overlay that did not appear — and nothing printed it. A render
      * that silently dropped its whole ambience track looked identical to one that never planned any.
      */
-    for (const s of rendered.skipped ?? []) {
+    for (const s of [...skippedFromSafeRender, ...(rendered.skipped ?? [])]) {
       console.warn(`[RenderJob] job=${job.id} not carried: ${s}`);
     }
     const bed = describeAudioBed({ timeline, recovered: new Set(audioByClip.keys()) });
