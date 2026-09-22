@@ -52,6 +52,8 @@ import { probeOverlayInk, type OverlayInkResult } from "./graphicsOverlayInk";
 import {
   buildAudioGraph,
   buildTransitionGraph,
+  TRANSITION_LADDER,
+  type TransitionLadderStep,
   effectiveTransitionSec,
   buildVideoFilter,
   cameraChain,
@@ -1050,30 +1052,35 @@ export async function renderTimeline(params: {
         `tolerance=${Math.max(2 / Math.max(1, fmt.fps), 0.08).toFixed(3)}s`
     );
   }
+  const graphDurations = rendered.map((r) => r.durationSec);
+  const graphTransitions = rendered.map((r) => ({
+    kind: r.clip.transitionIn,
+    /**
+     * RONDE 184 — the ALREADY-CLAMPED length, not the planner's request.
+     *
+     * The handle was rendered at this length; asking the graph to re-derive it from the request
+     * would let a second clamp produce a different answer against the now-longer segments, and
+     * the fade would run for a different time than the material provided for it.
+     */
+    durationSec: r.handleSec > 0 ? r.handleSec : r.clip.transitionInSec,
+  }));
   const graph = buildTransitionGraph({
-    durations: rendered.map((r) => r.durationSec),
-    transitions: rendered.map((r) => ({
-      kind: r.clip.transitionIn,
-      /**
-       * RONDE 184 — the ALREADY-CLAMPED length, not the planner's request.
-       *
-       * The handle was rendered at this length; asking the graph to re-derive it from the request
-       * would let a second clamp produce a different answer against the now-longer segments, and
-       * the fade would run for a different time than the material provided for it.
-       */
-      durationSec: r.handleSec > 0 ? r.handleSec : r.clip.transitionInSec,
-    })),
+    durations: graphDurations,
+    transitions: graphTransitions,
   });
 
   if (graph) {
-    const args = ["-y", "-hide_banner", "-loglevel", "error"];
-    for (const seg of segments) args.push("-i", seg);
-    args.push(
-      "-filter_complex", graph.filter,
-      "-map", "[vout]",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-      "-an", silent
-    );
+    const argsFor = (filter: string): string[] => {
+      const a = ["-y", "-hide_banner", "-loglevel", "error"];
+      for (const seg of segments) a.push("-i", seg);
+      a.push(
+        "-filter_complex", filter,
+        "-map", "[vout]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-an", silent
+      );
+      return a;
+    };
     /**
      * RONDE 627 — when the join fails, measure the things the join compares.
      *
@@ -1090,9 +1097,7 @@ export async function renderTimeline(params: {
      * `renderSegment`, and guessing at a normalisation here would hide the cause the next render
      * needs to show.
      */
-    try {
-      await runFfmpeg(args, "transition graph");
-    } catch (graphErr) {
+    const diagnoseSegmentShapes = async (): Promise<void> => {
       const shapes = await Promise.all(
         segments.map(async (seg) => ({ name: path.basename(seg), shape: await probeSegmentShape(seg) }))
       );
@@ -1120,7 +1125,62 @@ export async function renderTimeline(params: {
             "the join did not fail on geometry"
         );
       }
-      throw graphErr;
+    };
+
+    /**
+     * RONDE 628 — the ladder, walked here because this is the only place that knows it failed.
+     *
+     * Render 599 is the case: eleven segments of validated real media, one refusing `xfade`, and a
+     * delivery blocked on `AUTHORITATIVE_RENDER_FAILED`. The pictures were never in question. A
+     * documentary that cuts where it meant to dissolve is a smaller loss than one that does not
+     * exist, so a technical failure in the JOIN now costs the join and not the film.
+     *
+     * The shapes are probed once, on the first failure, because that is when the evidence is worth
+     * gathering and re-probing on each rung would say the same thing three times.
+     *
+     * What this does NOT do is lower a gate. Every segment in every rung is the same validated
+     * media in the same order at the same length; only the transition between them changes, and
+     * `cut` trims the handle it no longer eats so the total stays the timeline's own duration.
+     * A rung that still fails is re-thrown with the FIRST failure's message, because that is the
+     * one that names the original fault rather than the consequence of working around it.
+     */
+    const plannedGraph: { filter: string; totalSec: number } = graph;
+    /** The rung that actually produced the picture — what every later measurement must read. */
+    let renderedGraph = plannedGraph;
+    let ladderUsed: TransitionLadderStep = "planned";
+    let firstFailure: unknown = null;
+    for (const step of TRANSITION_LADDER) {
+      const rung: { filter: string; totalSec: number } | null =
+        step === "planned"
+          ? plannedGraph
+          : buildTransitionGraph({ durations: graphDurations, transitions: graphTransitions, step });
+      if (!rung) continue;
+      try {
+        await runFfmpeg(argsFor(rung.filter), `transition graph (${step})`);
+        renderedGraph = rung;
+        ladderUsed = step;
+        break;
+      } catch (graphErr) {
+        if (firstFailure == null) {
+          firstFailure = graphErr;
+          await diagnoseSegmentShapes();
+        }
+        console.error(
+          `[TransitionLadder] ${step} failed — ${(graphErr as Error).message.slice(0, 200)}`
+        );
+        if (step === TRANSITION_LADDER[TRANSITION_LADDER.length - 1]) throw firstFailure;
+      }
+    }
+    if (ladderUsed !== "planned") {
+      /**
+       * Loud, and recorded where the render's other compromises are recorded. A film that shipped
+       * with plainer joins than it was cut for is a fact the next reader needs, not a detail.
+       */
+      const line =
+        `transition_ladder: the planned transitions would not render, so the picture was joined ` +
+        `with "${ladderUsed}" instead — same clips, same order, same length, plainer joins`;
+      console.warn(`[TransitionLadder] RECOVERED via ${ladderUsed} — ${line}`);
+      skipped.push(line);
     }
     transitionsRendered = rendered.filter(
       (r, i) => i > 0 && r.clip.transitionIn !== "hard_cut"
@@ -1136,11 +1196,11 @@ export async function renderTimeline(params: {
      * the handle arithmetic and a video that silently ends before its narration does. A guard that
      * only speaks when something is wrong is worth more than the fix it verifies.
      */
-    const shortfall = timeline.durationSec - graph.totalSec;
+    const shortfall = timeline.durationSec - renderedGraph.totalSec;
     if (shortfall > 1 / Math.max(1, fmt.fps)) {
       skipped.push(
         `transition_overlap: the plan is ${timeline.durationSec.toFixed(2)}s and the picture ` +
-          `renders as ${graph.totalSec.toFixed(2)}s — ${transitionsRendered} transition(s) ` +
+          `renders as ${renderedGraph.totalSec.toFixed(2)}s — ${transitionsRendered} transition(s) ` +
           `overlap their neighbours by ${shortfall.toFixed(2)}s in total`
       );
     }

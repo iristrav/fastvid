@@ -707,12 +707,58 @@ export function effectiveTransitionSec(
   return Math.max(0.05, Math.min(requestedSec ?? DEFAULT_TRANSITION_SEC, maxSec));
 }
 
+/**
+ * RONDE 628 — THE RUNGS A FAILING JOIN CLIMBS DOWN, AND WHY THERE ARE ONLY THREE.
+ *
+ * Render 599 had eleven segments of validated real media and delivered nothing, because one
+ * `xfade` in the graph that joins them refused and `runFfmpeg` threw. The pictures were never the
+ * problem — every one of them had passed the picture editor — and a documentary that cuts where it
+ * meant to dissolve is a smaller loss than a documentary that does not exist.
+ *
+ * `planned` is what the planner asked for.
+ *
+ * `simple` changes the NAME of every transition to `fade` and touches nothing else. Every duration
+ * and every offset is identical to `planned`, so the arithmetic RONDE 182/184 settled is not
+ * re-derived on this rung: same frames, same length, a plain crossfade instead of a wipe or a
+ * dissolve. This is the rung that catches a transition mode the binary dislikes on this footage.
+ *
+ * `cut` removes the overlaps entirely — and this is the rung that needs care, because the segments
+ * were rendered LONGER than their slots on purpose. RONDE 184 gives each incoming segment a handle
+ * of `join.sec` extra seconds at the FRONT for its dissolve to consume. Concatenating them as they
+ * are would play those handles, and the picture would run `Σ handles` longer than the voice track
+ * it was cut to — the exact drift RONDE 182 measured as a 12.00s plan rendering as 10.70s, in the
+ * other direction. So a downgraded join trims the handle it was going to eat:
+ *
+ *     [i:v]trim=start=<join.sec>,setpts=PTS-STARTPTS,settb=AVTB[ti]
+ *
+ * which leaves `slot_i`, and `Σ slots` is the timeline's own duration. Both rungs therefore land on
+ * the same total, which is what keeps the audio in sync across a downgrade.
+ *
+ * There is no `retry the exact same command` rung. A filtergraph is deterministic — the same
+ * inputs, the same filters and the same binary produce the same refusal — so a retry would spend
+ * minutes of a render's budget to be told the same thing. Retries belong where the failure is a
+ * transfer, and those already have them.
+ */
+export type TransitionLadderStep = "planned" | "simple" | "cut";
+
+/** The rungs in the order they are attempted. Exported so the renderer cannot invent its own. */
+export const TRANSITION_LADDER: readonly TransitionLadderStep[] = ["planned", "simple", "cut"];
+
+/** The transition every `simple` join becomes: the plainest crossfade ffmpeg has. */
+export const SIMPLE_TRANSITION_NAME = "fade";
+
 export function buildTransitionGraph(params: {
   durations: readonly number[];
   /** The transition INTO each segment. Index 0 is ignored: nothing precedes the first clip. */
   transitions: readonly { kind: string; durationSec?: number }[];
+  /**
+   * Which rung of the ladder to build. `planned` is the default and is byte-identical to what this
+   * function produced before the ladder existed.
+   */
+  step?: TransitionLadderStep;
 }): { filter: string; totalSec: number } | null {
   const { durations, transitions } = params;
+  const step: TransitionLadderStep = params.step ?? "planned";
   if (durations.length < 2) return null;
 
   const joins = durations.slice(1).map((_, i) => {
@@ -722,6 +768,12 @@ export function buildTransitionGraph(params: {
     const sec = effectiveTransitionSec(t!.kind, t?.durationSec, durations[i]!, durations[i + 1]!);
     return sec == null ? null : { name, sec };
   });
+  /**
+   * `planned` and `simple` are a graph only when something actually fades; a video of pure cuts
+   * goes down the concat path, which is a stream copy. `cut` is the rung REACHED BY a failure, so
+   * it is built whenever there is a handle to trim — the concat path cannot be used there, because
+   * the segments on disk carry handles it would play.
+   */
   if (joins.every((j) => j === null)) return null;
 
   const steps: string[] = [];
@@ -759,22 +811,37 @@ export function buildTransitionGraph(params: {
    * condition would be a rule about which joins a future planner may combine, held in a place
    * nobody would think to look, and getting it wrong costs a whole render rather than a frame.
    */
-  for (let i = 0; i < durations.length; i++) steps.push(`[${i}:v]settb=AVTB[t${i}]`);
+  for (let i = 0; i < durations.length; i++) {
+    /**
+     * On `cut` the handle this segment was given for its dissolve is removed here, at the input,
+     * before anything joins it — so every later step sees a segment that is exactly its slot and
+     * the offsets below need no special case.
+     */
+    const trimSec = step === "cut" ? (joins[i - 1]?.sec ?? 0) : 0;
+    steps.push(
+      trimSec > 0
+        ? `[${i}:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,settb=AVTB[t${i}]`
+        : `[${i}:v]settb=AVTB[t${i}]`
+    );
+  }
 
   let label = "t0";
+  /** Segment 0 has no incoming transition, so it carries no handle on any rung. */
   let elapsed = durations[0]!;
   for (let i = 1; i < durations.length; i++) {
     const join = joins[i - 1];
     const out = i === durations.length - 1 ? "vout" : `v${i}`;
-    if (!join) {
+    /** On `cut` every join is a concat, and the handle it would have eaten is already trimmed. */
+    const trimmed = step === "cut" ? durations[i]! - (join?.sec ?? 0) : durations[i]!;
+    if (!join || step === "cut") {
       // A hard cut inside an otherwise-transitioned sequence: concat the two, no overlap.
       steps.push(`[${label}][t${i}]concat=n=2:v=1:a=0[${out}]`);
-      elapsed += durations[i]!;
+      elapsed += trimmed;
     } else {
       const offset = Math.max(0, elapsed - join.sec);
       steps.push(
-        `[${label}][t${i}]xfade=transition=${join.name}:duration=${join.sec.toFixed(3)}:` +
-          `offset=${offset.toFixed(3)}[${out}]`
+        `[${label}][t${i}]xfade=transition=${step === "simple" ? SIMPLE_TRANSITION_NAME : join.name}:` +
+          `duration=${join.sec.toFixed(3)}:offset=${offset.toFixed(3)}[${out}]`
       );
       elapsed = elapsed - join.sec + durations[i]!;
     }

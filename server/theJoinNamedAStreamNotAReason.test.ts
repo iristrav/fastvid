@@ -135,11 +135,18 @@ describe("§2 — the majority is the reference, not the first segment", () => {
 
 describe("§3 — the probe is wired to the failure, and repairs nothing", () => {
   it("THE GRAPH CALL IS WRAPPED AND THE ERROR IS RE-THROWN", () => {
-    const at = SRC.indexOf('await runFfmpeg(args, "transition graph");');
+    /**
+     * RONDE 628 moved the call inside the transition ladder, so the anchor moved with it. The
+     * claim is unchanged and deliberately not weakened: the graph call is still wrapped, the
+     * shapes are still probed on failure, and an exhausted ladder still throws rather than
+     * returning a picture nobody could render.
+     */
+    const at = SRC.indexOf("await runFfmpeg(argsFor(rung.filter)");
     expect(at).toBeGreaterThan(-1);
     const body = SRC.slice(at, at + 1400);
     expect(body).toContain("catch (graphErr)");
-    expect(body, "a diagnosed failure must still fail").toContain("throw graphErr;");
+    expect(body).toContain("await diagnoseSegmentShapes();");
+    expect(body, "a diagnosed failure must still fail").toContain("throw firstFailure;");
   });
 
   it("it probes the four properties the join actually compares", () => {

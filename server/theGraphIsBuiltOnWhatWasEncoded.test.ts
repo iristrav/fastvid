@@ -189,9 +189,29 @@ describe("§4 — [SegmentSpan]", () => {
     /**
      * No new transition, no new clamp, no change to `buildTransitionGraph`. The only thing that
      * moves is which number a drifted segment contributes.
+     *
+     * ── RONDE 628 re-pinned the second assertion, and said so rather than deleting it ────────
+     *
+     * This used to match one literal line:
+     *
+     *     for (let i = 0; i < durations.length; i++) steps.push(`[${i}:v]settb=AVTB[t${i}]`);
+     *
+     * RONDE 628 gave that loop a second form, because the `cut` rung of the transition ladder has
+     * to trim the handle RONDE 184 rendered for a dissolve that is no longer going to happen. So
+     * the line legitimately moved, and a string match on it would now fail for a reason that has
+     * nothing to do with what this test is about.
+     *
+     * What this test is about is unchanged and is asserted below: the measurement round introduced
+     * no clamp of its own, and every input still reaches the graph on one timebase — which is the
+     * property the old line existed to protect (see `longRenderDefects.test.ts`, where a mismatched
+     * timebase produced a zero-byte file).
+     *
+     * That the PLANNED rung is byte-identical to the graph this round built is proven behaviourally
+     * rather than textually, in `aPlainerJoinIsNotALostFilm.test.ts` §1.
      */
     const FILTERS = readFileSync(join(__dirname, "timelineFilters.ts"), "utf8");
     expect(FILTERS).toContain("const maxSec = Math.min(prevDurationSec, nextDurationSec) * 0.5;");
-    expect(FILTERS).toContain("for (let i = 0; i < durations.length; i++) steps.push(`[${i}:v]settb=AVTB[t${i}]`);");
+    expect(FILTERS).toContain("`[${i}:v]settb=AVTB[t${i}]`");
+    expect(FILTERS).toContain("setpts=PTS-STARTPTS,settb=AVTB[t${i}]`");
   });
 });
