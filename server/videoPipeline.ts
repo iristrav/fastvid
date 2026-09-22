@@ -33322,14 +33322,7 @@ async function beatClipPassesVisionGate(
    * failed to give it any must be nameable.
    */
   /** One line on purpose: adoptionIsEnforced proves this exact call precedes the judgement. */
-  const eligibleRecorded = dedup.sourcingCache?.lineage?.markEligible(clipPath, clipContentKey(clipPath), `vision_gate:${queryLabel}`);
-  if (eligibleRecorded === false) {
-    console.warn(
-      `[EligibilityGap] scene=${scene.index} beat=${beat.index} route=${queryLabel} ` +
-        `file=${path.basename(clipPath)} contentKey=${clipContentKey(clipPath)} ` +
-        `— the lineage ledger has no record for this clip, so it can never satisfy REAL_FUNNEL`
-    );
-  }
+  noteEligibleForJudgement(dedup, clipPath, `vision_gate:${queryLabel}`, scene.index, beat.index);
   noteBeatShortlistEligible(dedup.beatShortlist, scene.index, beat.index);
 
   /**
@@ -34504,12 +34497,98 @@ function noteVisionSpend(
  * costs no call and is still a verdict, and a call that times out costs a call and yields none. It
  * is their being counted by different SETS OF ROUTES that made them incomparable.
  */
+/**
+ * "THIS CANDIDATE IS WORTH PAYING A JUDGEMENT FOR" — written down, once, wherever that is decided.
+ *
+ * ── The defect ──────────────────────────────────────────────────────────────────────────────
+ *
+ * Render 597 refused four pictures the editor had APPROVED:
+ *
+ *     [AdoptionGuard] scene=2 beat=2 route=beat_fetch eligible=false vision=APPROVED
+ *       blocked=FUNNEL_WITHOUT_EVIDENCE
+ *       reason=route "beat_fetch" claims REAL_FUNNEL without eligibility
+ *       file=scene_2_b2_pool_youtube_cc_ytcc_3k-HbACK31g__…mp4
+ *
+ * That clip was found, ranked by its thumbnail, downloaded, scored 10.0, judged APPROVED and
+ * INGESTED INTO THE ARCHIVE as asset 57782. Its provenance was complete — `lineage=rmuccwkmt-1#40`,
+ * provider, providerAssetId, archiveAssetId. It failed on the stamp that says provenance exists.
+ *
+ * FIVE functions judge a beat's picture:
+ *
+ *     generateGuaranteedBeatClip        11636
+ *     beatClipPassesImageGate           15860
+ *     beatClipPassesVisionGate          33469   ← the only one that stamped
+ *     pushMotionGraphicBeatClipIfAny    34759
+ *     fetchSceneVisualsInner            41192   ← where render 597's clip came through
+ *
+ * RONDE 94 declared `fetchSceneVisualsInner`'s three insertion points REAL_FUNNEL deliberately,
+ * reasoning that "a REAL_FUNNEL claim without eligibility and vision is refused, so an
+ * over-generous reading here cannot smuggle anything in". That reasoning was right and the
+ * assumption under it was not: it took the eligibility writer to cover these routes. It covered one.
+ *
+ * ── Why HERE ────────────────────────────────────────────────────────────────────────────────
+ *
+ * `markEligible`'s own doc names the moment: "immediately before the picture is judged, because
+ * that is the real decision every route already makes: this candidate survived its route's
+ * deterministic filters and is worth paying a judgement for." `judgeBeatClipRelevance` IS that
+ * moment, for all five. One hook rather than five pastes, which is what would be forgotten again.
+ *
+ * ── What is NOT relaxed ─────────────────────────────────────────────────────────────────────
+ *
+ * `markEligible` still returns false when the ledger has never seen the file, and still refuses to
+ * invent provenance. A clip with no record stays ineligible and says so. The four routes that
+ * already had provenance simply stop being refused for never having passed the one desk that
+ * stamps it.
+ */
+function noteEligibleForJudgement(
+  dedup: VisualDedupState,
+  clipPath: string | undefined,
+  route: string,
+  sceneIndex: number,
+  beatIndex: number
+): boolean | undefined {
+  if (!clipPath) return undefined;
+  const contentKey = clipContentKey(clipPath);
+  const recorded = dedup.sourcingCache?.lineage?.markEligible(clipPath, contentKey, route);
+  /**
+   * `=== false` and not `!recorded`: the ledger is optional, so an absent one yields undefined,
+   * and "there was no ledger" is not the same finding as "the ledger had no record for this clip".
+   */
+  if (recorded === false) {
+    console.warn(
+      `[EligibilityGap] scene=${sceneIndex} beat=${beatIndex} route=${route} ` +
+        `file=${path.basename(clipPath)} contentKey=${contentKey} ` +
+        `— the lineage ledger has no record for this clip, so it can never satisfy REAL_FUNNEL`
+    );
+  }
+  return recorded;
+}
+
 async function judgeBeatClipRelevance(
   dedup: VisualDedupState,
   sceneIndex: number,
   beatIndex: number,
   params: Omit<BeatRelevanceParams, "onSpend">
 ): Promise<BeatRelevanceDecision> {
+  /**
+   * THE STAMP, FOR ALL FIVE JUDGES — see `noteEligibleForJudgement`.
+   *
+   * Before `checkBeatRelevance`, because the decision being recorded is "this is worth judging",
+   * and it is being made by the act of calling this function.
+   *
+   * A PLACEHOLDER IS EXEMPT. The guaranteed ladder's card rungs reach this function with
+   * `placeholder: true` so the judge can decline to look at a grey rectangle, and a drawn card
+   * must never read as eligible for the category that claims a verified own visual — RONDE 606
+   * spent a whole round making cards distinguishable and this would blur it again.
+   *
+   * `beatClipPassesVisionGate` keeps its own call: it stamps BEFORE the shortlist admission, and
+   * that admission can return early without ever reaching this function. Moving the stamp instead
+   * of adding one would have narrowed a route while widening four. Same helper, one body, and
+   * `markLineageEligible` is idempotent so the second stamp costs nothing.
+   */
+  if (!params.placeholder) {
+    noteEligibleForJudgement(dedup, params.clipPath, "judged", sceneIndex, beatIndex);
+  }
   const decision = await checkBeatRelevance({
     ...params,
     onSpend: (spent) => noteVisionSpend(dedup, sceneIndex, beatIndex, spent),

@@ -147,7 +147,13 @@ describe("eligibility has exactly one writer and one reader", () => {
   it("the vision gate records eligibility for every route that reaches it", () => {
     const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
     const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    const mark = body.indexOf("markEligible(clipPath, clipContentKey(clipPath)");
+    /**
+     * RONDE 609 — the write is now `noteEligibleForJudgement`, one body shared with the four other
+     * routes that judge a picture. The claim is unchanged and the ordering it protects is the
+     * whole point: the vision gate stamps BEFORE the judgement, and before the shortlist admission
+     * that can return without ever reaching one.
+     */
+    const mark = body.indexOf("noteEligibleForJudgement(dedup, clipPath");
     const judge = body.indexOf("judgeBeatClipRelevance(");
     expect(mark, "the vision gate does not record eligibility").toBeGreaterThan(-1);
     expect(judge).toBeGreaterThan(-1);
@@ -159,7 +165,7 @@ describe("eligibility has exactly one writer and one reader", () => {
     const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
     const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
     expect(body.indexOf('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text"')).toBeLessThan(
-      body.indexOf("markEligible(clipPath")
+      body.indexOf("noteEligibleForJudgement(dedup, clipPath")
     );
   });
 

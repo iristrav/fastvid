@@ -30,17 +30,26 @@ import { adoptionGuardVerdict, adoptionPolicyFor } from "./adoptionPolicy";
 
 const PIPE = fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
-/** The vision gate's eligibility write and the lines immediately around it. */
+/**
+ * The eligibility write and the lines immediately around it.
+ *
+ * RONDE 609 moved this body out of `beatClipPassesVisionGate` into `noteEligibleForJudgement`,
+ * because four other functions judge a beat's picture and none of them passed the one desk that
+ * stamps provenance. Every claim below is unchanged — the gap line still carries the same five
+ * fields, still fires only on a real false, and the return value is still captured. It is simply
+ * verified where the one body now lives instead of at one of its two call sites.
+ */
 const site = (): string => {
-  const at = PIPE.indexOf("const eligibleRecorded");
+  const at = PIPE.indexOf("function noteEligibleForJudgement(");
   expect(at, "the eligibility write moved or was renamed").toBeGreaterThan(-1);
-  return PIPE.slice(at, at + 900);
+  return PIPE.slice(at, at + 1100);
 };
 
 describe("the false answer is no longer discarded", () => {
   it("the return value is captured", () => {
-    expect(site()).toContain("const eligibleRecorded");
+    expect(site()).toContain("const recorded = dedup.sourcingCache?.lineage?.markEligible(");
     expect(site()).toContain("markEligible(");
+    expect(site(), "the answer must reach the caller too").toContain("return recorded;");
   });
 
   /**
@@ -48,8 +57,8 @@ describe("the false answer is no longer discarded", () => {
    * undefined, and a render with no ledger at all must not report a gap it cannot have.
    */
   it("reports only a real false, never an absent ledger", () => {
-    expect(site()).toContain("eligibleRecorded === false");
-    expect(site()).not.toContain("if (!eligibleRecorded)");
+    expect(site()).toContain("recorded === false");
+    expect(site()).not.toContain("if (!recorded)");
   });
 
   /** Which clip and which route — together they are the whole question. */

@@ -214,7 +214,10 @@ describe("the gate is where the boundary is drawn", () => {
   it("eligibility is decided before the shortlist, not after", () => {
     const at = PIPE.indexOf("async function beatClipPassesVisionGate(");
     const body = PIPE.slice(at, PIPE.indexOf("\n}\n", at));
-    expect(body.indexOf("markEligible(clipPath")).toBeLessThan(body.indexOf("admitToShortlist("));
+    /** RONDE 609: the write is `noteEligibleForJudgement` now — one body, five routes. Same order. */
+    expect(body.indexOf("noteEligibleForJudgement(dedup, clipPath")).toBeLessThan(
+      body.indexOf("admitToShortlist(")
+    );
   });
 
   /** A refusal is named and recorded, never a silent drop. */
