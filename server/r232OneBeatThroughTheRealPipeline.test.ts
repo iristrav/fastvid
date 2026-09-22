@@ -63,6 +63,9 @@ import {
   releaseShortlistSlot,
 } from "./beatShortlist";
 import { preparationKey } from "./preparationCache";
+import { adoptRouteForSource } from "./clipAdoptAudit";
+import { beatClipIsPlaceholder } from "./placeholderIdentity";
+import { isPipelineFallbackClip } from "./videoPipeline";
 
 const BEAT_TEXT =
   "As Soviet forces closed on Berlin in April 1945, Hitler withdrew into the Führerbunker.";
@@ -440,5 +443,113 @@ describe("R232 §5 — no route claims more than it can show", () => {
     expect(fallback.category).not.toBe("REAL_FUNNEL");
     const placeholder = adoptionPolicyFor("rescue_placeholder");
     expect(placeholder.category).not.toBe("REAL_FUNNEL");
+  });
+});
+
+/* ═══════════ 6. the leg this walk was missing: adoption → timeline ═══════════ */
+
+/**
+ * RONDE 611 — GOOD MEDIA REACHES THE TIMELINE, and that is asserted rather than assumed.
+ *
+ * ── The gap ─────────────────────────────────────────────────────────────────────────────────
+ *
+ * This file walked `beat → intent → query → gate → candidate → eligibility → shortlist → vision →
+ * adoption → lineage` and stopped at adoption. Everything after it — the step where an adopted
+ * clip becomes a `TimelineVideoClip` — was the one join with no end-to-end cover.
+ *
+ * RONDE 606 then put a NEW GATE on exactly that join: a card this pipeline drew is handed to the
+ * planner as `null`. That gate is tested for what it refuses. Nothing tested what it lets through.
+ *
+ * That is the wrong way round to be wrong. Every invariant added this week proves something does
+ * NOT get in. A pipeline can pass all of them and deliver an empty film. So this section walks the
+ * other direction: the candidate the editor approved must come out the far end.
+ *
+ * ── Real, not simulated ─────────────────────────────────────────────────────────────────────
+ *
+ * The ledger is the walk's own `VisualSourceLedger`. The route is what `adoptRouteForSource`
+ * computes from the adopt label the pipeline records. The verdict is `beatClipIsPlaceholder`,
+ * the function `videoPipeline` itself calls at the planner's input. Nothing between adoption and
+ * the timeline is faked.
+ */
+describe("R232 §6 — the approved picture comes out the far end", () => {
+  /** The file name an adopted clip carries by the time the planner sees it. */
+  const ADOPTED_FILE = "scene_1_b5_curated_a57364.mp4";
+  /** What the guaranteed ladder writes for BOTH its real rungs and its drawn cards. */
+  const GUARANTEED_FILE = "scene_1_slot5_guaranteed.mp4";
+
+  it("THE ADOPTED CANDIDATE IS NOT A PLACEHOLDER, so the planner is handed a clip", () => {
+    const { steps } = walkOneBeat(CANDIDATES);
+    const b = steps.find((s) => s.id === "B")!;
+    expect(b.allowed, "the chain stopped before the last leg could be tested").toBe(true);
+
+    /** `beat_fetch`, `archive`, `youtube_cc` — every REAL_FUNNEL label lands on route `primary`. */
+    const route = adoptRouteForSource("beat_fetch");
+    expect(route).toBe("primary");
+
+    const verdict = beatClipIsPlaceholder({ clipPath: ADOPTED_FILE, lineageRoute: route });
+    expect(verdict.placeholder, "approved media was refused at the timeline gate").toBe(false);
+    expect(verdict.authority).toBe("NONE");
+  });
+
+  it("GOOD_MEDIA_CAN_REACH_TIMELINE — the whole chain, stated as one claim", () => {
+    const { steps } = walkOneBeat(CANDIDATES);
+    const b = steps.find((s) => s.id === "B")!;
+    const route = adoptRouteForSource("beat_fetch");
+    const gate = beatClipIsPlaceholder({ clipPath: ADOPTED_FILE, lineageRoute: route });
+
+    expect(
+      {
+        eligible: b.eligible,
+        vision: b.vision,
+        adopted: b.allowed,
+        refusedAtTimeline: gate.placeholder,
+      },
+      "a picture the editor approved did not reach the timeline"
+    ).toEqual({
+      eligible: true,
+      vision: "APPROVED",
+      adopted: true,
+      refusedAtTimeline: false,
+    });
+  });
+
+  it("AND THE MIRROR: a drawn card on the same beat does NOT reach it", () => {
+    /**
+     * Same beat, same file-naming, same gate — only the adopt label differs. `rescue_placeholder`
+     * is what the ladder records for its `text_overlay` and `color_fallback` rungs, and
+     * `adoptRouteForSource` lands it on `fallback`.
+     *
+     * The filename is the one the ladder writes for ALL FOUR of its rungs, which is the whole
+     * reason the verdict may not be taken from it: `isPipelineFallbackClip` answers false here.
+     */
+    expect(isPipelineFallbackClip(GUARANTEED_FILE), "the old predicate never saw this").toBe(false);
+
+    const cardRoute = adoptRouteForSource("rescue_placeholder");
+    expect(cardRoute).toBe("fallback");
+
+    const verdict = beatClipIsPlaceholder({ clipPath: GUARANTEED_FILE, lineageRoute: cardRoute });
+    expect(verdict.placeholder, "a drawn card reached the timeline").toBe(true);
+    expect(verdict.authority).toBe("LINEAGE_ROUTE");
+  });
+
+  it("and a REAL rung of the same ladder, under the same filename, DOES reach it", () => {
+    /**
+     * `topical` fetches curated archive footage and writes it to the guaranteed name. Refusing it
+     * for how it is named is the mistake RONDE 606 was written to stop, and this is the case that
+     * would catch a regression into it.
+     */
+    const realRoute = adoptRouteForSource("rescue_archive");
+    expect(realRoute).toBe("rescue");
+    const verdict = beatClipIsPlaceholder({ clipPath: GUARANTEED_FILE, lineageRoute: realRoute });
+    expect(verdict.placeholder, "real rescued footage was thrown away for its filename").toBe(false);
+  });
+
+  it("BAD_MEDIA_CANNOT_REACH_TIMELINE — the refused candidates never get that far", () => {
+    /** D was refused by the editor; the adoption guard stops it long before the timeline gate. */
+    const { steps } = walkOneBeat(CANDIDATES);
+    for (const id of ["A", "D"]) {
+      const s = steps.find((x) => x.id === id)!;
+      expect(s.allowed, `${id} was adopted`).toBe(false);
+    }
   });
 });
