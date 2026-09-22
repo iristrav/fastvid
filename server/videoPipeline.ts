@@ -413,6 +413,8 @@ import {
   beatRejectCount,
   beatRejectReasons,
   noteRepeatedRefusal,
+  assetRefusedForRender,
+  noteAssetRefusedForRender,
 } from "./clipRejectAudit";
 // RONDE 70: one funnel line per beat, for every beat. Counting only — see beatOutcomeAudit.ts.
 import type { BeatOutcomeAudit } from "./beatOutcomeAudit";
@@ -702,6 +704,7 @@ import {
   type BeatRelevanceDecision,
   type BeatRelevanceParams,
   type BeatVisualContext,
+  isCanonicalAssetKey,
 } from "./beatVisualRelevance";
 import {
   coverageOfAdoptEntry,
@@ -33621,6 +33624,44 @@ async function beatClipPassesVisionGate(
    * never examined. The skip counter moving across this call is the only thing that can tell the
    * two apart, and `notArmed` is the bucket the gate stats already keep for it.
    */
+  /**
+   * RONDE 625 — AN ASSET ALREADY WRITTEN OFF FOR ITS OWN PIXELS IS NOT OFFERED AGAIN.
+   *
+   * Render 598 refused the same three Internet Archive clips on `baked_text` every thirty-five
+   * seconds for nine minutes. The refusal was correct each time — they are `legendado` uploads
+   * with Portuguese subtitles burnt into the picture — and it was re-made from scratch each time,
+   * because the only memory of an asset is `providerAssetAlreadyUsed`, which holds what was
+   * ADOPTED. A refused clip is never adopted, so it comes back a stranger.
+   *
+   * Asked BEFORE the detector rather than inside it: the verdict itself is memoised, so the saving
+   * is not the probe. It is that this beat stops spending an eligibility record, a CLIP evaluation
+   * and a round of the rescue ladder on a file whose pixels cannot change.
+   *
+   * Only `baked_text` is written off this way — see `FILE_LEVEL_REJECT_REASONS`. A vision verdict
+   * belongs to a (picture, narration) pair and must never travel to another beat.
+   */
+  const assetIdentity = clipContentKey(clipPath);
+  const writtenOff = isCanonicalAssetKey(assetIdentity)
+    ? assetRefusedForRender(dedup.clipRejectAudit, assetIdentity)
+    : null;
+  if (writtenOff) {
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, writtenOff, queryLabel);
+    const repeats = noteRepeatedRefusal(
+      dedup.clipRejectAudit,
+      scene.index,
+      beat.index,
+      assetIdentity,
+      `WRITTEN_OFF:${writtenOff}`
+    );
+    if (repeats === 0) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: not offered again — ` +
+          `${path.basename(clipPath)} was refused for ${writtenOff} earlier in this render, ` +
+          `and that is a fact about the file`
+      );
+    }
+    return { pass: false, worstScore10: null, skipped: false, fromCache: true };
+  }
   const skipsBefore = overlayBudgetSkipCount();
   const hasBakedText = await beatClipHasBakedText(clipPath);
   recordGateVerdict("baked_text", hasBakedText, {
@@ -33628,6 +33669,10 @@ async function beatClipPassesVisionGate(
   });
   if (hasBakedText) {
     recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text", queryLabel);
+    /** Burnt-in text is in the pixels: true on this beat, and on every other beat of this render. */
+    if (isCanonicalAssetKey(assetIdentity)) {
+      noteAssetRefusedForRender(dedup.clipRejectAudit, assetIdentity, "baked_text");
+    }
     console.warn(
       `[Pipeline] Scene ${scene.index} beat ${beat.index}: rejected — baked-in on-screen text ` +
         `(${path.basename(clipPath)})`

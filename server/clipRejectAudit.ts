@@ -75,7 +75,58 @@ export type ClipRejectAudit = {
    * buys is a log that names the repetition instead of performing it.
    */
   repeats: Map<string, number>;
+  /**
+   * RONDE 625 — ASSETS REFUSED FOR A REASON THAT IS A FACT ABOUT THE FILE.
+   *
+   * Render 598 offered the same three Internet Archive clips to scene 2 beat 0 every thirty-five
+   * seconds for nine minutes — two episodes of "The World at War" and a German documentary, all
+   * `legendado` uploads with Portuguese subtitles burnt into the picture. Each round refused all
+   * three on `baked_text`, correctly, and each round offered them again.
+   *
+   * `providerAssetAlreadyUsed` is the pre-download skip, and its own doc says what it holds:
+   * "already ADOPTED this render". A refused asset is never adopted, so it never enters, so it
+   * comes back a stranger. The refusal WAS recorded — in this audit, whose header says
+   * "Observability only" — and nothing read it back. The answer was computed on one side and never
+   * handed to the side that decides.
+   *
+   * ONLY reasons that are facts about the FILE belong here. A verdict belongs to a (picture,
+   * narration) pair — this codebase says so where the gate caches them — so `vision_gate` and
+   * `beat_image_gate` refuse a picture FOR THIS BEAT and must never write it off elsewhere. Burnt-in
+   * subtitles are in the pixels and are the same on every beat of every scene.
+   *
+   * Keyed by the asset's canonical identity, never by a path: `file:<size>:<basename>` is a
+   * fingerprint of one copy, and writing an asset off under it would miss the next copy and could
+   * catch an unrelated one.
+   */
+  refusedAssets: Map<string, string>;
 };
+
+/**
+ * Reasons that describe the FILE rather than the moment. Deliberately one entry: it is the one
+ * render 598 measured, and it is the one that cannot change between beats. A reason added here
+ * stops a candidate being offered again for the whole render, so the bar is that it must be
+ * impossible for the same asset to pass it later.
+ */
+export const FILE_LEVEL_REJECT_REASONS: ReadonlySet<string> = new Set(["baked_text"]);
+
+/** Write an asset off for this render. `identity` must be a canonical asset key, never a path. */
+export function noteAssetRefusedForRender(
+  audit: ClipRejectAudit | undefined,
+  identity: string,
+  reason: string
+): void {
+  if (!audit || !identity.trim() || !FILE_LEVEL_REJECT_REASONS.has(reason)) return;
+  if (!audit.refusedAssets.has(identity)) audit.refusedAssets.set(identity, reason);
+}
+
+/** The reason this asset was written off this render, or null. */
+export function assetRefusedForRender(
+  audit: ClipRejectAudit | undefined,
+  identity: string | null | undefined
+): string | null {
+  if (!audit || !identity) return null;
+  return audit.refusedAssets.get(identity) ?? null;
+}
 
 /**
  * Has this exact refusal already been reported? Returns how many times it had been seen BEFORE
@@ -103,7 +154,15 @@ export function beatRejectKey(sceneIndex: number, beatIndex: number): string {
 }
 
 export function createClipRejectAudit(capacity = CLIP_REJECT_DETAIL_CAPACITY): ClipRejectAudit {
-  return { entries: [], capacity, recorded: 0, dropped: 0, perBeat: new Map(), repeats: new Map() };
+  return {
+    entries: [],
+    capacity,
+    recorded: 0,
+    dropped: 0,
+    perBeat: new Map(),
+    repeats: new Map(),
+    refusedAssets: new Map(),
+  };
 }
 
 export function recordClipReject(

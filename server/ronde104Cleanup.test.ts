@@ -44,7 +44,12 @@ describe("RONDE 104 #1 — a filename may flag footage, it may not refuse it", (
   it("the baked-text check KEEPS its veto — a chyron is a defect, not an opinion", () => {
     const start = PIPELINE.indexOf("const hasBakedText = await beatClipHasBakedText(clipPath);");
     expect(start).toBeGreaterThan(-1);
-    const block = PIPELINE.slice(start, start + 700);
+    /**
+     * RONDE 625 writes the asset off for the render inside this same branch, which pushed the
+     * refusal past a 700-character window. The claim is unchanged — the check still vetoes — and
+     * the window is now wide enough to contain the branch it is reading.
+     */
+    const block = PIPELINE.slice(start, start + 1200);
     expect(block).toContain('recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "baked_text"');
     expect(block).toContain("return { pass: false");
   });
