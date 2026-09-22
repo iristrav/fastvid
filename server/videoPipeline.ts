@@ -19515,11 +19515,40 @@ const MONTH_NAMES = new Set([
   "july","august","september","october","november","december",
 ]);
 
-/** Common sentence openers that are capitalised only because they start the sentence. */
+/**
+ * Common sentence openers that are capitalised only because they start the sentence.
+ *
+ * RONDE 614 — the adverbs and prepositions were missing, and they are what narration opens with.
+ *
+ * The list held function words and little else, so any other capitalised opener was read as a
+ * name. Measured: of sixty-three ordinary openers put in front of a sentence whose subject was
+ * plainly "Reactor Four", TWENTY-SEVEN became the search subject themselves —
+ *
+ *     "Deep inside Reactor Four, Anatoly Dyatlov ordered the test."  ->  "Anatoly Dyatlov deep"
+ *
+ * — while thirty-six were already caught, by this list or by STOP_WORDS. The twenty-seven added
+ * below are exactly the ones that leaked; none was added on the suspicion that it might.
+ *
+ * Two things keep this narrow. It applies at position 0 only, so a name is untouched anywhere
+ * else in the sentence. And it demotes rather than deletes: an excluded opener still goes to the
+ * common-noun tier and is still available when a beat offers nothing better.
+ *
+ * The known cost: a sentence that genuinely OPENS with one of these as part of a name — "High
+ * Command ordered the retreat", "Long Island" — keeps the second word and loses the first. In
+ * narration those entities almost always arrive as "the High Command", where the word is no
+ * longer in opening position and nothing here applies.
+ */
 const SENTENCE_OPENER_WORDS = new Set([
   "the","a","an","it","he","she","they","we","in","on","at","by","for","with","from","after",
   "before","above","below","during","when","while","that","this","these","those","there","then",
   "but","and","or","as","if","so","by","life","most","many","some","every","each","one","two",
+  // RONDE 614, measured: place and manner adverbs.
+  "deep","deeper","far","further","high","low","long","here","elsewhere","everywhere","nowhere",
+  "somewhere","alone","together","slowly","quickly","quietly","barely",
+  // RONDE 614, measured: prepositions the list had skipped.
+  "within","behind","along","amid","despite","without","around",
+  // RONDE 614, measured: discourse connectives.
+  "nevertheless","thus",
 ]);
 
 /**
@@ -19605,7 +19634,33 @@ function beatSubjectCandidates(clean: string): { proper: string[]; common: strin
        * does not survive them cannot join a run, and it breaks the run it would have joined,
        * because two capitalised words with a stop word between them are not one name.
        */
-      const prev = isProperNoun ? properRunEnd : null;
+      /**
+       * RONDE 614 — AND A RUN BREAKS AT PUNCTUATION, FOR THE SAME REASON.
+       *
+       * The note above ends: "two capitalised words with a stop word between them are not one
+       * name." True, and it was only ever enforced for words. Adjacency is tested on the TOKEN
+       * index, and tokens are split on whitespace, so the comma in
+       *
+       *     "In April, Adolf Hitler spoke to the crowd."
+       *
+       * is invisible here: "April," sits at token 1 and "Adolf" at token 2, so they joined into
+       * one entry, "april adolf hitler". `notPerson` then correctly answered true — the entry is
+       * not the person, it contains a month the person's name does not — and the extractor
+       * appended the person's own name back onto the person:
+       *
+       *     "Adolf Hitler april adolf hitler"
+       *
+       * Three of the query's words are the subject's own name and the budget is gone. This is the
+       * failure RONDE 88A and RONDE 248 each fixed once, reached a third time by a third route,
+       * which is why the break is stated here rather than patched at the reading end.
+       *
+       * A comma, full stop, colon, dash or bracket ends a phrase. "April, Adolf Hitler" is a date
+       * and then a person; "Los Angeles" is one place and has nothing between its words. The test
+       * is the raw token, before punctuation is stripped, because stripping it is what hid this.
+       */
+      const prevRaw = tokens[i - 1] ?? "";
+      const runBrokenByPunctuation = /[^\p{L}\p{N}'’-]$/u.test(prevRaw);
+      const prev = isProperNoun && !runBrokenByPunctuation ? properRunEnd : null;
       if (prev && prev.sentence === sentenceIdx && prev.token === i - 1) {
         proper[proper.length - 1] = `${proper[proper.length - 1]} ${lower}`;
         properRunEnd = { sentence: sentenceIdx, token: i };
