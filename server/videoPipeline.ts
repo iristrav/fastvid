@@ -33205,7 +33205,22 @@ async function resolveBeatClipForBeat(
         }
         return v;
       },
-      beatVideoSearchWallMs(dedup.perf),
+      /**
+       * RONDE 623 — THE FOURTH, FOUND BY THE SWEEP RATHER THAN BY A RENDER.
+       *
+       * This scope holds `runBeatClipFetch` AND `resolveBeatClipFast`, and both reach a YouTube
+       * turn. Its size is `beatVisualSearchMaxMs`, which returns `perBeatSearchMs * 0.4` under an
+       * active render budget and 12_000 without one — against a turn priced at 24s. It escaped
+       * RONDE 622 twice over: the number is behind a function rather than typed in, and the scope's
+       * first argument is an `async () => {}` closure, which that round's walker did not read.
+       *
+       * Today's fast profile returns to `resolveBeatClipTurbo` before reaching this line, so no
+       * production render is known to have been bitten by it. That is a fact about one profile and
+       * not about the wall: a non-fast render on a tight budget lands here with whatever
+       * `perBeatSearchMs * 0.4` happens to be. A wall a turn can open under is sized for one, or it
+       * is a wall waiting for its render.
+       */
+      beatWallWithYoutubeTurn(beatVideoSearchWallMs(dedup.perf)),
       `video search s${sceneIndex} b${beat.index}`
     );
   } catch (err) {

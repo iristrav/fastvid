@@ -51,7 +51,10 @@ import {
   YOUTUBE_TURN_WINDOW_MS,
   affordsYoutubeTurn,
   beatWallWithYoutubeTurn,
+  historicalRescueBudgetMs,
 } from "./videoPipeline";
+import { composeRescueWallClockMs, youtubeBeatBudgetMs } from "./sourcingPolicy";
+import { SCENE_SEARCH_MIN_MS, sceneSearchBudgetMs } from "./sceneSearchBudget";
 
 const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 const LINES = SRC.split("\n");
@@ -185,7 +188,7 @@ describe("§2 — every scope that can reach a turn is sized for one", () => {
   };
 
   const scopes = (() => {
-    const found: Array<{ line: number; callee: string; ms: string }> = [];
+    const found: Array<{ line: number; callee: string; callees: string[]; ms: string }> = [];
     let from = 0;
     for (;;) {
       const at = SRC.indexOf("withSceneFetchTimeout(", from);
@@ -193,11 +196,20 @@ describe("§2 — every scope that can reach a turn is sized for one", () => {
       from = at + 1;
       const args = argsOf(at);
       if (args.length < 2) continue;
-      const callee = /(?:\(\)\s*=>\s*)?([A-Za-z0-9_]+)\s*\(/.exec(args[0] ?? "")?.[1];
-      if (!callee) continue;
+      /**
+       * EVERY named call in the first argument, not just the first one.
+       *
+       * RONDE 622's walker read `(() => name(` and nothing else, so a scope whose body is an
+       * `async () => { ... }` closure was skipped — and one of those held both `runBeatClipFetch`
+       * and `resolveBeatClipFast`. That is how the fourth wall survived a sweep meant to be
+       * exhaustive; reading the whole argument is what makes the sweep mean what it says.
+       */
+      const callees = [...new Set((args[0] ?? "").match(/\b[a-zA-Z][A-Za-z0-9_]{4,}(?=\s*\()/g) ?? [])];
+      if (!callees.length) continue;
       found.push({
         line: SRC.slice(0, at).split("\n").length,
-        callee,
+        callee: callees.find((c) => bodies.has(c)) ?? callees[0]!,
+        callees,
         ms: resolve(args[1] ?? ""),
       });
     }
@@ -227,10 +239,20 @@ describe("§2 — every scope that can reach a turn is sized for one", () => {
   it("NO SCOPE THAT CAN HOST A TURN IS SIZED BY A LITERAL BELOW THE PRICE", () => {
     const offenders: string[] = [];
     for (const s of scopes) {
-      if (!reachesTurn(s.callee)) continue;
+      if (!s.callees.some((c) => reachesTurn(c))) continue;
       /** The helper adds the turn's window, so a small base under it is correct by construction. */
-      const outsideHelper = s.ms.replace(/beatWallWithYoutubeTurn\([\s\S]*\)/g, "");
-      for (const lit of outsideHelper.match(/\b\d{1,3}(?:_\d{3})+\b/g) ?? []) {
+      let bare = s.ms.replace(/beatWallWithYoutubeTurn\([\s\S]*\)/g, "");
+      /**
+       * A number INSIDE a nested call is that function's argument, not this wall's size — the
+       * chunk wall passes a 20_000 floor to `chunkStageTimeoutMs` and is itself far larger.
+       * Stripping innermost calls until none remain leaves only what this scope was sized with.
+       */
+      for (let i = 0; i < 8; i++) {
+        const stripped = bare.replace(/[A-Za-z_$][\w$.?]*\([^()]*\)/g, "");
+        if (stripped === bare) break;
+        bare = stripped;
+      }
+      for (const lit of bare.match(/\b\d{1,3}(?:_\d{3})+\b/g) ?? []) {
         const ms = Number(lit.replace(/_/g, ""));
         if (ms < YOUTUBE_MIN_TURN_MS) {
           offenders.push(`line ${s.line}: ${s.callee} sized ${lit} (< ${YOUTUBE_MIN_TURN_MS})`);
@@ -254,7 +276,7 @@ describe("§2 — every scope that can reach a turn is sized for one", () => {
 
   it("the three this round repaired are among the scopes the walker sees", () => {
     const repaired = scopes.filter(
-      (s) => s.ms.includes("beatWallWithYoutubeTurn(") && reachesTurn(s.callee)
+      (s) => s.ms.includes("beatWallWithYoutubeTurn(") && s.callees.some((c) => reachesTurn(c))
     );
     expect(repaired.length, "the repaired walls are no longer recognised").toBeGreaterThanOrEqual(3);
   });
@@ -277,5 +299,69 @@ describe("§3 — one addition, one place", () => {
     expect(SRC).toContain(
       "export const YOUTUBE_MIN_TURN_MS = YOUTUBE_SEARCH_TIMEOUT_MS + YOUTUBE_MIN_DOWNLOAD_WINDOW_MS;"
     );
+  });
+});
+
+/* ═══════════ §4 — THE DELEGATED WALLS, EACH PROVING ITS OWN FLOOR ═══════════ */
+
+describe("§4 — a wall sized by a budget function, checked rather than trusted", () => {
+  /**
+   * §2 flags hand-written numbers, which is the defect that produced all four walls of RONDES 622
+   * and 623. It cannot flag a wall that delegates its size to a function — and a whitelist of such
+   * functions would forgive them by name, which is no check at all.
+   *
+   * So every budget function that sizes a YouTube-reaching scope is asserted HERE, against the
+   * price, with the real function. Nine of the seventeen scopes in the sweep are sized this way:
+   *
+   *     youtubeBeatBudgetMs        fetchBeatYoutubeOnly
+   *     composeRescueWallClockMs   recoverSceneClipsIfEmptyInner
+   *     historicalRescueBudgetMs   fetchHistoricalBeatRescue
+   *     sceneSearchBudgetMs        fetchSceneVisuals (x2)
+   *     beatVisualWallMs           adoptArchiveBeatClip, fetchHistoricalBeatVideo, resolveBeatClip (x3)
+   *
+   * The last already reads the helper, so it is covered by §2 and §3; the others are proven below.
+   * If one of them is ever lowered under the price, this section says so before a render does.
+   */
+  const PRICE = YOUTUBE_MIN_TURN_MS;
+
+  it("youtubeBeatBudgetMs never returns less than a turn costs", () => {
+    for (const len of [null, "30s", "60s", "3min"]) {
+      expect(youtubeBeatBudgetMs(len), `videoLength=${len}`).toBeGreaterThanOrEqual(PRICE);
+      /** And with the wall clock almost gone, which is when a floor matters most. */
+      expect(youtubeBeatBudgetMs(len, 1_000), `${len} with 1s left`).toBeGreaterThanOrEqual(PRICE);
+    }
+  });
+
+  it("composeRescueWallClockMs never returns less than a turn costs", () => {
+    for (const len of [null, "30s", "3min"]) {
+      expect(composeRescueWallClockMs(len), `videoLength=${len}`).toBeGreaterThanOrEqual(PRICE);
+    }
+  });
+
+  it("historicalRescueBudgetMs never returns less than a turn costs", () => {
+    /** Its own floor is 90s; the profile's number only ever raises it. */
+    for (const beatClipTimeoutMs of [1_000, 22_000, 150_000]) {
+      expect(
+        historicalRescueBudgetMs({ perf: { beatClipTimeoutMs } }),
+        `beatClipTimeoutMs=${beatClipTimeoutMs}`
+      ).toBeGreaterThanOrEqual(PRICE);
+    }
+  });
+
+  it("the scene search budget's floor is above the price", () => {
+    expect(SCENE_SEARCH_MIN_MS).toBeGreaterThanOrEqual(PRICE);
+    /** Including the degenerate input that returns the floor outright. */
+    expect(sceneSearchBudgetMs({ flatMs: 0, sceneDurationSec: 0, beatCount: 0 })).toBeGreaterThanOrEqual(PRICE);
+    expect(sceneSearchBudgetMs({ flatMs: 1_000, sceneDurationSec: 1, beatCount: 1 })).toBeGreaterThanOrEqual(PRICE);
+  });
+
+  it("and beatVisualWallMs reads the helper, so its own parts may stay small", () => {
+    /**
+     * 12s search + 6s fallback + 5s is 23s — under the price, and correct, because the helper adds
+     * the turn's window on top. This is RONDE 605's repair and it still holds.
+     */
+    const at = SRC.indexOf("export function beatVisualWallMs(");
+    const body = SRC.slice(at, SRC.indexOf("\n}", at));
+    expect(body).toContain("beatWallWithYoutubeTurn(");
   });
 });
