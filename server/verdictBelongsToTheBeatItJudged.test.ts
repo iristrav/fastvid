@@ -97,12 +97,15 @@ describe("what did NOT change", () => {
      * lookup found and is untouched.
      */
     expect(SRC).toContain("const neverLookedAt = existing.decision.evaluated === false;");
-    expect(SRC).toContain("params.finalSay === true && !scope.ledger.finalSayRetried.has(params.clipPath)");
+    /** RONDE 624 keyed the retry by the picture; the gate on finalSay is untouched. */
+    expect(SRC).toContain("params.finalSay === true && !scope.ledger.finalSayRetried.has(retryKey)");
   });
 
   it("the retry stays bounded at one per clip per render", () => {
     // A genuinely unjudgeable clip costs one extra look, not a loop.
-    expect(SRC).toContain("scope.ledger.finalSayRetried.add(params.clipPath);");
+    expect(SRC).toContain("scope.ledger.finalSayRetried.add(retryKey);");
+    /** And the key is the picture, so a rewritten file is bounded on its own merits. */
+    expect(SRC).toContain('const retryKey = `${params.clipPath}|${params.contentKey ?? ""}`;');
   });
 
   it("NO VERDICT WAS LOOSENED", () => {

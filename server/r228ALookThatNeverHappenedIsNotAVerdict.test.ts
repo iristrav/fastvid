@@ -172,7 +172,13 @@ describe("R228 §1 — the picture about to be used gets looked at", () => {
     process.env.ENABLE_BEAT_IMAGE_RELEVANCE_GATE = "false";
     const s = withUnlookedEntry(scope());
     await ask(s, { finalSay: true });
-    expect(s.ledger.finalSayRetried.has(WIKI)).toBe(true);
+    /**
+     * RONDE 624 keyed the retry by the PICTURE — `<path>|<contentKey>` — because a card rewritten
+     * at the same filename inherited a spent retry and could never earn a look again. The claim
+     * here is unchanged and is now stated more precisely: one retry, recorded against this clip.
+     */
+    const spent = [...s.ledger.finalSayRetried];
+    expect(spent.some((k) => k.startsWith(WIKI)), "the retry was not recorded for this clip").toBe(true);
     expect(s.ledger.finalSayRetried.size).toBe(1);
   });
 
@@ -200,7 +206,8 @@ describe("R228 §2 — no verdict moved", () => {
     const block = SRC.slice(at, at + 400);
     expect(block).toContain("existing.decision.evaluated === false");
     expect(block).toContain("params.finalSay === true");
-    expect(block).toContain("finalSayRetried.has(params.clipPath)");
+    /** RONDE 624 — the same read, keyed by the picture rather than the filename. */
+    expect(block).toContain("finalSayRetried.has(retryKey)");
     /** All three conjoined — any one of them alone would reopen far more than the deciding look. */
     expect(block).toContain("neverLookedAt && ");
   });

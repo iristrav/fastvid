@@ -211,7 +211,19 @@ export function beatSlotKey(ctx: BeatVisualContext): string {
  * exactly one render — two concurrent renders can neither read each other's verdicts nor spend
  * each other's budget.
  */
-export type BeatRelevanceEntry = { ctx: BeatVisualContext; decision: BeatRelevanceDecision };
+/**
+ * RONDE 624 — WHICH PICTURE THIS VERDICT IS ABOUT, not merely which filename.
+ *
+ * `byClipPath` is keyed by path, and a path is not a picture. Render 598 rewrote
+ * `scene_2_slot0_guaranteed.mp4` on every rescue round — same name, new duration, new bytes — and
+ * the ledger handed back the verdict earned by the previous one. See `ensureVerdictBeforeCompose`.
+ */
+export type BeatRelevanceEntry = {
+  ctx: BeatVisualContext;
+  decision: BeatRelevanceDecision;
+  /** The content key at the moment of the verdict, when the caller knew one. */
+  contentKey?: string;
+};
 
 /**
  * IS THIS KEY AN ASSET IDENTITY, OR ONLY A FINGERPRINT OF ONE FILE?
@@ -519,7 +531,7 @@ export async function checkBeatRelevance(
   const { clipPath, contentKey, ctx, workDir, state, ledger, route } = params;
 
   const record = (decision: BeatRelevanceDecision): BeatRelevanceDecision => {
-    const entry: BeatRelevanceEntry = { ctx, decision };
+    const entry: BeatRelevanceEntry = { ctx, decision, contentKey: contentKey || undefined };
     ledger.byClipPath.set(clipPath, entry);
     // Only an ASSET identity goes in the asset index — see `isCanonicalAssetKey`, which is the
     // same rule the verification reader asks before it calls a missing verdict `never_judged`.
@@ -1512,7 +1524,52 @@ export async function ensureVerdictBeforeCompose(params: {
     if (params.sceneIndex == null || params.beatIndex == null) return true;
     return entry.ctx.sceneIndex === params.sceneIndex && entry.ctx.beatIndex === params.beatIndex;
   };
-  const byPath = scope.ledger.byClipPath.get(params.clipPath);
+  /**
+   * RONDE 624 — A PATH IS NOT A PICTURE.
+   *
+   * ── What render 598 did, for nine minutes, on one beat ──────────────────────────────────────
+   *
+   *     [BeatRelevance] s2b0: backfill verdict unavailable: reason=already_judged
+   *         file=scene_2_slot0_guaranteed.mp4 — the last look was asked for and did not produce a
+   *         verdict; this refusal is the render failing to judge, not the editor refusing
+   *     [BeatRelevance] s2b0: refusing to push scene_2_slot0_guaranteed.mp4 — backfill needs an
+   *         approval; nobody looked at this clip for s2b0 (per-beat look ceiling reached (10))
+   *
+   * The same four files, every thirty-five seconds, from 15:58 until the render was killed. Each
+   * round REGENERATED the card at the same path with a different duration — the ffmpeg lines show
+   * `-t 3.5` and then `-t 5.428` writing `scene_2_slot0_guaranteed.mp4` — so every round offered a
+   * DIFFERENT picture under a name the ledger had already filed a verdict for.
+   *
+   * `byClipPath` answered with the previous card's record, that record carried no verdict, and the
+   * one retry this function grants was spent on the first round and keyed by the same path. So the
+   * escape hatch RONDE 228 built for precisely this moment could never fire again, and the beat
+   * could not be filled — not even by a placeholder, which is what made the loop endless rather
+   * than merely wasteful.
+   *
+   * ── The fix, and why it cannot hide a real verdict ──────────────────────────────────────────
+   *
+   * A path record is used only while the content it was earned on is still the content at that
+   * path. Both keys have to be known and they have to differ before anything is discarded, so a
+   * caller that offers no content key keeps exactly the behaviour it had. `file:<size>:<basename>`
+   * changes with the bytes, which is what makes a rewritten card visible here at all — see
+   * `isCanonicalAssetKey`, which already says such a key is a fingerprint and not an identity.
+   *
+   * Nothing is turned into an approval. A regenerated card is simply unjudged again, which is the
+   * truth about it, and it is looked at once like any other picture about to be used.
+   */
+  const pathEntry = scope.ledger.byClipPath.get(params.clipPath);
+  const pathEntryIsStale =
+    pathEntry?.contentKey != null &&
+    params.contentKey != null &&
+    pathEntry.contentKey !== params.contentKey;
+  if (pathEntryIsStale) {
+    console.warn(
+      `[BeatRelevance] ${path.basename(params.clipPath)} was rewritten since it was judged ` +
+        `(${pathEntry!.contentKey} -> ${params.contentKey}) — the old verdict belongs to a ` +
+        `different picture and is not reused`
+    );
+  }
+  const byPath = pathEntryIsStale ? undefined : pathEntry;
   const byKey =
     params.contentKey && !params.contentKey.startsWith("file:")
       ? scope.ledger.byContentKey.get(params.contentKey)
@@ -1559,12 +1616,20 @@ export async function ensureVerdictBeforeCompose(params: {
    * clip costs one extra look, not a loop. Render 576 offered the same five clips seventeen times
    * each; without that bound this would have re-judged every one of them.
    */
+  /**
+   * RONDE 624 — the one retry follows the PICTURE, not the filename.
+   *
+   * Keyed by path alone, a card rewritten at the same name inherited a spent retry and could never
+   * earn a look again. The bound RONDE 228 wanted — "one extra look per clip, not a loop" — is the
+   * same bound; it now counts clips the way the rest of this file does.
+   */
+  const retryKey = `${params.clipPath}|${params.contentKey ?? ""}`;
   if (existing) {
     const neverLookedAt = existing.decision.evaluated === false;
     const mayRetry =
-      neverLookedAt && params.finalSay === true && !scope.ledger.finalSayRetried.has(params.clipPath);
+      neverLookedAt && params.finalSay === true && !scope.ledger.finalSayRetried.has(retryKey);
     if (!mayRetry) return { outcome: "already_judged", verdict: existing.decision.verdict };
-    scope.ledger.finalSayRetried.add(params.clipPath);
+    scope.ledger.finalSayRetried.add(retryKey);
     console.warn(
       `[BeatRelevance] ${path.basename(params.clipPath)} was recorded without a look ` +
         `(${existing.decision.reason}) and is about to be used — looking once before it is refused ` +
