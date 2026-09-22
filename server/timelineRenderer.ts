@@ -801,8 +801,26 @@ export async function renderTimeline(params: {
 
   // ── 1. every clip becomes a normalised segment of exactly its own length ────────────────────
   const segments: string[] = [];
-  /** Kept alongside the paths so phase 2 knows each segment's clip and its real length. */
-  const rendered: Array<{ clip: TimelineVideoClip; durationSec: number; handleSec: number }> = [];
+  /**
+   * Kept alongside the paths so phase 2 knows each segment's clip and its real length.
+   *
+   * "Real" was aspirational until now: `durationSec` was `slotOf(clip) + handleSec`, which is what
+   * the planner ASKED FOR, and the only thing ever checked about the file was that it exceeded a
+   * kilobyte. The transition graph is built from these numbers, so a segment that encoded short
+   * entered the graph under a length it does not have — and ffmpeg then names an INPUT rather than
+   * the mismatch: `Error while processing the decoded data for stream #10:0`, which is what render
+   * 597 died on.
+   *
+   * `askedSec` and `measuredSec` are both kept so the report can name the gap rather than the
+   * symptom.
+   */
+  const rendered: Array<{
+    clip: TimelineVideoClip;
+    durationSec: number;
+    handleSec: number;
+    askedSec: number;
+    measuredSec: number | null;
+  }> = [];
   let transitionsRendered = 0;
   /** A clip's own length on the timeline. The handle is added on top of it, never taken out of it. */
   const slotOf = (c: TimelineVideoClip) => Math.max(0.04, c.timelineEnd - c.timelineStart);
@@ -841,8 +859,48 @@ export async function renderTimeline(params: {
       continue;
     }
     if (fs.existsSync(seg) && fs.statSync(seg).size > 1024) {
+      /**
+       * MEASURE WHAT WAS ENCODED — the file's own principle, applied to the parts as well.
+       *
+       * Line ~1299 of this file already states it: "Every claim is measured with ffprobe rather
+       * than assumed from the fact that ffmpeg exited zero." It was applied to the delivered MP4
+       * and not to the eleven segments the delivered MP4 is built from.
+       *
+       * ── Why a tolerance, and why the asked value wins inside it ──────────────────────────
+       *
+       * An encoder lands within a frame or two of a requested length, every time, on every clip.
+       * Feeding those roundings into the graph would change real renders: `buildTransitionGraph`
+       * re-clamps through `effectiveTransitionSec(kind, sec, durations[i], durations[i+1])`, so a
+       * measured length two frames short can produce a SHORTER fade than the handle that was
+       * actually rendered — precisely the drift RONDE 184 wrote its comment against.
+       *
+       * So inside the tolerance the graph gets the asked value and this round is byte-identical
+       * to the one before it. Outside it, the graph gets the truth, because outside it today's
+       * behaviour was a failed render.
+       *
+       * An unprobeable segment keeps the asked value too: unknown is not evidence of a mismatch,
+       * and that is exactly what happened before this change anyway.
+       */
+      const askedSec = slotOf(clip) + handleSec;
+      const measuredSec = await probeDurationSec(seg);
+      const toleranceSec = Math.max(2 / Math.max(1, fmt.fps), 0.08);
+      const material = measuredSec != null && Math.abs(measuredSec - askedSec) > toleranceSec;
+      if (material && measuredSec != null) {
+        const drift = measuredSec - askedSec;
+        skipped.push(
+          `segment_${drift < 0 ? "short" : "long"} clip ${clip.id}: asked ${askedSec.toFixed(3)}s, ` +
+            `encoded ${measuredSec.toFixed(3)}s (${drift > 0 ? "+" : ""}${drift.toFixed(3)}s) — ` +
+            "the transition graph is built on the measured length, not the requested one"
+        );
+      }
       segments.push(seg);
-      rendered.push({ clip, durationSec: slotOf(clip) + handleSec, handleSec });
+      rendered.push({
+        clip,
+        durationSec: material && measuredSec != null ? measuredSec : askedSec,
+        handleSec,
+        askedSec,
+        measuredSec,
+      });
     } else skipped.push(`clip ${clip.id}: segment was empty`);
 
     /**
@@ -897,6 +955,28 @@ export async function renderTimeline(params: {
    * null when there is nothing to fade.
    */
   const silent = path.join(workDir, "video_only.mp4");
+  /**
+   * WHAT THE GRAPH IS ABOUT TO BE BUILT ON — printed on every render, including the ones where
+   * everything matched.
+   *
+   * "No segment drifted" has to be a stated measurement rather than the absence of a warning, for
+   * the same reason `[ProviderSkipped]` names a provider nobody asked. A render that fails on the
+   * transition graph can now be read directly: either the segments were what the graph thought
+   * they were, or this line says which one was not.
+   */
+  {
+    const unprobed = rendered.filter((r) => r.measuredSec == null).length;
+    const drifted = rendered.filter(
+      (r) => r.measuredSec != null && r.measuredSec !== r.askedSec && r.durationSec === r.measuredSec
+    ).length;
+    const askedTotal = rendered.reduce((s, r) => s + r.askedSec, 0);
+    const graphTotal = rendered.reduce((s, r) => s + r.durationSec, 0);
+    console.log(
+      `[SegmentSpan] segments=${rendered.length} unprobed=${unprobed} drifted=${drifted} ` +
+        `askedTotal=${askedTotal.toFixed(2)}s graphTotal=${graphTotal.toFixed(2)}s ` +
+        `tolerance=${Math.max(2 / Math.max(1, fmt.fps), 0.08).toFixed(3)}s`
+    );
+  }
   const graph = buildTransitionGraph({
     durations: rendered.map((r) => r.durationSec),
     transitions: rendered.map((r) => ({
