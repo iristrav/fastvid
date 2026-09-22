@@ -134,7 +134,12 @@ describe("§3 — every other refusal is the one it was", () => {
   it("and they are refused BEFORE the counting, so no count can excuse them", () => {
     const at = SRC.indexOf("function categoryAtLimit(");
     const body = SRC.slice(at, SRC.indexOf("\n}", at));
-    const blocked = body.indexOf('category === "blocked_model"');
+    /**
+     * RONDE 621 moved the two literals into `categoryIsBlockedContent`, which decides the same
+     * refusals plus the one that asks whose film this is. The claim here is unchanged: a content
+     * refusal is settled before any counting, so no count can excuse one.
+     */
+    const blocked = body.indexOf("categoryIsBlockedContent(category, muskTopic)");
     const guard = body.indexOf('if (!muskTopic && category === "generic")');
     expect(blocked).toBeGreaterThan(-1);
     expect(blocked, "the content refusal must come first").toBeLessThan(guard);
@@ -143,11 +148,16 @@ describe("§3 — every other refusal is the one it was", () => {
 
 /* ═══════════ §4 — the neighbours, named and left alone ═══════════ */
 
-describe("§4 — the same defect one category over, deliberately not fixed here", () => {
+describe("§4 — the same defect one category over: one taken since, one still open", () => {
   /**
-   * Asserted as CURRENT BEHAVIOUR, not as desired behaviour. Both are this round's defect one
-   * notch further and neither has a render behind it; they belong to their own round with their
-   * own measurement. Pinned so that whoever takes them can see exactly what changes.
+   * RONDE 617 found two neighbours and fixed neither, pinning both as current behaviour so that
+   * whoever took them could see exactly what changed. RONDE 621 took the second — the blocklist
+   * that refused a moon-landing film its own subject — and the pin below is kept, inverted, so
+   * that fix cannot be undone silently.
+   *
+   * The first is still open and is still asserted as CURRENT behaviour, not desired: a quota of
+   * two yields two clips where a block yields none, so it is the less urgent half, and it still
+   * has no render behind it.
    */
   it("a space-race documentary meets the wall one category over", () => {
     const used = new Map<string, number>([["rocket", 2]]);
@@ -156,11 +166,19 @@ describe("§4 — the same defect one category over, deliberately not fixed here
     expect(g.atLimit, "still capped render-wide on a non-Musk topic").toBe(true);
   });
 
-  it("and a film about the moon landing has its own subject in the blocklist", () => {
-    /** `blocked_model` matches saturn|apollo|lunar|moon-landing|space shuttle. */
-    const g = stockCategoryGateForTest(new Map(), "apollo 11 lunar module", false);
-    expect(g.category).toBe("blocked_model");
-    expect(g.atLimit).toBe(true);
+  it("THE SECOND NEIGHBOUR WAS TAKEN — RONDE 621 split the blocklist", () => {
+    /**
+     * This test pinned a defect: `blocked_model` matched saturn|apollo|lunar|moon-landing|space
+     * shuttle, so a film about the moon landing had its own subject refused unconditionally.
+     * RONDE 621 separated "this footage is fake" from "this is a different space programme", and
+     * only the second asks whose film it is. The pin is kept, inverted, so the fix cannot be
+     * undone silently — see aDioramaIsNotTheApolloProgramme.
+     */
+    const doc = stockCategoryGateForTest(new Map(), "apollo 11 lunar module", false);
+    expect(doc.category).toBe("blocked_other_programme");
+    expect(doc.atLimit, "a documentary may search for its own subject").toBe(false);
+    /** And it is still the wrong programme on a SpaceX video, which is what the list was for. */
+    expect(stockCategoryGateForTest(new Map(), "apollo 11 lunar module", true).atLimit).toBe(true);
   });
 
   it("the code says both out loud where the gate is", () => {

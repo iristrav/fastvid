@@ -22473,10 +22473,43 @@ const OPENING_MUSK_QUERIES = HERO_MUSK_QUERIES;
 const MUSK_APPROVED_ROCKET_QUERY_RE =
   /\b(rocket|spacex|falcon|starship)\b|falcon\s*9.*(land|boost|recover|drone\s*ship)|starship.*(pad|boca|texas|static)|spacex.*crew\s*dragon/i;
 
+/**
+ * RONDE 621 — A MODEL ROCKET AND THE APOLLO PROGRAMME ARE NOT THE SAME REFUSAL.
+ *
+ * These two lists were one. `blocked_model` matched
+ *
+ *     miniature | diorama | tabletop | toy | model rocket | scale model | vhs | glitch | sci-fi
+ *     | cgi | saturn | apollo | lunar | moon-landing | moon-surface | space shuttle | shuttle
+ *
+ * and `categoryAtLimit` refuses that category unconditionally, on every topic. The first nine
+ * words say "this footage is fake" — true of any film ever made. The last seven say "this is a
+ * different space programme than SpaceX", which is true of a Musk video and is the SUBJECT of a
+ * film about the moon landing. On such a film every query for its own subject was refused before
+ * a provider was asked, with no log line that could explain why.
+ *
+ * This is RONDE 617's finding one category over, and the two are deliberately not fixed together:
+ * a quota of 2 still yields two clips, while a block yields none. A refusal that can never be
+ * satisfied is the urgent half, so it is the half this round takes.
+ *
+ * The split is by MEANING, not by topic: the fake-footage list still refuses everywhere, because a
+ * diorama is a diorama on any subject. Only the "other programme" half asks whose film this is.
+ */
+const BLOCKED_FAKE_FOOTAGE_RE =
+  /miniature|diorama|tabletop|toy|model rocket|scale model|vhs|glitch|sci[- ]?fi|cgi/;
+const BLOCKED_OTHER_SPACE_PROGRAMME_RE =
+  /saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle/;
+
 function stockVisualCategory(query: string, filePath?: string): string {
   const combined = `${query} ${path.basename(filePath ?? "")}`.toLowerCase();
-  if (/miniature|diorama|tabletop|toy|model rocket|scale model|saturn|apollo|lunar|moon[- ]?landing|moon[- ]?surface|space shuttle|shuttle|vhs|glitch|sci[- ]?fi|cgi/.test(combined)) {
+  if (BLOCKED_FAKE_FOOTAGE_RE.test(combined)) {
     return "blocked_model";
+  }
+  /**
+   * Named separately so the GATE can ask whose film this is — see `categoryIsBlockedContent`.
+   * The classifier knows the query and not the topic; the gate knows the topic and not the query.
+   */
+  if (BLOCKED_OTHER_SPACE_PROGRAMME_RE.test(combined)) {
+    return "blocked_other_programme";
   }
   if (/textile|weaving|loom|yarn factory|fabric mill|sewing factory|ferry|catamaran|river boat|canal|harbor cruise|container ship|cargo ship|shipping port|port crane|logistics hub|cargo terminal|container terminal|warehouse district|distribution center|highway|motorway|freeway|country road|rural road|pickup truck|pickup|semi truck|freight truck|delivery truck|desert road|coastal road|dashcam/.test(combined)) {
     return "blocked_offtopic";
@@ -22492,6 +22525,22 @@ function stockVisualCategory(query: string, filePath?: string): string {
   if (/assembly line|manufacturing|factory|gigafactory|welding plant/.test(combined)) return "factory";
   if (/astronaut|mission control|orbit|satellite deploy|space station/.test(combined)) return "space";
   return "generic";
+}
+
+/**
+ * RONDE 621 — CONTENT REFUSALS, AND THE ONE THAT ASKS WHOSE FILM THIS IS.
+ *
+ * `blocked_model` and `blocked_offtopic` are refusals about the FOOTAGE — a diorama, a dashcam, a
+ * container ship — and they hold on every topic, unchanged. `blocked_other_programme` is a refusal
+ * about the SUBJECT: Apollo, Saturn, the Shuttle are the wrong space programme on a SpaceX video
+ * and are the whole point of a film about the moon landing.
+ *
+ * One place, so a caller cannot answer this question differently by accident — which is how the
+ * two came to be one list in the first place.
+ */
+function categoryIsBlockedContent(category: string, muskTopic: boolean): boolean {
+  if (category === "blocked_model" || category === "blocked_offtopic") return true;
+  return category === "blocked_other_programme" && muskTopic;
 }
 
 function categoryLimitFor(dedup: VisualDedupState, category: string, muskTopic = false): number {
@@ -22518,7 +22567,7 @@ function hasMuskBrandSignal(sourceQuery: string, filePath: string): boolean {
 }
 
 function categoryAtLimit(dedup: VisualDedupState, category: string, muskTopic = false): boolean {
-  if (category === "blocked_model" || category === "blocked_offtopic") return true;
+  if (categoryIsBlockedContent(category, muskTopic)) return true;
   /**
    * RONDE 617 — "GENERIC" IS NOT A CATEGORY, IT IS THE CLASSIFIER SAYING NOTHING.
    *
@@ -22627,7 +22676,14 @@ function sanitizeSceneForMuskTopic(scene: Scene, sceneIndex: number, videoTitle?
     const trimmed = toQueryString(raw);
     if (!trimmed) return fallback;
     const cat = stockVisualCategory(trimmed);
-    if (cat === "blocked_model" || isBlockedStockQuery(trimmed)) return fallback;
+    /**
+     * RONDE 621 — this whole function returns early unless the film IS a Musk topic, so both
+     * refusals apply here in full: a model rocket and the Apollo programme are equally wrong on a
+     * SpaceX video. The split exists for the films this function never runs on.
+     */
+    if (cat === "blocked_model" || cat === "blocked_other_programme" || isBlockedStockQuery(trimmed)) {
+      return fallback;
+    }
     if (cat === "solar" && !/solar|photovoltaic|zon\b|sun\b/.test(scene.text.toLowerCase())) return fallback;
     if (cat === "space") return fallback;
     if (cat === "rocket" && !isMuskApprovedRocketQuery(trimmed)) {
@@ -28233,7 +28289,8 @@ async function adoptClip(
         }
       }
       const category = stockVisualCategory(sourceQuery, p);
-      if (category === "blocked_model" || category === "blocked_offtopic") continue;
+      /** RONDE 621 — the same question the gate below asks, so the two cannot answer differently. */
+      if (categoryIsBlockedContent(category, muskTopic)) continue;
       if (categoryAtLimit(dedup, category, muskTopic)) continue;
       // Documentary beat gate (blocklist-only: known non-documentary / off-topic geo-urban
       // filename patterns) now applies unconditionally, including scriptImageFallback
