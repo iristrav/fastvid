@@ -533,26 +533,27 @@ export function formatPrefetchLine(
 /* ═══════════════════════ which route first, in the background ═══════════════════════ */
 
 /**
- * RONDE 643 — RAPIDAPI FIRST HERE, AND ONLY HERE.
+ * RONDE 643 — WHICH ROUTE THE BACKGROUND ASKS FIRST, DECIDED BY MEASUREMENT.
  *
- * Inside a render the cloud route goes first because it fetches only the seconds one beat needs,
- * and a render has seconds to spend. The background has the opposite economics:
+ * The production route test on an HD video (Big Buck Bunny, 18:22 on 2026-09-23):
  *
- *   · it wants SEVERAL segments of each video, and RapidAPI's one whole-file transfer serves all of
- *     them — the download layer holds the source and re-cuts it (`source_reuse`) — while the cloud
- *     route pays a proxied yt-dlp run per segment;
- *   · RapidAPI's file comes straight from YouTube's CDN to this worker, not through the residential
- *     proxy the cloud route is billed by the gigabyte for;
- *   · and the production route test (RONDE 641) measured it delivering, 3 of 3, in 1.5–5.4 s.
+ *     route=cloud     ok=true   bytes=7734664  ms=12038   (9 s inside a 58 s window)
+ *     route=rapidapi  ok=false  http_403:ip_locked       ms=1118
  *
- * The cloud route stays as the fallback for anything RapidAPI refuses. The render's own order is
- * untouched. `YOUTUBE_PREFETCH_ROUTE_ORDER=cloud_first` restores the render's order here too.
+ * RapidAPI's file link is a googlevideo URL signed for RapidAPI's own address; fetched from this
+ * worker, YouTube refuses it. An earlier run had it succeed 3/3 — on a 2005 video whose old
+ * progressive format carries no such lock, which is why that test was replaced. For the videos a
+ * render actually finds, RapidAPI's transfer is refused, so it goes SECOND, as it does in a render.
+ *
+ * The cloud route delivered once it was given time — which a render never gave it, and this does.
+ * `YOUTUBE_PREFETCH_ROUTE_ORDER=rapidapi_first` swaps them, for a RapidAPI plan whose links are not
+ * address-locked.
  */
 export function prefetchRouteOrder(env: NodeJS.ProcessEnv = process.env): Array<"cloud" | "rapidapi"> {
   const cloud = Boolean(env.YOUTUBE_CC_DL_SERVICE?.trim());
   const rapid = Boolean(env.RAPIDAPI_KEY?.trim());
   const order: Array<"cloud" | "rapidapi"> =
-    env.YOUTUBE_PREFETCH_ROUTE_ORDER?.trim() === "cloud_first" ? ["cloud", "rapidapi"] : ["rapidapi", "cloud"];
+    env.YOUTUBE_PREFETCH_ROUTE_ORDER?.trim() === "rapidapi_first" ? ["rapidapi", "cloud"] : ["cloud", "rapidapi"];
   return order.filter((r) => (r === "cloud" ? cloud : rapid));
 }
 

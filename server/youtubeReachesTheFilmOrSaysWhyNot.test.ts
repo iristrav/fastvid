@@ -4,7 +4,7 @@
  *   §1  a file that arrived is asked whether it is a video before it is called one
  *   §2  the seconds of YouTube in the delivered film, direct and through the archive
  *   §3  a requirement blocks only when a deployment sets it, and says why
- *   §4  the background fetch asks RapidAPI first; the render's order is untouched
+ *   §4  the background asks the route that measured delivering first; the render's order is untouched
  *   §5  wired where it claims to be
  */
 import { describe, expect, it } from "vitest";
@@ -186,17 +186,17 @@ describe("§3 — a requirement only when a deployment sets one", () => {
 
 /* ═══════════ §4 ═══════════ */
 
-describe("§4 — the background asks RapidAPI first; the render's order is untouched", () => {
-  it("RapidAPI first, cloud as fallback, only the routes that exist", () => {
-    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s" } as never)).toEqual(["rapidapi", "cloud"]);
-    expect(prefetchRouteOrder({ YOUTUBE_CC_DL_SERVICE: "s" } as never)).toEqual(["cloud"]);
+describe("§4 — the background asks the route that measured delivering first", () => {
+  it("CLOUD FIRST — RapidAPI's link was measured ip_locked on an HD video; it stays as fallback", () => {
+    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s" } as never)).toEqual(["cloud", "rapidapi"]);
+    expect(prefetchRouteOrder({ RAPIDAPI_KEY: "k" } as never)).toEqual(["rapidapi"]);
     expect(prefetchRouteOrder({} as never)).toEqual([]);
   });
 
-  it("an operator can restore the render's order here too", () => {
+  it("an operator with an unlocked RapidAPI plan can swap them", () => {
     expect(
-      prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s", YOUTUBE_PREFETCH_ROUTE_ORDER: "cloud_first" } as never)
-    ).toEqual(["cloud", "rapidapi"]);
+      prefetchRouteOrder({ RAPIDAPI_KEY: "k", YOUTUBE_CC_DL_SERVICE: "s", YOUTUBE_PREFETCH_ROUTE_ORDER: "rapidapi_first" } as never)
+    ).toEqual(["rapidapi", "cloud"]);
   });
 
   it("the render's download call passes no route, so both run in their order as before", () => {
