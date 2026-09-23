@@ -42,35 +42,47 @@ import { pairClipsToBeats } from "./cinematicPipelineInputs";
 const pipeline = () => fs.readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
 
 describe("the cinematic plan can be built without the compose stage", () => {
-  it("prefers what compose actually used, and falls back to what retrieval selected", () => {
+  it("reads both sources, so an absent compose stage cannot empty the plan", () => {
     const src = pipeline();
     expect(src).toContain("const composedForScene = composedUsedClips[i] ?? [];");
     /**
-     * The preference is now hoisted into two named values, because the round that made the choice
-     * MEASURABLE — [CinematicSourceDecision] and [CinematicSourceDivergence] — needs both sides by
-     * name to report their counts and their difference. The behaviour is byte-for-byte the same
-     * choice; asserting it on the values rather than on one spelling of the ternary is what keeps
-     * this test about the property instead of about the formatting.
+     * The preference was first hoisted into two named values so the round that made the choice
+     * MEASURABLE — [CinematicSourceDecision] and [CinematicSourceDivergence] — could report both
+     * sides by name. RONDE 632 then acted on what they measured. Both values are still read; what
+     * changed is that neither one is discarded.
      */
     expect(src).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
     expect(src).toContain("const usingCompose = composedForScene.length > 0;");
-    expect(src).toContain("clipPaths: usingCompose ? composedForScene : canonicalForScene,");
+    expect(src).toContain("clipPaths: plannerSource.clipPaths,");
   });
 
   /**
-   * The composed list wins whenever it exists, and that is deliberate rather than incidental: it has
-   * had unusable files filtered out of it by the compose stage's own existence/decodability check.
-   * The selected set has not. Preferring the weaker source would be a quiet downgrade.
+   * RONDE 632 MADE THIS TEST STRONGER THAN THE ASSERTION THAT STOOD HERE.
+   *
+   * What stood here was "the composed list wins whenever it exists", and the reason given for it
+   * was the one that matters: compose's list "has had unusable files filtered out of it by the
+   * compose stage's own existence/decodability check. The selected set has not. Preferring the
+   * weaker source would be a quiet downgrade."
+   *
+   * That reason survives intact. The mechanism does not, because winning the whole list was never
+   * what the reason asked for — it asked that no file compose's CHECK would reject reaches the
+   * planner. Render 600 showed what the stronger form cost: four adopted YouTube clips that passed
+   * every check were invisible to the planner purely because compose's montage had not used them.
+   *
+   * So the check is now applied directly, to the canonical set, by compose's own predicate — and
+   * absence from compose's output, which is a selection and not a check, no longer removes
+   * anything. Nothing weaker reaches the planner than before; strictly more of what passed does.
    */
-  it("does not prefer the selected set over the composed one", () => {
+  it("still lets nothing past that compose's own usability check rejects", () => {
     const src = pipeline();
-    const at = src.indexOf("const composedForScene = composedUsedClips[i] ?? [];");
-    const line = src.slice(at, src.indexOf("adoptions:", at));
-    // The composed list is the TRUE branch — the one taken when it exists — not the fallback.
-    expect(line).toContain("usingCompose ? composedForScene : canonicalForScene");
-    expect(line).toContain("const usingCompose = composedForScene.length > 0;");
-    // And the fallback is the canonical retrieval state, not some third list.
-    expect(line).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
+    const at = src.indexOf("const source = await plannerClipsForScene({");
+    expect(at).toBeGreaterThan(-1);
+    const call = src.slice(at, src.indexOf("});", at));
+    // Both sources go in, named as they always were.
+    expect(call).toContain("canonical: sceneVisualResults[i]?.clips ?? [],");
+    expect(call).toContain("composed: composedUsedClips[i] ?? [],");
+    // And the filter is compose's real one, not a second opinion written for this call site.
+    expect(call).toContain("usableOnly: (clips) => usableSurvivorClips(clips),");
   });
 
   /**

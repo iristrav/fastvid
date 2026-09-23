@@ -639,6 +639,101 @@ export function candidateFrom(
   };
 }
 
+/** What `plannerClipsForScene` decided, and the counts that let a render check it. */
+export type PlannerClipSource = {
+  /** What the planner receives: the usable canonical set first, compose-only files after it. */
+  clipPaths: string[];
+  /** How many clips this scene's retrieval adopted. */
+  canonicalCount: number;
+  /** How many clips the legacy compose montage used. */
+  composeCount: number;
+  /**
+   * How many adopted clips were removed — and the ONLY reason one may be: the usability
+   * predicate compose itself applies said the file is not usable media. Absence from compose's
+   * montage is not counted here and never removes a clip.
+   */
+  canonicalExcludedByCompose: number;
+  /** How many adopted clips the planner can actually see. */
+  canonicalAvailableToPlanner: number;
+  /** The excluded adopted clips, so a render can name them rather than lose them silently. */
+  excluded: string[];
+  /** Files compose held that the canonical set does not, kept so nothing compose found is lost. */
+  composeOnly: string[];
+};
+
+/**
+ * WHICH CLIPS THE PLANNER IS ALLOWED TO SEE.
+ *
+ * ── The defect this removes ─────────────────────────────────────────────────────────────────
+ *
+ * The caller had one line: `usingCompose ? composedForScene : canonicalForScene`. The moment the
+ * legacy compose montage produced a single clip, the cinematic planner read COMPOSE's list and
+ * the canonical adopted set became invisible to it. A clip that was searched, downloaded,
+ * validated, judged and ADOPTED — but that compose did not put in its own montage — reached the
+ * planner as nothing at all, and the beat was dropped saying no clip had been adopted for it.
+ *
+ * It is provider-independent. It hit YouTube hardest only because those clips arrive late, via the
+ * scene pool, after compose has made its selection.
+ *
+ * ── Why the ternary is not simply flipped ───────────────────────────────────────────────────
+ *
+ * Because compose's list is not merely smaller, it is also FILTERED: compose drops files that are
+ * missing, empty, invalid video, or cards this pipeline drew. Reading canonical unconditionally
+ * would hand those back to the planner, which is the "accept worse pictures" trade this codebase
+ * refuses everywhere else.
+ *
+ * So the two facts are separated, because they were never the same fact:
+ *
+ *     compose REJECTED this file   → it is not usable media       → it stays out
+ *     compose is MISSING this file → compose made a selection     → it goes to the planner
+ *
+ * Only the first removes an adopted clip, and it is established by running the same predicate
+ * compose runs (`usableOnly`), not by asking whether compose's output happens to mention the file.
+ *
+ * ── Why adding entries cannot double-book a beat ────────────────────────────────────────────
+ *
+ * `pairClipsToBeats` below keeps the FIRST clip per beat and skips every later one, and skips any
+ * clip the adoption audit does not name. So a longer list can only fill beats that were empty. The
+ * canonical set is placed first for that reason: where both sources speak for a beat, the clip the
+ * render adopted for it wins, and compose's entries can only reach beats canonical left open.
+ */
+export async function plannerClipsForScene(params: {
+  /** This scene's adopted clips — the canonical retrieval state. */
+  canonical: readonly string[];
+  /** The clips the legacy compose montage used for this scene. */
+  composed: readonly string[];
+  /**
+   * Compose's own usability predicate, injected so production runs the REAL one
+   * (`usableSurvivorClips`) and a test can state a rejection instead of staging a file.
+   */
+  usableOnly: (clips: readonly string[]) => Promise<string[]>;
+  /** Injected so this stays free of node's path module — `path.basename` in the caller. */
+  basenameOf: (clipPath: string) => string;
+}): Promise<PlannerClipSource> {
+  const canonical = params.canonical.filter((p) => Boolean(p));
+  const composed = params.composed.filter((p) => Boolean(p));
+  const kept = await params.usableOnly(canonical);
+  const keptSet = new Set(kept);
+  const excluded = canonical.filter((p) => !keptSet.has(p));
+  /**
+   * By basename, because compose renames what it pads or overlays and the basename is the only
+   * join the two stages share. It over-matches rather than under-matches, which is the safe
+   * direction: the worst case is that a compose derivative of a clip we already hold is left out,
+   * and the clip itself is already in the list.
+   */
+  const heldNames = new Set(canonical.map((p) => params.basenameOf(p)));
+  const composeOnly = composed.filter((p) => !heldNames.has(params.basenameOf(p)));
+  return {
+    clipPaths: [...kept, ...composeOnly],
+    canonicalCount: canonical.length,
+    composeCount: composed.length,
+    canonicalExcludedByCompose: excluded.length,
+    canonicalAvailableToPlanner: kept.length,
+    excluded,
+    composeOnly,
+  };
+}
+
 /**
  * WHICH CLIP BELONGS TO WHICH BEAT.
  *

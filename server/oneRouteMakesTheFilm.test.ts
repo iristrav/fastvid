@@ -136,12 +136,17 @@ describe("§3 — legacy compose, pinned so it can only shrink", () => {
     /**
      * This was the real reason compose could not be deleted. `composedUsedClips[i]` is written BY
      * the compose stage, so reading only that made compose an INPUT to the cinematic plan rather
-     * than a fallback behind it. The canonical retrieval state is now the fallback, which is what
+     * than a fallback behind it. The canonical retrieval state became the fallback, which is what
      * makes a future removal a migration instead of a rewrite.
+     *
+     * RONDE 632 went one step further, and this assertion moves with it: the canonical set is now
+     * the PRIMARY source and compose contributes only what canonical does not already hold. The
+     * axle is not merely spare, it is off the car — compose's list can be empty on every scene and
+     * the planner still has every adopted clip.
      */
     expect(PIPELINE).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
-    expect(PIPELINE).toContain("const usingCompose = composedForScene.length > 0;");
-    expect(PIPELINE).toContain("clipPaths: usingCompose ? composedForScene : canonicalForScene,");
+    expect(PIPELINE).toContain("canonical: sceneVisualResults[i]?.clips ?? [],");
+    expect(PIPELINE).toContain("clipPaths: plannerSource.clipPaths,");
   });
 
   it("and the divergence between the two is measured on every render", () => {

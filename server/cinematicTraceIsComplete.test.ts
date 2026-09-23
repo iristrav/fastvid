@@ -157,12 +157,45 @@ describe("which source the planner read is stated", () => {
   });
 
   /**
-   * BEHAVIOUR UNCHANGED. This round observes the preference; it does not flip it. A change here
-   * is a separate, measured decision and must not ride along with the logging that measures it.
+   * THE SEPARATE, MEASURED DECISION THIS TEST WAS HOLDING THE DOOR FOR — RONDE 632.
+   *
+   * What stood here was "still prefers compose's output exactly as before", with the reason: "This
+   * round observes the preference; it does not flip it. A change here is a separate, measured
+   * decision and must not ride along with the logging that measures it."
+   *
+   * Render 600 supplied the measurement. Four YouTube clips reached `status=ASSIGNED` on beat
+   * level for the first time in this pipeline's history, and not one of them reached the film:
+   * `[CinematicPipeline] decisions=4 clips=4`, all four `fromArchive`. The planner was handed
+   * compose's list and planned exactly what it was handed.
+   *
+   * So the decision is made, on its own, in its own round — and it is NOT the flip this comment
+   * was guarding against. Compose's usability check still runs, over the canonical set. What
+   * stopped removing clips is compose's SELECTION, which was never a check.
    */
-  it("still prefers compose's output exactly as before", () => {
-    expect(PIPE).toContain("const usingCompose = composedForScene.length > 0;");
-    expect(PIPE).toContain("clipPaths: usingCompose ? composedForScene : canonicalForScene,");
+  it("states that the planner reads the merge, and still runs compose's usability check", () => {
+    expect(PIPE).toContain("preferredSource=canonicalFirstMerge ");
+    expect(PIPE).toContain("clipPaths: plannerSource.clipPaths,");
+    expect(PIPE).toContain("usableOnly: (clips) => usableSurvivorClips(clips),");
+  });
+
+  /** An adopted clip that still does not reach the planner is named, with its reason. */
+  it("names every canonical clip the usability check excluded", () => {
+    expect(PIPE).toContain("[CinematicPlannerSource]");
+    const at = PIPE.indexOf("[CinematicPlannerSource]");
+    const block = PIPE.slice(at, at + 1200);
+    expect(block).toContain("canonicalExcludedByCompose=");
+    expect(block).toContain("canonicalAvailableToPlanner=");
+    expect(block).toContain("excluded=UNUSABLE_MEDIA");
+  });
+
+  /** And every beat says which of the three things happened to its picture. */
+  it("gives each beat a reason that distinguishes lost from never-found", () => {
+    expect(PIPE).toContain("[CinematicPlannerBeat]");
+    const at = PIPE.indexOf("const excludedNames = new Set(");
+    const block = PIPE.slice(at, at + 1200);
+    expect(block).toContain("CANONICAL_CLIP_AVAILABLE");
+    expect(block).toContain("CANONICAL_CLIP_EXCLUDED");
+    expect(block).toContain("NO_CANONICAL_CLIP");
   });
 
   /** Bounded output: a scene that diverges wholesale must not replace the log with itself. */

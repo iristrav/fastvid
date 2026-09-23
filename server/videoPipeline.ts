@@ -51726,7 +51726,7 @@ async function _runVideoPipelineInner(
         enqueueCinematicRender,
         inProcessCinematicRenderBudgetMs,
       } = await import("./cinematicProduction");
-      const { pairClipsToBeats } = await import("./cinematicPipelineInputs");
+      const { pairClipsToBeats, plannerClipsForScene } = await import("./cinematicPipelineInputs");
       if (cinematicPlanningEnabled()) {
         const lineage = visualDedup.sourcingCache.lineage;
         /**
@@ -51747,6 +51747,52 @@ async function _runVideoPipelineInner(
          * media was found and the plan could not use it.
          */
         let placeholdersRefusedFromTimeline = 0;
+        /**
+         * §3 — THE ADOPTED SET REACHES THE PLANNER, AND ONLY A PROVEN REJECTION REMOVES A CLIP.
+         *
+         * Built here, ahead of the synchronous `scenes.map` below, because establishing that a file
+         * is usable means reading it (`usableSurvivorClips` stats it and probes it) and the map
+         * that assembles the planner's scenes cannot await.
+         *
+         * `plannerClipsForScene` carries the reasoning; what it does is: run compose's OWN
+         * usability predicate over the canonical adopted clips, keep everything it passes, and add
+         * whatever compose held that the adopted set does not. Absence from compose's montage
+         * stops removing an adopted clip — only the predicate does.
+         */
+        const plannerSourceByScene = new Map<
+          number,
+          Awaited<ReturnType<typeof plannerClipsForScene>>
+        >();
+        for (const [i, scene] of scenes.entries()) {
+          const source = await plannerClipsForScene({
+            canonical: sceneVisualResults[i]?.clips ?? [],
+            composed: composedUsedClips[i] ?? [],
+            usableOnly: (clips) => usableSurvivorClips(clips),
+            basenameOf: (clipPath) => path.basename(clipPath),
+          });
+          plannerSourceByScene.set(scene.index, source);
+          console.log(
+            `[CinematicPlannerSource] scene=${scene.index} ` +
+              `canonicalCount=${source.canonicalCount} composeCount=${source.composeCount} ` +
+              `canonicalExcludedByCompose=${source.canonicalExcludedByCompose} ` +
+              `canonicalAvailableToPlanner=${source.canonicalAvailableToPlanner} ` +
+              `composeOnlyAdded=${source.composeOnly.length}`
+          );
+          /**
+           * An adopted clip that does not reach the planner is named, never dropped in silence.
+           * This is the one exclusion the fix still allows, so it is the one that has to be
+           * readable in a render's log — otherwise the defect this change removes could come back
+           * through the predicate without anything saying so.
+           */
+          for (const p of source.excluded.slice(0, 10)) {
+            const rec = lineage.resolve(p, clipContentKey(p));
+            console.warn(
+              `[CinematicPlannerSource] scene=${scene.index} ` +
+                `asset=${rec?.provider ?? "UNVERIFIED"}:${rec?.providerAssetId ?? rec?.archiveAssetId ?? "none"} ` +
+                `excluded=UNUSABLE_MEDIA file=${path.basename(p)}`
+            );
+          }
+        }
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           /** The render's own id, so an adapter refusal names the run that produced it. */
@@ -51820,9 +51866,34 @@ async function _runVideoPipelineInner(
              */
             const canonicalForScene = sceneVisualResults[i]?.clips ?? [];
             const usingCompose = composedForScene.length > 0;
+            /**
+             * §3 — THE PREFERENCE, NOW MADE AND NOT MERELY MEASURED.
+             *
+             * These lines were written to let the next production render decide this on evidence:
+             * which source was used, whether the other was available, and which adopted files were
+             * missing from compose's. The trace above is what answers that question now — it
+             * reports the canonical set, the exclusions, and their reason — so `preferredSource` no
+             * longer names one of two lists. It names the merge, and the divergence report below
+             * stays because "what compose left out" is still worth reading; it is simply no longer
+             * the same thing as "what the planner lost".
+             */
+            const plannerSource =
+              plannerSourceByScene.get(scene.index) ??
+              /* A scene absent from the map cannot occur — it is built from this same array — but
+               * falling back to the canonical set keeps this expression total rather than throwing
+               * away a scene's pictures over a lookup. */
+              {
+                clipPaths: [...canonicalForScene],
+                canonicalCount: canonicalForScene.length,
+                composeCount: composedForScene.length,
+                canonicalExcludedByCompose: 0,
+                canonicalAvailableToPlanner: canonicalForScene.length,
+                excluded: [] as string[],
+                composeOnly: [] as string[],
+              };
             console.log(
               `[CinematicSourceDecision] scene=${scene.index} ` +
-                `preferredSource=${usingCompose ? "composedUsedClips" : "sceneVisualResults"} ` +
+                `preferredSource=canonicalFirstMerge ` +
                 `canonicalSourceAvailable=${canonicalForScene.length > 0} ` +
                 `composedSourceCount=${composedForScene.length} ` +
                 `canonicalSourceCount=${canonicalForScene.length}`
@@ -51850,11 +51921,45 @@ async function _runVideoPipelineInner(
                 }
               }
             }
+            const sceneAdoptions = visualDedup.clipAdoptAudit.filter(
+              (e) => e.sceneIndex === scene.index
+            );
             const clipForBeat = pairClipsToBeats({
-              clipPaths: usingCompose ? composedForScene : canonicalForScene,
-              adoptions: visualDedup.clipAdoptAudit.filter((e) => e.sceneIndex === scene.index),
+              clipPaths: plannerSource.clipPaths,
+              adoptions: sceneAdoptions,
               beats,
               basenameOf: (clipPath) => path.basename(clipPath),
+            });
+            /**
+             * §5 — WHY A BEAT HAS NO PICTURE, SAID WHERE IT CAN BE PROVEN.
+             *
+             * `planCinematicScene` drops an empty beat with `NO_ADOPTED_CLIP`, which was the label
+             * that lied: a clip HAD been adopted, the planner was handed a list that did not carry
+             * it. That sentence is true from inside that function — it received nothing — and the
+             * render needs the reason that function cannot know. It is known here, one line from
+             * the list itself, and only here:
+             *
+             *     CANONICAL_CLIP_AVAILABLE  the beat's adopted clip is in the planner's list
+             *     CANONICAL_CLIP_EXCLUDED   a clip was adopted for it and failed the usable check
+             *     NO_CANONICAL_CLIP         nothing was ever adopted for this beat
+             *
+             * The third is the only one that means what `NO_ADOPTED_CLIP` says.
+             */
+            const excludedNames = new Set(plannerSource.excluded.map((p) => path.basename(p)));
+            beats.forEach((beat, position) => {
+              const beatKey = beat.index ?? position;
+              const clipPath = clipForBeat[position];
+              const reason = clipPath
+                ? "CANONICAL_CLIP_AVAILABLE"
+                : sceneAdoptions.some(
+                      (a) => a.beatIndex === beatKey && excludedNames.has(a.basename)
+                    )
+                  ? "CANONICAL_CLIP_EXCLUDED"
+                  : "NO_CANONICAL_CLIP";
+              console.log(
+                `[CinematicPlannerBeat] scene=${scene.index} beat=${beatKey} reason=${reason}` +
+                  (clipPath ? ` file=${path.basename(clipPath)}` : "")
+              );
             });
             clipForBeat.forEach((clipPath, beatIndex) => {
               if (clipPath) localFileByBeat.set(`${scene.index}:${beatIndex}`, clipPath);
