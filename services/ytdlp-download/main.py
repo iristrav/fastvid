@@ -90,7 +90,7 @@ app = FastAPI(title="FastVid YouTube download service")
 # disk in milliseconds. Nothing about what is cut, or how, changes.
 RESULT_DIR = Path(tempfile.gettempdir()) / "ytdl-results"
 RESULT_TTL_S = 30 * 60
-RESULT_MAX_BYTES = int(os.environ.get("RESULT_CACHE_MB", "1024")) * 1024 * 1024
+RESULT_CACHE_CEILING_BYTES = int(os.environ.get("RESULT_CACHE_MB", "1024")) * 1024 * 1024
 # How long a second caller waits for the first one's cut. Under FastVid's 180 s transfer ceiling.
 INFLIGHT_WAIT_S = 150
 
@@ -133,7 +133,7 @@ def _prune_results() -> None:
             continue
     total = sum(f.stat().st_size for f in kept if f.exists())
     for f in kept:
-        if total <= RESULT_MAX_BYTES:
+        if total <= RESULT_CACHE_CEILING_BYTES:
             break
         try:
             size = f.stat().st_size
