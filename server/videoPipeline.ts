@@ -52269,7 +52269,8 @@ async function _runVideoPipelineInner(
         cinematicProgress.enabled = cinematicRenderPathEnabled();
         if (outcome.ok && cinematicProgress.enabled) {
           try {
-            const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob } = await import("./db");
+            const { claimRenderAttempt, createRenderJob, claimQueuedRenderJob, getRenderJobById } =
+              await import("./db");
             cutover = await enqueueCinematicRender({
               videoId,
               timelineVersion: outcome.timelineVersion,
@@ -52313,9 +52314,76 @@ async function _runVideoPipelineInner(
                */
               const claimed = await claimQueuedRenderJob(cutover.renderJobId);
               if (!claimed) {
-                cinematicRefusal =
-                  `the render job worker claimed job ${cutover.renderJobId} first, so this render ` +
-                  "did not produce the cinematic file";
+                /**
+                 * §16 — LOSING THE CLAIM IS NOT THE SAME AS THE RENDER FAILING.
+                 *
+                 * What stood here was the second half of that sentence: this render "did not
+                 * produce the cinematic file", written down as `cinematicRefusal`, which the
+                 * delivery gate reads as AUTHORITATIVE_RENDER_FAILED.
+                 *
+                 * Render 600 measured what that costs. Sixty-one milliseconds after queueing job
+                 * 19 the video was written off as failed; eight seconds later the worker started
+                 * it, and two and a half minutes after that the film passed the gate reading the
+                 * real file and was published. The MP4 existed the whole time.
+                 *
+                 * Not rendering it twice is right and is unchanged — `awaitRenderJobOutcome` only
+                 * READS the row, never claims it, so the mutual exclusion
+                 * `claimQueuedRenderJob` establishes is untouched. What changes is that this
+                 * render now asks the question it was answering: not "did I render it" but "was
+                 * it rendered".
+                 */
+                const { awaitRenderJobOutcome, formatRenderJobWait } = await import(
+                  "./awaitRenderJobOutcome"
+                );
+                const waitBudgetMs = inProcessCinematicRenderBudgetMs();
+                const waited = await awaitRenderJobOutcome({
+                  jobId: cutover.renderJobId,
+                  budgetMs: waitBudgetMs,
+                  readJob: (id) => getRenderJobById(id),
+                  /** The watchdog is fed exactly as the claimed path feeds it while ffmpeg runs. */
+                  onWaiting: ({ waitedMs, status }) =>
+                    get_activeWatchdog()?.ping(
+                      `waiting on render job=${cutover?.ok ? cutover.renderJobId : "?"} ` +
+                        `${status} ${Math.round(waitedMs / 1000)}s`
+                    ),
+                });
+                console.log(
+                  pipelineReport.add(
+                    "summary",
+                    `[RenderJob] video=${videoId} ${formatRenderJobWait(cutover.renderJobId, waited)}`
+                  )
+                );
+                if (waited.kind === "DELIVERED") {
+                  cinematicDeliveredUrl = waited.outputUrl;
+                  /** The renderer ran — in the worker's process, but it ran, and it delivered. */
+                  cinematicProgress.rendered = true;
+                  /**
+                   * AND EVERY STAGE-6 FIGURE WITHDRAWS ITS CLAIM ABOUT THIS FILE.
+                   *
+                   * The claimed path corrects the spot check and the AV envelope from the render
+                   * job's own return value. There is no return value here: another process
+                   * measured them and this one cannot see them. Re-measuring would mean fetching
+                   * and probing the delivered file, which is a multi-minute ffmpeg pass this
+                   * render has already spent its budget waiting through.
+                   *
+                   * So they say which file they describe, by the rule `avSync`'s own comment
+                   * states: "a number about a file the viewer did not receive is worse than no
+                   * number, because it reads as reassurance." `postRenderSpotCheck` has no
+                   * `measuredOn` field to qualify it with, so it is dropped rather than left
+                   * standing as a verdict on a file it never saw.
+                   */
+                  delete qualityReport.postRenderSpotCheck;
+                  if (qualityReport.avSync) qualityReport.avSync.measuredOn = "compose_montage";
+                  if (qualityReport.stillness) qualityReport.stillness.measuredOn = "compose_montage";
+                  if (qualityReport.repeats) qualityReport.repeats.measuredOn = "compose_montage";
+                  qualityReport.warnings.push(
+                    `the delivered file was rendered by the render job worker, so this report's ` +
+                      `black-frame, AV-envelope, stillness and repetition figures describe the ` +
+                      `compose montage and not the video the viewer receives`
+                  );
+                } else {
+                  cinematicRefusal = formatRenderJobWait(cutover.renderJobId, waited);
+                }
               } else {
                 onProgress?.({ stage: "Rendering the edit", percent: 97 });
                 const { runRenderJob } = await import("./renderJobWorker");

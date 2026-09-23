@@ -58,15 +58,36 @@ describe("stillness and repetition name the file they measured", () => {
      */
     const src = read(PIPELINE);
     /**
-     * Anchored on the spot check's own DELIVERED-file warning rather than on the assignment:
-     * `postRenderSpotCheck = {` is written twice — once at stage 6 from the compose file, once here
-     * from the render job — and the first of those is the wrong end of the file to measure from.
+     * RONDE 633 — THERE ARE TWO WAYS THE CINEMATIC FILE CAN BE DELIVERED, AND BOTH FLIP.
+     *
+     * This measured the FIRST occurrence of the flip and required it to sit just after the spot
+     * check's own delivered-file warning. That located the right block while there was only one
+     * block. There are two now: the render this process ran itself, and the render the job worker
+     * ran while this process waited on the row (render 600's job 19, written off in 61 ms and
+     * published two and a half minutes later).
+     *
+     * The property is unchanged and is what is asserted: EVERY flip sits under an established
+     * cinematic delivery, never on an unconditional path where it would mark the figures of a
+     * render that measured them correctly. Checking every occurrence rather than the first is
+     * strictly stronger than what stood here.
      */
     const anchor = src.indexOf("qualityReport.warnings.push(`Delivered file: ${w}`);");
-    const flip = src.indexOf(`qualityReport.stillness.measuredOn = "compose_montage";`);
     expect(anchor).toBeGreaterThan(-1);
-    expect(flip).toBeGreaterThan(anchor);
-    expect(flip - anchor).toBeLessThan(2_000);
+    const flips = [...src.matchAll(/qualityReport\.stillness\.measuredOn = "compose_montage";/g)];
+    expect(flips.length).toBeGreaterThan(0);
+    for (const m of flips) {
+      const at = m.index!;
+      /** The nearest delivery condition above this flip, and how far above it is. */
+      const guards = [
+        src.lastIndexOf("if (jobOutcome.ok) {", at),
+        src.lastIndexOf('if (waited.kind === "DELIVERED") {', at),
+      ];
+      const guard = Math.max(...guards);
+      expect(guard, "a flip with no cinematic delivery above it").toBeGreaterThan(-1);
+      expect(at - guard, "a flip that drifted away from the block that establishes it").toBeLessThan(
+        4_000
+      );
+    }
   });
 
   it("the render log says out loud that the two figures describe another file", () => {

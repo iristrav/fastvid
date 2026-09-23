@@ -132,13 +132,36 @@ describe("§2 — claimQueuedRenderJob", () => {
 /* ═══════════ §3 — both callers already handle losing ═══════════ */
 
 describe("§3 — failing closed costs a render nothing", () => {
-  it("the pipeline delivers the compose montage and says why", () => {
+  /**
+   * RONDE 633 MOVED THIS ANCHOR, AND THE PROPERTY GOT LARGER RATHER THAN SMALLER.
+   *
+   * What stood here was "a lost claim must set a stated refusal", measured in the 400 characters
+   * after the claim. The refusal was the only thing a lost claim could produce, and render 600
+   * showed what that cost: job 19 was written off sixty-one milliseconds after it was queued, and
+   * the worker that had won the row went on to render the film, pass the delivery gate on the real
+   * file, and publish it.
+   *
+   * So a lost claim now has two honest outcomes — the worker's file is delivered, or a refusal is
+   * stated with the reason the job row gave. What must never happen is the third: falling through
+   * quietly, having said nothing. That is what this asserts, across the whole branch instead of a
+   * fixed window, so a comment can be added to it without moving the property.
+   */
+  it("the pipeline either takes the worker's film or says why it could not", () => {
     const PIPELINE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
     const at = PIPELINE.indexOf("const claimed = await claimQueuedRenderJob(");
     expect(at).toBeGreaterThan(-1);
-    const after = PIPELINE.slice(at, at + 400);
-    expect(after).toContain("if (!claimed) {");
-    expect(after, "a lost claim must set a stated refusal").toContain("cinematicRefusal =");
+    const branch = PIPELINE.slice(at, PIPELINE.indexOf("\n              } else {", at));
+    expect(branch).toContain("if (!claimed) {");
+    expect(branch, "a lost claim must still not render the job a second time").not.toContain(
+      "runRenderJob("
+    );
+    expect(branch, "a lost claim must ask whether the job was rendered").toContain(
+      "await awaitRenderJobOutcome({"
+    );
+    expect(branch, "a delivered job must become the delivered film").toContain(
+      "cinematicDeliveredUrl = waited.outputUrl;"
+    );
+    expect(branch, "anything else must set a stated refusal").toContain("cinematicRefusal =");
   });
 
   it("the poll loop moves to the next job", () => {
