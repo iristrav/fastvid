@@ -26,8 +26,16 @@
 import fs from "fs";
 import path from "path";
 
-/** The yt-dlp service's own egress probe video (services/ytdlp-download/main.py): 19s, public. */
-export const ROUTE_TEST_DEFAULT_VIDEO_ID = "jNQXAC9IVRw";
+/**
+ * Big Buck Bunny, published by the Blender Foundation under CC BY 3.0: stable, public, and HD.
+ *
+ * The first choice was the yt-dlp service's egress-probe video, "Me at the zoo". It exists only up
+ * to 240p, and the service asks for at least MIN_FORMAT_HEIGHT (480): the first production run
+ * answered `502: Requested format is not available` three times out of three. That was a fact about
+ * the TEST VIDEO, not about the route — and a route test that fails for its own reasons is worse
+ * than none. A test video has to be one a render could actually have picked.
+ */
+export const ROUTE_TEST_DEFAULT_VIDEO_ID = "aqz-KE-bpKQ";
 
 export type YoutubeRoute = "cloud" | "rapidapi";
 
