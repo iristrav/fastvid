@@ -156,14 +156,31 @@ describe("the pipeline proves the delivered file's contents", () => {
     expect(src).toContain("ledger.replaceFinalVideo(deliveredPaths)");
   });
 
-  /** Only on the delivering path — when compose IS the deliverable, its proof is the right one. */
-  it("only when the cinematic render actually delivered", () => {
+  /**
+   * Only on a delivering path — when compose IS the deliverable, its proof is the right one.
+   *
+   * RONDE 639 MADE THIS CHECK EVERY OCCURRENCE INSTEAD OF THE FIRST. There are two delivering
+   * paths now: the render this process ran itself, and the one it waited for after the worker won
+   * the job. Reading `indexOf` found whichever came first in the file and said nothing about the
+   * other — and render 603 is what the missing one cost, a nine-shot film refused over a
+   * placeholder that the compose montage's stale marking still carried.
+   */
+  it("only where the cinematic render actually delivered — on every such path", () => {
     const src = pipeline();
-    const okAt = src.indexOf("cinematicDeliveredUrl = jobOutcome.outputUrl;");
-    const reproveAt = src.indexOf("ledger.replaceFinalVideo(deliveredPaths)");
-    const refusalAt = src.indexOf("cinematicRefusal = `${jobOutcome.code}");
-    expect(reproveAt).toBeGreaterThan(okAt);
-    expect(reproveAt).toBeLessThan(refusalAt);
+    const reproves = [...src.matchAll(/ledger\.replaceFinalVideo\(deliveredPaths\)/g)];
+    expect(reproves.length).toBeGreaterThan(0);
+    for (const m of reproves) {
+      const at = m.index!;
+      /** The nearest established delivery above it, whichever of the two paths this is. */
+      const guard = Math.max(
+        src.lastIndexOf("cinematicDeliveredUrl = jobOutcome.outputUrl;", at),
+        src.lastIndexOf("cinematicDeliveredUrl = waited.outputUrl;", at)
+      );
+      expect(guard, "a re-prove with no established delivery above it").toBeGreaterThan(-1);
+      /** And never below a refusal, where compose is the deliverable. */
+      const refusal = src.lastIndexOf("cinematicRefusal = `${jobOutcome.code}", at);
+      expect(refusal).toBeLessThan(guard);
+    }
   });
 
   /**

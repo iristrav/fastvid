@@ -84,8 +84,9 @@ describe("stillness and repetition name the file they measured", () => {
       ];
       const guard = Math.max(...guards);
       expect(guard, "a flip with no cinematic delivery above it").toBeGreaterThan(-1);
+      /** Widened for RONDE 639's FINAL_VIDEO correction, which sits between the two on one path. */
       expect(at - guard, "a flip that drifted away from the block that establishes it").toBeLessThan(
-        4_000
+        8_000
       );
     }
   });

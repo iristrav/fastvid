@@ -52417,6 +52417,79 @@ async function _runVideoPipelineInner(
                   /** The renderer ran — in the worker's process, but it ran, and it delivered. */
                   cinematicProgress.rendered = true;
                   /**
+                   * RONDE 639 — AND FINAL_VIDEO STOPS DESCRIBING THE MONTAGE NOBODY RECEIVED.
+                   *
+                   * `markFinalVideo` runs at stage 6 over `composedUsedClips` — the COMPOSE
+                   * montage's clips. The claimed path below corrects it with `replaceFinalVideo`
+                   * against what the render job reported it rendered. This path had no such
+                   * correction, and the LAST delivery gate reads exactly that marking
+                   * (`deliveryClipFactsFromLedger` keeps `finalVideoAt != null`).
+                   *
+                   * Render 603 is what that cost. The film was rendered, published and passed the
+                   * gate that read the real file:
+                   *
+                   *     [PlaceholderGate] video=603 refusedFromTimeline=1 clipsOnTimeline=9
+                   *                       placeholdersOnTimeline=0
+                   *     [DeliveryGate] DELIVERY_GATE_PASS video=603 clips=9 checks=assets+file
+                   *     [RenderJob] job=20 status=completed published=true clips=9 duration=65.54s
+                   *
+                   * and four seconds later the pipeline refused it:
+                   *
+                   *     [DeliveryGate] DELIVERY_GATE_FAIL video=603 clips=13 checks=assets failures=1
+                   *       PLACEHOLDER_IN_DELIVERY — clip=…#149 is a placeholder or colour fallback
+                   *
+                   * Thirteen clips judged for a film made of nine, and the one it failed on is a
+                   * card the placeholder gate had already refused from the timeline. The video was
+                   * blocked over a picture that is not in it.
+                   *
+                   * ── What this can and cannot claim ─────────────────────────────────────────
+                   *
+                   * The claimed path knows what the renderer RENDERED (`renderedClipIds`). Another
+                   * process rendered this one, so the strongest list available here is the stored
+                   * timeline the job carried — what was ASKED for. A clip the worker could not
+                   * rehydrate would still be marked, so this is not as strong as the claimed
+                   * path's list and the log says which it is rather than implying the other.
+                   *
+                   * It is still enormously closer to the delivered file than the compose montage,
+                   * and it is the same correction applied at the same point for the same reason.
+                   */
+                  try {
+                    const ledger = visualDedup.sourcingCache.lineage;
+                    const { localFilesForTimelineClips } = await import("./cinematicPipelineInputs");
+                    const { videoTrack } = await import("./projectTimeline");
+                    const timelineClips = videoTrack(outcome.timeline);
+                    const localByClipId = localFilesForTimelineClips({
+                      clips: timelineClips,
+                      localPathFor: (sceneIndex, beatIndex) =>
+                        localFileByBeat.get(`${sceneIndex}:${beatIndex}`) ?? null,
+                    });
+                    const deliveredPaths: string[] = [];
+                    let unattributable = 0;
+                    for (const clip of timelineClips) {
+                      const local = localByClipId.get(clip.id);
+                      if (local) deliveredPaths.push(local);
+                      else unattributable++;
+                    }
+                    const proven = ledger.replaceFinalVideo(deliveredPaths);
+                    console.log(
+                      pipelineReport.add(
+                        "sourcing",
+                        `[VisualAudit] video=${videoId} FINAL_VIDEO re-proved against the timeline ` +
+                          `the worker rendered: ${timelineClips.length} shot(s) planned, ` +
+                          `${proven} clip(s) proven` +
+                          (unattributable > 0
+                            ? `, ${unattributable} rehydrated by the render job and not attributable`
+                            : "") +
+                          " — planned rather than confirmed rendered, because another process rendered it"
+                      )
+                    );
+                  } catch (err) {
+                    console.warn(
+                      `[VisualAudit] video=${videoId} could not re-prove FINAL_VIDEO against the ` +
+                        `worker's timeline: ${(err as Error).message.slice(0, 200)}`
+                    );
+                  }
+                  /**
                    * AND EVERY STAGE-6 FIGURE WITHDRAWS ITS CLAIM ABOUT THIS FILE.
                    *
                    * The claimed path corrects the spot check and the AV envelope from the render

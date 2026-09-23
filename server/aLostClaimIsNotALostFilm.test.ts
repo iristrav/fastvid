@@ -344,18 +344,38 @@ describe("§7 — the pipeline asks whether it was rendered, not whether it rend
 /* ═══════════ §8 — no figure describes a file it never saw ═══════════ */
 
 describe("§8 — what the report says after a delivery this process did not measure", () => {
-  it("THE COMPOSE MONTAGE'S BLACK-FRAME VERDICT IS NOT LEFT STANDING", () => {
+  /**
+   * MEASURED TO THE END OF THE BRANCH, NOT ACROSS A FIXED SPAN.
+   *
+   * These read 2500 characters from the top of the branch, which located the corrections while
+   * they were the only thing in it. RONDE 639 put the FINAL_VIDEO re-prove above them — because
+   * render 603 showed the last delivery gate judging thirteen clips for a film made of nine — and
+   * a fixed window then reports a correction MISSING when it has only moved.
+   */
+  const deliveredBranch = (): string => {
     const at = PIPE.indexOf('if (waited.kind === "DELIVERED") {');
-    const block = PIPE.slice(at, at + 2500);
-    expect(block).toContain("delete qualityReport.postRenderSpotCheck;");
+    expect(at).toBeGreaterThan(-1);
+    return PIPE.slice(at, PIPE.indexOf("                } else {", at));
+  };
+
+  it("THE COMPOSE MONTAGE'S BLACK-FRAME VERDICT IS NOT LEFT STANDING", () => {
+    expect(deliveredBranch()).toContain("delete qualityReport.postRenderSpotCheck;");
   });
 
   it("and every figure that CAN be qualified names the file it measured", () => {
-    const at = PIPE.indexOf('if (waited.kind === "DELIVERED") {');
-    const block = PIPE.slice(at, at + 2500);
+    const block = deliveredBranch();
     expect(block).toContain('qualityReport.avSync.measuredOn = "compose_montage"');
     expect(block).toContain('qualityReport.stillness.measuredOn = "compose_montage"');
     expect(block).toContain('qualityReport.repeats.measuredOn = "compose_montage"');
     expect(block).toContain("qualityReport.warnings.push(");
+  });
+
+  it("AND THE FIGURE THAT COULD BE CORRECTED IS CORRECTED, NOT QUALIFIED", () => {
+    /**
+     * Render 603's actual defect. Unlike the spot check and the AV envelope, FINAL_VIDEO CAN be
+     * re-derived on this path — from the timeline the worker rendered — so it is, and the last
+     * delivery gate stops judging a montage nobody received.
+     */
+    expect(deliveredBranch()).toContain("ledger.replaceFinalVideo(deliveredPaths)");
   });
 });
