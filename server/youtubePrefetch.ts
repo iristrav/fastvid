@@ -38,6 +38,7 @@
  */
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import { and, asc, eq, inArray, lt, lte, or } from "drizzle-orm";
 import { youtubePrefetchQueue, type YoutubePrefetchRow } from "../drizzle/schema";
 import { affectedRowCount, getDb } from "./db";
@@ -320,6 +321,9 @@ const CONTENT_REFUSALS = new Set([
   "PREVIEW_UNREADABLE",
 ]);
 
+/** Refusals that are about the WHOLE video, so its remaining segments are not fetched. */
+export const STOP_EARLY_REFUSALS = new Set(["BAKED_EDIT_TEXT"]);
+
 /**
  * What one fetch means for the row. Pure: every input is something the fetch measured.
  *
@@ -463,9 +467,16 @@ export async function prefetchOneVideo(
   row: Pick<YoutubePrefetchRow, "videoId" | "title" | "query" | "licenseMode">,
   deps: PrefetchDeps,
   segmentsWanted = prefetchSegmentsPerVideo()
-): Promise<{ segments: PrefetchSegmentResult[]; interrupted: boolean; videoRefusal: string | null }> {
+): Promise<{
+  segments: PrefetchSegmentResult[];
+  interrupted: boolean;
+  videoRefusal: string | null;
+  /** Set when the fetch stopped before its planned segments because the picture was refused. */
+  stoppedEarlyFor: string | null;
+}> {
   const segments: PrefetchSegmentResult[] = [];
   let interrupted = false;
+  let stoppedEarlyFor: string | null = null;
   let videoRefusal: string | null = null;
   let workDir: string | null = null;
   try {
@@ -504,6 +515,18 @@ export async function prefetchOneVideo(
         archiveMetadataForPrefetchedSegment(row, startSec, measured)
       );
       segments.push({ startSec, downloaded: true, ingest });
+      /**
+       * RONDE 645 — A LOGO IN ONE SEGMENT IS A LOGO IN ALL OF THEM.
+       *
+       * Render 603's prefetch fetched all three segments of four videos whose first segment the
+       * archive had already refused for burnt-in text — a channel logo or a subtitle track runs the
+       * length of the video. Twelve transfers to learn what the first one had said. So a text
+       * refusal ends this video, and the next one in the queue gets the time.
+       */
+      if (ingest.status === "refused" && STOP_EARLY_REFUSALS.has(ingest.reasonCode)) {
+        stoppedEarlyFor = ingest.reasonCode;
+        break;
+      }
     }
   } catch (err) {
     segments.push({ startSec: -1, downloaded: false, downloadReason: `threw:${(err as Error).message?.slice(0, 80)}` });
@@ -517,7 +540,7 @@ export async function prefetchOneVideo(
       }
     }
   }
-  return { segments, interrupted, videoRefusal };
+  return { segments, interrupted, videoRefusal, stoppedEarlyFor };
 }
 
 export function formatPrefetchLine(
@@ -534,6 +557,133 @@ export function formatPrefetchLine(
     (verdict.lastError ? ` reason=${verdict.lastError}` : "") +
     (verdict.status === "failed" ? ` retryAt=${verdict.nextAttemptAt.toISOString()}` : "")
   );
+}
+
+/* ═══════════════════════ another video, when this one carries text ═══════════════════════ */
+
+/**
+ * RONDE 645 — A VIDEO REFUSED FOR ITS LOGO IS A REASON TO LOOK ELSEWHERE.
+ *
+ * Render 603's queue held what that render's own searches returned, and those searches ask for the
+ * narration's subject — "Hitler Berlin" — which on YouTube is mostly modern documentaries: a channel
+ * logo in the corner, subtitles, title cards. Six of the first eight were refused for burnt-in text.
+ * The archive's refusal is right and stays; what was missing is looking further.
+ *
+ * So a video refused for text makes the worker search once more, for the same query with a word
+ * that asks for the original material rather than a programme about it — "archive footage",
+ * "newsreel" — and queue what that finds. The new rows go through exactly the same fetch, the same
+ * validation and the same archive gates.
+ *
+ * Bounded three ways: one alternative search per refused video; each (query, suffix) searched once
+ * across every replica and every restart (a `worker_once_claims` row); and a daily cap per worker,
+ * because a YouTube search spends quota a render needs.
+ */
+export const ALTERNATIVE_QUERY_SUFFIXES = ["archive footage", "newsreel"] as const;
+
+/** The alternative queries for a base query, none for a query that is already an alternative. */
+export function alternativeQueries(query: string | null | undefined): string[] {
+  const base = (query ?? "").trim().replace(/\s+/g, " ");
+  if (!base) return [];
+  const lower = base.toLowerCase();
+  if (ALTERNATIVE_QUERY_SUFFIXES.some((s) => lower.endsWith(s))) return [];
+  return ALTERNATIVE_QUERY_SUFFIXES.map((s) => `${base} ${s}`.slice(0, 480));
+}
+
+/** Only a refusal for burnt-in text asks for another video; a dead link or a storage error does not. */
+export function shouldSearchAlternatives(verdict: Pick<PrefetchVerdict, "status" | "lastError">): boolean {
+  return verdict.status === "refused" && (verdict.lastError ?? "").includes("BAKED_EDIT_TEXT");
+}
+
+/** Alternative searches one worker may spend per UTC day. 0 switches the feature off. */
+export function prefetchAltSearchesPerDay(): number {
+  return intEnv("YOUTUBE_PREFETCH_ALT_SEARCHES_PER_DAY", 20, 0, 200);
+}
+
+/** The words a result must mention to count as about the same thing: the base query's own. */
+export function relevanceWordsFor(query: string): string[] {
+  return Array.from(
+    new Set(
+      query
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((w) => w.length >= 3)
+    )
+  ).slice(0, 12);
+}
+
+export type AlternativeDeps = {
+  /** True only for the one caller, ever, that may search this key. */
+  claim: (key: string) => Promise<boolean>;
+  search: (query: string, licenseMode: string | null, relevanceWords: string[]) => Promise<YoutubePrefetchCandidate[]>;
+  enqueue: (candidates: YoutubePrefetchCandidate[]) => void;
+  /** Spend one from today's allowance; false when it is spent. */
+  takeDailySlot: () => boolean;
+  log: (line: string) => void;
+};
+
+export function alternativeClaimKey(query: string): string {
+  return `yt-alt:${createHash("sha256").update(query.toLowerCase()).digest("hex").slice(0, 40)}`;
+}
+
+/** Search once for another video and queue what it finds. Never throws. */
+export async function queueAlternativesFor(
+  row: Pick<YoutubePrefetchRow, "videoId" | "query" | "licenseMode">,
+  deps: AlternativeDeps
+): Promise<{ query: string | null; queued: number }> {
+  try {
+    for (const alt of alternativeQueries(row.query)) {
+      if (!(await deps.claim(alternativeClaimKey(alt)).catch(() => false))) continue;
+      if (!deps.takeDailySlot()) {
+        deps.log(`[YouTubePrefetch] ALTERNATIVES for=${row.videoId} skipped — today's search allowance is spent`);
+        return { query: null, queued: 0 };
+      }
+      const found = (await deps.search(alt, row.licenseMode ?? null, relevanceWordsFor(row.query ?? "")))
+        .filter((c) => c.videoId && c.videoId !== row.videoId)
+        .slice(0, 5)
+        .map((c) => ({ ...c, query: alt, licenseMode: row.licenseMode ?? null }));
+      if (found.length > 0) deps.enqueue(found);
+      deps.log(
+        `[YouTubePrefetch] ALTERNATIVES for=${row.videoId} reason=BAKED_EDIT_TEXT query=${JSON.stringify(alt)} ` +
+          `found=${found.length}`
+      );
+      return { query: alt, queued: found.length };
+    }
+  } catch (err) {
+    deps.log(`[YouTubePrefetch] ALTERNATIVES for=${row.videoId} failed: ${(err as Error).message?.slice(0, 120)}`);
+  }
+  return { query: null, queued: 0 };
+}
+
+let altDay = "";
+let altUsed = 0;
+function takeDailyAltSlot(now = new Date()): boolean {
+  const day = now.toISOString().slice(0, 10);
+  if (day !== altDay) {
+    altDay = day;
+    altUsed = 0;
+  }
+  if (altUsed >= prefetchAltSearchesPerDay()) return false;
+  altUsed++;
+  return true;
+}
+
+async function productionAlternativeDeps(sourceVideoId: number | null): Promise<AlternativeDeps> {
+  const pipeline = await import("./videoPipeline");
+  const { claimOnce } = await import("./apifyLiveTest");
+  const holder = `${process.env.RAILWAY_REPLICA_ID ?? "replica"}:${process.pid}`;
+  return {
+    claim: (key) => claimOnce(key, holder),
+    search: async (query, licenseMode, words) => {
+      const mode = licenseMode === "creative_common" || licenseMode === "youtube" ? licenseMode : "any";
+      const rows = await pipeline.searchYoutubeVideoCandidates(query, -1, mode, words, 1, "", 10);
+      return rows
+        .filter((r) => r.rel >= 1)
+        .map((r) => ({ videoId: r.item.id?.videoId ?? "", title: r.title }));
+    },
+    enqueue: (cands) => enqueueYoutubePrefetch(cands, { sourceVideoId: sourceVideoId ?? undefined }),
+    takeDailySlot: () => takeDailyAltSlot(),
+    log: (l) => console.log(l),
+  };
 }
 
 /* ═══════════════════════ which route first, in the background ═══════════════════════ */
@@ -677,7 +827,13 @@ export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archi
       if (verdict.status === "ingested") {
         archived += fetched.segments.filter((s) => s.ingest?.status === "ingested").length;
       }
-      console.log(formatPrefetchLine(row, fetched, verdict));
+      console.log(
+        formatPrefetchLine(row, fetched, verdict) +
+          (fetched.stoppedEarlyFor ? ` stoppedEarly=${fetched.stoppedEarlyFor}` : "")
+      );
+      if (shouldSearchAlternatives(verdict)) {
+        await queueAlternativesFor(row, await productionAlternativeDeps(row.sourceVideoId ?? null));
+      }
       await recordPrefetchVerdict(row.id, verdict).catch((err) =>
         console.warn(`[YouTubePrefetch] could not record ${row.videoId}: ${(err as Error).message?.slice(0, 120)}`)
       );
