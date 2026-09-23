@@ -1057,6 +1057,65 @@ export type ScoredFunnelCandidate = {
  */
 export const STOCK_TIER_WIN_MARGIN = 1.0;
 
+/**
+ * THE SAME RULE, ONE TIER UP: A MARGINAL EDGE MAY NOT DECIDE THE SOURCE.
+ *
+ * ── What this function preferred before, and what it did not ────────────────────────────────
+ *
+ * Exactly one preference: non-stock over stock. INSIDE the non-stock tier — YouTube, Internet
+ * Archive, NARA, Wikimedia, the curated archive — the highest `worstScore10` simply won. So the
+ * only place the pipeline expresses a source preference among real archival sources is
+ * `EXTERNAL_SOURCE_TIER_BONUS`, which is a SHORTLIST nudge and says so in its own comment:
+ * "It moves candidates up the shortlist, and nothing else … `pickBestFunnelCandidate` still picks
+ * the winner on real VisionGate scores."
+ *
+ * Render 600 is what that produces. YouTube reached `status=ASSIGNED` on four beats, for the first
+ * time in this pipeline's history — the shortlist bonus doing precisely its job — and the film
+ * came out `fromArchive=4`. The bonus decides who gets LOOKED AT. Nothing decided who gets USED.
+ *
+ * ── Why a margin and not a rank ─────────────────────────────────────────────────────────────
+ *
+ * Because the operator's requirement has two halves and only a margin honours both: YouTube is to
+ * fill the film, and a picture that is genuinely worse may not be used to fill it. A flat rank
+ * would take the YouTube clip whenever one passed, at any score. A margin takes it when the field
+ * is comparable, and steps aside when another source is demonstrably better:
+ *
+ *     YouTube 0.82, Archive 0.88   →  YouTube      (an 0.06 edge decides nothing)
+ *     YouTube 6.0,  Archive 9.0    →  Archive      (three points is not a marginal edge)
+ *
+ * Sized identically to `STOCK_TIER_WIN_MARGIN` and measured on the identical 0-10 scale, because
+ * it is the identical statement about the identical kind of evidence. One rule, applied twice.
+ *
+ * ── What this cannot do ─────────────────────────────────────────────────────────────────────
+ *
+ * It runs over `passers` — candidates that already cleared VisionGate (`visionResult.pass`) and
+ * are not in `rejectedCandidateIds`, the beat image gate's hard exclusion. So it cannot admit a
+ * clip any gate refused, cannot lower a threshold, and cannot reach a candidate that was never
+ * judged. It chooses among pictures every existing check has already approved, which is the only
+ * place a source preference belongs.
+ *
+ * `discriminating` guards it for free: when the whole field sits within a point of itself the
+ * scores are noise (see RONDE 65 below), no margin can be cleared, and the preferred source wins
+ * — which is the right answer when nothing distinguishes the candidates.
+ */
+export function preferredSourceWinMargin(): number {
+  const raw = process.env.PREFERRED_SOURCE_WIN_MARGIN?.trim();
+  if (raw) {
+    const n = Number.parseFloat(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 10) return n;
+  }
+  return 1.0;
+}
+
+/**
+ * The sources the film is meant to be MADE of, as opposed to the ones it falls back on.
+ *
+ * One entry, deliberately: this is the operator's stated product — a documentary cut from YouTube
+ * footage — and not a general ranking of providers. The tier ORDER for everything else already
+ * exists in `SOURCING_TIERS` and `EXTERNAL_SOURCE_TIER_BONUS` and is not restated here.
+ */
+export const PREFERRED_WINNER_SOURCES = new Set<FunnelCandidateSource>(["youtube_cc"]);
+
 const STOCK_SOURCES = new Set<FunnelCandidateSource>(["pexels", "pixabay"]);
 
 /** FASE 4 — Candidate Expansion + Global Best-of-N: how many candidates are actually
@@ -1651,7 +1710,28 @@ export function pickBestFunnelCandidate(
 
   if (nonStock.length === 0) return best(stock);
 
-  const bestNonStock = best(nonStock);
+  /**
+   * THE SOURCE PREFERENCE, APPLIED WHERE THE WINNER IS ACTUALLY CHOSEN.
+   *
+   * See `preferredSourceWinMargin` above for why this is a margin rather than a rank, and why it
+   * can only ever choose between pictures every gate has already passed. The shape is the stock
+   * comparison below, one tier up and with the preference pointing the other way.
+   */
+  const preferred = nonStock.filter((s) => PREFERRED_WINNER_SOURCES.has(s.candidate.source));
+  const otherNonStock = nonStock.filter((s) => !PREFERRED_WINNER_SOURCES.has(s.candidate.source));
+  let bestNonStock: ScoredFunnelCandidate;
+  if (preferred.length === 0) {
+    bestNonStock = best(otherNonStock);
+  } else if (otherNonStock.length === 0) {
+    bestNonStock = best(preferred);
+  } else {
+    const bestPreferred = best(preferred);
+    const bestOther = best(otherNonStock);
+    bestNonStock =
+      discriminating && scoreOf(bestOther) >= scoreOf(bestPreferred) + preferredSourceWinMargin()
+        ? bestOther
+        : bestPreferred;
+  }
   if (stock.length === 0) return bestNonStock;
 
   const bestStock = best(stock);
