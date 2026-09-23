@@ -1002,3 +1002,16 @@ export const youtubePrefetchQueue = mysqlTable(
 
 export type YoutubePrefetchRow = typeof youtubePrefetchQueue.$inferSelect;
 export type InsertYoutubePrefetchRow = typeof youtubePrefetchQueue.$inferInsert;
+
+/**
+ * RONDE 644 — one row per claim key: the worker whose INSERT lands does the work, once.
+ *
+ * For paid, controlled work (the Apify live test) that three replicas booting the same code would
+ * otherwise run three times. Nothing on a render path reads it.
+ */
+export const workerOnceClaims = mysqlTable("worker_once_claims", {
+  id: int("id").autoincrement().primaryKey(),
+  claimKey: varchar("claimKey", { length: 128 }).notNull().unique(),
+  holder: varchar("holder", { length: 128 }),
+  claimedAt: timestamp("claimedAt").defaultNow().notNull(),
+});

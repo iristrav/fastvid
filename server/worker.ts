@@ -388,6 +388,12 @@ async function main() {
    */
   const { scheduleApifySchemaProbe } = await import("./apifySchemaProbe");
   scheduleApifySchemaProbe();
+  /**
+   * RONDE 644 — one controlled, paid Apify run per deployment (not per replica), measured end to
+   * end: how long Apify actually needs from this worker to a validated MP4.
+   */
+  const { scheduleApifyLiveTest } = await import("./apifyLiveTest");
+  scheduleApifyLiveTest();
   const { startYoutubePrefetchWorker } = await import("./youtubePrefetch");
   await startYoutubePrefetchWorker().catch((err) =>
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)
