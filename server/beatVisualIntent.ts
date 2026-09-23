@@ -106,8 +106,42 @@ export function buildBeatVisualIntent(input: {
   const objects = terms(ctx?.objects);
   const mustContain = (contract?.mustContain ?? []).map((t) => t.trim()).filter(Boolean);
 
+  /**
+   * RONDE 634 — A CUE IS A SIGNAL TO CHECK. IT IS NOT THE BEAT'S ANCHOR.
+   *
+   * The order above is kept, and the reason for it with it: a beat about the Battle of Berlin is
+   * about the battle even when it also names Berlin. What render 600 showed is that `event[0]` is
+   * two different things wearing one name, and only one of them carries that argument.
+   *
+   * `extractEventPhraseForQuery` answers in three rules. Rule 1 finds a NAMED event the way a
+   * documentary states one — "Battle of Berlin", "fall of France". Rule 2 finds the verb's object
+   * and returns exactly two content words — "political testament". Rule 3, when neither matched,
+   * returns `extractEventCue`'s bare vocabulary hit, one lower-case word, and that function's own
+   * doc comment says what it is worth: callers "must treat it as 'no event signal to check', not
+   * evidence of anything."
+   *
+   * The subject chain treated it as the strongest evidence in the beat. Render 600, scene 2:
+   *
+   *     [VisualIntent] s2b1 subject=capture     s2b2 subject=capture     s2b3 subject=capture
+   *
+   * on beats that also named Adolf Hitler and the Berlin Führerbunker. Every provider was asked
+   * about "capture", and `buildPrioritisedQueries` — which mandates PERSON > PLACE > EVENT — was
+   * being contradicted by the intent that fed it.
+   *
+   * Word count is the whole test, and it is exact rather than heuristic: rule 1 returns three or
+   * more words, rule 2 returns two, rule 3 returns one. So a single-word event is rule 3's cue.
+   *
+   * Nothing is dropped. The cue keeps its place in the chain, immediately where `event[0]` used to
+   * sit relative to objects and action, and it still appears in `content`, `foldedTerms` and the
+   * `events` list. It simply stops outranking a person the beat names and a place it names.
+   */
+  const words = (t: string) => t.trim().split(/\s+/).filter(Boolean).length;
+  const namedEvent = event.find((e) => words(e) > 1);
+  const eventCue = event.find((e) => words(e) === 1);
   const subject =
-    mustContain[0] ?? event[0] ?? people[0] ?? location[0] ?? objects[0] ?? action[0] ?? "";
+    [mustContain[0], namedEvent, people[0], location[0], eventCue, objects[0], action[0]].find(
+      (t) => Boolean(t?.trim())
+    ) ?? "";
 
   const content = [...new Set([...mustContain, ...event, ...people, ...location, ...period, ...action, ...objects])];
 

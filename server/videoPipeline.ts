@@ -20404,16 +20404,47 @@ export function extractVisualPlacePhrases(beatText: string): string[] {
  *
  * Returns "" when the beat describes no action — the common case, and callers must treat it as
  * "nothing to add", never as evidence of anything. The morphological branch is deliberately
- * generous: it will occasionally read a state ("finished") as an action. An action only ever
- * appears in a query behind an entity that anchors it, so a loose verb costs a low-ranked query
- * and never the subject of the search.
+ * generous: it will occasionally read a state ("finished") as an action.
+ *
+ * ── RONDE 634 — THE SENTENCE THAT EXCUSED THAT GENEROSITY WAS NOT TRUE ──────────────────────
+ *
+ * It read: "An action only ever appears in a query behind an entity that anchors it, so a loose
+ * verb costs a low-ranked query and never the subject of the search."
+ *
+ * `buildBeatVisualIntent` ends its subject chain on `action[0]`, so a beat with no event, no
+ * person, no place and no object takes its SUBJECT from this function. Render 600, scene 1
+ * beat 2:
+ *
+ *     [VisualIntent] s1b2 subject=distorted   →  query "his distorted"  →  a random Openverse photo
+ *
+ * "distorted" is a participle modifying the noun after it, not the clause's verb. The generosity
+ * was fine; the claim about where it could land was not, and it is corrected on both sides — here
+ * (a modifier is not a verb) and in the subject chain (a bare cue is not a beat's anchor).
+ *
+ * The rule below is positional, not another word list: an "-ed" word standing DIRECTLY after a
+ * determiner or a possessive is attached to the noun that follows it. "his distorted view",
+ * "the shattered remains", "a ruined city". It cannot touch a real verb, because a finite verb
+ * never occupies that slot — "Hitler ordered the retreat" has "Hitler" before "ordered", and
+ * "he dictated his testament" has "he".
  */
+const ACTION_CUE_MODIFIER_SLOT = new Set([
+  "a", "an", "the", "his", "her", "its", "their", "our", "my", "your",
+  "this", "that", "these", "those",
+]);
+
 export function extractActionCue(beatText: string): string {
   const text = (beatText ?? "").replace(/\[visual:[^\]]*\]/gi, " ");
   const tokens = text.split(/\s+/).filter(Boolean);
   let morphological = "";
+  let previous = "";
   for (const raw of tokens) {
     const word = raw.replace(/[^\p{L}'-]/gu, "");
+    /**
+     * Tracked over EVERY token, including the ones the checks below skip, so the slot before a
+     * word is the word that really precedes it in the sentence.
+     */
+    const precededBy = previous;
+    previous = word.toLowerCase();
     if (word.length < 3) continue;
     // A capitalised word mid-sentence is a name, not a verb.
     if (word[0] !== word[0]!.toLowerCase()) continue;
@@ -20431,6 +20462,8 @@ export function extractActionCue(beatText: string): string {
       !morphological &&
       word.length >= 5 &&
       lower.endsWith("ed") &&
+      /** RONDE 634 — a participle in the modifier slot describes the noun, not the sentence. */
+      !ACTION_CUE_MODIFIER_SLOT.has(precededBy) &&
       !STOP_WORDS.has(lower) &&
       !NON_ACTION_QUERY_WORDS.has(lower) &&
       !isNonPersonToken(lower)
