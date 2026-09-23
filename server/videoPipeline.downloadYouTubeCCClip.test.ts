@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import http from "http";
+import { execFileSync } from "child_process";
 import type { AddressInfo } from "net";
 import { downloadToFileStreaming, downloadYouTubeCCClip } from "./videoPipeline";
 
@@ -57,8 +58,24 @@ describe("downloadYouTubeCCClip cloud-DL path (F3-05 group 5)", () => {
     return outPath.replace(/\.mp4$/, "_cloud_tmp.mp4");
   }
 
+  /**
+   * RONDE 643 — a REAL video, because the route now asks. This test used to serve 50 KB of the
+   * letter "y" and expect it to be accepted as a clip: exactly the gap the acquisition audit found
+   * (size was the only question the cloud route asked). The junk payload is kept below, as the
+   * case that must now be refused.
+   */
+  function realMp4(seconds: number): Buffer {
+    const out = path.join(dir, `real_${seconds}.mp4`);
+    execFileSync("ffmpeg", [
+      "-y", "-v", "error", "-f", "lavfi", "-i", `testsrc=s=640x360:r=25:d=${seconds}`,
+      "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "400k", out,
+    ]);
+    return fs.readFileSync(out);
+  }
+
   it("streams a valid clip to cloudTmpPath then renames it onto outPath", async () => {
-    const payload = Buffer.alloc(50_000, "y"); // above the 10KB floor
+    const payload = realMp4(5);
+    expect(payload.length).toBeGreaterThan(10_000); // above the 10KB floor
     await startServer((_req, res) => {
       res.writeHead(200);
       res.end(payload);
@@ -71,6 +88,38 @@ describe("downloadYouTubeCCClip cloud-DL path (F3-05 group 5)", () => {
     expect(fs.existsSync(outPath)).toBe(true);
     expect(fs.readFileSync(outPath).equals(payload)).toBe(true);
     expect(fs.existsSync(tmpPathFor(outPath))).toBe(false);
+  });
+
+  it("RONDE 643 — 50 KB THAT IS NOT A VIDEO IS NOT A DOWNLOAD, whatever its size", async () => {
+    await startServer((_req, res) => {
+      res.writeHead(200);
+      res.end(Buffer.alloc(50_000, "y"));
+    });
+    const outPath = path.join(dir, "scene_0_ytcc_junk.mp4");
+    const outcome: { status?: string; reason?: string } = {};
+
+    const ok = await downloadYouTubeCCClip(videoId, 5, 0, outPath, 0, "Test video", undefined, false, outcome as never);
+
+    expect(ok).toBe(false);
+    expect(fs.existsSync(outPath)).toBe(false);
+    expect(fs.existsSync(tmpPathFor(outPath))).toBe(false);
+    expect(outcome.reason).toContain("NO_VIDEO_STREAM");
+  });
+
+  it("RONDE 643 — a real video far shorter than asked for is refused as a stub", async () => {
+    const payload = realMp4(1);
+    await startServer((_req, res) => {
+      res.writeHead(200);
+      res.end(payload);
+    });
+    const outPath = path.join(dir, "scene_0_ytcc_stub.mp4");
+    const outcome: { status?: string; reason?: string } = {};
+
+    const ok = await downloadYouTubeCCClip(videoId, 5, 0, outPath, 0, "Test video", undefined, false, outcome as never);
+
+    expect(ok).toBe(false);
+    expect(fs.existsSync(outPath)).toBe(false);
+    expect(outcome.reason).toContain("DURATION_TOO_SHORT");
   });
 
   it("leaves no partial cloudTmpPath behind when the stream errors mid-download", async () => {
