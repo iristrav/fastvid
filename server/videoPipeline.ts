@@ -42318,7 +42318,41 @@ async function fetchSceneVisualsInner(
         // FASE 2 / STAP 13: also report runner-up score, whether a stock source won, and whether
         // this beat's winner is queued for archive-ingestion (best-effort, background — see below;
         // "archiving" here means "attempted", not "confirmed written", since ingest runs async).
-        const passingScored = scored.filter(s => s.visionResult.pass);
+        /**
+         * RONDE 631 — THE PICTURE EDITOR'S REFUSAL REACHES THE ARCHIVE.
+         *
+         * `visionResult.pass` is the FUNNEL's verdict, a CLIP-similarity score. The beat image
+         * gate is a second, later judgement — a model that looks at the frames — and it records
+         * its refusals in `dedup.beatImageRejectedIds`. `pickBestFunnelCandidate` reads both and
+         * is right to; this line read only the first.
+         *
+         * Render 599, scene 1 beat 1, the same second in the same log:
+         *
+         *     …providerAssetId=OqFhvKarYjU stage=REMOVED status=REJECTED reason=vision_rejected:s1b1
+         *     …providerAssetId=rPCWO-wZaLo stage=REMOVED status=REJECTED reason=vision_rejected:s1b1
+         *     [Ingestion] s1b1 keeping 2 approved runner-up clip(s) the picture editor passed
+         *
+         * The picture editor did not pass them. It refused both, with reasons — a young German
+         * soldier wearing an Iron Cross, and a map of the 1st Belorussian Front, against narration
+         * about the orders Hitler issued in the bunker. They were nonetheless queued into the
+         * CURATED ARCHIVE, which is source #2, to be offered again on the next render as approved
+         * archive material.
+         *
+         * So the same answer was computed on one side and not handed to the side that decides —
+         * this codebase's signature defect, and the reason it matters here is that the archive is
+         * the one store whose contents outlive the render that made them.
+         *
+         * Both readers of `passingScored` want the same exclusion. The archive must not be seeded
+         * with a refused picture; and a "runner-up" the gate refused is not a runner-up, so the
+         * `[VisualDiscovery]` line stops naming one as though it were the beat's second choice.
+         *
+         * NOTHING IS LOOSENED. This removes clips from a set; it admits none. No threshold moves,
+         * no gate is added, and `winner` is chosen exactly as before by `pickBestFunnelCandidate`,
+         * which already applied this same exclusion.
+         */
+        const passingScored = scored
+          .filter(s => s.visionResult.pass)
+          .filter(s => !dedup.beatImageRejectedIds.has(s.candidate.id));
         const runnerUp = winner
           ? passingScored
               .filter(s => s !== winner)

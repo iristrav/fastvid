@@ -51,10 +51,33 @@ describe("only approved clips are kept", () => {
   it("THE LOOP READS `passingScored`, WHICH IS THE VISION-PASSED SET", () => {
     expect(loop()).toBeTruthy();
     /**
-     * The set itself is unchanged and still built from the verdict, not from the score. A clip
-     * Vision refused never appears in it, so it cannot be ingested by this route at all.
+     * The set is built from the verdict, not from the score. A clip Vision refused never appears
+     * in it, so it cannot be ingested by this route at all.
+     *
+     * ── RONDE 631: that claim was only half true, and this is the half it missed ─────────────
+     *
+     * This assertion used to pin the literal `scored.filter(s => s.visionResult.pass)` — and
+     * `visionResult.pass` is only the FUNNEL's verdict, a CLIP-similarity score. The beat image
+     * gate is a second judgement, by a model that looks at the frames, and it records refusals in
+     * `dedup.beatImageRejectedIds`. That set was not read here.
+     *
+     * Render 599 is what it cost. Scene 1 beat 1, the same second in the same log:
+     *
+     *     …providerAssetId=OqFhvKarYjU stage=REMOVED status=REJECTED reason=vision_rejected:s1b1
+     *     …providerAssetId=rPCWO-wZaLo stage=REMOVED status=REJECTED reason=vision_rejected:s1b1
+     *     [Ingestion] s1b1 keeping 2 approved runner-up clip(s) the picture editor passed
+     *
+     * Two clips the picture editor refused, queued into the curated archive as approved. The
+     * claim this test makes is the right claim; the literal it pinned did not deliver it.
+     *
+     * So the assertion is WIDENED rather than replaced: both verdicts must now be read, and the
+     * second expectation is what would have caught render 599.
      */
-    expect(PIPE).toContain("const passingScored = scored.filter(s => s.visionResult.pass);");
+    expect(PIPE).toContain(".filter(s => s.visionResult.pass)");
+    expect(
+      PIPE,
+      "a clip the beat image gate refused can still be ingested as approved"
+    ).toContain(".filter(s => !dedup.beatImageRejectedIds.has(s.candidate.id));");
   });
 
   it("A REFUSED CLIP IS STILL DISCARDED — the gate did not become a door", () => {
