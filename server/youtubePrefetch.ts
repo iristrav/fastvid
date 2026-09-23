@@ -530,6 +530,32 @@ export function formatPrefetchLine(
   );
 }
 
+/* ═══════════════════════ which route first, in the background ═══════════════════════ */
+
+/**
+ * RONDE 643 — RAPIDAPI FIRST HERE, AND ONLY HERE.
+ *
+ * Inside a render the cloud route goes first because it fetches only the seconds one beat needs,
+ * and a render has seconds to spend. The background has the opposite economics:
+ *
+ *   · it wants SEVERAL segments of each video, and RapidAPI's one whole-file transfer serves all of
+ *     them — the download layer holds the source and re-cuts it (`source_reuse`) — while the cloud
+ *     route pays a proxied yt-dlp run per segment;
+ *   · RapidAPI's file comes straight from YouTube's CDN to this worker, not through the residential
+ *     proxy the cloud route is billed by the gigabyte for;
+ *   · and the production route test (RONDE 641) measured it delivering, 3 of 3, in 1.5–5.4 s.
+ *
+ * The cloud route stays as the fallback for anything RapidAPI refuses. The render's own order is
+ * untouched. `YOUTUBE_PREFETCH_ROUTE_ORDER=cloud_first` restores the render's order here too.
+ */
+export function prefetchRouteOrder(env: NodeJS.ProcessEnv = process.env): Array<"cloud" | "rapidapi"> {
+  const cloud = Boolean(env.YOUTUBE_CC_DL_SERVICE?.trim());
+  const rapid = Boolean(env.RAPIDAPI_KEY?.trim());
+  const order: Array<"cloud" | "rapidapi"> =
+    env.YOUTUBE_PREFETCH_ROUTE_ORDER?.trim() === "cloud_first" ? ["cloud", "rapidapi"] : ["rapidapi", "cloud"];
+  return order.filter((r) => (r === "cloud" ? cloud : rapid));
+}
+
 /* ═══════════════════════ production wiring ═══════════════════════ */
 
 const WORK_DIR_PREFIX = "fastvid_ytprefetch_";
@@ -552,29 +578,41 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
     sourceDurationSec: async (videoId) =>
       pipeline.rapidApiYoutubeMetaDurationSec(await pipeline.fetchRapidApiYoutubeMeta(videoId, -1)),
     download: async (p) => {
-      const outcome: { status?: string; reason?: string } = {};
       /**
-       * Inside a scope of its own, so the pipeline's route shares apply as written: half of the
-       * window to the cloud route, the rest to RapidAPI. Outside any scope the layer reads an
-       * infinite clock and grants the cloud route only its floor.
+       * One route at a time, each inside a scope of its own with the whole window — see
+       * `prefetchRouteOrder`. Outside any scope the layer reads an infinite clock and grants the
+       * cloud route only its floor, so the scope is what gives it the time a render cannot.
        */
-      const ok = await pipeline.withSceneFetchTimeout(
-        () =>
-          pipeline.downloadYouTubeCCClip(
-            p.videoId,
-            p.durationSec,
-            p.startSec,
-            p.outPath,
-            -1,
-            p.title,
-            undefined,
-            p.startIsExact,
-            outcome as never
-          ),
-        PREFETCH_DOWNLOAD_WINDOW_MS,
-        `youtube prefetch ${p.videoId}@${p.startSec}s`
-      );
-      return { ok, reason: outcome.reason ?? outcome.status };
+      const reasons: string[] = [];
+      for (const route of prefetchRouteOrder()) {
+        const outcome: { status?: string; reason?: string } = {};
+        const ok = await pipeline
+          .withSceneFetchTimeout(
+            () =>
+              pipeline.downloadYouTubeCCClip(
+                p.videoId,
+                p.durationSec,
+                p.startSec,
+                p.outPath,
+                -1,
+                p.title,
+                undefined,
+                p.startIsExact,
+                outcome as never,
+                undefined,
+                route
+              ),
+            PREFETCH_DOWNLOAD_WINDOW_MS,
+            `youtube prefetch ${route} ${p.videoId}@${p.startSec}s`
+          )
+          .catch((err: Error) => {
+            outcome.reason = `threw:${err.message?.slice(0, 80)}`;
+            return false;
+          });
+        if (ok) return { ok: true, reason: `${route}:${outcome.reason ?? "ok"}` };
+        reasons.push(`${route}:${outcome.reason ?? outcome.status ?? "failed"}`);
+      }
+      return { ok: false, reason: reasons.join(" ") || "no_route_configured" };
     },
     videoRefusal: (videoId) => failure.youtubeDownloadRefusal(videoId),
     probeDurationSec: (filePath) => pipeline.probeVideoDurationSec(filePath),

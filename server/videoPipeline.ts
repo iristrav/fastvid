@@ -382,7 +382,7 @@ import { optimizeShotSequence, shotSequenceOptimizerEnabled } from "./shotSequen
 import { applyVisualRhythm, buildRhythmProfile, visualRhythmEngineEnabled } from "./visualRhythmEngine";
 import { planSceneAudio } from "./cinematicAudio/planner";
 import { buildRenderFeatureMatrix, formatFeatureMatrix } from "./renderContract";
-import { audioTrackOf, captionTrack, graphicsTrack, videoTrack } from "./projectTimeline";
+import { audioTrackOf, captionTrack, graphicsTrack, videoTrack, type TimelineVideoClip } from "./projectTimeline";
 import { analyzeVideoStructure, globalDocumentaryDirectorEnabled } from "./globalDocumentaryDirector";
 import {
   motionGraphicsEnabled,
@@ -470,6 +470,7 @@ import {
 } from "./visualSourceLineage";
 import {
   traceYoutubeLifecycle,
+  youtubeLifecycleTotals,
   formatYoutubeLifecycle,
   formatYoutubeLifecycleTable,
   formatYoutubeVisionAvailability,
@@ -870,6 +871,15 @@ import {
 } from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
 import { enqueueYoutubePrefetch } from "./youtubePrefetch";
+import { validateAcquiredFile } from "./youtubeAcquisitionValidation";
+import {
+  formatYoutubeFootage,
+  judgeYoutubeRequirement,
+  requiredYoutubeSeconds,
+  unmeasuredFootage,
+  youtubeFootageInTimeline,
+  type ArchiveOrigin,
+} from "./youtubeFootageInFilm";
 import {
   DELIVERY_GATE_FAIL,
   deliveryClipFactsFromLedger,
@@ -16664,10 +16674,46 @@ export async function downloadYouTubeCCClip(
       } else {
         let cloudFileSize = -1;
         try { cloudFileSize = fs.statSync(cloudTmpPath).size; } catch { /* leave as -1 */ }
+        /**
+         * RONDE 643 — THE FILE IS ASKED WHETHER IT IS A VIDEO BEFORE IT IS CALLED ONE.
+         *
+         * This route hands its file straight to the beat with no re-encode, and size was the only
+         * question it was ever asked. See `youtubeAcquisitionValidation.ts`: ffprobe plus one
+         * decoded frame, and a refusal falls through to RapidAPI like any other failure here.
+         */
+        const cloudVerdict =
+          cloudFileSize > 10_000 && cloudFileSize <= 80 * 1024 * 1024
+            ? await validateAcquiredFile(cloudTmpPath, duration, {
+                /**
+                 * ffprobe reports a stream duration it cannot determine as 0, which `judgeAcquiredFile`
+                 * would read as a stub. The container's own duration is the second measurement —
+                 * only when both say nothing is the file refused for its length.
+                 */
+                probe: async (p) => {
+                  const meta = await probeVideoStreamMeta(p);
+                  if (!meta || meta.durationSec > 0) return meta;
+                  return { ...meta, durationSec: await probeVideoDurationSec(p) };
+                },
+                decodeFrame: async (p) => {
+                  const framePath = `${p}.validate.jpg`;
+                  try {
+                    return await extractFrameAtFraction(p, framePath, 0.5);
+                  } finally {
+                    try { fs.unlinkSync(framePath); } catch { /* none written */ }
+                  }
+                },
+              })
+            : null;
         if (cloudFileSize > 80 * 1024 * 1024) {
           note("cloud", "DOWNLOAD_UNSUPPORTED", `over_size_ceiling_${Math.round(cloudFileSize / 1024 / 1024)}mb`);
           console.warn(
             `[Pipeline] Scene ${sceneIndex}: YouTube CC clip too large (${(cloudFileSize / 1024 / 1024).toFixed(1)}MB), skipping cloud service — falling back to RapidAPI`
+          );
+        } else if (cloudVerdict && !cloudVerdict.ok) {
+          note("cloud", "DOWNLOAD_INVALID_CONTENT", `${cloudVerdict.code}:${cloudVerdict.detail}`);
+          console.warn(
+            `[Pipeline] Scene ${sceneIndex}: Cloud DL delivered ${cloudFileSize} bytes for ${videoId} ` +
+              `that are not a usable video (${cloudVerdict.code}: ${cloudVerdict.detail}) — falling back to RapidAPI`
           );
         } else if (cloudFileSize > 10_000) {
           fs.renameSync(cloudTmpPath, outPath);
@@ -51846,6 +51892,16 @@ async function _runVideoPipelineInner(
      */
     let cinematicDeliveredUrl: string | null = null;
     /**
+     * RONDE 643 — the timeline the delivered cinematic file was rendered from, kept so the last
+     * gate can say how many seconds of it are YouTube. `basis` says which of the two delivery paths
+     * set it: the one that ran the render knows what was rendered; the one that waited knows what
+     * was asked for. Null on the compose route, which has no timeline to read.
+     */
+    let deliveredTimeline: {
+      clips: TimelineVideoClip[];
+      basis: "rendered_timeline" | "planned_timeline";
+    } | null = null;
+    /**
      * The cinematic refusal, hoisted so the final gate can read it.
      *
      * `cinematicRefusal` itself lives inside the block that produces it, and the gate that has to
@@ -52479,6 +52535,7 @@ async function _runVideoPipelineInner(
                 );
                 if (waited.kind === "DELIVERED") {
                   cinematicDeliveredUrl = waited.outputUrl;
+                  deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "planned_timeline" };
                   /** The renderer ran — in the worker's process, but it ran, and it delivered. */
                   cinematicProgress.rendered = true;
                   /**
@@ -52747,6 +52804,7 @@ async function _runVideoPipelineInner(
                 }
                 if (jobOutcome.ok) {
                   cinematicDeliveredUrl = jobOutcome.outputUrl;
+                  deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "rendered_timeline" };
                   console.log(
                     pipelineReport.add(
                       "summary",
@@ -53177,6 +53235,42 @@ async function _runVideoPipelineInner(
      * the file is made of rather than what it was planned to be made of. Nothing is probed again —
      * the delivered file's own measurements come from the quality report this render already built.
      */
+    /**
+     * RONDE 643 — HOW MANY SECONDS OF THIS FILM ARE YOUTUBE, ASKED OF THE FILM.
+     *
+     * Render 603 found 49 YouTube videos, downloaded none, and delivered a film every gate passed.
+     * Nothing said that the one thing this product is for had not happened. This line always
+     * prints, measured on the timeline the delivered file was rendered from, and counts YouTube
+     * footage that arrived through the archive (the background prefetch) as well as directly.
+     * It blocks only when a deployment sets REQUIRE_YOUTUBE_MIN_SECONDS.
+     */
+    let youtubeFootageVerdict: ReturnType<typeof judgeYoutubeRequirement> = { ok: true };
+    try {
+      let footage = unmeasuredFootage();
+      if (cinematicDeliveredUrl && deliveredTimeline) {
+        const origins = new Map<number, ArchiveOrigin>();
+        const assetIds = Array.from(
+          new Set(deliveredTimeline.clips.flatMap((c) => (c.source?.archiveAssetId != null ? [c.source.archiveAssetId] : [])))
+        );
+        for (const id of assetIds) {
+          const row = await getMediaArchiveAssetById(id).catch(() => undefined);
+          if (row) origins.set(id, { sourcePlatform: row.sourcePlatform ?? null, sourceUrl: row.sourceUrl ?? null });
+        }
+        footage = youtubeFootageInTimeline(deliveredTimeline.clips, origins, deliveredTimeline.basis);
+      }
+      const lineage = visualDedup.sourcingCache?.lineage;
+      const totals = lineage ? youtubeLifecycleTotals(traceYoutubeLifecycle(lineage, visualDedup.beatRelevance)) : null;
+      const line = formatYoutubeFootage(videoId, footage, totals
+        ? { found: totals.youtubeFound, downloaded: totals.youtubeDownloaded, adopted: totals.youtubeAdopted }
+        : undefined);
+      if (footage.youtubeSec > 0) console.log(pipelineReport.add("summary", line));
+      else console.warn(pipelineReport.add("summary", line));
+      youtubeFootageVerdict = judgeYoutubeRequirement(footage, requiredYoutubeSeconds());
+    } catch (err) {
+      console.warn(`[YouTubeInFilm] video=${videoId} not measured: ${(err as Error).message}`);
+      youtubeFootageVerdict = judgeYoutubeRequirement(unmeasuredFootage(), requiredYoutubeSeconds());
+    }
+
     {
       const deliveredRecords = visualDedup.sourcingCache?.lineage?.allRecords() ?? [];
       const finalGate = deliveryGate({
@@ -53202,6 +53296,19 @@ async function _runVideoPipelineInner(
       }
       if (!finalGate.allow) {
         throw pipelineError(PIPELINE_ERROR.FFMPEG, formatDeliveryBlock(finalGate, videoId));
+      }
+      /** Only a deployment that asked for it: REQUIRE_YOUTUBE_MIN_SECONDS. Never silent either way. */
+      if (!youtubeFootageVerdict.ok) {
+        console.error(
+          pipelineReport.add(
+            "summary",
+            `[DeliveryGate] ${youtubeFootageVerdict.code} video=${videoId} — ${youtubeFootageVerdict.detail}`
+          )
+        );
+        throw pipelineError(
+          PIPELINE_ERROR.FFMPEG,
+          `Delivery blocked for video ${videoId}: ${youtubeFootageVerdict.code} — ${youtubeFootageVerdict.detail}`
+        );
       }
     }
 
