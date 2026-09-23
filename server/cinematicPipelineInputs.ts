@@ -639,24 +639,21 @@ export function candidateFrom(
   };
 }
 
-/** What `plannerClipsForScene` decided, and the counts that let a render check it. */
+/** What `plannerClipsForScene` assembled, and the counts that let a render check it. */
 export type PlannerClipSource = {
-  /** What the planner receives: the usable canonical set first, compose-only files after it. */
+  /** What the planner receives: the whole adopted set first, compose-only files after it. */
   clipPaths: string[];
   /** How many clips this scene's retrieval adopted. */
   canonicalCount: number;
   /** How many clips the legacy compose montage used. */
   composeCount: number;
   /**
-   * How many adopted clips were removed — and the ONLY reason one may be: the usability
-   * predicate compose itself applies said the file is not usable media. Absence from compose's
-   * montage is not counted here and never removes a clip.
+   * How many adopted clips compose's montage does not mention. INFORMATION, NOT AN EXCLUSION —
+   * every one of them still reaches the planner. See the note on timing below.
    */
-  canonicalExcludedByCompose: number;
-  /** How many adopted clips the planner can actually see. */
+  canonicalNotInCompose: number;
+  /** How many adopted clips the planner can see. Equal to `canonicalCount`: nothing is removed. */
   canonicalAvailableToPlanner: number;
-  /** The excluded adopted clips, so a render can name them rather than lose them silently. */
-  excluded: string[];
   /** Files compose held that the canonical set does not, kept so nothing compose found is lost. */
   composeOnly: string[];
 };
@@ -675,20 +672,44 @@ export type PlannerClipSource = {
  * It is provider-independent. It hit YouTube hardest only because those clips arrive late, via the
  * scene pool, after compose has made its selection.
  *
- * ── Why the ternary is not simply flipped ───────────────────────────────────────────────────
+ * ── RONDE 636 — WHY NOTHING IS FILTERED HERE, WHICH IS NOT WHERE THIS STARTED ────────────────
  *
- * Because compose's list is not merely smaller, it is also FILTERED: compose drops files that are
- * missing, empty, invalid video, or cards this pipeline drew. Reading canonical unconditionally
- * would hand those back to the planner, which is the "accept worse pictures" trade this codebase
- * refuses everywhere else.
+ * This function first ran compose's own usability predicate (`usableSurvivorClips`) over the
+ * adopted clips, on the reasoning that compose's list "is not merely smaller, it is also
+ * FILTERED", so reading canonical unconditionally would hand back files compose had rightly
+ * dropped. The reasoning was sound. The placement was not, and render 602 measured what it cost:
  *
- * So the two facts are separated, because they were never the same fact:
+ *     [CinematicPlannerSource] scene=0 canonicalCount=4 canonicalExcludedByCompose=4 available=0
+ *     [CinematicPlannerSource] scene=1 canonicalCount=5 canonicalExcludedByCompose=5 available=0
+ *     [CinematicPlannerSource] scene=2 canonicalCount=4 canonicalExcludedByCompose=4 available=0
+ *     [CinematicPipeline] video=602 plan NOT stored code=CINEMATIC_NO_PLANNABLE_BEATS
  *
- *     compose REJECTED this file   → it is not usable media       → it stays out
- *     compose is MISSING this file → compose made a selection     → it goes to the planner
+ * Thirteen of thirteen, in every scene. A uniform total loss is never a judgement about content.
+ * And the same render holds the proof of what it really was: compose delivered TWELVE clips from
+ * those same files, using that same function. Compose's call kept 12; this one kept 0.
  *
- * Only the first removes an adopted clip, and it is established by running the same predicate
- * compose runs (`usableOnly`), not by asking whether compose's output happens to mention the file.
+ * Same function, same files, same render, a different moment — opposite answers. The predicate
+ * reads the filesystem, and by the time the planner's inputs are assembled the intermediate files
+ * compose worked from are no longer all there. A check borrowed from one stage does not keep its
+ * meaning when it is run in another.
+ *
+ * ── And it was a second copy of a check that already existed ────────────────────────────────
+ *
+ * The planner does this itself, at the only moment when the answer is current:
+ *
+ *   §10, in videoPipeline  refuses a card this pipeline drew. Named there and not here, on
+ *                          purpose: this file decides what makes a good plan, never what counts
+ *                          as media, and `aCardIsNotAPicture` holds it to that.
+ *   `localOnlyIdentityFor`  keeps a beat only when the path exists and has bytes
+ *   `identityFrom`          otherwise requires the clip to be rehydratable from its provider
+ *   duration check          drops a beat whose clip has no usable length
+ *
+ * Between them those are strictly better than the probe: a file this render no longer holds but
+ * CAN re-fetch is kept and re-fetched, where the probe simply killed it.
+ *
+ * So this function assembles and does not judge. Everything adopted goes to the planner, compose's
+ * own finds are added behind it, and the decisions stay with the code that was already making
+ * them. `canonicalNotInCompose` is reported because it is worth seeing, and it removes nothing.
  *
  * ── Why adding entries cannot double-book a beat ────────────────────────────────────────────
  *
@@ -697,24 +718,16 @@ export type PlannerClipSource = {
  * canonical set is placed first for that reason: where both sources speak for a beat, the clip the
  * render adopted for it wins, and compose's entries can only reach beats canonical left open.
  */
-export async function plannerClipsForScene(params: {
+export function plannerClipsForScene(params: {
   /** This scene's adopted clips — the canonical retrieval state. */
   canonical: readonly string[];
   /** The clips the legacy compose montage used for this scene. */
   composed: readonly string[];
-  /**
-   * Compose's own usability predicate, injected so production runs the REAL one
-   * (`usableSurvivorClips`) and a test can state a rejection instead of staging a file.
-   */
-  usableOnly: (clips: readonly string[]) => Promise<string[]>;
   /** Injected so this stays free of node's path module — `path.basename` in the caller. */
   basenameOf: (clipPath: string) => string;
-}): Promise<PlannerClipSource> {
+}): PlannerClipSource {
   const canonical = params.canonical.filter((p) => Boolean(p));
   const composed = params.composed.filter((p) => Boolean(p));
-  const kept = await params.usableOnly(canonical);
-  const keptSet = new Set(kept);
-  const excluded = canonical.filter((p) => !keptSet.has(p));
   /**
    * By basename, because compose renames what it pads or overlays and the basename is the only
    * join the two stages share. It over-matches rather than under-matches, which is the safe
@@ -722,14 +735,15 @@ export async function plannerClipsForScene(params: {
    * and the clip itself is already in the list.
    */
   const heldNames = new Set(canonical.map((p) => params.basenameOf(p)));
+  const composedNames = new Set(composed.map((p) => params.basenameOf(p)));
   const composeOnly = composed.filter((p) => !heldNames.has(params.basenameOf(p)));
+  const notInCompose = canonical.filter((p) => !composedNames.has(params.basenameOf(p)));
   return {
-    clipPaths: [...kept, ...composeOnly],
+    clipPaths: [...canonical, ...composeOnly],
     canonicalCount: canonical.length,
     composeCount: composed.length,
-    canonicalExcludedByCompose: excluded.length,
-    canonicalAvailableToPlanner: kept.length,
-    excluded,
+    canonicalNotInCompose: notInCompose.length,
+    canonicalAvailableToPlanner: canonical.length,
     composeOnly,
   };
 }

@@ -346,7 +346,8 @@ describe("clips are paired to beats by the adoption record", () => {
   /** The caller must use it — a pure function nothing calls is the R160 failure repeated. */
   it("the pipeline calls it instead of indexing the compose list", () => {
     const at = CODE.indexOf("planAndStoreCinematicTimeline({");
-    const block = CODE.slice(at, at + 3000);
+    /* To the end of the scene map rather than a fixed span — comments moved the call further in. */
+    const block = CODE.slice(at, CODE.indexOf("clipForBeat.forEach(", at));
     expect(block, "the planner does not use the pairing").toContain("pairClipsToBeats({");
     expect(block, "the planner still indexes the compose list by beat position").not.toMatch(
       /clipPaths\[beatIndex\]/

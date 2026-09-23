@@ -57,32 +57,39 @@ describe("the cinematic plan can be built without the compose stage", () => {
   });
 
   /**
-   * RONDE 632 MADE THIS TEST STRONGER THAN THE ASSERTION THAT STOOD HERE.
+   * THIS TEST HAS NOW BEEN REWRITTEN TWICE, AND BOTH TIMES THE REASON SURVIVED THE MECHANISM.
    *
-   * What stood here was "the composed list wins whenever it exists", and the reason given for it
-   * was the one that matters: compose's list "has had unusable files filtered out of it by the
-   * compose stage's own existence/decodability check. The selected set has not. Preferring the
-   * weaker source would be a quiet downgrade."
+   * What stood here originally was "the composed list wins whenever it exists", with the reason:
+   * compose's list "has had unusable files filtered out of it by the compose stage's own
+   * existence/decodability check. The selected set has not. Preferring the weaker source would be
+   * a quiet downgrade."
    *
-   * That reason survives intact. The mechanism does not, because winning the whole list was never
-   * what the reason asked for — it asked that no file compose's CHECK would reject reaches the
-   * planner. Render 600 showed what the stronger form cost: four adopted YouTube clips that passed
-   * every check were invisible to the planner purely because compose's montage had not used them.
+   * RONDE 632 kept that reason and moved the mechanism: run compose's predicate directly over the
+   * adopted set. RONDE 636 then measured that on render 602 — the predicate reads the filesystem,
+   * it was running one stage after compose had consumed its intermediates, and it refused
+   * THIRTEEN OF THIRTEEN adopted clips across three scenes while compose had kept twelve of those
+   * same files minutes earlier. The render stored no plan at all.
    *
-   * So the check is now applied directly, to the canonical set, by compose's own predicate — and
-   * absence from compose's output, which is a selection and not a check, no longer removes
-   * anything. Nothing weaker reaches the planner than before; strictly more of what passed does.
+   * The reason still survives, and it is now served where it always could have been: the planner
+   * makes these checks itself, at the only moment they are current. So what this asserts is that
+   * the planner's own refusals are wired and that no second copy of them has grown back in the
+   * assembly.
    */
-  it("still lets nothing past that compose's own usability check rejects", () => {
+  it("still lets nothing past that the planner's own checks reject", () => {
     const src = pipeline();
-    const at = src.indexOf("const source = await plannerClipsForScene({");
+    const at = src.indexOf("const plannerSource = plannerClipsForScene({");
     expect(at).toBeGreaterThan(-1);
     const call = src.slice(at, src.indexOf("});", at));
     // Both sources go in, named as they always were.
-    expect(call).toContain("canonical: sceneVisualResults[i]?.clips ?? [],");
-    expect(call).toContain("composed: composedUsedClips[i] ?? [],");
-    // And the filter is compose's real one, not a second opinion written for this call site.
-    expect(call).toContain("usableOnly: (clips) => usableSurvivorClips(clips),");
+    expect(call).toContain("canonical: canonicalForScene,");
+    expect(call).toContain("composed: composedForScene,");
+    // And no usability opinion is formed here — that is the RONDE 636 correction.
+    expect(call).not.toContain("usableOnly");
+    // The planner's own refusals are still what removes a clip.
+    expect(src).toContain("placeholdersRefusedFromTimeline");
+    expect(src).toContain("beatClipIsPlaceholder");
+    // And compose still runs the predicate where it holds the files.
+    expect(src).toContain("usableSurvivorClips(sceneVisualResults[i]?.clips ?? [])");
   });
 
   /**

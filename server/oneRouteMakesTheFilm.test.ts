@@ -145,7 +145,7 @@ describe("§3 — legacy compose, pinned so it can only shrink", () => {
      * the planner still has every adopted clip.
      */
     expect(PIPELINE).toContain("const canonicalForScene = sceneVisualResults[i]?.clips ?? [];");
-    expect(PIPELINE).toContain("canonical: sceneVisualResults[i]?.clips ?? [],");
+    expect(PIPELINE).toContain("canonical: canonicalForScene,");
     expect(PIPELINE).toContain("clipPaths: plannerSource.clipPaths,");
   });
 

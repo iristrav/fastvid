@@ -172,29 +172,50 @@ describe("which source the planner read is stated", () => {
    * was guarding against. Compose's usability check still runs, over the canonical set. What
    * stopped removing clips is compose's SELECTION, which was never a check.
    */
-  it("states that the planner reads the merge, and still runs compose's usability check", () => {
+  it("states that the planner reads the merge", () => {
     expect(PIPE).toContain("preferredSource=canonicalFirstMerge ");
     expect(PIPE).toContain("clipPaths: plannerSource.clipPaths,");
-    expect(PIPE).toContain("usableOnly: (clips) => usableSurvivorClips(clips),");
   });
 
-  /** An adopted clip that still does not reach the planner is named, with its reason. */
-  it("names every canonical clip the usability check excluded", () => {
+  /**
+   * RONDE 636 — AND THAT IT FORMS NO USABILITY OPINION WHILE DOING SO.
+   *
+   * The assertion that stood beside the one above required `usableOnly: (clips) =>
+   * usableSurvivorClips(clips)` in the assembly. Render 602 measured what that cost: the predicate
+   * reads the filesystem, it ran one stage after compose had consumed its intermediates, and it
+   * refused thirteen of thirteen adopted clips in every scene while compose had kept twelve of
+   * those same files minutes earlier. `plan NOT stored code=CINEMATIC_NO_PLANNABLE_BEATS`.
+   *
+   * So the check went back to where it is current — compose, and the planner's own refusals — and
+   * this pins that it did not grow back here.
+   */
+  it("and forms no usability opinion where the answer would already be stale", () => {
+    const at = PIPE.indexOf("const plannerSource = plannerClipsForScene({");
+    expect(at).toBeGreaterThan(-1);
+    expect(PIPE.slice(at, PIPE.indexOf("});", at))).not.toContain("usableOnly");
+    expect(PIPE).not.toContain("usableOnly:");
+    /** Compose still runs it, where it is holding the files. */
+    expect(PIPE).toContain("usableSurvivorClips(sceneVisualResults[i]?.clips ?? [])");
+  });
+
+  /** How much of the adopted set the planner can see, per scene, on every render. */
+  it("counts the adopted set against what compose used", () => {
     expect(PIPE).toContain("[CinematicPlannerSource]");
     const at = PIPE.indexOf("[CinematicPlannerSource]");
-    const block = PIPE.slice(at, at + 1200);
-    expect(block).toContain("canonicalExcludedByCompose=");
+    const block = PIPE.slice(at, at + 700);
+    expect(block).toContain("canonicalCount=");
+    expect(block).toContain("composeCount=");
+    expect(block).toContain("canonicalNotInCompose=");
     expect(block).toContain("canonicalAvailableToPlanner=");
-    expect(block).toContain("excluded=UNUSABLE_MEDIA");
+    expect(block).toContain("composeOnlyAdded=");
   });
 
-  /** And every beat says which of the three things happened to its picture. */
+  /** And every beat says whether its adopted clip reached the planner. */
   it("gives each beat a reason that distinguishes lost from never-found", () => {
     expect(PIPE).toContain("[CinematicPlannerBeat]");
-    const at = PIPE.indexOf("const excludedNames = new Set(");
-    const block = PIPE.slice(at, at + 1200);
+    const at = PIPE.indexOf("[CinematicPlannerBeat] scene=");
+    const block = PIPE.slice(at, at + 400);
     expect(block).toContain("CANONICAL_CLIP_AVAILABLE");
-    expect(block).toContain("CANONICAL_CLIP_EXCLUDED");
     expect(block).toContain("NO_CANONICAL_CLIP");
   });
 

@@ -51781,51 +51781,15 @@ async function _runVideoPipelineInner(
          */
         let placeholdersRefusedFromTimeline = 0;
         /**
-         * §3 — THE ADOPTED SET REACHES THE PLANNER, AND ONLY A PROVEN REJECTION REMOVES A CLIP.
+         * §3 — THE WHOLE ADOPTED SET REACHES THE PLANNER.
          *
-         * Built here, ahead of the synchronous `scenes.map` below, because establishing that a file
-         * is usable means reading it (`usableSurvivorClips` stats it and probes it) and the map
-         * that assembles the planner's scenes cannot await.
+         * `plannerClipsForScene` carries the reasoning, including why RONDE 636 removed the
+         * usability probe that used to stand here: it read the filesystem one stage too late,
+         * refused thirteen of thirteen adopted clips on render 602, and was a second copy of
+         * checks the planner already performs at the only moment they are current.
          *
-         * `plannerClipsForScene` carries the reasoning; what it does is: run compose's OWN
-         * usability predicate over the canonical adopted clips, keep everything it passes, and add
-         * whatever compose held that the adopted set does not. Absence from compose's montage
-         * stops removing an adopted clip — only the predicate does.
+         * Nothing is awaited any more, so this is assembled inside the map with everything else.
          */
-        const plannerSourceByScene = new Map<
-          number,
-          Awaited<ReturnType<typeof plannerClipsForScene>>
-        >();
-        for (const [i, scene] of scenes.entries()) {
-          const source = await plannerClipsForScene({
-            canonical: sceneVisualResults[i]?.clips ?? [],
-            composed: composedUsedClips[i] ?? [],
-            usableOnly: (clips) => usableSurvivorClips(clips),
-            basenameOf: (clipPath) => path.basename(clipPath),
-          });
-          plannerSourceByScene.set(scene.index, source);
-          console.log(
-            `[CinematicPlannerSource] scene=${scene.index} ` +
-              `canonicalCount=${source.canonicalCount} composeCount=${source.composeCount} ` +
-              `canonicalExcludedByCompose=${source.canonicalExcludedByCompose} ` +
-              `canonicalAvailableToPlanner=${source.canonicalAvailableToPlanner} ` +
-              `composeOnlyAdded=${source.composeOnly.length}`
-          );
-          /**
-           * An adopted clip that does not reach the planner is named, never dropped in silence.
-           * This is the one exclusion the fix still allows, so it is the one that has to be
-           * readable in a render's log — otherwise the defect this change removes could come back
-           * through the predicate without anything saying so.
-           */
-          for (const p of source.excluded.slice(0, 10)) {
-            const rec = lineage.resolve(p, clipContentKey(p));
-            console.warn(
-              `[CinematicPlannerSource] scene=${scene.index} ` +
-                `asset=${rec?.provider ?? "UNVERIFIED"}:${rec?.providerAssetId ?? rec?.archiveAssetId ?? "none"} ` +
-                `excluded=UNUSABLE_MEDIA file=${path.basename(p)}`
-            );
-          }
-        }
         const outcome = await planAndStoreCinematicTimeline({
           videoId,
           /** The render's own id, so an adapter refusal names the run that produced it. */
@@ -51910,20 +51874,19 @@ async function _runVideoPipelineInner(
              * stays because "what compose left out" is still worth reading; it is simply no longer
              * the same thing as "what the planner lost".
              */
-            const plannerSource =
-              plannerSourceByScene.get(scene.index) ??
-              /* A scene absent from the map cannot occur — it is built from this same array — but
-               * falling back to the canonical set keeps this expression total rather than throwing
-               * away a scene's pictures over a lookup. */
-              {
-                clipPaths: [...canonicalForScene],
-                canonicalCount: canonicalForScene.length,
-                composeCount: composedForScene.length,
-                canonicalExcludedByCompose: 0,
-                canonicalAvailableToPlanner: canonicalForScene.length,
-                excluded: [] as string[],
-                composeOnly: [] as string[],
-              };
+            const plannerSource = plannerClipsForScene({
+              canonical: canonicalForScene,
+              composed: composedForScene,
+              basenameOf: (clipPath) => path.basename(clipPath),
+            });
+            console.log(
+              `[CinematicPlannerSource] scene=${scene.index} ` +
+                `canonicalCount=${plannerSource.canonicalCount} ` +
+                `composeCount=${plannerSource.composeCount} ` +
+                `canonicalNotInCompose=${plannerSource.canonicalNotInCompose} ` +
+                `canonicalAvailableToPlanner=${plannerSource.canonicalAvailableToPlanner} ` +
+                `composeOnlyAdded=${plannerSource.composeOnly.length}`
+            );
             console.log(
               `[CinematicSourceDecision] scene=${scene.index} ` +
                 `preferredSource=canonicalFirstMerge ` +
@@ -51970,27 +51933,23 @@ async function _runVideoPipelineInner(
              * that lied: a clip HAD been adopted, the planner was handed a list that did not carry
              * it. That sentence is true from inside that function — it received nothing — and the
              * render needs the reason that function cannot know. It is known here, one line from
-             * the list itself, and only here:
+             * the list itself:
              *
              *     CANONICAL_CLIP_AVAILABLE  the beat's adopted clip is in the planner's list
-             *     CANONICAL_CLIP_EXCLUDED   a clip was adopted for it and failed the usable check
              *     NO_CANONICAL_CLIP         nothing was ever adopted for this beat
              *
-             * The third is the only one that means what `NO_ADOPTED_CLIP` says.
+             * RONDE 636 removed a third, `CANONICAL_CLIP_EXCLUDED`, together with the mistimed
+             * probe that was the only thing producing it. Nothing is filtered out of the planner's
+             * list here any more, so a beat either has its adopted clip or never had one, and a
+             * beat the PLANNER then refuses says so in its own words (`NOT_REHYDRATABLE`,
+             * `SCENE_TIME_EXHAUSTED`, `NO_DURATION`) at the moment it decides.
              */
-            const excludedNames = new Set(plannerSource.excluded.map((p) => path.basename(p)));
             beats.forEach((beat, position) => {
               const beatKey = beat.index ?? position;
               const clipPath = clipForBeat[position];
-              const reason = clipPath
-                ? "CANONICAL_CLIP_AVAILABLE"
-                : sceneAdoptions.some(
-                      (a) => a.beatIndex === beatKey && excludedNames.has(a.basename)
-                    )
-                  ? "CANONICAL_CLIP_EXCLUDED"
-                  : "NO_CANONICAL_CLIP";
               console.log(
-                `[CinematicPlannerBeat] scene=${scene.index} beat=${beatKey} reason=${reason}` +
+                `[CinematicPlannerBeat] scene=${scene.index} beat=${beatKey} ` +
+                  `reason=${clipPath ? "CANONICAL_CLIP_AVAILABLE" : "NO_CANONICAL_CLIP"}` +
                   (clipPath ? ` file=${path.basename(clipPath)}` : "")
               );
             });
