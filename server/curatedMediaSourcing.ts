@@ -3129,6 +3129,24 @@ export function archiveAssetPreflight(
   return true;
 }
 
+/**
+ * RONDE 645 — THE ROUTE THAT PREPARED A CURATED CLIP TELLS THE LEDGER WHICH ASSET IT WAS.
+ *
+ * `fetchCuratedArchiveBeatClip` is called from seventeen places in the pipeline and opened no
+ * lineage record, so every clip it prepared was adopted as a clip the ledger had never seen —
+ * provider UNVERIFIED. Render 603 adopted archive asset 57802, a YouTube segment the background
+ * prefetch had just filed, exactly that way (`UNTRACED_ADOPTION … adopted as UNVERIFIED`).
+ *
+ * This module cannot import the pipeline (the pipeline imports it), so the pipeline registers the
+ * one function that knows the active render's ledger, and the pick — which is the proof of where
+ * the clip came from — is handed to it the moment the file exists.
+ */
+type CuratedClipPreparedHook = (picked: CuratedCandidatePick, sceneIndex: number, beatIndex: number, clipPath: string) => void;
+let curatedClipPreparedHook: CuratedClipPreparedHook | null = null;
+export function setCuratedClipPreparedHook(hook: CuratedClipPreparedHook | null): void {
+  curatedClipPreparedHook = hook;
+}
+
 export async function fetchCuratedArchiveBeatClip(
   beat: CuratedBeatContext,
   scene: CuratedSceneContext,
@@ -3299,6 +3317,11 @@ export async function fetchCuratedArchiveBeatClip(
         const tags = normalizeMediaTags(picked.asset.tags ?? []);
         return tags.some((x) => x === t || x.includes(t));
       });
+      try {
+        curatedClipPreparedHook?.(picked, sceneIndex, beat.index, clipPath);
+      } catch {
+        /* provenance bookkeeping never costs a clip that was prepared correctly */
+      }
       console.log(
         `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: curated archive #${picked.asset.id} ` +
           `from "${picked.archiveName}" (score ${picked.score}, ${clampHoldSec(holdSec).toFixed(1)}s` +

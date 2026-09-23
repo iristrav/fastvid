@@ -271,6 +271,7 @@ import {
   type CuratedCandidatePick,
   type ArchiveAssetRow,
   listCuratedArchiveCandidates,
+  setCuratedClipPreparedHook,
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import {
@@ -16582,6 +16583,20 @@ export async function downloadYouTubeCCClip(
      * the window it was granted. It decides nothing and changes no behaviour — it is the evidence
      * a later round needs so the ceiling is set from measurement instead of from arithmetic.
      */
+    /**
+     * RONDE 645 — ONE ROUTE ON ITS OWN GETS THE WHOLE WINDOW IT WAS GIVEN.
+     *
+     * The share and the 180 s base exist to split a render's scene budget between two routes. A
+     * caller that asked for one route (`onlyRoute`: the background prefetch and the route test)
+     * runs inside a scope it sized for that one route, and halving it only guaranteed a hang-up
+     * before the file arrived — the same 499 render 603 was full of, now in the background. So
+     * there the scope is the limit. Every render call passes no route and keeps the share, the
+     * floor and the base exactly as they were.
+     */
+    const cloudTimeoutMs =
+      onlyRoute && Number.isFinite(remainingForCloud)
+        ? remainingForCloud
+        : Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs);
     const cloudStartedAtMs = Date.now();
     const reportCloudTiming = (outcome: string): void => {
       console.log(
@@ -16602,7 +16617,7 @@ export async function downloadYouTubeCCClip(
       const { response: dlResp, bytesWritten } = await downloadToFileStreaming(
         dlUrl,
         cloudTmpPath,
-        Math.min(youtubeDownloadTimeoutMs(budgetMs), cloudWindowMs),
+        cloudTimeoutMs,
         `YouTube CC cloud download scene ${sceneIndex}`,
         { headers: cloudHeaders },
         80 * 1024 * 1024
@@ -16917,7 +16932,10 @@ export async function downloadYouTubeCCClip(
             tmpPath,
             // RONDE 52: 180s was eight times the scope containing it, so this step could never
             // finish. It now takes what is left, and reports honestly when that is not enough.
-            scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000),
+            /** RONDE 645 — one route on its own: the whole scope, as for the cloud leg above. */
+            onlyRoute && Number.isFinite(remainingScopeMs())
+              ? Math.max(5_000, remainingScopeMs())
+              : scopedTimeoutMs(youtubeDownloadTimeoutMs(), 5_000),
             `RapidAPI YouTube download scene ${sceneIndex}`,
             {
               headers: {
@@ -35404,6 +35422,22 @@ export function ensureCuratedAssetLineage(
  * existing caller, and the structural tests that look for it here, are unaffected.
  */
 export { ensureCuratedAssetLineageOn };
+
+/**
+ * RONDE 645 — every curated clip `fetchCuratedArchiveBeatClip` prepares is bound to its asset's
+ * lineage record in the active render, exactly as `prepareArchiveBeatClip` above does for the
+ * primary route: opened (or found) from the pick, the prepared file bound to it, the download
+ * recorded. The adoption that follows then resolves the file to a record with a provider, an
+ * archive id and — for an archived YouTube segment — its YouTube origin, instead of opening an
+ * anonymous UNVERIFIED one.
+ */
+setCuratedClipPreparedHook((picked, sceneIndex, beatIndex, clipPath) => {
+  const lineage = get_activeSourcingCache()?.lineage;
+  if (!lineage) return;
+  const record = ensureCuratedAssetLineageOn(lineage, picked, sceneIndex, beatIndex);
+  lineage.bindPath(record.lineageId, clipPath, clipContentKey(clipPath));
+  lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK", currentPath: clipPath });
+});
 
 /**
  * RONDE 87 — a stable, groupable reason string from a thrown error message.

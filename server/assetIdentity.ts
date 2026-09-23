@@ -180,6 +180,13 @@ export function identityFromAdoption(
     const page = sourcePageUrlFor(provider, providerAssetId);
     if (page) identity.sourcePageUrl = page;
   }
+  /**
+   * RONDE 645 — an archived clip's own origin page (a YouTube watch URL for a prefetched segment)
+   * when no provider-derived page is known. For attribution and tracing, never for fetching:
+   * `mediaUrl` above stays the copy this system holds.
+   */
+  const origin = facts.originalUrl?.trim();
+  if (!identity.sourcePageUrl && origin && /^https?:\/\//.test(origin)) identity.sourcePageUrl = origin;
   const title = facts.assetTitle?.trim();
   if (title) identity.title = title;
   return identity;

@@ -3397,6 +3397,18 @@ export type CuratedCandidatePickForLineage = {
     mediaType?: string | null;
     storageUrl?: string | null;
     title?: string | null;
+    /**
+     * RONDE 645 — AN ARCHIVED YOUTUBE CLIP KEEPS ITS YOUTUBE ORIGIN.
+     *
+     * The background prefetch files YouTube segments into the archive, and every later render meets
+     * them as archive assets: provider = the archive's name, storageUrl = our own copy. The YouTube
+     * video they came from was on the asset row and nowhere on the record. The row's source URL is
+     * carried as the record's `originalUrl` — the provider's canonical page, which is what that
+     * field is for — so the origin travels with the clip through adoption, the timeline identity
+     * (`sourcePageUrl`) and the final film. Copied from the row, never inferred.
+     */
+    sourceUrl?: string | null;
+    sourcePlatform?: string | null;
   };
   archiveName?: string;
   score?: number;
@@ -3434,6 +3446,8 @@ export function ensureCuratedAssetLineageOn(
 ): VisualLineageRecord {
   const contentKey = curatedAssetContentKey(picked.asset.id);
   const placeholder = `archive-asset:${picked.asset.id}`;
+  /** RONDE 645: the row's own origin (a YouTube watch URL for a prefetched segment) — see the type. */
+  const originalUrl = picked.asset.sourceUrl?.trim() || undefined;
   const existing = ledger.resolve(placeholder, contentKey);
   /**
    * Idempotent, and no longer silent about a record that has no provider yet — see
@@ -3442,6 +3456,7 @@ export function ensureCuratedAssetLineageOn(
    * put two curated clips into the UNVERIFIED bucket and blocked an export.
    */
   if (existing) {
+    existing.originalUrl ??= originalUrl;
     return ledger.attributeProvider(existing, {
       provider: picked.archiveName?.trim() || "own_archive",
       providerAssetId: String(picked.asset.id),
@@ -3461,6 +3476,7 @@ export function ensureCuratedAssetLineageOn(
     provider: picked.archiveName?.trim() || "own_archive",
     providerAssetId: String(picked.asset.id),
     sourceUrl: picked.asset.storageUrl ?? undefined,
+    originalUrl,
     localPath: placeholder,
     mediaType: picked.asset.mediaType === "video" ? "video" : "image",
     candidateScore: picked.score,

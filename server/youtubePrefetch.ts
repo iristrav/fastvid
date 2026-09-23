@@ -86,17 +86,38 @@ export function prefetchIntervalMs(): number {
 export const PREFETCH_SEGMENT_SEC = 30;
 
 /**
- * The window one segment's download gets. This is the whole point of the module: a render gives a
- * YouTube download what a scene has left, often nothing; this gives it five minutes, which the
- * pipeline's own shares then split between its two routes exactly as they always do.
+ * The window ONE ROUTE gets for ONE segment. This is the whole point of the module: a render gives
+ * a YouTube download what a scene has left, often nothing.
+ *
+ * RONDE 645: it was five minutes, and the download layer then halved it and capped it at 180 s, as
+ * it does to share a render's budget between two routes — render 603's background fetch timed the
+ * cloud route out at 148 s on NG28oNhCHD0. Each route now runs on its own with the whole window
+ * (`onlyRoute`), and the window is ten minutes by default: the background has no scene waiting, and
+ * the service keeps whatever it finishes, so a long cut is paid for once.
+ * YOUTUBE_PREFETCH_WINDOW_MIN sets it (2–30); every segment logs how long it actually took, so the
+ * number can be set from measurement.
  */
-export const PREFETCH_DOWNLOAD_WINDOW_MS = 5 * 60_000;
+export function prefetchWindowMs(): number {
+  return intEnv("YOUTUBE_PREFETCH_WINDOW_MIN", 10, 2, 30) * 60_000;
+}
+/** The default, kept as a name for readers of the log and the tests. */
+export const PREFETCH_DOWNLOAD_WINDOW_MS = 10 * 60_000;
 
 /** After this many tries a video is left alone. `failed` rows past it are never claimed again. */
 export const PREFETCH_MAX_ATTEMPTS = 4;
 
-/** A `fetching` row older than this belonged to a worker that died mid-fetch. */
-export const PREFETCH_STALE_CLAIM_MS = 30 * 60_000;
+/**
+ * A `fetching` row not touched for this long belonged to a worker that died mid-fetch.
+ *
+ * RONDE 645: the row is now touched before every segment, so "stale" means one segment has taken
+ * longer than both routes' whole windows together — never a live worker that is merely slow. The
+ * fixed 30 minutes it replaced was shorter than one video could legitimately take once each route
+ * got its full window, and a second worker would have claimed a video still being fetched.
+ */
+export function prefetchStaleClaimMs(): number {
+  return 2 * prefetchWindowMs() + 5 * 60_000;
+}
+export const PREFETCH_STALE_CLAIM_MS = 2 * PREFETCH_DOWNLOAD_WINDOW_MS + 5 * 60_000;
 
 /** 15 min, 1 h, 4 h, then a day: a route that is down now is often up in an hour. */
 export function prefetchBackoffMs(attempts: number): number {
@@ -249,7 +270,7 @@ export async function claimNextYoutubePrefetch(now = new Date()): Promise<Youtub
   const db = await getDb();
   if (!db) return null;
   const q = youtubePrefetchQueue;
-  const staleBefore = new Date(now.getTime() - PREFETCH_STALE_CLAIM_MS);
+  const staleBefore = new Date(now.getTime() - prefetchStaleClaimMs());
   const due = await db
     .select()
     .from(q)
@@ -284,6 +305,13 @@ export type PrefetchVerdict = {
   nextAttemptAt: Date;
 };
 
+/** Heartbeat: the claimed row is alive. Its own clock, like every other time on this table. */
+async function touchPrefetchRow(id: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(youtubePrefetchQueue).set({ updatedAt: new Date() }).where(eq(youtubePrefetchQueue.id, id));
+}
+
 async function recordPrefetchVerdict(id: number, v: PrefetchVerdict): Promise<void> {
   const db = await getDb();
   if (!db) return;
@@ -303,6 +331,8 @@ async function recordPrefetchVerdict(id: number, v: PrefetchVerdict): Promise<vo
 export type PrefetchSegmentResult = {
   startSec: number;
   downloaded: boolean;
+  /** How long the download took, measured — the evidence the window should be set from. */
+  downloadMs?: number;
   /** The download layer's own classified reason, quoted, when it did not deliver. */
   downloadReason?: string;
   ingest?: IngestOutcome;
@@ -458,6 +488,8 @@ export type PrefetchDeps = {
   ingest: (filePath: string, metadata: IngestMetadata) => Promise<IngestOutcome>;
   /** Drop anything the download layer is holding for this video — its files are about to go. */
   release: (videoId: string) => void;
+  /** Mark the claimed row alive, so a slow fetch is never taken for a dead one. */
+  touch?: () => Promise<void>;
   makeWorkDir: (videoId: string) => string;
   removeWorkDir: (dir: string) => void;
 };
@@ -492,6 +524,8 @@ export async function prefetchOneVideo(
         break;
       }
       const outPath = path.join(workDir, `seg_${startSec}.mp4`);
+      await deps.touch?.().catch(() => {});
+      const startedAt = Date.now();
       const got = await deps
         .download({
           videoId: row.videoId,
@@ -503,7 +537,7 @@ export async function prefetchOneVideo(
         })
         .catch((err: Error) => ({ ok: false, reason: `threw:${err.message?.slice(0, 80)}` }));
       if (!got.ok || !fs.existsSync(outPath)) {
-        segments.push({ startSec, downloaded: false, downloadReason: got.reason });
+        segments.push({ startSec, downloaded: false, downloadReason: got.reason, downloadMs: Date.now() - startedAt });
         videoRefusal = deps.videoRefusal(row.videoId);
         /** A video the layer has written off is written off for every one of its segments. */
         if (videoRefusal) break;
@@ -514,7 +548,7 @@ export async function prefetchOneVideo(
         outPath,
         archiveMetadataForPrefetchedSegment(row, startSec, measured)
       );
-      segments.push({ startSec, downloaded: true, ingest });
+      segments.push({ startSec, downloaded: true, ingest, downloadMs: Date.now() - startedAt });
       /**
        * RONDE 645 — A LOGO IN ONE SEGMENT IS A LOGO IN ALL OF THEM.
        *
@@ -555,7 +589,10 @@ export function formatPrefetchLine(
     `downloaded=${downloaded} archived=${archived} status=${verdict.status}` +
     (verdict.archiveAssetId != null ? ` assetId=${verdict.archiveAssetId}` : "") +
     (verdict.lastError ? ` reason=${verdict.lastError}` : "") +
-    (verdict.status === "failed" ? ` retryAt=${verdict.nextAttemptAt.toISOString()}` : "")
+    (verdict.status === "failed" ? ` retryAt=${verdict.nextAttemptAt.toISOString()}` : "") +
+    (fetched.segments.some((s) => s.downloadMs != null)
+      ? ` segmentMs=${fetched.segments.map((s) => s.downloadMs ?? "?").join(",")}`
+      : "")
   );
 }
 
@@ -759,7 +796,7 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
                 undefined,
                 route
               ),
-            PREFETCH_DOWNLOAD_WINDOW_MS,
+            prefetchWindowMs(),
             `youtube prefetch ${route} ${p.videoId}@${p.startSec}s`
           )
           .catch((err: Error) => {
@@ -816,7 +853,7 @@ export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archi
       const row = await claimNextYoutubePrefetch();
       if (!row) break;
       videos++;
-      const fetched = await prefetchOneVideo(row, deps);
+      const fetched = await prefetchOneVideo(row, { ...deps, touch: () => touchPrefetchRow(row.id) });
       const verdict = decidePrefetchVerdict({
         attempts: row.attempts,
         segments: fetched.segments,
