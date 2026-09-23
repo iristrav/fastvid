@@ -1167,6 +1167,16 @@ export function maxConcurrentRenderJobs(): number {
 
 let activeRenderJobs = 0;
 
+/**
+ * RONDE 640 — how many renders this process is running, for the YouTube prefetch.
+ *
+ * The prefetch downloads through the same layer a render's rehydration does, and it must never
+ * compete with one. It asks this, and the generation queue's own count, before every segment.
+ */
+export function activeRenderJobCount(): number {
+  return activeRenderJobs;
+}
+
 export async function processRenderJobTick(): Promise<void> {
   if (tickInFlight) return;
   tickInFlight = true;

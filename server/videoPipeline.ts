@@ -869,6 +869,7 @@ import {
   formatRepeatReport,
 } from "./videoRepeatAudit";
 import { ingestExternalClipToArchive } from "./archiveIngestion";
+import { enqueueYoutubePrefetch } from "./youtubePrefetch";
 import {
   DELIVERY_GATE_FAIL,
   deliveryClipFactsFromLedger,
@@ -15803,7 +15804,7 @@ export function rapidApiYoutubeMetaDurationSec(meta: RapidApiYoutubeMeta | null 
  * cleaned up is the ENOENT class of bug fetchWithTimeout's scope signal exists to prevent — so
  * the download stays inside the scope, unchanged.
  */
-async function fetchRapidApiYoutubeMeta(
+export async function fetchRapidApiYoutubeMeta(
   videoId: string,
   sceneIndex: number,
   sourcingCache?: SourcingCache,
@@ -17930,6 +17931,30 @@ export async function fetchYouTubeCCClips(
          * hands back exactly the order the search produced.
          */
         const ordered = await youtubeRowsRankedByThumbnail(items, pass.license, scriptGuided, sceneIndex);
+
+        /**
+         * RONDE 640 — WRITTEN DOWN BEFORE THE CLOCK DECIDES WHETHER IT IS FETCHED.
+         *
+         * Render 603 found 49 YouTube videos and downloaded none: this loop reached them with
+         * seconds left. The same rows go on a list the worker fetches from between renders, into
+         * the archive, where the next render finds them. Only rows this loop would itself consider
+         * — past the relevance floor, and never one a named-person check already ruled out.
+         * One INSERT, not awaited; it can neither slow nor fail this render.
+         */
+        enqueueYoutubePrefetch(
+          ordered
+            .slice(0, 5)
+            .filter(
+              (r) => r.rel >= 0 && !(relevanceKeywords.length > 0 && r.rel < minRelevanceScore)
+            )
+            .map((r) => ({
+              videoId: r.item.id?.videoId ?? "",
+              title: r.title,
+              query,
+              licenseMode: pass.license === "any" ? null : pass.license,
+            })),
+          { renderKey: sourcingCache, sourceVideoId: sourcingCache?.lineage?.videoId }
+        );
 
         for (const row of ordered.slice(0, 5)) {
           if (fetched >= count) break;

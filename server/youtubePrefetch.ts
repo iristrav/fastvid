@@ -1,0 +1,683 @@
+/**
+ * YOUTUBE, FETCHED WHEN NOTHING IS WAITING FOR IT — RONDE 640.
+ *
+ * ── What render 603 measured ────────────────────────────────────────────────────────────────
+ *
+ *     youtubeFound=49  youtubeDownloaded=0
+ *     ~45 of 59 attempts: scene_budget_too_short_to_start (0–10s left)
+ *
+ * Search works. The download is the step that fails, and it fails for one reason above all the
+ * others: by the time YouTube's turn comes, the scene has seconds left. Rounds 52 to 639 tuned how
+ * a download copes inside that window — shares, floors, latches, preflights, a source memo — and
+ * every one of them was right about the window and none of them could make it bigger.
+ *
+ * ── What this does instead ──────────────────────────────────────────────────────────────────
+ *
+ * A render WRITES DOWN what it found (`enqueueYoutubePrefetch`): video id, title, the query that
+ * found it and the licence mode it was found under. That costs one INSERT and never waits.
+ *
+ * When no render is running, the worker FETCHES from that list (`runYoutubePrefetchBatch`) with a
+ * five-minute window per segment instead of a scene's last seconds, cuts a few segments out of
+ * each video, and hands them to the curated archive through the one door every external clip
+ * already uses — `ingestExternalClipToArchiveWithReason`, with its stock exclusion, quality gate,
+ * baked-text gate and source-URL dedup, none of which is touched.
+ *
+ * A later render finds them there, and judges each one against its own beat like any other
+ * archive clip. Nothing here says a video is RELEVANT; it says it was found and fetched.
+ *
+ * ── What it deliberately is not ─────────────────────────────────────────────────────────────
+ *
+ *   · Not a second downloader. Every byte comes through the pipeline's own
+ *     `downloadYouTubeCCClip` — the same routes, the same refusal memo, the same licence rules.
+ *   · Not a competitor for a render. It starts only when neither the generation queue nor the
+ *     render-job worker has anything running in this process, and checks again before every
+ *     segment. A segment already in flight when a render starts finishes; nothing new starts.
+ *   · Not a gate. It never refuses, delays or fails a render; the enqueue swallows every error.
+ *   · Not a promise about the first render on a new subject. That render finds the videos; the
+ *     ones after it are the ones that get them.
+ */
+import fs from "fs";
+import path from "path";
+import { and, asc, eq, inArray, lt, lte, or } from "drizzle-orm";
+import { youtubePrefetchQueue, type YoutubePrefetchRow } from "../drizzle/schema";
+import { affectedRowCount, getDb } from "./db";
+import type { IngestMetadata, IngestOutcome } from "./archiveIngestion";
+
+/* ═══════════════════════ knobs — every one bounded ═══════════════════════ */
+
+function intEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
+
+/** On unless ENABLE_YOUTUBE_PREFETCH=false. It also needs YouTube sourcing and archive ingestion. */
+export function youtubePrefetchEnabled(): boolean {
+  return process.env.ENABLE_YOUTUBE_PREFETCH !== "false";
+}
+
+/** How many new videos one render may add. A render that searches forty queries adds forty, not 400. */
+export function prefetchEnqueueCapPerRender(): number {
+  return intEnv("YOUTUBE_PREFETCH_ENQUEUE_PER_RENDER", 40, 0, 500);
+}
+
+/** Segments cut out of one video. Each becomes its own archive clip, judged on its own. */
+export function prefetchSegmentsPerVideo(): number {
+  return intEnv("YOUTUBE_PREFETCH_SEGMENTS", 3, 1, 6);
+}
+
+/** Videos per quiet batch. Small, so a render that starts mid-batch waits for at most one segment. */
+export function prefetchVideosPerBatch(): number {
+  return intEnv("YOUTUBE_PREFETCH_BATCH", 3, 1, 20);
+}
+
+/** How often the worker looks for a quiet moment. */
+export function prefetchIntervalMs(): number {
+  return intEnv("YOUTUBE_PREFETCH_INTERVAL_MIN", 3, 1, 120) * 60_000;
+}
+
+/**
+ * One archive clip's length. Well inside the archive's own 3–120s admission window, and long
+ * enough that a beat's trim has room to choose.
+ */
+export const PREFETCH_SEGMENT_SEC = 30;
+
+/**
+ * The window one segment's download gets. This is the whole point of the module: a render gives a
+ * YouTube download what a scene has left, often nothing; this gives it five minutes, which the
+ * pipeline's own shares then split between its two routes exactly as they always do.
+ */
+export const PREFETCH_DOWNLOAD_WINDOW_MS = 5 * 60_000;
+
+/** After this many tries a video is left alone. `failed` rows past it are never claimed again. */
+export const PREFETCH_MAX_ATTEMPTS = 4;
+
+/** A `fetching` row older than this belonged to a worker that died mid-fetch. */
+export const PREFETCH_STALE_CLAIM_MS = 30 * 60_000;
+
+/** 15 min, 1 h, 4 h, then a day: a route that is down now is often up in an hour. */
+export function prefetchBackoffMs(attempts: number): number {
+  const base = 15 * 60_000;
+  return Math.min(24 * 60 * 60_000, base * 4 ** Math.max(0, attempts - 1));
+}
+
+/* ═══════════════════════ which seconds of a video ═══════════════════════ */
+
+/**
+ * Where in a video the segments start, or null when its length is unknown.
+ *
+ * Spread across the body of the video — 15% to 80% — because the first seconds of a documentary
+ * are its title card and the last are its credits, and neither is a picture any beat wants.
+ * Segments never overlap: two starts closer than one segment collapse into one.
+ *
+ * Null rather than a guess. The caller then asks for ONE segment and lets the download layer
+ * re-derive the start from the real file (`startIsExact=false`), which is what it already does
+ * whenever it has no length to go on.
+ */
+export function prefetchSegmentStarts(
+  sourceDurationSec: number,
+  segmentSec: number,
+  maxSegments: number
+): number[] | null {
+  if (!(sourceDurationSec > 0) || !(segmentSec > 0) || maxSegments < 1) return null;
+  if (sourceDurationSec <= segmentSec + 5) return [0];
+  const lastStart = Math.floor(sourceDurationSec - segmentSec);
+  const fractions =
+    maxSegments === 1
+      ? [0.4]
+      : Array.from({ length: maxSegments }, (_, i) => 0.15 + (0.65 * i) / (maxSegments - 1));
+  const starts: number[] = [];
+  for (const f of fractions) {
+    const s = Math.max(0, Math.min(lastStart, Math.floor(sourceDurationSec * f)));
+    if (starts.every((prev) => Math.abs(prev - s) >= segmentSec)) starts.push(s);
+  }
+  return starts;
+}
+
+/* ═══════════════════════ the render's side: write it down ═══════════════════════ */
+
+export type YoutubePrefetchCandidate = {
+  videoId: string;
+  title?: string | null;
+  /** The query that found it — carried into the archive so a later search can find it again. */
+  query?: string | null;
+  /** The licence label a render records on the pool candidate; null when the pass filtered nothing. */
+  licenseMode?: string | null;
+};
+
+/** A YouTube video id, and nothing that merely looks like a URL or a sentence. */
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{6,32}$/;
+
+/** Keyed by the render's own sourcing cache, so the cap dies with the render. */
+const offeredPerRender = new WeakMap<object, Set<string>>();
+
+/**
+ * Which of these candidates this render may still offer, by the per-render cap.
+ *
+ * A video offered twice in one render counts once — the same query runs in several passes, and
+ * the cap is about how much one render may add, not how often it says so.
+ */
+export function takeEnqueueSlots(
+  renderKey: object | undefined,
+  candidates: readonly YoutubePrefetchCandidate[],
+  cap = prefetchEnqueueCapPerRender()
+): YoutubePrefetchCandidate[] {
+  const valid = candidates.filter((c) => VIDEO_ID_RE.test(c.videoId ?? ""));
+  if (!renderKey) return valid.slice(0, cap);
+  let offered = offeredPerRender.get(renderKey);
+  if (!offered) {
+    offered = new Set();
+    offeredPerRender.set(renderKey, offered);
+  }
+  const out: YoutubePrefetchCandidate[] = [];
+  for (const c of valid) {
+    if (offered.has(c.videoId)) continue;
+    if (offered.size >= cap) break;
+    offered.add(c.videoId);
+    out.push(c);
+  }
+  return out;
+}
+
+const clip = (s: string | null | undefined, n: number): string | null => {
+  const t = (s ?? "").trim();
+  return t ? t.slice(0, n) : null;
+};
+
+/**
+ * Write down what a render found. Fire-and-forget: returns at once, never throws, never waits.
+ *
+ * INSERT IGNORE on the unique video id, so a video found again — by this render or any other —
+ * keeps the row it has, including its attempts and its backoff.
+ */
+export function enqueueYoutubePrefetch(
+  candidates: readonly YoutubePrefetchCandidate[],
+  opts: { renderKey?: object; sourceVideoId?: number } = {}
+): void {
+  if (!youtubePrefetchEnabled() || candidates.length === 0) return;
+  const take = takeEnqueueSlots(opts.renderKey, candidates);
+  if (take.length === 0) return;
+  void (async () => {
+    try {
+      const db = await getDb();
+      if (!db) return;
+      const result = await db
+        .insert(youtubePrefetchQueue)
+        .ignore()
+        .values(
+          take.map((c) => ({
+            videoId: c.videoId,
+            title: clip(c.title, 512),
+            query: clip(c.query, 512),
+            licenseMode: clip(c.licenseMode, 32),
+            sourceVideoId: opts.sourceVideoId ?? null,
+            /**
+             * Every time on this row comes from this process's clock, never the database's
+             * `now()`: the claim compares them against `new Date()`, and two clocks in two time
+             * zones would move a retry by hours without anyone noticing.
+             */
+            nextAttemptAt: new Date(),
+          }))
+        );
+      const added = affectedRowCount(result);
+      if (added !== 0) {
+        console.log(
+          `[YouTubePrefetch] QUEUED video=${opts.sourceVideoId ?? "?"} offered=${take.length} ` +
+            `new=${added ?? "unknown"} — fetched later, outside any render, into the archive`
+        );
+      }
+    } catch (err) {
+      /** A list of things to fetch later can never be the reason this render does not finish. */
+      console.warn(`[YouTubePrefetch] enqueue failed: ${(err as Error).message?.slice(0, 160)}`);
+    }
+  })();
+}
+
+/* ═══════════════════════ the worker's side: claim, fetch, file ═══════════════════════ */
+
+/**
+ * The next due row, claimed by a conditional UPDATE so two workers cannot fetch one video.
+ *
+ * Same shape as `claimQueuedRenderJob`: the UPDATE only lands if the row is still in the state it
+ * was read in, and an unknown row count is a lost claim — fetching a video twice is waste, and the
+ * claim cannot prove it was not.
+ */
+export async function claimNextYoutubePrefetch(now = new Date()): Promise<YoutubePrefetchRow | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const q = youtubePrefetchQueue;
+  const staleBefore = new Date(now.getTime() - PREFETCH_STALE_CLAIM_MS);
+  const due = await db
+    .select()
+    .from(q)
+    .where(
+      and(
+        lt(q.attempts, PREFETCH_MAX_ATTEMPTS),
+        or(
+          and(inArray(q.status, ["queued", "failed"]), lte(q.nextAttemptAt, now)),
+          and(eq(q.status, "fetching"), lt(q.updatedAt, staleBefore))
+        )
+      )
+    )
+    .orderBy(asc(q.nextAttemptAt), asc(q.id))
+    .limit(5);
+  for (const row of due) {
+    const result = await db
+      .update(q)
+      .set({ status: "fetching", attempts: row.attempts + 1, updatedAt: now })
+      .where(and(eq(q.id, row.id), eq(q.status, row.status), eq(q.attempts, row.attempts)));
+    if (affectedRowCount(result) === 1) {
+      return { ...row, status: "fetching", attempts: row.attempts + 1 };
+    }
+  }
+  return null;
+}
+
+export type PrefetchVerdict = {
+  status: "queued" | "ingested" | "failed" | "refused";
+  lastError: string | null;
+  archiveAssetId: number | null;
+  attempts: number;
+  nextAttemptAt: Date;
+};
+
+async function recordPrefetchVerdict(id: number, v: PrefetchVerdict): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(youtubePrefetchQueue)
+    .set({
+      status: v.status,
+      lastError: v.lastError?.slice(0, 512) ?? null,
+      archiveAssetId: v.archiveAssetId,
+      attempts: v.attempts,
+      nextAttemptAt: v.nextAttemptAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(youtubePrefetchQueue.id, id));
+}
+
+export type PrefetchSegmentResult = {
+  startSec: number;
+  downloaded: boolean;
+  /** The download layer's own classified reason, quoted, when it did not deliver. */
+  downloadReason?: string;
+  ingest?: IngestOutcome;
+};
+
+/**
+ * Refusals that are about the PICTURE. Fetching the same seconds again would earn the same answer,
+ * so a video whose every segment got one of these is not retried. Everything else — a storage
+ * write, a missing archive, an unknown throw — is about this moment and is.
+ */
+const CONTENT_REFUSALS = new Set([
+  "EXEMPT_SOURCE",
+  "FILE_TOO_SMALL",
+  "INVALID_DURATION",
+  "BAKED_EDIT_TEXT",
+  "PREVIEW_UNREADABLE",
+]);
+
+/**
+ * What one fetch means for the row. Pure: every input is something the fetch measured.
+ *
+ *   anything archived        → ingested (the rest of that video is not chased)
+ *   a render started         → queued again, and the attempt is given back — it was not a failure
+ *   the video was written off → refused (the download layer's own durable verdict, quoted)
+ *   every segment refused for its picture → refused
+ *   anything else            → failed, retried after `prefetchBackoffMs`
+ */
+export function decidePrefetchVerdict(p: {
+  attempts: number;
+  segments: readonly PrefetchSegmentResult[];
+  videoRefusal: string | null;
+  interrupted: boolean;
+  now: number;
+}): PrefetchVerdict {
+  const archived = p.segments.flatMap((s) =>
+    s.ingest?.status === "ingested" ? [s.ingest.assetId] : []
+  );
+  const at = (ms: number) => new Date(p.now + ms);
+  if (archived.length > 0) {
+    return {
+      status: "ingested",
+      lastError: null,
+      archiveAssetId: archived[0]!,
+      attempts: p.attempts,
+      nextAttemptAt: at(0),
+    };
+  }
+  if (p.interrupted && !p.videoRefusal) {
+    return {
+      status: "queued",
+      lastError: "interrupted_by_render",
+      archiveAssetId: null,
+      attempts: Math.max(0, p.attempts - 1),
+      nextAttemptAt: at(0),
+    };
+  }
+  if (p.videoRefusal) {
+    return {
+      status: "refused",
+      lastError: `download:${p.videoRefusal}`,
+      archiveAssetId: null,
+      attempts: p.attempts,
+      nextAttemptAt: at(0),
+    };
+  }
+  const refusals = p.segments.flatMap((s) =>
+    s.ingest?.status === "refused" ? [s.ingest.reasonCode] : []
+  );
+  if (
+    p.segments.length > 0 &&
+    refusals.length === p.segments.length &&
+    refusals.every((c) => CONTENT_REFUSALS.has(c))
+  ) {
+    return {
+      status: "refused",
+      lastError: `ingest:${Array.from(new Set(refusals)).join("+")}`,
+      archiveAssetId: null,
+      attempts: p.attempts,
+      nextAttemptAt: at(0),
+    };
+  }
+  const reasons = p.segments.map((s) =>
+    s.downloaded
+      ? `ingest:${s.ingest?.status === "refused" ? s.ingest.reasonCode : "none"}`
+      : `download:${s.downloadReason ?? "unknown"}`
+  );
+  return {
+    status: "failed",
+    lastError: Array.from(new Set(reasons)).join(",") || "no_segment_attempted",
+    archiveAssetId: null,
+    attempts: p.attempts,
+    nextAttemptAt: at(prefetchBackoffMs(p.attempts)),
+  };
+}
+
+/**
+ * The provenance an archived segment carries. The same fields a render sends for a YouTube clip it
+ * adopted (`archiveMetadataForExternalClip`), with the same rules:
+ *
+ *   · tags are EMPTY — RONDE 9: narration words describe what is said, not what is shown, and
+ *     they poisoned the archive once. The provider's own title is the searchable text.
+ *   · the query is the one that FOUND it, never the title (RONDE 28).
+ *   · the source URL names the second it starts at, so each segment is its own source to the
+ *     archive's dedup, and a second fetch of the same seconds is recognised as a repeat.
+ */
+export function archiveMetadataForPrefetchedSegment(
+  row: Pick<YoutubePrefetchRow, "videoId" | "title" | "query" | "licenseMode">,
+  startSec: number,
+  durationSec: number | undefined
+): IngestMetadata {
+  const start = Math.max(0, Math.floor(startSec));
+  return {
+    title: row.title?.trim() || row.query?.trim() || `YouTube ${row.videoId}`,
+    tags: [],
+    personContext: false,
+    sourceNote: `youtube_cc:${row.videoId}@${start}s`,
+    mediaType: "video",
+    mimeType: "video/mp4",
+    durationSec: durationSec && durationSec > 0 ? durationSec : undefined,
+    licenseNote: row.licenseMode ?? undefined,
+    sourceUrl: `https://www.youtube.com/watch?v=${row.videoId}&t=${start}s`,
+    sourcePlatform: "youtube_cc",
+    originalQuery: row.query ?? undefined,
+    matchedQuery: row.query ?? undefined,
+  };
+}
+
+/** Everything the fetch touches outside itself, so a test can make exactly one part fail. */
+export type PrefetchDeps = {
+  /** True only when no render is running in this process. Asked before every segment. */
+  isIdle: () => boolean;
+  /** The source's length in seconds, 0 when unknown. */
+  sourceDurationSec: (videoId: string) => Promise<number>;
+  download: (p: {
+    videoId: string;
+    startSec: number;
+    durationSec: number;
+    startIsExact: boolean;
+    outPath: string;
+    title: string | undefined;
+  }) => Promise<{ ok: boolean; reason?: string }>;
+  /** The download layer's durable verdict about this video, if it has reached one. */
+  videoRefusal: (videoId: string) => string | null;
+  probeDurationSec: (filePath: string) => Promise<number>;
+  ingest: (filePath: string, metadata: IngestMetadata) => Promise<IngestOutcome>;
+  /** Drop anything the download layer is holding for this video — its files are about to go. */
+  release: (videoId: string) => void;
+  makeWorkDir: (videoId: string) => string;
+  removeWorkDir: (dir: string) => void;
+};
+
+/** Fetch one claimed video's segments and file each one with the archive. Never throws. */
+export async function prefetchOneVideo(
+  row: Pick<YoutubePrefetchRow, "videoId" | "title" | "query" | "licenseMode">,
+  deps: PrefetchDeps,
+  segmentsWanted = prefetchSegmentsPerVideo()
+): Promise<{ segments: PrefetchSegmentResult[]; interrupted: boolean; videoRefusal: string | null }> {
+  const segments: PrefetchSegmentResult[] = [];
+  let interrupted = false;
+  let videoRefusal: string | null = null;
+  let workDir: string | null = null;
+  try {
+    const sourceSec = await deps.sourceDurationSec(row.videoId).catch(() => 0);
+    const planned = prefetchSegmentStarts(sourceSec, PREFETCH_SEGMENT_SEC, segmentsWanted);
+    /** Unknown length: one segment, and the download layer picks its start from the real file. */
+    const starts = planned ?? [15];
+    const startIsExact = planned !== null;
+    workDir = deps.makeWorkDir(row.videoId);
+    for (const startSec of starts) {
+      if (!deps.isIdle()) {
+        interrupted = true;
+        break;
+      }
+      const outPath = path.join(workDir, `seg_${startSec}.mp4`);
+      const got = await deps
+        .download({
+          videoId: row.videoId,
+          startSec,
+          durationSec: PREFETCH_SEGMENT_SEC,
+          startIsExact,
+          outPath,
+          title: row.title ?? undefined,
+        })
+        .catch((err: Error) => ({ ok: false, reason: `threw:${err.message?.slice(0, 80)}` }));
+      if (!got.ok || !fs.existsSync(outPath)) {
+        segments.push({ startSec, downloaded: false, downloadReason: got.reason });
+        videoRefusal = deps.videoRefusal(row.videoId);
+        /** A video the layer has written off is written off for every one of its segments. */
+        if (videoRefusal) break;
+        continue;
+      }
+      const measured = await deps.probeDurationSec(outPath).catch(() => 0);
+      const ingest = await deps.ingest(
+        outPath,
+        archiveMetadataForPrefetchedSegment(row, startSec, measured)
+      );
+      segments.push({ startSec, downloaded: true, ingest });
+    }
+  } catch (err) {
+    segments.push({ startSec: -1, downloaded: false, downloadReason: `threw:${(err as Error).message?.slice(0, 80)}` });
+  } finally {
+    deps.release(row.videoId);
+    if (workDir) {
+      try {
+        deps.removeWorkDir(workDir);
+      } catch {
+        /* the boot sweep collects what this could not */
+      }
+    }
+  }
+  return { segments, interrupted, videoRefusal };
+}
+
+export function formatPrefetchLine(
+  row: Pick<YoutubePrefetchRow, "videoId">,
+  fetched: { segments: readonly PrefetchSegmentResult[] },
+  verdict: PrefetchVerdict
+): string {
+  const downloaded = fetched.segments.filter((s) => s.downloaded).length;
+  const archived = fetched.segments.filter((s) => s.ingest?.status === "ingested").length;
+  return (
+    `[YouTubePrefetch] video=${row.videoId} segments=${fetched.segments.length} ` +
+    `downloaded=${downloaded} archived=${archived} status=${verdict.status}` +
+    (verdict.archiveAssetId != null ? ` assetId=${verdict.archiveAssetId}` : "") +
+    (verdict.lastError ? ` reason=${verdict.lastError}` : "") +
+    (verdict.status === "failed" ? ` retryAt=${verdict.nextAttemptAt.toISOString()}` : "")
+  );
+}
+
+/* ═══════════════════════ production wiring ═══════════════════════ */
+
+const WORK_DIR_PREFIX = "fastvid_ytprefetch_";
+
+/** Is anything rendering in this process? Both queues, because both download through one layer. */
+export async function workerIsIdle(): Promise<boolean> {
+  const { workerLocalActiveJobs } = await import("./videoQueue");
+  const { activeRenderJobCount } = await import("./renderJobWorker");
+  return workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0;
+}
+
+async function productionPrefetchDeps(): Promise<PrefetchDeps> {
+  const pipeline = await import("./videoPipeline");
+  const failure = await import("./providerFailureClass");
+  const { ingestExternalClipToArchiveWithReason } = await import("./archiveIngestion");
+  const { workerLocalActiveJobs } = await import("./videoQueue");
+  const { activeRenderJobCount } = await import("./renderJobWorker");
+  return {
+    isIdle: () => workerLocalActiveJobs() === 0 && activeRenderJobCount() === 0,
+    sourceDurationSec: async (videoId) =>
+      pipeline.rapidApiYoutubeMetaDurationSec(await pipeline.fetchRapidApiYoutubeMeta(videoId, -1)),
+    download: async (p) => {
+      const outcome: { status?: string; reason?: string } = {};
+      /**
+       * Inside a scope of its own, so the pipeline's route shares apply as written: half of the
+       * window to the cloud route, the rest to RapidAPI. Outside any scope the layer reads an
+       * infinite clock and grants the cloud route only its floor.
+       */
+      const ok = await pipeline.withSceneFetchTimeout(
+        () =>
+          pipeline.downloadYouTubeCCClip(
+            p.videoId,
+            p.durationSec,
+            p.startSec,
+            p.outPath,
+            -1,
+            p.title,
+            undefined,
+            p.startIsExact,
+            outcome as never
+          ),
+        PREFETCH_DOWNLOAD_WINDOW_MS,
+        `youtube prefetch ${p.videoId}@${p.startSec}s`
+      );
+      return { ok, reason: outcome.reason ?? outcome.status };
+    },
+    videoRefusal: (videoId) => failure.youtubeDownloadRefusal(videoId),
+    probeDurationSec: (filePath) => pipeline.probeVideoDurationSec(filePath),
+    ingest: (filePath, metadata) => ingestExternalClipToArchiveWithReason(filePath, metadata),
+    release: (videoId) => failure.forgetYoutubeSourceFile(videoId),
+    makeWorkDir: (videoId) =>
+      fs.mkdtempSync(path.join(pipeline.TMP_DIR, `${WORK_DIR_PREFIX}${videoId}_`)),
+    removeWorkDir: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/** Why the prefetch does nothing, or null when it can run. Said once at boot. */
+export async function prefetchDisabledReason(): Promise<string | null> {
+  if (!youtubePrefetchEnabled()) return "ENABLE_YOUTUBE_PREFETCH=false";
+  const { youtubeSourcingEnabled, externalAssetIngestionEnabled } = await import("./sourcingPolicy");
+  if (!youtubeSourcingEnabled()) return "ENABLE_YOUTUBE_SOURCING is not true";
+  if (!externalAssetIngestionEnabled()) return "ENABLE_EXTERNAL_ASSET_INGESTION=false";
+  if (!process.env.RAPIDAPI_KEY && !process.env.YOUTUBE_CC_DL_SERVICE) {
+    return "no YouTube download route (RAPIDAPI_KEY and YOUTUBE_CC_DL_SERVICE both MISSING)";
+  }
+  return null;
+}
+
+let batchInFlight = false;
+
+/** One quiet batch: up to `prefetchVideosPerBatch` videos, stopping the moment a render starts. */
+export async function runYoutubePrefetchBatch(): Promise<{ videos: number; archived: number }> {
+  if (batchInFlight) return { videos: 0, archived: 0 };
+  if (!(await workerIsIdle())) return { videos: 0, archived: 0 };
+  batchInFlight = true;
+  let videos = 0;
+  let archived = 0;
+  try {
+    const deps = await productionPrefetchDeps();
+    /**
+     * The route's egress latch is render-scoped and nothing between renders reopens it, so a latch
+     * the last render closed would decide every fetch until the next render. A quiet batch is a
+     * fresh measurement, the same as a render start is.
+     */
+    const { resetCloudEgressBlocked } = await import("./providerFailureClass");
+    resetCloudEgressBlocked();
+    for (let i = 0; i < prefetchVideosPerBatch(); i++) {
+      if (!deps.isIdle()) break;
+      const row = await claimNextYoutubePrefetch();
+      if (!row) break;
+      videos++;
+      const fetched = await prefetchOneVideo(row, deps);
+      const verdict = decidePrefetchVerdict({
+        attempts: row.attempts,
+        segments: fetched.segments,
+        videoRefusal: fetched.videoRefusal,
+        interrupted: fetched.interrupted,
+        now: Date.now(),
+      });
+      if (verdict.status === "ingested") {
+        archived += fetched.segments.filter((s) => s.ingest?.status === "ingested").length;
+      }
+      console.log(formatPrefetchLine(row, fetched, verdict));
+      await recordPrefetchVerdict(row.id, verdict).catch((err) =>
+        console.warn(`[YouTubePrefetch] could not record ${row.videoId}: ${(err as Error).message?.slice(0, 120)}`)
+      );
+    }
+  } catch (err) {
+    console.warn(`[YouTubePrefetch] batch failed: ${(err as Error).message?.slice(0, 160)}`);
+  } finally {
+    batchInFlight = false;
+  }
+  return { videos, archived };
+}
+
+/** Work directories a killed process left behind. At boot nothing can be using them. */
+export function sweepPrefetchWorkDirs(tmpDir: string): number {
+  let removed = 0;
+  try {
+    for (const entry of fs.readdirSync(tmpDir)) {
+      if (!entry.startsWith(WORK_DIR_PREFIX)) continue;
+      fs.rmSync(path.join(tmpDir, entry), { recursive: true, force: true });
+      removed++;
+    }
+  } catch {
+    /* a missing tmp dir has nothing to sweep */
+  }
+  return removed;
+}
+
+let prefetchTimer: ReturnType<typeof setInterval> | null = null;
+
+export async function startYoutubePrefetchWorker(): Promise<void> {
+  const disabled = await prefetchDisabledReason();
+  if (disabled) {
+    console.log(`[YouTubePrefetch] OFF — ${disabled}`);
+    return;
+  }
+  const { TMP_DIR } = await import("./videoPipeline");
+  const swept = sweepPrefetchWorkDirs(TMP_DIR);
+  if (prefetchTimer) clearInterval(prefetchTimer);
+  prefetchTimer = setInterval(() => {
+    void runYoutubePrefetchBatch();
+  }, prefetchIntervalMs());
+  prefetchTimer.unref?.();
+  console.log(
+    `[YouTubePrefetch] ON — up to ${prefetchVideosPerBatch()} video(s) × ${prefetchSegmentsPerVideo()} ` +
+      `segment(s) of ${PREFETCH_SEGMENT_SEC}s every ${prefetchIntervalMs() / 60_000} min, only while ` +
+      `no render runs` + (swept > 0 ? ` (swept ${swept} abandoned work dir(s))` : "")
+  );
+}

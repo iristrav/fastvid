@@ -372,6 +372,14 @@ async function main() {
   scheduleClipEmbeddingBackfill();
   const { startClipBackgroundAuditor } = await import("./clipBackgroundAuditor");
   startClipBackgroundAuditor();
+  /**
+   * RONDE 640 — YouTube found during a render is fetched here, between renders, into the archive.
+   * Render 603 found 49 videos and downloaded none: every scene reached YouTube with seconds left.
+   */
+  const { startYoutubePrefetchWorker } = await import("./youtubePrefetch");
+  await startYoutubePrefetchWorker().catch((err) =>
+    console.warn("[YouTubePrefetch] could not start:", (err as Error).message)
+  );
 
   // ── 5s heartbeat: logs every function the pipeline is currently blocking in ──
   // getWorkerHeartbeat() now tracks one entry per concurrent call (keyed by its own label) and

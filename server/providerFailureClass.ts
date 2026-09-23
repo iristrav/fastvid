@@ -381,6 +381,17 @@ export function youtubeSourceFile(videoId: string): { path: string; bytes: numbe
   return hit;
 }
 
+/**
+ * RONDE 640 — let go of one video's source, for a caller that is about to delete it.
+ *
+ * The background prefetch fetches outside any render, so no render start will clear what it
+ * noted. Without this its entries would point at deleted files and keep counting against the
+ * hold ceiling until the next render — a memo that says "held" about nothing.
+ */
+export function forgetYoutubeSourceFile(videoId: string): void {
+  youtubeSourceFiles.delete(videoId);
+}
+
 /** Start of a render: the files are in a work directory that is about to be deleted. */
 export function resetYoutubeSourceFiles(): void {
   youtubeSourceFiles.clear();

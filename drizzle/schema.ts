@@ -941,3 +941,64 @@ export const renderLocks = mysqlTable(
 
 export type RenderLock = typeof renderLocks.$inferSelect;
 export type InsertRenderLock = typeof renderLocks.$inferInsert;
+
+/**
+ * YOUTUBE SOURCES FETCHED OUTSIDE A RENDER, SO A RENDER DOES NOT HAVE TO — RONDE 640.
+ *
+ * ── Why a queue and not another budget ──────────────────────────────────────────────────────
+ *
+ * Render 603 found forty-nine YouTube videos and downloaded none of them:
+ *
+ *     [YouTubeLifecycle] TOTAL youtubeFound=49 youtubeDownloaded=0 … youtubeFinalVideo=0
+ *
+ * More than ten rounds had tuned how a render copes with YouTube saying no — budgets, route order,
+ * latches, memos. None of them can make it say yes, and a render cannot wait: a scene has minutes,
+ * and by the time YouTube's turn came it had between zero and ten seconds. A background worker
+ * has neither constraint. It can take an hour over one video and try it ten times.
+ *
+ * So a render records what it found here, a loop in the worker fetches it patiently into the
+ * curated archive, and later renders take it from the archive — the one source that delivered
+ * nine clips out of nine in render 603.
+ *
+ * ── What a row is ───────────────────────────────────────────────────────────────────────────
+ *
+ * One YouTube video, keyed by its id so a render that finds it again adds nothing. `status` is the
+ * lifecycle; `nextAttemptAt` is the backoff; `archiveAssetId` is the result. Nothing here says the
+ * video is RELEVANT — every render still judges each archive clip against its own beat.
+ */
+export const youtubePrefetchQueue = mysqlTable(
+  "youtube_prefetch_queue",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    /** UNIQUE: finding the same video twice queues it once. */
+    videoId: varchar("videoId", { length: 32 }).notNull().unique(),
+    title: varchar("title", { length: 512 }),
+    /** The search that found it — carried into the archive so later searches can find it again. */
+    query: varchar("query", { length: 512 }),
+    /**
+     * The licence mode of the search pass that returned it — the same label a render records on
+     * the pool candidate (`creative_common`, `youtube`), or null when the pass filtered nothing.
+     */
+    licenseMode: varchar("licenseMode", { length: 32 }),
+    status: mysqlEnum("status", ["queued", "fetching", "ingested", "failed", "refused"])
+      .default("queued")
+      .notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    /** Machine-readable reason, never a sentence a caller has to pattern-match. */
+    lastError: varchar("lastError", { length: 512 }),
+    /** Not before this. Backoff lives in the row so it survives a worker restart. */
+    nextAttemptAt: timestamp("nextAttemptAt").defaultNow().notNull(),
+    archiveAssetId: int("archiveAssetId"),
+    /** Which render found it, for the audit trail only. */
+    sourceVideoId: int("sourceVideoId"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    /** The worker's claim query: due rows, oldest due first. */
+    claimIdx: index("youtube_prefetch_queue_claim_idx").on(t.status, t.nextAttemptAt),
+  })
+);
+
+export type YoutubePrefetchRow = typeof youtubePrefetchQueue.$inferSelect;
+export type InsertYoutubePrefetchRow = typeof youtubePrefetchQueue.$inferInsert;
