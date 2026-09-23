@@ -382,6 +382,12 @@ async function main() {
    */
   const { scheduleYoutubeRouteTest } = await import("./youtubeRouteTest");
   scheduleYoutubeRouteTest();
+  /**
+   * RONDE 644 — read the Apify YouTube actor's real input/output schema before any adapter is
+   * written against it. Read-only: no run, no cost, token never printed.
+   */
+  const { scheduleApifySchemaProbe } = await import("./apifySchemaProbe");
+  scheduleApifySchemaProbe();
   const { startYoutubePrefetchWorker } = await import("./youtubePrefetch");
   await startYoutubePrefetchWorker().catch((err) =>
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)

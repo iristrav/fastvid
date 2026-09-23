@@ -42,6 +42,7 @@ import { and, asc, eq, inArray, lt, lte, or } from "drizzle-orm";
 import { youtubePrefetchQueue, type YoutubePrefetchRow } from "../drizzle/schema";
 import { affectedRowCount, getDb } from "./db";
 import type { IngestMetadata, IngestOutcome } from "./archiveIngestion";
+import { inferArchiveAssetTagsFromTitle } from "./visualBeatTags";
 
 /* ═══════════════════════ knobs — every one bounded ═══════════════════════ */
 
@@ -400,8 +401,13 @@ export function decidePrefetchVerdict(p: {
  * The provenance an archived segment carries. The same fields a render sends for a YouTube clip it
  * adopted (`archiveMetadataForExternalClip`), with the same rules:
  *
- *   · tags are EMPTY — RONDE 9: narration words describe what is said, not what is shown, and
- *     they poisoned the archive once. The provider's own title is the searchable text.
+ *   · tags come from the PROVIDER'S OWN TITLE, never from the narration — RONDE 9: narration
+ *     words describe what is said, not what is shown, and they poisoned the archive once.
+ *     RONDE 644: they were EMPTY here, and the audit proved what that cost: archive routing
+ *     (`scoreArchiveAssetSample`) and most of `scoreCuratedAsset` read `asset.tags` only, so a
+ *     fetched segment was invisible to the router — and render 603 routed 135 of 200 beats to
+ *     NO_RELEVANT_ARCHIVE. `inferArchiveAssetTagsFromTitle` is the same derivation the scorer
+ *     already applies to titles; storing it lets routing see what scoring could.
  *   · the query is the one that FOUND it, never the title (RONDE 28).
  *   · the source URL names the second it starts at, so each segment is its own source to the
  *     archive's dedup, and a second fetch of the same seconds is recognised as a repeat.
@@ -414,7 +420,7 @@ export function archiveMetadataForPrefetchedSegment(
   const start = Math.max(0, Math.floor(startSec));
   return {
     title: row.title?.trim() || row.query?.trim() || `YouTube ${row.videoId}`,
-    tags: [],
+    tags: row.title?.trim() ? inferArchiveAssetTagsFromTitle({ title: row.title }) : [],
     personContext: false,
     sourceNote: `youtube_cc:${row.videoId}@${start}s`,
     mediaType: "video",

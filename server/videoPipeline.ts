@@ -52804,7 +52804,16 @@ async function _runVideoPipelineInner(
                 }
                 if (jobOutcome.ok) {
                   cinematicDeliveredUrl = jobOutcome.outputUrl;
-                  deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "rendered_timeline" };
+                  /**
+                   * RONDE 644 — only the clips the renderer REPORTS it rendered. The job can drop a
+                   * clip it cannot use (`disableClipsForRender`) on its own copy of the timeline; the
+                   * plan here would still list it, and "rendered" would then be a claim about a plan.
+                   */
+                  const renderedIds = new Set(jobOutcome.renderedClipIds);
+                  deliveredTimeline = {
+                    clips: videoTrack(outcome.timeline).filter((c) => renderedIds.has(c.id)),
+                    basis: "rendered_timeline",
+                  };
                   console.log(
                     pipelineReport.add(
                       "summary",

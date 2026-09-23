@@ -187,10 +187,17 @@ describe("§3 — what one fetch means for the row", () => {
 describe("§4 — what the archive is told", () => {
   const row = { videoId: "abcDEF12345", title: "Berlin 1945 newsreel", query: "berlin ruins 1945", licenseMode: null };
 
-  it("RONDE 9 — NO NARRATION TAGS; THE PROVIDER'S TITLE IS THE SEARCHABLE TEXT", () => {
+  it("RONDE 9 — NO NARRATION TAGS; TAGS COME FROM THE PROVIDER'S OWN TITLE ONLY", () => {
     const m = archiveMetadataForPrefetchedSegment(row, 90, 30);
-    expect(m.tags).toEqual([]);
     expect(m.title).toBe("Berlin 1945 newsreel");
+    /** RONDE 644: routing reads tags only, so a title-only segment was invisible to it. */
+    expect(m.tags).toContain("berlin");
+    /** The query ("berlin ruins 1945") came from the narration: "ruins" is in it, not in the title. */
+    expect(m.tags).not.toContain("ruins");
+  });
+
+  it("no title, no tags — nothing is invented", () => {
+    expect(archiveMetadataForPrefetchedSegment({ ...row, title: null }, 0, 30).tags).toEqual([]);
   });
 
   it("RONDE 28 — THE QUERY THAT FOUND IT, NEVER THE TITLE", () => {

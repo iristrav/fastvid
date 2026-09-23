@@ -211,7 +211,9 @@ describe("§4 — the background asks the route that measured delivering first",
 describe("§5 — wired where it claims to be", () => {
   it("both delivery paths keep the timeline they delivered, and say which kind it is", () => {
     expect(PIPE).toContain('deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "planned_timeline" };');
-    expect(PIPE).toContain('deliveredTimeline = { clips: videoTrack(outcome.timeline), basis: "rendered_timeline" };');
+    /** RONDE 644: the rendering path counts only what the renderer reports it rendered. */
+    expect(PIPE).toContain("clips: videoTrack(outcome.timeline).filter((c) => renderedIds.has(c.id)),");
+    expect(PIPE).toContain("const renderedIds = new Set(jobOutcome.renderedClipIds);");
   });
 
   it("the line is printed before the last gate decides, whatever it decides", () => {
