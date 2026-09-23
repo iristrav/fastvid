@@ -596,9 +596,66 @@ export function cloudEgressRefusal(): { videoId: string; reason: string } | null
   return cloudEgressBlocked;
 }
 
+/**
+ * RONDE 638 — WHERE THE LATCH'S EVIDENCE COMES FROM, AND WHAT EACH PIECE COSTS.
+ *
+ * ── The expensive way to learn one fact ─────────────────────────────────────────────────────
+ *
+ * The latch needs three consecutive refusals, for the good reason stated above it: a residential
+ * proxy rotates the address, so one refusal is about one IP out of ninety million. Until now the
+ * only thing that could supply a refusal was a download that had already spent its whole window
+ * timing out. The latch resets every render, so every render pays that discovery — up to three
+ * times. Render 599, one scene:
+ *
+ *     Cloud DL failed z2kp1wkRE8o: … exceeded 117s — falling back to RapidAPI
+ *     Cloud DL failed FLal-KvTNAQ: … exceeded 117s — falling back to RapidAPI
+ *     Cloud DL failed aZbpVsQzBeU: … exceeded  84s — falling back to RapidAPI
+ *     Cloud DL failed 7bx_yqMF3jc: … exceeded  54s — falling back to RapidAPI
+ *
+ * "The scene's wall was 276s and it used 280s, so five later YouTube candidates were refused
+ * before they started, under the 12s floor."
+ *
+ * ── The cheap way to learn the same fact ────────────────────────────────────────────────────
+ *
+ * `egressRefusalReason` asks the service's own `/health/egress`, answers in milliseconds, and has
+ * existed since RONDE 258. It was wired to the TIMEOUT path — "asked only on a timeout" — which is
+ * after the cost it exists to avoid.
+ *
+ * So the probe becomes a second SOURCE of the same evidence rather than a way around the
+ * threshold. Three still means three; what changes is that a strike can now cost a millisecond
+ * instead of two minutes. Nothing here lowers the bar — `maxConsecutiveEgressRefusals` is
+ * untouched and a success still resets the count.
+ *
+ * ── Why the gap, and why it is the probe's own TTL ──────────────────────────────────────────
+ *
+ * Counting one measurement three times would be a flattered metric, not evidence: the probe caches
+ * its answer, so three reads inside one cache window are one answer read thrice. Asking no more
+ * often than that window means every ask that counts is a genuinely fresh request — which, against
+ * a rotating pool, is exactly what the three-strike rule is asking for.
+ *
+ * It also bounds the one cost the probe can impose. A FAILURE to answer is deliberately not cached
+ * ("the service did not answer" is not evidence that it is blocked), so an unreachable probe costs
+ * its 3s ceiling every time it is asked. Once per 30s window is at most a tenth of the render, and
+ * against a 117s download window that is not a trade worth hesitating over.
+ */
+let cloudEgressPreflightAt = 0;
+
+/**
+ * May this caller ask the service about itself right now?
+ *
+ * True at most once per `minGapMs`, which the caller sets to the probe's own cache TTL so that
+ * every ask that counts toward the latch is a fresh measurement.
+ */
+export function claimCloudEgressPreflight(minGapMs: number, now = Date.now()): boolean {
+  if (cloudEgressPreflightAt !== 0 && now - cloudEgressPreflightAt < minGapMs) return false;
+  cloudEgressPreflightAt = now;
+  return true;
+}
+
 /** Cleared at the start of every render, beside the per-video memo. */
 export function resetCloudEgressBlocked(): void {
   cloudEgressBlocked = null;
+  cloudEgressPreflightAt = 0;
   consecutiveEgressRefusals = 0;
 }
 

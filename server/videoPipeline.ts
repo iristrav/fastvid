@@ -72,6 +72,7 @@ import {
   cloudEgressRefusal,
   cloudEgressRefusalStreak,
   noteCloudEgressBlocked,
+  claimCloudEgressPreflight,
   noteCloudEgressOk,
   resetCloudEgressBlocked,
   shouldRetryAfterFailure,
@@ -81,7 +82,7 @@ import {
   resetYoutubeSourceFiles,
   youtubeServiceRefusalReason,
 } from "./providerFailureClass";
-import { egressRefusalReason } from "./youtubeEgressProbe";
+import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -16422,6 +16423,39 @@ export async function downloadYouTubeCCClip(
     }
   }
 
+  /**
+   * RONDE 638 — ASK THE SERVICE BEFORE SPENDING A WINDOW ON IT, NOT AFTER.
+   *
+   * The latch needs three consecutive refusals and resets every render, so every render has to
+   * discover the route's state for itself. Until now the only thing that could supply a refusal
+   * was a download that had already spent its whole window timing out — up to half a scene's
+   * remaining budget, three times over.
+   *
+   * `egressRefusalReason` asks the service's own `/health/egress` and answers in milliseconds. It
+   * has existed since RONDE 258 and was wired to the TIMEOUT path, which is after the cost it
+   * exists to avoid. Here it is a second SOURCE of the same evidence: three still means three, and
+   * a strike now costs a millisecond instead of two minutes.
+   *
+   * Asked no more often than the probe's own cache TTL, so every ask that counts is a fresh
+   * measurement rather than one answer read three times — see `claimCloudEgressPreflight`.
+   * A probe that cannot be asked returns null and changes nothing.
+   */
+  if (
+    cloudDlService &&
+    !cloudEgressRefusal() &&
+    claimCloudEgressPreflight(YOUTUBE_EGRESS_CACHE_MS)
+  ) {
+    const preflightBlocked = await egressRefusalReason().catch(() => null);
+    if (preflightBlocked) {
+      const closed = noteCloudEgressBlocked(videoId, preflightBlocked);
+      console.warn(
+        `[Pipeline] yt-dlp egress preflight says ${preflightBlocked} — ` +
+          `${cloudEgressRefusalStreak()} refusal(s) in a row, ` +
+          `learned without spending a download window` +
+          (closed ? " — the cloud route is skipped for the rest of this render" : "")
+      );
+    }
+  }
   /**
    * The latch is read here, before the budget check, because a dead route costs nothing to skip
    * and the budget it would have spent is worth more to the routes that still work.

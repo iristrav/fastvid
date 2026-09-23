@@ -132,10 +132,14 @@ describe("R261 §2 — the transfer is reused, the clip is not", () => {
      * function to continue into the cloud and RapidAPI routes exactly as before, so this round can
      * save a download and can never be the reason one does not happen.
      */
+    /**
+     * Measured to the landmark rather than across a fixed span: RONDE 638 put the egress preflight
+     * between the two, and a window that stops short reports the latch missing rather than late.
+     */
     const at = CODE.indexOf("const heldSource = youtubeSourceFile(videoId);");
-    const block = CODE.slice(at, at + 1200);
-    const ret = block.indexOf("return true;");
-    const close = block.indexOf("const egressBlocked = cloudEgressRefusal();");
+    const close = CODE.indexOf("const egressBlocked = cloudEgressRefusal();", at);
+    const ret = CODE.indexOf("return true;", at);
+    expect(at).toBeGreaterThan(-1);
     expect(ret).toBeGreaterThan(-1);
     expect(close).toBeGreaterThan(ret);
   });
