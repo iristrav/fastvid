@@ -16725,6 +16725,13 @@ export async function downloadYouTubeCCClip(
   // or didn't return a usable file. Unchanged from before this fix other than moving second.
   if (RAPIDAPI_KEY) {
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
+    /**
+     * RONDE 637 — whether this render is HOLDING `tmpPath` as the source for `videoId`.
+     *
+     * Declared beside the path it guards, because the `finally` that used to delete it
+     * unconditionally is the reason RONDE 261's source memo never once produced a `source_reuse`.
+     */
+    let tmpPathIsRenderSource = false;
     try {
       // RONDE 56: cached per render and fetched outside the beat's deadline — see
       // fetchRapidApiYoutubeMeta. Render 531 lost all 85 of its RapidAPI attempts here, every
@@ -16828,7 +16835,26 @@ export async function downloadYouTubeCCClip(
                * trim, because what the next beat needs is this file — not the clip about to be cut
                * out of it for this one.
                */
-              noteYoutubeSourceFile(videoId, tmpPath, rapidFileSize);
+              /**
+               * RONDE 637 — AND THE ANSWER IS CARRIED TO THE CODE THAT WOULD HAVE DELETED IT.
+               *
+               * `finally` below unlinked `tmpPath` on every path, success included, so this memo
+               * remembered a file that stopped existing microseconds later. Render 602 fetched
+               * `C6T9Mvn3TY0` four times and `fof6zEzfSlQ` three, all `reason=rapidapi` and never
+               * once `source_reuse`, while twenty-odd other candidates died holding
+               * `scene_budget_0s_left`. The transfers the memo exists to prevent were paying for
+               * the budget the rest of the beat needed.
+               *
+               * First-writer-wins means this path may not be the stored one, and the ceiling may
+               * refuse it outright — so the memo says which, and only a `true` keeps the file.
+               */
+              tmpPathIsRenderSource = noteYoutubeSourceFile(videoId, tmpPath, rapidFileSize);
+              if (tmpPathIsRenderSource) {
+                console.log(
+                  `[Pipeline] Scene ${sceneIndex}: holding ${videoId}'s source for this render ` +
+                    `(${rapidFileSize} bytes) — later beats re-cut instead of re-fetching`
+                );
+              }
               // RONDE 64: the whole source is on disk here, so stop guessing its length.
               //
               // This route downloads the entire video and only then trims. Every attempt so far
@@ -16889,10 +16915,17 @@ export async function downloadYouTubeCCClip(
         (err as Error).message
       );
     } finally {
-      try {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch {
-        /* ignore */
+      /**
+       * Deleted unless this render is HOLDING it — see `noteYoutubeSourceFile`. A source kept
+       * here lives in the render's work directory, which is removed when the render ends, and
+       * the memo's byte ceiling bounds how much of it may be kept at once.
+       */
+      if (!tmpPathIsRenderSource) {
+        try {
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        } catch {
+          /* ignore */
+        }
       }
     }
   }

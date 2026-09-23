@@ -309,15 +309,62 @@ const youtubeSourceFiles = new Map<string, { path: string; bytes: number }>();
 let youtubeSourceReuses = 0;
 
 /**
+ * How many bytes of untrimmed source one render may hold at once.
+ *
+ * RONDE 637 made these files OUTLIVE the download that fetched them, which is what the memo
+ * always needed and never had. That turns a memo into disk: the per-file ceiling is 80 MB and a
+ * five-minute documentary can ask for dozens of videos, so an unbounded memo is a container out
+ * of space — and on this runner a full disk fails writes while deletes still succeed, which is a
+ * far worse render than a repeated download.
+ *
+ * Past the ceiling the memo simply stops accepting new sources and every caller behaves exactly
+ * as it did before RONDE 637: the file is deleted after its trim and a later beat re-fetches it.
+ * Degrading to the old behaviour is the only safe direction for a cache.
+ */
+export function youtubeSourceHoldCeilingBytes(): number {
+  const raw = process.env.YOUTUBE_SOURCE_HOLD_MB?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && n <= 8192) return n * 1024 * 1024;
+  }
+  return 512 * 1024 * 1024;
+}
+
+/** Bytes of source this render is currently holding on disk. */
+export function youtubeSourceHeldBytes(): number {
+  let total = 0;
+  for (const held of youtubeSourceFiles.values()) total += held.bytes;
+  return total;
+}
+
+/**
  * Remember where this render put a video's untrimmed source.
  *
  * First writer wins, matching the refusal memo beside it: a second successful download of the
  * same video is the thing this exists to prevent, so if one happens anyway the first path is
  * still the one to re-cut from.
+ *
+ * ── RONDE 637 — IT RETURNS WHETHER IT STORED, AND THAT IS THE WHOLE FIX ──────────────────────
+ *
+ * The memo recorded `tmpPath` and the download's own `finally` unlinked `tmpPath` on every path,
+ * success included. So `youtubeSourceFile` found its entry, `fs.existsSync` said no, and the
+ * reuse fell through to a full re-download — every time. Render 602 fetched `C6T9Mvn3TY0` four
+ * times and `fof6zEzfSlQ` three, all `reason=rapidapi`, never once `source_reuse`, while
+ * twenty-odd other candidates died with `scene_budget_0s_left`.
+ *
+ * One side recorded the answer and the other deleted the thing the answer pointed at. The caller
+ * cannot know which of those two it is without being told, because first-writer-wins means its
+ * own path may not be the stored one — so this says so, the same way `noteCloudEgressBlocked`
+ * returns whether it was the call that closed the latch.
+ *
+ * `true` means: this render is holding that exact path, do not delete it.
  */
-export function noteYoutubeSourceFile(videoId: string, filePath: string, bytes: number): void {
-  if (!videoId || !filePath || !(bytes > 0)) return;
-  if (!youtubeSourceFiles.has(videoId)) youtubeSourceFiles.set(videoId, { path: filePath, bytes });
+export function noteYoutubeSourceFile(videoId: string, filePath: string, bytes: number): boolean {
+  if (!videoId || !filePath || !(bytes > 0)) return false;
+  if (youtubeSourceFiles.has(videoId)) return false;
+  if (youtubeSourceHeldBytes() + bytes > youtubeSourceHoldCeilingBytes()) return false;
+  youtubeSourceFiles.set(videoId, { path: filePath, bytes });
+  return true;
 }
 
 /**
