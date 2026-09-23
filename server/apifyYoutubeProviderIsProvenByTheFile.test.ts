@@ -211,3 +211,60 @@ describe("acquisition outcomes", () => {
     expect(fs.existsSync(path.join(dir, "out.mp4"))).toBe(false);
   });
 });
+
+describe("MEASUREMENT MODE — the first test is not limited by FastVid's old timing", () => {
+  const long = Array.from({ length: 30 }, () => ({ status: "RUNNING" })).concat([{ status: "SUCCEEDED" }]);
+
+  it("no FastVid deadline, and NO timeout is sent to Apify", async () => {
+    const urls: string[] = [];
+    const r = await acquireYoutubeVideoViaApify(req({ deadlineMs: null, watchdogMs: 45 * 60_000 }), deps({}, [], urls));
+    expect(r.ok).toBe(true);
+    const start = urls.find((u) => u.includes("/runs?"))!;
+    expect(start).not.toMatch(/timeout=/);
+    expect(start).toContain("maxTotalChargeUsd=");
+  });
+
+  it("a run that takes ~10 minutes completes — the same run a 45 s deadline would kill", async () => {
+    const measured = await acquireYoutubeVideoViaApify(req({ deadlineMs: null, watchdogMs: 45 * 60_000 }), deps({ polls: long }, [], []));
+    expect(measured.ok).toBe(true);
+    expect(measured.summary.totalMs).toBeGreaterThan(9 * 60_000);
+    const bounded = await acquireYoutubeVideoViaApify(req({ deadlineMs: 45_000 }), deps({ polls: long }, [], []));
+    expect(bounded).toMatchObject({ ok: false, failure: "APIFY_TIMEOUT" });
+  });
+
+  it("the watchdog is a hang guard, reported as NOT a measured acquisition time", async () => {
+    const r = await acquireYoutubeVideoViaApify(req({ deadlineMs: null, watchdogMs: 60_000 }), deps({ polls: long }, [], []));
+    expect(r).toMatchObject({ ok: false, failure: "WATCHDOG_TIMEOUT" });
+    if (!r.ok) expect(r.detail).toContain("NOT a measured acquisition time");
+  });
+
+  it("totalMs stops when validation stops — TOTAL TIME TO USABLE MP4 — and actorWaitMs is the run itself", async () => {
+    const r = await acquireYoutubeVideoViaApify(req({ deadlineMs: null }), deps({}, [], []));
+    if (!r.ok) throw new Error("expected success");
+    expect(r.summary.totalMs).toBe(r.timing.validationFinishedAt! - r.timing.startedAt);
+    expect(r.summary.actorWaitMs).toBe(r.timing.runFinishedAt! - r.timing.runCreatedAt!);
+  });
+});
+
+describe("the report the brief asks for", () => {
+  it("every field, and a watchdog is never presented as a time", async () => {
+    const { formatApifyTimingReport } = await import("./apifyLiveTest");
+    const ok = formatApifyTimingReport({
+      ok: true,
+      summary: { actorWaitMs: 47_300, fileDownloadMs: 8_100, validationMs: 1_200, totalMs: 57_900 },
+      bytes: 157 * 1024 * 1024, durationSec: 596.5, width: 1920, height: 1080, codec: "h264",
+    });
+    expect(ok).toBe(
+      "[YouTubeApify] REPORT APIFY_TOTAL_TIME=57.9s ACTOR_WAIT=47.3s FILE_DOWNLOAD=8.1s VALIDATION=1.2s " +
+        "FILE_SIZE=157.0MB VIDEO_DURATION=596.5s RESOLUTION=1920x1080 CODEC=h264 RESULT=PASS"
+    );
+    const wd = formatApifyTimingReport({ ok: false, failure: "WATCHDOG_TIMEOUT", summary: { actorWaitMs: null, fileDownloadMs: null, validationMs: null, totalMs: 2_700_000 } });
+    expect(wd).toContain("APIFY_TOTAL_TIME=NOT MEASURED (watchdog)");
+    expect(wd).toContain("RESULT=FAIL(WATCHDOG_TIMEOUT)");
+  });
+
+  it("the live test runs in measurement mode", () => {
+    const src = fs.readFileSync(path.join(__dirname, "apifyLiveTest.ts"), "utf8");
+    expect(src).toContain("deadlineMs: null,");
+  });
+});

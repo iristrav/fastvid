@@ -18,10 +18,47 @@ export function apifyLiveTestVideoId(env: NodeJS.ProcessEnv = process.env): stri
   return raw && /^[A-Za-z0-9_-]{6,32}$/.test(raw) ? raw : APIFY_LIVE_TEST_DEFAULT_VIDEO_ID;
 }
 
-/** A measurement window, not a production budget: generous so the run's real length is observed. */
-export function apifyLiveTestDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
-  const n = Number.parseInt(env.YOUTUBE_APIFY_LIVE_TEST_DEADLINE_SEC ?? "", 10);
-  return (Number.isFinite(n) && n >= 60 && n <= 1800 ? n : 600) * 1000;
+/**
+ * MEASUREMENT MODE — no acquisition timeout of ours at all.
+ *
+ * The first question is how long Apify actually takes, not whether it fits a budget we already had.
+ * So the run gets no FastVid deadline and no `timeout` is sent to Apify: it ends when the actor
+ * finishes, or when Apify reports a failure, or on a real network failure.
+ *
+ * The only limit is this watchdog: a guard against a hung request or a programming error, set far
+ * above any plausible run (45 minutes by default). If it fires, the result is WATCHDOG_TIMEOUT and
+ * is reported as NOT being a measured acquisition time.
+ */
+export function apifyLiveTestWatchdogMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number.parseInt(env.YOUTUBE_APIFY_LIVE_TEST_WATCHDOG_MIN ?? "", 10);
+  return (Number.isFinite(n) && n >= 10 && n <= 180 ? n : 45) * 60_000;
+}
+
+/** The report in the order the brief asks for it. Seconds to one decimal, measured, never rounded up. */
+export function formatApifyTimingReport(r: {
+  ok: boolean;
+  failure?: string;
+  summary: { actorWaitMs: number | null; fileDownloadMs: number | null; validationMs: number | null; totalMs: number };
+  bytes?: number;
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  codec?: string | null;
+}): string {
+  const sec = (ms: number | null | undefined) => (ms == null ? "not reached" : `${(ms / 1000).toFixed(1)}s`);
+  const watchdog = r.failure === "WATCHDOG_TIMEOUT";
+  return [
+    "[YouTubeApify] REPORT",
+    `APIFY_TOTAL_TIME=${watchdog ? "NOT MEASURED (watchdog)" : sec(r.summary.totalMs)}`,
+    `ACTOR_WAIT=${sec(r.summary.actorWaitMs)}`,
+    `FILE_DOWNLOAD=${sec(r.summary.fileDownloadMs)}`,
+    `VALIDATION=${sec(r.summary.validationMs)}`,
+    `FILE_SIZE=${r.bytes != null ? `${(r.bytes / 1024 / 1024).toFixed(1)}MB` : "none"}`,
+    `VIDEO_DURATION=${r.durationSec != null ? `${r.durationSec.toFixed(1)}s` : "none"}`,
+    `RESOLUTION=${r.width && r.height ? `${r.width}x${r.height}` : "none"}`,
+    `CODEC=${r.codec ?? "none"}`,
+    `RESULT=${r.ok ? "PASS" : `FAIL(${r.failure ?? "unknown"})`}`,
+  ].join(" ");
 }
 
 /** One claim per deployed commit, so a redeploy measures again and a replica never duplicates. */
@@ -57,14 +94,15 @@ export async function runApifyLiveTest(): Promise<void> {
   const { TMP_DIR } = await import("./videoPipeline");
   const dir = fs.mkdtempSync(path.join(TMP_DIR, "fastvid_apifytest_"));
   const videoId = apifyLiveTestVideoId();
-  console.log(`[YouTubeApify] LIVE_TEST claimed ${key} — one run, video=${videoId} (CC BY test video)`);
+  console.log(`[YouTubeApify] LIVE_TEST claimed ${key} — one run, video=${videoId} (CC BY test video), measurement mode: no deadline, watchdog ${apifyLiveTestWatchdogMs() / 60_000} min`);
   try {
     const result = await acquireYoutubeVideoViaApify(
       {
         videoId,
         quality: "1080",
         outPath: path.join(dir, `${videoId}.mp4`),
-        deadlineMs: apifyLiveTestDeadlineMs(),
+        deadlineMs: null,
+        watchdogMs: apifyLiveTestWatchdogMs(),
         token,
         enabled: true,
       },
@@ -82,8 +120,15 @@ export async function runApifyLiveTest(): Promise<void> {
         `apifyReportedStart=${t.apifyRunStartedAt ?? "none"} apifyReportedFinish=${t.apifyRunFinishedAt ?? "none"} ` +
         `fileDownloadStartedAt=${iso(t.fileDownloadStartedAt)} fileDownloadFinishedAt=${iso(t.fileDownloadFinishedAt)} ` +
         `validationStartedAt=${iso(t.validationStartedAt)} validationFinishedAt=${iso(t.validationFinishedAt)} ` +
-        `apifyRunMs=${result.summary.providerWaitMs ?? "none"} fileDownloadMs=${result.summary.fileDownloadMs ?? "none"} ` +
+        `actorWaitMs=${result.summary.actorWaitMs ?? "none"} apifyRunMs=${result.summary.providerWaitMs ?? "none"} fileDownloadMs=${result.summary.fileDownloadMs ?? "none"} ` +
         `validationMs=${result.summary.validationMs ?? "none"} totalMs=${result.summary.totalMs} usageUsd=${result.usageTotalUsd ?? "?"}`
+    );
+    console.log(
+      formatApifyTimingReport(
+        result.ok
+          ? { ok: true, summary: result.summary, bytes: result.bytes, durationSec: result.durationSec, width: result.width, height: result.height, codec: result.codec }
+          : { ok: false, failure: result.failure, summary: result.summary }
+      )
     );
   } catch (err) {
     console.warn(`[YouTubeApify] LIVE_TEST could not run: ${(err as Error).message?.slice(0, 200)}`);

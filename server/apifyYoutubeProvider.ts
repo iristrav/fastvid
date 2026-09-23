@@ -50,7 +50,12 @@ export type ApifyFailureClass =
   | "APIFY_TIMEOUT"
   | "APIFY_NO_FILE"
   | "APIFY_FILE_DOWNLOAD_FAILED"
-  | "APIFY_INVALID_FILE";
+  | "APIFY_INVALID_FILE"
+  /**
+   * Measurement mode only: the safety watchdog fired. This is NOT an acquisition time — it says a
+   * request or the run hung far past anything normal, and the number must not be used as data.
+   */
+  | "WATCHDOG_TIMEOUT";
 
 /** Every instant is MEASURED on this worker's clock; Apify's own timestamps are kept beside them. */
 export type ApifyTiming = {
@@ -68,6 +73,8 @@ export type ApifyTiming = {
 
 export type ApifyTimingSummary = {
   providerWaitMs: number | null;
+  /** From the run being created to Apify reporting it finished: the actor's own working time, as we waited for it. */
+  actorWaitMs: number | null;
   fileDownloadMs: number | null;
   validationMs: number | null;
   totalMs: number;
@@ -77,9 +84,11 @@ export function summariseTiming(t: ApifyTiming, endedAt: number): ApifyTimingSum
   const span = (a: number | null, b: number | null) => (a != null && b != null ? b - a : null);
   return {
     providerWaitMs: span(t.startedAt, t.runFinishedAt),
+    actorWaitMs: span(t.runCreatedAt, t.runFinishedAt),
     fileDownloadMs: span(t.fileDownloadStartedAt, t.fileDownloadFinishedAt),
     validationMs: span(t.validationStartedAt, t.validationFinishedAt),
-    totalMs: endedAt - t.startedAt,
+    /** TOTAL TIME TO USABLE MP4: the timer stops when validation does, when it got that far. */
+    totalMs: (t.validationFinishedAt ?? endedAt) - t.startedAt,
   };
 }
 
@@ -239,7 +248,20 @@ type Run = {
 };
 
 export async function acquireYoutubeVideoViaApify(
-  req: { videoId: string; quality: string; outPath: string; deadlineMs: number; token: string | undefined; enabled: boolean },
+  req: {
+    videoId: string;
+    quality: string;
+    outPath: string;
+    /**
+     * FastVid's acquisition deadline, or NULL for measurement mode: no deadline of ours, and no
+     * `timeout` sent to Apify — the run ends when the actor finishes or Apify reports a failure.
+     */
+    deadlineMs: number | null;
+    /** Measurement mode's only limit: a hang guard far above any normal run. Not a timeout. */
+    watchdogMs?: number;
+    token: string | undefined;
+    enabled: boolean;
+  },
   deps: ApifyDeps
 ): Promise<ApifyAcquisition> {
   const timing: ApifyTiming = {
@@ -271,22 +293,30 @@ export async function acquireYoutubeVideoViaApify(
   if (!req.enabled) return fail("APIFY_DISABLED", "YOUTUBE_APIFY_ENABLED=false");
   if (!req.token) return fail("APIFY_NO_TOKEN", "APIFY_API_TOKEN=MISSING");
   const auth = { Authorization: `Bearer ${req.token}` };
-  const remaining = () => req.deadlineMs - (deps.now() - timing.startedAt);
+  const measuring = req.deadlineMs == null;
+  const limitMs = measuring ? req.watchdogMs ?? 45 * 60_000 : req.deadlineMs!;
+  const remaining = () => limitMs - (deps.now() - timing.startedAt);
+  /** Which limit was hit: a deadline is a verdict, the watchdog is only a hang guard. */
+  const outOfTime = (detail: string) =>
+    measuring
+      ? fail("WATCHDOG_TIMEOUT", `${detail} — safety watchdog (${limitMs}ms), NOT a measured acquisition time`)
+      : fail("APIFY_TIMEOUT", detail);
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 
-  deps.log(`[YouTubeApify] START videoId=${req.videoId} quality=${req.quality} actor=${APIFY_YOUTUBE_ACTOR} deadlineMs=${req.deadlineMs}`);
+  deps.log(`[YouTubeApify] START videoId=${req.videoId} quality=${req.quality} actor=${APIFY_YOUTUBE_ACTOR} ${measuring ? `mode=measure watchdogMs=${limitMs}` : `deadlineMs=${limitMs}`}`);
 
   const schema = await deps.inputSchema().catch(() => [] as SchemaField[]);
   const plan = buildActorInput(schema, sourceUrl, { quality: req.quality, format: "video", residentialProxyMode: "fallback" });
   if (!plan.ok) return fail("APIFY_SCHEMA_UNSUPPORTED", plan.detail);
 
   /* 1 — start the run. Its own timeout is our deadline, so an abandoned run does not keep billing. */
-  const runTimeoutSec = Math.max(30, Math.ceil(req.deadlineMs / 1000));
+  /** Measurement mode sends no timeout: Apify's own run limit is not ours to shorten. */
+  const runTimeoutParam = measuring ? "" : `timeout=${Math.max(30, Math.ceil(limitMs / 1000))}&`;
   let run: Run;
   try {
     const resp = await deps.http(
       "POST",
-      `${API}/acts/${APIFY_YOUTUBE_ACTOR}/runs?timeout=${runTimeoutSec}&maxTotalChargeUsd=${apifyMaxChargeUsd()}`,
+      `${API}/acts/${APIFY_YOUTUBE_ACTOR}/runs?${runTimeoutParam}maxTotalChargeUsd=${apifyMaxChargeUsd()}`,
       { headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(plan.input) }
     );
     if (resp.status !== 201 && resp.status !== 200) return fail("APIFY_HTTP_ERROR", `start run http_${resp.status}`);
@@ -306,7 +336,7 @@ export async function acquireYoutubeVideoViaApify(
   /* 2 — wait, in Apify's own long-poll steps of at most 60 s, never past our deadline. */
   while (!TERMINAL.has(run.status ?? "")) {
     const left = remaining();
-    if (left <= 0) return fail("APIFY_TIMEOUT", `run still ${run.status ?? "unknown"} at the ${req.deadlineMs}ms deadline`);
+    if (left <= 0) return outOfTime(`run still ${run.status ?? "unknown"} after ${limitMs}ms`);
     const waitSec = Math.max(1, Math.min(60, Math.floor(left / 1000)));
     try {
       const resp = await deps.http("GET", `${API}/actor-runs/${runId}?waitForFinish=${waitSec}`, { headers: auth });
@@ -369,6 +399,7 @@ export async function acquireYoutubeVideoViaApify(
   let bytes: number | null = null;
   try {
     bytes = await deps.downloadTo(recordUrl, auth, req.outPath, apifyMaxSourceBytes(), Math.max(30_000, remaining()));
+    if (!bytes && remaining() <= 0) return outOfTime("record download still running");
   } catch (err) {
     return fail("APIFY_FILE_DOWNLOAD_FAILED", `record download threw: ${(err as Error).message}`);
   }
@@ -392,7 +423,7 @@ export async function acquireYoutubeVideoViaApify(
   deps.log(
     `[YouTubeApify] VALIDATED videoId=${req.videoId} runId=${runId} bytes=${bytes} durationSec=${verdict.durationSec.toFixed(1)} ` +
       `resolution=${verdict.width}x${verdict.height} codec=${details.codec ?? "?"} fps=${details.fps ?? "?"} ` +
-      `providerWaitMs=${summary.providerWaitMs} fileDownloadMs=${summary.fileDownloadMs} ` +
+      `actorWaitMs=${summary.actorWaitMs} providerWaitMs=${summary.providerWaitMs} fileDownloadMs=${summary.fileDownloadMs} ` +
       `validationMs=${summary.validationMs} totalMs=${summary.totalMs} usageUsd=${usageTotalUsd ?? "?"}`
   );
   return {
