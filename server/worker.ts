@@ -376,6 +376,12 @@ async function main() {
    * RONDE 640 — YouTube found during a render is fetched here, between renders, into the archive.
    * Render 603 found 49 videos and downloaded none: every scene reached YouTube with seconds left.
    */
+  /**
+   * RONDE 641 — can a YouTube FILE arrive, per route? The preflight only asks whether the service
+   * can reach YouTube, and it said yes on the deployment where 49 of 49 downloads failed.
+   */
+  const { scheduleYoutubeRouteTest } = await import("./youtubeRouteTest");
+  scheduleYoutubeRouteTest();
   const { startYoutubePrefetchWorker } = await import("./youtubePrefetch");
   await startYoutubePrefetchWorker().catch((err) =>
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)

@@ -16240,6 +16240,25 @@ function countDownloadOutcome(
   m.downloadOutcomes[status] = (m.downloadOutcomes[status] ?? 0) + 1;
 }
 
+/**
+ * RONDE 641 — is this media link bound to the address that requested it?
+ *
+ * `ip_locked` when a googlevideo link signs its `ip` parameter (valid only from that address),
+ * `not_ip_locked` when it does not, `not_googlevideo` for any other host, `unparseable` when it is
+ * not a URL. Never the link itself: it carries a signature.
+ */
+export function googlevideoLinkLock(url: string): "ip_locked" | "not_ip_locked" | "not_googlevideo" | "unparseable" {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "unparseable";
+  }
+  if (!u.hostname.endsWith("googlevideo.com")) return "not_googlevideo";
+  const signed = (u.searchParams.get("sparams") ?? "").split(",").map((p) => p.trim());
+  return signed.includes("ip") && u.searchParams.has("ip") ? "ip_locked" : "not_ip_locked";
+}
+
 export async function downloadYouTubeCCClip(
   videoId: string,
   duration: number,
@@ -16282,9 +16301,22 @@ export async function downloadYouTubeCCClip(
    * Optional, so `rehydrationDeps` and the runtime-test tool — which have their own budgets and no
    * beat wrapper — keep the 180 s they had.
    */
-  budgetMs?: number
+  budgetMs?: number,
+  /**
+   * RONDE 641 — ONE ROUTE, ON ITS OWN, SO A FAILURE CAN BE PINNED ON IT.
+   *
+   * Render 603 downloaded none of 49 YouTube videos, and its log mixes the two routes in every
+   * line: a cloud timeout, then a RapidAPI 403, then a budget with nothing left. Whether either
+   * route can deliver a file at all from this deployment is a question the render cannot answer,
+   * because each attempt spends the other's time. `youtubeRouteTest` asks each one separately.
+   *
+   * Absent for every render caller, which keeps both routes, in their order, exactly as before.
+   */
+  onlyRoute?: "cloud" | "rapidapi"
 ): Promise<boolean> {
-  const cloudDlService = process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
+  /** RONDE 641: a caller that asked for RapidAPI alone gets a function with no cloud route at all. */
+  const cloudDlService =
+    onlyRoute === "rapidapi" ? "" : process.env.YOUTUBE_CC_DL_SERVICE?.replace(/\/$/, "") || "";
   const hasCloudRoute = Boolean(cloudDlService);
   const hasRapidRoute = Boolean(RAPIDAPI_KEY);
   /**
@@ -16758,7 +16790,7 @@ export async function downloadYouTubeCCClip(
 
   // F3-41: RapidAPI fallback — tried when the cloud/yt-dlp service is not configured, errored,
   // or didn't return a usable file. Unchanged from before this fix other than moving second.
-  if (RAPIDAPI_KEY) {
+  if (RAPIDAPI_KEY && onlyRoute !== "cloud") {
     const tmpPath = outPath.replace(/\.mp4$/, "_rapid_tmp.mp4");
     /**
      * RONDE 637 — whether this render is HOLDING `tmpPath` as the source for `videoId`.
@@ -16852,7 +16884,15 @@ export async function downloadYouTubeCCClip(
           );
           bytesTransferred = bytesWritten;
           if (!dlResp.ok) {
-            note("rapidapi", "DOWNLOAD_FAILED", `http_${dlResp.status}`);
+            /**
+             * RONDE 641 — WHOSE ADDRESS THE FILE LINK WAS MADE FOR.
+             *
+             * Render 603: every RapidAPI file transfer answered 403 while the metadata call that
+             * produced its link answered 200. A googlevideo link that lists `ip` among its signed
+             * parameters is valid only from the address that asked for it — RapidAPI's, not this
+             * worker's. Recorded as a fact about the link, so the log says which of the two it was.
+             */
+            note("rapidapi", "DOWNLOAD_FAILED", `http_${dlResp.status}:${googlevideoLinkLock(format.url)}`);
           } else if (bytesWritten === null) {
             note("rapidapi", "DOWNLOAD_EMPTY", "no_response_body");
           }
