@@ -35,6 +35,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -69,6 +71,87 @@ COOKIES_FILE = os.environ.get("COOKIES_FILE", "").strip()
 PROBE_VIDEO_ID = os.environ.get("EGRESS_PROBE_VIDEO_ID", "jNQXAC9IVRw").strip()
 
 app = FastAPI(title="FastVid YouTube download service")
+
+
+# ── RONDE 642 — A FINISHED CUT IS KEPT FOR THE CALLER WHO ASKS AGAIN ─────────────────────────────
+#
+# Render 603, this service's own log against its own access log:
+#
+#     14:34:58  GET /download?id=yOPuuSeBfyo…   → 499 after 14.9 s   (the client hung up)
+#     14:35:28  INFO ok id=yOPuuSeBfyo start=4.50 dur=4.00 bytes=1592852
+#
+# Thirteen of seventeen requests ended that way. The cut takes ~30 s through the proxy; the render
+# could wait 12–22 s. Every file was made, finished seconds after nobody was listening, and deleted
+# by the cleanup task — and the render then asked for the SAME id and start again (OwwcdkV30U8
+# five times, yOPuuSeBfyo four), paying the full 30 s each time and hanging up each time.
+#
+# So a finished cut is kept for a while under (id, start, duration), and a request that is already
+# being worked on is waited for instead of started twice. The second ask is then answered from
+# disk in milliseconds. Nothing about what is cut, or how, changes.
+RESULT_DIR = Path(tempfile.gettempdir()) / "ytdl-results"
+RESULT_TTL_S = 30 * 60
+RESULT_MAX_BYTES = int(os.environ.get("RESULT_CACHE_MB", "1024")) * 1024 * 1024
+# How long a second caller waits for the first one's cut. Under FastVid's 180 s transfer ceiling.
+INFLIGHT_WAIT_S = 150
+
+_inflight: dict[str, threading.Event] = {}
+_inflight_lock = threading.Lock()
+
+
+def _result_key(video_id: str, start: float, duration: float) -> str:
+    safe = "".join(c for c in video_id if c.isalnum() or c in "-_")
+    return f"{safe}_{start:.2f}_{duration:.2f}"
+
+
+def _cached_result(key: str) -> Path | None:
+    path = RESULT_DIR / f"{key}.mp4"
+    try:
+        age = time.time() - path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    if age > RESULT_TTL_S:
+        path.unlink(missing_ok=True)
+        return None
+    return path
+
+
+def _prune_results() -> None:
+    """Expired files go; then the oldest, until the directory is under its ceiling."""
+    try:
+        files = sorted(RESULT_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
+    except FileNotFoundError:
+        return
+    now = time.time()
+    kept: list[Path] = []
+    for f in files:
+        try:
+            if now - f.stat().st_mtime > RESULT_TTL_S:
+                f.unlink(missing_ok=True)
+            else:
+                kept.append(f)
+        except FileNotFoundError:
+            continue
+    total = sum(f.stat().st_size for f in kept if f.exists())
+    for f in kept:
+        if total <= RESULT_MAX_BYTES:
+            break
+        try:
+            size = f.stat().st_size
+            f.unlink(missing_ok=True)
+            total -= size
+        except FileNotFoundError:
+            continue
+
+
+def _store_result(key: str, produced: Path) -> Path:
+    """Move a finished cut under its key. Atomic: a reader sees the whole file or none."""
+    RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    final = RESULT_DIR / f"{key}.mp4"
+    staging = RESULT_DIR / f".{key}.{uuid.uuid4().hex}.part"
+    shutil.copyfile(produced, staging)
+    os.replace(staging, final)
+    _prune_results()
+    return final
 
 
 def _require_token(authorization: str | None) -> None:
@@ -533,6 +616,36 @@ def download(
 ) -> FileResponse:
     _require_token(authorization)
 
+    key = _result_key(id, start, duration)
+    hit = _cached_result(key)
+    if hit is None:
+        with _inflight_lock:
+            running = _inflight.get(key)
+            if running is None:
+                _inflight[key] = threading.Event()
+        if running is not None:
+            # Someone is already cutting exactly this. Their result is ours; starting a second
+            # yt-dlp run for it is the waste render 603 paid four and five times over.
+            running.wait(timeout=INFLIGHT_WAIT_S)
+            hit = _cached_result(key)
+            if hit is None:
+                # The first cut failed or is still going. Asking again is what the caller did
+                # before this existed, so that is what happens — with its own in-flight marker.
+                with _inflight_lock:
+                    _inflight.setdefault(key, threading.Event())
+    if hit is not None:
+        log.info("ok id=%s start=%.2f dur=%.2f bytes=%d cached=hit", id, start, duration, hit.stat().st_size)
+        return FileResponse(hit, media_type="video/mp4", filename=f"{id}.mp4")
+    try:
+        return _download_and_cut(id, start, duration, key)
+    finally:
+        with _inflight_lock:
+            done = _inflight.pop(key, None)
+        if done is not None:
+            done.set()
+
+
+def _download_and_cut(id: str, start: float, duration: float, key: str) -> FileResponse:
     work = Path(tempfile.mkdtemp(prefix="ytdl-"))
     out_path = work / f"{uuid.uuid4().hex}.mp4"
     cleanup = BackgroundTask(shutil.rmtree, work, ignore_errors=True)
@@ -591,6 +704,12 @@ def download(
         "ok id=%s start=%.2f dur=%.2f bytes=%d salvage=%s proxy=%s",
         id, start, duration, size, salvage, bool(PROXY_URL),
     )
+    # Kept under its key BEFORE the response goes out, so it survives a caller that has already
+    # hung up. A cache that cannot be written costs only the reuse; the response is unchanged.
+    try:
+        produced = _store_result(key, produced)
+    except OSError as err:
+        log.warning("result not kept id=%s: %s", id, err)
     return FileResponse(
         produced,
         media_type="video/mp4",
