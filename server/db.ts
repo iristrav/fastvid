@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from "drizzle-orm";
-import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
+import { AUTO_ARCHIVES, STOCK_ARCHIVE_SLUG, type AutoArchiveKind } from "./stockArchive";
 import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
@@ -1707,23 +1707,27 @@ export async function createMediaArchiveUnique(data: Omit<InsertMediaArchive, "s
 export { STOCK_ARCHIVE_SLUG };
 
 export async function ensureStockMediaArchive(): Promise<number | null> {
-  const existing = await getMediaArchiveBySlug(STOCK_ARCHIVE_SLUG);
+  return ensureAutoMediaArchive("stock");
+}
+
+/** RONDE 648 — the archive an automatic ingest of this kind goes to, created on first use. */
+export async function ensureAutoMediaArchive(kind: AutoArchiveKind): Promise<number | null> {
+  const spec = AUTO_ARCHIVES[kind];
+  const existing = await getMediaArchiveBySlug(spec.slug);
   if (existing) return existing.id;
   const db = await getDb();
   if (!db) return null;
   try {
     await db.insert(mediaArchives).values({
-      name: "Stockbeelden",
-      slug: STOCK_ARCHIVE_SLUG,
-      description:
-        "Stock shots (Pexels, Pixabay) used in delivered films. Kept so every shot can be read back " +
-        "from our own storage; never offered as archive footage.",
-      isActive: 0,
+      name: spec.name,
+      slug: spec.slug,
+      description: spec.description,
+      isActive: spec.isActive,
     });
   } catch {
     /* another worker created it first — the unique slug says so; read it back below */
   }
-  return (await getMediaArchiveBySlug(STOCK_ARCHIVE_SLUG))?.id ?? null;
+  return (await getMediaArchiveBySlug(spec.slug))?.id ?? null;
 }
 
 export async function updateMediaArchive(id: number, data: Partial<InsertMediaArchive>) {

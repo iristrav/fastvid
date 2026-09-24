@@ -29,6 +29,7 @@ const createMediaArchiveAssetMock = vi.fn();
 const getAllMediaArchivesMock = vi.fn();
 const findBySourceUrlHashMock = vi.fn();
 const ensureStockMediaArchiveMock = vi.fn();
+const ensureAutoMediaArchiveMock = vi.fn();
 const storagePutMock = vi.fn();
 
 vi.mock("./db", () => ({
@@ -36,13 +37,14 @@ vi.mock("./db", () => ({
   getAllMediaArchives: (...a: unknown[]) => getAllMediaArchivesMock(...a),
   findMediaArchiveAssetBySourceUrlHash: (...a: unknown[]) => findBySourceUrlHashMock(...a),
   ensureStockMediaArchive: (...a: unknown[]) => ensureStockMediaArchiveMock(...a),
+  ensureAutoMediaArchive: (...a: unknown[]) => ensureAutoMediaArchiveMock(...a),
 }));
 vi.mock("./storage", () => ({ storagePut: (...a: unknown[]) => storagePutMock(...a) }));
 vi.mock("./archiveEmbeddingIndex", () => ({ indexArchiveAssetEmbedding: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./visualSearchMemory", () => ({ recordVisualSearchMemory: vi.fn().mockResolvedValue(undefined) }));
 
 import { ingestExternalClipToArchiveWithReason } from "./archiveIngestion";
-import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
+import { AUTO_ARCHIVES, STOCK_ARCHIVE_SLUG, autoArchiveKind } from "./stockArchive";
 
 const pexels = {
   title: "Soldiers marching",
@@ -66,6 +68,8 @@ beforeEach(() => {
   ]);
   findBySourceUrlHashMock.mockReset().mockResolvedValue(null);
   ensureStockMediaArchiveMock.mockReset().mockResolvedValue(77);
+  /** RONDE 648 — the YouTube archive is 5, Overig is 6; the stock archive is never an automatic default. */
+  ensureAutoMediaArchiveMock.mockReset().mockImplementation(async (kind: string) => ({ youtube: 5, other: 6 })[kind] ?? null);
   storagePutMock.mockReset().mockImplementation(async (key: string) => ({ key, url: `https://cdn.example/${key}` }));
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "r647-stock-"));
   clip = path.join(dir, "clip.mp4");
@@ -107,7 +111,7 @@ describe("§2 — RONDE 9 still holds", () => {
     expect(createMediaArchiveAssetMock).not.toHaveBeenCalled();
   });
 
-  it("the stock archive is never the default target, even when it is listed first and active", async () => {
+  it("the stock archive is never the default target: a YouTube segment goes to the YouTube archive", async () => {
     const out = await ingestExternalClipToArchiveWithReason(clip, {
       title: "Berlin 1945",
       tags: ["berlin"],
@@ -119,11 +123,13 @@ describe("§2 — RONDE 9 still holds", () => {
     });
     expect(out.status).toBe("ingested");
     const row = createMediaArchiveAssetMock.mock.calls[0]![0] as { archiveId: number; mixKind: string };
-    expect(row.archiveId).toBe(1);
+    expect(row.archiveId).toBe(5);
     expect(row.mixKind).toBe("real_video");
+    expect(ensureAutoMediaArchiveMock).toHaveBeenCalledWith("youtube");
+    expect(ensureStockMediaArchiveMock).not.toHaveBeenCalled();
   });
 
-  it("the flag on a non-stock clip changes nothing: it goes to the curated archive", async () => {
+  it("the flag on a non-stock clip changes nothing: a Wikimedia clip goes to Overig", async () => {
     const out = await ingestExternalClipToArchiveWithReason(clip, {
       title: "Berlin 1945",
       tags: ["berlin"],
@@ -135,7 +141,8 @@ describe("§2 — RONDE 9 still holds", () => {
       stockArchive: true,
     });
     expect(out.status).toBe("ingested");
-    expect((createMediaArchiveAssetMock.mock.calls[0]![0] as { archiveId: number }).archiveId).toBe(1);
+    expect((createMediaArchiveAssetMock.mock.calls[0]![0] as { archiveId: number }).archiveId).toBe(6);
+    expect(ensureAutoMediaArchiveMock).toHaveBeenCalledWith("other");
     expect(ensureStockMediaArchiveMock).not.toHaveBeenCalled();
   });
 
@@ -150,12 +157,20 @@ describe("§2 — RONDE 9 still holds", () => {
   });
 
   it("the stock archive is created INACTIVE, under its own slug", () => {
+    expect(AUTO_ARCHIVES.stock).toMatchObject({ name: "Stockbeelden", slug: STOCK_ARCHIVE_SLUG, isActive: 0 });
     const DB = readFileSync(join(__dirname, "db.ts"), "utf8");
     const at = DB.indexOf("export async function ensureStockMediaArchive(");
     const body = DB.slice(at, DB.indexOf("\n}\n", at));
-    expect(body).toContain('name: "Stockbeelden"');
-    expect(body).toContain("slug: STOCK_ARCHIVE_SLUG");
-    expect(body).toContain("isActive: 0");
+    expect(body).toContain('return ensureAutoMediaArchive("stock")');
+  });
+
+  it("RONDE 648 — the kind of an automatic ingest is read from its own source", () => {
+    expect(autoArchiveKind({ sourcePlatform: "pexels", sourceNote: "pexels:1" })).toBe("stock");
+    expect(autoArchiveKind({ sourceNote: "pixabay:2" })).toBe("stock");
+    expect(autoArchiveKind({ sourcePlatform: "youtube_cc", sourceNote: "youtube_cc:abc@13s" })).toBe("youtube");
+    expect(autoArchiveKind({ sourceNote: "youtube_cc:youtube_cc:FDUFqdMOeMg" })).toBe("youtube");
+    expect(autoArchiveKind({ sourcePlatform: "wikimedia", sourceNote: "wikimedia:File:Klara_Hitler.jpg" })).toBe("other");
+    expect(autoArchiveKind({ sourceNote: "internet_archive:item555" })).toBe("other");
   });
 });
 

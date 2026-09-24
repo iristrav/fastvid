@@ -11,7 +11,8 @@ import path from "path";
 // archiveDurationRepair.test.ts) — the real ingestExternalClipToArchive()/quality-gate/
 // duplicate-check logic under test is exercised unmocked.
 const createMediaArchiveAssetMock = vi.fn();
-const getAllMediaArchivesMock = vi.fn();
+/** RONDE 648 — automatic ingests are routed by source kind, not to "the latest archive". */
+const ensureAutoMediaArchiveMock = vi.fn();
 const findMediaArchiveAssetBySourceUrlHashMock = vi.fn();
 const storagePutMock = vi.fn();
 const indexArchiveAssetEmbeddingMock = vi.fn().mockResolvedValue(undefined);
@@ -19,7 +20,7 @@ const recordVisualSearchMemoryMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("./db", () => ({
   createMediaArchiveAsset: (...args: unknown[]) => createMediaArchiveAssetMock(...args),
-  getAllMediaArchives: (...args: unknown[]) => getAllMediaArchivesMock(...args),
+  ensureAutoMediaArchive: (...args: unknown[]) => ensureAutoMediaArchiveMock(...args),
   findMediaArchiveAssetBySourceUrlHash: (...args: unknown[]) => findMediaArchiveAssetBySourceUrlHashMock(...args),
 }));
 vi.mock("./storage", () => ({
@@ -40,7 +41,9 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
 
   beforeEach(() => {
     createMediaArchiveAssetMock.mockReset().mockResolvedValue(101);
-    getAllMediaArchivesMock.mockReset().mockResolvedValue([{ id: 1, isActive: 1 }]);
+    ensureAutoMediaArchiveMock
+      .mockReset()
+      .mockImplementation(async (kind: string) => ({ stock: 9, youtube: 7, other: 8 })[kind] ?? null);
     findMediaArchiveAssetBySourceUrlHashMock.mockReset().mockResolvedValue(null);
     storagePutMock.mockReset().mockResolvedValue({ key: "archive-ingested/1/test.mp4", url: "https://cdn.example.com/test.mp4" });
     indexArchiveAssetEmbeddingMock.mockClear();
@@ -98,6 +101,9 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     expect(inserted.entities).toEqual(["Justin Bieber"]);
     expect(inserted.topics).toEqual(["music"]);
     expect(inserted.downloadedAt).toBeInstanceOf(Date);
+    // RONDE 648 — a YouTube segment goes to the YouTube archive.
+    expect(ensureAutoMediaArchiveMock).toHaveBeenCalledWith("youtube");
+    expect(inserted.archiveId).toBe(7);
 
     // The learning loop records this query/entity/source/asset combination.
     expect(recordVisualSearchMemoryMock).toHaveBeenCalledWith(
@@ -152,6 +158,9 @@ describe("ingestExternalClipToArchive — F3-26 structured provenance + duplicat
     expect(result?.reused).toBeUndefined();
     expect(storagePutMock).toHaveBeenCalledTimes(1);
     expect(createMediaArchiveAssetMock).toHaveBeenCalledTimes(1);
+    // RONDE 648 — neither YouTube nor stock: the Overig archive.
+    expect(ensureAutoMediaArchiveMock).toHaveBeenCalledWith("other");
+    expect(createMediaArchiveAssetMock.mock.calls[0]![0].archiveId).toBe(8);
   });
 
   it("admin-uploaded assets without a sourceUrl skip the duplicate check entirely (backward compatible)", async () => {

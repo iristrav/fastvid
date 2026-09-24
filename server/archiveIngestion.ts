@@ -17,8 +17,8 @@ import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
 import { storagePut } from "./storage";
-import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMediaArchives } from "./db";
-import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
+import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash } from "./db";
+import { AUTO_ARCHIVES, autoArchiveKind } from "./stockArchive";
 import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewCheck";
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
@@ -367,13 +367,20 @@ async function ingestExternalClipToArchiveInner(
     // Resolve archive to ingest into
     let archiveId = stockArchiveId ?? metadata.archiveId;
     if (!archiveId) {
-      /** RONDE 647 — the Stockbeelden archive is never anyone's default. */
-      const archives = (await getAllMediaArchives())?.filter((a) => a.slug !== STOCK_ARCHIVE_SLUG);
-      const active = archives?.find(a => a.isActive !== 0) ?? archives?.[0];
-      if (!active) {
-        return refuse("NO_ACTIVE_ARCHIVE", `${archives?.length ?? 0} archive(s) exist, none usable`);
+      /**
+       * RONDE 648 — by the kind of source, never "the most recently updated archive".
+       *
+       * That rule put 57 YouTube segments into an archive named Stockbeelden, and 36 more into WW2
+       * when WW2 happened to be the latest. YouTube goes to YouTube, everything else FastVid finds
+       * and keeps goes to Overig; stock was routed above.
+       */
+      const kind = autoArchiveKind(metadata);
+      const { ensureAutoMediaArchive } = await import("./db");
+      const target = await ensureAutoMediaArchive(kind).catch(() => null);
+      if (target == null) {
+        return refuse("NO_ACTIVE_ARCHIVE", `the ${AUTO_ARCHIVES[kind].name} archive could not be found or created`);
       }
-      archiveId = active.id;
+      archiveId = target;
     }
 
     // Build a deterministic storage key to avoid duplicates
