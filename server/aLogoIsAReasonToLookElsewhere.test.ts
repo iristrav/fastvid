@@ -161,11 +161,6 @@ describe("§4 — wired, and the archive's refusal is untouched", () => {
     expect(SRC).toContain("enqueue: (cands) => enqueueYoutubePrefetch(cands,");
   });
   it("the text gate itself is not touched here", () => {
-    const INGEST = readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8");
-    expect(INGEST).toContain('const hasText = overlay.verdict === "has_text";');
-    // RONDE 648: only a clip the picture editor approved for its beat passes with text — and the
-    // prefetch never approves anything, so for this batch the refusal is exactly what it was.
-    expect(INGEST).toContain("if (hasText && !metadata.approvedForBeat) {");
-    expect(SRC).not.toContain("approvedForBeat");
+    expect(readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8")).toContain('if (overlay.verdict === "has_text") {');
   });
 });

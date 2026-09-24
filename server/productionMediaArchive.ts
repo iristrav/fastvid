@@ -129,8 +129,6 @@ export type ProductionArchiveMetadata = {
   personContext?: boolean;
   /** RONDE 647 — stock, into the separate Stockbeelden archive. See `IngestMetadata`. */
   stockArchive?: boolean;
-  /** RONDE 648 — approved by the picture editor for the beat it fills. See `IngestMetadata`. */
-  approvedForBeat?: boolean;
 };
 
 /**

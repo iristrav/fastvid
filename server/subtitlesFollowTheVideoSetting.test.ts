@@ -68,6 +68,19 @@ describe("the video's subtitle setting decides", () => {
   });
 });
 
+describe("nobody else's text in the picture either", () => {
+  /**
+   * The operator's choice (2026-09-24): a shot with on-screen text — burnt-in subtitles, a title
+   * bar, a channel logo — is refused, even when the picture editor liked it for its beat. The text
+   * detector cannot tell a subtitle from a logo, so there is no approval that lets text through.
+   */
+  it("the archive refuses any clip with text, and no caller can wave it through", () => {
+    const INGEST = readFileSync(join(__dirname, "archiveIngestion.ts"), "utf8");
+    expect(INGEST).toContain('if (overlay.verdict === "has_text") {');
+    expect(INGEST).not.toContain("approvedForBeat");
+  });
+});
+
 describe("the wiring", () => {
   it("the render hands the planner the video's own setting", () => {
     const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");

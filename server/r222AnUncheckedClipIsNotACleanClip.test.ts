@@ -159,12 +159,7 @@ describe("R222 §4 — a clip nobody looked at is stored as unjudged", () => {
   });
 
   it("ONLY A REAL `clean` IS WRITTEN AS CLEAN; ANYTHING ELSE IS null", () => {
-    /**
-     * RONDE 648 — a `has_text` clip kept for the beat that approved it is written as 1, the value
-     * curated sourcing filters on. Still: only a real `clean` is 0, and no verdict is null.
-     */
-    expect(INGEST).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : hasText ? 1 : null,`);
-    expect(INGEST).toContain(`const hasText = overlay.verdict === "has_text";`);
+    expect(INGEST).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : null,`);
   });
 
   it("ingestion asks for the verdict, not the boolean", () => {
