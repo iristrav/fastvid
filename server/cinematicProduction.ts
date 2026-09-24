@@ -201,6 +201,12 @@ export type CinematicPlanParams = {
   /** The measured TTS word boundaries, so captions land where the words are. §12. */
   words?: TtsWordTiming[];
   format?: ProjectTimeline["format"];
+  /**
+   * RONDE 649 — the video's own subtitle setting (`videos.enableSubtitles`, off unless the user
+   * switched it on). Required: render 606 was made with subtitles off and still carried twelve,
+   * because nothing handed the setting to the planner and the planner's default is on.
+   */
+  includeSubtitles: boolean;
   /** Injected so a test can run the whole route without a database. */
   persist: (params: {
     id: number;
@@ -343,6 +349,7 @@ export async function planAndStoreCinematicTimeline(
       voice: params.voice ?? null,
       words: params.words,
       format: params.format,
+      includeSubtitles: params.includeSubtitles,
       /**
        * The film's emotional shape, so the score follows the story rather than the clock.
        *

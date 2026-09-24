@@ -1052,7 +1052,8 @@ async function startServer() {
       const { enqueueVideoJob } = await import('../queue');
       const { prompt, videoLength = '8-10', videoType = 'documentary', userId = 1 } = req.body;
       if (!prompt) { res.status(400).json({ error: 'prompt required' }); return; }
-      const videoId = await createVideo({ userId, prompt, videoLength, videoType, status: 'queued' });
+      // RONDE 649: subtitles off, like the dashboard — the column's own default is 1.
+      const videoId = await createVideo({ userId, prompt, videoLength, videoType, status: 'queued', enableSubtitles: 0 });
       if (!videoId) { res.status(500).json({ error: 'Failed to create video' }); return; }
       const { queuePosition } = await enqueueVideoJob(videoId, '🔍 Internal test — waiting in queue...');
       res.json({ videoId, status: 'queued', queuePosition });
