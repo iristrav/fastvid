@@ -211,6 +211,9 @@ describe("fetchYouTubeCCClips — F3-41 Test 4 (YouTube CC search unchanged: vid
     process.env.ENABLE_YOUTUBE_SOURCING = "true";
     process.env.YOUTUBE_API_KEY = "f341-test-youtube-key";
     process.env.YOUTUBE_CC_DL_SERVICE = "https://f341-cloud-service.example.com";
+    // RONDE 650: one licence pass per query is the default now (the daily quota); the CC pass
+    // this test guards is still there when every pass is enabled.
+    process.env.YOUTUBE_SEARCH_PASSES = "3";
     nodeFetchMock.mockReset();
   });
   afterEach(() => {

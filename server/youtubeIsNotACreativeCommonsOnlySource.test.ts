@@ -76,7 +76,7 @@ describe("R268 §1 — three modes, and one of them is no filter at all", () => 
 describe("R268 §2 — the general route is built, not just available", () => {
   const block = PIPE.slice(
     PIPE.indexOf('const ccPass = { license: "creative_common"'),
-    PIPE.indexOf("for (const query of uniqueQueries.slice(0, 2))")
+    PIPE.indexOf("for (const [queryIndex, query] of uniqueQueries.slice(0, 2).entries())")
   );
 
   it("THE THREE PASSES ARE ALL CONSTRUCTED", () => {

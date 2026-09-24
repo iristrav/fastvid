@@ -1207,11 +1207,38 @@ export type YoutubeSearchDuration = "short" | "medium";
  */
 export function youtubeSearchDurationForPass(
   passIndex: number,
-  passCount: number
+  passCount: number,
+  /**
+   * RONDE 650 — with ONE pass per query, the two queries alternate instead: the first asks for
+   * `short`, the second for `medium`. Both slices are still covered, for one call per query.
+   * Absent (the old callers) keeps the one-pass answer above: `medium`.
+   */
+  queryIndex?: number
 ): YoutubeSearchDuration {
   if (!Number.isFinite(passIndex) || passIndex < 0) return "medium";
-  if (!Number.isFinite(passCount) || passCount <= 1) return "medium";
+  if (!Number.isFinite(passCount) || passCount <= 1) {
+    if (queryIndex == null || !Number.isFinite(queryIndex) || queryIndex < 0) return "medium";
+    return queryIndex % 2 === 0 ? "short" : "medium";
+  }
   return passIndex % 2 === 0 ? "short" : "medium";
+}
+
+/**
+ * RONDE 650 — HOW MANY LICENCE PASSES ONE QUERY MAY SPEND.
+ *
+ * The YouTube Data API allows 10,000 units a day and a search costs 100. With three passes per
+ * query and two queries per turn, one beat's turn cost 600 units, and a beat asks through the
+ * lookahead, its own turn and the rescue routes. Render 607 ran the key dry at 18:18
+ * (`YouTube fair-use API error 429`) and the rest of it searched through the scraped fallback,
+ * which answered with memes and a mobile game.
+ *
+ * The first pass is the widest one the policy allows (`any` under the operator's authorisation, so
+ * it already contains what the CC and standard passes would return). One pass per query is the
+ * default; `YOUTUBE_SEARCH_PASSES=3` restores every pass.
+ */
+export function youtubeSearchPassesPerQuery(): number {
+  const raw = Number(process.env.YOUTUBE_SEARCH_PASSES?.trim());
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
 }
 
 /**

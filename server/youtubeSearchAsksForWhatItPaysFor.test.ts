@@ -187,7 +187,7 @@ describe("the duration reaches the API and the cache", () => {
     const PIPE = src();
     expect(PIPE).toContain("for (const [passIndex, pass] of licensePasses.entries()) {");
     expect(PIPE).toContain(
-      "const passDuration = youtubeSearchDurationForPass(passIndex, licensePasses.length);"
+      "const passDuration = youtubeSearchDurationForPass(passIndex, licensePasses.length, queryIndex);"
     );
   });
 

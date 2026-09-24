@@ -102,7 +102,7 @@ describe("B — what render 606 downloaded, refused before a byte moves", () => 
   it("every beat query asks for footage", () => {
     const fn = PIPE.slice(PIPE.indexOf("function buildBeatYoutubeQueries("));
     const body = fn.slice(0, fn.indexOf("\n}\n"));
-    expect(body).toContain("askForFootage(toQueryString(q))");
+    expect(body).toContain("const typedFootage = typed.map((q) => askForFootage(toQueryString(q)));");
   });
 });
 

@@ -38,6 +38,40 @@ export function youtubeTitleIsNotFootage(title: string | null | undefined): stri
   return null;
 }
 
+/**
+ * RONDE 650 — A YOUTUBE QUERY SAYS WHO OR WHAT IT IS ABOUT.
+ *
+ * Render 607 sent "escape archival footage" and "suicide archival footage" to YouTube — a beat's
+ * power word with the footage suffix and nothing else. YouTube answered with a mobile game
+ * ("Granny 3 … Escape Full Gameplay") and a memes compilation. The same beat also asked
+ * "Adolf Hitler suicide archival footage", which is the question that could find the picture.
+ *
+ * Prefixing the video's subject was considered and rejected: 607's person lock read "Hitler Kill"
+ * (from its title), and "Hitler Kill escape" would have been no better. So a query that names
+ * nobody is simply not sent while the list holds queries that do — which also spends less of the
+ * daily search quota. A list where nothing names anybody (a topic film) is kept whole.
+ *
+ * "Names something": one of the subject's words is in it, or it carries a capitalised word of its
+ * own ("Joseph Goebbels Führerbunker", "Third Reich", "hitler Rumors").
+ */
+export function queryNamesSomething(query: string, subject?: string | null): boolean {
+  const q = query.trim();
+  if (!q) return false;
+  if (/(^|\s)\p{Lu}/u.test(q)) return true;
+  const lower = q.toLowerCase();
+  return (subject ?? "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2)
+    .some((w) => lower.split(/\s+/).includes(w));
+}
+
+/** Keeps the queries that name something; all of them when none does. */
+export function queriesThatNameSomething(queries: string[], subject?: string | null): string[] {
+  const named = queries.filter((q) => queryNamesSomething(q, subject));
+  return named.length > 0 ? named : queries;
+}
+
 /** Words that already ask for footage; a query carrying one is left as it is. */
 const FOOTAGE_WORD = /\b(footage|archival|archive|newsreels?|documentary|film|filmed|news report|video|reel)\b/i;
 
