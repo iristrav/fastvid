@@ -671,7 +671,16 @@ export function relevanceWordsFor(query: string): string[] {
 export type AlternativeDeps = {
   /** True only for the one caller, ever, that may search this key. */
   claim: (key: string) => Promise<boolean>;
-  search: (query: string, licenseMode: string | null, relevanceWords: string[]) => Promise<YoutubePrefetchCandidate[]>;
+  /**
+   * `evidence` is the query the RENDER searched with — already proven by that render's beat. It is
+   * the proof the alternative is searched under; see `productionAlternativeDeps`.
+   */
+  search: (
+    query: string,
+    licenseMode: string | null,
+    relevanceWords: string[],
+    evidence: string
+  ) => Promise<YoutubePrefetchCandidate[]>;
   enqueue: (candidates: YoutubePrefetchCandidate[]) => void;
   /** Spend one from today's allowance; false when it is spent. */
   takeDailySlot: () => boolean;
@@ -694,7 +703,9 @@ export async function queueAlternativesFor(
         deps.log(`[YouTubePrefetch] ALTERNATIVES for=${row.videoId} skipped — today's search allowance is spent`);
         return { query: null, queued: 0 };
       }
-      const found = (await deps.search(alt, row.licenseMode ?? null, relevanceWordsFor(row.query ?? "")))
+      const found = (
+        await deps.search(alt, row.licenseMode ?? null, relevanceWordsFor(row.query ?? ""), row.query ?? "")
+      )
         .filter((c) => c.videoId && c.videoId !== row.videoId)
         .slice(0, 5)
         .map((c) => ({ ...c, query: alt, licenseMode: row.licenseMode ?? null }));
@@ -730,9 +741,25 @@ async function productionAlternativeDeps(sourceVideoId: number | null): Promise<
   const holder = `${process.env.RAILWAY_REPLICA_ID ?? "replica"}:${process.pid}`;
   return {
     claim: (key) => claimOnce(key, holder),
-    search: async (query, licenseMode, words) => {
+    search: async (query, licenseMode, words, evidence) => {
       const mode = licenseMode === "creative_common" || licenseMode === "youtube" ? licenseMode : "any";
-      const rows = await pipeline.searchYoutubeVideoCandidates(query, -1, mode, words, 1, "", 10);
+      /**
+       * RONDE 647 — THE SEARCH RUNS UNDER A PROOF, OR THE GATE BLOCKS IT.
+       *
+       * 2026-09-24 07:53: `ALTERNATIVES … found=0` after `[SearchQueryAudit] … status=BLOCKED
+       * reason=LEGACY_QUERY_BUILDER`. A background search has no beat, so no provenance scope was
+       * open and SEARCH_GATE_STRICT refused every alternative — the feature never searched at all.
+       *
+       * The proof is the render's own query, which that render's gate already verified against its
+       * beat. The alternative adds only production words ("archive footage", "newsreel"), which
+       * need no proof. A word the original query did not prove is still refused: the gate is not
+       * relaxed, it is given the evidence it asks for.
+       */
+      const ctx = pipeline.buildVerifiedQueryContextForBeat(evidence, { sceneText: evidence });
+      const { withSearchProvenance } = await import("./searchQueryContract");
+      const rows = await withSearchProvenance(ctx, () =>
+        pipeline.searchYoutubeVideoCandidates(query, -1, mode, words, 1, "", 10)
+      );
       return rows
         .filter((r) => r.rel >= 1)
         .map((r) => ({ videoId: r.item.id?.videoId ?? "", title: r.title }));
