@@ -85,6 +85,7 @@ import {
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
+import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
 import {
@@ -23392,8 +23393,20 @@ async function isMostlyBlackClip(filePath: string, precomputedDurationSec?: numb
   const curatedStill = isCuratedPreparedStillClip(filePath);
   // Blur-fill stills darken edges by design — not embedded letterbox bars.
   if (!curatedStill && (await hasEmbeddedBlackBars(filePath))) {
-    console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
-    return true;
+    /**
+     * RONDE 648 — the bars are cut off and the frame refilled with the picture itself (see
+     * `embeddedBarsCrop`). Only a shot whose bars cannot be measured, or that would be a sliver
+     * without them, is refused as before.
+     */
+    const cropped = await cropEmbeddedBarsInPlace(filePath).catch(() => null);
+    if (!cropped) {
+      console.warn(`[Pipeline] Rejecting clip with embedded black bars: ${path.basename(filePath)}`);
+      return true;
+    }
+    console.log(
+      `[Pipeline] Embedded black bars cropped: ${path.basename(filePath)} ` +
+        `kept ${cropped.w}x${cropped.h} of ${cropped.srcW}x${cropped.srcH}, frame refilled with the picture itself`
+    );
   }
   // Curated archive clips: reject if too dark — threshold 25 (was 12, too permissive).
   // B&W archival clips have low luma by design; we still skip near-pitch-black ones.
