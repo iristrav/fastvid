@@ -593,6 +593,31 @@ export function audioMixExtentSec(inputs: readonly MixInput[]): number {
 }
 
 /**
+ * RONDE 646 — HOW FAR THE AUDIO FILES REACH, MEASURED. The span above is the PLAN.
+ *
+ * Render 603: `[MuxSpan] picture=56.30s audioMix=67.53s … shortestWouldTruncatePicture=no`, and the
+ * muxed file was 50.23s. The mux copies the picture untouched, so only `-shortest` can have cut it,
+ * and `-shortest` cuts to the audio the files actually hold — which ended at 50.23s while the
+ * timeline said 67.53s. `amix=duration=longest` ends with the longest REAL input, not the longest
+ * planned one.
+ *
+ * Each input is laid in untrimmed at `start + delay` (see `buildAudioGraph`), so a file reaches
+ * `start + delay + its own length`. Null when any file could not be probed: a partial answer would
+ * be read as a whole one.
+ */
+export function measuredAudioExtentSec(
+  inputs: readonly { input: MixInput; fileSec: number | null }[]
+): number | null {
+  if (inputs.length === 0) return 0;
+  let end = 0;
+  for (const { input, fileSec } of inputs) {
+    if (fileSec == null || !Number.isFinite(fileSec)) return null;
+    end = Math.max(end, input.startSec + Math.max(0, input.delaySec ?? 0) + Math.max(0, fileSec));
+  }
+  return end;
+}
+
+/**
  * Does `-shortest` bind on the PICTURE rather than on the audio?
  *
  * Its comment at the mux accounts for one direction — a music bed may not make the file longer
@@ -616,17 +641,34 @@ export function formatMuxSpan(p: {
   timelineSec: number;
   tracks: number;
   muxed: boolean;
+  /**
+   * RONDE 646 — the files' own reach (`measuredAudioExtentSec`). Undefined: not measured, and the
+   * plan is all there is. Null: measured and unprobeable, said as such.
+   */
+  audioFilesSec?: number | null;
+  /** RONDE 646 — the mix is padded with silence, so the picture bounds the file. */
+  padded?: boolean;
 }): string {
-  const binds = shortestTruncatesPicture(p.pictureSec, p.audioExtentSec, p.muxed);
+  /** The files decide what `-shortest` sees; the plan only when the files were not measured. */
+  const reach = p.audioFilesSec != null ? p.audioFilesSec : p.audioExtentSec;
+  const binds = shortestTruncatesPicture(p.pictureSec, reach, p.muxed);
+  const gap = ((p.pictureSec ?? 0) - reach).toFixed(2);
   return (
     `[MuxSpan] picture=${p.pictureSec?.toFixed(2) ?? "unknown"}s ` +
-    `audioMix=${p.audioExtentSec.toFixed(2)}s timeline=${p.timelineSec.toFixed(2)}s ` +
+    `audioMix=${p.audioExtentSec.toFixed(2)}s ` +
+    (p.audioFilesSec !== undefined
+      ? `audioFiles=${p.audioFilesSec != null ? `${p.audioFilesSec.toFixed(2)}s` : "unknown"} `
+      : "") +
+    `timeline=${p.timelineSec.toFixed(2)}s ` +
     `tracks=${p.tracks} mux=${p.muxed ? "yes" : "copy"} ` +
     `shortestWouldTruncatePicture=${binds ? "YES" : "no"}` +
-    (binds
-      ? ` — the mix ends ${((p.pictureSec ?? 0) - p.audioExtentSec).toFixed(2)}s before the ` +
-        `picture does, and -shortest cuts the file at the shorter of the two`
-      : "")
+    (binds && p.padded
+      ? ` — the audio ends ${gap}s before the picture does; the mix is padded with silence, so ` +
+        `the picture keeps its length`
+      : binds
+        ? ` — the mix ends ${gap}s before the ` +
+          `picture does, and -shortest cuts the file at the shorter of the two`
+        : "")
   );
 }
 
@@ -1483,13 +1525,20 @@ export async function renderTimeline(params: {
    */
   const pictureSec = await probeDurationSec(withText);
   const audioExtentSec = audioMixExtentSec(resolvedAudio.map((a) => a.input));
+  const audioFilesSec = measuredAudioExtentSec(
+    await Promise.all(
+      resolvedAudio.map(async (a) => ({ input: a.input, fileSec: await probeDurationSec(a.file) }))
+    )
+  );
   console.log(
     formatMuxSpan({
       pictureSec,
       audioExtentSec,
+      audioFilesSec,
       timelineSec: params.timeline.durationSec,
       tracks: resolvedAudio.length,
       muxed: audioGraph != null,
+      padded: audioGraph != null,
     })
   );
 
@@ -1498,9 +1547,27 @@ export async function renderTimeline(params: {
   } else {
     const args: string[] = ["-y", "-hide_banner", "-loglevel", "error", "-i", withText];
     for (const a of resolvedAudio) args.push("-i", a.file);
+    /**
+     * RONDE 646 — THE MIX IS PADDED WITH SILENCE, so `-shortest` can only bind on the picture.
+     *
+     * `-shortest` binds both ways (RONDE 603). With the mix endless, the one direction left is the
+     * one §26 wrote it for: a music bed may not outlast the edit. Renders 597 (62.01s → 47.73s) and
+     * 603 (56.29s → 50.23s) lost their endings because the audio FILES ended before the planned
+     * audio did. Silence where the file ran out is what the timeline actually holds there; the
+     * picture it planned is kept. Reproduced: a 10s picture under a 7s music file muxed to 7.01s,
+     * and to 10.00s with the pad.
+     *
+     * Padded TO THE PICTURE (`whole_dur`), not endlessly: ffmpeg 6.1 writes a correct file behind an
+     * endless `apad` and then exits 228, "Error while filtering: No space left on device", when
+     * `-shortest` closes the stream under it — every mux would have failed. A finite pad ends by
+     * itself, and `-shortest` still trims a mix that runs past the picture.
+     */
+    const muxLabel = `${audioGraph.outLabel}_padded`;
+    const padToSec = pictureSec ?? params.timeline.durationSec;
     args.push(
-      "-filter_complex", audioGraph.filter,
-      "-map", "0:v", "-map", `[${audioGraph.outLabel}]`,
+      "-filter_complex",
+      `${audioGraph.filter};[${audioGraph.outLabel}]apad=whole_dur=${padToSec.toFixed(3)}[${muxLabel}]`,
+      "-map", "0:v", "-map", `[${muxLabel}]`,
       "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
       /**
        * §26 — `-shortest` bounded by the VIDEO, which is the timeline's own length.
