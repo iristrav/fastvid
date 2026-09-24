@@ -12029,6 +12029,55 @@ function beatPictureWasApproved(
   return d.verdict === "fits" ? "fits" : null;
 }
 
+/**
+ * RONDE 646 — A REFILL MAY NOT TRADE DOWN.
+ *
+ * Render 603, scene 1:
+ *
+ *     20:29:44 [Pipeline] Scene 1: 2/10 clips — strict beat refill
+ *     20:43:11 [SceneResourced] scene_1_resourced:strict_voice_refill dropped a fetched asset
+ *              nothing refused: provider=youtube_cc:yOPuuSeBfyo scene=1 beat=5
+ *     20:43:11 [SceneResourced] … provider=ww2:57364 …
+ *     20:51:01 [CinematicDrop] scene=1 beat=0,1,2,4,5 reason=NO_ADOPTED_CLIP
+ *
+ * Thirteen minutes of refill replaced the scene's two real clips — the render's only YouTube clip
+ * among them — with none, and the delivery gate then blocked on placeholders. Renders 574 and 595
+ * lost YouTube clips the same way. RENDER 574's note chose not to overrule a rebuild "with no
+ * evidence"; this is the evidence, and the rule is narrow: the refill still wins whenever it holds
+ * at least as much real footage as the scene it replaces. Only a result with LESS is refused.
+ */
+export function refillMayNotTradeDown<T extends { clips: string[] }>(
+  before: T,
+  refill: T,
+  isPlaceholder: (clip: string) => boolean
+): { result: T; kept: "refill" | "previous"; beforeUsable: number; refillUsable: number } {
+  const usable = (r: T) => r.clips.filter((c) => c && !isPlaceholder(c)).length;
+  const beforeUsable = usable(before);
+  const refillUsable = usable(refill);
+  return refillUsable < beforeUsable
+    ? { result: before, kept: "previous", beforeUsable, refillUsable }
+    : { result: refill, kept: "refill", beforeUsable, refillUsable };
+}
+
+/** The refill ran and was refused: its clips are released and explained, and the line says why. */
+function applyRefillMayNotTradeDown(
+  dedup: VisualDedupState,
+  before: SceneVisualsResult,
+  refill: SceneVisualsResult,
+  sceneIndex: number
+): SceneVisualsResult {
+  const verdict = refillMayNotTradeDown(before, refill, isPipelineFallbackClip);
+  if (verdict.kept === "previous") {
+    console.warn(
+      `[SceneResourced] scene=${sceneIndex} strict_voice_refill KEPT_PREVIOUS — the refill returned ` +
+        `${verdict.refillUsable} real clip(s) where the scene had ${verdict.beforeUsable}; a refill ` +
+        `may not trade real footage for less`
+    );
+    noteSceneClipsResourced(dedup, refill, before, sceneIndex, "strict_voice_refill");
+  }
+  return verdict.result;
+}
+
 function noteSceneClipsResourced(
   dedup: VisualDedupState | undefined,
   previous: { clips?: string[] } | undefined,
@@ -48094,7 +48143,12 @@ async function _runVideoPipelineInner(
                 const minNeeded = minClipsForBalancedVoice(scene.duration + 0.15, videoLength);
                 if (usable.length < minNeeded) {
                   console.warn(`[Pipeline] P5A Scene ${scene.index}: ${usable.length}/${minNeeded} clips — strict refill`);
-                  svr = await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]);
+                  svr = applyRefillMayNotTradeDown(
+                    visualDedup,
+                    svr,
+                    await refillSceneStrictVoiceMatch(scene, workDir, topicContext, visualDedup, audioPaths[i]),
+                    scene.index
+                  );
                 }
               }
               const prevSceneVisual_4 = sceneVisualResults[i];
@@ -48896,12 +48950,17 @@ async function _runVideoPipelineInner(
           `[Pipeline] Scene ${scenes[si].index}: ${usable.length}/${minNeeded} clips — strict beat refill`
         );
         const prevSceneVisual_10 = sceneVisualResults[si];
-        sceneVisualResults[si] = await refillSceneStrictVoiceMatch(
-          scenes[si],
-          workDir,
-          topicContext,
+        sceneVisualResults[si] = applyRefillMayNotTradeDown(
           visualDedup,
-          audioPaths[si]
+          prevSceneVisual_10,
+          await refillSceneStrictVoiceMatch(
+            scenes[si],
+            workDir,
+            topicContext,
+            visualDedup,
+            audioPaths[si]
+          ),
+          scenes[si]?.index ?? si
         );
         noteSceneClipsResourced(visualDedup, prevSceneVisual_10, sceneVisualResults[si], scenes[si]?.index ?? si, "strict_voice_refill");
       }
