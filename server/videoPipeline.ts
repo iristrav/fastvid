@@ -16209,6 +16209,8 @@ export function formatYoutubeDownloadLine(params: {
   hasCloudRoute: boolean;
   hasRapidRoute: boolean;
   reason: string;
+  /** RONDE 646: a route the caller left out is SKIPPED, not MISSING — the deployment still has it. */
+  onlyRoute?: "cloud" | "rapidapi";
 }): string {
   /**
    * THE DETAIL WAS WRITTEN AND NEVER READ — the one line about a download said only that it failed.
@@ -16229,8 +16231,8 @@ export function formatYoutubeDownloadLine(params: {
   return (
     `[YouTubeDownload] video=${params.videoId} scene=${params.sceneIndex} ` +
     `status=${params.status} attempts=${trail} ` +
-    `cloudService=${params.hasCloudRoute ? "SET" : "MISSING"} ` +
-    `rapidApi=${params.hasRapidRoute ? "SET" : "MISSING"} reason=${params.reason}`
+    `cloudService=${params.onlyRoute === "rapidapi" ? "SKIPPED" : params.hasCloudRoute ? "SET" : "MISSING"} ` +
+    `rapidApi=${params.onlyRoute === "cloud" ? "SKIPPED" : params.hasRapidRoute ? "SET" : "MISSING"} reason=${params.reason}`
   );
 }
 
@@ -16371,7 +16373,7 @@ export async function downloadYouTubeCCClip(
       outcome.transferStarted = transferStarted;
     }
     const line = formatYoutubeDownloadLine({
-      videoId, sceneIndex, status, attempts, hasCloudRoute, hasRapidRoute, reason,
+      videoId, sceneIndex, status, attempts, hasCloudRoute, hasRapidRoute, reason, onlyRoute,
     });
     if (status === "DOWNLOAD_SUCCESS") console.log(line);
     else console.warn(line);

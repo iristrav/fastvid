@@ -172,6 +172,20 @@ describe("§4 — the line carries the whole trail", () => {
     })).toContain("cloudService=MISSING rapidApi=MISSING");
   });
 
+  it("RONDE 646 — a route the caller left out is SKIPPED, not MISSING", () => {
+    /**
+     * Production 2026-09-24 02:25: the prefetch's RapidAPI-only pass printed `cloudService=MISSING`
+     * on a worker whose cloud service is configured and had been asked a second earlier.
+     */
+    const base = { videoId: "x", sceneIndex: -1, status: "DOWNLOAD_FAILED" as const, attempts: [], reason: "r" };
+    expect(formatYoutubeDownloadLine({ ...base, hasCloudRoute: false, hasRapidRoute: true, onlyRoute: "rapidapi" }))
+      .toContain("cloudService=SKIPPED rapidApi=SET");
+    expect(formatYoutubeDownloadLine({ ...base, hasCloudRoute: true, hasRapidRoute: true, onlyRoute: "cloud" }))
+      .toContain("cloudService=SET rapidApi=SKIPPED");
+    expect(formatYoutubeDownloadLine({ ...base, hasCloudRoute: true, hasRapidRoute: true }))
+      .toContain("cloudService=SET rapidApi=SET");
+  });
+
   it("says attempts=none rather than leaving the field empty", () => {
     expect(formatYoutubeDownloadLine({
       videoId: "x", sceneIndex: 0, status: "DOWNLOAD_UNAVAILABLE", attempts: [],
