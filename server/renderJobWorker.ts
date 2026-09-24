@@ -88,6 +88,7 @@ import {
   type PostRenderSpotCheckResult,
 } from "./postRenderSpotCheck";
 import { resolveLocalStorageFilePath } from "./storageLocal";
+import { resolveArchiveObjectFetchUrl } from "./archiveAssetLoad";
 import { downloadToFileStreaming, isPipelineFallbackClip } from "./videoPipeline";
 import {
   deliveryGate,
@@ -196,6 +197,20 @@ export function defaultRenderWorkerDeps(): RenderWorkerDeps {
           return true;
         }
         return false;
+      }
+      /**
+       * RONDE 648 — the narration is an object KEY, not a URL.
+       *
+       * Render 604 (job 23, 11:00): `[Voice] narration on the timeline duration=81.11s`, then
+       * `audio clip voice_c3ba5ecb50 could not be fetched`, and the film was delivered without its
+       * voice. On S3 `storagePutFromFile` returns `/manus-storage/<key>`, and a relative path handed
+       * to `fetch` is an invalid URL. The archive's read-back had the same defect in render 594; the
+       * one resolver it got is used here too. Null means there is no signed URL to be had.
+       */
+      if (url.startsWith("/manus-storage/")) {
+        const signed = await resolveArchiveObjectFetchUrl({ storageUrl: url, storageKey: null });
+        if (!signed) return false;
+        url = signed;
       }
       /**
        * Everything else goes through the pipeline's own downloader — §26's "no second downloader"
