@@ -451,6 +451,40 @@ export function oddSegmentsOut(
   return { reference, odd: shapes.filter((s) => s.shape !== reference) };
 }
 
+/**
+ * RONDE 647 — does the picture STAND? Taller than wide as it will be decoded, which means after the
+ * rotation a phone recording carries in its metadata (ffmpeg applies it on decode). Null when the
+ * file cannot be read, which is not evidence either way.
+ */
+export async function probeIsPortrait(file: string): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync(FFPROBE, [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height:stream_tags=rotate:stream_side_data=rotation",
+      "-of", "json",
+      file,
+    ]);
+    const stream = (JSON.parse(stdout) as {
+      streams?: Array<{
+        width?: number;
+        height?: number;
+        tags?: { rotate?: string };
+        side_data_list?: Array<{ rotation?: number }>;
+      }>;
+    }).streams?.[0];
+    if (!stream?.width || !stream?.height) return null;
+    const rotation = Number(
+      stream.side_data_list?.find((d) => d.rotation != null)?.rotation ?? stream.tags?.rotate ?? 0
+    );
+    const quarterTurn = Math.abs(Math.round(rotation / 90)) % 2 === 1;
+    const [w, h] = quarterTurn ? [stream.height, stream.width] : [stream.width, stream.height];
+    return h > w;
+  } catch {
+    return null;
+  }
+}
+
 export async function probeHasStream(file: string, kind: "v" | "a"): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
@@ -705,7 +739,12 @@ async function renderSegment(
             archiveAssetId: clip.source.archiveAssetId,
           }),
         };
-  const vf = buildVideoFilter(graded, fmt, dur, look);
+  /** RONDE 647 — a standing picture is filled with itself, blurred, instead of black bars. */
+  const portraitSource = !clip.transform?.fit && (await probeIsPortrait(localMedia)) === true;
+  if (portraitSource) {
+    console.log(`[PortraitFill] clip=${clip.id} the source stands — blurred fill instead of black bars`);
+  }
+  const vf = buildVideoFilter(graded, fmt, dur, look, { portraitSource });
 
   const args: string[] = ["-y", "-hide_banner", "-loglevel", "error"];
   if (clip.kind === "image") {

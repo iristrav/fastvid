@@ -61,6 +61,30 @@ export function containChain(fmt: TimelineFormat): string {
 }
 
 /**
+ * RONDE 647 — A STANDING PICTURE FILLS THE FRAME WITH ITSELF, NOT WITH BLACK.
+ *
+ * Video 604 carried a 720×1280 YouTube shot for 15.8 s: `containChain` centred it between two black
+ * bars covering two thirds of the frame. The picture is kept exactly as it is — whole, sharp,
+ * centred — and the bars are filled with the same picture scaled to cover the frame, blurred and
+ * darkened so it reads as background. Nothing is cropped from the shot itself.
+ *
+ * The labels are local to this clip's graph; `-vf` accepts a graph with one input and one output,
+ * and whatever follows (camera, grade, effects) continues the last chain.
+ */
+export function blurFillChain(fmt: TimelineFormat): string {
+  const W = fmt.widthPx;
+  const H = fmt.heightPx;
+  return (
+    `split=2[bfbg][bffg];` +
+    `[bfbg]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},` +
+    `boxblur=luma_radius=40:luma_power=2:chroma_radius=20:chroma_power=2,eq=brightness=-0.12[bfback];` +
+    `[bffg]scale=${W}:${H}:force_original_aspect_ratio=decrease[bffront];` +
+    `[bfback][bffront]overlay=(W-w)/2:(H-h)/2,` +
+    `setsar=1,fps=${fmt.fps},format=yuv420p`
+  );
+}
+
+/**
  * Fill the frame and crop the overflow, rather than padding it.
  *
  * `force_original_aspect_ratio=increase` scales until BOTH dimensions cover, then the crop takes
@@ -504,13 +528,19 @@ export function buildVideoFilter(
   fmt: TimelineFormat,
   durationSec: number,
   /** RONDE 149 — the video's look. Absent leaves the pixels untouched. */
-  look?: TimelineLook
+  look?: TimelineLook,
+  /**
+   * RONDE 647 — facts the renderer measured about the file. `portraitSource` = the picture stands
+   * (taller than wide, after rotation). Only consulted when nobody chose a fit for this clip.
+   */
+  source?: { portraitSource?: boolean }
 ): string {
   const t = clip.transform;
   const parts: string[] = [];
 
   if (t?.fit === "crop" && t.crop) parts.push(cropChain(fmt, t.crop));
   else if (t?.fit === "cover") parts.push(coverChain(fmt, { x: t.positionX, y: t.positionY }));
+  else if (!t?.fit && source?.portraitSource) parts.push(blurFillChain(fmt));
   else parts.push(containChain(fmt));
 
   const camera = clip.camera ? cameraChain(clip.camera, fmt, durationSec) : null;
