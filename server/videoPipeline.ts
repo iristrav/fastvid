@@ -84,6 +84,7 @@ import {
 } from "./providerFailureClass";
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
+import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
 import {
@@ -5416,6 +5417,94 @@ function releaseUnstartedYoutubeTurn(
   dedup.youtubeTurnByBeat?.delete(key);
 }
 
+/**
+ * RONDE 648 — every beat's YouTube search and download, queued when its scene starts.
+ *
+ * The same queries (`buildBeatYoutubeQueries`, with the scene's person), the same fetcher, the same
+ * beat proof in scope and the same per-download rules as the beat's own turn — so what it fetches
+ * is exactly what the turn would have fetched, only earlier. Each run has its own scope: the
+ * fetcher closes the YouTube turn of whatever scope it runs in, and a lookahead must never close
+ * the scene's. At most YOUTUBE_LOOKAHEAD_PARALLEL at a time across the render.
+ */
+export const YOUTUBE_LOOKAHEAD_PARALLEL = 3;
+
+function startSceneYoutubeLookahead(
+  scene: Scene,
+  beats: SceneBeat[],
+  workDir: string,
+  clipFetchDur: number,
+  videoTitle: string | undefined,
+  personName: string,
+  dedup: VisualDedupState
+): void {
+  if (!youtubeFirstPerBeatEnabled() || !youtubeSourcingEnabled() || !youtubeCcReady()) return;
+  const registry = (dedup.youtubeLookahead ??= createLookaheadRegistry(YOUTUBE_LOOKAHEAD_PARALLEL));
+  let queued = 0;
+  for (const beat of beats) {
+    if (slotHasNoBeatBehindIt(scene.index, beat.index)) continue;
+    hydrateSceneBeatInPlace(beat);
+    const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
+    if (queries.length === 0) continue;
+    const beatKey = youtubeTurnKey(scene.index, beat.index);
+    const started = registry.start(beatKey, queries, async () => {
+      if (dedup.youtubeTurnByBeat.has(beatKey)) return { paths: [], searched: false };
+      const before = providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount;
+      const t0 = Date.now();
+      const keywords = [...new Set(beat.keywords ?? [])].slice(0, 22);
+      const person = dedup.personTopicLock ? dedup.primaryPerson || personName || "" : "";
+      let paths: string[] = [];
+      try {
+        paths = await withBeatProvenance(
+          beat,
+          scene,
+          () =>
+            withSceneFetchTimeout(
+              () =>
+                fetchYouTubeCCClips(
+                  queries.slice(0, 5),
+                  clipFetchDur,
+                  workDir,
+                  scene.index,
+                  YOUTUBE_CANDIDATES_PER_TURN,
+                  keywords,
+                  1,
+                  person,
+                  {
+                    beatText: beat.text,
+                    beatIndex: beat.index,
+                    videoTitle,
+                    fastMode: dedup.perf.fastStockMode,
+                  },
+                  dedup.usedContentKeys,
+                  dedup.sourcingCache
+                ),
+              YOUTUBE_FIRST_TURN_MS,
+              `youtube lookahead s${scene.index} b${beat.index}`
+            ),
+          { personName }
+        );
+      } catch (err) {
+        console.log(
+          `[YouTubeLookahead] s${scene.index}b${beat.index} ended early — ${(err as Error).message?.slice(0, 80)}`
+        );
+      }
+      console.log(
+        `[YouTubeLookahead] s${scene.index}b${beat.index} READY clips=${paths.length} ms=${Date.now() - t0}`
+      );
+      return {
+        paths,
+        searched: providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount > before,
+      };
+    });
+    if (started) queued++;
+  }
+  if (queued > 0) {
+    console.log(
+      `[YouTubeLookahead] scene=${scene.index} queued=${queued} parallel=${YOUTUBE_LOOKAHEAD_PARALLEL}`
+    );
+  }
+}
+
 /** What one attempt at the provider produced, in the detail the outcome vocabulary needs. */
 type YoutubeAttempt = {
   clip: string | null;
@@ -5460,10 +5549,32 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
    * is how the turn learns which of the two happened, without a new record anywhere.
    */
   const searchesBefore = providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount;
+  /** RONDE 648 — a lookahead that searched counts as this turn having searched. */
+  let lookaheadSearched = false;
   const searchedSince = () =>
+    lookaheadSearched ||
     providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount > searchesBefore;
   /** THE ONE PRODUCTION CALL TO THE PROVIDER. Every route in this pipeline arrives at this line. */
   const search = async (): Promise<string[]> => {
+    /**
+     * RONDE 648 — the work this beat's scene already started for it, when it asked these queries
+     * and is already running or done. Never waited for in a queue: see `youtubeLookahead.ts`.
+     */
+    const ahead = dedup.youtubeLookahead?.take(youtubeTurnKey(sceneIndex, beat.index), req.queries);
+    if (ahead) {
+      console.log(
+        `[YouTubeLookahead] s${sceneIndex}b${beat.index} ` +
+          (ahead.kind === "use" ? `USED state=${ahead.state}` : `NOT_USED reason=${ahead.reason}`)
+      );
+    }
+    if (ahead?.kind === "use") {
+      const got: LookaheadResult = await ahead.result;
+      lookaheadSearched = got.searched;
+      if (got.paths.length > 0 || got.searched) {
+        found = found.concat(got.paths);
+        return got.paths;
+      }
+    }
     const paths = await fetchYouTubeCCClips(
       req.queries.slice(0, 5),
       clipFetchDur,
@@ -22082,6 +22193,8 @@ export interface VisualDedupState {
    * route's query set was dropped to achieve it.
    */
   youtubeTurnByBeat: Map<string, YoutubeTurnRecord>;
+  /** RONDE 648 — each beat's YouTube work, started when its scene starts. See `youtubeLookahead`. */
+  youtubeLookahead?: LookaheadRegistry;
   /** F3-49: "s{sceneIndex}b{beatIndex}" keys for which fetchHistoricalBeatVideo's full
    *  HISTORICAL_SOURCE_TIER_ORDER cascade (Internet Archive, YouTube CC, Wikimedia, NARA,
    *  Flickr, SepiaSearch, Vimeo, media.ccc, NASA — up to 27 external search/metadata/
@@ -41534,6 +41647,9 @@ async function fetchSceneVisualsInner(
    * iteration and once after the loop, so a `continue` — of which there are several — closes the
    * previous beat's ladder rather than leaking it into the next one.
    */
+  if (!archiveOnly) {
+    startSceneYoutubeLookahead(scene, beats, workDir, clipFetchDur, videoTitle, personName, dedup);
+  }
   const renderIdForLadder = String(getActiveVideoId() ?? "-");
   let closeBeatLadder: (() => void) | null = null;
   try {
