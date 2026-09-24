@@ -34762,8 +34762,10 @@ async function ensureArchiveBackedBeforePush(
    * it a moment ago (`ensureVerdictBeforeCompose`, route "push"), so the answer is on the ledger.
    * It lets the archive keep an approved shot that carries on-screen text; see `approvedForBeat`.
    */
+  // No ledger (a seeded or hand-built route) means nobody approved it: the text refusal stands.
   const approvedForBeat =
     beatIndex != null &&
+    dedup.beatRelevance != null &&
     composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey, { sceneIndex, beatIndex }, "approval").allow;
   const stored = await storeExternalClipForTimeline({
     clipPath,
