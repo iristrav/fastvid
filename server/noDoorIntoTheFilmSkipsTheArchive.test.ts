@@ -167,15 +167,19 @@ describe("a clip the archive refused cannot be reseeded into the film", () => {
     }
   });
 
-  it("and RONDE 9's stock exemption is untouched — pexels and pixabay never enter the archive", async () => {
+  it("and stock no longer passes unstored — pexels and pixabay need their own archive copy too", async () => {
     /**
-     * `sourceMayEnterCuratedArchive` refuses these two, so the gate answers `exempt_source` and
-     * the clip is carried without a handle. That is the existing rule, not a hole: a stock clip
-     * ingested tagged "adolf hitler" outranked real archive footage on every later render.
+     * RONDE 9 still keeps these two out of the CURATED archive: `sourceMayEnterCuratedArchive`
+     * refuses them, and a stock clip tagged "adolf hitler" never outranks real footage again.
+     *
+     * RONDE 647 — but they are no longer carried WITHOUT a handle. Video 604 was not delivered
+     * because a Pexels shot had no archive asset, which the delivery gate refuses. Stock is now
+     * stored in the separate Stockbeelden archive before it may enter the film; in this world no
+     * storage answers, so the clip is refused like any other clip that cannot be read back.
      */
     for (const provider of ["pexels", "pixabay"]) {
       const { dedup } = worldWith([{ file: "yt.mp4", provider, assetId: "1", beat: 0, archiveAssetId: null }]);
-      expect((await seed(dedup)).seeded, `${provider} lost its exemption`).toBe(1);
+      expect((await seed(dedup)).seeded, `${provider} entered the film with no archive copy`).toBe(0);
     }
   });
 });

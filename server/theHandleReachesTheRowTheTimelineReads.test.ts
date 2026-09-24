@@ -177,8 +177,9 @@ describe("the exemption carries the handle it read", () => {
   it("the four exemptions and the refusal are otherwise exactly as they were", () => {
     /** §11 — the archive-first invariant itself was not reopened by this round. */
     expect(FN).toContain('if (!root || !provider) return { ok: true, reason: "not_external" };');
+    /** RONDE 647 — the one deliberate change: stock is stored in its own archive, not exempt. */
     expect(FN).toContain(
-      'if (!sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };'
+      'if (!stock && !sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };'
     );
     expect(FN).toContain(
       'if (!externalAssetIngestionEnabled()) return { ok: true, reason: "ingestion_stopped" };'

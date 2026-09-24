@@ -218,7 +218,8 @@ describe("no gate was softened to buy this", () => {
   it("the archive-first invariant at the push boundary is untouched", () => {
     const pipe = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
     expect(pipe).toContain("async function ensureArchiveBackedBeforePush(");
-    expect(pipe).toContain('if (!sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };');
+    /** RONDE 647 — stock is stored (Stockbeelden archive) rather than exempt; the rest stands. */
+    expect(pipe).toContain('if (!stock && !sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };');
     expect(pipe).toContain("if (archived.ok) return false;");
   });
 });
