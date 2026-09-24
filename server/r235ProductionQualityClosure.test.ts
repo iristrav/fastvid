@@ -303,7 +303,9 @@ describe("R235 §5 — twenty slots, ten videos", () => {
      * private helper instead.
      */
     expect((FAIL.match(/function youtubeRefusalKey\(/g) ?? []).length).toBe(1);
-    expect((FAIL.match(/youtubeRefusalKey\(videoId\)/g) ?? []).length).toBe(2);
+    /** Read, write, and (RONDE 646) the prefetch's forget — all three through the one helper. */
+    expect((FAIL.match(/youtubeRefusalKey\(videoId\)/g) ?? []).length).toBe(3);
+    expect(FAIL).toContain("permanentDownloadRefusals.delete(youtubeRefusalKey(videoId))");
     expect(PIPE, "the pipeline spells the memo key out itself").not.toContain('`youtube_cc:${videoId}`');
   });
 
