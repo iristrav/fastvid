@@ -138,6 +138,71 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
     vi.resetModules();
   });
 
+  it("RONDE 648 — a text-laden clip APPROVED for its beat is kept, marked so it is never offered again", async () => {
+    vi.resetModules();
+    /** Same single stub as above: the detector's verdict. Storage and the row are recorded. */
+    vi.doMock("./archiveClipFilter", () => ({
+      cachedClipBakedEditTextVerdict: async () => ({
+        verdict: "has_text" as const,
+        reason: "a date caption in the lower third",
+      }),
+    }));
+    const storagePut = vi.fn(async (key: string) => ({ key, url: `https://cdn.test/${key}` }));
+    vi.doMock("./storage", () => ({ storagePut }));
+    const createMediaArchiveAsset = vi.fn(async () => 606);
+    vi.doMock("./db", () => ({
+      createMediaArchiveAsset,
+      findMediaArchiveAssetBySourceUrlHash: async () => null,
+      ensureAutoMediaArchive: async (kind: string) => (kind === "youtube" ? 38 : 39),
+    }));
+    vi.doMock("./archiveEmbeddingIndex", () => ({ indexArchiveAssetEmbedding: async () => undefined }));
+    vi.doMock("./visualSearchMemory", () => ({ recordVisualSearchMemory: async () => undefined }));
+
+    const mod = await import("./archiveIngestion");
+    const metadata = {
+      title: "Nuremberg rally, 1934",
+      tags: [],
+      sourceNote: "youtube_cc:ikgg2o03e3E@12s",
+      sourcePlatform: "youtube_cc",
+      mediaType: "video" as const,
+      mimeType: "video/mp4",
+    };
+
+    /** Not approved: refused exactly as before. */
+    const refused = await mod.ingestExternalClipToArchiveWithReason(TEXT_LADEN_CLIP, metadata);
+    expect(refused.status).toBe("refused");
+    expect(createMediaArchiveAsset).not.toHaveBeenCalled();
+
+    /** Approved for its beat: kept, into the YouTube archive, with the marker set. */
+    const kept = await mod.ingestExternalClipToArchiveWithReason(TEXT_LADEN_CLIP, { ...metadata, approvedForBeat: true });
+    expect(kept.status).toBe("ingested");
+    expect(createMediaArchiveAsset).toHaveBeenCalledTimes(1);
+    const row = (createMediaArchiveAsset.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(row.hasBakedEditText).toBe(1);
+    expect(row.archiveId).toBe(38);
+
+    /** And the marker is exactly what curated sourcing already filters on. */
+    const { hasKnownBakedEditText } = await vi.importActual<typeof import("./curatedMediaSourcing")>(
+      "./curatedMediaSourcing"
+    );
+    expect(hasKnownBakedEditText({ hasBakedEditText: row.hasBakedEditText as number })).toBe(true);
+
+    for (const m of ["./archiveClipFilter", "./storage", "./db", "./archiveEmbeddingIndex", "./visualSearchMemory"]) {
+      vi.doUnmock(m);
+    }
+    vi.resetModules();
+  }, 60_000);
+
+  it("RONDE 648 — the push gate says whether the file was approved for its beat", () => {
+    const PIPE = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
+    const fn = PIPE.slice(PIPE.indexOf("async function ensureArchiveBackedBeforePush("));
+    const body = fn.slice(0, fn.indexOf("\n}\n"));
+    expect(body).toContain(
+      'composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey, { sceneIndex, beatIndex }, "approval").allow'
+    );
+    expect(body).toContain("...(approvedForBeat ? { approvedForBeat: true } : {}),");
+  });
+
   it("runs before the upload and the DB insert, so nothing is stored for a rejected clip", () => {
     const guardAt = fn.indexOf("cachedClipBakedEditTextVerdict(");
     const uploadAt = fn.indexOf("storagePut(");
@@ -155,7 +220,10 @@ describe("RONDE 24 — ingestion refuses text-laden footage", () => {
      * re-analysed, which is what RONDE 24 was protecting; what it may no longer do is record a
      * clearance that nobody issued.
      */
-    expect(ingestionSrc).toContain(`hasBakedEditText: overlay.verdict === "clean" ? 0 : null,`);
+    /** RONDE 648 — and a text-laden clip kept for the beat that approved it is recorded as such. */
+    expect(ingestionSrc).toContain(
+      `hasBakedEditText: overlay.verdict === "clean" ? 0 : hasText ? 1 : null,`
+    );
     expect(ingestionSrc, "a clip nobody judged is stored as cleared again").not.toContain(
       "hasBakedEditText: 0,"
     );
@@ -209,7 +277,9 @@ describe("RONDE 24 — the overlay memo is shared, not duplicated", () => {
     );
     expect(boolWrapper).toContain(`=== "has_text"`);
     /** And ingestion refuses on exactly one condition, which is not the failure. */
-    expect(ingestionSrc).toContain(`if (overlay.verdict === "has_text")`);
+    /** RONDE 648 — spelled through `hasText`; an approval for the beat is the only exception. */
+    expect(ingestionSrc).toContain(`const hasText = overlay.verdict === "has_text";`);
+    expect(ingestionSrc).toContain(`if (hasText && !metadata.approvedForBeat) {`);
   });
 
   it("exposes a reset seam so tests do not leak verdicts between cases", () => {

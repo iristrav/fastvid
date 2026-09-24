@@ -59,6 +59,12 @@ export type IngestMetadata = {
    * Pexels or Pixabay clip is admitted; without it RONDE 9's refusal stands.
    */
   stockArchive?: boolean;
+  /**
+   * RONDE 648 — the picture editor approved THIS clip for the beat it is about to fill. Only then
+   * may a clip with baked-in on-screen text be kept: it is stored with `hasBakedEditText = 1`, which
+   * curated sourcing already treats as "never offer this again unasked" (`hasKnownBakedEditText`).
+   */
+  approvedForBeat?: boolean;
 
   // F3-26: structured web-sourcing provenance (all optional — admin uploads and older callers
   // that don't have this data keep working unchanged).
@@ -322,13 +328,31 @@ async function ingestExternalClipToArchiveInner(
       overlayKey,
       beatClipTextFilterMaxChecks()
     );
-    if (overlay.verdict === "has_text") {
+    /**
+     * RONDE 648 — AN APPROVED SHOT WITH TEXT IS KEPT, AND MARKED SO IT IS NOT OFFERED AGAIN.
+     *
+     * Render 606: the picture editor passed a YouTube shot of Hitler at a rally for s1b0 and one of
+     * Berlin in ruins for s2b0; both carried on-screen text, this door refused them, and the push
+     * gate — every shot must be readable from our own storage — then refused them for the film.
+     * Two rules that together kept approved YouTube out of every film. The operator's choice: such a
+     * shot is kept for the beat that approved it, with `hasBakedEditText = 1`, which curated
+     * sourcing already filters out — so RONDE 24's reason (text re-offered to every later render)
+     * still holds. Unapproved clips with text are refused exactly as before.
+     */
+    const hasText = overlay.verdict === "has_text";
+    if (hasText && !metadata.approvedForBeat) {
       console.log(
         `[Ingestion] Skipping "${metadata.title.slice(0, 60)}" — baked-in on-screen text, not archive material`
       );
       return refuse("BAKED_EDIT_TEXT", overlay.reason ?? "the on-screen-text check said has_text", {
         mimeType: metadata.mimeType,
       });
+    }
+    if (hasText) {
+      console.log(
+        `[Ingestion] "${metadata.title.slice(0, 60)}" has baked-in on-screen text and was approved for ` +
+          `its beat — kept for that beat, marked hasBakedEditText=1 so no later render is offered it unasked`
+      );
     }
     /**
      * RONDE 222 — a clip nobody looked at is not admitted as a clip that was cleared.
@@ -492,7 +516,7 @@ async function ingestExternalClipToArchiveInner(
        * question properly. That is the correct cost for a clip nobody has looked at, and it is paid
        * once rather than inherited forever.
        */
-      hasBakedEditText: overlay.verdict === "clean" ? 0 : null,
+      hasBakedEditText: overlay.verdict === "clean" ? 0 : hasText ? 1 : null,
       // RONDE 118: verified a few lines above, before the bytes were even stored.
       previewCheckedAt: new Date(),
     };

@@ -34744,6 +34744,14 @@ async function ensureArchiveBackedBeforePush(
     sourceCreator: null,
     remoteUrl: root.sourceUrl ?? root.originalUrl ?? cached?.canonicalUrl ?? null,
   };
+  /**
+   * RONDE 648 — did the picture editor approve this very file for this beat? The push gate judged
+   * it a moment ago (`ensureVerdictBeforeCompose`, route "push"), so the answer is on the ledger.
+   * It lets the archive keep an approved shot that carries on-screen text; see `approvedForBeat`.
+   */
+  const approvedForBeat =
+    beatIndex != null &&
+    composeBarrierAllows(dedup.beatRelevance, clipPath, contentKey, { sceneIndex, beatIndex }, "approval").allow;
   const stored = await storeExternalClipForTimeline({
     clipPath,
     facts,
@@ -34754,6 +34762,7 @@ async function ensureArchiveBackedBeforePush(
         topics: [],
       }),
       ...(stock ? { stockArchive: true } : {}),
+      ...(approvedForBeat ? { approvedForBeat: true } : {}),
     },
     lineage: ledger,
     workDir: path.dirname(clipPath),
