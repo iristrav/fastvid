@@ -1270,6 +1270,8 @@ export function youtubeBeatBudgetMs(
     // guard's own minimum, or the source is switched off by arithmetic rather than by choice.
     if (!isNaN(n) && n >= 15_000 && n <= 120_000) return n;
   }
+  /** RONDE 648 — the operator's two minutes, when a beat asks YouTube first itself. */
+  if (youtubeFirstPerBeatEnabled()) return YOUTUBE_FIRST_TURN_MS;
   /**
    * ── Why the base grew ─────────────────────────────────────────────────────────────────────
    *
@@ -1955,8 +1957,46 @@ export function beatSemanticCacheEnabled(): boolean {
  *  replace the legacy path, it only runs ahead of it. Set ENABLE_SCENE_CANDIDATE_POOL=false
  *  to opt back out. */
 export function sceneCandidatePoolEnabled(): boolean {
+  /** RONDE 648 — a beat asks YouTube first, itself; the scene no longer asks everyone at once. */
+  if (youtubeFirstPerBeatEnabled()) return false;
   return process.env.ENABLE_SCENE_CANDIDATE_POOL !== "false";
 }
+
+/**
+ * RONDE 648 — YOUTUBE FIRST, PER BEAT, LIVE.
+ *
+ * The operator's order, 2026-09-24: every beat searches YouTube itself, downloads what it finds and
+ * uses it; only when YouTube yields nothing usable does the beat go on, one tier at a time — own
+ * archive, open sources, stock — stopping at the first picture the editor approves. The scene-level
+ * pool and funnel (every provider at once, prefetched during TTS) are off in this mode.
+ *
+ * Render 605 is why: of its 15 minutes of retrieval, the scene pools spent 1.5–2 minutes per scene
+ * on YouTube downloads they abandoned at a 45-second cap measured on 2-second Wikimedia fetches,
+ * while the per-beat YouTube turn adopted five live YouTube shots. SOURCING_YOUTUBE_FIRST=false
+ * restores the pool route exactly as it was.
+ */
+export function youtubeFirstPerBeatEnabled(): boolean {
+  return process.env.SOURCING_YOUTUBE_FIRST !== "false";
+}
+
+/** The operator's choice: how long one beat may spend on YouTube before it moves on. */
+export const YOUTUBE_FIRST_TURN_MS = 120_000;
+
+/**
+ * What the tiers after YouTube get, at the least. The 1-minute profile's per-beat wall is 22 s on
+ * Railway — sized for a beat that arrived with a scene pool already in hand. Without the pool the
+ * archive, the open sources and stock are asked from nothing, and 22 s is not enough for that.
+ */
+export const YOUTUBE_FIRST_FALLBACK_MIN_MS = 60_000;
+
+/** One beat's worst case in this mode: the whole YouTube turn, then the whole fallback. */
+export const YOUTUBE_FIRST_BEAT_WORST_MS = YOUTUBE_FIRST_TURN_MS + YOUTUBE_FIRST_FALLBACK_MIN_MS;
+
+/**
+ * How many beats search at the same time. Beats inside a scene run one after another, scenes run
+ * side by side, so this is the scene parallelism. The operator chose three.
+ */
+export const YOUTUBE_FIRST_PARALLEL_BEATS = 3;
 
 /** Thumbnail-first selection (P2): download thumbnails for pool candidates and
  *  run CLIP similarity scoring before downloading the full asset.  Only the

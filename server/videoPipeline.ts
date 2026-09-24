@@ -242,7 +242,7 @@ import {
   type ArchiveSourcingAudit,
 } from "./archiveSourcingAudit";
 import { cachedClipHasBakedEditText, resetOverlayBudget, overlayBudgetSkipCount } from "./archiveClipFilter";
-import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, blockExportOnVisualMismatch, allowDegradedVisualExport, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
+import { sceneCandidatePoolEnabled, poolThumbnailRankingEnabled, retrievalFunnelEnabled, funnelAwaitTimeoutMs, archiveFirstBeatsEnabled, externalAssetIngestionEnabled, asyncQaEnabled, scenePipelineEnabled, archivePexelsFallbackEnabled, curatedAiFallbackMaxClips, curatedArchiveExternalFallbackEnabled, curatedArchiveOnlyVisuals, curatedMaxStockBeatsPerVideo, curatedMinimizeStockFootage, elevenLabsOnlyVoice, fishAudioFallbackEnabled, googleTtsFallbackEnabled, archiveVisualBeatSec, archiveVisualBeatSecForVideo, archiveVisualMaxClipSec, archiveVisualMaxClipSecForVideo, archiveVisualMinClipSec, archiveMaxImageClipsPerVideo, archiveMinVideoClipsTarget, archivePreferVideoClips, maxMotionGraphicsPerVideo, framedArchiveStillsEnabled, facelessSubtitlesEnabled, yearsOnlyOnScreen, screenLabelsEnabled, strictNoVisualRepeat, archiveCrossVideoVarietyEnabled, youtubeSourcingEnabled, youtubeReadinessWarnings, europeanaSourcingEnabled, stabilityAiEnabled, sceneBeatCapForCadence, sceneBeatCapForCadenceForVideo, maxBeatCapForVisualCadence, openverseStillsEnabled, openverseGeoDocumentaryEnabled, wikimediaInternetStillsEnabled, visualStageWallClockMin, maxVisualCandidatesPerBeatTry, pipelineWallClockLimitEnabled, isFastShortVideoLength, fastShortPlainComposeEnabled, composeLocalClipsOnly, maxPipelineWallClockMin, maxPipelineWallClockHardMin, pipelineRushModeMs, pipelineEmergencyFinishMs, composeParallelismForVideo, polishBeforeComposeEnabled, ffmpegThreadFlag, montageSegmentParallelism, deferFacelessSubtitlesToCompose, maxFallbackBeatsPerVideo, strictVoiceVisualMatchEnabled, blockExportOnVisualMismatch, allowDegradedVisualExport, visualFootageFocusEnabled, stockClipQualityFloor, visualSourcingTurboMs, archiveBeatBudgetMs, composeMayFetchForStarvedScene, fastShortComposeRescueVisionFloor, archiveSimilarMatchVisionFloor, fastBeatConcurrency, beatVisualRescueEnabled, beatVisualRescueVisionFloor, beatVisualRescueAiMaxClips, fastShortArchivePoolMax, fastShortArchivePoolWarmMs, fastShortClipIndexPrewarmMax, fastShortClipIndexPrewarmMs, literalVisualGateEnabled, envFlagIsOn, envFlagIsNotOff, youtubeOperatorAuthorized, youtubeRetrievalMode, type YoutubeLicenseMode, composeRescueWallClockMs, downloadStallTimeoutMs, poolDownloadTotalTimeoutMs, beatClipTextFilterEnabled, beatClipTextFilterMaxChecks, youtubeDownloadTimeoutMs, youtubeMaxDownloadsPerRender, youtubeSearchPageSize, youtubeSearchDurationForPass, type YoutubeSearchDuration, youtubeMinFormatHeight, youtubeFirstEnabled, youtubeBeatBudgetMs, youtubeFirstPerBeatEnabled, YOUTUBE_FIRST_TURN_MS, YOUTUBE_FIRST_BEAT_WORST_MS, YOUTUBE_FIRST_FALLBACK_MIN_MS, YOUTUBE_FIRST_PARALLEL_BEATS, shouldProbeYoutubeDuration, formatYoutubeProbeSkip, YOUTUBE_META_PROBE_TIMEOUT_MS } from "./sourcingPolicy";
 import {
   getCrossVideoExcludeAssetIds,
   recordArchiveVideoUsage,
@@ -3399,6 +3399,8 @@ function youtubeBeatSearchBudgetMs(): number {
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 15_000 && n <= 120_000) return n;
   }
+  /** RONDE 648 — the operator's two minutes per beat. */
+  if (youtubeFirstPerBeatEnabled()) return YOUTUBE_FIRST_TURN_MS;
   return 60_000;
 }
 
@@ -4571,6 +4573,12 @@ function resolveMaxStockBeatsPerVideo(videoLength: string): number {
 
 function maxEntityYoutubeFetchesPerVideo(minimizeStock = minimizeStockFootageEnabled()): number {
   if (!youtubeSourcingEnabled() || !youtubeCcReady()) return 0;
+  /**
+   * RONDE 648 — every beat gets its YouTube turn. Render 605 had 14 beats against a ceiling of 12,
+   * so its last two would have been declined YouTube before they asked. 40 covers the longest
+   * 1–2 minute renders; the per-render DOWNLOAD ceiling (youtubeMaxDownloadsPerRender) still holds.
+   */
+  if (youtubeFirstPerBeatEnabled()) return 40;
   if (minimizeStock) return IS_RAILWAY ? 32 : 24;
   return IS_RAILWAY ? 12 : 8;
 }
@@ -4637,7 +4645,9 @@ function applyMinimizeStockProfile(
  * be able to check this arithmetic rather than trust it. Render 596 is what trusting it cost.
  */
 export function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
-  return Math.max(YOUTUBE_TURN_WINDOW_MS, youtubeBeatFetchWindowAsked(fastStockMode));
+  const window = Math.max(YOUTUBE_TURN_WINDOW_MS, youtubeBeatFetchWindowAsked(fastStockMode));
+  /** RONDE 648 — the 1-minute profile asked 22 s on Railway; a YouTube cut takes 30–50 s. */
+  return youtubeFirstPerBeatEnabled() ? Math.max(window, YOUTUBE_FIRST_TURN_MS) : window;
 }
 
 /** The window each mode asks for, unchanged. The floor above is applied to all of them at once. */
@@ -4751,7 +4761,39 @@ function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
  * Nothing here is raised for its own sake: the supplement is zero when there is no YouTube to
  * budget for, so a build without a key keeps exactly the wall it has today.
  */
+/**
+ * RONDE 648 — the scene's flat search share when a beat asks YouTube first, itself.
+ *
+ * The 1-minute profile gives a scene 180 s, sized for beats that arrived with a scene pool already
+ * in hand. In YouTube-first mode each beat may spend two minutes on YouTube and one on the tiers
+ * after it, and a scene's beats run one after another — so the share has to fit its beats, or the
+ * scene is cut off with beats that never had their turn. Render 605's scene 1 had six beats.
+ */
+export function sceneVisualFlatMs(perf: Pick<PipelinePerfProfile, "sceneVisualTimeoutMs" | "maxBeatsPerScene">): number {
+  if (!youtubeFirstPerBeatEnabled()) return perf.sceneVisualTimeoutMs;
+  const beats = Math.max(perf.maxBeatsPerScene, 6);
+  return Math.max(perf.sceneVisualTimeoutMs, beats * YOUTUBE_FIRST_BEAT_WORST_MS);
+}
+
+/** RONDE 648 — scenes side by side, which is beats side by side: the operator chose three. */
+export function sceneRetrieveParallelism(perf: Pick<PipelinePerfProfile, "sceneParallelism">): number {
+  return youtubeFirstPerBeatEnabled() ? YOUTUBE_FIRST_PARALLEL_BEATS : perf.sceneParallelism;
+}
+
 export function beatVisualWallMs(perf: PipelinePerfProfile): number {
+  /**
+   * RONDE 648 — one beat's whole ladder: two minutes of YouTube, then the archive, the open sources
+   * and stock. The beat's wall is the scope every one of those runs inside, so a wall sized for a
+   * beat that arrived with a scene pool in hand (22 s on the 1-minute Railway profile) would end the
+   * YouTube turn before its first download could finish.
+   */
+  if (youtubeFirstPerBeatEnabled()) {
+    return Math.max(beatVisualWallMsForMode(perf), YOUTUBE_FIRST_BEAT_WORST_MS);
+  }
+  return beatVisualWallMsForMode(perf);
+}
+
+function beatVisualWallMsForMode(perf: PipelinePerfProfile): number {
   if (youtubeOnlySourcingEnabled()) {
     return (
       youtubeBeatSearchBudgetMs() +
@@ -17970,7 +18012,9 @@ export async function fetchYouTubeCCClips(
   const claimDownloadSlot = (): boolean =>
     claimYoutubeDownloadSlot(sourcingCache, maxDownloadAttempts);
 
-  const ytDeadline = Date.now() + (IS_RAILWAY ? 88_000 : 55_000);
+  /** RONDE 648 — the fetcher's own deadline must not end the operator's two minutes early. */
+  const ytDeadline =
+    Date.now() + (youtubeFirstPerBeatEnabled() ? YOUTUBE_FIRST_TURN_MS : IS_RAILWAY ? 88_000 : 55_000);
   const guidedDeadline =
     scriptGuidedClipsEnabled() && scriptGuided?.beatText?.trim()
       ? Date.now() + scriptGuidedBudgetMs(scriptGuided.fastMode ?? IS_RAILWAY)
@@ -33035,20 +33079,36 @@ async function resolveBeatClipFastTurbo(
   const historicalDoc =
     isHistoricalDocumentary(videoTitle, scene.text, beat.text) && !dedup.personTopicLock;
   const tag = `b${beat.index}`;
-
-  let clip = await fetchBeatInternetStillsFirst(
-    beat,
-    scene,
-    workDir,
-    sceneIndex,
-    clipFetchDur,
-    dedup,
-    scenePersons,
-    videoTitle,
-    beatAdoptOpts,
-    `${tag}_inet`
-  );
-  if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
+  /**
+   * RONDE 648 — YOUTUBE FIRST MEANS FIRST.
+   *
+   * This route opened with `fetchBeatInternetStillsFirst` — Wikimedia and web stills, the open
+   * sources — and reached YouTube only inside `beatPrimaryFetch` after it. In YouTube-first mode the
+   * beat asks YouTube before anything, with the operator's two minutes; the stills come after the
+   * archive, where the operator placed the open sources.
+   */
+  const youtubeFirst = youtubeFirstPerBeatEnabled();
+  let clip: string | null = null;
+  if (youtubeFirst) {
+    clip = await youtubeFirstBeatSlice(
+      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, `${tag}_ytfirst`
+    );
+    if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
+  } else {
+    clip = await fetchBeatInternetStillsFirst(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      beatAdoptOpts,
+      `${tag}_inet`
+    );
+    if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
+  }
 
   /**
    * RONDE 622 — THE WALL THAT COULD NEVER PAY, MEASURED IN PRODUCTION.
@@ -33088,7 +33148,9 @@ async function resolveBeatClipFastTurbo(
    * describe this — which is why the anchor below is a literal-free assertion against the helper,
    * not another reconstruction.
    */
-  const primaryMs = beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000);
+  const primaryMs = youtubeFirst
+    ? Math.max(beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000), YOUTUBE_FIRST_FALLBACK_MIN_MS)
+    : beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000);
   try {
     clip = await withSceneFetchTimeout(
       () => beatPrimaryFetch(
@@ -33115,6 +33177,24 @@ async function resolveBeatClipFastTurbo(
     );
   }
   if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
+
+  /** RONDE 648 — the open sources' stills, after YouTube and the archive, in YouTube-first mode. */
+  if (youtubeFirst) {
+    const stills = await fetchBeatInternetStillsFirst(
+      beat,
+      scene,
+      workDir,
+      sceneIndex,
+      clipFetchDur,
+      dedup,
+      scenePersons,
+      videoTitle,
+      beatAdoptOpts,
+      `${tag}_inet`
+    );
+    if (stills && isRealVideoClip(stills) && !isPipelineFallbackClip(stills)) return stills;
+    if (!clip && stills && !isPipelineFallbackClip(stills)) clip = stills;
+  }
 
   if (dedup.perf.enableAiFallback && dedup.aiClipsUsed < dedup.perf.maxAiClipsPerVideo) {
     try {
@@ -47441,7 +47521,7 @@ async function _runVideoPipelineInner(
     const perf = getPipelinePerfProfile(videoLength);
     const profiler = createPipelineProfiler(String(videoId), videoLength, {
       composeParallelism: composeParallelismForVideo(videoLength, IS_RAILWAY),
-      retrieveParallelism: perf.sceneParallelism,
+      retrieveParallelism: sceneRetrieveParallelism(perf),
       montageSegmentParallelism: montageSegmentParallelism(IS_RAILWAY),
       ffmpegPreset: process.env.FFMPEG_PRESET ?? "veryfast",
       crf: process.env.FFMPEG_CRF ?? "18",
@@ -47492,7 +47572,7 @@ async function _runVideoPipelineInner(
     }
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
-      `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
+      `≤${perf.maxBeatsPerScene} beats/scene, ${sceneRetrieveParallelism(perf)} parallel scenes, ` +
       `sourcing=${curatedArchiveOnlyVisuals() ? "media archive only" : youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival+stills → Pexels (YouTube off)"}, ` +
       `local-vision=${clipVisionGateEnabled() ? "on" : "off"}, ` +
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}, ` +
@@ -48031,7 +48111,7 @@ async function _runVideoPipelineInner(
         visualDedup.composeNetworkBlocked = true;
       }
 
-      const retrieveLimit = pLimit(perf.sceneParallelism);
+      const retrieveLimit = pLimit(sceneRetrieveParallelism(perf));
       const pipelineComposeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
       let completedPipelineVisuals = 0;
       let completedPipelineCompose = 0;
@@ -48049,7 +48129,7 @@ async function _runVideoPipelineInner(
       const p5aPreset = process.env.FFMPEG_PRESET ?? "veryfast";
       console.log(
         `[Compose] P5A startup — CPU cores: ${cpuCount}, compose parallelism: ${composePar}, ` +
-        `retrieve parallelism: ${perf.sceneParallelism}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
+        `retrieve parallelism: ${sceneRetrieveParallelism(perf)}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
         `max concurrent ffmpeg (compose×montage): ~${composePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
         `encoder preset: ${p5aPreset}`
       );
@@ -48125,7 +48205,7 @@ async function _runVideoPipelineInner(
                       audioPaths[i], prefetchPools, prefetchFunnels
                     ),
                     sceneSearchBudgetMs({
-                      flatMs: perf.sceneVisualTimeoutMs,
+                      flatMs: sceneVisualFlatMs(perf),
                       // Beats are derived later (buildSceneBeats), so duration is the honest
                       // signal available at the moment this budget has to be set.
                       sceneDurationSec: scene.duration,
@@ -48642,7 +48722,7 @@ async function _runVideoPipelineInner(
       `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
     );
 
-    const visualLimit = pLimit(perf.sceneParallelism);
+    const visualLimit = pLimit(sceneRetrieveParallelism(perf));
     let completedVisuals = 0;
     let activeSceneIdx = 0;
     let heartbeatTick = 0;
@@ -48741,7 +48821,7 @@ async function _runVideoPipelineInner(
                   prefetchFunnels
                 ),
                 sceneSearchBudgetMs({
-                  flatMs: perf.sceneVisualTimeoutMs,
+                  flatMs: sceneVisualFlatMs(perf),
                   sceneDurationSec: scene.duration,
                 }),
                 `Scene ${scene.index} visuals`
@@ -48776,7 +48856,7 @@ async function _runVideoPipelineInner(
         chunkScenes.length,
         scenes.length,
         20_000,
-        perf.sceneVisualTimeoutMs
+        sceneVisualFlatMs(perf)
       ),
       `Visual generation stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
