@@ -22,6 +22,12 @@ describe("sourcingPolicy — F3-27 live activation (default-on, explicit opt-out
     delete process.env.ENABLE_RETRIEVAL_FUNNEL;
     delete process.env.ENABLE_ARCHIVE_FIRST_BEATS;
     delete process.env.ENABLE_EXTERNAL_ASSET_INGESTION;
+    /**
+     * RONDE 648 — these are the pool route's flags, tested as that route has them. YouTube-first
+     * mode (the default since RONDE 648) turns the scene pool off whatever they say; that is
+     * pinned in the last test here and in youtubeGoesFirstPerBeat.test.ts.
+     */
+    process.env.SOURCING_YOUTUBE_FIRST = "false";
   });
 
   afterEach(() => {
@@ -49,5 +55,12 @@ describe("sourcingPolicy — F3-27 live activation (default-on, explicit opt-out
   it("any other value (not the literal string 'false') is still treated as enabled", () => {
     process.env.ENABLE_SCENE_CANDIDATE_POOL = "0";
     expect(sceneCandidatePoolEnabled()).toBe(true);
+  });
+
+  it("RONDE 648 — with YouTube-first mode on (its default), no scene pool runs", () => {
+    delete process.env.SOURCING_YOUTUBE_FIRST;
+    expect(sceneCandidatePoolEnabled()).toBe(false);
+    process.env.ENABLE_SCENE_CANDIDATE_POOL = "true";
+    expect(sceneCandidatePoolEnabled()).toBe(false);
   });
 });

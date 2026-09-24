@@ -433,6 +433,12 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
 
   /** Real headroom buys a bigger slice; a capped one, so one beat cannot take the scene. */
   it("grows with headroom and stops growing", () => {
+    /**
+     * RONDE 648 — the headroom-scaled slice is the pool route's rule. In YouTube-first mode the
+     * operator set a flat two minutes per beat (youtubeGoesFirstPerBeat.test.ts); this rule is
+     * still the one that mode's switch restores.
+     */
+    vi.stubEnv("SOURCING_YOUTUBE_FIRST", "false");
     const base = youtubeBeatBudgetMs("8-10", 0);
     const generous = youtubeBeatBudgetMs("8-10", SOURCING_RESERVE_MS + 60 * 60_000);
     expect(generous).toBeGreaterThan(base);
@@ -455,6 +461,8 @@ describe("the YouTube-first attempt cannot eat the scene", () => {
    * to spare.
    */
   it("is smaller than the archive's own beat slice", async () => {
+    /** RONDE 648 — the pool route's rule, as above; YouTube-first mode is the operator's order. */
+    vi.stubEnv("SOURCING_YOUTUBE_FIRST", "false");
     const { archiveBeatBudgetMs } = await import("./sourcingPolicy");
     expect(youtubeBeatBudgetMs("8-10", 0)).toBeLessThan(archiveBeatBudgetMs("8-10", 0) * 3);
   });

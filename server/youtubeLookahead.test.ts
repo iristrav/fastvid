@@ -108,17 +108,31 @@ describe("the wiring", () => {
     expect(start).toBeLessThan(loop);
   });
 
-  it("the lookahead asks the same queries, through the same fetcher, as the beat's own turn", () => {
+  it("the lookahead asks the same queries as the beat's own turn, through the one YouTube door", () => {
     const fn = SRC.slice(SRC.indexOf("function startSceneYoutubeLookahead("));
     const body = fn.slice(0, fn.indexOf("\n}\n"));
     expect(body).toContain("buildBeatYoutubeQueries(beat, scene, videoTitle, personName)");
-    expect(body).toContain("fetchYouTubeCCClips(");
     expect(body).toContain("withBeatProvenance(");
-    expect(body).toContain("withSceneFetchTimeout(");
+    expect(body).toContain("runYoutubeLookaheadInner(");
+    const inner = SRC.slice(SRC.indexOf("async function runYoutubeLookaheadInner("));
+    const innerBody = inner.slice(0, inner.indexOf("\n}\n"));
+    expect(innerBody).toContain("runCentralYoutubeTurn({");
+    expect(innerBody).toContain("lookahead: true,");
+    expect(body, "the provider is called only by the adapter").not.toContain("fetchYouTubeCCClips(");
+    expect(body, "the capability question is the central turn's").not.toContain("youtubeCcReady()");
+  });
+
+  it("a lookahead turn claims nothing, spends no ceiling, and never takes a lookahead itself", () => {
+    const turn = SRC.slice(SRC.indexOf("export async function runCentralYoutubeTurn("));
+    expect(turn).toContain("const claim: YoutubeTurnClaim = req.lookahead\n    ? { granted: true, key: turnKey, token: -1 }");
+    expect(turn).toContain("const spendsEntityBudget = !req.lookahead && req.countsAgainstEntityCeiling !== false;");
+    const finish = turn.slice(turn.indexOf("const finish = ("), turn.indexOf("YOUTUBE_OUTCOME_LEAVES_TURN_OPEN.has(outcome)"));
+    expect(finish, "a lookahead ends before any turn is ended or tier declined").toContain("if (req.lookahead) {");
+    expect(SRC).toContain("const ahead = req.lookahead\n      ? undefined");
   });
 
   it("the provider adapter takes the lookahead before it searches", () => {
-    const at = SRC.indexOf("const ahead = dedup.youtubeLookahead?.take(youtubeTurnKey(sceneIndex, beat.index), req.queries);");
+    const at = SRC.indexOf("dedup.youtubeLookahead?.take(youtubeTurnKey(sceneIndex, beat.index), req.queries);");
     const fetch = SRC.indexOf("const paths = await fetchYouTubeCCClips(", at);
     expect(at).toBeGreaterThan(-1);
     expect(fetch).toBeGreaterThan(at);

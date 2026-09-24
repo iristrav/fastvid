@@ -21,6 +21,7 @@ import {
   youtubeFirstPerBeatEnabled,
 } from "./sourcingPolicy";
 import {
+  applyYoutubeFirstPerf,
   beatVisualWallMs,
   getPipelinePerfProfile,
   sceneRetrieveParallelism,
@@ -28,7 +29,20 @@ import {
   youtubeBeatFetchTimeoutMs,
 } from "./videoPipeline";
 
-const KEYS = ["SOURCING_YOUTUBE_FIRST", "ENABLE_SCENE_CANDIDATE_POOL", "YOUTUBE_BEAT_BUDGET_MS"];
+const KEYS = [
+  "SOURCING_YOUTUBE_FIRST",
+  "ENABLE_SCENE_CANDIDATE_POOL",
+  "YOUTUBE_BEAT_BUDGET_MS",
+  "ENABLE_YOUTUBE_SOURCING",
+  "YOUTUBE_API_KEY",
+  "YOUTUBE_CC_DL_SERVICE",
+];
+/** A build that CAN ask YouTube: search key and downloader configured. Nothing is contacted. */
+const withYoutube = () => {
+  process.env.ENABLE_YOUTUBE_SOURCING = "true";
+  process.env.YOUTUBE_API_KEY = "test-key";
+  process.env.YOUTUBE_CC_DL_SERVICE = "http://127.0.0.1:9";
+};
 let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
@@ -64,6 +78,7 @@ describe("the switch", () => {
 
 describe("two minutes of YouTube per beat, and nothing above it ends them early", () => {
   const oneMinute = getPipelinePerfProfile("1");
+  beforeEach(withYoutube);
 
   it("the YouTube slice is two minutes; an explicit override still wins", () => {
     expect(YOUTUBE_FIRST_TURN_MS).toBe(120_000);
@@ -90,6 +105,21 @@ describe("two minutes of YouTube per beat, and nothing above it ends them early"
     expect(sceneRetrieveParallelism(oneMinute)).toBe(3);
   });
 
+  it("the render runs with those numbers: its own profile copy carries them", () => {
+    const perf = applyYoutubeFirstPerf(oneMinute);
+    expect(perf.sceneParallelism).toBe(3);
+    expect(perf.sceneVisualTimeoutMs).toBe(sceneVisualFlatMs(oneMinute));
+    const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
+    expect(SRC).toContain("const perf = applyYoutubeFirstPerf(getPipelinePerfProfile(videoLength));");
+  });
+
+  it("a build that cannot ask YouTube keeps every wall exactly as it was", () => {
+    delete process.env.YOUTUBE_API_KEY;
+    const p = getPipelinePerfProfile("1");
+    expect(sceneVisualFlatMs(p)).toBe(p.sceneVisualTimeoutMs);
+    expect(beatVisualWallMs(p)).toBeLessThan(YOUTUBE_FIRST_BEAT_WORST_MS);
+  });
+
   it("with the switch off, every one of those numbers is the profile's own", () => {
     process.env.SOURCING_YOUTUBE_FIRST = "false";
     const p = getPipelinePerfProfile("1");
@@ -105,12 +135,18 @@ describe("the order on the route the 1-minute Railway profile takes", () => {
   const body = SRC.slice(start, SRC.indexOf("\n}\n", start));
 
   it("YouTube is asked before the stills, and the stills come after the archive", () => {
-    const yt = body.indexOf("clip = await youtubeFirstBeatSlice(");
+    // In YouTube-first mode the stills-first opening is skipped...
+    expect(body).toContain("if (!youtubeFirst) {\n    clip = await fetchBeatInternetStillsFirst(");
+    // ...so the first provider work is beatPrimaryFetch, which opens with the YouTube-first slice...
     const primary = body.indexOf("() => beatPrimaryFetch(");
     const stillsAfter = body.indexOf("const stills = await fetchBeatInternetStillsFirst(");
-    expect(yt).toBeGreaterThan(-1);
-    expect(primary).toBeGreaterThan(yt);
+    expect(primary).toBeGreaterThan(-1);
     expect(stillsAfter).toBeGreaterThan(primary);
+    const archival = SRC.slice(SRC.indexOf("export async function fetchBeatArchivalThenPexels("));
+    const slice = archival.indexOf("const ytFirstClip = await youtubeFirstBeatSlice(");
+    const ownArchive = archival.indexOf("fetchCuratedArchiveBeatClipWithLineage(");
+    expect(slice).toBeGreaterThan(-1);
+    expect(ownArchive).toBeGreaterThan(slice);
   });
 
   it("the scene-wide retrieval and its TTS prefetch both hang off the switch that is now off", () => {

@@ -4648,7 +4648,9 @@ function applyMinimizeStockProfile(
 export function youtubeBeatFetchTimeoutMs(fastStockMode: boolean): number {
   const window = Math.max(YOUTUBE_TURN_WINDOW_MS, youtubeBeatFetchWindowAsked(fastStockMode));
   /** RONDE 648 — the 1-minute profile asked 22 s on Railway; a YouTube cut takes 30–50 s. */
-  return youtubeFirstPerBeatEnabled() ? Math.max(window, YOUTUBE_FIRST_TURN_MS) : window;
+  return youtubeFirstPerBeatEnabled() && youtubeAvailableForBudgeting()
+    ? Math.max(window, YOUTUBE_FIRST_TURN_MS)
+    : window;
 }
 
 /** The window each mode asks for, unchanged. The floor above is applied to all of them at once. */
@@ -4771,36 +4773,51 @@ function beatStockFallbackWallMs(perf: PipelinePerfProfile): number {
  * scene is cut off with beats that never had their turn. Render 605's scene 1 had six beats.
  */
 export function sceneVisualFlatMs(perf: Pick<PipelinePerfProfile, "sceneVisualTimeoutMs" | "maxBeatsPerScene">): number {
-  if (!youtubeFirstPerBeatEnabled()) return perf.sceneVisualTimeoutMs;
+  if (!youtubeFirstPerBeatEnabled() || !youtubeAvailableForBudgeting()) return perf.sceneVisualTimeoutMs;
   const beats = Math.max(perf.maxBeatsPerScene, 6);
   return Math.max(perf.sceneVisualTimeoutMs, beats * YOUTUBE_FIRST_BEAT_WORST_MS);
 }
 
+/** RONDE 648 — the profile a render runs with in YouTube-first mode; unchanged otherwise. */
+export function applyYoutubeFirstPerf<P extends PipelinePerfProfile>(perf: P): P {
+  return {
+    ...perf,
+    sceneParallelism: sceneRetrieveParallelism(perf),
+    sceneVisualTimeoutMs: sceneVisualFlatMs(perf),
+  };
+}
+
 /** RONDE 648 — scenes side by side, which is beats side by side: the operator chose three. */
 export function sceneRetrieveParallelism(perf: Pick<PipelinePerfProfile, "sceneParallelism">): number {
-  return youtubeFirstPerBeatEnabled() ? YOUTUBE_FIRST_PARALLEL_BEATS : perf.sceneParallelism;
+  return youtubeFirstPerBeatEnabled() && youtubeAvailableForBudgeting()
+    ? YOUTUBE_FIRST_PARALLEL_BEATS
+    : perf.sceneParallelism;
+}
+
+/**
+ * RONDE 648 — a beat's wall in YouTube-first mode holds the whole ladder: two minutes of YouTube,
+ * then the archive, the open sources and stock. Only when YouTube can actually be asked — a build
+ * without it keeps every wall exactly as it was.
+ */
+function youtubeFirstWall(ms: number): number {
+  return youtubeFirstPerBeatEnabled() && youtubeAvailableForBudgeting()
+    ? Math.max(ms, YOUTUBE_FIRST_BEAT_WORST_MS)
+    : ms;
 }
 
 export function beatVisualWallMs(perf: PipelinePerfProfile): number {
-  /**
-   * RONDE 648 — one beat's whole ladder: two minutes of YouTube, then the archive, the open sources
-   * and stock. The beat's wall is the scope every one of those runs inside, so a wall sized for a
-   * beat that arrived with a scene pool in hand (22 s on the 1-minute Railway profile) would end the
-   * YouTube turn before its first download could finish.
-   */
-  if (youtubeFirstPerBeatEnabled()) {
-    return Math.max(beatVisualWallMsForMode(perf), YOUTUBE_FIRST_BEAT_WORST_MS);
+  if (youtubeFirstPerBeatEnabled() && youtubeAvailableForBudgeting() && !youtubeOnlySourcingEnabled()) {
+    return Math.max(
+      beatWallWithYoutubeTurn(beatVisualSearchMaxMs(perf) + beatStockFallbackWallMs(perf) + 5_000),
+      YOUTUBE_FIRST_BEAT_WORST_MS
+    );
   }
-  return beatVisualWallMsForMode(perf);
-}
-
-function beatVisualWallMsForMode(perf: PipelinePerfProfile): number {
   if (youtubeOnlySourcingEnabled()) {
-    return (
+    return youtubeFirstWall(
       youtubeBeatSearchBudgetMs() +
-      Math.max(perf.transformTimeoutMs, 25_000) +
-      beatStockFallbackWallMs(perf) +
-      8_000
+        Math.max(perf.transformTimeoutMs, 25_000) +
+        beatStockFallbackWallMs(perf) +
+        8_000
     );
   }
   return beatWallWithYoutubeTurn(
@@ -5073,6 +5090,13 @@ export type CentralYoutubeRequest = {
    */
   deliver?: "adopted" | "candidates";
   /**
+   * RONDE 648 — the search a beat's turn would make, made AHEAD of that turn by its scene. It
+   * does not claim the beat's turn, declines no tier and adopts nothing: it hands back the files,
+   * and the beat's own turn later takes them (`youtubeLookahead`). It still passes this door, so
+   * the provider keeps one caller and the capability question keeps one asker.
+   */
+  lookahead?: boolean;
+  /**
    * The provider's own relevance floor, when the branch has one. Carried rather than harmonised:
    * the beat cascade's archival tiers search at 2 and its real-event tier at 1, and picking one
    * number for both would either loosen a gate or tighten one.
@@ -5223,7 +5247,14 @@ export async function runCentralYoutubeTurn(
       `queries=${req.queries.length} query=${JSON.stringify(req.queries[0] ?? "")}`
   );
 
-  const claim = claimYoutubeTurn(dedup, sceneIndex, beat.index, req.termSource);
+  /**
+   * RONDE 648 — a lookahead walks this same door but claims nothing: the beat's own turn is still
+   * to come and will take the files it hands back (see `youtubeLookahead`). So no register entry,
+   * no tier declined, no reserve touched, and no per-video ceiling spent — only the search.
+   */
+  const claim: YoutubeTurnClaim = req.lookahead
+    ? { granted: true, key: turnKey, token: -1 }
+    : claimYoutubeTurn(dedup, sceneIndex, beat.index, req.termSource);
   if (!claim.granted) {
     logYoutubeTurnRefused(turnKey, req.termSource, claim.record);
     return {
@@ -5246,6 +5277,13 @@ export async function runCentralYoutubeTurn(
     clip: string | null,
     candidatePaths: string[] = []
   ): CentralYoutubeResult => {
+    if (req.lookahead) {
+      console.log(
+        `[YOUTUBE_TURN] scene=${sceneIndex} beat=${beat.index} turn=LOOKAHEAD_END result=${outcome} ` +
+          `usedMs=${Date.now() - startedAtMs} candidates=${candidatePaths.length}`
+      );
+      return { clip: null, candidatePaths, outcome, alreadyCompleted: false };
+    }
     /**
      * §15 — the scope reserve is released HERE, at the one exit every turn passes through, and only
      * once the turn is genuinely over. `endYoutubeTurn` is idempotent and `fetchYouTubeCCClips`
@@ -5327,7 +5365,7 @@ export async function runCentralYoutubeTurn(
    * still be able to take this beat's turn.
    */
   if (req.queries.length === 0) return finish("YOUTUBE_NO_QUERY", null);
-  const spendsEntityBudget = req.countsAgainstEntityCeiling !== false;
+  const spendsEntityBudget = !req.lookahead && req.countsAgainstEntityCeiling !== false;
   if (spendsEntityBudget && dedup.entityYoutubeFetchesUsed >= dedup.perf.maxEntityYoutubePerVideo) {
     console.log(
       `[YOUTUBE_TURN] scene=${sceneIndex} beat=${beat.index} turn=SKIPPED ` +
@@ -5428,6 +5466,41 @@ function releaseUnstartedYoutubeTurn(
  */
 export const YOUTUBE_LOOKAHEAD_PARALLEL = 3;
 
+/** The lookahead's search, inside the beat's proof — the scope `withBeatProvenance` opens above. */
+async function runYoutubeLookaheadInner(
+  beat: SceneBeat,
+  scene: Scene,
+  workDir: string,
+  clipFetchDur: number,
+  videoTitle: string | undefined,
+  personName: string,
+  queries: string[],
+  dedup: VisualDedupState
+): Promise<CentralYoutubeResult> {
+  return runCentralYoutubeTurn({
+    beat,
+    scene,
+    workDir,
+    sceneIndex: scene.index,
+    clipFetchDur,
+    dedup,
+    visualNeed: personName.trim() ? "person" : "topic",
+    queries,
+    queryBuilder: "buildBeatYoutubeQueries",
+    termSource: "youtube lookahead",
+    adoptOpts: {
+      keywords: beat.keywords ?? [],
+      personTopic: dedup.personTopicLock,
+      primaryPerson: dedup.primaryPerson || personName,
+      videoTitle,
+      sceneText: scene.text,
+    },
+    timeoutMs: YOUTUBE_FIRST_TURN_MS,
+    deliver: "candidates",
+    lookahead: true,
+  });
+}
+
 function startSceneYoutubeLookahead(
   scene: Scene,
   beats: SceneBeat[],
@@ -5437,63 +5510,30 @@ function startSceneYoutubeLookahead(
   personName: string,
   dedup: VisualDedupState
 ): void {
-  if (!youtubeFirstPerBeatEnabled() || !youtubeSourcingEnabled() || !youtubeCcReady()) return;
+  if (!youtubeFirstPerBeatEnabled() || !youtubeSourcingEnabled()) return;
   const registry = (dedup.youtubeLookahead ??= createLookaheadRegistry(YOUTUBE_LOOKAHEAD_PARALLEL));
   let queued = 0;
   for (const beat of beats) {
-    if (slotHasNoBeatBehindIt(scene.index, beat.index)) continue;
     hydrateSceneBeatInPlace(beat);
     const queries = buildBeatYoutubeQueries(beat, scene, videoTitle, personName);
     if (queries.length === 0) continue;
     const beatKey = youtubeTurnKey(scene.index, beat.index);
     const started = registry.start(beatKey, queries, async () => {
       if (dedup.youtubeTurnByBeat.has(beatKey)) return { paths: [], searched: false };
-      const before = providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount;
       const t0 = Date.now();
-      const keywords = [...new Set(beat.keywords ?? [])].slice(0, 22);
-      const person = dedup.personTopicLock ? dedup.primaryPerson || personName || "" : "";
-      let paths: string[] = [];
-      try {
-        paths = await withBeatProvenance(
-          beat,
-          scene,
-          () =>
-            withSceneFetchTimeout(
-              () =>
-                fetchYouTubeCCClips(
-                  queries.slice(0, 5),
-                  clipFetchDur,
-                  workDir,
-                  scene.index,
-                  YOUTUBE_CANDIDATES_PER_TURN,
-                  keywords,
-                  1,
-                  person,
-                  {
-                    beatText: beat.text,
-                    beatIndex: beat.index,
-                    videoTitle,
-                    fastMode: dedup.perf.fastStockMode,
-                  },
-                  dedup.usedContentKeys,
-                  dedup.sourcingCache
-                ),
-              YOUTUBE_FIRST_TURN_MS,
-              `youtube lookahead s${scene.index} b${beat.index}`
-            ),
-          { personName }
-        );
-      } catch (err) {
-        console.log(
-          `[YouTubeLookahead] s${scene.index}b${beat.index} ended early — ${(err as Error).message?.slice(0, 80)}`
-        );
-      }
+      const ahead = await withBeatProvenance(
+        beat,
+        scene,
+        () => runYoutubeLookaheadInner(beat, scene, workDir, clipFetchDur, videoTitle, personName, queries, dedup),
+        { personName }
+      );
       console.log(
-        `[YouTubeLookahead] s${scene.index}b${beat.index} READY clips=${paths.length} ms=${Date.now() - t0}`
+        `[YouTubeLookahead] s${scene.index}b${beat.index} READY clips=${ahead.candidatePaths.length} ` +
+          `outcome=${ahead.outcome} ms=${Date.now() - t0}`
       );
       return {
-        paths,
-        searched: providerMetrics(dedup.sourcingCache, "youtube_cc").searchCount > before,
+        paths: ahead.candidatePaths,
+        searched: ahead.outcome === "YOUTUBE_CANDIDATES_DELIVERED" || ahead.outcome === "YOUTUBE_NO_RESULTS",
       };
     });
     if (started) queued++;
@@ -5560,7 +5600,9 @@ async function tryBeatRealYouTubeFootage(req: CentralYoutubeRequest): Promise<Yo
      * RONDE 648 — the work this beat's scene already started for it, when it asked these queries
      * and is already running or done. Never waited for in a queue: see `youtubeLookahead.ts`.
      */
-    const ahead = dedup.youtubeLookahead?.take(youtubeTurnKey(sceneIndex, beat.index), req.queries);
+    const ahead = req.lookahead
+      ? undefined
+      : dedup.youtubeLookahead?.take(youtubeTurnKey(sceneIndex, beat.index), req.queries);
     if (ahead) {
       console.log(
         `[YouTubeLookahead] s${sceneIndex}b${beat.index} ` +
@@ -33197,17 +33239,12 @@ async function resolveBeatClipFastTurbo(
    *
    * This route opened with `fetchBeatInternetStillsFirst` — Wikimedia and web stills, the open
    * sources — and reached YouTube only inside `beatPrimaryFetch` after it. In YouTube-first mode the
-   * beat asks YouTube before anything, with the operator's two minutes; the stills come after the
-   * archive, where the operator placed the open sources.
+   * stills wait: `beatPrimaryFetch` opens with the YouTube-first slice and then the archive, and the
+   * stills come after both, where the operator placed the open sources.
    */
   const youtubeFirst = youtubeFirstPerBeatEnabled();
   let clip: string | null = null;
-  if (youtubeFirst) {
-    clip = await youtubeFirstBeatSlice(
-      beat, scene, workDir, sceneIndex, clipFetchDur, dedup, personName, videoTitle, beatAdoptOpts, `${tag}_ytfirst`
-    );
-    if (clip && isRealVideoClip(clip) && !isPipelineFallbackClip(clip)) return clip;
-  } else {
+  if (!youtubeFirst) {
     clip = await fetchBeatInternetStillsFirst(
       beat,
       scene,
@@ -33261,9 +33298,7 @@ async function resolveBeatClipFastTurbo(
    * describe this — which is why the anchor below is a literal-free assertion against the helper,
    * not another reconstruction.
    */
-  const primaryMs = youtubeFirst
-    ? Math.max(beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000), YOUTUBE_FIRST_FALLBACK_MIN_MS)
-    : beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000);
+  const primaryMs = youtubeFirstWall(beatWallWithYoutubeTurn(historicalDoc ? 15_000 : 20_000));
   try {
     clip = await withSceneFetchTimeout(
       () => beatPrimaryFetch(
@@ -47634,10 +47669,14 @@ async function _runVideoPipelineInner(
         );
       }
     }
-    const perf = getPipelinePerfProfile(videoLength);
+    /**
+     * RONDE 648 — the render's own copy of the profile carries YouTube-first mode's scene share and
+     * parallelism, so every reader of `perf` below sees one set of numbers.
+     */
+    const perf = applyYoutubeFirstPerf(getPipelinePerfProfile(videoLength));
     const profiler = createPipelineProfiler(String(videoId), videoLength, {
       composeParallelism: composeParallelismForVideo(videoLength, IS_RAILWAY),
-      retrieveParallelism: sceneRetrieveParallelism(perf),
+      retrieveParallelism: perf.sceneParallelism,
       montageSegmentParallelism: montageSegmentParallelism(IS_RAILWAY),
       ffmpegPreset: process.env.FFMPEG_PRESET ?? "veryfast",
       crf: process.env.FFMPEG_CRF ?? "18",
@@ -47688,7 +47727,7 @@ async function _runVideoPipelineInner(
     }
     console.log(
       `[Pipeline] Perf budget: ≤${perf.targetWallClockMin}min wall-clock, ` +
-      `≤${perf.maxBeatsPerScene} beats/scene, ${sceneRetrieveParallelism(perf)} parallel scenes, ` +
+      `≤${perf.maxBeatsPerScene} beats/scene, ${perf.sceneParallelism} parallel scenes, ` +
       `sourcing=${curatedArchiveOnlyVisuals() ? "media archive only" : youtubeOnlySourcingEnabled() ? `YouTube-only ≤${youtubeBeatSearchBudgetMs() / 1000}s → Pexels` : youtubeSourcingEnabled() ? "YouTube+archival" : "archival+stills → Pexels (YouTube off)"}, ` +
       `local-vision=${clipVisionGateEnabled() ? "on" : "off"}, ` +
       `fair-use transform=${perf.skipFairUseTransform ? "skip" : "on"}, ` +
@@ -48227,7 +48266,7 @@ async function _runVideoPipelineInner(
         visualDedup.composeNetworkBlocked = true;
       }
 
-      const retrieveLimit = pLimit(sceneRetrieveParallelism(perf));
+      const retrieveLimit = pLimit(perf.sceneParallelism);
       const pipelineComposeLimit = pLimit(composeParallelismForVideo(videoLength, IS_RAILWAY));
       let completedPipelineVisuals = 0;
       let completedPipelineCompose = 0;
@@ -48245,7 +48284,7 @@ async function _runVideoPipelineInner(
       const p5aPreset = process.env.FFMPEG_PRESET ?? "veryfast";
       console.log(
         `[Compose] P5A startup — CPU cores: ${cpuCount}, compose parallelism: ${composePar}, ` +
-        `retrieve parallelism: ${sceneRetrieveParallelism(perf)}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
+        `retrieve parallelism: ${perf.sceneParallelism}, montage segment parallelism: ${montageSegmentParallelism(IS_RAILWAY)}, ` +
         `max concurrent ffmpeg (compose×montage): ~${composePar * montageSegmentParallelism(IS_RAILWAY)}, ` +
         `encoder preset: ${p5aPreset}`
       );
@@ -48321,7 +48360,7 @@ async function _runVideoPipelineInner(
                       audioPaths[i], prefetchPools, prefetchFunnels
                     ),
                     sceneSearchBudgetMs({
-                      flatMs: sceneVisualFlatMs(perf),
+                      flatMs: perf.sceneVisualTimeoutMs,
                       // Beats are derived later (buildSceneBeats), so duration is the honest
                       // signal available at the moment this budget has to be set.
                       sceneDurationSec: scene.duration,
@@ -48838,7 +48877,7 @@ async function _runVideoPipelineInner(
       `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
     );
 
-    const visualLimit = pLimit(sceneRetrieveParallelism(perf));
+    const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
     let activeSceneIdx = 0;
     let heartbeatTick = 0;
@@ -48937,7 +48976,7 @@ async function _runVideoPipelineInner(
                   prefetchFunnels
                 ),
                 sceneSearchBudgetMs({
-                  flatMs: sceneVisualFlatMs(perf),
+                  flatMs: perf.sceneVisualTimeoutMs,
                   sceneDurationSec: scene.duration,
                 }),
                 `Scene ${scene.index} visuals`
@@ -48972,7 +49011,7 @@ async function _runVideoPipelineInner(
         chunkScenes.length,
         scenes.length,
         20_000,
-        sceneVisualFlatMs(perf)
+        perf.sceneVisualTimeoutMs
       ),
       `Visual generation stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
