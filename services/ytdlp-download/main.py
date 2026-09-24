@@ -56,6 +56,12 @@ MIN_BYTES = 10_000
 MAX_BYTES = 80 * 1024 * 1024
 # youtubeMinFormatHeight() in server/sourcingPolicy.ts — 480 by default.
 MIN_HEIGHT = int(os.environ.get("MIN_FORMAT_HEIGHT", "480"))
+# RONDE 648 — the resolution the service PREFERS. The format filter below only sets a floor, and
+# yt-dlp's default order then takes the largest stream left: run against yt-dlp 2026.08.19 with a
+# 144p–2160p ladder it picks 2160p. Every byte of that goes through the paid residential proxy
+# (DataImpulse ran out at 07:53 on 2026-09-24) for a clip scaled into 1920x1080 as B-roll. `res:N`
+# prefers the largest stream at or below N and, when there is none, the smallest above it.
+MAX_HEIGHT = int(os.environ.get("MAX_FORMAT_HEIGHT", "720"))
 
 SERVICE_TOKEN = os.environ.get("SERVICE_TOKEN", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
@@ -176,6 +182,8 @@ def _ydl_options(out_path: Path, start: float, end: float) -> dict:
         # than the difference between having the shot and not having it. RONDE 27 made the same
         # call on the RapidAPI route after a half-gigabyte 720p file cost a render three clips.
         "format": f"bv*[height>={MIN_HEIGHT}][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+        # The filter above is a floor, not a choice — without this the largest stream wins.
+        "format_sort": [f"res:{MAX_HEIGHT}"],
         # THE POINT OF THIS SERVICE. Only the requested window is fetched, so a 3.5-second beat
         # costs a few megabytes instead of the whole source video.
         "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
