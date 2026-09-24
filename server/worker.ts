@@ -394,6 +394,11 @@ async function main() {
    */
   const { scheduleApifyLiveTest } = await import("./apifyLiveTest");
   scheduleApifyLiveTest();
+  /** RONDE 648 — read-only: what each archive holds, before any asset is moved between them. */
+  const { logArchiveInventory } = await import("./archiveInventory");
+  await logArchiveInventory().catch((err) =>
+    console.warn("[ArchiveInventory] could not read:", (err as Error).message)
+  );
   const { startYoutubePrefetchWorker } = await import("./youtubePrefetch");
   await startYoutubePrefetchWorker().catch((err) =>
     console.warn("[YouTubePrefetch] could not start:", (err as Error).message)
