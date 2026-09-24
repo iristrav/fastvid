@@ -47,6 +47,7 @@ import path from "path";
 import {
   MAX_JUDGEMENTS_PER_BEAT,
   type VisionDeclineCause,
+  BEAT_JUDGE_RULES,
   beatImageRelevanceGateEnabled,
   judgeBeatImage,
   judgementTally,
@@ -196,6 +197,9 @@ export function beatIdentityKey(ctx: BeatVisualContext): string {
   // Same slices buildPrompt() uses, so the hash and the question agree on what "the same beat" is.
   const parts = [norm(ctx.beatText, 300), norm(ctx.sceneText, 300), norm(ctx.videoTitle, 200)];
   if (!parts[0]) return "";
+  // RONDE 649 — the rules the judge answers by are part of the question: a verdict stored under
+  // older rules (kept 90 days) must not answer for the new ones.
+  parts.push(BEAT_JUDGE_RULES);
   return crypto.createHash("sha1").update(parts.join("\u0000")).digest("hex").slice(0, 16);
 }
 
@@ -411,6 +415,39 @@ export function beatAlreadyHasApprovedPicture(
   }
   /** Only when the approved picture has no asset identity filed for this beat at all. */
   return byPath;
+}
+
+/**
+ * RONDE 649 — DID THIS BEAT ALREADY SAY NO TO THIS PICTURE?
+ *
+ * Render 606 offered archive asset 57840 to s0b0 seven times in ninety seconds. The editor refused
+ * it the first time ("a specific person, likely a Nazi figure, not Hitler"); every later offer was
+ * prepared, recorded, sent through the rescue ladder and refused again at the push barrier — the
+ * last five as "nobody looked", because the beat's look budget had gone on the repeats.
+ *
+ * The answer comes from `byBeat`, so it is THIS beat's own verdict and nothing else: a picture
+ * refused under one sentence is still offered to every other. Only a real `does_not_fit` counts —
+ * a decline (`evaluated: false`) is nobody looking, and a reprieve is a deliberate yes.
+ *
+ * Returns the editor's reason, for the log line, or null.
+ */
+export function beatAlreadyRefusedPicture(
+  ledger: BeatRelevanceLedger,
+  sceneIndex: number,
+  beatIndex: number,
+  handles: { contentKey?: string | null; clipPath?: string | null }
+): string | null {
+  const keys = [
+    handles.contentKey ? beatRelevanceBeatKey(sceneIndex, beatIndex, "content", handles.contentKey) : null,
+    handles.clipPath ? beatRelevanceBeatKey(sceneIndex, beatIndex, "path", handles.clipPath) : null,
+  ];
+  for (const key of keys) {
+    if (!key) continue;
+    const d = ledger.byBeat.get(key)?.decision;
+    if (!d || d.verdict !== "does_not_fit" || d.evaluated === false || d.reprieved) continue;
+    return d.reason || "does_not_fit";
+  }
+  return null;
 }
 
 /**

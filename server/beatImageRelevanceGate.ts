@@ -535,6 +535,13 @@ export type BeatSubjectAnchors = {
  * sentence; "the documentary is set in the 1930s-1940s" is a claim about the film. Saying the
  * second in the words of the first would turn a legitimate cutaway into a refusal.
  */
+/**
+ * RONDE 649 — which edition of the rules below a verdict was given under. Part of the stored
+ * verdict's key (`beatIdentityKey`), so changing the rules re-asks instead of reusing old answers.
+ * Change it whenever the belongs / does-not-belong wording changes.
+ */
+export const BEAT_JUDGE_RULES = "r649-unfilmable-lines";
+
 function formatAnchors(anchors: BeatSubjectAnchors | undefined): string[] {
   if (!anchors) return [];
   const lines: string[] = [];
@@ -645,7 +652,26 @@ export function buildBeatImagePrompt(
     "    that person: a shot of them belongs under a line about them, even when it was filmed at",
     "    a different moment than the one being described;",
     "  · the place or the period the line describes is what is on screen;",
-    "  · it is honest atmospheric footage of the era and setting THAT LINE describes.",
+    "  · it is honest atmospheric footage of the era and setting THAT LINE describes;",
+    /**
+     * RONDE 649 — A LINE ABOUT SOMETHING NO CAMERA CAN FILM.
+     *
+     * Render 606 refused, under "the investigation Hugh Trevor-Roper led", Berlin's ruins and
+     * soldiers in 1945 ("the narration refers to an investigation and doesn't directly relate to
+     * the visuals"); under "Hitler's dental records in Berlin", German soldiers of the period. A
+     * rumour, an investigation or a record has no picture of its own. A documentary shows the
+     * world that idea is about — and every such line in 606 ended on a placeholder or a fallback.
+     *
+     * Bounded on purpose, so render 563's leap stays closed: the period alone is still not enough.
+     * It has to be the period WITH the person this shot is meant to show or one of the
+     * documentary's own places, as printed above. A pharmacy street somewhere else in Europe is
+     * neither, and is still refused.
+     */
+    "  · the line is about something no camera can film — a rumour, a theory, a doubt, an",
+    "    investigation, a record, a claim — and the frame shows the world that idea is about: the",
+    "    person this shot is meant to show, or one of the places this documentary is about, in its",
+    "    period. Berlin in ruins in 1945 belongs under a line about the investigation into what",
+    "    happened in Berlin in 1945.",
     "Archive material with no caption still belongs if what it shows fits that line.",
     "",
     "It DOES NOT belong when the frame is plainly about something else — a different subject,",
@@ -663,7 +689,8 @@ export function buildBeatImagePrompt(
      */
     "The era on its own is never enough. \"This is wartime footage and this is a wartime film\"",
     "would be equally true of every other shot in the film, so it decides nothing about this one:",
-    "something the line itself names or describes has to be there as well.",
+    "something the line itself names or describes has to be there as well — or, for a line about",
+    "something no camera can film, the person or one of the places named above.",
     many
       ? "If most of what is on screen is a title card, a leader or a countdown rather than actual" +
         " footage, it does not belong: the viewer would be looking at text, not at the story."

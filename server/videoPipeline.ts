@@ -85,6 +85,7 @@ import {
 import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressProbe";
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
+import { askForFootage, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -274,6 +275,7 @@ import {
   type ArchiveAssetRow,
   listCuratedArchiveCandidates,
   setCuratedClipPreparedHook,
+  setCuratedAssetRefusedHook,
 } from "./curatedMediaSourcing";
 import { foldSearchText } from "./searchTextNormalize";
 import {
@@ -690,6 +692,7 @@ import {
   beatIdentityKey,
   checkBeatRelevance,
   composeBarrierAllows,
+  beatAlreadyRefusedPicture,
   createBeatRelevanceLedger,
   formatRelevanceSummary,
   inheritBeatRelevance,
@@ -3432,8 +3435,10 @@ function buildBeatYoutubeQueries(
       : []),
   ].filter((q) => toQueryString(q).length > 3);
 
-  const unique = [...new Set([...typed, ...rest].map((q) => toQueryString(q)))];
-  const typedKept = unique.filter((q) => typed.includes(q)).length;
+  // RONDE 649 — every query asks for the picture, not only for the subject: see askForFootage.
+  const typedFootage = typed.map((q) => askForFootage(toQueryString(q)));
+  const unique = [...new Set([...typedFootage, ...rest.map((q) => askForFootage(toQueryString(q)))])];
+  const typedKept = unique.filter((q) => typedFootage.includes(q)).length;
   return unique.slice(0, 6 + typedKept);
 }
 
@@ -17844,6 +17849,17 @@ export async function searchYoutubeVideoCandidates(
   providerMetrics(sourcingCache, "youtube_cc").resultCount += searchDataResolved.items?.length ?? 0;
 
   return (searchDataResolved.items ?? [])
+    .filter((item) => {
+      // RONDE 649 — a parody, a reaction video or an audiobook is never a shot; see youtubeNonFootage.
+      const genre = youtubeTitleIsNotFootage(item.snippet?.title);
+      if (genre) {
+        console.log(
+          `[YouTubeNotFootage] video=${item.id?.videoId ?? "?"} genre=${genre} ` +
+            `title="${(item.snippet?.title ?? "").slice(0, 70)}" — not downloaded`
+        );
+      }
+      return !genre;
+    })
     .map((item) => {
       const title = item.snippet?.title ?? "";
       const desc = item.snippet?.description ?? "";
@@ -22593,8 +22609,17 @@ export function createVisualDedupState(
   bindContentKeyResolver(state.clipAdoptAudit, clipContentKey);
   // Same reasoning on the refusal side: recordClipReject is the one point every gate reports to.
   state.clipRejectAudit.lineage = state.sourcingCache.lineage;
+  // RONDE 649 — the curated picker asks this render's editor what a beat already refused.
+  ledgerBySourcingCache.set(state.sourcingCache, state.beatRelevance);
   return state;
 }
+
+/**
+ * RONDE 649 — the verdict ledger of the render a sourcing cache belongs to. The render context
+ * carries the cache, not the dedup state, so this is how a module-level hook reaches the ledger of
+ * the render it is running inside. Weak, so a finished render's ledger is not kept alive.
+ */
+const ledgerBySourcingCache = new WeakMap<SourcingCache, BeatRelevanceLedger>();
 
 const STOCK_CATEGORY_LIMITS: Record<string, number> = {
   gigafactory: 1,
@@ -34220,6 +34245,35 @@ async function beatClipPassesVisionGate(
     }
     return { pass: false, worstScore10: null, skipped: false, fromCache: true };
   }
+  /**
+   * RONDE 649 — AND A PICTURE THIS BEAT'S EDITOR ALREADY REFUSED IS NOT OFFERED TO IT AGAIN.
+   *
+   * The file-level write-off above covers pixels; this covers the pair. Render 606 re-offered
+   * refused assets to the same beat round after round, and each repeat spent the beat's look
+   * budget and a rescue round on an answer that was already on the ledger. Per beat only — see
+   * `beatAlreadyRefusedPicture` — so the same picture is still offered to every other sentence.
+   */
+  const refusedHere = beatAlreadyRefusedPicture(dedup.beatRelevance, scene.index, beat.index, {
+    contentKey: isCanonicalAssetKey(assetIdentity) ? assetIdentity : null,
+    clipPath,
+  });
+  if (refusedHere) {
+    recordClipReject(dedup.clipRejectAudit, scene.index, beat.index, clipPath, "already_refused_at_this_beat", queryLabel);
+    const repeats = noteRepeatedRefusal(
+      dedup.clipRejectAudit,
+      scene.index,
+      beat.index,
+      assetIdentity,
+      "REFUSED_AT_THIS_BEAT"
+    );
+    if (repeats === 0) {
+      console.log(
+        `[Pipeline] Scene ${scene.index} beat ${beat.index}: not offered again — ` +
+          `${path.basename(clipPath)} was refused for this beat earlier: ${refusedHere.slice(0, 100)}`
+      );
+    }
+    return { pass: false, worstScore10: null, skipped: false, fromCache: true };
+  }
   const skipsBefore = overlayBudgetSkipCount();
   const hasBakedText = await beatClipHasBakedText(clipPath);
   recordGateVerdict("baked_text", hasBakedText, {
@@ -35744,6 +35798,16 @@ setCuratedClipPreparedHook((picked, sceneIndex, beatIndex, clipPath) => {
   const record = ensureCuratedAssetLineageOn(lineage, picked, sceneIndex, beatIndex);
   lineage.bindPath(record.lineageId, clipPath, clipContentKey(clipPath));
   lineage.recordEvent(record.lineageId, "DOWNLOAD_SUCCEEDED", { status: "OK", currentPath: clipPath });
+});
+
+/** RONDE 649 — see `setCuratedAssetRefusedHook`: this beat's own no, from the active render. */
+setCuratedAssetRefusedHook((sceneIndex, beatIndex, assetId) => {
+  const cache = get_activeSourcingCache();
+  const ledger = cache ? ledgerBySourcingCache.get(cache) : undefined;
+  if (!ledger) return null;
+  return beatAlreadyRefusedPicture(ledger, sceneIndex, beatIndex, {
+    contentKey: curatedAssetContentKey(assetId),
+  });
 });
 
 /**

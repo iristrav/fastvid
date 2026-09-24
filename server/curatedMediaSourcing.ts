@@ -3148,6 +3148,19 @@ export function setCuratedClipPreparedHook(hook: CuratedClipPreparedHook | null)
   curatedClipPreparedHook = hook;
 }
 
+/**
+ * RONDE 649 — an asset THIS beat's editor already refused is not prepared for it again.
+ *
+ * Same arrangement as the hook above: the pipeline owns the render's verdict ledger and registers
+ * the one question this module needs answered. The answer is per beat — see
+ * `beatAlreadyRefusedPicture` — so an asset refused under one sentence stays offered to the rest.
+ */
+type CuratedAssetRefusedHook = (sceneIndex: number, beatIndex: number, assetId: number) => string | null;
+let curatedAssetRefusedHook: CuratedAssetRefusedHook | null = null;
+export function setCuratedAssetRefusedHook(hook: CuratedAssetRefusedHook | null): void {
+  curatedAssetRefusedHook = hook;
+}
+
 export async function fetchCuratedArchiveBeatClip(
   beat: CuratedBeatContext,
   scene: CuratedSceneContext,
@@ -3273,6 +3286,14 @@ export async function fetchCuratedArchiveBeatClip(
       continue;
     }
     if (usedAssetIds.has(picked.asset.id) || usedStorageUrls.has(picked.asset.storageUrl)) {
+      continue;
+    }
+    const refusedHere = curatedAssetRefusedHook?.(sceneIndex, beat.index, picked.asset.id) ?? null;
+    if (refusedHere) {
+      console.log(
+        `[Pipeline] Scene ${sceneIndex} beat ${beat.index}: archive asset ${picked.asset.id} ` +
+          `not offered again — this beat already refused it: ${refusedHere.slice(0, 100)}`
+      );
       continue;
     }
     if (
