@@ -676,6 +676,15 @@ function youtubeRefusalKey(videoId: string): string {
 }
 
 /**
+ * Forget one video's render-scoped refusal. The background prefetch runs between renders, so
+ * nothing resets the memo for it: a bot check noted an hour ago would answer its retry before any
+ * question was asked. A quiet fetch is a fresh measurement, the same as a render start is.
+ */
+export function forgetYoutubeDownloadRefusal(videoId: string): void {
+  if (videoId) permanentDownloadRefusals.delete(youtubeRefusalKey(videoId));
+}
+
+/**
  * Remember a YouTube download refusal, when — and only when — it was about the video.
  *
  * Returns whether it was remembered, so a caller can log the distinction rather than guess at it.

@@ -355,6 +355,23 @@ const CONTENT_REFUSALS = new Set([
 export const STOP_EARLY_REFUSALS = new Set(["BAKED_EDIT_TEXT"]);
 
 /**
+ * RONDE 646 — A BOT CHECK IS ABOUT THE ASKER, NOT THE VIDEO.
+ *
+ * The download layer writes a bot check off for the rest of a RENDER (`YOUTUBE_DURABLE_SERVICE_
+ * REFUSALS`), deliberately not beyond it: "an IP's reputation can recover". The prefetch read that
+ * render-scoped verdict as a permanent one — 2026-09-24 02:30, yGKzBH4D27A went to `refused` for
+ * `http_502:bot_check` and would never have been asked again. These classes are retried on the
+ * normal backoff instead.
+ */
+export const PREFETCH_RETRYABLE_REFUSAL_CLASSES: ReadonlySet<string> = new Set(["bot_check"]);
+
+/** The refusal is `STATUS:http_NNN:class`; the class is read off the end. */
+export function refusalIsAboutTheVideo(refusal: string): boolean {
+  const cls = refusal.slice(refusal.lastIndexOf(":") + 1).trim();
+  return !PREFETCH_RETRYABLE_REFUSAL_CLASSES.has(cls);
+}
+
+/**
  * What one fetch means for the row. Pure: every input is something the fetch measured.
  *
  *   anything archived        → ingested (the rest of that video is not chased)
@@ -392,7 +409,7 @@ export function decidePrefetchVerdict(p: {
       nextAttemptAt: at(0),
     };
   }
-  if (p.videoRefusal) {
+  if (p.videoRefusal && refusalIsAboutTheVideo(p.videoRefusal)) {
     return {
       status: "refused",
       lastError: `download:${p.videoRefusal}`,
@@ -484,7 +501,9 @@ export type PrefetchDeps = {
   }) => Promise<{ ok: boolean; reason?: string }>;
   /** The download layer's durable verdict about this video, if it has reached one. */
   videoRefusal: (videoId: string) => string | null;
-  probeDurationSec: (filePath: string) => Promise<number>;
+  /** Forget that verdict before asking again: it was scoped to a render that is over. */
+  forgetRefusal?: (videoId: string) => void;
+  probeDurationSec:(filePath: string) => Promise<number>;
   ingest: (filePath: string, metadata: IngestMetadata) => Promise<IngestOutcome>;
   /** Drop anything the download layer is holding for this video — its files are about to go. */
   release: (videoId: string) => void;
@@ -512,6 +531,7 @@ export async function prefetchOneVideo(
   let videoRefusal: string | null = null;
   let workDir: string | null = null;
   try {
+    deps.forgetRefusal?.(row.videoId);
     const sourceSec = await deps.sourceDurationSec(row.videoId).catch(() => 0);
     const planned = prefetchSegmentStarts(sourceSec, PREFETCH_SEGMENT_SEC, segmentsWanted);
     /** Unknown length: one segment, and the download layer picks its start from the real file. */
@@ -809,6 +829,7 @@ async function productionPrefetchDeps(): Promise<PrefetchDeps> {
       return { ok: false, reason: reasons.join(" ") || "no_route_configured" };
     },
     videoRefusal: (videoId) => failure.youtubeDownloadRefusal(videoId),
+    forgetRefusal: (videoId) => failure.forgetYoutubeDownloadRefusal(videoId),
     probeDurationSec: (filePath) => pipeline.probeVideoDurationSec(filePath),
     ingest: (filePath, metadata) => ingestExternalClipToArchiveWithReason(filePath, metadata),
     release: (videoId) => failure.forgetYoutubeSourceFile(videoId),
