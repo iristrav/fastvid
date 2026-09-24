@@ -18,6 +18,7 @@ import path from "path";
 import { createHash } from "crypto";
 import { storagePut } from "./storage";
 import { createMediaArchiveAsset, findMediaArchiveAssetBySourceUrlHash, getAllMediaArchives } from "./db";
+import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
 import { formatPreviewRefusal, verifyArchivePreview } from "./archivePreviewCheck";
 import { extractFrameAtFraction } from "./localClipVision";
 import { indexArchiveAssetEmbedding } from "./archiveEmbeddingIndex";
@@ -53,6 +54,11 @@ export type IngestMetadata = {
   licenseNote?: string;
   /** Override which archive to ingest into; defaults to the first active archive. */
   archiveId?: number;
+  /**
+   * RONDE 647 — stock footage, going into the separate "Stockbeelden" archive. The only way a
+   * Pexels or Pixabay clip is admitted; without it RONDE 9's refusal stands.
+   */
+  stockArchive?: boolean;
 
   // F3-26: structured web-sourcing provenance (all optional — admin uploads and older callers
   // that don't have this data keep working unchanged).
@@ -102,8 +108,10 @@ export type IngestResult = {
  * decided it — the byte count, the duration, the ffmpeg message — never a restatement of the code.
  */
 export type IngestRefusalCode =
-  /** RONDE 9's standing exception: stock footage is never archive material. */
+  /** RONDE 9's standing exception: stock footage is never CURATED archive material. */
   | "EXEMPT_SOURCE"
+  /** RONDE 647 — stock headed for the Stockbeelden archive, and that archive could not be had. */
+  | "STOCK_ARCHIVE_UNAVAILABLE"
   /** `fs.statSync` threw: the file the caller says it has is not readable. */
   | "SOURCE_FILE_UNREADABLE"
   /** Below `MIN_FILE_BYTES` — a placeholder or a truncated download. */
@@ -273,14 +281,26 @@ async function ingestExternalClipToArchiveInner(
     // Defense-in-depth: the funnel call site already refuses, this blocks every other caller.
     const platform = (metadata.sourcePlatform ?? "").toLowerCase();
     const sourcePrefix = metadata.sourceNote.toLowerCase();
-    if (
+    const isStock =
       platform === "pexels" || platform === "pixabay" ||
-      sourcePrefix.startsWith("pexels:") || sourcePrefix.startsWith("pixabay:")
-    ) {
+      sourcePrefix.startsWith("pexels:") || sourcePrefix.startsWith("pixabay:");
+    /**
+     * RONDE 647 — stock goes to its OWN archive or nowhere. The Stockbeelden archive is inactive,
+     * so curated sourcing never offers what is kept there; RONDE 9's poisoning cannot come back.
+     */
+    let stockArchiveId: number | null = null;
+    if (isStock && !metadata.stockArchive) {
       console.log(
         `[Ingestion] Skipping ${metadata.sourcePlatform ?? metadata.sourceNote.split(":")[0]} clip — stock footage is never ingested into the curated archive`
       );
       return refuse("EXEMPT_SOURCE", `${platform || sourcePrefix.split(":")[0]} is stock footage`);
+    }
+    if (isStock) {
+      const { ensureStockMediaArchive } = await import("./db");
+      stockArchiveId = await ensureStockMediaArchive().catch(() => null);
+      if (stockArchiveId == null) {
+        return refuse("STOCK_ARCHIVE_UNAVAILABLE", "the Stockbeelden archive could not be found or created");
+      }
     }
 
     const gate = qualityGateRefusal(localPath, metadata);
@@ -345,9 +365,10 @@ async function ingestExternalClipToArchiveInner(
     }
 
     // Resolve archive to ingest into
-    let archiveId = metadata.archiveId;
+    let archiveId = stockArchiveId ?? metadata.archiveId;
     if (!archiveId) {
-      const archives = await getAllMediaArchives();
+      /** RONDE 647 — the Stockbeelden archive is never anyone's default. */
+      const archives = (await getAllMediaArchives())?.filter((a) => a.slug !== STOCK_ARCHIVE_SLUG);
       const active = archives?.find(a => a.isActive !== 0) ?? archives?.[0];
       if (!active) {
         return refuse("NO_ACTIVE_ARCHIVE", `${archives?.length ?? 0} archive(s) exist, none usable`);
@@ -425,7 +446,7 @@ async function ingestExternalClipToArchiveInner(
       archiveId,
       title: metadata.title.slice(0, 512),
       mediaType: metadata.mediaType,
-      mixKind: metadata.mediaType === "video" ? "real_video" : "photo",
+      mixKind: stockArchiveId != null ? "stock" : metadata.mediaType === "video" ? "real_video" : "photo",
       mimeType: metadata.mimeType,
       storageUrl: url,
       storageKey: key,

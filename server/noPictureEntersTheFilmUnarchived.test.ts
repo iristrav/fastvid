@@ -411,13 +411,23 @@ describe("§8 — the RONDE 9 exception, unchanged", () => {
     expect(sourceMayEnterCuratedArchive(" Pixabay ")).toBe(false);
   });
 
-  it("AND THEY ARE STILL ALLOWED INTO THE FILM — the exemption is from the archive, not the timeline", () => {
+  it("AND THEY ARE STILL ALLOWED INTO THE FILM — stored in the Stockbeelden archive, not the curated one", () => {
     /**
      * The distinction that makes this an exception rather than a ban: stock footage is refused by
-     * the ARCHIVE, and the gate lets it push. Turning RONDE 9 into a push refusal would remove
-     * stock footage from the product, which is not what RONDE 9 decided.
+     * the CURATED archive, and still reaches the film. Turning RONDE 9 into a push refusal would
+     * remove stock footage from the product, which is not what RONDE 9 decided.
+     *
+     * RONDE 647 — video 604 was not delivered because this exemption left a Pexels shot with no
+     * archive asset, which the delivery gate refuses. The operator's rule: every shot is kept in
+     * our own storage, stock in its own archive. So stock is no longer exempt from being STORED;
+     * it is stored with `stockArchive`, which only the separate, inactive Stockbeelden archive
+     * accepts. Only the curated archive's own rows remain exempt.
      */
-    expect(DECIDER).toContain('if (!sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };');
+    expect(DECIDER).toContain("const stock = isStockProvider(provider);");
+    expect(DECIDER).toContain(
+      'if (!stock && !sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };'
+    );
+    expect(DECIDER).toContain("...(stock ? { stockArchive: true } : {}),");
   });
 
   it("the curated archive is not stored into itself", () => {

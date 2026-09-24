@@ -159,6 +159,7 @@ import {
   updateMediaArchiveAsset,
 } from "./db";
 import type { MediaArchiveAsset } from "../drizzle/schema";
+import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
 import { seededShuffle } from "./archiveUsageMemory";
 import { throwIfActiveRenderCancelled } from "./videoGenerationCancel";
 
@@ -311,7 +312,7 @@ export type ArchiveVisualSourcesStatus = {
 
 /** Pipeline startup check when visuals are archive-only. */
 export async function archiveVisualSourcesReady(): Promise<ArchiveVisualSourcesStatus> {
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG);
   if (!archives.length) {
     return {
       ok: false,
@@ -763,7 +764,7 @@ export async function rankArchivesForVisualQuery(
   anchorTags: string[] = [],
   opts?: { assetSampleSize?: number; assetsCache?: Map<number, ArchiveAssetRow[]> }
 ): Promise<RankedArchive[]> {
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG);
   if (!archives.length) return [];
 
   const combined = normalizeMediaTags([...queryTags, ...anchorTags]);
@@ -855,7 +856,7 @@ export async function resolveArchivesForVisualQuery(
     assetsCache?: Map<number, ArchiveAssetRow[]>;
   }
 ): Promise<Array<Awaited<ReturnType<typeof getAllMediaArchives>>[number]>> {
-  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1);
+  const archives = (await getAllMediaArchives()).filter((a) => a.isActive === 1 && a.slug !== STOCK_ARCHIVE_SLUG);
   if (archives.length === 0) return [];
   const allRelevant = opts?.allRelevant !== false;
 

@@ -34485,7 +34485,17 @@ async function ensureArchiveBackedBeforePush(
     }
     return { ok: true, reason: "already_archived" };
   }
-  if (!sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };
+  /**
+   * RONDE 647 — EVERY SHOT IS KEPT IN OUR OWN STORAGE, STOCK INCLUDED.
+   *
+   * Video 604 rendered cleanly and was not delivered: one Pexels shot carried no archive asset, and
+   * the delivery gate requires one for every clip (CLIP_WITHOUT_ARCHIVE_ASSET) while this line
+   * exempted stock from being stored. Two rules that could never both be met. Stock is now stored
+   * too — in the separate, inactive Stockbeelden archive, so RONDE 9's rule still holds: stock is
+   * never offered as archive footage. Only the curated archive's own rows stay exempt.
+   */
+  const stock = isStockProvider(provider);
+  if (!stock && !sourceMayEnterCuratedArchive(provider)) return { ok: true, reason: "exempt_source" };
   if (!externalAssetIngestionEnabled()) return { ok: true, reason: "ingestion_stopped" };
 
   const providerAssetId = root.providerAssetId?.trim() || null;
@@ -34507,11 +34517,14 @@ async function ensureArchiveBackedBeforePush(
   const stored = await storeExternalClipForTimeline({
     clipPath,
     facts,
-    metadata: archiveMetadataForExternalClip(facts, {
-      beatQuery: root.query?.trim() || root.beatText?.slice(0, 80) || "",
-      personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
-      topics: [],
-    }),
+    metadata: {
+      ...archiveMetadataForExternalClip(facts, {
+        beatQuery: root.query?.trim() || root.beatText?.slice(0, 80) || "",
+        personContext: Boolean(dedup.personTopicLock && dedup.primaryPerson),
+        topics: [],
+      }),
+      ...(stock ? { stockArchive: true } : {}),
+    },
     lineage: ledger,
     workDir: path.dirname(clipPath),
     sceneIndex,
@@ -40801,6 +40814,12 @@ async function ensureArchiveMontageVoiceCoverage(
  * same rule and had no way to ask for it, which is how the two routes came to disagree about
  * whether a downloaded clip gets stored at all.
  */
+/** RONDE 647 — stock libraries: stored for the film, in the Stockbeelden archive only. */
+export function isStockProvider(source: string): boolean {
+  const s = source.trim().toLowerCase();
+  return s === "pexels" || s === "pixabay";
+}
+
 export function sourceMayEnterCuratedArchive(source: string): boolean {
   const s = source.trim().toLowerCase();
   return s !== "pexels" && s !== "pixabay" && s !== "archive";

@@ -127,6 +127,8 @@ export type ProductionArchiveMetadata = {
   matchedQuery?: string;
   topics?: string[];
   personContext?: boolean;
+  /** RONDE 647 — stock, into the separate Stockbeelden archive. See `IngestMetadata`. */
+  stockArchive?: boolean;
 };
 
 /**

@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from "drizzle-orm";
+import { STOCK_ARCHIVE_SLUG } from "./stockArchive";
 import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
 import * as fs from "fs";
@@ -1692,6 +1693,37 @@ export async function createMediaArchiveUnique(data: Omit<InsertMediaArchive, "s
   const { slugBase: _ignored, ...rest } = data;
   const result = await db.insert(mediaArchives).values({ ...rest, slug });
   return (result as unknown as [{ insertId: number }])[0]?.insertId as number;
+}
+
+/**
+ * RONDE 647 — THE STOCK ARCHIVE: where every stock shot a film uses is kept, apart from the rest.
+ *
+ * Every shot on a delivered timeline must be readable from FastVid's own storage (the delivery
+ * gate's CLIP_WITHOUT_ARCHIVE_ASSET). Stock may not enter the curated archive — RONDE 9: a Pexels
+ * clip tagged "adolf hitler" outranked real footage on every later render. So stock gets its own
+ * archive, "Stockbeelden", created INACTIVE: curated sourcing reads only active archives (and
+ * excludes this slug by name as well), so what is kept here is never offered as archive footage.
+ */
+export { STOCK_ARCHIVE_SLUG };
+
+export async function ensureStockMediaArchive(): Promise<number | null> {
+  const existing = await getMediaArchiveBySlug(STOCK_ARCHIVE_SLUG);
+  if (existing) return existing.id;
+  const db = await getDb();
+  if (!db) return null;
+  try {
+    await db.insert(mediaArchives).values({
+      name: "Stockbeelden",
+      slug: STOCK_ARCHIVE_SLUG,
+      description:
+        "Stock shots (Pexels, Pixabay) used in delivered films. Kept so every shot can be read back " +
+        "from our own storage; never offered as archive footage.",
+      isActive: 0,
+    });
+  } catch {
+    /* another worker created it first — the unique slug says so; read it back below */
+  }
+  return (await getMediaArchiveBySlug(STOCK_ARCHIVE_SLUG))?.id ?? null;
 }
 
 export async function updateMediaArchive(id: number, data: Partial<InsertMediaArchive>) {
