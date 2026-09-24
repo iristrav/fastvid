@@ -86,6 +86,7 @@ import { egressRefusalReason, YOUTUBE_EGRESS_CACHE_MS } from "./youtubeEgressPro
 import pLimit from "p-limit";
 import { createLookaheadRegistry, type LookaheadRegistry, type LookaheadResult } from "./youtubeLookahead";
 import { askForFootage, queriesThatNameSomething, youtubeTitleIsNotFootage } from "./youtubeNonFootage";
+import { markYoutubeKeySpent, usableYoutubeSearchKeys } from "./youtubeApiKeys";
 import { cropEmbeddedBarsInPlace } from "./embeddedBarsCrop";
 import { generateGrokVideo } from "./_core/grokVideo";
 import { generateVeoVideo } from "./_core/veoVideo";
@@ -17795,8 +17796,15 @@ export async function searchYoutubeVideoCandidates(
      */
     `${query}#${license}#n${maxResults}#d${videoDuration}`,
     async (): Promise<{ items?: YoutubeSearchRow["item"][] } | null> => {
+      /**
+       * RONDE 651 — the keys are tried in order: a 429 sets one aside until Google's reset and the
+       * same search goes out on the next. Only when none is left does the render's cooldown start.
+       * See `youtubeApiKeys`. With one key configured this is the request it always was.
+       */
+      let searchKey = usableYoutubeSearchKeys()[0] ?? { key: youtubeApiKey, position: 1 };
+      for (;;) {
       const searchUrl = new URL("https://www.googleapis.com/youtube/v3/search");
-      searchUrl.searchParams.set("key", youtubeApiKey);
+      searchUrl.searchParams.set("key", searchKey.key);
       searchUrl.searchParams.set("q", query);
       searchUrl.searchParams.set("type", "video");
       /** One decision, shared with the metadata recorded on adoption. `null` means send nothing. */
@@ -17816,6 +17824,14 @@ export async function searchYoutubeVideoCandidates(
         scopedTimeoutMs(15_000, 3_000),
         `${label} search scene ${sceneIndex}`
       ));
+      /** RONDE 651 — a spent key first hands the search to the next one, when there is one. */
+      if (searchResp.status === 429) {
+        const nextKey = markYoutubeKeySpent(searchKey.position);
+        if (nextKey && nextKey.position !== searchKey.position) {
+          searchKey = nextKey;
+          continue;
+        }
+      }
       if (!searchResp.ok) {
         if (searchResp.status === 429) {
           markYoutubeRateLimited(parseRetryAfterMs(searchResp.headers?.get?.("retry-after")));
@@ -17827,6 +17843,7 @@ export async function searchYoutubeVideoCandidates(
       }
       markYoutubeSearchResult(true);
       return (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
+      }
     },
     "searchYoutubeVideoCandidates"
   );

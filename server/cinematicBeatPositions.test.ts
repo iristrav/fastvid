@@ -175,7 +175,13 @@ describe("render 563's plan survives its own validator", () => {
    * this is why the cursor advances before the adoption checks rather than after them.
    */
   it("a dropped beat still occupies its share of the narration", () => {
-    const { built, clips } = videoClips([sceneFacts(0, 3, { adopted: [0, 2] })]);
+    const { built, clips: all } = videoClips([sceneFacts(0, 3, { adopted: [0, 2] })]);
+    /**
+     * RONDE 651 — the shot held over the dropped beat is longer than six seconds, so the long-shot
+     * rule cuts it into `_pN` pieces. Those pieces are one decision; the beats are what this
+     * asserts, so a piece after the first is read as part of the shot it came from.
+     */
+    const clips = all.filter((c) => !/_p(?:[2-9]|\d{2,})$/.test(c.id));
     expect(built.dropped).toEqual(["s0b1: no clip was adopted for this beat"]);
     expect(clips).toHaveLength(2);
     expect(

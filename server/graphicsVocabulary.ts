@@ -241,6 +241,8 @@ export const EXPLICITLY_DESIGNED_GRAPHICS: ReadonlySet<string> = new Set([
   "chapter_card",
   "chapter_title",
   "counter",
+  /** RONDE 651 — a year set as a date (serif, between two rules), no longer the generic card. */
+  "date_card",
   "donut_chart",
   "horizontal_bar",
   "icon",

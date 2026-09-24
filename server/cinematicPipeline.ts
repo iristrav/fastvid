@@ -43,6 +43,8 @@ import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
+import { directOnScreenText, type TextDirection } from "./onScreenTextDirector";
+import { limitLongShots } from "./longShotLimit";
 import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
 import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
@@ -186,6 +188,8 @@ export type CinematicPipelineResult = {
    * stay distinguishable — see `musicDirector.ts`.
    */
   cueSheet: ScoredCue[];
+  /** RONDE 651 — what the on-screen text director kept, switched off and converted. */
+  textDirection: TextDirection;
   /**
    * RONDE 166 (§1/§2) — the ambience that was laid down, and the music verdict.
    *
@@ -351,6 +355,26 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   });
 
   /**
+   * RONDE 651 — the two text planners' output, read TOGETHER once, the way an editor would: no
+   * key-word pop-ups, each person, place and year once, never two texts in one place. See
+   * `onScreenTextDirector`. Switched off, never deleted — the editor can turn any of it back on.
+   */
+  const textDirection = directOnScreenText(timeline);
+
+  /**
+   * RONDE 651 — no shot on screen longer than six seconds: see `limitLongShots`. Here rather than
+   * inside `translateEdl`, which translates and decides nothing; after the YouTube rule there,
+   * whose pieces are already at most five and pass through untouched. Its pieces are `_pN` like
+   * the YouTube rule's, and are reported to `lostEditorialIntent` as one planned shot each.
+   */
+  const videoTrack = timeline.tracks.find((t) => t.kind === "VIDEO");
+  const longShots =
+    videoTrack?.kind === "VIDEO"
+      ? limitLongShots({ clips: videoTrack.clips })
+      : { clips: [], notes: [] as string[], adjustedIds: [] as string[] };
+  if (videoTrack?.kind === "VIDEO") videoTrack.clips.splice(0, videoTrack.clips.length, ...longShots.clips);
+
+  /**
    * RONDE 166 (§1/§2) — the AMBIENT track, filled from the catalogue that was already there.
    *
    * `translateEdl` builds AMBIENT and MUSIC as literal empty arrays, because an EDL is a picture
@@ -427,9 +451,10 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     director,
     unsupported,
     covered,
-    youtubeShots,
-    youtubeAdjustedClipIds,
+    youtubeShots: [...youtubeShots, ...longShots.notes],
+    youtubeAdjustedClipIds: [...youtubeAdjustedClipIds, ...longShots.adjustedIds],
     cueSheet,
+    textDirection,
     renderId,
     audio: audioPlan,
     attention,

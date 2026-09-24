@@ -145,7 +145,12 @@ describe("R178 — a real render's beats reach the timeline as graphics", () => 
   it("every planned graphic is on the timeline, none lost in translation", () => {
     const { edl, timeline } = runRoute([sceneFacts(0, BEAT_TEXTS)]);
     const planned = edl.decisions.reduce((n, d) => n + d.motionGraphics.length, 0);
-    expect(graphicsOf(timeline)).toHaveLength(planned);
+    /**
+     * RONDE 651 — a location card the on-screen text director adds in place of an empty map is
+     * marked `standsInFor`; it is an addition, not a planned graphic, and the map it replaces is
+     * still on the track (switched off), so nothing planned is missing from this count.
+     */
+    expect(graphicsOf(timeline).filter((g) => !g.data?.standsInFor)).toHaveLength(planned);
     /** The route's own audit agrees — it is what production logs. */
     expect(lostEditorialIntent(edl, timeline)).toEqual([]);
   });

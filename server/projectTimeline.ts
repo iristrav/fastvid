@@ -402,6 +402,13 @@ export type TimelineText = {
   animation: TextAnimation;
   editedByUser?: boolean;
   disabled?: boolean;
+  /**
+   * RONDE 651 — what the planner meant this text to be ("name", "date", "location", "callout",
+   * "animated_text", …): the caption planner's own `captionType`. Absent on older timelines.
+   */
+  role?: string;
+  /** RONDE 651 — why the on-screen text director switched it off, when it did. */
+  disabledReason?: string;
 };
 
 export type TimelineCaption = {
@@ -562,6 +569,8 @@ export type TimelineGraphic = {
   disabled?: boolean;
   /** Why the planner asked for it, carried so an unsupported graphic can say what was lost. */
   reason?: string;
+  /** RONDE 651 — why the on-screen text director switched it off, when it did. */
+  disabledReason?: string;
 };
 
 export type TimelineTrack =

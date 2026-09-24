@@ -87,13 +87,14 @@ describe("the design list is the switch, written down", () => {
   });
 
   /** The measured 21/11 split, pinned so a change to either side is deliberate. */
-  it("the distribution is 22 designed and 11 generic", () => {
+  it("the distribution is 23 designed and 10 generic", () => {
     const generic = [...RENDERABLE_GRAPHICS].filter((t) => !EXPLICITLY_DESIGNED_GRAPHICS.has(t));
     /** RONDE 124 added `highlight_box`: a real design, drawn before the switch. */
-    expect(EXPLICITLY_DESIGNED_GRAPHICS.size).toBe(22);
-    expect(generic.length).toBe(11);
+    /** RONDE 651 added `date_card`: a year set as a date, no longer the generic card. */
+    expect(EXPLICITLY_DESIGNED_GRAPHICS.size).toBe(23);
+    expect(generic.length).toBe(10);
     expect(generic.sort()).toEqual([
-      "badge", "callout", "date_card", "emphasis", "headline", "label",
+      "badge", "callout", "emphasis", "headline", "label",
       "subtitle", "text", "timeline_event", "title", "warning",
     ]);
   });

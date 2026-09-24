@@ -642,7 +642,13 @@ export function translateEdl(params: {
         );
       }
       if (trackForCaption(caption) === "CAPTIONS") captions.push(el);
-      else texts.push({ ...el, animation: caption.animation === "none" ? "none" : "fade" });
+      else
+        texts.push({
+          ...el,
+          animation: caption.animation === "none" ? "none" : "fade",
+          /** RONDE 651 — the planner's own word for it, so the text director can read it. */
+          role: caption.captionType,
+        });
     }
 
     /**
@@ -796,6 +802,7 @@ export function translateEdl(params: {
    */
   const limited = limitYoutubeShots({ clips, youtube });
   clips.splice(0, clips.length, ...limited.clips);
+
   /**
    * The film is as long as the LONGER of its picture and its voice.
    *

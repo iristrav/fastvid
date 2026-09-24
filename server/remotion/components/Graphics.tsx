@@ -94,43 +94,86 @@ function readAny(g: GraphicSpec, ...keys: string[]): string | null {
   return null;
 }
 
-const CARD_FONT = "DejaVu Sans, Liberation Sans, sans-serif";
+/**
+ * RONDE 651 — the type a documentary uses: a quiet sans for labels, a serif for dates and quotes.
+ *
+ * Noto Sans and Noto Serif are installed in the render image (Dockerfile: fonts-noto,
+ * fonts-noto-core); DejaVu and Liberation stay behind them as the fallback they always were.
+ */
+const CARD_FONT = "Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";
+const SERIF_FONT = "Noto Serif, DejaVu Serif, Liberation Serif, serif";
+/** A muted archival gold — present without shouting over black-and-white footage. */
+const ACCENT = "#d9b45a";
+/** Legible over any shot without a box: a soft dark halo rather than a hard outline. */
+const HALO = "0 2px 10px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)";
 
 /**
  * A location card: the place, with its country underneath when the payload has one.
  *
  * The rule in miniature — `country` is drawn if and only if the planner put one in the payload.
+ * RONDE 651: set as a locator slug — small capitals, open tracking, a thin gold rule — the way a
+ * documentary marks where we are, instead of a heavy white headline.
  */
 const LocationCard: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }) => {
   const country = readAny(g, "country", "region", "subtitle");
   return (
-    <div style={{ borderLeft: "4px solid #ffd54a", paddingLeft: 18 }}>
-      <div style={{ fontFamily: CARD_FONT, fontSize: "1em", fontWeight: 800, color: "white", letterSpacing: "0.04em" }}>
+    <div style={{ borderLeft: `3px solid ${ACCENT}`, paddingLeft: 18 }}>
+      <div style={{ fontFamily: CARD_FONT, fontSize: "1em", fontWeight: 600, color: "white", letterSpacing: "0.04em", textShadow: HALO }}>
         {primary.toUpperCase()}
       </div>
       {country && (
-        <div style={{ fontFamily: CARD_FONT, fontSize: "0.55em", color: "rgba(255,255,255,0.75)", marginTop: 4 }}>
-          {country}
+        <div style={{ fontFamily: CARD_FONT, fontSize: "0.55em", color: "rgba(255,255,255,0.8)", marginTop: 4, letterSpacing: "0.12em", textShadow: HALO }}>
+          {country.toUpperCase()}
         </div>
       )}
     </div>
   );
 };
 
-/** A lower third: a name and, when present, a role. */
+/**
+ * A lower third: a name and, when present, a role.
+ *
+ * RONDE 651: no black slab. The name sits on a translucent band that fades out to the right, with
+ * a thin gold rule at its left edge — the broadcast lower third — and the role in tracked small
+ * capitals under it. Padding and sizes are exactly the ones `graphicBoxSize` measures.
+ */
 const LowerThird: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }) => {
   const role = readAny(g, "role", "subtitle", "description", "title");
   return (
-    <div style={{ background: "rgba(0,0,0,0.72)", padding: "0.5em 0.9em", borderRadius: 4 }}>
-      <div style={{ fontFamily: CARD_FONT, fontSize: "0.9em", fontWeight: 800, color: "white" }}>{primary}</div>
+    <div
+      style={{
+        background: "linear-gradient(90deg, rgba(8,8,10,0.62) 0%, rgba(8,8,10,0.45) 70%, rgba(8,8,10,0) 100%)",
+        padding: "0.5em 0.9em",
+        borderLeft: `3px solid ${ACCENT}`,
+      }}
+    >
+      <div style={{ fontFamily: CARD_FONT, fontSize: "0.9em", fontWeight: 600, color: "white", letterSpacing: "0.01em", textShadow: HALO }}>
+        {primary}
+      </div>
       {role && (
-        <div style={{ fontFamily: CARD_FONT, fontSize: "0.5em", color: "#ffd54a", marginTop: 2, letterSpacing: "0.08em" }}>
+        <div style={{ fontFamily: CARD_FONT, fontSize: "0.5em", color: ACCENT, marginTop: 2, letterSpacing: "0.14em", textShadow: HALO }}>
           {role.toUpperCase()}
         </div>
       )}
     </div>
   );
 };
+
+/**
+ * RONDE 651 — a date card, set as a date: serif figures between two short rules.
+ *
+ * It used to fall through to the default branch — the year in heavy white sans, the same weight as
+ * a headline. A documentary states a year quietly; the rules frame it without a box.
+ */
+const DateCard: React.FC<{ primary: string }> = ({ primary }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: "0.45em" }}>
+    <div style={{ height: 2, width: "1.2em", background: "white" }} />
+    <div style={{ fontFamily: SERIF_FONT, fontSize: "0.9em", fontWeight: 500, color: "white", letterSpacing: "0.12em", textShadow: HALO }}>
+      {primary}
+    </div>
+    <div style={{ height: 2, width: "1.2em", background: "white" }} />
+  </div>
+);
 
 /**
  * A number counter that COUNTS, from the payload's own from/to.
@@ -162,7 +205,7 @@ const QuoteCard: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary }
   const attribution = readAny(g, "attribution", "author", "source");
   return (
     <div style={{ maxWidth: "80%", textAlign: "center" }}>
-      <div style={{ fontFamily: CARD_FONT, fontSize: "0.95em", fontStyle: "italic", color: "white", lineHeight: 1.35 }}>
+      <div style={{ fontFamily: SERIF_FONT, fontSize: "0.95em", fontStyle: "italic", color: "white", lineHeight: 1.35, textShadow: HALO }}>
         “{primary}”
       </div>
       {attribution && (
@@ -288,6 +331,10 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
     case "name":
       body = <LowerThird g={g} primary={words} />;
       break;
+    /** RONDE 651 — a year is set as a date, not as a headline. */
+    case "date_card":
+      body = <DateCard primary={words} />;
+      break;
     case "counter":
     case "statistic":
       body = <NumberCounter g={g} primary={words} />;
@@ -299,16 +346,16 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
     case "chapter_title":
       body = (
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontFamily: CARD_FONT, fontSize: "1.2em", fontWeight: 800, color: "white", letterSpacing: "0.06em" }}>
+          <div style={{ fontFamily: SERIF_FONT, fontSize: "1.2em", fontWeight: 600, color: "white", letterSpacing: "0.08em", textShadow: HALO }}>
             {words.toUpperCase()}
           </div>
-          <div style={{ height: 3, width: 90, background: "#ffd54a", margin: "14px auto 0" }} />
+          <div style={{ height: 2, width: 90, background: ACCENT, margin: "14px auto 0" }} />
         </div>
       );
       break;
     default:
       body = (
-        <div style={{ fontFamily: CARD_FONT, fontSize: "1em", fontWeight: 800, color: "white" }}>{primary}</div>
+        <div style={{ fontFamily: CARD_FONT, fontSize: "1em", fontWeight: 600, color: "white", textShadow: HALO }}>{primary}</div>
       );
   }
 
