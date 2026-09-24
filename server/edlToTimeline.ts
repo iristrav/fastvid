@@ -61,6 +61,7 @@ import type {
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import { resolveSoundEffect } from "./audioAssetSource";
 import { beatIndexFromBeatId } from "./cinematicPipelineInputs";
+import { limitYoutubeShots, type YoutubeSourceFacts } from "./youtubeShotLimit";
 
 /**
  * The engine's transition vocabulary, mapped to the renderer's.
@@ -339,6 +340,11 @@ export type EdlTranslationInput = {
    * re-render.
    */
   sourceTrim?: { inSec: number; outSec?: number };
+  /**
+   * RONDE 647 — present when the chosen footage came from YouTube: its length and shot boundaries,
+   * in the rehydrated file's seconds. Such a shot is held to five seconds; see `youtubeShotLimit`.
+   */
+  youtubeSource?: YoutubeSourceFacts;
 };
 
 export type EdlTranslation = {
@@ -354,6 +360,10 @@ export type EdlTranslation = {
    * happened to be survivable.
    */
   covered: string[];
+  /** RONDE 647 — what the five-second YouTube rule changed, one line each. */
+  youtubeShots: string[];
+  /** RONDE 647 — the clips it cut into pieces or moved, by the id they had before. */
+  youtubeAdjustedClipIds: string[];
 };
 
 /**
@@ -501,7 +511,10 @@ export function translateEdl(params: {
   const sfx: TimelineAudioClip[] = [];
   const graphics: TimelineGraphic[] = [];
 
-  for (const { decision, sceneOffsetSec, identity, sourceTrim } of params.inputs) {
+  /** RONDE 647 — clip id → its YouTube source, for the five-second rule after the holds. */
+  const youtube = new Map<string, YoutubeSourceFacts>();
+
+  for (const { decision, sceneOffsetSec, identity, sourceTrim, youtubeSource } of params.inputs) {
     const clip = decision.clip;
     const start = sceneOffsetSec + clip.startSec;
     const end = sceneOffsetSec + clip.endSec;
@@ -537,8 +550,10 @@ export function translateEdl(params: {
       );
     }
 
+    const clipId = timelineElementId("vc", decision.beatId, clip.candidateId, clip.startSec);
+    if (youtubeSource) youtube.set(clipId, youtubeSource);
     clips.push({
-      id: timelineElementId("vc", decision.beatId, clip.candidateId, clip.startSec),
+      id: clipId,
       kind: clip.assetType === "image" ? "image" : "video",
       source: identity,
       /**
@@ -775,6 +790,13 @@ export function translateEdl(params: {
     voiceDurationSec: params.voice?.durationSec ?? null,
   });
   /**
+   * RONDE 647 — AFTER the holds, because a hold is exactly how a YouTube shot grew to 40 s (video
+   * 604). The rule redistributes time inside a scene and never changes the span the clips cover,
+   * so the length measured below and the narration under it are unaffected.
+   */
+  const limited = limitYoutubeShots({ clips, youtube });
+  clips.splice(0, clips.length, ...limited.clips);
+  /**
    * The film is as long as the LONGER of its picture and its voice.
    *
    * This used to be the picture alone. Every consumer downstream trusts this number: the renderer
@@ -811,7 +833,13 @@ export function translateEdl(params: {
     { kind: "GRAPHICS", graphics },
   ];
   timeline.durationSec = Number(duration.toFixed(3));
-  return { timeline, unsupported, covered };
+  return {
+    timeline,
+    unsupported,
+    covered,
+    youtubeShots: limited.notes,
+    youtubeAdjustedClipIds: limited.adjustedIds,
+  };
 }
 
 /** What the translation could not carry across, for the render log. */

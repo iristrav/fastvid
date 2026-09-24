@@ -52415,6 +52415,14 @@ async function _runVideoPipelineInner(
           words: storedAlignment?.words ?? [],
           persist: (p) => saveVideoTimeline(p),
           /**
+           * RONDE 647 — a YouTube shot is held to five seconds and taken from one continuous shot
+           * of the original. Its length and cuts come from its archive row, measured once.
+           */
+          youtubeSourceFacts: async (identity) => {
+            const { youtubeSourceFactsFor, productionShotCutDeps } = await import("./youtubeShotCuts");
+            return youtubeSourceFactsFor(identity, productionShotCutDeps(workDir));
+          },
+          /**
            * The emotional curve this render already built, handed to the score.
            *
            * `buildDocumentaryPlan` runs at the top of the render and produces the curve from the

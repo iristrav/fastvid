@@ -280,6 +280,13 @@ export const mediaArchiveAssets = mysqlTable(
   /** Version string of the annotator that produced annotationJson, e.g. "v1".
    *  Lets the backfill re-annotate only rows produced by older versions. */
   annotationVersion: varchar("annotationVersion", { length: 16 }),
+  /**
+   * RONDE 647 — where the footage cuts to another shot, in seconds of this file, ascending.
+   *
+   * Null = never measured. [] = measured, one continuous shot. Measured the first time a plan needs
+   * it (`youtubeShotCuts.ts`), so a YouTube piece is never taken across a cut in the original.
+   */
+  shotCutsSec: json("shotCutsSec").$type<number[]>(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

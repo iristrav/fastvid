@@ -43,6 +43,7 @@ import type { EDL, EditDecision } from "./cinematicEditingEngine/types";
 import { aiDirectorEnabled, runAIDirector, toDirectorGuidance, type SceneInput } from "./aiDirector";
 import type { DirectorOutput } from "./aiDirector/types";
 import { translateEdl, type EdlTranslationInput } from "./edlToTimeline";
+import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import { ambientClips, planCinematicAudio, type CinematicAudioPlan } from "./cinematicAmbient";
 import { ATTENTION_EFFECTS, classifyAttentionMoment, type AttentionMoment } from "./shotVocabulary";
 import { formatGraphics, newRenderId } from "./renderCorrelation";
@@ -81,6 +82,8 @@ export type CinematicBeatInput = {
    * returns rather than to a temp file that will not exist tomorrow.
    */
   sourceTrim?: { inSec: number; outSec?: number };
+  /** RONDE 647 — set when this beat's footage came from YouTube; see `youtubeShotLimit`. */
+  youtubeSource?: YoutubeSourceFacts;
 };
 
 export type CinematicSceneInput = {
@@ -171,6 +174,10 @@ export type CinematicPipelineResult = {
    * about retrieval, not about the edit.
    */
   covered: string[];
+  /** RONDE 647 — what the five-second YouTube rule changed, one line each. */
+  youtubeShots: string[];
+  /** RONDE 647 — the clips that rule cut into pieces or moved, by their original id. */
+  youtubeAdjustedClipIds: string[];
   /**
    * WHERE MUSIC SHOULD BE, AND WHAT COULD FILL IT.
    *
@@ -248,6 +255,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   const inputs: CinematicEditingInput[] = [];
   const identities: AssetSourceIdentity[] = [];
   const trims: Array<{ inSec: number; outSec?: number } | undefined> = [];
+  const youtubeSources: Array<YoutubeSourceFacts | undefined> = [];
   const offsets: number[] = [];
   /** RONDE 166 (§3) — index-aligned with `inputs`; null for a beat with no evidence. */
   const attention: Array<PlannedAttention | null> = [];
@@ -273,6 +281,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       });
       identities.push(beat.identity);
       trims.push(beat.sourceTrim);
+      youtubeSources.push(beat.youtubeSource);
       /**
        * RONDE 166 (§3) — the beat's attention moment, classified from the beat's OWN TEXT.
        *
@@ -321,9 +330,10 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       sceneOffsetSec: offsets[i] ?? 0,
       identity: identities[i]!,
       ...(trims[i] ? { sourceTrim: trims[i]! } : {}),
+      ...(youtubeSources[i] ? { youtubeSource: youtubeSources[i]! } : {}),
     })
   );
-  const { timeline, unsupported, covered } = translateEdl({
+  const { timeline, unsupported, covered, youtubeShots, youtubeAdjustedClipIds } = translateEdl({
     videoId: params.videoId,
     inputs: translationInputs,
     format: params.format,
@@ -417,6 +427,8 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     director,
     unsupported,
     covered,
+    youtubeShots,
+    youtubeAdjustedClipIds,
     cueSheet,
     renderId,
     audio: audioPlan,
@@ -441,10 +453,25 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
  * different shapes on purpose (beat-relative vs absolute time), so a deep comparison would be all
  * noise. What must hold is that every decision that was made is still represented.
  */
-export function lostEditorialIntent(edl: EDL, timeline: ProjectTimeline): string[] {
+export function lostEditorialIntent(
+  edl: EDL,
+  timeline: ProjectTimeline,
+  /**
+   * RONDE 647 — clips the five-second YouTube rule cut into pieces or moved. Their pieces are one
+   * decision, and their in-point was moved on purpose, so neither is reported as lost.
+   */
+  youtubeAdjustedClipIds: readonly string[] = []
+): string[] {
   const lost: string[] = [];
   const track = timeline.tracks.find((t) => t.kind === "VIDEO");
-  const clips = track && track.kind === "VIDEO" ? track.clips : [];
+  const adjusted = new Set(youtubeAdjustedClipIds);
+  const pieceOf = (id: string): { base: string; n: number } | null => {
+    const m = /^(.*)_p(\d+)$/.exec(id);
+    return m && adjusted.has(m[1]!) ? { base: m[1]!, n: Number(m[2]) } : null;
+  };
+  const clips = (track && track.kind === "VIDEO" ? track.clips : []).filter(
+    (c) => (pieceOf(c.id)?.n ?? 1) === 1
+  );
 
   if (clips.length !== edl.decisions.length) {
     lost.push(
@@ -488,7 +515,8 @@ export function lostEditorialIntent(edl: EDL, timeline: ProjectTimeline): string
     if (decision.effects.length !== (clip.effects?.length ?? 0)) {
       lost.push(`beat ${decision.beatId}: ${decision.effects.length} effect(s) planned, ${clip.effects?.length ?? 0} carried`);
     }
-    if (clip.sourceIn !== decision.clip.trimStartSec) {
+    const baseId = pieceOf(clip.id)?.base ?? clip.id;
+    if (clip.sourceIn !== decision.clip.trimStartSec && !adjusted.has(baseId)) {
       lost.push(`beat ${decision.beatId}: the planner's trim was not carried across`);
     }
   });

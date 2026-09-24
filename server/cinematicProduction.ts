@@ -49,7 +49,8 @@ import {
   formatQualitySummary,
   type QualityFinding,
 } from "./directorQualityRules";
-import type { ProjectTimeline } from "./projectTimeline";
+import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
+import type { YoutubeSourceFacts } from "./youtubeShotLimit";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 /**
  * §14's route line reads the REAL predicates, so it can never claim a flag state the pipeline does
@@ -217,6 +218,12 @@ export type CinematicPlanParams = {
    * same film — the thing this codebase has spent rounds removing.
    */
   emotionalCurve?: readonly CurvePoint[];
+  /**
+   * RONDE 647 — for a beat whose footage came from YouTube, its length and shot boundaries; null
+   * for any other footage. Injected (production: `youtubeSourceFactsFor`) so a test can plan
+   * without a database. Absent = no beat is treated as YouTube.
+   */
+  youtubeSourceFacts?: (identity: AssetSourceIdentity) => Promise<YoutubeSourceFacts | null>;
 };
 
 /**
@@ -309,6 +316,27 @@ export async function planAndStoreCinematicTimeline(
       return { ok: false, code: CINEMATIC_PLAN_ERROR.NO_PLANNABLE_BEATS, reason, log };
     }
 
+    /**
+     * RONDE 647 — which beats are YouTube, asked once per archive asset before the plan is made,
+     * because the five-second rule is applied while the timeline is built.
+     */
+    if (params.youtubeSourceFacts) {
+      const asked = new Map<string, Promise<YoutubeSourceFacts | null>>();
+      for (const scene of built.scenes) {
+        for (const beat of scene.beats) {
+          const key =
+            beat.identity.archiveAssetId != null
+              ? `a:${beat.identity.archiveAssetId}`
+              : `p:${beat.identity.provider}:${beat.identity.providerAssetId ?? ""}`;
+          if (!asked.has(key)) {
+            asked.set(key, params.youtubeSourceFacts(beat.identity).catch(() => null));
+          }
+          const facts = await asked.get(key)!;
+          if (facts) beat.youtubeSource = facts;
+        }
+      }
+    }
+
     result = runCinematicPipeline({
       videoId: params.videoId,
       scenes: built.scenes,
@@ -339,6 +367,8 @@ export async function planAndStoreCinematicTimeline(
   }
 
   log.push(formatCinematicPlan(result));
+  /** RONDE 647 — every change the five-second YouTube rule made, one line each. */
+  for (const line of result.youtubeShots) log.push(`[YouTubeShots] video=${params.videoId} ${line}`);
   /**
    * RONDE 178 — the graphics line, so a plan/render mismatch is visible per render.
    *
@@ -395,7 +425,7 @@ export async function planAndStoreCinematicTimeline(
    * The losslessness check on the REAL edit, not only in a test. A decision that failed to cross
    * from the EDL into the timeline is named here, on the video where it happened.
    */
-  for (const lost of lostEditorialIntent(result.edl, result.timeline)) {
+  for (const lost of lostEditorialIntent(result.edl, result.timeline, result.youtubeAdjustedClipIds)) {
     log.push(`[EDL] LOST ${lost}`);
   }
 
