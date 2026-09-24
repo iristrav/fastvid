@@ -654,7 +654,9 @@ import {
   formatVoicePersistFailure,
   formatVoicePersistSuccess,
   persistVoiceover,
+  narrationForTimeline,
 } from "./renderPersistence";
+import { probeMediaFacts } from "./assetRehydrator";
 import { tryRestoreFromMediaCache, reportToMediaCache } from "./mediaCache";
 /**
  * RONDE 192 — the lock, and the id that names the render holding it.
@@ -51935,6 +51937,8 @@ async function _runVideoPipelineInner(
      */
     let persisted: Awaited<ReturnType<typeof persistVoiceover>> | null = null;
     let storedAlignment: ReturnType<typeof loadStoredTtsAlignment> = null;
+    /** RONDE 647 — the narration the timeline carries; see `narrationForTimeline`. */
+    let narration: ReturnType<typeof narrationForTimeline> = null;
     try {
       persisted = await persistVoiceover({
         videoId,
@@ -51942,6 +51946,22 @@ async function _runVideoPipelineInner(
         upload: (key, filePath, contentType) => storagePutFromFile(key, filePath, contentType),
       });
       storedAlignment = loadStoredTtsAlignment(workDir);
+      const measuredVoiceSec =
+        persisted.ok && !(storedAlignment?.totalDurationSec && storedAlignment.totalDurationSec > 0)
+          ? (await probeMediaFacts(persisted.sourcePath).catch(() => null))?.durationSec ?? null
+          : null;
+      narration = narrationForTimeline({
+        persisted,
+        alignmentDurationSec: storedAlignment?.totalDurationSec,
+        measuredDurationSec: measuredVoiceSec,
+      });
+      console.log(
+        narration
+          ? `[Voice] video=${videoId} narration on the timeline duration=${narration.durationSec.toFixed(2)}s ` +
+              `source=${narration.durationSource} words=${storedAlignment?.words.length ?? 0}`
+          : `[Voice] video=${videoId} NO NARRATION ON THE TIMELINE — persisted=${persisted.ok} ` +
+              `alignment=${storedAlignment?.totalDurationSec ?? "none"} measured=${measuredVoiceSec ?? "none"}`
+      );
       if (persisted.ok) {
         await updateVideoStatus(videoId, "completed", { voiceoverUrl: persisted.url });
         console.log(
@@ -51957,7 +51977,7 @@ async function _runVideoPipelineInner(
         manifestSchemaVersion: MANIFEST_SCHEMA_VERSION,
         narration: buildNarrationPersistence({
           voiceoverUrl: persisted.ok ? persisted.url : null,
-          durationSec: storedAlignment?.totalDurationSec ?? null,
+          durationSec: narration?.durationSec ?? null,
           // Only what the render actually knows. The TTS ladder picks its own tier at call time
           // and does not report which one answered, so this stays null rather than guessing
           // "elevenlabs" for a clip that may have come from the Google or Fish fallback.
@@ -52408,10 +52428,7 @@ async function _runVideoPipelineInner(
             namedEntities: (text) => beatNamedEntitiesByKind(text),
             secondarySubjects: (text) => extractSecondaryEntities(text, undefined),
           },
-          voice:
-            persisted?.ok && storedAlignment?.totalDurationSec
-              ? { url: persisted.url, durationSec: storedAlignment.totalDurationSec }
-              : null,
+          voice: narration ? { url: narration.url, durationSec: narration.durationSec } : null,
           words: storedAlignment?.words ?? [],
           persist: (p) => saveVideoTimeline(p),
           /**

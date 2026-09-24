@@ -222,3 +222,33 @@ export function readNarrationPersistence(
 export function narrationIsRecoverable(n: NarrationPersistence | null): boolean {
   return Boolean(n?.voiceoverUrl);
 }
+
+/**
+ * RONDE 647 — THE NARRATION REACHES THE TIMELINE WITH OR WITHOUT WORD TIMING.
+ *
+ * Renders 603 (twice) and 604 all logged `voiceover stored … words=0` and `audioBed voice=0`: the
+ * voice-over was synthesised and uploaded, and the stored timeline had no VOICE clip at all. The
+ * cinematic plan was handed a voice only when the TTS ALIGNMENT carried a total duration, and only
+ * ElevenLabs returns character timing — a narration from Google TTS or Fish Audio has none. So the
+ * decision "is there a narration" read the word-timing file instead of the narration.
+ *
+ * The length now comes from the alignment when there is one, and otherwise from the file itself,
+ * measured. Word boundaries are never estimated: without an alignment the captions carry none.
+ */
+export function narrationForTimeline(params: {
+  persisted: VoiceoverPersistResult | null;
+  alignmentDurationSec: number | null | undefined;
+  measuredDurationSec: number | null | undefined;
+}): { url: string; durationSec: number; durationSource: "alignment" | "measured_file" } | null {
+  const p = params.persisted;
+  if (!p || !p.ok) return null;
+  const aligned = params.alignmentDurationSec;
+  if (aligned != null && Number.isFinite(aligned) && aligned > 0) {
+    return { url: p.url, durationSec: aligned, durationSource: "alignment" };
+  }
+  const measured = params.measuredDurationSec;
+  if (measured != null && Number.isFinite(measured) && measured > 0) {
+    return { url: p.url, durationSec: Number(measured.toFixed(3)), durationSource: "measured_file" };
+  }
+  return null;
+}
