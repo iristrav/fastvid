@@ -26,6 +26,7 @@ import {
 import { NicheRequestsDashboardCard } from "@/components/niche/DashboardNicheRequests";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
 import { VideoEditor } from "@/components/VideoEditor";
+import { FootageRightsNotice } from "@/components/FootageRightsNotice";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -632,6 +633,9 @@ function VideoDetailModal({ videoId, onClose, onEdit }: {
                   </div>
                 )}
               </div>
+            )}
+            {video.status === "completed" && video.videoUrl && !fileMissing && (
+              <FootageRightsNotice videoId={video.id} />
             )}
             {/*
               RONDE 106 — the quality report moved to the admin.

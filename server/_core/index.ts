@@ -38,6 +38,8 @@ import { getLlmDiagnostics, logLlmStartupDiagnostics } from "../llmStartupDiagno
 import { logStripeStartupDiagnostics } from "../stripeStartupDiagnostics";
 import { recordWorkerHeartbeat, readWorkerHeartbeats, summarizeWorkerHealth } from "../workerHeartbeat";
 import { getSessionSecret } from "./sessionSecret";
+import { requireOperator } from "./operatorOnly";
+import { apiRateLimit } from "./apiRateLimit";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -400,6 +402,9 @@ async function startServer() {
 
   registerCanonicalAppUrl(app);
 
+  // RONDE 652: one per-client ceiling on /api, ahead of every route that could be hammered.
+  app.use(apiRateLimit);
+
   // Configure body parser with larger size limit for file uploads
   // Register Stripe webhook BEFORE express.json() for raw body access
   registerStripeWebhook(app);
@@ -473,7 +478,7 @@ async function startServer() {
     console.log(`[Fastvid] Local storage serving enabled at /local-storage → ${LOCAL_UPLOADS_DIR}`);
   }
 
-  app.get("/api/health/llm-smoke", async (_req, res) => {
+  app.get("/api/health/llm-smoke", requireOperator, async (_req, res) => {
     try {
       const { invokeLLM } = await import("./llm");
       const { archiveAiTaggingEnabled } = await import("../archiveAssetTagging");
@@ -656,7 +661,7 @@ async function startServer() {
     });
   });
 
-  app.get("/api/health/youtube-probe", async (_req, res) => {
+  app.get("/api/health/youtube-probe", requireOperator, async (_req, res) => {
     try {
       const { probeYouTubeCcPipeline } = await import("../videoPipeline");
       const probe = await probeYouTubeCcPipeline();
@@ -679,7 +684,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/health/stability-probe", async (_req, res) => {
+  app.get("/api/health/stability-probe", requireOperator, async (_req, res) => {
     try {
       const { probeStabilityAI } = await import("../videoPipeline");
       const probe = await probeStabilityAI();

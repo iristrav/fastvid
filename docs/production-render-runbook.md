@@ -101,6 +101,16 @@ production.
 `railway.json` sets `healthcheckPath: /api/health`, served by
 `server/worker.ts`. `GET /api/health/r2` checks object storage separately.
 
+The probes that spend quota or money — `/api/health/youtube-probe` (one YouTube
+search per call), `/api/health/stability-probe` and `/api/health/llm-smoke` — need
+a signed-in admin, or the header `x-operator-key` equal to `OPERATOR_PROBE_KEY`
+(web service, at least 24 characters) for an external monitor. Every `/api`
+request is limited per client (`API_RATE_LIMIT_PER_MIN`, default 600).
+
+A cancelled render that does not stop by itself is abandoned after
+`RENDER_CANCEL_GRACE_MS` (default 60 s): its lock and worker slot are released and
+the log says `[RenderCancel] … ABANDONED`.
+
 ---
 
 ## 3. What to collect

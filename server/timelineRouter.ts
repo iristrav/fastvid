@@ -434,6 +434,25 @@ export const timelineRouter = router({
     }),
 
   /**
+   * RONDE 652 — which YouTube footage in this video still needs a rights check before publishing.
+   *
+   * READ-ONLY, like `get`. A timeline this build cannot open answers with no entries rather than an
+   * error: the notice is advice next to the video, and it must never stand between a person and
+   * the file they already have.
+   */
+  footageRights: protectedProcedure
+    .input(z.object({ videoId: z.number().int().positive() }))
+    .query(async ({ ctx, input }) => {
+      requireVideoAccess(await getVideoById(input.videoId), ctx);
+      const { footageRightsReport, archiveIdsForFootageRights } = await import("./footageRights");
+      const loaded = await loadTimeline(input.videoId).catch(() => null);
+      if (!loaded) return footageRightsReport({ tracks: [] } as unknown as ProjectTimeline, []);
+      const { getMediaArchiveAssetsByIds } = await import("./db");
+      const rows = await getMediaArchiveAssetsByIds(archiveIdsForFootageRights(loaded.timeline));
+      return footageRightsReport(loaded.timeline, rows);
+    }),
+
+  /**
    * §16 — change one text or caption element. Local to one element, by construction.
    *
    * A convenience over `save`: the client could send a whole edited timeline, and for a single

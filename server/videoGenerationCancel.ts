@@ -29,10 +29,30 @@ export function throwIfVideoGenerationCancelled(videoId: number): void {
 // from deep inside any nested async call within that render's call tree — in particular,
 // llm.ts's invokeLLM reads the userId here to attribute per-user LLM spend without every one
 // of its 24 call sites needing to pass a userId explicitly.
-const activeRenderIdentityStorage = new AsyncLocalStorage<{ videoId: number; userId: number | null }>();
+/**
+ * RONDE 652 — one render run, as opposed to the video it renders.
+ *
+ * The video's cancel flag is cleared when its run ends, so the next attempt can start clean. A run
+ * that was ABANDONED (cancelled, and still running after its grace period — see
+ * `cancelledRenderRelease.ts`) has not ended, though: it keeps executing in the background. This
+ * token marks that run alone, so its own checkpoints keep throwing while a fresh attempt for the
+ * same video runs untouched.
+ */
+export type RenderRunToken = { abandoned: boolean };
 
-export function runWithActiveVideoId<T>(videoId: number, fn: () => T, userId: number | null = null): T {
-  return activeRenderIdentityStorage.run({ videoId, userId }, fn);
+const activeRenderIdentityStorage = new AsyncLocalStorage<{
+  videoId: number;
+  userId: number | null;
+  run?: RenderRunToken;
+}>();
+
+export function runWithActiveVideoId<T>(
+  videoId: number,
+  fn: () => T,
+  userId: number | null = null,
+  run?: RenderRunToken
+): T {
+  return activeRenderIdentityStorage.run({ videoId, userId, run }, fn);
 }
 
 export function getActiveVideoId(): number | undefined {
@@ -46,6 +66,7 @@ export function getActiveUserId(): number | null | undefined {
 /** Convenience: throws if the CURRENT active render (from context) has been cancelled.
  *  A no-op if called outside any tracked render (activeVideoId undefined). */
 export function throwIfActiveRenderCancelled(): void {
-  const videoId = getActiveVideoId();
-  if (videoId != null) throwIfVideoGenerationCancelled(videoId);
+  const store = activeRenderIdentityStorage.getStore();
+  if (store?.run?.abandoned) throw new Error("Video generation cancelled");
+  if (store?.videoId != null) throwIfVideoGenerationCancelled(store.videoId);
 }

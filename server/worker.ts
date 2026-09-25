@@ -165,7 +165,9 @@ function startWorkerHealthServer(): void {
           }
         }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "done", endpoint, attempts }, null, 2));
+        // RONDE 652: the endpoint URL names the storage account (R2 puts the account id in it), and
+        // this route has no login — report that one is configured, not what it is.
+        res.end(JSON.stringify({ status: "done", endpointConfigured: true, attempts }, null, 2));
       })().catch((err) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "error", message: (err as Error).message }));

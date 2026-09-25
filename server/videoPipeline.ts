@@ -946,7 +946,8 @@ import {
   summarizeVoiceMontageSyncAudits,
   type VoiceMontageSyncAuditResult,
 } from "./voiceMontageSyncAudit";
-import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested } from "./videoGenerationCancel";
+import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested, type RenderRunToken } from "./videoGenerationCancel";
+import { renderCancelGraceMs, watchForAbandonedRender } from "./cancelledRenderRelease";
 import {
   buildTtsSceneBeatMap,
   fetchElevenLabsWithTimestamps,
@@ -47284,8 +47285,17 @@ export async function runVideoPipeline(
     );
   }
 
-  try {
-    return await withVisionCensus(visionCensus, () =>
+  /**
+   * RONDE 652 — a cancel that the pipeline does not act on still gives the lock back.
+   *
+   * Cancelling is cooperative, and render 607 showed a run that was cancelled and never reached
+   * another checkpoint: this `finally` never ran and the lock was held for its whole lease. Once a
+   * cancel is requested the render gets a grace period; after it, the run is abandoned — its
+   * children killed, its token marked so its own checkpoints keep throwing — and this function
+   * rejects, which releases the lock here and the worker slot in the queue.
+   */
+  const renderRun: RenderRunToken = { abandoned: false };
+  const pipelineRun = withVisionCensus(visionCensus, () =>
       withSourceFloorMemo(sourceFloorMemo, () =>
       withSubjectGateScope(subjectGateScope, () =>
         withComposeJudgeScope(composeJudgeScope, () =>
@@ -47295,13 +47305,37 @@ export async function runVideoPipeline(
                 videoId, script, onProgress, voiceId, customVoiceoverUrl, videoLength, enableSubtitles, userPrompt,
                 sourceFloorMemo, subjectGateScope, composeJudgeScope
               ))
-            ), ownerUserId)
+            ), ownerUserId, renderRun)
           )
         )
       )
     )
     );
+  const cancelWatch = watchForAbandonedRender({
+    videoId,
+    isCancelled: () => isVideoGenerationCancelRequested(videoId),
+    graceMs: renderCancelGraceMs(),
+    onAbandon: (reason) => {
+      renderRun.abandoned = true;
+      renderCtx.watchdog?.abandon(reason);
+      console.error(
+        `[RenderCancel] video=${videoId} ABANDONED render=${productionRenderId} — ${reason}`
+      );
+      /** It keeps running in the background; say so when it finally ends, and never let it throw unobserved. */
+      void Promise.resolve(pipelineRun).then(
+        () => console.warn(`[RenderCancel] video=${videoId} abandoned render=${productionRenderId} ended late (resolved)`),
+        (err) =>
+          console.warn(
+            `[RenderCancel] video=${videoId} abandoned render=${productionRenderId} ended late: ` +
+              `${(err as Error)?.message?.slice(0, 160)}`
+          )
+      );
+    },
+  });
+  try {
+    return await Promise.race([pipelineRun, cancelWatch.abandoned]);
   } finally {
+    cancelWatch.stop();
     /** Every ending, holder-scoped. An overrun render cannot take its successor's lock away. */
     const removed = await releaseRenderLock(dbRenderLockStore, videoId, productionRenderId).catch(
       () => false

@@ -57,6 +57,12 @@ export interface RenderWatchdog {
   /** Stop the watchdog (called when render completes normally). */
   stop(): void;
   /**
+   * RONDE 652 — the render was cancelled and did not stop by itself: kill its children and refuse
+   * any it starts later. Writes no status and signals nothing; the caller that abandoned the
+   * render owns that. Returns how many children were killed.
+   */
+  abandon(reason: string): number;
+  /**
    * Update the total budget after RenderBudget is computed post-VO-sync.
    * Safe to call at any point before the watchdog fires.
    */
@@ -236,6 +242,19 @@ export function createRenderWatchdog(videoId: number | string, budgetMs = WATCHD
       clearInterval(timer);
       children.clear();
       console.log(`[Watchdog] video=${videoId} stopped normally at ${Math.round((Date.now() - startMs) / 1000)}s`);
+    },
+    abandon(reason: string) {
+      stopped = true;
+      clearInterval(timer);
+      let killed = 0;
+      for (const cp of children) {
+        if (!cp.killed) {
+          try { cp.kill("SIGKILL"); killed++; } catch { /* already dead */ }
+        }
+      }
+      children.clear();
+      console.error(`[Watchdog] video=${videoId} ABANDONED — ${reason}; killed ${killed} child process(es)`);
+      return killed;
     },
     deadline,
   };
