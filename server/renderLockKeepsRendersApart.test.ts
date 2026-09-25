@@ -256,7 +256,7 @@ describe("a refused second render leaves no trace", () => {
     const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
     const acquire = src.indexOf("await acquireRenderLock(dbRenderLockStore");
     const refusal = src.indexOf("PIPELINE_ERROR.RENDER_ALREADY_RUNNING");
-    const firstScope = src.indexOf("return await withVisionCensus(visionCensus");
+    const firstScope = src.indexOf("const pipelineRun = withVisionCensus(visionCensus");
     expect(acquire, "the lock is not taken in runVideoPipeline").toBeGreaterThan(-1);
     expect(refusal).toBeGreaterThan(acquire);
     expect(refusal, "a refusal must happen before any pipeline scope opens").toBeLessThan(firstScope);
@@ -266,8 +266,11 @@ describe("a refused second render leaves no trace", () => {
     const { readFileSync } = await import("fs");
     const path = await import("path");
     const src = readFileSync(path.join(__dirname, "videoPipeline.ts"), "utf8");
-    const at = src.indexOf("return await withVisionCensus(visionCensus");
-    const tail = src.slice(at, at + 2000);
+    /** RONDE 652 — the pipeline now races its own abandonment; the release is still in the finally. */
+    const at = src.indexOf("const pipelineRun = withVisionCensus(visionCensus");
+    expect(at).toBeGreaterThan(-1);
+    const tail = src.slice(at, at + 4000);
+    expect(tail).toContain("return await Promise.race([pipelineRun, cancelWatch.abandoned]);");
     expect(tail).toContain("} finally {");
     expect(tail).toContain("releaseRenderLock(dbRenderLockStore, videoId, productionRenderId)");
   });

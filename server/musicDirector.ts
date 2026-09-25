@@ -350,7 +350,7 @@ export function scoreCues(
 }
 
 /** The cue sheet as render-log lines. One per cue, plus a verdict. */
-export function formatCueSheet(scored: readonly ScoredCue[]): string[] {
+export function formatCueSheet(scored: readonly ScoredCue[], catalogueName?: string): string[] {
   if (scored.length === 0) return ["[Music] no cue sheet — the film has no scenes to score"];
   const lines = scored.map((s) => {
     const len = (s.cue.endSec - s.cue.startSec).toFixed(1);
@@ -371,7 +371,7 @@ export function formatCueSheet(scored: readonly ScoredCue[]): string[] {
   const got = scored.filter((s) => s.track).length;
   lines.push(
     `[Music] TOTAL cues=${scored.length} scored=${got}/${wanted} ` +
-      `catalogue=${activeMusicCatalogue().name}` +
+      `catalogue=${catalogueName ?? activeMusicCatalogue().name}` +
       (got === 0 && wanted > 0
         ? " — THIS FILM HAS NO MUSIC. Register a licensed catalogue with registerMusicCatalogue()."
         : "")

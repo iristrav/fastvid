@@ -653,7 +653,12 @@ export function shouldSearchAlternatives(verdict: Pick<PrefetchVerdict, "status"
 
 /** Alternative searches one worker may spend per UTC day. 0 switches the feature off. */
 export function prefetchAltSearchesPerDay(): number {
-  return intEnv("YOUTUBE_PREFETCH_ALT_SEARCHES_PER_DAY", 20, 0, 200);
+  /**
+   * RONDE 653 — off by default. Every alternative search comes out of the same 100 a day the
+   * renders need, and a counter per worker that resets on every deploy is not a budget. Set it
+   * when the project's quota has room for background searching.
+   */
+  return intEnv("YOUTUBE_PREFETCH_ALT_SEARCHES_PER_DAY", 0, 0, 200);
 }
 
 /** The words a result must mention to count as about the same thing: the base query's own. */
@@ -765,7 +770,8 @@ async function productionAlternativeDeps(sourceVideoId: number | null): Promise<
         .map((r) => ({ videoId: r.item.id?.videoId ?? "", title: r.title }));
     },
     enqueue: (cands) => enqueueYoutubePrefetch(cands, { sourceVideoId: sourceVideoId ?? undefined }),
-    takeDailySlot: () => takeDailyAltSlot(),
+    /** RONDE 653 — never while the renders' own searches are in a quota cooldown. */
+    takeDailySlot: () => !pipeline.isYoutubeInCooldown() && takeDailyAltSlot(),
     log: (l) => console.log(l),
   };
 }

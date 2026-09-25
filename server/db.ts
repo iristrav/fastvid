@@ -836,6 +836,36 @@ export async function failPipelineIfStalled(video: Video): Promise<Video> {
   return refreshed ?? video;
 }
 
+/**
+ * RONDE 653 — a render this worker is about to be stopped under (deploy, restart) goes back in the
+ * queue NOW, instead of sitting in `generating` until the stall sweep notices it minutes later.
+ *
+ * The generation attempt is bumped first, so the interrupted run — if it is still unwinding for
+ * the few milliseconds before the process exits — reads itself as superseded and writes nothing.
+ * It counts against the same stall-recovery allowance as any other restart, so a video that keeps
+ * being interrupted ends as failed with the reason, not in a loop.
+ */
+export async function requeueInterruptedVideo(videoId: number, reason: string): Promise<"requeued" | "failed" | "skipped"> {
+  const video = await getVideoById(videoId);
+  if (!video) return "skipped";
+  if (!IN_PROGRESS_STATUSES.includes(video.status as (typeof IN_PROGRESS_STATUSES)[number])) return "skipped";
+  if (video.status === "queued" || video.status === "awaiting_approval" || video.status === "pending") return "skipped";
+  await bumpGenerationAttempt(videoId);
+  const meta = readVideoMetadataObject(video);
+  const prior = typeof meta.stallRecoveries === "number" ? meta.stallRecoveries : 0;
+  const next = prior + 1;
+  if (next <= pipelineMaxStallRecoveries()) {
+    await requeueStalledPipeline(video, reason, next);
+    return "requeued";
+  }
+  await updateVideoStatus(videoId, "failed", {
+    errorMessage: appErrorMessage(PIPELINE_ERROR.STUCK_TIMEOUT, `${reason} — interrupted ${next} times`),
+    progressStep: "Failed — interrupted too often",
+    progressPercent: 0,
+  });
+  return "failed";
+}
+
 /** Scan in-flight pipelines — re-queue zombies or fail on hard stall / wall-clock cap. */
 export async function failAllStalledPipelines(): Promise<{ failed: number; requeued: number }> {
   const db = await getDb();

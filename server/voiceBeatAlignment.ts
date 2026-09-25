@@ -33,7 +33,7 @@ const alignCache = new Map<string, WhisperSegment[]>();
 
 /** Dedicated Whisper key — independent of the LLM_API_KEY used for script/script-judging
  *  calls, so a non-OpenAI LLM provider (e.g. Groq) doesn't silently disable voice-beat sync. */
-function whisperApiKey(): string {
+export function whisperApiKey(): string {
   return process.env.OPENAI_API_KEY?.trim() || ENV.forgeApiKey;
 }
 
@@ -70,7 +70,7 @@ function tokenOverlapScore(expected: string[], haystack: string[]): number {
   return hits / expected.length;
 }
 
-function whisperApiUrl(): string {
+export function whisperApiUrl(): string {
   // A dedicated OPENAI_API_KEY always talks to OpenAI directly; only fall back to the
   // LLM provider's own base URL (e.g. Forge) when reusing its key for Whisper too.
   if (process.env.OPENAI_API_KEY?.trim()) {

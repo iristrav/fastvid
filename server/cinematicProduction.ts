@@ -42,7 +42,8 @@ import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./ti
 import { repairTimelineForRender, formatTimelineRepairs } from "./timelineRepair";
 import { envFlagIsOn } from "./envFlag";
 import { formatCinematicAudio } from "./cinematicAmbient";
-import { formatCueSheet, type CurvePoint } from "./musicDirector";
+import { EMPTY_MUSIC_CATALOGUE, formatCueSheet, type CurvePoint, type MusicCatalogue } from "./musicDirector";
+import { productionMusicCatalogue } from "./freesoundMusicCatalogue";
 import {
   judgeTimeline,
   formatQualityFindings,
@@ -225,6 +226,8 @@ export type CinematicPlanParams = {
    * same film — the thing this codebase has spent rounds removing.
    */
   emotionalCurve?: readonly CurvePoint[];
+  /** RONDE 653 — injected by tests; production asks Freesound (`productionMusicCatalogue`). */
+  musicCatalogue?: MusicCatalogue;
   /**
    * RONDE 647 — for a beat whose footage came from YouTube, its length and shot boundaries; null
    * for any other footage. Injected (production: `youtubeSourceFactsFor`) so a test can plan
@@ -261,6 +264,7 @@ export async function planAndStoreCinematicTimeline(
 
   let built;
   let result;
+  let musicCatalogue: MusicCatalogue = EMPTY_MUSIC_CATALOGUE;
   try {
     built = buildCinematicSceneInputs({
       scenes: params.scenes,
@@ -344,6 +348,18 @@ export async function planAndStoreCinematicTimeline(
       }
     }
 
+    /**
+     * RONDE 653 — the score's supply, asked for before the plan: CC0 music from Freesound, or the
+     * empty catalogue with the reason in the cue sheet. A failed lookup never fails the plan.
+     */
+    musicCatalogue = await (params.musicCatalogue
+      ? Promise.resolve(params.musicCatalogue)
+      : productionMusicCatalogue()
+    ).catch((err: Error) => {
+      log.push(`[MusicCatalogue] unavailable: ${err.message?.slice(0, 160)}`);
+      return EMPTY_MUSIC_CATALOGUE;
+    });
+
     result = runCinematicPipeline({
       videoId: params.videoId,
       scenes: built.scenes,
@@ -359,6 +375,7 @@ export async function planAndStoreCinematicTimeline(
        * anything measured the intensity between them.
        */
       emotionalCurve: params.emotionalCurve,
+      musicCatalogue,
     });
   } catch (err) {
     /**
@@ -410,7 +427,7 @@ export async function planAndStoreCinematicTimeline(
    * specification, and a deployment that registers a catalogue can see immediately whether it
    * covered the film. See `musicDirector.ts`.
    */
-  for (const line of formatCueSheet(result.cueSheet)) log.push(line);
+  for (const line of formatCueSheet(result.cueSheet, musicCatalogue.name)) log.push(line);
   /**
    * §9 — one line per sound effect the beat asked for, found or not.
    *

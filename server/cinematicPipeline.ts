@@ -62,6 +62,7 @@ import {
   planMusicCues,
   scoreCues,
   type CurvePoint,
+  type MusicCatalogue,
   type ScoredCue,
 } from "./musicDirector";
 
@@ -130,6 +131,11 @@ export type CinematicPipelineParams = {
    * intensity. See `musicDirector.ts`.
    */
   emotionalCurve?: readonly CurvePoint[];
+  /**
+   * RONDE 653 — the catalogue THIS film is scored from. Absent: whatever is registered, which is
+   * the empty catalogue unless a deployment registered one.
+   */
+  musicCatalogue?: MusicCatalogue;
   /**
    * RONDE 172 — the render's correlation id.
    *
@@ -422,7 +428,8 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
       curve: params.emotionalCurve ?? [],
       sceneWindows,
       totalDurationSec: timeline.durationSec,
-    })
+    }),
+    params.musicCatalogue
   );
   const musicTrack = timeline.tracks.find((t) => t.kind === "MUSIC");
   if (musicTrack?.kind === "MUSIC") {

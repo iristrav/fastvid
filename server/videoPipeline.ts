@@ -940,7 +940,7 @@ import {
   normaliseDeliveredLoudness,
   type LoudnessResult,
 } from "./audioLoudness";
-import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage } from "./voiceBeatAlignment";
+import { spotCheckComposedSceneBeatSync, alignSceneBeatsToVoiceAudio, validateMontageVoiceCoverage, whisperApiKey, whisperApiUrl } from "./voiceBeatAlignment";
 import {
   auditSceneVoiceMontageSync,
   summarizeVoiceMontageSyncAudits,
@@ -948,6 +948,23 @@ import {
 } from "./voiceMontageSyncAudit";
 import { throwIfVideoGenerationCancelled, runWithActiveVideoId, throwIfActiveRenderCancelled, requestVideoGenerationCancel, getActiveVideoId, isVideoGenerationCancelRequested, type RenderRunToken } from "./videoGenerationCancel";
 import { renderCancelGraceMs, watchForAbandonedRender } from "./cancelledRenderRelease";
+import { registerActiveRender, unregisterActiveRender } from "./interruptedRenderRecovery";
+import {
+  cachedYoutubeSearchPayload,
+  countYoutubeQuotaCall,
+  formatYoutubeSearchCall,
+  storeYoutubeSearchPayload,
+  youtubeQuotaCallsToday,
+} from "./youtubeSearchQuota";
+import {
+  loadNarrationMeta,
+  narrationProviderLabel,
+  narrationWordTiming,
+  saveNarrationMeta,
+  summarizeProviders,
+  whisperWordTimings,
+  type NarrationWordTiming,
+} from "./narrationWordTiming";
 import {
   buildTtsSceneBeatMap,
   fetchElevenLabsWithTimestamps,
@@ -2467,7 +2484,7 @@ const YOUTUBE_RATE_LIMIT_ESCALATED_COOLDOWN_MS = 45 * 60_000;
 const YOUTUBE_RATE_LIMIT_MAX_RETRY_AFTER_MS = 60 * 60_000;
 let youtubeRateLimitStreak = 0;
 
-function isYoutubeInCooldown(): boolean {
+export function isYoutubeInCooldown(): boolean {
   return Date.now() < youtubeCooldownUntilMs;
 }
 
@@ -8653,6 +8670,8 @@ export async function synthesizeFullNarrationMp3(
     Boolean(voiceId?.trim());
   const TTS_TIMEOUT_MS = 180_000;
   const silentFallbackChunks: number[] = [];
+  /** RONDE 653 — which provider spoke each part. Was returned and dropped; now kept and reported. */
+  const partProviders: string[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
     onTtsPart?.(i + 1, chunks.length);
@@ -8676,6 +8695,7 @@ export async function synthesizeFullNarrationMp3(
         const partDur = await probeVideoDurationSec(partPath);
         timeOffset += partDur > 0 ? partDur : 0;
         partPaths.push(partPath);
+        partProviders.push("elevenlabs-timestamped");
         continue;
       }
     }
@@ -8685,9 +8705,22 @@ export async function synthesizeFullNarrationMp3(
       voiceSettings: chunkVoiceSettings,
     });
     if (voResult.usedSilentFallback) silentFallbackChunks.push(i + 1);
+    partProviders.push(voResult.provider ?? "unknown");
     const partDur = await probeVideoDurationSec(partPath);
     timeOffset += partDur > 0 ? partDur : 0;
     partPaths.push(partPath);
+  }
+  saveNarrationMeta(workDir, { text: fullNarration, providers: partProviders });
+  const notElevenLabs = partProviders.filter((p) => !p.startsWith("elevenlabs")).length;
+  const providerLine =
+    `[Voice] narration parts=${partProviders.length} providers=${summarizeProviders(partProviders)}`;
+  if (notElevenLabs > 0) {
+    console.warn(
+      `${providerLine} — ${notElevenLabs} part(s) NOT spoken by ElevenLabs (see the [ElevenLabs] lines ` +
+        `above for why); word timing will come from transcription or an estimate, not the TTS`
+    );
+  } else {
+    console.log(providerLine);
   }
 
   if (silentFallbackChunks.length > 0) {
@@ -17798,6 +17831,24 @@ export async function searchYoutubeVideoCandidates(
     `${query}#${license}#n${maxResults}#d${videoDuration}`,
     async (): Promise<{ items?: YoutubeSearchRow["item"][] } | null> => {
       /**
+       * RONDE 653 — the same request answered in the last few hours, by any render on this worker,
+       * is answered again without spending quota. Keyed like the per-render cache above it.
+       */
+      const processKey = `${query}#${license}#n${maxResults}#d${videoDuration}`;
+      const callContext = {
+        videoId: getActiveVideoId() ?? sourcingCache?.lineage?.videoId,
+        renderId: sourcingCache?.lineage?.renderId,
+        sceneIndex,
+        query,
+      };
+      const reused = cachedYoutubeSearchPayload(processKey);
+      if (reused !== undefined) {
+        console.log(
+          formatYoutubeSearchCall({ ...callContext, source: "process_cache", callsToday: youtubeQuotaCallsToday() })
+        );
+        return reused as { items?: YoutubeSearchRow["item"][] };
+      }
+      /**
        * RONDE 651 — the keys are tried in order: a 429 sets one aside until Google's reset and the
        * same search goes out on the next. Only when none is left does the render's cooldown start.
        * See `youtubeApiKeys`. With one key configured this is the request it always was.
@@ -17825,6 +17876,14 @@ export async function searchYoutubeVideoCandidates(
         scopedTimeoutMs(15_000, 3_000),
         `${label} search scene ${sceneIndex}`
       ));
+      console.log(
+        formatYoutubeSearchCall({
+          ...callContext,
+          source: "network",
+          status: searchResp.status,
+          callsToday: countYoutubeQuotaCall(),
+        })
+      );
       /** RONDE 651 — a spent key first hands the search to the next one, when there is one. */
       if (searchResp.status === 429) {
         const nextKey = markYoutubeKeySpent(searchKey.position);
@@ -17843,7 +17902,9 @@ export async function searchYoutubeVideoCandidates(
         return null;
       }
       markYoutubeSearchResult(true);
-      return (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
+      const payload = (await searchResp.json()) as { items?: YoutubeSearchRow["item"][] };
+      storeYoutubeSearchPayload(processKey, payload);
+      return payload;
       }
     },
     "searchYoutubeVideoCandidates"
@@ -47294,6 +47355,8 @@ export async function runVideoPipeline(
    * children killed, its token marked so its own checkpoints keep throwing — and this function
    * rejects, which releases the lock here and the worker slot in the queue.
    */
+  /** RONDE 653 — so a worker being stopped knows which locks it holds and can hand them back. */
+  registerActiveRender(videoId, productionRenderId);
   const renderRun: RenderRunToken = { abandoned: false };
   const pipelineRun = withVisionCensus(visionCensus, () =>
       withSourceFloorMemo(sourceFloorMemo, () =>
@@ -47336,6 +47399,7 @@ export async function runVideoPipeline(
     return await Promise.race([pipelineRun, cancelWatch.abandoned]);
   } finally {
     cancelWatch.stop();
+    unregisterActiveRender(videoId, productionRenderId);
     /** Every ending, holder-scoped. An overrun render cannot take its successor's lock away. */
     const removed = await releaseRenderLock(dbRenderLockStore, videoId, productionRenderId).catch(
       () => false
@@ -51975,85 +52039,108 @@ async function _runVideoPipelineInner(
      * nothing: it measures, it warns, and it is wrapped so a slow or broken audit can never cost a
      * render that is otherwise complete.
      */
-    try {
-      const stillness = await withTimeout(
-        auditVideoStillness({ videoPath: finalVideoPath, maxSampleFps: 8, timeoutMs: 180_000 }),
-        200_000,
-        "stillness audit"
-      );
-      const verdict = checkStillnessLimit(stillness, stillImageMaxSec());
-      console.log(formatStillnessReport(`video ${videoId} final.mp4`, stillness, verdict));
-      qualityReport.stillness = {
-        // True until the cutover block flips it — see `measuredOn` in videoQualityReport.ts.
-        measuredOn: "delivered_file",
-        durationSec: stillness.durationSec,
-        longestStillSec: stillness.longestStillSec,
-        longestStillStartSec: stillness.longestStillStartSec,
-        visualChanges: stillness.visualChanges,
-        stillSegments: stillness.stillRuns.length,
-        // RONDE 136: the two facts about the END of the film, which nothing measured before.
-        imagesOverLimit: verdict.stillsOverLimit,
-        endFrameLuma: stillness.endFrameLuma,
-        endsOnBlack: stillness.endsOnBlack,
-        limitSec: verdict.limitSec,
-        ok: verdict.ok,
-      };
-      if (stillness.endsOnBlack) {
-        qualityReport.warnings.push(
-          `de video eindigt op een zwart beeld (luma ${stillness.endFrameLuma?.toFixed(0)}) — ` +
-            `de kijker blijft achter met een leeg scherm`
+    /**
+     * RONDE 653 — the stillness and repeat audits measure THE FILE THE VIEWER RECEIVES, or wait.
+     *
+     * Both read the compose montage for up to three minutes each. With the cinematic render path on,
+     * that montage is the fallback and not the delivery: `measuredOn` was then flipped to
+     * "compose_montage" and a warning said the figures describe the wrong video. So they are
+     * deferred, and run only if the montage is what gets delivered after all. The delivered
+     * cinematic file is checked by the render job's own spot check.
+     */
+    const auditComposeMontage = async (): Promise<void> => {
+      try {
+        const stillness = await withTimeout(
+          auditVideoStillness({ videoPath: finalVideoPath, maxSampleFps: 8, timeoutMs: 180_000 }),
+          200_000,
+          "stillness audit"
         );
-      }
-      for (const v of verdict.violations.slice(0, 3)) {
-        qualityReport.warnings.push(
-          `beeld staat ${v.durationSec.toFixed(1)}s stil vanaf ${v.startSec.toFixed(1)}s — ` +
-            `langer dan de ${verdict.limitSec.toFixed(0)}s die een foto mag duren`
-        );
-      }
+        const verdict = checkStillnessLimit(stillness, stillImageMaxSec());
+        console.log(formatStillnessReport(`video ${videoId} final.mp4`, stillness, verdict));
+        qualityReport.stillness = {
+          // True until the cutover block flips it — see `measuredOn` in videoQualityReport.ts.
+          measuredOn: "delivered_file",
+          durationSec: stillness.durationSec,
+          longestStillSec: stillness.longestStillSec,
+          longestStillStartSec: stillness.longestStillStartSec,
+          visualChanges: stillness.visualChanges,
+          stillSegments: stillness.stillRuns.length,
+          // RONDE 136: the two facts about the END of the film, which nothing measured before.
+          imagesOverLimit: verdict.stillsOverLimit,
+          endFrameLuma: stillness.endFrameLuma,
+          endsOnBlack: stillness.endsOnBlack,
+          limitSec: verdict.limitSec,
+          ok: verdict.ok,
+        };
+        if (stillness.endsOnBlack) {
+          qualityReport.warnings.push(
+            `de video eindigt op een zwart beeld (luma ${stillness.endFrameLuma?.toFixed(0)}) — ` +
+              `de kijker blijft achter met een leeg scherm`
+          );
+        }
+        for (const v of verdict.violations.slice(0, 3)) {
+          qualityReport.warnings.push(
+            `beeld staat ${v.durationSec.toFixed(1)}s stil vanaf ${v.startSec.toFixed(1)}s — ` +
+              `langer dan de ${verdict.limitSec.toFixed(0)}s die een foto mag duren`
+          );
+        }
 
-      /**
-       * RONDE 156 — and does the same picture come back?
-       *
-       * The sourcing dedup is thorough but runs entirely BEFORE adoption, and two routes step
-       * around it on purpose when a scene is starved: round B of ensureArchiveMontageVoiceCoverage
-       * re-uses dedup.lastRealClip, and montageTailPadFilterChain loops the whole scene montage.
-       * Neither is visible to usedContentKeys or usedFingerprints, so nothing could answer
-       * "does the finished film repeat itself". This measures the exported MP4 and answers it.
-       *
-       * Measurement only, like the stillness audit beside it — it decides nothing and cannot cost
-       * a render that is otherwise complete.
-       */
-      const repeats = await withTimeout(
-        auditVideoRepeats({ videoPath: finalVideoPath, timeoutMs: 180_000 }),
-        200_000,
-        "repeat audit"
-      );
-      const repeatVerdict = checkRepeatLimit(repeats);
-      console.log(formatRepeatReport(`video ${videoId} final.mp4`, repeats, repeatVerdict));
-      qualityReport.repeats = {
-        measuredOn: "delivered_file",
-        distinctPictures: repeats.distinctPictures,
-        repeatedPictures: repeats.repeats.length,
-        repeatedSec: repeats.repeatedSec,
-        repeatedShare: repeats.repeatedShare,
-        limitShare: repeatVerdict.limitShare,
-        ok: repeatVerdict.ok,
-      };
-      for (const v of repeatVerdict.violations.slice(0, 3)) {
-        qualityReport.warnings.push(`hetzelfde beeld keert terug — ${v}`);
+        /**
+         * RONDE 156 — and does the same picture come back?
+         *
+         * The sourcing dedup is thorough but runs entirely BEFORE adoption, and two routes step
+         * around it on purpose when a scene is starved: round B of ensureArchiveMontageVoiceCoverage
+         * re-uses dedup.lastRealClip, and montageTailPadFilterChain loops the whole scene montage.
+         * Neither is visible to usedContentKeys or usedFingerprints, so nothing could answer
+         * "does the finished film repeat itself". This measures the exported MP4 and answers it.
+         *
+         * Measurement only, like the stillness audit beside it — it decides nothing and cannot cost
+         * a render that is otherwise complete.
+         */
+        const repeats = await withTimeout(
+          auditVideoRepeats({ videoPath: finalVideoPath, timeoutMs: 180_000 }),
+          200_000,
+          "repeat audit"
+        );
+        const repeatVerdict = checkRepeatLimit(repeats);
+        console.log(formatRepeatReport(`video ${videoId} final.mp4`, repeats, repeatVerdict));
+        qualityReport.repeats = {
+          measuredOn: "delivered_file",
+          distinctPictures: repeats.distinctPictures,
+          repeatedPictures: repeats.repeats.length,
+          repeatedSec: repeats.repeatedSec,
+          repeatedShare: repeats.repeatedShare,
+          limitShare: repeatVerdict.limitShare,
+          ok: repeatVerdict.ok,
+        };
+        for (const v of repeatVerdict.violations.slice(0, 3)) {
+          qualityReport.warnings.push(`hetzelfde beeld keert terug — ${v}`);
+        }
+      } catch (err) {
+        /**
+         * A measurement that could not be taken is reported as absent, never as a pass.
+         *
+         * RONDE 156: this block now holds two audits, and the earlier one throwing means the later
+         * one never ran. Both fields stay unset on qualityReport, so "no number" reads as "not
+         * measured" rather than "clean" — but the message must not claim to know which one failed.
+         */
+        console.warn(
+          `[VisualIntegrity] stillness/repeat audit could not run: ` +
+            `${(err as Error)?.message?.slice(0, 120)}`
+        );
       }
-    } catch (err) {
-      /**
-       * A measurement that could not be taken is reported as absent, never as a pass.
-       *
-       * RONDE 156: this block now holds two audits, and the earlier one throwing means the later
-       * one never ran. Both fields stay unset on qualityReport, so "no number" reads as "not
-       * measured" rather than "clean" — but the message must not claim to know which one failed.
-       */
-      console.warn(
-        `[VisualIntegrity] stillness/repeat audit could not run: ` +
-          `${(err as Error)?.message?.slice(0, 120)}`
+    };
+    const composeAuditDeferred = await (async () => {
+      const { cinematicPlanningEnabled, cinematicRenderPathEnabled } = await import("./cinematicProduction");
+      return cinematicPlanningEnabled() && cinematicRenderPathEnabled();
+    })().catch(() => false);
+    if (composeAuditDeferred) {
+      console.log(
+        `[VisualIntegrity] video=${videoId} stillness/repeat audit deferred — the compose montage is the ` +
+          `fallback, not the delivery; it is audited only if it is delivered`
       );
+    } else {
+      await auditComposeMontage();
     }
 
     let url: string;
@@ -52306,6 +52393,8 @@ async function _runVideoPipelineInner(
     let storedAlignment: ReturnType<typeof loadStoredTtsAlignment> = null;
     /** RONDE 647 — the narration the timeline carries; see `narrationForTimeline`. */
     let narration: ReturnType<typeof narrationForTimeline> = null;
+    let narrationMeta: ReturnType<typeof loadNarrationMeta> = null;
+    let wordTiming: NarrationWordTiming = { words: [], source: "none", note: "narration not persisted" };
     try {
       persisted = await persistVoiceover({
         videoId,
@@ -52313,6 +52402,7 @@ async function _runVideoPipelineInner(
         upload: (key, filePath, contentType) => storagePutFromFile(key, filePath, contentType),
       });
       storedAlignment = loadStoredTtsAlignment(workDir);
+      narrationMeta = loadNarrationMeta(workDir);
       const measuredVoiceSec =
         persisted.ok && !(storedAlignment?.totalDurationSec && storedAlignment.totalDurationSec > 0)
           ? (await probeMediaFacts(persisted.sourcePath).catch(() => null))?.durationSec ?? null
@@ -52322,10 +52412,35 @@ async function _runVideoPipelineInner(
         alignmentDurationSec: storedAlignment?.totalDurationSec,
         measuredDurationSec: measuredVoiceSec,
       });
+      /**
+       * RONDE 653 — word timing for the plan, whichever voice spoke. ElevenLabs' own timestamps
+       * when it spoke; otherwise the finished narration transcribed, otherwise an estimate from
+       * the script. Held here only: the alignment file the scene split reads is left alone, so an
+       * estimate can never move a cut.
+       */
+      wordTiming = await narrationWordTiming({
+        measured: storedAlignment?.words,
+        audioPath: persisted.ok ? persisted.sourcePath : null,
+        text: narrationMeta?.text ?? script,
+        durationSec: narration?.durationSec ?? null,
+        transcribe: (audioPath, expectedWords, durationSec) =>
+          whisperWordTimings({
+            audioPath,
+            expectedWords,
+            durationSec,
+            apiKey: whisperApiKey(),
+            apiUrl: whisperApiUrl(),
+          }),
+      });
+      const wordLine =
+        `[Voice] video=${videoId} word timing source=${wordTiming.source} words=${wordTiming.words.length} ` +
+        `voice=${narrationMeta ? summarizeProviders(narrationMeta.providers) : "unknown"} — ${wordTiming.note}`;
+      if (wordTiming.source === "elevenlabs") console.log(wordLine);
+      else console.warn(pipelineReport.add("summary", wordLine));
       console.log(
         narration
           ? `[Voice] video=${videoId} narration on the timeline duration=${narration.durationSec.toFixed(2)}s ` +
-              `source=${narration.durationSource} words=${storedAlignment?.words.length ?? 0}`
+              `source=${narration.durationSource} words=${wordTiming.words.length}`
           : `[Voice] video=${videoId} NO NARRATION ON THE TIMELINE — persisted=${persisted.ok} ` +
               `alignment=${storedAlignment?.totalDurationSec ?? "none"} measured=${measuredVoiceSec ?? "none"}`
       );
@@ -52348,9 +52463,9 @@ async function _runVideoPipelineInner(
           // Only what the render actually knows. The TTS ladder picks its own tier at call time
           // and does not report which one answered, so this stays null rather than guessing
           // "elevenlabs" for a clip that may have come from the Google or Fish fallback.
-          provider: null,
+          provider: narrationProviderLabel(narrationMeta?.providers ?? []),
           voiceId: voiceId ?? null,
-          words: storedAlignment?.words ?? [],
+          words: wordTiming.words,
         }),
       });
     } catch (err) {
@@ -52798,7 +52913,7 @@ async function _runVideoPipelineInner(
             secondarySubjects: (text) => extractSecondaryEntities(text, undefined),
           },
           voice: narration ? { url: narration.url, durationSec: narration.durationSec } : null,
-          words: storedAlignment?.words ?? [],
+          words: wordTiming.words,
           persist: (p) => saveVideoTimeline(p),
           /**
            * RONDE 647 — a YouTube shot is held to five seconds and taken from one continuous shot
@@ -53543,6 +53658,8 @@ async function _runVideoPipelineInner(
          * CONFIGURED one runs below it. One assignment, at the point the value is final.
          */
         cinematicRefusalForGate = cinematicRefusal;
+        /** RONDE 653 — the montage IS the delivery now, so it is measured after all. */
+        if (!cinematicDeliveredUrl && composeAuditDeferred) await auditComposeMontage();
         if (!cinematicDeliveredUrl && cinematicRefusal) {
           console.warn(
             pipelineReport.add(

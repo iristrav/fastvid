@@ -73,6 +73,7 @@ import {
   getPipelinePerfProfile,
 } from "./videoPipeline";
 import { buildMediaSearchIntent } from "./mediaResearchEngine";
+import { resetYoutubeSearchQuotaState } from "./youtubeSearchQuota";
 
 const mockedFetch = vi.mocked(fetchModule);
 
@@ -439,6 +440,8 @@ describe("RONDE 134 — entity integrity survives the widening", () => {
 describe("RONDE 134 — the corrected query causes a real provider request", () => {
   beforeEach(() => {
     mockedFetch.mockReset();
+    /** RONDE 653 — each case must reach the provider itself, not a previous case's cached answer. */
+    resetYoutubeSearchQuotaState();
     process.env.YOUTUBE_API_KEY = "test-key-not-a-real-credential";
     process.env.RAPIDAPI_KEY = "test-key-not-a-real-credential";
   });

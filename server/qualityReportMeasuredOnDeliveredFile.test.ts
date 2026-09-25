@@ -39,8 +39,8 @@ describe("stillness and repetition name the file they measured", () => {
      * The honest default. On the fallback path the compose montage IS the deliverable, so starting
      * here means that path needs no correction at all — only the cinematic path does.
      */
-    expect(src).toContain(`measuredOn: "delivered_file",\n        durationSec: stillness.durationSec,`);
-    expect(src).toContain(`measuredOn: "delivered_file",\n        distinctPictures: repeats.distinctPictures,`);
+    expect(src).toContain(`measuredOn: "delivered_file",\n          durationSec: stillness.durationSec,`);
+    expect(src).toContain(`measuredOn: "delivered_file",\n          distinctPictures: repeats.distinctPictures,`);
   });
 
   it("both are flipped to compose_montage when the cinematic render delivers", () => {

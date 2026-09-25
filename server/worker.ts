@@ -5,7 +5,9 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { shouldRunQueueWorker } from "@shared/videoQueue";
-import { recoverAllStuckVideos } from "./db";
+import { dbRenderLockStore, recoverAllStuckVideos, requeueInterruptedVideo } from "./db";
+import { releaseRenderLock } from "./renderLock";
+import { handBackInterruptedRenders } from "./interruptedRenderRecovery";
 import { logLlmStartupDiagnostics, assertProductionLlmReady } from "./llmStartupDiagnostics";
 import { startVideoQueueWorker, stopVideoQueueWorker } from "./queue";
 import { applyCalibrationGuard } from "./calibrationGuard";
@@ -41,7 +43,12 @@ process.on("unhandledRejection", (reason) => {
 // deploy for whichever render happened to be active at that moment. Give any in-flight render a
 // bounded grace window to finish before exiting — most renders are much shorter than this, and
 // one that's already 95% done shouldn't be thrown away just because a deploy landed.
-const SHUTDOWN_DRAIN_MS = Math.max(0, parseInt(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "25000", 10) || 25000);
+/**
+ * RONDE 653 — the drain must end, and the hand-back finish, INSIDE the platform's draining time
+ * (`drainingSeconds` in railway.worker.json, 60 s). Drain 45 s, then at most 8 s to hand back.
+ */
+const SHUTDOWN_DRAIN_MS = Math.max(0, parseInt(process.env.WORKER_SHUTDOWN_DRAIN_MS ?? "45000", 10) || 45000);
+const SHUTDOWN_HANDBACK_MS = 8_000;
 
 /**
  * How long the BOOT egress probe may wait — the value this file already used, kept.
@@ -66,8 +73,22 @@ function handleShutdownSignal(signal: NodeJS.Signals) {
       process.exit(0);
     }
     if (Date.now() >= deadline) {
-      console.log(`[Worker] Drain window (${SHUTDOWN_DRAIN_MS}ms) elapsed with ${active} job(s) still active — exiting anyway`);
-      process.exit(0);
+      console.log(`[Worker] Drain window (${SHUTDOWN_DRAIN_MS}ms) elapsed with ${active} job(s) still active — handing them back`);
+      /**
+       * RONDE 653 — a render that cannot finish in the drain window goes back in the queue now and
+       * gives its lock back, instead of dying with it held for 40 minutes. Bounded, because the
+       * platform's SIGKILL does not wait for it.
+       */
+      void Promise.race([
+        handBackInterruptedRenders(`worker ${signal} (deploy or restart)`, {
+          requeue: (id, reason) => requeueInterruptedVideo(id, reason),
+          releaseLock: (id, renderId) => releaseRenderLock(dbRenderLockStore, id, renderId),
+        }),
+        new Promise((r) => setTimeout(r, SHUTDOWN_HANDBACK_MS)),
+      ])
+        .catch((err) => console.error(`[Worker] hand-back failed: ${(err as Error).message}`))
+        .finally(() => process.exit(0));
+      return;
     }
     setTimeout(tryExit, 1000).unref?.();
   };
