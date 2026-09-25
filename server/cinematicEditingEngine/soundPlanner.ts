@@ -41,6 +41,21 @@ const RULES: SoundRule[] = [
   { soundType: "impact", signals: ["collision", "crashed into", "impact of"], category: "cue", volume: 0.65 },
 ];
 
+/**
+ * RONDE 657 — the sounds that play UNDER a beat rather than punctuate it: every "ambient" rule, and
+ * the heartbeat. "Zorg er ook voor dat de achtergrond geluiden heel zacht zijn" — these are
+ * background sounds, so they go where the background sounds go: the AMBIENT track, levelled and
+ * ducked with the room tone, not the SFX track at the planner's 0.3.
+ */
+const BACKGROUND_SOUNDS: ReadonlySet<SoundEffectType> = new Set<SoundEffectType>([
+  ...RULES.filter((r) => r.category === "ambient").map((r) => r.soundType),
+  "heartbeat",
+]);
+
+export function isBackgroundSound(soundType: SoundEffectType): boolean {
+  return BACKGROUND_SOUNDS.has(soundType);
+}
+
 const HEARTBEAT_SIGNALS = ["tension", "suspense", "danger", "anxious", "terrifying", "on edge"];
 const WHOOSH_TRANSITIONS = ["whip", "slide", "push", "motion_blur"];
 

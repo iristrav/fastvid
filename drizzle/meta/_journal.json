@@ -414,6 +414,13 @@
       "when": 1787901300000,
       "tag": "0058_ronde654_remeasure_youtube_cuts",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "5",
+      "when": 1787901400000,
+      "tag": "0059_ronde657_remeasure_youtube_dissolves",
+      "breakpoints": true
     }
   ]
 }

@@ -127,24 +127,37 @@ export async function searchFreesoundMusic(params: {
  * A catalogue over a fixed pool, for ONE film: a track is used at most once, so the score does
  * not repeat itself, and a cue is only given a track long enough to cover it.
  */
-export function catalogueFromPool(name: string, pool: readonly MusicTrack[]): MusicCatalogue {
+export function catalogueFromPool(
+  name: string,
+  pool: readonly MusicTrack[],
+  state: { used: Set<string>; last: string | null } = { used: new Set(), last: null }
+): MusicCatalogue {
   if (pool.length === 0) return EMPTY_MUSIC_CATALOGUE;
-  const used = new Set<string>();
+  const key = (t: MusicTrack) => t.identity.providerAssetId ?? t.title;
+  const pick = (choices: MusicTrack[], req: MusicRequest): MusicTrack | null => {
+    if (!choices.length) return null;
+    const fitting = choices.filter((t) => t.moods.includes(req.role));
+    return [...(fitting.length ? fitting : choices)].sort(
+      (a, b) => Math.abs(a.energy - req.intensity) - Math.abs(b.energy - req.intensity)
+    )[0]!;
+  };
   return {
     name,
     find(req: MusicRequest): MusicTrack | null {
-      const long = pool.filter(
-        (t) => t.durationSec >= req.minDurationSec && !used.has(t.identity.providerAssetId ?? t.title)
-      );
-      const fitting = long.filter((t) => t.moods.includes(req.role));
-      const choices = fitting.length ? fitting : long;
-      if (!choices.length) return null;
-      const best = [...choices].sort(
-        (a, b) => Math.abs(a.energy - req.intensity) - Math.abs(b.energy - req.intensity)
-      )[0]!;
-      used.add(best.identity.providerAssetId ?? best.title);
+      const long = pool.filter((t) => t.durationSec >= req.minDurationSec);
+      /**
+       * A fresh track first. RONDE 657 — when the pool has none left, one heard earlier in the film
+       * rather than no music at all; never the one that just played, so a track never follows itself.
+       */
+      const best =
+        pick(long.filter((t) => !state.used.has(key(t))), req) ??
+        pick(long.filter((t) => key(t) !== state.last), req);
+      if (!best) return null;
+      state.used.add(key(best));
+      state.last = key(best);
       return best;
     },
+    fork: () => catalogueFromPool(name, pool, { used: new Set(state.used), last: state.last }),
   };
 }
 

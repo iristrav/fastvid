@@ -76,6 +76,11 @@ export type MusicCue = {
   sceneIndices: number[];
   /** Why this cue is here, in one sentence. §2: nothing decided without a stated reason. */
   reason: string;
+  /**
+   * RONDE 657 — set when a cue was longer than any one track could cover and is played as several
+   * tracks in a row: which part this is. Consecutive parts crossfade rather than dip.
+   */
+  part?: { index: number; of: number };
 };
 
 /** One point of the film's emotional shape. Matches `EmotionalCurvePoint` structurally. */
@@ -265,6 +270,11 @@ export type MusicCatalogue = {
   /** A name for the log, so a render says WHICH catalogue scored it. */
   readonly name: string;
   find(request: MusicRequest): MusicTrack | null;
+  /**
+   * RONDE 657 — a copy that answers as this one would right now, without changing it: so a split
+   * can be tried before it is committed to. Optional; a catalogue without it scores cues whole.
+   */
+  fork?(): MusicCatalogue;
 };
 
 /**
@@ -328,26 +338,49 @@ export function scoreCues(
   cues: readonly MusicCue[],
   catalogue: MusicCatalogue = activeMusicCatalogue()
 ): ScoredCue[] {
-  return cues.map((cue) => {
+  const unavailable = (cue: MusicCue) =>
+    catalogue.name === "none"
+      ? "no music catalogue is registered in this deployment"
+      : `${catalogue.name} held nothing for a ${cue.role} cue at intensity ${cue.intensity}`;
+  return cues.flatMap((cue): ScoredCue[] => {
     if (cue.role === "silence") {
-      return { cue, track: null, unavailableReason: "" };
+      return [{ cue, track: null, unavailableReason: "" }];
     }
-    const track = catalogue.find({
-      role: cue.role,
-      intensity: cue.intensity,
-      minDurationSec: Math.max(MIN_CUE_SEC, cue.endSec - cue.startSec),
-    });
-    return {
-      cue,
-      track,
-      unavailableReason: track
-        ? ""
-        : catalogue.name === "none"
-          ? "no music catalogue is registered in this deployment"
-          : `${catalogue.name} held nothing for a ${cue.role} cue at intensity ${cue.intensity}`,
-    };
+    const ask = (c: MusicCue) =>
+      catalogue.find({ role: c.role, intensity: c.intensity, minDurationSec: Math.max(MIN_CUE_SEC, c.endSec - c.startSec) });
+    const track = ask(cue);
+    if (track || catalogue.name === "none") return [{ cue, track, unavailableReason: track ? "" : unavailable(cue) }];
+    /**
+     * RONDE 657 — neighbouring scenes doing the same job join into one cue, and in a ten-minute film
+     * that cue can run for minutes: longer than most CC0 tracks. Rather than leave minutes of the
+     * film unscored, the cue is played as consecutive tracks, each long enough for its part, in as
+     * few parts as the catalogue allows — never parts shorter than `MIN_MUSIC_PART_SEC`.
+     */
+    const len = cue.endSec - cue.startSec;
+    for (let n = 2; len / n >= MIN_MUSIC_PART_SEC; n++) {
+      const parts = Array.from({ length: n }, (_, i): MusicCue => ({
+        ...cue,
+        sceneIndices: [...cue.sceneIndices],
+        startSec: Number((cue.startSec + (len * i) / n).toFixed(3)),
+        endSec: Number((cue.startSec + (len * (i + 1)) / n).toFixed(3)),
+        reason: `${cue.reason} (part ${i + 1} of ${n})`,
+        part: { index: i + 1, of: n },
+      }));
+      const probe = catalogue.fork?.();
+      if (!probe) break;
+      const tracks = parts.map((p) => probe.find({ role: p.role, intensity: p.intensity, minDurationSec: p.endSec - p.startSec }));
+      if (tracks.every((t) => t)) {
+        return parts.map((p) => ({ cue: p, track: ask(p), unavailableReason: "" })).map((s) =>
+          s.track ? s : { ...s, unavailableReason: unavailable(s.cue) }
+        );
+      }
+    }
+    return [{ cue, track: null, unavailableReason: unavailable(cue) }];
   });
 }
+
+/** RONDE 657 — the shortest stretch one track is asked to carry when a long cue is split. */
+export const MIN_MUSIC_PART_SEC = 30;
 
 /** The cue sheet as render-log lines. One per cue, plus a verdict. */
 export function formatCueSheet(scored: readonly ScoredCue[], catalogueName?: string): string[] {

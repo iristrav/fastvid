@@ -119,10 +119,35 @@ export function planYoutubePieces(params: {
     );
   }
 
-  /** All distinct windows, in source order, each inside one usable shot. */
-  const windows: number[] = [];
-  for (const seg of usable) {
-    for (let at = seg.start; at + len <= seg.end + EPS; at += len) windows.push(at);
+  /** All distinct windows of a length, in source order, each inside one usable shot. */
+  const windowsOf = (l: number): number[] => {
+    const out: number[] = [];
+    for (const seg of usable) {
+      for (let at = seg.start; at + l <= seg.end + EPS; at += l) out.push(at);
+    }
+    return out;
+  };
+  let windows = windowsOf(len);
+  /**
+   * RONDE 657 — the dress rehearsal played the same 4 s of a YouTube source twice in a row: one shot
+   * held a 4 s window, two shorter shots held none. Rather than repeat a picture, the pieces get
+   * shorter — still equal, never under `YOUTUBE_STRICT_MIN_PIECE_SEC` — until every piece can show
+   * different footage. Only when even that fails does a window repeat, and the note below says so.
+   */
+  if (windows.length < count) {
+    for (let more = count + 1; need / more >= YOUTUBE_STRICT_MIN_PIECE_SEC - EPS; more++) {
+      const w = windowsOf(need / more);
+      if (w.length >= more) {
+        notes.push(
+          `${count} piece(s) of ${len.toFixed(2)}s would repeat a picture — ${more} different pieces of ` +
+            `${(need / more).toFixed(2)}s instead`
+        );
+        count = more;
+        len = need / more;
+        windows = w;
+        break;
+      }
+    }
   }
   if (windows.length === 0) {
     return { pieces: [], notes, refused: `no shot in the source holds a ${len.toFixed(2)}s piece clear of its cuts` };

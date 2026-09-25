@@ -12,9 +12,11 @@ import {
 } from "./youtubeShotLimit";
 import {
   cutsWithTransitions,
-  detectGradualTransitionsInFile,
   gradualTransitionWindows,
-  parseSceneScores,
+  parseFrameDifferences,
+  scanGradualTransitionsInFile,
+  scanReachedTheEnd,
+  scanTimeoutMs,
 } from "./youtubeSoftCuts";
 import { formatCutCheck, timelineEditPoints, unexpectedSceneChanges } from "./deliveredCutCheck";
 import type { ProjectTimeline, TimelineVideoClip } from "./projectTimeline";
@@ -40,6 +42,25 @@ describe("no piece is ever taken across a cut, even when the shots are short", (
       if (home!.start > 0) expect(p.inSec).toBeGreaterThanOrEqual(home!.start + YOUTUBE_CUT_MARGIN_SEC - 1e-6);
     }
     expect(pieces.reduce((s, p) => s + p.durationSec, 0)).toBeCloseTo(5, 3);
+  });
+
+  it("shorter, different pieces rather than the same picture twice (RONDE 657, the dress rehearsal's source)", () => {
+    /** Shots 0–4, a dissolve 4–5, 5–8, 8–14: only the last holds a 4 s window clear of its cuts. */
+    const facts = measured(14, [4, 5, 8]);
+    const { pieces, notes, refused } = planYoutubePieces({ inSec: 8, durationSec: 8, facts });
+    expect(refused).toBeUndefined();
+    const starts = pieces.map((p) => p.inSec);
+    expect(new Set(starts).size).toBe(pieces.length);
+    expect(notes.join(" ")).not.toMatch(/— \d+ repeat/);
+    expect(notes.join(" ")).toContain("different pieces");
+    /** Rounded to the millisecond; `limitYoutubeShots` ends the last piece on the slot's own end. */
+    expect(pieces.reduce((sum, p) => sum + p.durationSec, 0)).toBeCloseTo(8, 2);
+    const segs = shotSegments(facts);
+    for (const p of pieces) {
+      expect(p.durationSec).toBeGreaterThanOrEqual(1.5);
+      const home = segs.find((seg) => p.inSec >= seg.start - 1e-6 && p.inSec < seg.end)!;
+      expect(p.inSec + p.durationSec).toBeLessThanOrEqual(home.end - YOUTUBE_CUT_MARGIN_SEC + 1e-6);
+    }
   });
 
   it("refuses when no shot is long enough once clear of its cuts", () => {
@@ -86,41 +107,88 @@ describe("a refused YouTube clip gives its slot to another shot, never a transit
 });
 
 describe("dissolves and fades are found, camera moves are not", () => {
+  /** Scores are the mean absolute frame difference, luma + half of each colour plane, in levels. */
   it("a run of modest changes above the moving baseline is a transition", () => {
-    const still = (t0: number, n: number) => Array.from({ length: n }, (_, i) => ({ t: t0 + i / 10, score: 0 }));
-    const fade = Array.from({ length: 10 }, (_, i) => ({ t: 2 + i / 10, score: 0.02 }));
+    const still = (t0: number, n: number) => Array.from({ length: n }, (_, i) => ({ t: Number((t0 + i / 10).toFixed(1)), score: 0.3 }));
+    const fade = Array.from({ length: 10 }, (_, i) => ({ t: Number((2 + i / 10).toFixed(1)), score: 3 }));
     expect(gradualTransitionWindows([...still(0, 20), ...fade, ...still(3, 20)])).toEqual([{ start: 2, end: 2.9 }]);
   });
 
-  it("steady motion on every frame is not", () => {
-    const motion = Array.from({ length: 60 }, (_, i) => ({ t: i / 10, score: 0.015 + (i % 3) * 0.005 }));
+  it("steady motion on every frame is not, however much it moves", () => {
+    const motion = Array.from({ length: 60 }, (_, i) => ({ t: i / 10, score: 9 + (i % 3) * 1.5 }));
     expect(gradualTransitionWindows(motion)).toEqual([]);
   });
 
+  it("a single jump is a hard cut, left to the hard-cut pass", () => {
+    const s = Array.from({ length: 40 }, (_, i) => ({ t: i / 10, score: i === 20 ? 90 : 0 }));
+    expect(gradualTransitionWindows(s)).toEqual([]);
+  });
+
   it("reads ffmpeg's metadata print, and turns windows into cut edges", () => {
-    const out = "frame:0 pts:0 pts_time:0.1\nlavfi.scene_score=0.020000\nframe:1 pts:1 pts_time:0.2\nlavfi.scene_score=0.000000\n";
-    expect(parseSceneScores(out)).toEqual([{ t: 0.1, score: 0.02 }, { t: 0.2, score: 0 }]);
+    const out = [
+      "frame:0 pts:1 pts_time:0.1",
+      "lavfi.signalstats.YAVG=2",
+      "frame:0 pts:1 pts_time:0.1",
+      "lavfi.signalstats.UAVG=6",
+      "frame:0 pts:1 pts_time:0.1",
+      "lavfi.signalstats.VAVG=4",
+      "frame:1 pts:2 pts_time:0.2",
+      "lavfi.signalstats.YAVG=0",
+      "frame:1 pts:2 pts_time:0.2",
+      "lavfi.signalstats.UAVG=0",
+      "frame:1 pts:2 pts_time:0.2",
+      "lavfi.signalstats.VAVG=0",
+    ].join("\n");
+    expect(parseFrameDifferences(out)).toEqual([{ t: 0.1, score: 7 }, { t: 0.2, score: 0 }]);
     expect(cutsWithTransitions([5], [{ start: 2, end: 2.9 }])).toEqual([2, 2.9, 5]);
+  });
+
+  it("a scan that stopped early or failed is not a scan", () => {
+    const upTo = (end: number) => Array.from({ length: end * 10 }, (_, i) => ({ t: i / 10, score: 0 }));
+    expect(scanReachedTheEnd(upTo(60), 60, true)).toBe(true);
+    expect(scanReachedTheEnd(upTo(30), 60, true)).toBe(false);
+    expect(scanReachedTheEnd(upTo(60), 60, false)).toBe(false);
+    expect(scanTimeoutMs(0)).toBe(30_000);
+    expect(scanTimeoutMs(300)).toBe(90_000);
+    expect(scanTimeoutMs(100_000)).toBe(600_000);
   });
 
   describe("on real ffmpeg video", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fv_softcut_"));
     const ff = (args: string[]) => execFileSync("ffmpeg", ["-loglevel", "error", "-y", ...args]);
+    const xfade = (a: string, b: string, out: string, extra = "") =>
+      ff(["-f", "lavfi", "-i", a, "-f", "lavfi", "-i", b,
+        "-filter_complex", `[0][1]xfade=transition=fade:duration=1:offset=2${extra},format=yuv420p`, "-c:v", "libx264", path.join(dir, out)]);
     beforeAll(() => {
-      ff(["-f", "lavfi", "-i", "color=c=red:s=320x180:d=3:r=25", "-f", "lavfi", "-i", "color=c=blue:s=320x180:d=3:r=25",
-        "-filter_complex", "[0][1]xfade=transition=fade:duration=1:offset=2,format=yuv420p", "-c:v", "libx264", path.join(dir, "dissolve.mp4")]);
+      xfade("color=c=red:s=320x180:d=3:r=25", "color=c=blue:s=320x180:d=3:r=25", "dissolve.mp4");
+      /** RONDE 657 — the dress rehearsal's pair, which the scene score missed: dark red-brown into dark blue. */
+      xfade("color=c=0x993322:s=320x180:d=3:r=25", "color=c=0x223399:s=320x180:d=3:r=25", "lowContrast.mp4");
+      /** Two greys a few levels apart: as quiet as a real shot change gets. */
+      xfade("color=c=0x505050:s=320x180:d=3:r=25", "color=c=0x6a6a6a:s=320x180:d=3:r=25", "greys.mp4");
+      /** A dissolve between two pictures that both move. */
+      xfade("testsrc2=s=320x180:d=3:r=25", "mandelbrot=s=320x180:r=25,trim=duration=3", "moving.mp4");
       ff(["-f", "lavfi", "-i", "testsrc2=s=320x180:d=6:r=25", "-c:v", "libx264", "-pix_fmt", "yuv420p", path.join(dir, "motion.mp4")]);
     });
 
-    it("finds the 1 s cross-fade at 2–3 s", async () => {
-      const w = await detectGradualTransitionsInFile(path.join(dir, "dissolve.mp4"));
-      expect(w).toHaveLength(1);
-      expect(w[0]!.start).toBeGreaterThanOrEqual(1.8);
-      expect(w[0]!.end).toBeLessThanOrEqual(3.2);
-    }, 30_000);
+    for (const file of ["dissolve.mp4", "lowContrast.mp4", "greys.mp4", "moving.mp4"]) {
+      it(`finds the 1 s cross-fade at 2–3 s in ${file}, and scans to the end`, async () => {
+        const scan = await scanGradualTransitionsInFile(path.join(dir, file), { durationSec: 5 });
+        expect(scan.complete).toBe(true);
+        expect(scan.windows).toHaveLength(1);
+        expect(scan.windows[0]!.start).toBeGreaterThanOrEqual(1.8);
+        expect(scan.windows[0]!.end).toBeLessThanOrEqual(3.2);
+      }, 30_000);
+    }
 
     it("finds nothing in footage that only moves", async () => {
-      expect(await detectGradualTransitionsInFile(path.join(dir, "motion.mp4"))).toEqual([]);
+      const scan = await scanGradualTransitionsInFile(path.join(dir, "motion.mp4"), { durationSec: 6 });
+      expect(scan.complete).toBe(true);
+      expect(scan.windows).toEqual([]);
+    }, 30_000);
+
+    it("a scan cut short by its time limit says so", async () => {
+      const scan = await scanGradualTransitionsInFile(path.join(dir, "motion.mp4"), { durationSec: 6, timeoutMs: 1 });
+      expect(scan.complete).toBe(false);
     }, 30_000);
   });
 });
@@ -143,8 +211,11 @@ describe("the delivered file is checked against the edit's own cuts", () => {
     const WORKER = fs.readFileSync(path.join(__dirname, "renderJobWorker.ts"), "utf8");
     const CUTS = fs.readFileSync(path.join(__dirname, "youtubeShotCuts.ts"), "utf8");
     expect(WORKER).toContain("await scanDeliveredCuts(outputPath, timeline)");
-    expect(CUTS).toContain("cutsWithTransitions(hard, soft)");
+    expect(CUTS).toContain("cutsWithTransitions(hard, soft.windows)");
     expect(fs.readFileSync(path.join(__dirname, "../drizzle/0058_ronde654_remeasure_youtube_cuts.sql"), "utf8"))
+      .toContain("SET `shotCutsSec` = NULL");
+    /** RONDE 657 — measured once more with the detector that sees a steady cross-fade. */
+    expect(fs.readFileSync(path.join(__dirname, "../drizzle/0059_ronde657_remeasure_youtube_dissolves.sql"), "utf8"))
       .toContain("SET `shotCutsSec` = NULL");
   });
 });

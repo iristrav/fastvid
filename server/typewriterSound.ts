@@ -8,8 +8,10 @@
  * with, and a real typewriter recording already has the rhythm of keys in it.
  *
  * The recording is `freesound:434572`, "Typewriter keys", from the sound catalogue that already
- * supplies the ambience — not a new id written down here. Quiet (-22 dB), ducked under the voice,
- * and cut with a short fade so it stops when the typing does.
+ * supplies the ambience — not a new id written down here. Quiet (-22 dB) and cut with a short fade
+ * so it stops when the typing does. Not ducked: the renderer never ducks an SFX-track clip unless
+ * asked (§154, an accent is meant to be heard), and a typing sound pushed under the voice would be
+ * gone exactly when the text types during narration. -22 dB is what keeps it under the voice.
  */
 import type { TimelineAudioClip } from "./projectTimeline";
 import { SOUND_CATALOG } from "./cinematicAudio/catalog";
@@ -40,7 +42,6 @@ export function typewriterSfxClips(
         end,
         gain,
         fadeOutSec: 0.08,
-        duckUnderVoice: true,
       };
     });
 }

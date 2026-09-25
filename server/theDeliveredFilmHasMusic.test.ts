@@ -12,7 +12,7 @@ import {
   searchFreesoundMusic,
   trackFromFreesound,
 } from "./freesoundMusicCatalogue";
-import { EMPTY_MUSIC_CATALOGUE, formatCueSheet, planMusicCues, scoreCues, type MusicTrack } from "./musicDirector";
+import { EMPTY_MUSIC_CATALOGUE, MIN_MUSIC_PART_SEC, formatCueSheet, planMusicCues, scoreCues, type MusicTrack } from "./musicDirector";
 import { buildAudioGraph, type MixInput } from "./timelineFilters";
 
 /**
@@ -126,6 +126,66 @@ describe("one film is scored from the pool without repeating a track", () => {
 
   it("an empty pool is the empty catalogue, and the cue sheet says so", () => {
     expect(catalogueFromPool("x", [])).toBe(EMPTY_MUSIC_CATALOGUE);
+  });
+});
+
+/**
+ * RONDE 657 — the dress rehearsal scored its intro and left the rest UNSCORED: a cue asks for one
+ * track at least as long as itself, and joined scenes make cues minutes long.
+ */
+describe("a long cue is played as consecutive tracks, and a small pool is reused before it goes silent", () => {
+  const t = (id: number, duration: number, search = 0) => trackFromFreesound(fsResult(id, { duration }), MUSIC_SEARCHES[search]!)!;
+  const cue = (role: "intro" | "transition" | "outro", startSec: number, endSec: number) =>
+    ({ role, startSec, endSec, intensity: 40, sceneIndices: [0], reason: "r" });
+
+  it("a 5-minute cue with no 5-minute track becomes parts, each covered, never the same track twice in a row", () => {
+    const pool = [t(21, 130), t(22, 110), t(23, 150), t(24, 90)];
+    const scored = scoreCues([cue("transition", 0, 300)], catalogueFromPool("freesound-cc0", pool));
+    expect(scored.length).toBeGreaterThan(1);
+    expect(scored.every((s) => s.track)).toBe(true);
+    expect(scored[0]!.cue.startSec).toBe(0);
+    expect(scored.at(-1)!.cue.endSec).toBe(300);
+    for (let i = 0; i < scored.length; i++) {
+      const s = scored[i]!;
+      expect(s.track!.durationSec).toBeGreaterThanOrEqual(s.cue.endSec - s.cue.startSec);
+      expect(s.cue.part).toEqual({ index: i + 1, of: scored.length });
+      if (i) {
+        expect(s.cue.startSec).toBe(scored[i - 1]!.cue.endSec);
+        expect(s.track!.identity.providerAssetId).not.toBe(scored[i - 1]!.track!.identity.providerAssetId);
+      }
+    }
+    expect(formatCueSheet(scored, "freesound-cc0").join("\n")).not.toContain("UNSCORED");
+  });
+
+  it("never splits into parts shorter than half a minute", () => {
+    expect(MIN_MUSIC_PART_SEC).toBe(30);
+    /** 50 s from 30 s tracks would need 25 s parts: left unscored, and the cue sheet says so. */
+    const short = scoreCues([cue("transition", 0, 50)], catalogueFromPool("freesound-cc0", [t(31, 30), t(32, 30)]));
+    expect(short).toHaveLength(1);
+    expect(short[0]!.track).toBeNull();
+    expect(short[0]!.unavailableReason).toContain("held nothing");
+    /** 300 s from 30 s tracks is ten parts of exactly 30 s — the floor, not below it. */
+    const long = scoreCues([cue("transition", 0, 300)], catalogueFromPool("freesound-cc0", [t(31, 30), t(32, 30)]));
+    for (const s of long) expect(s.cue.endSec - s.cue.startSec).toBeGreaterThanOrEqual(MIN_MUSIC_PART_SEC - 0.001);
+  });
+
+  it("when every track has been heard, one heard earlier plays rather than silence — but not the one just played", () => {
+    const pool = [t(41, 120), t(42, 120)];
+    const scored = scoreCues([cue("intro", 0, 60), cue("transition", 60, 120), cue("outro", 120, 180)], catalogueFromPool("freesound-cc0", pool));
+    const ids = scored.map((s) => s.track?.identity.providerAssetId ?? null);
+    expect(ids.every((id) => id)).toBe(true);
+    expect(ids[1]).not.toBe(ids[0]);
+    expect(ids[2]).not.toBe(ids[1]);
+    const alone = scoreCues([cue("intro", 0, 60), cue("outro", 60, 120)], catalogueFromPool("freesound-cc0", [t(51, 120)]));
+    expect(alone[0]!.track).not.toBeNull();
+    expect(alone[1]!.track).toBeNull();
+  });
+
+  it("the parts hand over with a two-second crossfade instead of a dip", () => {
+    const PIPE = fs.readFileSync(path.join(__dirname, "cinematicPipeline.ts"), "utf8");
+    expect(PIPE).toContain("const MUSIC_PART_CROSSFADE_SEC = 2;");
+    expect(PIPE).toContain("start: Number(Math.max(0, scored.cue.startSec - handover).toFixed(3))");
+    expect(PIPE).toContain("fadeInSec: handover || 1.5");
   });
 });
 

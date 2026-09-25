@@ -81,3 +81,29 @@ describe("ambience sits far under the voice, whatever level it was recorded at",
     expect(pauseLoud).toBeGreaterThan(-70);
   }, 60_000);
 });
+
+/**
+ * RONDE 657 — the dress rehearsal heard rain at -10.5 dB in a pause: the sound planner's "ambient"
+ * rules (rain, wind, crowd, fire, keys, a heartbeat) sat on the SFX track at 0.3, never levelled and
+ * never ducked. Background sounds now go where background sounds go.
+ */
+describe("the planner's background sounds are as quiet as the room tone", () => {
+  it("rain, wind, a crowd and a heartbeat are background; a hit, a click and a whoosh are not", async () => {
+    const { isBackgroundSound } = await import("./cinematicEditingEngine/soundPlanner");
+    for (const t of ["rain", "wind", "crowd", "fire", "keyboard", "typing", "heartbeat"] as const) expect(isBackgroundSound(t)).toBe(true);
+    for (const t of ["explosion", "camera_click", "whoosh", "impact", "page_turn"] as const) expect(isBackgroundSound(t)).toBe(false);
+  });
+
+  it("they land on the AMBIENT track at the ambience level, ducked, and the same recording is never doubled", () => {
+    const EDL = fs.readFileSync(path.join(__dirname, "edlToTimeline.ts"), "utf8");
+    const PIPE = fs.readFileSync(path.join(__dirname, "cinematicPipeline.ts"), "utf8");
+    const at = EDL.indexOf("if (isBackgroundSound(sound.soundType)) {");
+    expect(at).toBeGreaterThan(-1);
+    const body = EDL.slice(at, at + 1200);
+    expect(body).toContain("background.push(");
+    expect(body).toContain("gain: gainFromDb(ambienceGainDb())");
+    expect(body).toContain("duckUnderVoice: true");
+    expect(EDL).toContain('{ kind: "AMBIENT", clips: background }');
+    expect(PIPE).toContain("b.source.providerAssetId === c.source.providerAssetId && c.start < b.end && c.end > b.start");
+  });
+});

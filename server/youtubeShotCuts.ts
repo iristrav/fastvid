@@ -38,7 +38,8 @@ export type ShotCutDeps = {
   getAsset: (archiveAssetId: number) => Promise<ShotCutRow | null>;
   /** Put the archive asset's stored file at `dest`. */
   fetchAsset: (archiveAssetId: number, dest: string) => Promise<boolean>;
-  detect: (filePath: string) => Promise<{ durationSec: number; cutsSec: number[] }>;
+  /** `incomplete`: the scan stopped before the end of the file — its cuts are not the whole truth. */
+  detect: (filePath: string) => Promise<{ durationSec: number; cutsSec: number[]; incomplete?: string }>;
   save: (archiveAssetId: number, cutsSec: number[], durationSec: number) => Promise<void>;
   workDir?: string;
   log?: (line: string) => void;
@@ -83,6 +84,11 @@ export async function youtubeSourceFactsFor(
     }
     const measured = await deps.detect(dest);
     const durationSec = measured.durationSec > 0 ? measured.durationSec : row.durationSec ?? 0;
+    if (measured.incomplete) {
+      /** RONDE 657 — not saved: the next render measures again rather than trusting half a scan. */
+      say(`[YouTubeShots] archiveAsset=${id} NOT measured: ${measured.incomplete} — not cut from until measured`);
+      return { sourceDurationSec: durationSec, cutsSec: [], measured: false };
+    }
     const cutsSec = measured.cutsSec
       .filter((c) => Number.isFinite(c) && c > 0 && c < durationSec)
       .map((c) => Number(c.toFixed(3)))
@@ -131,18 +137,23 @@ export function productionShotCutDeps(workDir?: string): ShotCutDeps {
     },
     detect: async (filePath) => {
       const { detectInteriorCutTimesInFile, probeVideoDurationSec, ffmpegBin } = await import("./archiveVideoSplitter");
-      const { detectGradualTransitionsInFile, cutsWithTransitions } = await import("./youtubeSoftCuts");
+      const { scanGradualTransitionsInFile, scanTimeoutMs, cutsWithTransitions } = await import("./youtubeSoftCuts");
       const durationSec = await probeVideoDurationSec(filePath);
-      if (!(durationSec > 0)) return { durationSec, cutsSec: [] };
+      if (!(durationSec > 0)) return { durationSec, cutsSec: [], incomplete: "its length could not be read" };
       /**
        * RONDE 654 — hard cuts AND the edges of every dissolve or fade, so a piece can sit inside
        * neither. Both passes run on the same file at the same time.
        */
+      /** RONDE 657 — the time allowed grows with the source: a fixed 28 s stopped long sources early. */
+      const timeoutMs = scanTimeoutMs(durationSec);
       const [hard, soft] = await Promise.all([
-        detectInteriorCutTimesInFile(filePath, durationSec),
-        detectGradualTransitionsInFile(filePath, { ffmpegBin: ffmpegBin() }),
+        detectInteriorCutTimesInFile(filePath, durationSec, timeoutMs),
+        scanGradualTransitionsInFile(filePath, { ffmpegBin: ffmpegBin(), timeoutMs, durationSec }),
       ]);
-      return { durationSec, cutsSec: cutsWithTransitions(hard, soft) };
+      const cutsSec = cutsWithTransitions(hard, soft.windows);
+      return soft.complete
+        ? { durationSec, cutsSec }
+        : { durationSec, cutsSec, incomplete: `transition scan stopped at ${soft.lastSec.toFixed(1)}s of ${durationSec.toFixed(1)}s` };
     },
     save: async (id, cutsSec, durationSec) => {
       const { updateMediaArchiveAsset } = await import("./db");

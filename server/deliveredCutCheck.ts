@@ -66,7 +66,7 @@ export async function scanDeliveredCuts(filePath: string, timeline: ProjectTimel
     if (!(dur > 0)) return null;
     const [hard, soft] = await Promise.all([
       detectInteriorCutTimesInFile(filePath, dur, 60_000),
-      detectGradualTransitionsInFile(filePath, { ffmpegBin: ffmpegBin(), timeoutMs: 60_000 }),
+      detectGradualTransitionsInFile(filePath, { ffmpegBin: ffmpegBin(), timeoutMs: 60_000, durationSec: dur }),
     ]);
     /** A gradual transition is judged by its middle. */
     const changes = [...hard, ...soft.map((w) => (w.start + w.end) / 2)].sort((a, b) => a - b);

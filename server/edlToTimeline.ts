@@ -60,6 +60,8 @@ import type {
 } from "./cinematicEditingEngine/types";
 import { graphicIsRenderable } from "./graphicsVocabulary";
 import { resolveSoundEffect } from "./audioAssetSource";
+import { isBackgroundSound } from "./cinematicEditingEngine/soundPlanner";
+import { ambienceGainDb, gainFromDb } from "./cinematicAmbient";
 import { beatIndexFromBeatId } from "./cinematicPipelineInputs";
 import { limitYoutubeShots, type YoutubeSourceFacts } from "./youtubeShotLimit";
 
@@ -509,6 +511,8 @@ export function translateEdl(params: {
   const captions: TimelineCaption[] = [];
   const texts: TimelineText[] = [];
   const sfx: TimelineAudioClip[] = [];
+  /** RONDE 657 — the planner's background sounds: on the AMBIENT track, with the room tone. */
+  const background: TimelineAudioClip[] = [];
   const graphics: TimelineGraphic[] = [];
 
   /** RONDE 647 — clip id → its YouTube source, for the five-second rule after the holds. */
@@ -679,14 +683,32 @@ export function translateEdl(params: {
         unsupported.push(`beat ${decision.beatId}: ${found.reason}`);
         continue;
       }
-      sfx.push({
-        id: timelineElementId("sfx", decision.beatId, sound.soundType, sound.timeSec),
+      const placed = {
         source: found.identity,
         start: Number((sceneOffsetSec + sound.timeSec).toFixed(3)),
         end: Number((sceneOffsetSec + sound.timeSec + 1.5).toFixed(3)),
-        gain: Math.max(0, Math.min(1, sound.volume)),
         fadeInSec: sound.fadeInSec,
         fadeOutSec: sound.fadeOutSec,
+      };
+      if (isBackgroundSound(sound.soundType)) {
+        /**
+         * RONDE 657 — rain, wind, a crowd, a heartbeat: background, so as quiet as the room tone.
+         * The AMBIENT track levels the recording by its measured loudness, sets it at the ambience
+         * level and ducks it under the voice; on the SFX track it played at the planner's 0.3
+         * (-10.5 dB), un-levelled and un-ducked, louder than any ambience in the film.
+         */
+        background.push({
+          id: timelineElementId("bg", decision.beatId, sound.soundType, sound.timeSec),
+          ...placed,
+          gain: gainFromDb(ambienceGainDb()),
+          duckUnderVoice: true,
+        });
+        continue;
+      }
+      sfx.push({
+        id: timelineElementId("sfx", decision.beatId, sound.soundType, sound.timeSec),
+        ...placed,
+        gain: Math.max(0, Math.min(1, sound.volume)),
       });
     }
 
@@ -835,7 +857,7 @@ export function translateEdl(params: {
     { kind: "MUSIC", clips: [] },
     { kind: "SFX", clips: sfx },
     { kind: "CAPTIONS", captions },
-    { kind: "AMBIENT", clips: [] },
+    { kind: "AMBIENT", clips: background },
     { kind: "TEXT", texts },
     { kind: "GRAPHICS", graphics },
   ];

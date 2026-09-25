@@ -6,6 +6,7 @@ import { MAX_REVEALS, REVEAL_MIN_GAP_SEC, directOnScreenText, formatTextDirectio
 import { TYPE_CHAR_SEC, TYPE_DELAY_SEC, keystrokeTimesSec, typedCount, typingDurationSec } from "./remotion/components/typewriter";
 import { TYPEWRITER_GAIN_DB, intensityAtFrom, typewriterSfxClips, typewriterSoundId } from "./typewriterSound";
 import { SUPPORTED_ANIMATIONS, PROGRESSIVE_ANIMATIONS } from "./remotion/components/animation";
+import { duckingEnabled } from "./timelineFilters";
 
 /**
  * RONDE 656 — "zorg ervoor dat de tekst wat in beeld komt, typend in beeld komt. Ook met een
@@ -108,14 +109,17 @@ describe("years type; key-word pop-ups stay off except at the most intense momen
 });
 
 describe("the keys are heard, from the catalogue's own recording", () => {
-  it("one quiet clip per typing element, from the first key to the last, ducked under the voice", () => {
+  it("one quiet clip per typing element, from the first key to the last, heard over the voice at -22 dB", () => {
     expect(typewriterSoundId()).toBe("434572");
     const [c] = typewriterSfxClips([{ id: "g_date", start: 2, text: "1945" }]);
     expect(c!.source).toMatchObject({ provider: "freesound", providerAssetId: "434572" });
     expect(c!.start).toBeCloseTo(2 + TYPE_DELAY_SEC, 3);
     expect(c!.end).toBeCloseTo(2 + TYPE_DELAY_SEC + 4 * TYPE_CHAR_SEC + 0.08, 3);
     expect(c!.gain).toBeCloseTo(10 ** (TYPEWRITER_GAIN_DB / 20), 3);
-    expect(c!.duckUnderVoice).toBe(true);
+    /** RONDE 657 — an SFX clip is not ducked (the renderer's rule); its level is what keeps it quiet. */
+    expect(c!.duckUnderVoice).toBeUndefined();
+    expect(duckingEnabled({ index: 1, kind: "SFX", startSec: c!.start, gain: c!.gain, durationSec: 1 })).toBe(false);
+    expect(TYPEWRITER_GAIN_DB).toBeLessThanOrEqual(-20);
   });
 
   it("the film's intensity comes from the shot on screen and its beat", () => {

@@ -414,7 +414,22 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
     sceneWindows,
   });
   const ambientTrack = timeline.tracks.find((t) => t.kind === "AMBIENT");
-  if (ambientTrack?.kind === "AMBIENT") ambientTrack.clips.push(...ambientClips(audioPlan));
+  if (ambientTrack?.kind === "AMBIENT") {
+    const beds = ambientClips(audioPlan);
+    /**
+     * RONDE 657 — a planned background sound whose recording is already the scene's bed at that
+     * moment is the same rain twice, 6 dB louder: dropped, and counted in the log.
+     */
+    const doubled = ambientTrack.clips.filter((c) =>
+      beds.some((b) => b.source.providerAssetId === c.source.providerAssetId && c.start < b.end && c.end > b.start)
+    );
+    ambientTrack.clips.splice(0, ambientTrack.clips.length, ...ambientTrack.clips.filter((c) => !doubled.includes(c)), ...beds);
+    if (doubled.length) {
+      console.log(
+        `[CinematicAudio] ${doubled.length} planned background sound(s) already playing as the scene's ambience — not doubled`
+      );
+    }
+  }
   for (const line of audioPlan.unavailable) unsupported.push(line);
 
   /**
@@ -437,6 +452,7 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
    * is a spotting decision, and the most effective bar in a documentary score is frequently the
    * one where it stops.
    */
+  const MUSIC_PART_CROSSFADE_SEC = 2;
   const cueSheet = scoreCues(
     planMusicCues({
       curve: params.emotionalCurve ?? [],
@@ -449,17 +465,22 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
   if (musicTrack?.kind === "MUSIC") {
     for (const scored of cueSheet) {
       if (!scored.track) continue;
+      /**
+       * RONDE 657 — a later part of a split cue starts two seconds early and fades in while the part
+       * before it fades out: one track hands over to the next, with no dip in the bed.
+       */
+      const handover = scored.cue.part && scored.cue.part.index > 1 ? MUSIC_PART_CROSSFADE_SEC : 0;
       musicTrack.clips.push({
-        id: `music_${scored.cue.role}_${scored.cue.startSec.toFixed(0)}`,
+        id: `music_${scored.cue.role}_${scored.cue.startSec.toFixed(0)}${scored.cue.part ? `_p${scored.cue.part.index}` : ""}`,
         source: scored.track.identity,
-        start: scored.cue.startSec,
+        start: Number(Math.max(0, scored.cue.startSec - handover).toFixed(3)),
         end: scored.cue.endSec,
         /**
          * Well under the voice, and ducked further by `DUCK_MUSIC` when the narrator speaks.
          * A documentary bed sits where you notice it only when it stops.
          */
         gain: 0.22,
-        fadeInSec: 1.5,
+        fadeInSec: handover || 1.5,
         fadeOutSec: 2,
         duckUnderVoice: true,
       });

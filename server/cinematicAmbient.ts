@@ -77,7 +77,7 @@ export type CinematicAudioPlan = {
  * `TimelineAudioClip.gain` is linear. This converts rather than inventing a second calibration —
  * −26 dBFS is what `planSceneAudio` already returns for a neutral scene.
  */
-function gainFromDb(db: number): number {
+export function gainFromDb(db: number): number {
   return Number(Math.pow(10, db / 20).toFixed(4));
 }
 
