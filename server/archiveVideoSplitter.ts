@@ -134,7 +134,7 @@ const DEFAULT_SPLIT_BUDGET_MS = 3_600_000;
 const DEFAULT_MAX_SOURCE_SEC = ARCHIVE_MAX_VIDEO_DURATION_SEC;
 const DEFAULT_MAX_UPLOAD_MB = ARCHIVE_MAX_UPLOAD_BYTES / (1024 * 1024);
 
-function ffmpegBin(): string {
+export function ffmpegBin(): string {
   return process.env.FFMPEG_BIN || process.env.FFMPEG_PATH || "ffmpeg";
 }
 

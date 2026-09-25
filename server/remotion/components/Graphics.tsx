@@ -23,6 +23,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 import { animationAt } from "./animation";
+import { typedCount } from "./typewriter";
 import { positionStyle, type TextStyleLike } from "./Text";
 import {
   BarChart,
@@ -165,15 +166,26 @@ const LowerThird: React.FC<{ g: GraphicSpec; primary: string }> = ({ g, primary 
  * It used to fall through to the default branch — the year in heavy white sans, the same weight as
  * a headline. A documentary states a year quietly; the rules frame it without a box.
  */
-const DateCard: React.FC<{ primary: string }> = ({ primary }) => (
-  <div style={{ display: "flex", alignItems: "center", gap: "0.45em" }}>
-    <div style={{ height: 2, width: "1.2em", background: "white" }} />
-    <div style={{ fontFamily: SERIF_FONT, fontSize: "0.9em", fontWeight: 500, color: "white", letterSpacing: "0.12em", textShadow: HALO }}>
-      {primary}
+const DateCard: React.FC<{ primary: string; typewriter?: boolean }> = ({ primary, typewriter }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  /**
+   * RONDE 656 — a year types itself in, key by key, at the pace the key sound follows
+   * (`typewriter.ts`). The untyped figures are laid out but hidden, so the rules do not move.
+   */
+  const chars = [...primary];
+  const shown = typewriter ? typedCount(primary, frame / fps) : chars.length;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.45em" }}>
+      <div style={{ height: 2, width: "1.2em", background: "white" }} />
+      <div style={{ fontFamily: SERIF_FONT, fontSize: "0.9em", fontWeight: 500, color: "white", letterSpacing: "0.12em", textShadow: HALO }}>
+        {chars.slice(0, shown).join("")}
+        {shown < chars.length && <span style={{ visibility: "hidden" }}>{chars.slice(shown).join("")}</span>}
+      </div>
+      <div style={{ height: 2, width: "1.2em", background: "white" }} />
     </div>
-    <div style={{ height: 2, width: "1.2em", background: "white" }} />
-  </div>
-);
+  );
+};
 
 /**
  * A number counter that COUNTS, from the payload's own from/to.
@@ -333,7 +345,7 @@ export const Graphic: React.FC<{ g: GraphicSpec }> = ({ g }) => {
       break;
     /** RONDE 651 — a year is set as a date, not as a headline. */
     case "date_card":
-      body = <DateCard primary={words} />;
+      body = <DateCard primary={words} typewriter={g.data?.typewriter === true} />;
       break;
     case "counter":
     case "statistic":

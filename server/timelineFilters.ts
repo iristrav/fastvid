@@ -891,7 +891,39 @@ export function buildTransitionGraph(params: {
  * would mean two answers to one question, and the other one is the tested one.
  */
 export const DUCK_MUSIC = { threshold: 0.02, ratio: 8, attack: 5, release: 200, makeup: 1 } as const;
-export const DUCK_AMBIENT = { threshold: 0.03, ratio: 4, attack: 10, release: 300, makeup: 1 } as const;
+/**
+ * RONDE 655 — the operator: "de achtergrondgeluiden heel zacht". Ambience now ducks earlier
+ * (threshold 0.02) and harder (ratio 6), still gentler than music, so it all but disappears while
+ * the narrator speaks and is heard only in the pauses.
+ */
+export const DUCK_AMBIENT = { threshold: 0.02, ratio: 6, attack: 10, release: 300, makeup: 1 } as const;
+
+/**
+ * RONDE 655 — every ambience recording is first brought to one loudness, so the gain on the clip
+ * means the same thing for a quiet room tone and a loud crowd. Freesound recordings differ by 25 dB
+ * or more; without this a loud one stayed loud however low the gain.
+ *
+ * Done as ARITHMETIC on the clip's gain, not as a filter: the renderer measures each ambience file's
+ * integrated loudness once and scales the gain (`levelledGain`). The filter graph stays exactly the
+ * `volume` it was — loudness normalisation of the film itself happens at one place per route (R222).
+ */
+export const AMBIENCE_TARGET_LUFS = -23;
+/** A near-silent file is not pushed up by more than this; it stays quiet rather than hissing. */
+const MAX_LEVEL_BOOST_DB = 6;
+
+/** The clip's gain after levelling its file from `measuredLufs` to `targetLufs`. */
+export function levelledGain(gain: number, measuredLufs: number | null, targetLufs = AMBIENCE_TARGET_LUFS): number {
+  if (measuredLufs == null || !Number.isFinite(measuredLufs)) return gain;
+  const db = Math.min(MAX_LEVEL_BOOST_DB, targetLufs - measuredLufs);
+  return Number((gain * 10 ** (db / 20)).toFixed(4));
+}
+
+/** ffmpeg `ebur128` summary → integrated loudness, or null. */
+export function parseIntegratedLufs(stderr: string): number | null {
+  const m = /Integrated loudness:\s*\n\s*I:\s*(-?[\d.]+)\s*LUFS/.exec(stderr);
+  const v = m ? Number(m[1]) : NaN;
+  return Number.isFinite(v) && v > -70 ? v : null;
+}
 
 export type MixInput = {
   /** ffmpeg input index. */

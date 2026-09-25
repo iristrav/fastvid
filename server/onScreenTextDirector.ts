@@ -48,7 +48,27 @@ export type TextDirection = {
   disabled: Array<{ id: string; reason: string; label: string }>;
   converted: string[];
   extended: number;
+  /**
+   * RONDE 656 — the elements that type themselves in, and when they appear: every year that stays
+   * on screen, and at most a couple of lines at the film's most intense moments. The planner lays a
+   * key sound under each from this list.
+   */
+  typewriter: Array<{ id: string; start: number; text: string; why: "year" | "reveal" }>;
 };
+
+export type TextDirectionOptions = {
+  /**
+   * The film's emotional intensity (0–100) at a moment on the timeline, when the plan knows it.
+   * Absent: no reveal lines are chosen, and only years type.
+   */
+  intensityAt?: (sec: number) => number | null;
+};
+
+/** RONDE 656 — a reveal line only where the film is at its most intense. */
+export const REVEAL_MIN_INTENSITY = 70;
+export const MAX_REVEALS = 2;
+export const REVEAL_MIN_GAP_SEC = 15;
+const REVEAL_MAX_CHARS = 40;
 
 const KEYWORD_ROLES = new Set(["animated_text", "callout"]);
 const PRIORITY: Record<Kind, number> = { title: 0, name: 1, place: 2, date: 3, other: 4 };
@@ -125,8 +145,8 @@ function switchOff(e: Element, reason: string, out: TextDirection): void {
  * Apply the rules to a timeline, in place. Deterministic: the same timeline always gives the
  * same result, ordered by start time and then id.
  */
-export function directOnScreenText(timeline: ProjectTimeline): TextDirection {
-  const out: TextDirection = { kept: 0, disabled: [], converted: [], extended: 0 };
+export function directOnScreenText(timeline: ProjectTimeline, opts: TextDirectionOptions = {}): TextDirection {
+  const out: TextDirection = { kept: 0, disabled: [], converted: [], extended: 0, typewriter: [] };
   const textTrack = timeline.tracks.find((t) => t.kind === "TEXT");
   const graphicTrack = timeline.tracks.find((t) => t.kind === "GRAPHICS");
   const texts = textTrack && textTrack.kind === "TEXT" ? textTrack.texts : [];
@@ -191,6 +211,35 @@ export function directOnScreenText(timeline: ProjectTimeline): TextDirection {
   for (const e of elements) {
     if (userEdited(e) || e.track !== "text") continue;
     if (KEYWORD_ROLES.has(e.el.role ?? "")) switchOff(e, "keyword_popup", out);
+  }
+
+  /*
+   * Rule 1b (RONDE 656) — "typend in beeld … alleen bij jaargetallen, of spannende onderwerpen".
+   * A key-word pop-up is off everywhere EXCEPT at the film's most intense moments: there, at most
+   * two, a quarter-minute apart, come back as a short line that types itself in. They then face every
+   * rule below like any other text, so a reveal never lands on top of a card.
+   */
+  const reveals = new Set<string>();
+  if (opts.intensityAt) {
+    const candidates = elements
+      .filter((e) => e.track === "text" && e.el.disabledReason === "keyword_popup")
+      .filter((e) => e.label.length >= 3 && e.label.length <= REVEAL_MAX_CHARS)
+      .map((e) => ({ e, intensity: opts.intensityAt!((e.el.start + e.el.end) / 2) ?? 0 }))
+      .filter((c) => c.intensity >= REVEAL_MIN_INTENSITY)
+      .sort((a, b) => b.intensity - a.intensity || a.e.el.start - b.e.el.start);
+    const picked: Element[] = [];
+    for (const c of candidates) {
+      if (picked.length >= MAX_REVEALS) break;
+      if (picked.some((p) => Math.abs(p.el.start - c.e.el.start) < REVEAL_MIN_GAP_SEC)) continue;
+      picked.push(c.e);
+    }
+    for (const e of picked) {
+      e.el.disabled = false;
+      delete e.el.disabledReason;
+      const at = out.disabled.findIndex((d) => d.id === e.el.id);
+      if (at >= 0) out.disabled.splice(at, 1);
+      reveals.add(e.el.id);
+    }
   }
 
   /* Rule 3 — only a person's name is named as a person. */
@@ -278,6 +327,21 @@ export function directOnScreenText(timeline: ProjectTimeline): TextDirection {
     accepted.push(e);
   }
   out.kept = accepted.length;
+
+  /*
+   * RONDE 656 — what types. Every year still on screen, and the reveal lines that survived the rules
+   * above. A text the user edited keeps the animation they gave it.
+   */
+  for (const e of accepted.slice().sort((a, b) => a.el.start - b.el.start)) {
+    if (userEdited(e)) continue;
+    if (e.track === "graphic" && e.el.graphicType === "date_card") {
+      e.el.data = { ...(e.el.data ?? {}), typewriter: true };
+      out.typewriter.push({ id: e.el.id, start: e.el.start, text: e.label, why: "year" });
+    } else if (e.track === "text" && (e.kind === "date" || reveals.has(e.el.id))) {
+      e.el.animation = "typewriter";
+      out.typewriter.push({ id: e.el.id, start: e.el.start, text: e.label, why: reveals.has(e.el.id) ? "reveal" : "year" });
+    }
+  }
   return out;
 }
 
@@ -289,6 +353,8 @@ export function formatTextDirection(videoId: number, d: TextDirection): string {
   return (
     `[Graphics] on-screen text video=${videoId} kept=${d.kept} off=${d.disabled.length}` +
     (why ? ` (${why})` : "") +
-    ` converted=${d.converted.length} extended=${d.extended}`
+    ` converted=${d.converted.length} extended=${d.extended}` +
+    ` typewriter=${d.typewriter?.length ?? 0}` +
+    (d.typewriter?.length ? ` (${d.typewriter.map((t) => `${t.why}:"${t.text}"@${t.start.toFixed(1)}s`).join(", ")})` : "")
   );
 }

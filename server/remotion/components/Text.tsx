@@ -29,6 +29,7 @@ import {
   revealProgress,
   type CaptionWord,
 } from "./animation";
+import { typedCount, typedLength } from "./typewriter";
 import { anchorGeometry } from "../../captionLayout";
 
 export type TextStyleLike = {
@@ -203,6 +204,17 @@ const PlainText: React.FC<{ text: string; animation: string; reveal: number }> =
   if (animation === "character_reveal" || animation === "type_on") {
     return <>{text.slice(0, Math.ceil(text.length * reveal))}</>;
   }
+  /** RONDE 656 — the untyped rest is laid out but invisible, so the line does not grow as it types. */
+  if (animation === "typewriter") {
+    const chars = [...text];
+    const shown = Math.round(chars.length * reveal);
+    return (
+      <>
+        {chars.slice(0, shown).join("")}
+        <span style={{ visibility: "hidden" }}>{chars.slice(shown).join("")}</span>
+      </>
+    );
+  }
   if (animation === "word_reveal") {
     const words = text.split(/\s+/);
     return <>{words.slice(0, Math.ceil(words.length * reveal)).join(" ")}</>;
@@ -284,7 +296,13 @@ const TextBody: React.FC<
   const frame = useCurrentFrame();
   const { width: compositionWidth, height: compositionHeight } = useVideoConfig();
   const state = animationAt(animation, frame, chunkDurationInFrames);
-  const reveal = revealProgress(animation, frame, chunkDurationInFrames);
+  /** RONDE 656 — a typewriter types at its own fixed pace, not over the element's life. */
+  const reveal =
+    animation === "typewriter"
+      ? typedLength(text) === 0
+        ? 1
+        : typedCount(text, frame / fps) / typedLength(text)
+      : revealProgress(animation, frame, chunkDurationInFrames);
 
   /** Where we are in the VIDEO, so a word's own start/end compares directly. */
   const absoluteSec = (chunkFromFrame + frame) / fps;

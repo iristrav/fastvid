@@ -168,7 +168,8 @@ describe("1 — wiring and design", () => {
 
   it("the director runs on every cinematic timeline, right after translation", () => {
     const tr = PIPE.indexOf("} = translateEdl({");
-    const dir = PIPE.indexOf("const textDirection = directOnScreenText(timeline);");
+    /** RONDE 656 — it now also receives the film's intensity, for the typing reveal lines. */
+    const dir = PIPE.indexOf("const textDirection = directOnScreenText(timeline, {");
     expect(tr).toBeGreaterThan(-1);
     expect(dir).toBeGreaterThan(tr);
     expect(EDL).toContain("role: caption.captionType,");
@@ -177,7 +178,8 @@ describe("1 — wiring and design", () => {
   it("the cards use the installed Noto faces and a date is set as a date", () => {
     expect(GFX).toContain('const CARD_FONT = "Noto Sans, DejaVu Sans, Liberation Sans, sans-serif";');
     expect(GFX).toContain('const SERIF_FONT = "Noto Serif, DejaVu Serif, Liberation Serif, serif";');
-    expect(GFX).toContain('case "date_card":\n      body = <DateCard primary={words} />;');
+    /** RONDE 656 — and types itself in when the director says so. */
+    expect(GFX).toContain('case "date_card":\n      body = <DateCard primary={words} typewriter={g.data?.typewriter === true} />;');
     const docker = readFileSync(join(__dirname, "..", "Dockerfile"), "utf8");
     expect(docker).toContain("fonts-noto");
   });

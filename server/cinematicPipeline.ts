@@ -56,6 +56,7 @@ import {
   graphicsLifecycle,
 } from "./graphicsLifecycle";
 import type { AssetSourceIdentity, ProjectTimeline } from "./projectTimeline";
+import { intensityAtFrom, typewriterSfxClips } from "./typewriterSound";
 import type { TtsWordTiming } from "./voiceTtsAlignment";
 import {
   formatCueSheet,
@@ -365,7 +366,20 @@ export function runCinematicPipeline(params: CinematicPipelineParams): Cinematic
    * key-word pop-ups, each person, place and year once, never two texts in one place. See
    * `onScreenTextDirector`. Switched off, never deleted — the editor can turn any of it back on.
    */
-  const textDirection = directOnScreenText(timeline);
+  /**
+   * RONDE 656 — the text director also decides what types: every year, and a line or two at the
+   * film's most intense beats. The beat intensities come from the planning engine's curve.
+   */
+  const videoForIntensity = timeline.tracks.find((t) => t.kind === "VIDEO");
+  const textDirection = directOnScreenText(timeline, {
+    intensityAt:
+      params.emotionalCurve?.length && videoForIntensity?.kind === "VIDEO"
+        ? intensityAtFrom(videoForIntensity.clips, params.emotionalCurve)
+        : undefined,
+  });
+  /** And the keys are heard: the typewriter recording under each, on the SFX track. */
+  const sfxForTyping = timeline.tracks.find((t) => t.kind === "SFX");
+  if (sfxForTyping?.kind === "SFX") sfxForTyping.clips.push(...typewriterSfxClips(textDirection.typewriter));
 
   /**
    * RONDE 651 — no shot on screen longer than six seconds: see `limitLongShots`. Here rather than

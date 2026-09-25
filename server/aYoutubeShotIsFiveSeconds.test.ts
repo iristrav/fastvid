@@ -170,7 +170,8 @@ describe("§3 — no piece holds a cut of the original", () => {
   it("a planned in-point whose window crosses a cut is moved inside the shot", () => {
     const facts = { sourceDurationSec: 30, cutsSec: [10], measured: true };
     const { pieces, notes } = planYoutubePieces({ inSec: 8, durationSec: 4, facts });
-    expect(pieces).toEqual([{ inSec: 6, durationSec: 4 }]);
+    /** RONDE 654 — and a quarter second clear of the cut, so its last frame is not the one before it. */
+    expect(pieces).toEqual([{ inSec: 5.75, durationSec: 4 }]);
     expect(notes.join(" ")).toContain("so the piece holds no cut");
   });
 
@@ -194,16 +195,19 @@ describe("§3 — no piece holds a cut of the original", () => {
     }
   });
 
-  it("a source whose length is unknown is played straight on from the planned moment", () => {
-    const { pieces } = planYoutubePieces({
+  /**
+   * RONDE 654 — the operator: "1 beeld zonder overgang naar een volgend beeld". A source nobody
+   * measured may hold a cut anywhere, so it is no longer cut blind: it is refused, and the slot goes
+   * to another shot (see youtubeCutsOnTheShot.test.ts).
+   */
+  it("a source whose length or cuts are unknown is refused rather than cut blind", () => {
+    const plan = planYoutubePieces({
       inSec: 3,
       durationSec: 9,
       facts: { sourceDurationSec: 0, cutsSec: [], measured: false },
     });
-    expect(pieces).toEqual([
-      { inSec: 3, durationSec: 4.5 },
-      { inSec: 7.5, durationSec: 4.5 },
-    ]);
+    expect(plan.pieces).toEqual([]);
+    expect(plan.refused).toContain("not measured");
   });
 });
 

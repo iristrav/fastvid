@@ -130,10 +130,19 @@ export function productionShotCutDeps(workDir?: string): ShotCutDeps {
       return deps.readBack(id, dest);
     },
     detect: async (filePath) => {
-      const { detectInteriorCutTimesInFile, probeVideoDurationSec } = await import("./archiveVideoSplitter");
+      const { detectInteriorCutTimesInFile, probeVideoDurationSec, ffmpegBin } = await import("./archiveVideoSplitter");
+      const { detectGradualTransitionsInFile, cutsWithTransitions } = await import("./youtubeSoftCuts");
       const durationSec = await probeVideoDurationSec(filePath);
-      const cutsSec = durationSec > 0 ? await detectInteriorCutTimesInFile(filePath, durationSec) : [];
-      return { durationSec, cutsSec };
+      if (!(durationSec > 0)) return { durationSec, cutsSec: [] };
+      /**
+       * RONDE 654 — hard cuts AND the edges of every dissolve or fade, so a piece can sit inside
+       * neither. Both passes run on the same file at the same time.
+       */
+      const [hard, soft] = await Promise.all([
+        detectInteriorCutTimesInFile(filePath, durationSec),
+        detectGradualTransitionsInFile(filePath, { ffmpegBin: ffmpegBin() }),
+      ]);
+      return { durationSec, cutsSec: cutsWithTransitions(hard, soft) };
     },
     save: async (id, cutsSec, durationSec) => {
       const { updateMediaArchiveAsset } = await import("./db");

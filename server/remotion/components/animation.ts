@@ -161,6 +161,7 @@ export function animationAt(
      * saying so explicitly stops a future reader from thinking they were forgotten.
      */
     case "type_on":
+    case "typewriter":
     case "word_reveal":
     case "character_reveal":
       return { ...NEUTRAL, opacity: exitOpacity };
@@ -175,11 +176,13 @@ export const SUPPORTED_ANIMATIONS: ReadonlySet<string> = new Set([
   "none", "fade", "fade_rise", "fade_scale", "pop", "scale",
   "slide_up", "slide_down", "slide_left", "slide_right",
   "bounce", "type_on", "word_reveal", "character_reveal", "mask_reveal",
+  /** RONDE 656 — types at one fixed pace (`typewriter.ts`), so a key sound can follow it. */
+  "typewriter",
 ]);
 
 /** Animations that reveal the text progressively rather than moving the whole box. */
 export const PROGRESSIVE_ANIMATIONS: ReadonlySet<string> = new Set([
-  "type_on", "word_reveal", "character_reveal",
+  "type_on", "word_reveal", "character_reveal", "typewriter",
 ]);
 
 /**

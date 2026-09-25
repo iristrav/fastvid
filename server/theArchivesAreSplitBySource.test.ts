@@ -25,7 +25,10 @@ const JOURNAL = JSON.parse(readFileSync(join(__dirname, "..", "drizzle", "meta",
 
 describe("the migration", () => {
   it("is registered, so it actually runs", () => {
-    expect(JOURNAL.entries.at(-1)).toMatchObject({ idx: 57, tag: "0057_ronde648_youtube_overig_stock_archives" });
+    /** Registered in the journal; later migrations (0058, RONDE 654) may follow it. */
+    expect(JOURNAL.entries).toContainEqual(
+      expect.objectContaining({ idx: 57, tag: "0057_ronde648_youtube_overig_stock_archives" })
+    );
   });
 
   it("creates the two archives under the slugs ingestion routes to", () => {

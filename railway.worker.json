@@ -4,6 +4,6 @@
     "startCommand": "sh worker-start.sh",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3,
-    "drainingSeconds": "60"
+    "drainingSeconds": 60
   }
 }

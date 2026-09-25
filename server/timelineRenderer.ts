@@ -56,6 +56,8 @@ import {
 } from "./ffmpegFailureClass";
 import {
   buildAudioGraph,
+  levelledGain,
+  parseIntegratedLufs,
   buildTransitionGraph,
   TRANSITION_LADDER,
   type TransitionLadderStep,
@@ -898,6 +900,19 @@ function escapeFilterPath(p: string): string {
  * so that this module has no opinion about downloading, caching or authorisation — the rehydrator
  * owns all three, and a renderer that could fetch would be a renderer that could make decisions.
  */
+/** RONDE 655 — one ebur128 pass over an audio file: its integrated loudness, or null. */
+async function measureIntegratedLufs(file: string): Promise<number | null> {
+  try {
+    const { stderr } = await execFileAsync(ffmpeg(), ["-hide_banner", "-nostats", "-i", file, "-af", "ebur128", "-f", "null", "-"], {
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 60_000,
+    });
+    return parseIntegratedLufs(String(stderr));
+  } catch (err) {
+    return parseIntegratedLufs(String((err as { stderr?: string }).stderr ?? ""));
+  }
+}
+
 export async function renderTimeline(params: {
   timeline: ProjectTimeline;
   workDir: string;
@@ -1517,7 +1532,8 @@ export async function renderTimeline(params: {
         index: resolvedAudio.length + 1,
         kind,
         startSec: c.start,
-        gain: c.gain,
+        /** RONDE 655 — ambience is levelled first, so its gain means the same for every recording. */
+        gain: kind === "AMBIENT" ? levelledGain(c.gain, await measureIntegratedLufs(file)) : c.gain,
         fadeInSec: c.fadeInSec,
         fadeOutSec: c.fadeOutSec,
         durationSec: Math.max(0, c.end - c.start),

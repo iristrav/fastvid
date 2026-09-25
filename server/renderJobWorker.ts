@@ -65,6 +65,7 @@ import { validateTimeline, NON_BLOCKING_ISSUES, formatTimelineIssue } from "./ti
 import { rehydrateTimelineAssets, formatRehydrationSummary } from "./assetRehydrator";
 import { productionRehydrateDeps } from "./rehydrationDeps";
 import { renderTimeline, checkRenderedFile, type GraphicsOverlayFile } from "./timelineRenderer";
+import { deliveredCutCheckEnabled, formatCutCheck, scanDeliveredCuts } from "./deliveredCutCheck";
 import {
   classifyFfmpegFailure,
   formatFfmpegFailure,
@@ -990,6 +991,22 @@ export async function runRenderJob(params: {
         for (const w of spotCheck.warnings) {
           console.warn(`[RenderJob] video=${job.videoId} job=${job.id} contentCheck: ${w}`);
         }
+      }
+    }
+
+    /**
+     * RONDE 654 — every change of picture in the delivered file should be one of the edit's own
+     * cuts. Measured here, on the file itself, before the work directory is swept; logged, never
+     * blocking. See `deliveredCutCheck.ts`.
+     */
+    if (deliveredCutCheckEnabled()) {
+      const cuts = await scanDeliveredCuts(outputPath, timeline);
+      if (cuts) {
+        const line = formatCutCheck({ videoId: job.videoId, jobId: job.id, changes: cuts.changes.length, unexpected: cuts.unexpected });
+        if (cuts.unexpected.length) console.warn(line);
+        else console.log(line);
+      } else {
+        console.warn(`[CutCheck] video=${job.videoId} job=${job.id} could not scan the delivered file`);
       }
     }
 

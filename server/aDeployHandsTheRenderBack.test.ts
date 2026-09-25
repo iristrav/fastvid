@@ -78,7 +78,9 @@ describe("the wiring", () => {
   const RAILWAY = JSON.parse(fs.readFileSync(path.join(__dirname, "../railway.worker.json"), "utf8"));
 
   it("the platform gives the worker time to drain and hand back", () => {
-    expect(Number(RAILWAY.deploy.drainingSeconds)).toBeGreaterThanOrEqual(60);
+    /** A NUMBER: Railway refused the string form ("expected number, received string") and the deploy failed. */
+    expect(typeof RAILWAY.deploy.drainingSeconds).toBe("number");
+    expect(RAILWAY.deploy.drainingSeconds).toBeGreaterThanOrEqual(60);
     expect(WORKER).toContain('WORKER_SHUTDOWN_DRAIN_MS ?? "45000"');
     expect(WORKER).toContain("const SHUTDOWN_HANDBACK_MS = 8_000;");
   });

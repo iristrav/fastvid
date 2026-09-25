@@ -155,13 +155,23 @@ export function planCinematicAudio(params: {
 }
 
 /** The planned ambience as timeline clips, ready for the AMBIENT track. */
-export function ambientClips(plan: CinematicAudioPlan, ambienceGainDb = -26): TimelineAudioClip[] {
+/**
+ * RONDE 655 — how far below full level the (loudness-normalised) ambience sits. -18 dB on a bed
+ * normalised to -23 LUFS lands near -41 LUFS, about 25 dB under a normal narration — heard in the
+ * pauses, gone under the voice. `AMBIENCE_GAIN_DB` overrides it, bounded to -60…-6.
+ */
+export function ambienceGainDb(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number.parseFloat(env.AMBIENCE_GAIN_DB?.trim() ?? "");
+  return Number.isFinite(n) ? Math.min(-6, Math.max(-60, n)) : -18;
+}
+
+export function ambientClips(plan: CinematicAudioPlan, gainDb = ambienceGainDb()): TimelineAudioClip[] {
   return plan.ambient.map((a) => ({
     id: `amb_s${a.sceneIndex}_${a.identity.providerAssetId}`,
     source: a.identity,
     start: a.startSec,
     end: a.endSec,
-    gain: gainFromDb(ambienceGainDb),
+    gain: gainFromDb(gainDb),
     /**
      * §2 — ambience ducks under the voice, and more gently than music does. `duckUnderVoice` is
      * the flag `buildAudioGraph` already reads, and it applies `DUCK_AMBIENT` rather than

@@ -391,7 +391,9 @@ export type TextAnimation =
   | "type_on"
   | "word_reveal"
   | "character_reveal"
-  | "mask_reveal";
+  | "mask_reveal"
+  /** RONDE 656 — types at a fixed pace per character; see remotion/components/typewriter.ts. */
+  | "typewriter";
 
 export type TimelineText = {
   id: string;
