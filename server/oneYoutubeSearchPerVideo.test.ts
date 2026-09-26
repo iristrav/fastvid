@@ -266,6 +266,19 @@ describe("one search fills the pool; a second only for a real gap; never a third
     expect(pool.searches).toBe(0);
   });
 
+  it("a misread person lock ('Hitler Took', video 608) does not empty the pool", async () => {
+    const d = deps({ usable: () => [0, 1, 2] });
+    const pool = await buildVideoYoutubePool(d, input);
+    const beat = tesla.sceneTexts[0]!.split(". ")[0]! + ".";
+    /** Judged to serve this beat: kept whatever the name string says. */
+    expect(poolRowsForBeat(pool, beat, [], "Hitler Took").length).toBe(50);
+    /** Not judged for this beat: a real part of the name must appear — "hitler", never "took". */
+    const other = poolRowsForBeat(pool, "An unrelated sentence about nothing here.", [], "Hitler Took");
+    expect(other).toEqual([]);
+    const withName = { ...pool, candidates: pool.candidates.map((c, i) => (i === 0 ? { ...c, title: "Hitler in Berlin", serves: [9] } : c)) };
+    expect(poolRowsForBeat(withName, "An unrelated sentence about nothing here.", [], "Hitler Took").map((r) => r.title)).toEqual(["Hitler in Berlin"]);
+  });
+
   it("a beat gets the videos judged to serve it first", async () => {
     const d = deps({ usable: (it) => (it.videoId.endsWith("1") ? [2] : [0]) });
     const pool = await buildVideoYoutubePool(d, input);
