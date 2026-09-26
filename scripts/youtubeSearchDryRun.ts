@@ -20,11 +20,12 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-const MAX_SEARCH_CALLS = 18;
+/** Pass 1 spent 9 search.list calls; pass 2 may spend at most this many, so the run stays under 18. */
+const MAX_SEARCH_CALLS = Number(process.env.DRY_RUN_MAX_SEARCHES ?? 18);
 const VIDEO_LENGTH = "1";
 const VIDEO_TYPE = "documentary";
 
-const TOPICS: Array<{ category: string; prompt: string }> = [
+const ALL_TOPICS: Array<{ category: string; prompt: string }> = [
   { category: "geschiedenis", prompt: "The fall of the Berlin Wall in 1989" },
   { category: "technologie", prompt: "How the smartphone changed the world" },
   { category: "gezondheid", prompt: "How artificial intelligence is changing healthcare" },
@@ -35,6 +36,9 @@ const TOPICS: Array<{ category: string; prompt: string }> = [
   { category: "actuele gebeurtenissen", prompt: "The 2026 FIFA World Cup in North America" },
   { category: "abstract", prompt: "Why do we procrastinate?" },
 ];
+/** PASS 2 — only the topics named here (comma-separated categories); all of them when unset. */
+const ONLY = (process.env.DRY_RUN_TOPICS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+const TOPICS = ONLY.length ? ALL_TOPICS.filter((t) => ONLY.includes(t.category)) : ALL_TOPICS;
 
 /* ═══════════════════════ safety: the key never leaves this process ═══════════════════════ */
 
@@ -427,7 +431,7 @@ async function main() {
   const { runScriptEngineV2 } = await import("../server/scriptEngine");
   const { getScriptLengthBudget } = await import("../server/scriptWriter");
   const pipeline = await import("../server/videoPipeline");
-  const { withSearchProvenance } = await import("../server/searchQueryContract");
+  const { withSearchProvenance, validateSearchQuery } = await import("../server/searchQueryContract");
   const { youtubeTitleIsNotFootage } = await import("../server/youtubeNonFootage");
   const { prepareImageForVision, imageMimeToDataUrl } = await import("../server/archiveClipFilter");
   const vision = await import("../server/localClipVision");
@@ -476,34 +480,65 @@ async function main() {
       }
       const videoKeywords = [...new Set(meaningfulWords(`${topic.prompt} ${engine.title}`).filter((w) => w.length >= 4))];
 
-      /* the archive, YouTube-origin only, per beat — counted apart from the search */
+      /* the archive, YouTube-origin only — counted apart from the search, and judged like it */
+      /**
+       * PASS 2 — pass 1 counted every pick the archive returned, and it returned the same ~140 assets
+       * for Tesla, procrastination and the Berlin Wall alike: its coverage said nothing. Now a pick must
+       * clear the curated route's own floor (score >= 22), and then its source video's YouTube thumbnail
+       * goes through the SAME triage as a search result. Only what that triage calls usable counts.
+       */
       const archiveCache = new Map();
-      const archiveByBeat = new Map<number, Array<{ id: number; source: string; score: number }>>();
       const topicAnchors = normalizeMediaTags(videoKeywords);
+      const archiveSeen = new Map<string, { id: number; score: number; title: string }>();
       for (const b of beats) {
         const tags = normalizeMediaTags(meaningfulWords(b.text).filter((w) => w.length >= 4));
         const picks = await listCuratedArchiveCandidates(
           tags, new Set(), new Set(), topicAnchors, undefined, b.text, new Set(), archiveCache, true, true
         ).catch(() => []);
-        const yt = picks.filter((p) => /youtube/i.test(p.asset.sourcePlatform ?? "") || /youtube\.com|youtu\.be/.test(p.asset.sourceUrl ?? ""));
-        archiveByBeat.set(
-          b.index,
-          yt.map((p) => ({
-            id: p.asset.id,
-            source: /[?&]v=([\w-]{11})|youtu\.be\/([\w-]{11})/.exec(p.asset.sourceUrl ?? "")?.slice(1).find(Boolean) ?? `asset${p.asset.id}`,
-            score: Math.round(p.score * 100) / 100,
-          }))
-        );
+        for (const p of picks) {
+          const ytId =
+            /youtube/i.test(p.asset.sourcePlatform ?? "") && /^[\w-]{11}$/.test(p.asset.providerAssetId ?? "")
+              ? p.asset.providerAssetId!
+              : /[?&]v=([\w-]{11})|youtu\.be\/([\w-]{11})/.exec(p.asset.sourceUrl ?? "")?.slice(1).find(Boolean);
+          if (!ytId || p.score < 22) continue;
+          const prev = archiveSeen.get(ytId);
+          if (!prev || p.score > prev.score) archiveSeen.set(ytId, { id: p.asset.id, score: p.score, title: p.asset.title ?? "" });
+        }
       }
-      const archiveCovered = [...archiveByBeat.entries()].filter(([, a]) => a.length > 0).map(([i]) => i);
-      const archiveAssets = new Set([...archiveByBeat.values()].flat().map((a) => a.id));
-      const archiveSources = new Set([...archiveByBeat.values()].flat().map((a) => a.source));
+      const archiveTop = [...archiveSeen.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, 30);
+      const archiveJudged = await pool(archiveTop, 5, async ([ytId, a]) => {
+        const item: SearchItem = { videoId: ytId, title: a.title, description: "", channel: "archive", thumb: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg` };
+        const v = await judgeThumbnail({ invokeLLM: llm, prepare: prepareImageForVision, toDataUrl: imageMimeToDataUrl }, item, engine.title, beats);
+        const usable = !!v && (v.footageType === "real_footage" || v.footageType === "archival_footage") && v.servesBeats.length > 0;
+        log(
+          `[DryRunArchive] ${ytId} score=${Math.round(a.score)} ${usable ? "USABLE" : "no    "} beats=[${usable ? v!.servesBeats.join(",") : ""}] ` +
+            `${v?.footageType ?? "no_verdict"} "${a.title.slice(0, 70)}" — ${(v?.depicts ?? "").slice(0, 80)}`
+        );
+        return { ytId, beats: usable ? v!.servesBeats : [], usable };
+      });
+      const archiveUsable = archiveJudged.filter((a) => a.usable);
+      const archiveByBeat = new Map<number, Array<{ id: number; source: string; score: number }>>();
+      for (const a of archiveUsable) for (const b of a.beats) {
+        const list = archiveByBeat.get(b) ?? [];
+        list.push({ id: 0, source: a.ytId, score: 0 });
+        archiveByBeat.set(b, list);
+      }
+      const archiveCovered = [...archiveByBeat.keys()];
+      const archiveAssets = new Set(archiveUsable.map((a) => a.ytId));
+      const archiveSources = new Set(archiveUsable.map((a) => a.ytId));
+      log(
+        `[DryRunArchiveSummary] picksAboveFloor=${archiveSeen.size} judged=${archiveTop.length} usable=${archiveUsable.length} ` +
+          `coverage=${archiveCovered.length}/${beats.length}`
+      );
 
       /* 2. one search, judged */
       const runSearch = async (n: 1 | 2, plan: Plan): Promise<SearchReport> => {
         const ctx = pipeline.buildVerifiedQueryContextForBeat(engine.markdownScript.slice(0, 4000), { sceneText: engine.markdownScript.slice(0, 4000), topic: topic.prompt });
         const admitted = withSearchProvenance(ctx, () => pipeline.admitProviderQuery("youtube", plan.query, "dry_run_planner"));
-        const gate = admitted === null ? "BLOCKED" : admitted === plan.query ? "ADMITTED" : `ADMITTED_AS "${admitted}"`;
+        const verdict = validateSearchQuery(plan.query, ctx) as { ok: boolean; reason?: string };
+        const gate =
+          (admitted === null ? "BLOCKED" : admitted === plan.query ? "ADMITTED" : `ADMITTED_AS "${admitted}"`) +
+          (verdict.ok ? "" : ` reason=${verdict.reason ?? "?"}`);
         const { status, items } = await searchList(plan.query);
         const unique = [...new Map(items.map((i) => [i.videoId, i])).values()];
         const details = await videosList(unique.map((u) => u.videoId));
@@ -587,7 +622,7 @@ async function main() {
         const distinctVideos = new Set([...searchIds, ...archiveSources]).size;
         const cover = sourcesNeeded([
           ...searchUsable.map((c) => ({ id: c.videoId, beats: c.beats })),
-          ...[...archiveByBeat.entries()].flatMap(([b, a]) => a.map((x) => ({ id: `archive:${x.source}`, beats: [b] }))),
+          ...archiveUsable.map((a) => ({ id: `archive:${a.ytId}`, beats: a.beats })),
         ]);
         const needCand = Math.max(6, Math.ceil(beats.length / 2));
         const reasons: string[] = [];
