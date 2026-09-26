@@ -42,6 +42,18 @@ export function cropIsWorthMaking(c: BarsCrop): boolean {
   return c.w >= c.srcW * 0.3 && c.h >= c.srcH * 0.3;
 }
 
+/** How many audio streams the file carries; null when ffprobe cannot tell. */
+async function audioStreamCount(file: string): Promise<number | null> {
+  try {
+    const { stdout } = await run("ffprobe", [
+      "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", file,
+    ]);
+    return stdout.trim() ? stdout.trim().split("\n").length : 0;
+  } catch {
+    return null;
+  }
+}
+
 async function probeSize(file: string): Promise<{ w: number; h: number } | null> {
   try {
     const { stdout } = await run("ffprobe", [
@@ -74,6 +86,11 @@ export async function detectEmbeddedBarsCrop(file: string): Promise<BarsCrop | n
 /**
  * Crop the bars and refill the frame at the file's own size, replacing the file atomically.
  * Returns the crop it made, or null when nothing was changed.
+ *
+ * RONDE 660 — video 608: this also runs on a whole composed scene (the post-compose black check),
+ * and the old `-an` threw that scene's voice-over away; scene 0 went first into the concat list and
+ * the whole film came out without a voice. The sound is now copied through untouched, and a result
+ * that carries fewer audio streams than the file it would replace is thrown away instead.
  */
 export async function cropEmbeddedBarsInPlace(file: string, fps = 25): Promise<BarsCrop | null> {
   const crop = await detectEmbeddedBarsCrop(file);
@@ -85,10 +102,21 @@ export async function cropEmbeddedBarsInPlace(file: string, fps = 25): Promise<B
       "-vf",
       `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},` +
         blurFillChain({ widthPx: crop.srcW, heightPx: crop.srcH, fps }),
-      "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+      "-map", "0:v:0", "-map", "0:a?", "-c:a", "copy",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
       tmp,
     ]);
     if (!fs.existsSync(tmp) || fs.statSync(tmp).size === 0) return null;
+    const audioBefore = await audioStreamCount(file);
+    const audioAfter = await audioStreamCount(tmp);
+    if (audioBefore === null || audioAfter === null || audioAfter < audioBefore) {
+      console.error(
+        `[EmbeddedBars] crop of ${path.basename(file)} discarded — audio streams before=${audioBefore ?? "unknown"} ` +
+          `after=${audioAfter ?? "unknown"}; the file is left as it was`
+      );
+      fs.rmSync(tmp, { force: true });
+      return null;
+    }
     fs.renameSync(tmp, file);
     return crop;
   } catch {

@@ -92,6 +92,83 @@ describe("the crop, on real files", () => {
   }, 60_000);
 });
 
+/** RONDE 660 — video 608: the audio streams of a file, as ffprobe reports them. */
+async function audioStreams(file: string): Promise<string[]> {
+  const { stdout } = await run("ffprobe", [
+    "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_name", "-of", "csv=p=0", file,
+  ]);
+  return stdout.trim() ? stdout.trim().split("\n") : [];
+}
+
+/** Mean volume in dB of the file's sound — a voice is loud, silence is -91 dB. */
+async function meanVolume(file: string): Promise<number> {
+  const { stderr } = await run(FF, ["-hide_banner", "-i", file, "-vn", "-af", "volumedetect", "-f", "null", "-"]);
+  return Number(/mean_volume:\s*(-?[0-9.]+) dB/.exec(stderr)?.[1] ?? NaN);
+}
+
+describe("RONDE 660 — a composed scene keeps its voice-over through the crop (video 608)", () => {
+  it("a letterboxed scene WITH a voice track is cropped and still carries the same voice", async () => {
+    const scene = path.join(dir, "scene_0_composed.mp4");
+    // A composed scene the way 608's scene 0 was: 1920x778 picture letterboxed in 1080, plus sound.
+    await run(FF, [
+      "-y", "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "testsrc2=size=640x260:rate=25:duration=4",
+      "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000:duration=4",
+      "-vf", "pad=640:360:0:50:black", "-map", "0:v", "-map", "1:a",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+      "-shortest", scene,
+    ]);
+    expect(await audioStreams(scene)).toEqual(["aac"]);
+    const volBefore = await meanVolume(scene);
+
+    const crop = await cropEmbeddedBarsInPlace(scene);
+    expect(crop).not.toBeNull();
+    expect(await size(scene)).toBe("640,360");
+    expect(await audioStreams(scene)).toEqual(["aac"]);
+    expect(Math.abs((await meanVolume(scene)) - volBefore)).toBeLessThan(1);
+  }, 120_000);
+
+  it("a shot without sound is still cropped (and gains no sound)", async () => {
+    const boxed = await make("silent_boxed.mp4", "pad=640:360:80:0:black");
+    expect(await cropEmbeddedBarsInPlace(boxed)).not.toBeNull();
+    expect(await audioStreams(boxed)).toEqual([]);
+  }, 120_000);
+
+  it("the crop never writes `-an`, and refuses a result with fewer audio streams", () => {
+    const MOD = readFileSync(join(__dirname, "embeddedBarsCrop.ts"), "utf8");
+    const body = MOD.slice(MOD.indexOf("export async function cropEmbeddedBarsInPlace"));
+    expect(body).not.toContain('"-an"');
+    expect(body).toContain('"-map", "0:a?", "-c:a", "copy"');
+    expect(body).toContain("audioAfter < audioBefore");
+  });
+});
+
+describe("RONDE 660 — the concat refuses a film without its voice", () => {
+  const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
+  const fn = SRC.slice(
+    SRC.indexOf("export async function concatenateScenesWithMusic("),
+    SRC.indexOf("\n}\n", SRC.indexOf("export async function concatenateScenesWithMusic("))
+  );
+
+  it("every scene is proven to carry audio before the concat list is written", () => {
+    const check = fn.indexOf("await probeHasAudioStream(p)");
+    const refuse = fn.indexOf("throw pipelineError(", check);
+    const list = fn.indexOf("fs.writeFileSync(listFile");
+    expect(check).toBeGreaterThan(-1);
+    expect(refuse).toBeGreaterThan(check);
+    expect(list).toBeGreaterThan(refuse);
+    expect(fn.slice(check, refuse)).toContain("scenesWithoutAudio");
+  });
+
+  it("a concat without audio is no longer delivered with background music only", () => {
+    expect(fn).not.toContain("using background music only");
+    expect(fn).not.toContain("Background music mixing (no voiceover)");
+    const noAudio = fn.indexOf("Concat has no audio stream");
+    expect(noAudio).toBeGreaterThan(-1);
+    expect(fn.slice(noAudio, noAudio + 400)).toContain("throw pipelineError(PIPELINE_ERROR.CONCAT");
+  });
+});
+
 describe("the wiring", () => {
   it("the pipeline crops before it refuses, and refuses only when the crop was not made", () => {
     const SRC = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");

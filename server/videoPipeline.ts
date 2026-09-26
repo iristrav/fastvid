@@ -47009,6 +47009,21 @@ async function ensureFinalVideoDuration(
 }
 
 // ─── 7. Final Concatenation + Music Mix ───────────────────────────────────────
+/** Does the file carry an audio stream? null when no ffprobe could answer. */
+async function probeHasAudioStream(file: string): Promise<boolean | null> {
+  for (const probePath of FFPROBE_PATHS()) {
+    try {
+      const { stdout } = await withSceneFetchTimeout(
+        () => exec(`${probePath} -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${file}"`),
+        10_000,
+        "ffprobe scene audio check"
+      );
+      return stdout.trim().includes("audio");
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
 export async function concatenateScenesWithMusic(
   scenePaths: string[],
   workDir: string,
@@ -47038,6 +47053,26 @@ export async function concatenateScenesWithMusic(
   });
   if (validScenePaths.length === 0) {
     throw pipelineError(PIPELINE_ERROR.NO_SCENES, "No valid composed scene files to concatenate");
+  }
+
+  /**
+   * RONDE 660 — video 608: every scene carries the voice-over, proven before the concat. The concat
+   * demuxer takes its stream layout from the FIRST file, so one scene without sound (608: scene 0,
+   * after the bar crop dropped it) made the whole film silent, and the pipeline then delivered it
+   * with background music only. A scene without an audio stream now stops the render by name.
+   */
+  const scenesWithoutAudio: string[] = [];
+  for (const p of validScenePaths) {
+    const has = await probeHasAudioStream(p);
+    if (has === false) scenesWithoutAudio.push(path.basename(p));
+    else if (has === null) console.error(`[Pipeline] Concat: audio of ${path.basename(p)} could not be probed`);
+  }
+  if (scenesWithoutAudio.length > 0) {
+    console.error(`[Pipeline] Concat refused — scene(s) without voice-over audio: ${scenesWithoutAudio.join(", ")}`);
+    throw pipelineError(
+      PIPELINE_ERROR.CONCAT,
+      `Scene(s) without voice-over audio: ${scenesWithoutAudio.join(", ")} — the film would have no voice`
+    );
   }
 
   const allClips = [...validScenePaths];
@@ -47239,17 +47274,13 @@ export async function concatenateScenesWithMusic(
       }
     }
   } else {
-    // Fallback: concat has no audio — use only background music at 25%
-    console.warn("[Pipeline] Concat has no audio stream, using background music only");
-    await withSceneFetchTimeout(
-      () => exec(
-        `${FFMPEG_BIN} -y -i "${concatPath}" -i "${musicPath}" ` +
-        `-filter_complex "[1:a]volume=0.25,aloop=loop=-1:size=2e+09[aout]" ` +
-        `-map "0:v" -map "[aout]" ` +
-        `-c:v copy -c:a aac -b:a 320k -movflags +faststart "${outputPath}"`
-      ),
-      Math.round(musicMixTimeoutMs * 0.8), "Background music mixing (no voiceover)"
-    );
+    /**
+     * RONDE 660 — no silent fallback: a film without its voice-over is not delivered with music
+     * only (video 608). Every scene was proven to carry audio above, so this is the concat itself
+     * losing it, and the render stops here with that said.
+     */
+    console.error("[Pipeline] Concat has no audio stream — refusing to deliver a film without its voice-over");
+    throw pipelineError(PIPELINE_ERROR.CONCAT, "Concat output has no audio stream — the film would have no voice");
   }
 
   try {
