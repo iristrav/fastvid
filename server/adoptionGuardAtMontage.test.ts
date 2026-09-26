@@ -366,7 +366,7 @@ describe("the guard runs at the montage boundary", () => {
     const helper = LEDGER.slice(LEDGER.indexOf("  isEligible(clipPath: string"));
     const impl = helper.slice(0, helper.indexOf("\n  }"));
     expect(impl).toContain("this.resolve(clipPath, contentKey)");
-    expect(impl).toContain('this.hasStage(record.lineageId, "ELIGIBLE")');
+    expect(impl).toContain('this.hasStage(record.lineageId, "ELIGIBLE", "OK")');
   });
 
   /**

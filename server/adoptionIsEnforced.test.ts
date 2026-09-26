@@ -194,7 +194,7 @@ describe("eligibility has exactly one writer and one reader", () => {
     const at = LEDGER.indexOf("  isEligible(clipPath: string");
     const body = LEDGER.slice(at, LEDGER.indexOf("\n  }", at));
     expect(body).toContain("this.resolve(clipPath, contentKey)");
-    expect(body).toContain('this.hasStage(record.lineageId, "ELIGIBLE")');
+    expect(body).toContain('this.hasStage(record.lineageId, "ELIGIBLE", "OK")');
     expect(body).not.toContain("basename");
   });
 

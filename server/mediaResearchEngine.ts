@@ -843,6 +843,40 @@ export function combinedTypedQueriesForBeat(
  * the validator is the identical function, and with no ambient context (unit tests, callers
  * outside a beat scope) it approves everything it approved before.
  */
+/**
+ * RONDE 660 — THE CANDIDATE WITHOUT THE WORDS THE SCRIPT DOES NOT SAY.
+ *
+ * Video 608: `[QueryAnchor] rejected="Hitler pacing Führerbunker reenactment" reason=UNVERIFIED_TERM
+ * chosen="multiple addictions"`. One added word ("reenactment") cost the whole candidate, and the
+ * fallback then took an abstract phrase that names nothing a camera can film — so the providers
+ * were asked about "multiple addictions" and the editor was shown frames of the word ADDICTION.
+ *
+ * The gate is not touched. The words the validator itself names as unproven (`blockedTerms`) are
+ * dropped, and what remains is put to the SAME validator again; only its yes is accepted. What
+ * remains must still name something: two content words, or a verified person or place on its own.
+ * Only term-level refusals are narrowed — a pronoun, a missing anchor or a compound refusal is a
+ * statement about the whole query and keeps it refused.
+ */
+const NARROWABLE_REASONS = new Set(["UNVERIFIED_TERM", "LLM_GENERATED_TERM", "TITLE_INFERENCE_NOT_ALLOWED"]);
+
+export function narrowToProvenTerms(candidate: string, ctx: VerifiedQueryContext | undefined): string | null {
+  if (!ctx) return null;
+  const verdict = validateSearchQuery(candidate, ctx);
+  if (verdict.ok || !verdict.reason || !NARROWABLE_REASONS.has(verdict.reason)) return null;
+  const blocked = new Set((verdict.blockedTerms ?? []).map((t) => foldSearchText(t)));
+  if (blocked.size === 0) return null;
+  const kept = candidate
+    .split(/\s+/)
+    .filter((w) => w && !blocked.has(foldSearchText(w.replace(/[^\p{L}\p{N}'-]/gu, ""))));
+  const narrowed = kept.join(" ").trim();
+  if (!narrowed || narrowed === candidate.trim() || looksLikeSentenceFragment(narrowed)) return null;
+  const namesSomething =
+    kept.length >= 2 ||
+    [...ctx.persons, ...ctx.places].some((t) => t.verified && foldSearchText(t.term) === foldSearchText(narrowed));
+  if (!namesSomething) return null;
+  return validateSearchQuery(narrowed, ctx).ok ? narrowed : null;
+}
+
 export function chooseProvenAnchor(
   candidates: readonly string[],
   ctx: VerifiedQueryContext | undefined
@@ -853,6 +887,26 @@ export function chooseProvenAnchor(
     if (!candidate) continue;
     if (validateSearchQuery(candidate, ctx).ok) return { anchor: candidate, rejected };
     rejected.push(candidate);
+  }
+  /**
+   * RONDE 660 — then the same candidates without the words the validator named (see
+   * `narrowToProvenTerms`), before any fallback token. A narrowed candidate never outranks the
+   * beat's own verified person: when the beat proves a person, the narrowed query must still name
+   * them, or the person-first fallback below keeps its place (render 563: "Unseen Forces Berlin"
+   * narrows to "Berlin", and "Martin Bormann" is the better question).
+   */
+  if (ctx) {
+    const personWords = ctx.persons
+      .filter((t) => t.verified)
+      .flatMap((t) => foldSearchText(t.term).split(/\s+/))
+      .filter((w) => w.length >= 3);
+    for (const candidate of rejected) {
+      const narrowed = narrowToProvenTerms(candidate, ctx);
+      if (!narrowed) continue;
+      const folded = foldSearchText(narrowed).split(/\s+/);
+      if (personWords.length > 0 && !personWords.some((w) => folded.includes(w))) continue;
+      return { anchor: narrowed, rejected };
+    }
   }
   /**
    * Nothing the caller offered survives. Rather than give up the anchored family — which is what

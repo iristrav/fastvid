@@ -328,6 +328,20 @@ export type BeatRelevanceLedger = {
    * clip per render, then the recorded answer stands whatever it says.
    */
   finalSayRetried: Set<string>;
+  /**
+   * RONDE 660 — an approval that never became the beat's picture.
+   *
+   * Video 608: the editor approved archive asset 57924 for s2b2 and 57810 for s1b3, and both were
+   * then turned away at the push (FUNNEL_WITHOUT_EVIDENCE). `beatAlreadyHasApprovedPicture` still
+   * answered "this beat has a picture", so every card offered to those beats was refused AND NOT
+   * KEPT — about 130 times in the render, each one a ladder of searches — while the beats stayed
+   * empty and the scene was stretched to cover them. A picture that was refused at the push does
+   * not stand behind the beat. Beat keys (`beatRelevanceBeatKey`), set on a push refusal and
+   * cleared again if the same picture is later accepted there.
+   *
+   * Optional so a ledger literal built elsewhere keeps compiling; absent means "nothing refused".
+   */
+  refusedAtPush?: Set<string>;
 };
 
 export function createBeatRelevanceLedger(): BeatRelevanceLedger {
@@ -337,7 +351,31 @@ export function createBeatRelevanceLedger(): BeatRelevanceLedger {
     byBeat: new Map(),
     spendByBeat: new Map(),
     finalSayRetried: new Set(),
+    refusedAtPush: new Set(),
   };
+}
+
+/**
+ * RONDE 660 — the push's answer about an approved picture, filed under THIS beat.
+ *
+ * Called from the one place every push outcome passes through (`tracePushOutcome`), so a refusal
+ * cannot be made without it being known here. `accepted` clears an earlier refusal: a picture that
+ * was turned away once and adopted later does stand behind the beat.
+ */
+export function notePushOutcomeForBeat(
+  ledger: BeatRelevanceLedger,
+  sceneIndex: number,
+  beatIndex: number,
+  handles: { contentKey?: string | null; clipPath: string },
+  accepted: boolean
+): void {
+  const set = (ledger.refusedAtPush ??= new Set());
+  const keys = [beatRelevanceBeatKey(sceneIndex, beatIndex, "path", handles.clipPath)];
+  if (handles.contentKey) keys.push(beatRelevanceBeatKey(sceneIndex, beatIndex, "content", handles.contentKey));
+  for (const key of keys) {
+    if (accepted) set.delete(key);
+    else set.add(key);
+  }
 }
 
 /**
@@ -406,6 +444,14 @@ export function beatAlreadyHasApprovedPicture(
     if (!key.startsWith(prefix)) continue;
     const handle = key.slice(prefix.length);
     if (self.has(handle)) continue;
+    /** RONDE 660 — approved, then refused at the push: it does not stand behind the beat. */
+    if (ledger.refusedAtPush?.has(key)) continue;
+    if (
+      entry.contentKey &&
+      ledger.refusedAtPush?.has(beatRelevanceBeatKey(sceneIndex, beatIndex, "content", entry.contentKey))
+    ) {
+      continue;
+    }
     const d = entry.decision;
     if (d.verdict !== "fits") continue;
     /** A decline is not a verdict: `evaluated: false` means nobody looked. */
@@ -1412,6 +1458,17 @@ export type ComposeJudgeScope = {
    */
   isPlaceholder: (basename: string) => boolean;
   /**
+   * RONDE 660 — "this picture is worth paying a judgement for", said where the compose/push route
+   * decides it.
+   *
+   * Video 608: archive clips that reached the push unjudged were judged HERE ("push fits"), and
+   * this function called `checkBeatRelevance` directly — past `judgeBeatClipRelevance`, the one
+   * desk that stamps eligibility. The adoption guard then read eligible=false beside
+   * vision=APPROVED and refused four approved pictures (57805, 57866, 57924, 57810). Called for a
+   * real picture only, never for a card. Optional: a scope without it stamps nothing, as before.
+   */
+  noteJudged?: (clipPath: string, contentKey: string | undefined, at: { sceneIndex: number; beatIndex: number }) => void;
+  /**
    * How many judgements this route may spend before it stops asking.
    *
    * The render-wide ceiling already bounds the total, but it is sized for the retrieval phase and
@@ -1717,6 +1774,7 @@ export async function ensureVerdictBeforeCompose(params: {
    */
   if (!params.finalSay && scope.spent >= scope.budget) return { outcome: "budget_spent" };
   scope.spent++;
+  if (!placeholder) scope.noteJudged?.(params.clipPath, params.contentKey, at);
 
   const decision = await checkBeatRelevance({
     clipPath: params.clipPath,

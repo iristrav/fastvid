@@ -724,6 +724,8 @@ import {
   barrierCoverage,
   ensureVerdictBeforeCompose,
   getComposeJudgeScope,
+  notePushOutcomeForBeat,
+  beatAlreadyHasApprovedPicture,
   nothingToJudgeAgainst,
   maxComposePhaseJudgements,
   relevanceVerdictForRenderedAsset,
@@ -11885,6 +11887,35 @@ export function isPlaceholderGuaranteedTier(tier: GuaranteedClipTier | undefined
  * is built from the narration. When beatText is empty there is no proof and the gate refuses the
  * query, which is the correct outcome rather than a missing one.
  */
+/**
+ * RONDE 660 — A CARD THIS BEAT WILL REFUSE IS NOT MADE.
+ *
+ * Video 608 ran the guaranteed ladder for s1b3 and s2b2 over and over for half an hour: every card
+ * was drawn, judged and "refused AND NOT KEPT" because the beat already held a picture the editor
+ * approved (`beatAlreadyHasApprovedPicture`). That answer cannot change while that picture stands,
+ * so asking again only burns the render's time. Returns the approved picture's handle when a card
+ * would be refused, null when a card may be needed. Pictures refused at the push do not count —
+ * see `refusedAtPush`.
+ */
+function cardWouldBeRefusedForBeat(
+  dedup: VisualDedupState | undefined,
+  sceneIndex: number,
+  beatIndex: number
+): string | null {
+  if (!dedup?.beatRelevance) return null;
+  const behind = beatAlreadyHasApprovedPicture(dedup.beatRelevance, sceneIndex, beatIndex, "", "");
+  if (!behind) return null;
+  const key = `s${sceneIndex}b${beatIndex}`;
+  if (!dedup.cardSkipLogged.has(key)) {
+    dedup.cardSkipLogged.add(key);
+    console.warn(
+      `[Pipeline] Scene ${sceneIndex} beat ${beatIndex}: no card drawn — this beat already has a picture ` +
+        `the editor approved (${behind}), so any card would be refused; the ladder stops here`
+    );
+  }
+  return behind;
+}
+
 export async function generateGuaranteedBeatClip(
   sceneIndex: number,
   slotIndex: number,
@@ -21945,6 +21976,8 @@ export interface VisualDedupState {
    * exemption was invisible at exactly the scale where it matters.
    */
   adoptedWithSuspendedVision: Map<string, number>;
+  /** RONDE 660 — beats whose "no card drawn" line was already printed; see `cardWouldBeRefusedForBeat`. */
+  cardSkipLogged: Set<string>;
   /**
    * HOW OFTEN THE STOCK LADDER HAS ALREADY RUN FOR A BEAT — keyed `s<scene>b<beat>`.
    *
@@ -22623,6 +22656,7 @@ export function createVisualDedupState(
     backfillRefusedNeverLookedAt: 0,
     backfillApprovalSuspended: new Map(),
     adoptedWithSuspendedVision: new Map(),
+    cardSkipLogged: new Set(),
     stockLadderRunsByBeat: new Map(),
     stockQueriesAsked: new Set(),
     stockLadderStandAsides: 0,
@@ -35307,6 +35341,12 @@ function tracePushOutcome(
   accepted: boolean,
   reason: string
 ): void {
+  /** RONDE 660 — the beat's own memory of it: see `refusedAtPush` on the relevance ledger. */
+  if (dedup.beatRelevance && beatIndex != null) {
+    notePushOutcomeForBeat(
+      dedup.beatRelevance, sceneIndex, beatIndex, { clipPath, contentKey: clipContentKey(clipPath) || null }, accepted
+    );
+  }
   const ledger = dedup.sourcingCache?.lineage;
   const record = ledger?.resolve(clipPath, clipContentKey(clipPath)) ?? null;
   const root = record && ledger ? ledger.rootOf(record.lineageId) ?? record : record;
@@ -38898,6 +38938,7 @@ async function rescueBeatVisualWhenEmptyInner(
   }
 
   for (let attempt = 0; attempt < 4; attempt++) {
+    if (cardWouldBeRefusedForBeat(dedup, scene.index, beat.index)) return false;
     const tierOut: GuaranteedTierOut = {};
     /**
      * RONDE 88A — THE LADDER MUST NOT PAY FOR A CLIP THIS BEAT'S PUSH WILL REFUSE.
@@ -39243,6 +39284,7 @@ async function ensureBeatVisualFilled(
     `[Pipeline] Scene ${scene.index} zin ${beat.index}: self-heal — guaranteed clip (pipeline must complete)`
   );
   for (let attempt = 0; attempt < 4; attempt++) {
+    if (cardWouldBeRefusedForBeat(dedup, scene.index, beat.index)) return;
     const tierOut: GuaranteedTierOut = {};
     /** RONDE 88A — same loop, same push, same reason: see the note at the rescue site above. */
     const beatClip = await generateGuaranteedBeatClip(
@@ -48217,6 +48259,13 @@ async function _runVideoPipelineInner(
        * that beat and an empty slot. `coverageOfAdoptEntry` is the classifier the beat report
        * already uses; it is resolved here because it lives in a module that imports the gate.
        */
+      /**
+       * RONDE 660 — a picture judged at the push is stamped eligible exactly like one judged
+       * earlier, by the same helper. See `noteJudged` on the scope for video 608's four refusals.
+       */
+      composeJudgeScope.noteJudged = (clipPath, _contentKey, at) => {
+        noteEligibleForJudgement(visualDedup, clipPath, "judged_at_push", at.sceneIndex, at.beatIndex);
+      };
       composeJudgeScope.isPlaceholder = (basename) => {
         for (let i = visualDedup.clipAdoptAudit.length - 1; i >= 0; i--) {
           const entry = visualDedup.clipAdoptAudit[i]!;

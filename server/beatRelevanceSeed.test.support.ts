@@ -77,7 +77,8 @@ export function recordExternalRelevanceVerdict(
     /** See the parameter's note: an omitted flag means a real look, never a decline. */
     evaluated: judgement.evaluated !== false,
   };
-  const entry: BeatRelevanceEntry = { ctx, decision };
+  /** The content key travels on the entry, exactly as `checkBeatRelevance`'s own `record()` files it. */
+  const entry: BeatRelevanceEntry = { ctx, decision, contentKey: contentKey || undefined };
   ledger.byClipPath.set(clipPath, entry);
   if (contentKey && !contentKey.startsWith("file:")) ledger.byContentKey.set(contentKey, entry);
   /**

@@ -1003,7 +1003,15 @@ export class VisualSourceLedger {
    * question is asked of the root — the same resolution `tracePushOutcome` and the compose
    * instrumentation already use.
    */
-  hasStage(lineageId: string, stage: LineageStage): boolean {
+  /**
+   * RONDE 660 — `status`, when given, must match too.
+   *
+   * A refusal is filed as a STATUS on a stage (`rejectionStageForGate`): a vision refusal or a
+   * FUNNEL_WITHOUT_EVIDENCE writes `ELIGIBLE status=REJECTED`. Read without a status, that event
+   * answered "eligible" — and `markLineageEligible` then returned early without ever writing the OK
+   * one. Eligibility is read and written with `"OK"`; every other caller is unchanged.
+   */
+  hasStage(lineageId: string, stage: LineageStage, status?: LineageEventStatus): boolean {
     const root = this.rootOf(lineageId);
     if (!root) return false;
     /** Every record on the chain from this one up to the root; a stage on any of them counts. */
@@ -1016,7 +1024,7 @@ export class VisualSourceLedger {
       cursor = this.records.get(cursor.parentLineageId) ?? null;
     }
     for (const event of this.events) {
-      if (event.stage === stage && chain.has(event.lineageId)) return true;
+      if (event.stage === stage && chain.has(event.lineageId) && (status == null || event.status === status)) return true;
     }
     return false;
   }
@@ -1054,7 +1062,7 @@ export class VisualSourceLedger {
    * "eligible" cannot come to mean two slightly different things depending on the route.
    */
   markLineageEligible(lineageId: string, reason?: string): boolean {
-    if (this.hasStage(lineageId, "ELIGIBLE")) return true;
+    if (this.hasStage(lineageId, "ELIGIBLE", "OK")) return true;
     return Boolean(this.recordEvent(lineageId, "ELIGIBLE", { status: "OK", reason }));
   }
 
@@ -1068,7 +1076,7 @@ export class VisualSourceLedger {
    */
   isEligible(clipPath: string, contentKey?: string): boolean {
     const record = this.resolve(clipPath, contentKey);
-    return Boolean(record && this.hasStage(record.lineageId, "ELIGIBLE"));
+    return Boolean(record && this.hasStage(record.lineageId, "ELIGIBLE", "OK"));
   }
 
   /** Walks up the derivation chain to the record this one ultimately came from. */
@@ -1752,7 +1760,7 @@ export class VisualSourceLedger {
        * that adopt without ranking exist by design, and the route is named so 26 of these can be
        * triaged the way ADOPTED_WITHOUT_SELECTED's are, rather than counted.
        */
-      if (has(id, "ADOPTED") && !this.hasStage(id, "ELIGIBLE")) {
+      if (has(id, "ADOPTED") && !this.hasStage(id, "ELIGIBLE", "OK")) {
         warnings.push({
           code: "ADOPTED_WITHOUT_ELIGIBLE",
           message:
