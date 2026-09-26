@@ -21,7 +21,7 @@ import os from "os";
 import path from "path";
 
 /** Pass 1 spent 9 search.list calls; pass 2 may spend at most this many, so the run stays under 18. */
-const MAX_SEARCH_CALLS = Number(process.env.DRY_RUN_MAX_SEARCHES ?? 18);
+const MAX_SEARCH_CALLS = Number(process.env.DRY_RUN_MAX_SEARCHES ?? 6);
 const VIDEO_LENGTH = "1";
 const VIDEO_TYPE = "documentary";
 
@@ -37,7 +37,7 @@ const ALL_TOPICS: Array<{ category: string; prompt: string }> = [
   { category: "abstract", prompt: "Why do we procrastinate?" },
 ];
 /** PASS 2 — only the topics named here (comma-separated categories); all of them when unset. */
-const ONLY = (process.env.DRY_RUN_TOPICS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+const ONLY = (process.env.DRY_RUN_TOPICS ?? "gezondheid,business,abstract").split(",").map((t) => t.trim()).filter(Boolean);
 const TOPICS = ONLY.length ? ALL_TOPICS.filter((t) => ONLY.includes(t.category)) : ALL_TOPICS;
 
 /* ═══════════════════════ safety: the key never leaves this process ═══════════════════════ */
