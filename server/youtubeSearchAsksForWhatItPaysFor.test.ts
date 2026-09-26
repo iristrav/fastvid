@@ -70,7 +70,8 @@ describe("the call site", () => {
 
   it("the search asks the policy, not an arithmetic of its own", () => {
     const PIPE = src();
-    const at = PIPE.indexOf("const items = await searchYoutubeVideoCandidates(");
+    /** RONDE 658 — the per-beat call now sits behind the video pool; the arguments are the same. */
+    const at = PIPE.indexOf("const items = poolMode ? await rowsFromPool() : await searchYoutubeVideoCandidates(");
     expect(at).toBeGreaterThan(0);
     const call = PIPE.slice(at, PIPE.indexOf(");", at));
     expect(call).toContain("youtubeSearchPageSize()");
@@ -83,7 +84,8 @@ describe("the call site", () => {
      * prose that records a removal from the code that performs one.
      */
     const PIPE = src();
-    const at = PIPE.indexOf("const items = await searchYoutubeVideoCandidates(");
+    /** RONDE 658 — the per-beat call now sits behind the video pool; the arguments are the same. */
+    const at = PIPE.indexOf("const items = poolMode ? await rowsFromPool() : await searchYoutubeVideoCandidates(");
     const call = PIPE.slice(at, PIPE.indexOf(");", at));
     const args = call.replace(/\/\*\*[\s\S]*?\*\//g, "");
     expect(args, "the expression that asked for five").not.toContain("count - fetched");
@@ -193,7 +195,7 @@ describe("the duration reaches the API and the cache", () => {
 
   it("the render says which slice it searched", () => {
     // A supply change nobody can see in the log is a supply change nobody can verify.
-    expect(src()).toContain("`duration=${passDuration} attempted=true ` +");
+    expect(src()).toContain("`duration=${passDuration} attempted=true from=${poolMode ? \"video_pool\" : \"search\"} ` +");
   });
 
   it("NO EXTRA SEARCH CALL WAS ADDED", () => {

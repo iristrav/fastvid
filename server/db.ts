@@ -15,7 +15,7 @@ import { isShortVideoLength, normalizeVideoLength } from "@shared/videoLengths";
 import { validateFinalVideoForExport, resolveStoredVideoLocalPath, validateFinalVideoPlayable } from "./finalVideoGate";
 import { maxPipelineWallClockMin, maxPipelineWallClockHardMin, visualStageWallClockMin, pipelineWallClockLimitEnabled, pipelineProgressStallRecoveryEnabled, pipelineProgressStallThresholdMs, pipelineMaxStallRecoveries, pipelineMinutesPerVideoMinute, pipelineWallClockGraceFactor, pipelineComposeGraceMs, PIPELINE_UNLIMITED_MS } from "./sourcingPolicy";
 import type { Video } from "../drizzle/schema";
-import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, renderLocks, type RenderJob } from "../drizzle/schema";
+import { InsertInviteCode, InsertUser, InsertVideo, InsertPasswordResetToken, inviteCodes, users, videos, passwordResetTokens, llmSpendByUser, renderJobs, renderLocks, youtubeVideoSearches, type RenderJob } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { AssetSourceIdentity } from "./projectTimeline";
 
@@ -2451,6 +2451,54 @@ function lockIsVacuous(): true {
   }
   return true;
 }
+
+/**
+ * RONDE 658 — the per-video YouTube search budget, kept by the database. See youtubeSearchBudget.ts.
+ *
+ * `claim` is the whole mechanism: an UPDATE conditional on the count the caller expects, so two
+ * replicas asking for search #1 at once both send it and exactly one row changes. No database, no
+ * search — the refusal is the safe answer.
+ */
+export const dbYoutubeSearchBudgetStore: import("./youtubeSearchBudget").YoutubeSearchBudgetStore = {
+  async load(videoId) {
+    const db = await getDb();
+    if (!db) return null;
+    const rows = await db.select().from(youtubeVideoSearches).where(eq(youtubeVideoSearches.videoId, videoId)).limit(1);
+    const r = rows[0];
+    if (!r) return null;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(r)) if (v !== null && v !== undefined) out[k] = v;
+    return out as unknown as import("./youtubeSearchBudget").YoutubeSearchBudgetRow;
+  },
+
+  async claim(videoId, n) {
+    const db = await getDb();
+    if (!db) return false;
+    try {
+      await db.insert(youtubeVideoSearches).values({ videoId });
+    } catch {
+      /** The row already exists: the count on it decides, below. */
+    }
+    const now = new Date();
+    const result = await db
+      .update(youtubeVideoSearches)
+      .set(n === 1 ? { searchCount: 1, search1StartedAt: now } : { searchCount: 2, search2StartedAt: now })
+      .where(and(eq(youtubeVideoSearches.videoId, videoId), eq(youtubeVideoSearches.searchCount, n - 1)));
+    return affectedOne(result);
+  },
+
+  async record(videoId, patch) {
+    const db = await getDb();
+    if (!db) return;
+    const set: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue;
+      set[k] = typeof v === "string" ? v.slice(0, k === "poolJson" ? 4_000_000 : k === "search2Reason" ? 400 : 300) : v;
+    }
+    if (Object.keys(set).length === 0) return;
+    await db.update(youtubeVideoSearches).set(set).where(eq(youtubeVideoSearches.videoId, videoId));
+  },
+};
 
 export const dbRenderLockStore: RenderLockStore = {
   async insertIfAbsent(row) {

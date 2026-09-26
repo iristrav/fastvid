@@ -1022,3 +1022,49 @@ export const workerOnceClaims = mysqlTable("worker_once_claims", {
   holder: varchar("holder", { length: 128 }),
   claimedAt: timestamp("claimedAt").defaultNow().notNull(),
 });
+
+/**
+ * RONDE 658 — ONE YOUTUBE SEARCH BUDGET PER VIDEO, KEPT BY THE DATABASE.
+ *
+ * "1 search normaal, 2 searches maximaal, 3 searches nooit" — over retries, replicas, workers,
+ * requeues, deploys, render retries, stall recovery and a user trying again. A process cannot keep
+ * that promise; a row can. `searchCount` only ever moves 0 → 1 → 2, each step a conditional UPDATE
+ * that exactly one caller wins (see `dbYoutubeSearchBudgetStore.claim`).
+ *
+ * The rest of the row is the record the operator asked for: which query, how many candidates, how
+ * many usable, what coverage, whether search #2 was needed and why, and what the film finally used.
+ * `poolJson` holds the judged candidates, so a later attempt of the same video reuses them instead
+ * of searching again.
+ */
+export const youtubeVideoSearches = mysqlTable("youtube_video_searches", {
+  id: int("id").autoincrement().primaryKey(),
+  videoId: int("videoId").notNull().references(() => videos.id).unique(),
+  searchCount: int("searchCount").default(0).notNull(),
+  beatsTotal: int("beatsTotal"),
+  search1StartedAt: timestamp("search1StartedAt"),
+  search1CompletedAt: timestamp("search1CompletedAt"),
+  search1Query: varchar("search1Query", { length: 300 }),
+  search1Status: varchar("search1Status", { length: 64 }),
+  search1Candidates: int("search1Candidates"),
+  search1Usable: int("search1Usable"),
+  search1Coverage: int("search1Coverage"),
+  archiveUsable: int("archiveUsable"),
+  search2Needed: int("search2Needed"),
+  search2Reason: varchar("search2Reason", { length: 400 }),
+  search2StartedAt: timestamp("search2StartedAt"),
+  search2CompletedAt: timestamp("search2CompletedAt"),
+  search2Query: varchar("search2Query", { length: 300 }),
+  search2Status: varchar("search2Status", { length: 64 }),
+  search2Candidates: int("search2Candidates"),
+  search2Usable: int("search2Usable"),
+  finalCoverage: int("finalCoverage"),
+  downloads: int("downloads"),
+  downloadsOk: int("downloadsOk"),
+  timelineClips: int("timelineClips"),
+  fallbackUsed: int("fallbackUsed"),
+  poolJson: longtext("poolJson"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type YoutubeVideoSearch = typeof youtubeVideoSearches.$inferSelect;

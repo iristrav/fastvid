@@ -517,6 +517,17 @@ import {
 } from "./searchQueryContract";
 import { formatFallback, formatSelection } from "./renderCorrelation";
 import type { ArchivePoolSearch, YoutubePoolSearch } from "./scenePool";
+import {
+  awaitVideoYoutubePool,
+  buildVideoYoutubePool,
+  emptyVideoYoutubePool,
+  hasVideoYoutubePool,
+  poolRowsForBeat,
+  registerVideoYoutubePool,
+  releaseVideoYoutubePool,
+  youtubeVideoPoolEnabled,
+} from "./youtubeVideoPool";
+import { productionVideoPoolDeps } from "./youtubeVideoPoolProduction";
 
 /**
  * RONDE 177 — the YouTube search the SCENE POOL should use, or nothing.
@@ -535,6 +546,17 @@ import type { ArchivePoolSearch, YoutubePoolSearch } from "./scenePool";
  */
 function scenePoolYoutubeSearch(sourcingCache?: SourcingCache): YoutubePoolSearch | undefined {
   if (!youtubeSourcingEnabled() || !process.env.YOUTUBE_API_KEY) return undefined;
+  /** RONDE 658 — inside a render the scene pool asks the video's pool, never YouTube itself. */
+  const videoId = getActiveVideoId();
+  if (youtubeVideoPoolEnabled() && videoId != null) {
+    return async (query, _sceneIndex, _license, relevanceKeywords, minRelevanceScore, requiredPersonName, maxResults) => {
+      const pool = await awaitVideoYoutubePool(videoId, 60_000);
+      if (!pool) return [];
+      return poolRowsForBeat(pool, query, relevanceKeywords, requiredPersonName)
+        .filter((r) => r.rel >= minRelevanceScore)
+        .slice(0, maxResults);
+    };
+  }
   return (query, sceneIndex, license, relevanceKeywords, minRelevanceScore, requiredPersonName, maxResults) =>
     searchYoutubeVideoCandidates(
       query, sceneIndex, license, relevanceKeywords, minRelevanceScore,
@@ -676,7 +698,7 @@ import {
   formatRenderLockRelease,
   releaseRenderLock,
 } from "./renderLock";
-import { dbRenderLockStore } from "./db";
+import { dbRenderLockStore, dbYoutubeSearchBudgetStore } from "./db";
 import { newRenderId } from "./renderCorrelation";
 import {
   judgeBeatImage,
@@ -2506,7 +2528,7 @@ function markYoutubeSearchResult(success: boolean): void {
 }
 
 /** Called specifically for an HTTP 429 — a rate-limit/quota signal, not a generic failure. */
-function markYoutubeRateLimited(retryAfterMs?: number): void {
+export function markYoutubeRateLimited(retryAfterMs?: number): void {
   youtubeRateLimitStreak++;
   const base =
     youtubeRateLimitStreak >= 2 ? YOUTUBE_RATE_LIMIT_ESCALATED_COOLDOWN_MS : YOUTUBE_RATE_LIMIT_COOLDOWN_MS;
@@ -17803,6 +17825,20 @@ export async function searchYoutubeVideoCandidates(
     return [];
   }
 
+  /**
+   * RONDE 658 — ONE BUDGET PER VIDEO: inside a render, `search.list` is spent only by the video's
+   * pool (`youtubeVideoPool.ts`), which claims each search from the database first. Every other
+   * route — a beat, a scene pool, a rescue tier, a retry — is refused here, so none of them can add
+   * a search the budget did not grant. `YOUTUBE_SEARCH_MODE=per_beat` restores the old behaviour.
+   */
+  const renderVideoId = getActiveVideoId();
+  if (youtubeVideoPoolEnabled() && renderVideoId != null) {
+    console.log(
+      `[YouTubeSearchBudget] REFUSED video=${renderVideoId} scene=${sceneIndex} route=per_beat_search ` +
+        `query=${JSON.stringify(query.slice(0, 80))} — this video's searches come from its pool only`
+    );
+    return [];
+  }
   const label =
     license === "creative_common" ? "YouTube CC"
       : license === "youtube" ? "YouTube standard"
@@ -18311,12 +18347,31 @@ export async function fetchYouTubeCCClips(
   // RONDE 650 — the daily search quota: the widest pass only, unless configured otherwise.
   licensePasses.splice(youtubeSearchPassesPerQuery());
 
+  /**
+   * RONDE 658 — a beat's YouTube candidates come from the video's pool: one search for the whole
+   * film, judged once, shared by every beat. The loop below runs once, over the pool's rows for
+   * this beat; the download, the ceiling, the dedup and the picture editor are unchanged.
+   */
+  const poolVideoId = getActiveVideoId();
+  const poolMode = youtubeVideoPoolEnabled() && poolVideoId != null && hasVideoYoutubePool(poolVideoId);
+  const rowsFromPool = async () => {
+    const wait = Math.max(0, Math.min(90_000, remainingScopeMs() - YOUTUBE_MIN_DOWNLOAD_WINDOW_MS));
+    const pool = await awaitVideoYoutubePool(poolVideoId!, Number.isFinite(wait) ? wait : 90_000);
+    if (!pool) {
+      console.log(`[YouTubeSearchPlan] video=${poolVideoId} scene=${sceneIndex} pool not ready within ${Math.round(wait / 1000)}s — no YouTube for this beat`);
+    }
+    /** An inner helper, not an exit of the fetcher: the turn still ends on the fetcher's own exits. */
+    return pool ? poolRowsForBeat(pool, scriptGuided?.beatText ?? uniqueQueries[0] ?? "", relevanceKeywords, requiredPersonName) : [];
+  };
+
   for (const [queryIndex, query] of uniqueQueries.slice(0, 2).entries()) {
+    if (poolMode && queryIndex > 0) break;
     if (fetched >= count) break;
     if (downloadsSoFar() >= maxDownloadAttempts) break;
     if (Date.now() > ytDeadline) break;
 
     for (const [passIndex, pass] of licensePasses.entries()) {
+      if (poolMode && passIndex > 0) break;
       if (fetched >= count) break;
       if (downloadsSoFar() >= maxDownloadAttempts) break;
       if (Date.now() > ytDeadline) break;
@@ -18333,7 +18388,7 @@ export async function fetchYouTubeCCClips(
       const passDuration = youtubeSearchDurationForPass(passIndex, licensePasses.length, queryIndex);
 
       try {
-        const items = await searchYoutubeVideoCandidates(
+        const items = poolMode ? await rowsFromPool() : await searchYoutubeVideoCandidates(
           query,
           sceneIndex,
           pass.license,
@@ -18363,7 +18418,7 @@ export async function fetchYouTubeCCClips(
          */
         console.log(
           `[Retrieval] s${sceneIndex} source=youtube mode=${pass.license} ` +
-            `duration=${passDuration} attempted=true ` +
+            `duration=${passDuration} attempted=true from=${poolMode ? "video_pool" : "search"} ` +
             `candidates=${items.length} query=${JSON.stringify(query.slice(0, 80))}`
         );
         if (!items.length) {
@@ -47400,6 +47455,7 @@ export async function runVideoPipeline(
   } finally {
     cancelWatch.stop();
     unregisterActiveRender(videoId, productionRenderId);
+    releaseVideoYoutubePool(videoId);
     /** Every ending, holder-scoped. An overrun render cannot take its successor's lock away. */
     const removed = await releaseRenderLock(dbRenderLockStore, videoId, productionRenderId).catch(
       () => false
@@ -47592,6 +47648,30 @@ async function _runVideoPipelineInner(
       if (personLocked && primaryPerson) sanitizeSceneForPersonTopic(scene, primaryPerson);
     }
     console.log(`[Pipeline] Stage 1 (parse): ${scenes.length} scenes in ${((Date.now()-t0)/1000).toFixed(1)}s`);
+
+    /**
+     * RONDE 658 — ONE YOUTUBE POOL FOR THE WHOLE VIDEO, built while the voice-over is made.
+     *
+     * The scenes say what the film needs; the pool asks YouTube once (twice at most) for all of it.
+     * Registered before any beat runs, so every beat finds it; never awaited here, so TTS is not held.
+     */
+    if (youtubeVideoPoolEnabled() && youtubeSourcingEnabled() && process.env.YOUTUBE_API_KEY?.trim() && !hasVideoYoutubePool(videoId)) {
+      const poolInput = {
+        videoId,
+        prompt: asVideoTitleString(userPrompt ?? videoRow?.prompt ?? topicContext ?? ""),
+        title: asVideoTitleString(videoTitle),
+        sceneTexts: scenes.filter((s) => !s.isChapterCard).map((s) => s.text),
+      };
+      registerVideoYoutubePool(
+        videoId,
+        productionVideoPoolDeps(poolInput)
+          .then((deps) => buildVideoYoutubePool(deps, poolInput))
+          .catch((err: Error) => {
+            console.warn(`[YouTubeSearchPlan] video=${videoId} pool failed: ${err.message?.slice(0, 160)} — beats go on without YouTube`);
+            return emptyVideoYoutubePool(videoId);
+          })
+      );
+    }
 
     // ── P4: Prefetch scene candidate pools / retrieval funnels during TTS ──────
     // Kick off retrieval for ALL scenes immediately after parse so it runs in
@@ -53900,6 +53980,27 @@ async function _runVideoPipelineInner(
       if (footage.youtubeSec > 0) console.log(pipelineReport.add("summary", line));
       else console.warn(pipelineReport.add("summary", line));
       youtubeFootageVerdict = judgeYoutubeRequirement(footage, requiredYoutubeSeconds());
+      /**
+       * RONDE 658 — what the video's one or two searches finally became, on the same row as the
+       * searches themselves: downloads tried, downloads that arrived, YouTube clips in the delivered
+       * film, and how many clips the other sources (archive, open, stock, AI) had to supply.
+       */
+      if (youtubeVideoPoolEnabled()) {
+        const outcome = {
+          downloads: providerMetrics(visualDedup.sourcingCache, "youtube_cc").downloadSlotsClaimed,
+          downloadsOk: totals?.youtubeDownloaded ?? 0,
+          timelineClips: footage.clips.length,
+          fallbackUsed: Math.max(0, (deliveredTimeline?.clips.length ?? 0) - footage.clips.length),
+        };
+        console.log(
+          pipelineReport.add(
+            "summary",
+            `[YouTubeSearchOutcome] video=${videoId} downloads=${outcome.downloads} downloadsOk=${outcome.downloadsOk} ` +
+              `timelineClips=${outcome.timelineClips} fallbackClips=${outcome.fallbackUsed}`
+          )
+        );
+        void dbYoutubeSearchBudgetStore.record(videoId, outcome).catch(() => {});
+      }
     } catch (err) {
       console.warn(`[YouTubeInFilm] video=${videoId} not measured: ${(err as Error).message}`);
       youtubeFootageVerdict = judgeYoutubeRequirement(unmeasuredFootage(), requiredYoutubeSeconds());

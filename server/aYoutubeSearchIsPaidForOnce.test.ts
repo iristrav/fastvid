@@ -104,6 +104,7 @@ describe("background searching gives way to renders", () => {
 
   it("never searches during the renders' quota cooldown", () => {
     const PREFETCH = fs.readFileSync(path.join(__dirname, "youtubePrefetch.ts"), "utf8");
-    expect(PREFETCH).toContain("takeDailySlot: () => !pipeline.isYoutubeInCooldown() && takeDailyAltSlot(),");
+    /** RONDE 658 — still never during the cooldown, and now never in the one-pool mode either. */
+    expect(PREFETCH).toContain("takeDailySlot: () => !youtubeVideoPoolEnabled() && !pipeline.isYoutubeInCooldown() && takeDailyAltSlot(),");
   });
 });

@@ -36,6 +36,7 @@
  *   · Not a promise about the first render on a new subject. That render finds the videos; the
  *     ones after it are the ones that get them.
  */
+import { youtubeVideoPoolEnabled } from "./youtubeVideoPool";
 import fs from "fs";
 import path from "path";
 import { createHash } from "crypto";
@@ -771,7 +772,11 @@ async function productionAlternativeDeps(sourceVideoId: number | null): Promise<
     },
     enqueue: (cands) => enqueueYoutubePrefetch(cands, { sourceVideoId: sourceVideoId ?? undefined }),
     /** RONDE 653 — never while the renders' own searches are in a quota cooldown. */
-    takeDailySlot: () => !pipeline.isYoutubeInCooldown() && takeDailyAltSlot(),
+    /**
+     * RONDE 658 — and never in the one-pool mode: every search.list belongs to a video's budget, and
+     * a background search belongs to no video.
+     */
+    takeDailySlot: () => !youtubeVideoPoolEnabled() && !pipeline.isYoutubeInCooldown() && takeDailyAltSlot(),
     log: (l) => console.log(l),
   };
 }
