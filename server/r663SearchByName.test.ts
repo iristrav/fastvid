@@ -75,3 +75,55 @@ describe("RONDE 663 — a beat that names nothing keeps the old rule", () => {
     expect(validateSearchQuery("canal tulips", plain).ok).toBe(false);
   });
 });
+
+/**
+ * RONDE 663 — TOPIC-NEUTRAL. The subjects come from the beat's own text, never from a list of
+ * topics, so the rule behaves the same for a technology film, a sports film or a cooking film.
+ */
+describe("RONDE 663 — the same rule for every topic", () => {
+  const cases: Array<{ domain: string; beat: string; allowed: string[]; refused: string[] }> = [
+    {
+      domain: "technology",
+      beat: "Steve Jobs introduced the iPhone on stage in San Francisco in 2007, sharing his bold vision.",
+      allowed: ["iPhone", "Steve Jobs", "San Francisco 2007"],
+      refused: ["his bold vision", "stage"],
+    },
+    {
+      domain: "sports",
+      beat: "Ayrton Senna took pole position at Monaco in 1988 while rivals struggled behind him.",
+      allowed: ["Senna Monaco", "1988", "pole position Monaco"],
+      refused: ["rivals struggled"],
+    },
+    {
+      domain: "science",
+      beat: "In 1898 Marie Curie discovered radium in her Paris laboratory after years of patient work.",
+      allowed: ["Marie Curie", "radium Paris"],
+      refused: ["patient work"],
+    },
+    {
+      domain: "business",
+      beat: "Netflix began mailing DVDs before streaming changed how people watched films.",
+      allowed: ["Netflix DVDs"],
+      refused: ["people watched"],
+    },
+    {
+      domain: "nature, no names",
+      beat: "Honey bees gather nectar from flowers as the morning sun warms the meadow.",
+      allowed: ["honey bees flowers", "morning meadow", "nectar"],
+      refused: [],
+    },
+    {
+      domain: "cooking, no names",
+      beat: "Fresh pasta is rolled thin, folded around ricotta and boiled for three minutes.",
+      allowed: ["fresh pasta ricotta", "boiled"],
+      refused: [],
+    },
+  ];
+  for (const c of cases) {
+    it(`${c.domain}: names get through, nameless questions do not`, () => {
+      const ctx = emptyQueryContext(c.beat);
+      for (const q of c.allowed) expect(validateSearchQuery(q, ctx).ok, `${c.domain}: "${q}"`).toBe(true);
+      for (const q of c.refused) expect(validateSearchQuery(q, ctx).reason, `${c.domain}: "${q}"`).toBe("SUBJECT_NOT_NAMED");
+    });
+  }
+});
