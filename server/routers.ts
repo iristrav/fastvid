@@ -862,9 +862,9 @@ async function _runVideoGeneration(
 
     // By this point the render has fully succeeded and the file is already uploaded — the only
     // thing left to do is a DB write. A transient DB blip here must not turn an already-finished,
-    // already-uploaded render into "failed" (the outer catch below would do exactly that, and for
-    // the S3/R2 backend recoverVideoCompletionState's fallback can't reconstruct the URL since it
-    // only scans local disk). Retry this specific write a few times before letting it propagate.
+    // already-uploaded render into "failed" (the outer catch below would do exactly that, and
+    // nothing else can find the URL again). Retry this specific write a few times before letting
+    // it propagate.
     for (let attempt = 1; ; attempt++) {
       try {
         await updateVideoStatus(videoId, "completed", {

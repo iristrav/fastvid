@@ -2,7 +2,6 @@ import { and, asc, desc, eq, gt, getTableColumns, inArray, like, or, sql } from 
 import { AUTO_ARCHIVES, STOCK_ARCHIVE_SLUG, type AutoArchiveKind } from "./stockArchive";
 import type { RenderLockStore } from "./renderLock";
 import { drizzle } from "drizzle-orm/mysql2";
-import * as fs from "fs";
 import { PIPELINE_ERROR, appErrorMessage } from "@shared/appErrors";
 import { BLOCKED_EXPORT_METADATA_KEY, type BlockedExportRecord } from "@shared/exportBlocked";
 import {
@@ -886,33 +885,16 @@ export async function failAllStalledPipelines(): Promise<{ failed: number; reque
   return { failed, requeued };
 }
 
-/** Locate a finished MP4 on disk when videoUrl was never persisted (Railway local storage). */
-export async function findStoredVideoUrl(videoId: number): Promise<string | null> {
-  try {
-    const { LOCAL_UPLOADS_DIR } = await import("./storageLocal");
-    if (!fs.existsSync(LOCAL_UPLOADS_DIR)) return null;
-    const prefix = `videos_${videoId}_final`;
-    const match = fs
-      .readdirSync(LOCAL_UPLOADS_DIR)
-      .find((f) => f.startsWith(prefix) && f.endsWith(".mp4"));
-    return match ? `/local-storage/${match}` : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Fix videos stuck in generating_* after the MP4 was saved but the final status write failed
- * (common after Railway redeploy or OOM during upload/finalization).
- */
 export async function recoverVideoCompletionState(video: Video): Promise<Video> {
   if (video.status === "completed" || video.status === "failed") return video;
 
-  let videoUrl = video.videoUrl;
-  if (!videoUrl) {
-    videoUrl = await findStoredVideoUrl(video.id);
-  }
-
+  /**
+   * Only a URL the delivering run wrote, and it writes it together with `completed` after the
+   * delivery gate passed. The directory scan that stood here looked for `videos_<id>_final*.mp4`,
+   * a name nothing has written since the compose route was deleted — so all it could still do was
+   * promote a stale file to `completed` without the gate ever seeing it.
+   */
+  const videoUrl = video.videoUrl;
   if (videoUrl) {
     const localPath = resolveStoredVideoLocalPath(videoUrl);
     if (localPath) {
