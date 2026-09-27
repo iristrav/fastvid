@@ -78,7 +78,16 @@ describe("the render job inspects the file it is about to deliver", () => {
     const nextStepAt = worker.indexOf("6d. THE DELIVERY GATE", at);
     expect(at).toBeGreaterThan(-1);
     expect(nextStepAt, "the content check is no longer followed by the delivery gate").toBeGreaterThan(at);
-    expect(worker.slice(at, nextStepAt)).not.toContain("fail(");
+    /**
+     * RONDE 662 — exactly one refusal sits in this window, and it is not a warning: every sample
+     * black (`blankPictureFinding`). Warnings still only log; the one finding that blocks is named.
+     */
+    const window = worker.slice(at, nextStepAt);
+    const fails = window.match(/fail\(/g) ?? [];
+    expect(fails.length, "a content warning can fail the render again").toBe(1);
+    expect(window).toContain("const blank = blankPictureFinding(spotCheck);");
+    expect(window).toContain("`FINAL_PICTURE_IS_BLACK: ${blank}`");
+    expect(window).not.toMatch(/spotCheck\.ok[^\n]*fail\(|warnings[^\n]*fail\(/);
   });
 
   it("survives a check that throws, rather than losing a finished render to it", () => {
