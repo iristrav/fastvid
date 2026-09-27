@@ -1,5 +1,5 @@
 /**
- * Self-healing helpers — geo stock queries, script expansion, non-fatal quality gates.
+ * Geo stock queries, script expansion, and the pre-render refusal of an indefensible render.
  */
 import { PIPELINE_ERROR, pipelineError } from "@shared/appErrors";
 import {
@@ -18,80 +18,7 @@ import {
   type ScriptLengthBudget,
 } from "./scriptWriter";
 import type { VideoQualityReport } from "./videoQualityReport";
-import { assertQualityReportExportGate, indefensibleExportConditions, qualityStatusCeiling } from "./videoQualityReport";
-import type { FinalVideoValidation } from "./finalVideoGate";
-import { minQualityExportScore, strictQualityExportEnabled, qualityExportHardTierEnabled, blockExportOnVisualMismatch } from "./sourcingPolicy";
-
-/** Auto-bump export score when montage completed — all video lengths, never block export. */
-export function healQualityReportForExport(
-  report: VideoQualityReport,
-  videoLength?: string | null,
-  finalVideo?: FinalVideoValidation | null
-): VideoQualityReport {
-  if (qualityExportHardTierEnabled()) {
-    return report;
-  }
-  const minScore = minQualityExportScore(videoLength);
-  const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
-  const archiveRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
-  const exportReady = finalVideo?.ok === true && report.totalClips > 0;
-  const archiveMontageOk =
-    archiveRatio >= 0.75 && fallbackBeats === 0 && report.stockCount <= 1;
-
-  let healed = report.score;
-  if (archiveMontageOk) {
-    healed = Math.max(healed, 85);
-  } else if (exportReady && archiveRatio >= 0.5 && fallbackBeats <= 2) {
-    healed = Math.max(healed, 82);
-  }
-  if (exportReady && healed < minScore) {
-    healed = Math.max(healed, minScore);
-  }
-  /**
-   * AN AVAILABILITY DECISION MAY NOT MAKE A VERIFICATION CLAIM.
-   *
-   * Every condition above reads SOURCE TYPE: what share of the clips came from the archive, how
-   * many beats fell back, whether the file plays. Not one of them asks whether anybody looked at
-   * a picture — and the comment in `enforceQualityExportGate` has said so for rounds: "a montage
-   * of real archive clips with no fallback beats reaches 85 on source type alone, which says
-   * nothing about whether the pictures fit the narration."
-   *
-   * Render 578 is that sentence as a fact. Thirteen clips, every one out of the operator's own
-   * curated archive, so `archiveRatio` was 1.0 and `archiveMontageOk` was true. Its measured score
-   * was 43 — three scenes short of footage, one shot held for 17.4 seconds, 47.6% of the film on
-   * one piece of footage. It was raised to 85 and stored as 85.
-   *
-   * `STATUS_CEILING` is the number this pipeline already uses to say what a score may claim, and
-   * `computeMeritQualityScore` applies it to every measured score. The policy is now held to the
-   * same ceiling. This is a bound on a RAISE, so it can never block an export and never lowers a
-   * measured score: a render whose beats were verified keeps the full adjustment it had, and one
-   * whose beats were not stops at the number its own status permits.
-   */
-  const ceiling = qualityStatusCeiling(report.qualityStatus);
-  if (healed > ceiling) healed = Math.max(report.score, ceiling);
-  /**
-   * RONDE 124 — keep the number the quality inputs actually produced.
-   *
-   * `report.score = healed` used to be the whole story, and the pre-policy value survived only in
-   * a console line that nothing stored. The two are different claims and both are now on the
-   * report: the raw one can never be raised by a policy, and the adjusted one is recorded only
-   * when a policy genuinely moved it.
-   *
-   * Set BEFORE the assignment below, and set unconditionally — a render the policy did not touch
-   * still has to be able to say what its raw score was, or a reader cannot tell "the policy did
-   * not fire" from "this field was never written".
-   */
-  if (report.rawVisualQualityScore === undefined) report.rawVisualQualityScore = report.score;
-  if (healed > report.score) {
-    report.warnings.push(
-      `Visual quality raw=${report.rawVisualQualityScore}/100, raised to ${healed}/100 by the ` +
-        `export-availability policy (availability, not picture quality)`
-    );
-    report.availabilityAdjustedScore = healed;
-  }
-  report.score = healed;
-  return report;
-}
+import { indefensibleExportConditions } from "./videoQualityReport";
 
 /** Pexels/Pixabay queries anchored to beat + title geography (wrong-country stock avoided). */
 export function buildDocumentaryShotQueries(baseQuery: string, beatIndex: number): string[] {
@@ -214,171 +141,16 @@ export async function ensureScriptMeetsBudgetWithRetry(
   return { script: current, ok: false, words };
 }
 
-/** Log geo export warnings — never fail the pipeline when strict mode off. */
-export function logQualityReportExportWarnings(videoId: number, report: VideoQualityReport): void {
-  assertQualityReportExportGate(report);
-}
-
-/** Quality export gate — self-heal score, warn on geo/fallbacks, never block completed montages. */
-export function enforceQualityExportGate(
-  videoId: number,
-  report: VideoQualityReport,
-  videoLength?: string | null,
-  finalVideo?: FinalVideoValidation | null
-): void {
-  /**
-   * RONDE 89 — the two conditions no score may overrule, checked before any flag.
-   *
-   * Render 568 shipped on `availabilityAdjusted=82/100` over a measured `raw=24/100`, with 15 of
-   * 17 beats reading `verification=never_asked` and 17 of 20 clips reading `provider=UNVERIFIED`.
-   * Every switch that could have stopped it — `strictQualityExportEnabled`,
-   * `qualityExportHardTierEnabled`, `blockExportOnVisualMismatch` — was off, and the checks below
-   * all hang off one of them. So this one hangs off nothing: see `indefensibleExportConditions`
-   * for why these two are not a threshold and cannot be argued with.
-   *
-   * It throws the same PIPELINE_ERROR.QUALITY_GATE every other blocking check here throws, so the
-   * reason is stored on `videos.errorMessage` and reaches the person who asked for the video
-   * rather than only the worker log.
-   */
+/** Refuses a render whose pictures cannot be traced or were never approved — see `indefensibleExportConditions`. */
+export function enforceQualityExportGate(videoId: number, report: VideoQualityReport): void {
   const indefensible = indefensibleExportConditions(report);
-  if (indefensible.length > 0) {
-    for (const c of indefensible) {
-      console.error(`[Quality] Video ${videoId}: EXPORT BLOCKED ${c.code} — ${c.detail}`);
-    }
-    throw pipelineError(
-      PIPELINE_ERROR.QUALITY_GATE,
-      `Export blocked — this render cannot say what it is showing: ` +
-        indefensible.map((c) => `${c.code}: ${c.detail}`).join(" | ")
-    );
+  if (indefensible.length === 0) return;
+  for (const c of indefensible) {
+    console.error(`[Quality] Video ${videoId}: EXPORT BLOCKED ${c.code} — ${c.detail}`);
   }
-
-  if (
-    blockExportOnVisualMismatch() &&
-    report.voiceVisualMatch &&
-    !report.voiceVisualMatch.ok
-  ) {
-    throw pipelineError(
-      PIPELINE_ERROR.QUALITY_GATE,
-      `Voice↔visual match failed: ${report.voiceVisualMatch.warnings.join("; ")}`
-    );
-  }
-
-  if (!strictQualityExportEnabled()) {
-    logQualityReportExportWarnings(videoId, report);
-    if (!blockExportOnVisualMismatch()) {
-      healQualityReportForExport(report, videoLength, finalVideo);
-    }
-    return;
-  }
-
-  const hardTier = qualityExportHardTierEnabled();
-  const blockVisual = blockExportOnVisualMismatch();
-
-  const violations = report.criticalGeoViolations ?? [];
-  if (violations.length > 0) {
-    const summary = violations
-      .slice(0, 4)
-      .map((v) => `${v.basename}${v.assetTitle ? ` (${v.assetTitle.slice(0, 40)})` : ""}`)
-      .join("; ");
-    console.warn(
-      `[Quality] Video ${videoId}: ${violations.length} geo violation(s) — ${summary} (continuing export)`
-    );
-  }
-
-  const minScore = minQualityExportScore(videoLength);
-  if (report.score < minScore && finalVideo?.ok) {
-    if (hardTier) {
-      throw pipelineError(
-        PIPELINE_ERROR.QUALITY_GATE,
-        `Quality score ${report.score}/100 below minimum ${minScore} (hard export tier)`
-      );
-    }
-    const before = report.score;
-    healQualityReportForExport(report, videoLength, finalVideo);
-    // Transparency (production finding): the self-heal is an intentional, documented "never
-    // block export" export-availability decision, not a real quality fix — the underlying
-    // visual coverage is exactly what it was before this line ran. Logging only the healed
-    // number ("score=70/100") without its raw basis let a genuinely poor render (heavy
-    // fallback/placeholder usage) read as if it had actually scored well. rawScore is the
-    // pre-heal number; fallbackRatio/realClipRatio are the same signals healQualityReportForExport
-    // itself already used to decide how far to heal, surfaced here rather than hidden.
-    const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
-    const beatsFilled = report.adoptAuditSummary?.beatsFilled ?? 0;
-    const fallbackRatio = beatsFilled > 0 ? fallbackBeats / beatsFilled : 0;
-    const realClipRatio = report.totalClips > 0 ? report.archiveCount / report.totalClips : 0;
-    /**
-     * RONDE 124 — the same two numbers, laid out so neither can be read as the other.
-     *
-     * `raw` is what the quality inputs measured. `availabilityAdjusted` is what the
-     * export-availability policy raised it to, and the ratios below are the two signals that
-     * policy actually consults — a montage of real archive clips with no fallback beats reaches
-     * 85 on source type alone, which says nothing about whether the pictures fit the narration.
-     */
-    console.warn(
-      `[Quality] Video ${videoId}: visual quality raw=${before}/100, ` +
-        `availabilityAdjusted=${report.score}/100 (export minimum ${minScore}) | ` +
-        `availability: realClipRatio=${realClipRatio.toFixed(2)} fallbackRatio=${fallbackRatio.toFixed(2)} ` +
-        `— continuing export. The adjusted number is an availability decision, NOT a measurement ` +
-        `of picture quality; raw is the measurement.`
-    );
-  }
-
-  if (report.postRenderSpotCheck && !report.postRenderSpotCheck.ok) {
-    if (hardTier) {
-      throw pipelineError(
-        PIPELINE_ERROR.QUALITY_GATE,
-        `Post-render spot-check failed: ${report.postRenderSpotCheck.warnings.slice(0, 3).join("; ")}`
-      );
-    }
-    console.warn(
-      `[Quality] Video ${videoId}: post-render spot-check warnings — ` +
-        `${report.postRenderSpotCheck.warnings.join("; ")} (continuing export)`
-    );
-  }
-
-  // NOTE: this used to also throw whenever strictVoiceMontageSyncExport() was true — which
-  // defaults to true — independently of hardTier. Every other check in this function (score,
-  // spot-check, below) only hard-fails under hardTier (opt-in, default off) and otherwise just
-  // warns-and-continues; this one broke that pattern; by the time this runs the video has
-  // already been fully rendered AND uploaded to storage, so throwing here discarded a finished,
-  // playable video (and its real API spend) over what the rest of this function treats as a
-  // warning-level concern. Aligned to the same hardTier bar as everything else.
-  const syncFailed =
-    report.voiceMontageSync && !report.voiceMontageSync.ok;
-  if (syncFailed && hardTier) {
-    const detail = report.voiceMontageSync!.warnings.slice(0, 4).join("; ");
-    throw pipelineError(
-      PIPELINE_ERROR.QUALITY_GATE,
-      `Voice montage sync audit failed (${report.voiceMontageSync!.failedScenes.length} scene(s)): ${detail}`
-    );
-  }
-  if (syncFailed) {
-    console.warn(
-      `[Quality] Video ${videoId}: voice montage sync warnings — ` +
-        `${report.voiceMontageSync!.warnings.slice(0, 3).join("; ")} (set ENABLE_QUALITY_EXPORT_HARD_TIER=true to block export)`
-    );
-  }
-
-  const fallbackBeats = report.adoptAuditSummary?.fallbackBeats ?? 0;
-  const visualMismatch = report.voiceVisualMatch && !report.voiceVisualMatch.ok;
-  if (fallbackBeats > 0 || visualMismatch) {
-    if (hardTier || blockVisual) {
-      const detail =
-        report.voiceVisualMatch?.warnings.join("; ") ??
-        `${fallbackBeats} fallback beat(s)`;
-      throw pipelineError(
-        PIPELINE_ERROR.QUALITY_GATE,
-        `Voice↔visual match failed: ${detail}`
-      );
-    }
-    console.warn(
-      `[Quality] Video ${videoId}: ${fallbackBeats} fallback beat(s) used (continuing export)`
-    );
-  }
-
-  if (!hardTier && !blockVisual) {
-    healQualityReportForExport(report, videoLength, finalVideo);
-  }
-
-  console.log(`[Quality] Video ${videoId}: export gate passed (score=${report.score}/100)`);
+  throw pipelineError(
+    PIPELINE_ERROR.QUALITY_GATE,
+    `Export blocked — this render cannot say what it is showing: ` +
+      indefensible.map((c) => `${c.code}: ${c.detail}`).join(" | ")
+  );
 }

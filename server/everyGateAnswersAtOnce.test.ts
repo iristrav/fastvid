@@ -59,7 +59,7 @@ const gate = (r: VideoQualityReport, name: string, scenes = 0, policy = POLICY) 
 describe("every gate is reported, blocking or not", () => {
   const clean = reportFor({ adoptAudit: [adopt(0, 0, "archive"), adopt(0, 1, "wikimedia")] });
 
-  it("names all six", () => {
+  it("names all four", () => {
     /**
      * `final_picture_is_black` joined the list when the blank-film condition was added: the spot
      * check had been measuring an empty render and classifying it as blocking, and no reader ever
@@ -71,8 +71,6 @@ describe("every gate is reported, blocking or not", () => {
       "no_verified_own_visual",
       "mostly_unverified_clips",
       "final_picture_is_black",
-      "voice_visual_match",
-      "quality_score",
     ]);
   });
 
@@ -83,8 +81,8 @@ describe("every gate is reported, blocking or not", () => {
 
   it("the summary line counts the blocking ones", () => {
     const lines = formatExportGateReadiness(569, exportGateReadiness(clean, 0, POLICY));
-    expect(lines[0]).toMatch(/video=569 \d of 6 gate\(s\) would block/);
-    expect(lines).toHaveLength(7);
+    expect(lines[0]).toMatch(/video=569 \d of 4 gate\(s\) would block/);
+    expect(lines).toHaveLength(5);
     /**
      * And the count is the real one. A summary that says "6 gates" while printing 5 rows would be
      * the same class of defect this whole list exists to catch.
@@ -140,35 +138,8 @@ describe("the gate an operator is least likely to expect", () => {
     adoptAudit: [...Array.from({ length: 19 }, (_, i) => adopt(0, i, "archive")), adopt(0, 19, "fallback")],
   });
 
-  it("one card-only beat in twenty blocks it", () => {
-    expect(gate(oneCard, "voice_visual_match").blocking).toBe(true);
-    expect(gate(oneCard, "voice_visual_match").detail).toContain("ANY card-only beat blocks");
-  });
-
   it("while the coverage gate, which needs a majority, does not", () => {
     expect(gate(oneCard, "visual_coverage").blocking).toBe(false);
-  });
-
-  it("and it is reported as unenforced when the flag is off", () => {
-    const off = { ...POLICY, blockVisualMismatch: false };
-    expect(gate(oneCard, "voice_visual_match", 0, off).blocking).toBe(false);
-    expect(gate(oneCard, "voice_visual_match", 0, off).detail).toContain("not enforced");
-  });
-});
-
-describe("the score floor reports which tier it is on", () => {
-  const low = reportFor({ adoptAudit: [adopt(0, 0, "fallback")] });
-
-  it("blocks on the hard tier", () => {
-    const g = gate(low, "quality_score", 0, { ...POLICY, hardTier: true });
-    expect(g.blocking).toBe(low.score < 45);
-    expect(g.detail).toContain("hard tier: blocks");
-  });
-
-  it("is healed rather than blocking on the soft tier", () => {
-    const g = gate(low, "quality_score");
-    expect(g.blocking).toBe(false);
-    expect(g.detail).toContain("does not block");
   });
 });
 

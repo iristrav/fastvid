@@ -46,63 +46,6 @@ import { deliveryClipFactsFromLedger, deliveryGate } from "./deliveryGate";
 
 const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-/* ═══════════ §1 — the gate's own reading is unchanged and still right ═══════════ */
-
-describe("§1 — the gate judges what the ledger says is in the final video", () => {
-  const rec = (over: Record<string, unknown>) =>
-    ({
-      lineageId: "x",
-      provider: "ww2",
-      providerAssetId: "1",
-      archiveAssetId: 1,
-      route: "primary",
-      finalVideoAt: 1,
-      ...over,
-    }) as never;
-
-  it("ONLY RECORDS MARKED AS IN THE FINAL VIDEO ARE JUDGED", () => {
-    const facts = deliveryClipFactsFromLedger([
-      rec({ lineageId: "in" }),
-      rec({ lineageId: "out", finalVideoAt: null }),
-    ]);
-    expect(facts.map((f) => f.clipId)).toEqual(["in"]);
-  });
-
-  it("and a card the pipeline drew is still a placeholder to it", () => {
-    const facts = deliveryClipFactsFromLedger([rec({ lineageId: "card", route: "fallback" })]);
-    expect(facts[0]?.isPlaceholder).toBe(true);
-  });
-
-  it("A PLACEHOLDER IN THE JUDGED LIST STILL BLOCKS — THAT RULE IS NOT TOUCHED", () => {
-    const verdict = deliveryGate({
-      videoId: 603,
-      route: "cinematic_timeline",
-      cinematicRefusal: null,
-      timelineExists: true,
-      clips: deliveryClipFactsFromLedger([rec({ lineageId: "card", route: "fallback" })]),
-      delivered: null,
-      assetsOnly: true,
-      voiceoverSec: null,
-    });
-    expect(verdict.allow).toBe(false);
-    expect(verdict.failures.map((f) => f.code)).toContain("PLACEHOLDER_IN_DELIVERY");
-  });
-
-  it("and a film of real clips passes it", () => {
-    const verdict = deliveryGate({
-      videoId: 603,
-      route: "cinematic_timeline",
-      cinematicRefusal: null,
-      timelineExists: true,
-      clips: deliveryClipFactsFromLedger([rec({ lineageId: "a" }), rec({ lineageId: "b" })]),
-      delivered: null,
-      assetsOnly: true,
-      voiceoverSec: null,
-    });
-    expect(verdict.allow).toBe(true);
-  });
-});
-
 /* ═══════════ §2 — both delivery paths correct the marking ═══════════ */
 
 describe("§2 — FINAL_VIDEO is re-proved wherever the cinematic film is delivered", () => {
@@ -160,12 +103,5 @@ describe("§3 — what the correction exists to overwrite", () => {
      */
     expect(PIPE).not.toContain("ledger.markFinalVideo(");
     expect((PIPE.match(/ledger\.replaceFinalVideo\(deliveredPaths\)/g) ?? []).length).toBe(2);
-  });
-
-  it("and the last gate still reads the ledger, not a second list of its own", () => {
-    expect(PIPE).toContain("clips: deliveryClipFactsFromLedger(deliveredRecords),");
-    expect(PIPE).toContain(
-      "const deliveredRecords = visualDedup.sourcingCache?.lineage?.allRecords() ?? [];"
-    );
   });
 });

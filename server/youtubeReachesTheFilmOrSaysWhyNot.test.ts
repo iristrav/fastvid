@@ -177,7 +177,8 @@ describe("§3 — a requirement only when a deployment sets one", () => {
   });
 
   it("the requirement is judged after the existing gate, and that gate's rules are untouched", () => {
-    const gate = PIPE.indexOf("throw pipelineError(PIPELINE_ERROR.FFMPEG, formatDeliveryBlock(finalGate, videoId));");
+    /** The delivery gate runs in the render job; this is judged once that render has delivered. */
+    const gate = PIPE.indexOf("there is no second render to fall back to");
     const yt = PIPE.indexOf("if (!youtubeFootageVerdict.ok) {");
     expect(gate).toBeGreaterThan(-1);
     expect(yt).toBeGreaterThan(gate);
@@ -218,7 +219,7 @@ describe("§5 — wired where it claims to be", () => {
 
   it("the line is printed before the last gate decides, whatever it decides", () => {
     const line = PIPE.indexOf("const line = formatYoutubeFootage(videoId, footage");
-    const gate = PIPE.indexOf("const finalGate = deliveryGate({");
+    const gate = PIPE.indexOf("if (!youtubeFootageVerdict.ok) {");
     expect(line).toBeGreaterThan(-1);
     expect(gate).toBeGreaterThan(line);
   });

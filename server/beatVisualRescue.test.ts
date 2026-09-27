@@ -10,11 +10,9 @@ beforeEach(() => { vi.stubEnv("FAST_SHORT_PATH", "true"); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
 import {
-  allowDegradedVisualExport,
   beatVisualRescueEnabled,
   beatVisualRescueVisionFloor,
   beatVisualRescueAiMaxClips,
-  blockExportOnVisualMismatch,
   maxFallbackBeatsPerVideo,
   fastShortArchivePoolMax,
   fastShortClipIndexPrewarmMax,
@@ -39,17 +37,13 @@ describe("beatVisualRescue", () => {
     expect(beatVisualRescueAiMaxClips("1")).toBe(2);
     expect(fastShortArchivePoolMax()).toBe(200);
     expect(fastShortClipIndexPrewarmMax()).toBe(48);
-    expect(allowDegradedVisualExport()).toBe(true);
-    expect(blockExportOnVisualMismatch()).toBe(false);
     expect(maxFallbackBeatsPerVideo()).toBe(20);
   });
 
-  it("can disable rescue and restore strict export block", () => {
+  it("can disable rescue", () => {
     process.env.BEAT_VISUAL_RESCUE = "false";
     process.env.STRICT_VOICE_VISUAL_MATCH = "true";
     expect(beatVisualRescueEnabled()).toBe(false);
-    expect(allowDegradedVisualExport()).toBe(false);
-    expect(blockExportOnVisualMismatch()).toBe(true);
     expect(maxFallbackBeatsPerVideo()).toBe(0);
   });
 

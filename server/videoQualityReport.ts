@@ -1068,10 +1068,9 @@ const UNVERIFIED_CLIP_SHARE_LIMIT = 0.5;
  *
  * ── Deliberately unconditional ──────────────────────────────────────────────────────────────
  *
- * Every other check in `enforceQualityExportGate` fires only under `ENABLE_QUALITY_EXPORT_HARD_TIER`
- * (opt-in, default off) or `strictQualityExportEnabled()`. This one is checked before either,
- * because a flag that has to be remembered is exactly how render 568 shipped: the conditions
- * below were all true and every switch that could have stopped it was off.
+ * No flag switches this off, because a flag that has to be remembered is exactly how render 568
+ * shipped: the conditions below were all true and every switch that could have stopped it was off.
+ * It is the whole of `enforceQualityExportGate` now; the flag-gated checks beside it are gone.
  *
  * ── What it deliberately does NOT do ────────────────────────────────────────────────────────
  *
@@ -1209,13 +1208,7 @@ export type ExportGateStatus = {
 
 export function exportGateReadiness(
   report: VideoQualityReport,
-  sceneRescueColorFallbackCount: number,
-  policy: {
-    hardTier: boolean;
-    blockVisualMismatch: boolean;
-    strictQuality: boolean;
-    minScore: number;
-  }
+  sceneRescueColorFallbackCount: number
 ): ExportGateStatus[] {
   const out: ExportGateStatus[] = [];
 
@@ -1259,30 +1252,6 @@ export function exportGateReadiness(
     });
   }
 
-  /**
-   * 4. The tightest of them all, and the one an operator is least likely to expect: ANY beat
-   * filled only by a card blocks, not a majority — provided the policy flag is on.
-   */
-  const visualMismatch = Boolean(report.voiceVisualMatch && !report.voiceVisualMatch.ok);
-  out.push({
-    gate: "voice_visual_match",
-    blocking: (policy.hardTier || policy.blockVisualMismatch) && (fallbackBeats > 0 || visualMismatch),
-    detail:
-      `${fallbackBeats} card-only beat(s), voiceVisual ${visualMismatch ? "MISMATCH" : "ok"}` +
-      (policy.hardTier || policy.blockVisualMismatch
-        ? " — ANY card-only beat blocks while BLOCK_EXPORT_ON_VISUAL_MISMATCH is on"
-        : " — not enforced in this configuration"),
-  });
-
-  /** 5. The score floor, which only blocks on the hard tier; otherwise the score is healed. */
-  out.push({
-    gate: "quality_score",
-    blocking: policy.strictQuality && policy.hardTier && report.score < policy.minScore,
-    detail:
-      `score ${report.score}/100, minimum ${policy.minScore}` +
-      (policy.hardTier ? " (hard tier: blocks)" : " (soft tier: healed, does not block)"),
-  });
-
   return out;
 }
 
@@ -1300,22 +1269,8 @@ export function formatExportGateReadiness(
   ];
 }
 
-/** Log geo export warnings when strict mode off. */
-export function assertQualityReportExportGate(report: VideoQualityReport): void {
-  const violations = report.criticalGeoViolations ?? [];
-  if (violations.length === 0) return;
-  const summary = violations
-    .slice(0, 4)
-    .map((v) => `${v.basename}${v.assetTitle ? ` (${v.assetTitle.slice(0, 40)})` : ""}`)
-    .join("; ");
-  console.warn(
-    `[Quality] Geo warning (non-blocking): ${violations.length} issue(s): ${summary}`
-  );
-}
-
 /**
- * Problem 10 (production render finding — "Why Hitler Killed Himself and His Wife"): unlike
- * assertQualityReportExportGate above (deliberately non-blocking, geo-only), this gate is
+ * Problem 10 (production render finding — "Why Hitler Killed Himself and His Wife"): this gate is
  * deliberately BLOCKING. A real render was found where actual sourced footage stopped after a
  * few seconds and a static color/text placeholder silently filled the rest of the video, while
  * the pipeline still reported the render as a normal success. This throws (PIPELINE_ERROR.

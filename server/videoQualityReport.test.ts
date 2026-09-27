@@ -3,7 +3,6 @@ import {
   buildVideoQualityReport,
   computeMeritQualityScore,
   inferClipSourceFromPath,
-  assertQualityReportExportGate,
 } from "./videoQualityReport";
 import { wikimediaV1AdoptionThreshold, wikimediaMetadataPassesBeatGate } from "./visualMatchingEngine";
 
@@ -37,7 +36,7 @@ describe("buildVideoQualityReport", () => {
     expect(report.score).toBeLessThan(100);
   });
 
-  it("assertQualityReportExportGate records violations without blocking pipeline", () => {
+  it("records geo violations in the report, where they are a warning and never a block", () => {
     // RONDE 30: criticalGeoViolations is produced by isArchiveGeoBlockedForBeat, which opens
     // with `if (!metadataVisualBlocksEnabled()) return false;` — and that flag is off by
     // default, so with shipped settings the quality report can never report a geo violation at
@@ -62,7 +61,6 @@ describe("buildVideoQualityReport", () => {
       }
     );
     expect(report.criticalGeoViolations?.length).toBeGreaterThanOrEqual(1);
-    expect(() => assertQualityReportExportGate(report)).not.toThrow();
     if (prevBlocks === undefined) delete process.env.ENABLE_METADATA_VISUAL_BLOCKS;
     else process.env.ENABLE_METADATA_VISUAL_BLOCKS = prevBlocks;
   });

@@ -146,54 +146,6 @@ describe("Test D — the pipeline's final gate, on the ledger's delivered clips"
 
 });
 
-/* ═══════════════════════ the final gate's clip list comes from the ledger ═══════════════════════ */
-
-describe("the final gate's clips are read from the lineage", () => {
-  const record = (over: Partial<DeliveredLineageRecord> = {}): DeliveredLineageRecord => ({
-    lineageId: "L1",
-    provider: "wikimedia",
-    providerAssetId: "File:A.webm",
-    archiveAssetId: 57010,
-    route: "primary",
-    finalVideoAt: 1_700_000_000,
-    ...over,
-  });
-
-  it("MEASURED: only records proven to be IN the delivered file are counted", () => {
-    const facts = deliveryClipFactsFromLedger([
-      record({ lineageId: "in" }),
-      /** Downloaded, judged, adopted — and not in the concat. It is not a delivered clip. */
-      record({ lineageId: "out", finalVideoAt: null }),
-    ]);
-    expect(facts.map((f) => f.clipId)).toEqual(["in"]);
-  });
-
-  it("MEASURED: a delivered record with no archive handle becomes a refusable clip", () => {
-    const facts = deliveryClipFactsFromLedger([record({ archiveAssetId: undefined })]);
-    expect(facts[0]?.archiveAssetId).toBeNull();
-    expect(facts[0]?.fromArchive).toBe(false);
-    const v = deliveryGate({
-      videoId: 1, route: "cinematic_timeline", cinematicRefusal: null, timelineExists: true,
-      clips: facts, delivered: null, assetsOnly: true,
-    });
-    expect(v.allow).toBe(false);
-  });
-
-  it("MEASURED: a fallback route's clip is a placeholder", () => {
-    const facts = deliveryClipFactsFromLedger([record({ route: "fallback" })]);
-    expect(facts[0]?.isPlaceholder).toBe(true);
-  });
-
-  it("MEASURED: an unattributed record is named UNVERIFIED rather than guessed at", () => {
-    const facts = deliveryClipFactsFromLedger([record({ provider: null })]);
-    expect(facts[0]?.provider).toBe("UNVERIFIED");
-  });
-
-  it("MEASURED: a delivered record IS resolved — its bytes are in the file by construction", () => {
-    expect(deliveryClipFactsFromLedger([record()])[0]?.resolved).toBe(true);
-  });
-});
-
 /* ═══════════════════════ Test E / Test F ═══════════════════════ */
 
 describe("Test E — providers unavailable, archive present", () => {

@@ -849,12 +849,6 @@ import {
   type ArchiveOrigin,
 } from "./youtubeFootageInFilm";
 import {
-  
-  deliveryClipFactsFromLedger,
-  deliveryGate,
-  formatDeliveryBlock,
-} from "./deliveryGate";
-import {
   productionArchiveDeps,
   storeForProduction,
   type ProductionArchiveMetadata,
@@ -44437,16 +44431,9 @@ async function _runVideoPipelineInner(
      */
     try {
       const { exportGateReadiness, formatExportGateReadiness } = await import("./videoQualityReport");
-      const { qualityExportHardTierEnabled, blockExportOnVisualMismatch, strictQualityExportEnabled, minQualityExportScore } =
-        await import("./sourcingPolicy");
       for (const line of formatExportGateReadiness(
         videoId,
-        exportGateReadiness(qualityReport, visualDedup.sceneRescueColorFallbackCount, {
-          hardTier: qualityExportHardTierEnabled(),
-          blockVisualMismatch: blockExportOnVisualMismatch(),
-          strictQuality: strictQualityExportEnabled(),
-          minScore: minQualityExportScore(visualDedup.videoLength),
-        })
+        exportGateReadiness(qualityReport, visualDedup.sceneRescueColorFallbackCount)
       )) {
         console.log(pipelineReport.add("summary", line));
       }
@@ -45264,7 +45251,7 @@ async function _runVideoPipelineInner(
        * gate exists to stop, and it should be the reason reported when more than one applies.
        */
       assertVisionCoverageExportGate(visionCoverageParams);
-      enforceQualityExportGate(videoId, qualityReport, videoLength);
+      enforceQualityExportGate(videoId, qualityReport);
     } catch (gateError) {
       throw gateError;
     }
@@ -46690,33 +46677,12 @@ async function _runVideoPipelineInner(
       );
     }
 
+    /**
+     * The delivery gate already ran, once, in the render job, against the timeline that was
+     * rendered and the file that came out. A second verdict here, rebuilt from the ledger, is how
+     * render 603 was refused four seconds after its film had passed and been published.
+     */
     {
-      const deliveredRecords = visualDedup.sourcingCache?.lineage?.allRecords() ?? [];
-      const finalGate = deliveryGate({
-        videoId,
-        route: "cinematic_timeline",
-        /** Always null here: a render that did not deliver was refused above. */
-        cinematicRefusal: null,
-        timelineExists: true,
-        clips: deliveryClipFactsFromLedger(deliveredRecords),
-        /**
-         * No file facts. This gate runs after the export gate, the stillness audit and the
-         * post-render spot check have each read the delivered file; it has no measurement of its
-         * own, and inventing `exists: true` would be a claim nobody made. `assetsOnly` says so,
-         * and the log line carries `checks=assets`.
-         */
-        delivered: null,
-        assetsOnly: true,
-        voiceoverSec: null,
-      });
-      for (const line of finalGate.lines) {
-        if (finalGate.allow) console.log(pipelineReport.add("summary", line));
-        else console.error(pipelineReport.add("summary", line));
-      }
-      if (!finalGate.allow) {
-        throw pipelineError(PIPELINE_ERROR.FFMPEG, formatDeliveryBlock(finalGate, videoId));
-      }
-      /** Only a deployment that asked for it: REQUIRE_YOUTUBE_MIN_SECONDS. Never silent either way. */
       if (!youtubeFootageVerdict.ok) {
         console.error(
           pipelineReport.add(

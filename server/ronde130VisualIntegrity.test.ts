@@ -24,7 +24,6 @@ import os from "os";
 import path from "path";
 import { MAX_STILL_IMAGE_DURATION_SEC, containCenterFilter } from "./stillImagePolicy";
 
-
 const src = (f: string) => fs.readFileSync(path.join(process.cwd(), "server", f), "utf8");
 
 let dir: string;
@@ -93,20 +92,5 @@ describe("RONDE 130 — earlier rounds, asserted rather than assumed", () => {
     expect(classifyProviderFailure({ err: new Error("Video generation cancelled") })).toBe("CANCELLED");
     expect(shouldRetryAfterFailure({ kind: "CANCELLED", attempt: 0, maxAttempts: 4 }).retry).toBe(false);
     expect(cooldownMsForFailure("RATE_LIMITED")).toBeGreaterThanOrEqual(60_000);
-  });
-
-  it("RONDE 124: the raw quality score is never overwritten by the availability policy", async () => {
-    const { healQualityReportForExport } = await import("./pipelineSelfHeal");
-    const { buildVideoQualityReport } = await import("./videoQualityReport");
-    const report = buildVideoQualityReport(["/tmp/scene_0_b0_curated_a1.mp4"], "T", {
-      archiveOnly: true, fastShort: true,
-    });
-    report.score = 10;
-    healQualityReportForExport(report, "1", {
-      ok: true, durationSec: 74, hasAudio: true, hasVideo: true,
-      sizeBytes: 48_000_000, spotOk: true, reasons: [],
-    });
-    expect(report.rawVisualQualityScore).toBe(10);
-    expect(report.score).toBeGreaterThan(10);
   });
 });

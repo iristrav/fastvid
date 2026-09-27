@@ -197,51 +197,6 @@ export function deliveryGate(input: DeliveryGateInput): DeliveryGateVerdict {
   return { allow: false, failures, lines };
 }
 
-/* ═══════════════════════ the pipeline's own check, from the lineage ═══════════════════════ */
-
-/**
- * THE CLIPS THE DELIVERED FILE CARRIES, AS THE GATE NEEDS TO SEE THEM — read from the ledger.
- *
- * The render job gates its timeline itself. The pipeline's final gate reads the lineage ledger
- * instead: `record.finalVideoAt` is set only for the records `replaceFinalVideo` proved against
- * the delivered file's own clip list.
- *
- * ── What `resolved` and `fromArchive` mean here ─────────────────────────────────────────────
- *
- * `resolved` is true by construction: a record with `finalVideoAt` is in the delivered file, so
- * its bytes were read.
- * `fromArchive` is the archive handle's presence, which is the question the gate is really asking.
- */
-export type DeliveredLineageRecord = {
-  lineageId: string;
-  provider?: string | null;
-  providerAssetId?: string;
-  archiveAssetId?: number;
-  route?: string;
-  /** Set by `markFinalVideo` for the records proven to be in the delivered file. */
-  finalVideoAt?: number | null;
-};
-
-export function deliveryClipFactsFromLedger(
-  records: readonly DeliveredLineageRecord[]
-): DeliveryClipFact[] {
-  return records
-    .filter((r) => r.finalVideoAt != null)
-    .map((r) => ({
-      clipId: r.lineageId,
-      archiveAssetId: r.archiveAssetId ?? null,
-      provider: r.provider?.trim() || "UNVERIFIED",
-      providerAssetId: r.providerAssetId ?? null,
-      resolved: true,
-      fromArchive: r.archiveAssetId != null,
-      /**
-       * The pipeline's own word for a clip it manufactured rather than sourced. A colour card or a
-       * guaranteed slot enters the ledger with `route: "fallback"`, and that is the one route whose
-       * output depicts nothing.
-       */
-      isPlaceholder: r.route === "fallback",
-    }));
-}
 
 /** The one sentence a blocked delivery reports to the operator and to the job row. */
 export function formatDeliveryBlock(verdict: DeliveryGateVerdict, videoId: number): string {

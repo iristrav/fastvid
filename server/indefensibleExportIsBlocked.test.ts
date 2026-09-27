@@ -258,14 +258,8 @@ describe("the check runs before any flag is read", () => {
     const body = src.slice(at, src.indexOf("\n}", at));
     const check = body.indexOf("indefensibleExportConditions(report)");
     expect(check).toBeGreaterThan(-1);
-    for (const flag of [
-      "strictQualityExportEnabled()",
-      "qualityExportHardTierEnabled()",
-      "blockExportOnVisualMismatch()",
-    ]) {
-      const flagAt = body.indexOf(flag);
-      expect(flagAt, `${flag} is read before the unconditional check`).toBeGreaterThan(check);
-    }
+    /** The flags that once came after it are gone: nothing in the gate can switch it off. */
+    expect(body).not.toMatch(/Enabled\(\)|process\.env/);
   });
 
   /** It must throw, not warn — a console line is what render 568 already had. */

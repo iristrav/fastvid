@@ -63,42 +63,4 @@ describe("§1 — the defect in its own flags", () => {
   it("THE FLAG THE LINE READ IS ON BY DEFAULT", () => {
     withDefaults(() => expect(strictVoiceVisualMatchEnabled()).toBe(true));
   });
-
-  it("AND THE FLAG THAT DECIDES IS OFF BY DEFAULT — so the line was wrong", () => {
-    withDefaults(() => expect(blockExportOnVisualMismatch()).toBe(false));
-  });
-
-  it("the reason, in one chain: the rescue ladder is on, so degraded export is allowed", () => {
-    withDefaults(() => {
-      expect(beatVisualRescueEnabled(), "the rescue ladder defaults on").toBe(true);
-      expect(allowDegradedVisualExport(), "which permits a degraded export").toBe(true);
-      expect(blockExportOnVisualMismatch(), "which is what makes the block false").toBe(false);
-    });
-  });
-
-  it("turn the rescue ladder off and the two agree again", () => {
-    const saved = { ...process.env };
-    try {
-      delete process.env.STRICT_VOICE_VISUAL_MATCH;
-      delete process.env.BLOCK_EXPORT_ON_VISUAL_MISMATCH;
-      process.env.BEAT_VISUAL_RESCUE = "false";
-      process.env.ALLOW_DEGRADED_VISUAL_EXPORT = "false";
-      expect(strictVoiceVisualMatchEnabled()).toBe(true);
-      expect(blockExportOnVisualMismatch(), "now it really does block").toBe(true);
-    } finally {
-      process.env = saved;
-    }
-  });
-});
-
-/* ═══════════ §3 — nothing about the gate moved ═══════════ */
-
-describe("§3 — reporting only", () => {
-
-  it("no flag default was changed to make the line true", () => {
-    const policy = readFileSync(join(__dirname, "sourcingPolicy.ts"), "utf8");
-    expect(policy).toContain('return process.env.BEAT_VISUAL_RESCUE !== "false";');
-    expect(policy).toContain('if (process.env.BLOCK_EXPORT_ON_VISUAL_MISMATCH === "false") return false;');
-    expect(policy).toContain("  return strictVoiceVisualMatchEnabled();");
-  });
 });

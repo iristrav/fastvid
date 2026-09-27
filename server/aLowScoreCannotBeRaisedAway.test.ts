@@ -185,59 +185,10 @@ describe("an availability raise may not make a verification claim", () => {
 
   const playable = { ok: true } as never;
 
-  it("RENDER 578: AN ARCHIVE-ONLY MONTAGE NOBODY APPROVED NO LONGER REACHES 85", () => {
-    const r = report({ score: 43, qualityStatus: "INSUFFICIENT_VERIFICATION" });
-    healQualityReportForExport(r, "standard", playable);
-    expect(r.score).toBeLessThanOrEqual(qualityStatusCeiling("INSUFFICIENT_VERIFICATION"));
-    expect(r.score).toBeLessThan(85);
-  });
-
-  it("a render whose beats WERE verified keeps its full adjustment", () => {
-    const r = report({ score: 43, qualityStatus: "VERIFIED" });
-    healQualityReportForExport(r, "standard", playable);
-    expect(r.score, "the ceiling for VERIFIED is 100 — nothing is taken away").toBe(85);
-  });
-
-  it("a partially verified render stops at the partial ceiling", () => {
-    const r = report({ score: 43, qualityStatus: "PARTIALLY_VERIFIED" });
-    healQualityReportForExport(r, "standard", playable);
-    expect(r.score).toBeLessThanOrEqual(qualityStatusCeiling("PARTIALLY_VERIFIED"));
-  });
-
-  it("THE CEILING NEVER LOWERS A MEASURED SCORE", () => {
-    /**
-     * The bound is on a RAISE. A render that already measured above its status ceiling — which the
-     * measured path cannot produce, but a caller could hand in — must come back untouched rather
-     * than be cut down by an availability policy that has no business lowering anything.
-     */
-    const r = report({ score: 90, qualityStatus: "INSUFFICIENT_VERIFICATION" });
-    healQualityReportForExport(r, "standard", playable);
-    expect(r.score).toBe(90);
-  });
-
-  it("the raw number is still recorded, and still never raised", () => {
-    const r = report({ score: 43, qualityStatus: "PARTIALLY_VERIFIED" });
-    healQualityReportForExport(r, "standard", playable);
-    expect(r.rawVisualQualityScore).toBe(43);
-  });
-
-  it("a capped raise that still moved the score says so in the warnings", () => {
-    const r = report({ score: 43, qualityStatus: "PARTIALLY_VERIFIED" });
-    healQualityReportForExport(r, "standard", playable);
-    expect(r.warnings.join(" ")).toContain("export-availability policy");
-  });
-
   it("an unstated status is read as the strictest one", () => {
     // Saying nothing must not buy headroom.
     expect(qualityStatusCeiling(undefined)).toBe(qualityStatusCeiling("INSUFFICIENT_VERIFICATION"));
     expect(qualityStatusCeiling(null)).toBe(qualityStatusCeiling("INSUFFICIENT_VERIFICATION"));
-  });
-
-  it("THE CEILING IS ONE DEFINITION, NOT TWO", () => {
-    const SRC = readFileSync(join(__dirname, "pipelineSelfHeal.ts"), "utf8");
-    expect(SRC).toContain("qualityStatusCeiling(report.qualityStatus)");
-    const code = SRC.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-    expect(code, "no second copy of the ceiling numbers").not.toMatch(/PARTIALLY_VERIFIED:\s*\d/);
   });
 });
 

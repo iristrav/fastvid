@@ -605,10 +605,6 @@ export function deferFacelessSubtitlesToCompose(): boolean {
   return process.env.ENABLE_DEFER_FACELESS_SUBTITLES !== "false";
 }
 
-/** No score self-heal; hard fail on sync/fallback beats — opt-in via ENABLE_QUALITY_EXPORT_HARD_TIER=true. */
-export function qualityExportHardTierEnabled(): boolean {
-  return process.env.ENABLE_QUALITY_EXPORT_HARD_TIER === "true";
-}
 
 /**
  * Strict voice↔visual CLIP matching — every beat must pass vision gate (default ON).
@@ -627,11 +623,6 @@ export function metadataVisualBlocksEnabled(): boolean {
   return process.env.ENABLE_METADATA_VISUAL_BLOCKS === "true";
 }
 
-/** Allow export when rescue tiers used (default ON with beat visual rescue). */
-export function allowDegradedVisualExport(): boolean {
-  if (process.env.ALLOW_DEGRADED_VISUAL_EXPORT === "false") return false;
-  return beatVisualRescueEnabled();
-}
 
 /**
  * When no clip passes strict CLIP match, run a degraded rescue ladder instead of failing export.
@@ -712,12 +703,6 @@ export function maxFallbackBeatsPerVideo(): number {
   return strictVoiceVisualMatchEnabled() ? 0 : 6;
 }
 
-/** Block export when visuals fail CLIP bar / use grey fallbacks (default on with strict match). */
-export function blockExportOnVisualMismatch(): boolean {
-  if (process.env.BLOCK_EXPORT_ON_VISUAL_MISMATCH === "false") return false;
-  if (allowDegradedVisualExport()) return false;
-  return strictVoiceVisualMatchEnabled();
-}
 
 /** Skip LLM semantic rerank when CLIP pre-rank top score ≥ this (default 8). */
 export function semanticRerankClipSkipMin(): number {
@@ -1718,21 +1703,7 @@ export function archiveSimilarMatchVisionFloor(): number {
   return 5;
 }
 
-/** Block upload when qualityReport fails thresholds (on by default). */
-export function strictQualityExportEnabled(): boolean {
-  return process.env.ENABLE_STRICT_QUALITY_EXPORT !== "false";
-}
 
-/** Minimum qualityReport.score before export (default 45). */
-export function minQualityExportScore(videoLength?: string | null): number {
-  const raw = process.env.MIN_QUALITY_EXPORT_SCORE?.trim();
-  if (raw) {
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 0 && n <= 100) return n;
-  }
-  if (isFastShortVideoLength(videoLength)) return 70;
-  return 45;
-}
 
 /**
  * Case/whitespace-tolerant env boolean parsing. A Railway variable set to "TRUE" or " true "
