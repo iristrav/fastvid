@@ -49,11 +49,17 @@ describe("RONDE 663 — what the beat names still gets through", () => {
     });
   }
 
-  it("a proper noun counts only where it is not the first word of a sentence", () => {
-    const text = "Millions suffered. The people of Germany waited.";
-    const ctx = emptyQueryContext(text);
+  it("a name that opens a sentence is still a name", () => {
+    /** ronde173's beat: skipping the first word refused "Churchill" while "Stalin" counted. */
+    const ctx = emptyQueryContext("Churchill and Stalin");
+    expect(validateSearchQuery("Churchill", ctx).ok).toBe(true);
+    expect(validateSearchQuery("Stalin", ctx).ok).toBe(true);
+  });
+
+  it("a function word or pronoun that opens a sentence is never a subject", () => {
+    const ctx = emptyQueryContext("His inner circle stayed. The people of Germany waited.");
     expect(validateSearchQuery("germany", ctx).ok).toBe(true);
-    expect(validateSearchQuery("millions suffered", ctx).reason).toBe("SUBJECT_NOT_NAMED");
+    expect(validateSearchQuery("inner circle", ctx).reason).toBe("SUBJECT_NOT_NAMED");
   });
 });
 

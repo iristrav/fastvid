@@ -1700,45 +1700,51 @@ export function validateSearchQuery(
    * name what happened, not what is on screen. A beat that names nothing keeps the old rule, so a
    * beat about cyclists on a canal still searches for "canal cyclists".
    */
-  const named = namedSubjectStems(ctx);
+  const { named, openers } = namedSubjectStems(ctx);
   if (named.size > 0) {
     const namesOne = words.some(
-      (raw) => /^\d{3,4}$/.test(raw) || evidenceStems(raw).some((form) => named.has(form))
+      (raw) =>
+        /^\d{3,4}$/.test(raw) || evidenceStems(raw).some((form) => named.has(form) || openers.has(form))
     );
     if (!namesOne) return { ok: false, reason: "SUBJECT_NOT_NAMED", offendingTerm: q, blockedTerms: [] };
   }
   return { ok: true };
 }
 
-/** RONDE 663 — the stems of what this beat's context names: see check I in `validateSearchQuery`. */
-function namedSubjectStems(ctx: VerifiedQueryContext): Set<string> {
-  const out = new Set<string>();
-  const addWords = (text: string) => {
+/**
+ * RONDE 663 — what this beat's context names: see check I in `validateSearchQuery`.
+ *
+ * Two sets, because two questions. `named` decides WHETHER the beat names something, and only
+ * strong signals count: typed persons, places, countries, objects and years, a capital that is not
+ * the first word of a sentence ("Germany", "iPhone", "WWII"), and every content word of the user's
+ * prompt (people type prompts in lower case — "wwii" — and it is what they asked for). `openers`
+ * are capitalised words that open a sentence: every sentence opens on a capital, so they cannot
+ * decide that a beat names something, but a query naming one is not refused — "Churchill and
+ * Stalin" opens on a name, and refusing "Churchill" would cost a real question.
+ */
+function namedSubjectStems(ctx: VerifiedQueryContext): { named: Set<string>; openers: Set<string> } {
+  const named = new Set<string>();
+  const openers = new Set<string>();
+  const addWords = (text: string, into: Set<string>) => {
     for (const w of text.split(/[^\p{L}\p{N}'’-]+/u)) {
       if (!w || isFunctionWord(w) || isPronounToken(w) || isProductionWord(foldSearchText(w))) continue;
-      for (const form of evidenceStems(w)) out.add(form);
+      for (const form of evidenceStems(w)) into.add(form);
     }
   };
   for (const list of [ctx.persons, ctx.places, ctx.countries, ctx.objects, ctx.years]) {
-    for (const token of list) if (token.verified) addWords(token.term);
+    for (const token of list) if (token.verified) addWords(token.term, named);
   }
-  /**
-   * A proper noun: a capital anywhere in the word ("Germany", "iPhone", "WWII"), where a sentence
-   * does not start — the first word of a sentence proves nothing.
-   */
   for (const sentence of (ctx.evidence ?? "").split(/[.!?:;]\s+|\n+/)) {
-    for (const raw of sentence.trim().split(/\s+/).slice(1)) {
-      const w = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-      if (/\p{Lu}/u.test(w)) addWords(w);
-    }
+    sentence
+      .trim()
+      .split(/\s+/)
+      .forEach((raw, i) => {
+        const w = raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+        if (/\p{Lu}/u.test(w)) addWords(w, i === 0 ? openers : named);
+      });
   }
-  /**
-   * The user's own prompt (RONDE 160's topic channel) names the film's subject in the person's own
-   * words, and people type prompts in lower case ("wwii") — so every content word of it counts,
-   * capital or not. It is what they asked for; that is what makes it a subject.
-   */
-  addWords(ctx.topic ?? "");
-  return out;
+  addWords(ctx.topic ?? "", named);
+  return { named, openers };
 }
 
 /**
