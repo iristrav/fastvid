@@ -6,7 +6,7 @@ import {
   exportGateReadiness,
   type VideoQualityReport,
 } from "./videoQualityReport";
-import { isInformationalSpotWarning } from "./postRenderSpotCheck";
+import { blankPictureFinding, isInformationalSpotWarning } from "./postRenderSpotCheck";
 
 /**
  * A BLANK FILM MAY NOT BE PUBLISHED.
@@ -219,27 +219,49 @@ describe("nothing was loosened to make room for it", () => {
   });
 });
 
-describe("the gate runs after the measurement exists", () => {
+/**
+ * RONDE 662 — the blank film is refused where the file is made. The render job asks before the
+ * upload, so the rule holds whichever process rendered the timeline; the pipeline no longer keeps a
+ * second copy of the question.
+ */
+describe("the render job refuses a blank film before it is published", () => {
+  const WORKER = readFileSync(join(__dirname, "renderJobWorker.ts"), "utf8");
   const PIPE = readFileSync(join(__dirname, "videoPipeline.ts"), "utf8");
 
-  it("THE SPOT CHECK IS RECORDED BEFORE THE BLANK-PICTURE GATE IS ASKED", () => {
-    /**
-     * Ordering is the whole fix. `enforceQualityExportGate` reads `qualityReport`, so a spot check
-     * written after it would leave the condition permanently invisible — a gate that exists and
-     * never fires, which is indistinguishable from not having written it.
-     */
-    /**
-     * RONDE 661 — the spot check now arrives with the timeline render, after stage 6's export
-     * gate, so the blank-picture condition is asked again on the delivered file's measurement —
-     * after it is recorded and before the video is marked complete.
-     */
-    const recorded = PIPE.indexOf("qualityReport.postRenderSpotCheck = {");
-    const gate = PIPE.indexOf('.filter((c) => c.code === "FINAL_PICTURE_IS_BLACK")');
-    const completed = PIPE.indexOf('await updateVideoStatus(videoId, "completed", {', gate);
-    expect(recorded).toBeGreaterThan(-1);
-    expect(gate).toBeGreaterThan(-1);
-    expect(recorded).toBeLessThan(gate);
-    expect(completed).toBeGreaterThan(gate);
-    expect(PIPE.slice(gate, gate + 600)).toContain("PIPELINE_ERROR.QUALITY_GATE");
+  it("ONE RULE: four black samples of four is blank; one of four is a dark shot, not a blank film", () => {
+    expect(blankPictureFinding({ framesChecked: 4, blackFrameCount: 4, worstMeanLuma: 0 })).toContain(
+      "all 4 sampled frame(s)"
+    );
+    /** Render 604 job 22: black=1 of 4, and a real film. */
+    expect(blankPictureFinding({ framesChecked: 4, blackFrameCount: 1, worstMeanLuma: 0 })).toBeNull();
+    expect(blankPictureFinding({ framesChecked: 4, blackFrameCount: 3, worstMeanLuma: 0 })).toBeNull();
+  });
+
+  it("NOTHING MEASURED IS NOT A CONVICTION", () => {
+    expect(blankPictureFinding(null)).toBeNull();
+    expect(blankPictureFinding({ framesChecked: 1, blackFrameCount: 1, worstMeanLuma: 0 })).toBeNull();
+    expect(blankPictureFinding({ framesChecked: 0, blackFrameCount: 0, worstMeanLuma: null })).toBeNull();
+  });
+
+  it("THE EXPORT GATE AND THE RENDER JOB ASK THE SAME QUESTION", () => {
+    const qr = readFileSync(join(__dirname, "videoQualityReport.ts"), "utf8");
+    expect(qr).toContain("blankPictureFinding(report.postRenderSpotCheck)");
+    expect(WORKER).toContain("const blank = blankPictureFinding(spotCheck);");
+  });
+
+  it("THE JOB FAILS AFTER MEASURING AND BEFORE THE DELIVERY GATE AND THE UPLOAD", () => {
+    const measured = WORKER.indexOf("spotCheck = await spotCheckFinalVideo(outputPath)");
+    const refused = WORKER.indexOf("return await fail(RENDER_ERROR.RENDER_FAILED, `FINAL_PICTURE_IS_BLACK: ${blank}`);");
+    const gate = WORKER.indexOf("const gate = deliveryGate({");
+    const upload = WORKER.indexOf("const put = await deps.upload(");
+    expect(measured).toBeGreaterThan(-1);
+    expect(refused).toBeGreaterThan(measured);
+    expect(gate).toBeGreaterThan(refused);
+    expect(upload).toBeGreaterThan(refused);
+  });
+
+  it("the pipeline keeps no second copy of the question", () => {
+    expect(PIPE).not.toContain('.filter((c) => c.code === "FINAL_PICTURE_IS_BLACK")');
   });
 });
+

@@ -2,6 +2,7 @@
  * Per-video quality summary — clip mix, source breakdown, geo warnings.
  */
 import * as path from "path";
+import { blankPictureFinding } from "./postRenderSpotCheck";
 import { classifyClipMixKind, type VisualMixKind } from "./visualMixPolicy";
 import { inferVideoVisualTopic } from "./visualBeatTags";
 import {
@@ -1030,16 +1031,6 @@ export type IndefensibleExportCondition = {
 const UNVERIFIED_CLIP_SHARE_LIMIT = 0.5;
 
 /**
- * How many of the spot check's four samples must be dark before the film is called blank.
- *
- * `spotCheckFinalVideo` samples the delivered file at 12%, 38%, 62% and 88% — never at the very
- * start or the very end, so an opening or closing fade cannot produce a dark sample. ALL of them
- * is the bar: a documentary may legitimately hold on black once, and two of four dark is a night
- * sequence, not an empty render. Four of four is a film with no picture anywhere it was looked.
- */
-const BLANK_PICTURE_MIN_SAMPLES = 2;
-
-/**
  * RONDE 89 — THE TWO THINGS A SCORE MAY NOT OVERRULE.
  *
  * ── What render 568 delivered ───────────────────────────────────────────────────────────────
@@ -1177,20 +1168,8 @@ export function indefensibleExportConditions(
    * function's own rule: "nothing was measured" is not evidence of a bad render, and a render whose
    * picture was never sampled is reported as unsampled rather than convicted.
    */
-  const spot = report.postRenderSpotCheck;
-  if (
-    spot &&
-    spot.framesChecked >= BLANK_PICTURE_MIN_SAMPLES &&
-    spot.blackFrameCount === spot.framesChecked
-  ) {
-    out.push({
-      code: "FINAL_PICTURE_IS_BLACK",
-      detail:
-        `all ${spot.framesChecked} sampled frame(s) of the delivered file are black ` +
-        `(worst mean luma ${spot.worstMeanLuma?.toFixed(0) ?? "?"}) — ` +
-        `the film has no picture at any point that was looked at`,
-    });
-  }
+  const blank = blankPictureFinding(report.postRenderSpotCheck);
+  if (blank) out.push({ code: "FINAL_PICTURE_IS_BLACK", detail: blank });
 
   return out;
 }

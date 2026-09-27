@@ -46585,29 +46585,6 @@ async function _runVideoPipelineInner(
       );
     }
 
-    /**
-     * RONDE 661 — A BLANK FILM MAY STILL NOT BE PUBLISHED.
-     *
-     * `FINAL_PICTURE_IS_BLACK` used to be answered at stage 6, where the spot check ran on the
-     * compose montage before `enforceQualityExportGate`. That montage is gone: the spot check now
-     * arrives with the timeline render, after stage 6, and the render job deliberately does not
-     * block on it. So the one condition that moved in time is asked again here, on the delivered
-     * file's own measurement, before the video is marked complete. Nothing else is re-judged.
-     */
-    {
-      const { indefensibleExportConditions } = await import("./videoQualityReport");
-      const blank = indefensibleExportConditions(qualityReport).filter((c) => c.code === "FINAL_PICTURE_IS_BLACK");
-      if (blank.length > 0) {
-        console.error(
-          pipelineReport.add("summary", `[Quality] Video ${videoId}: EXPORT BLOCKED ${blank[0]!.code} — ${blank[0]!.detail}`)
-        );
-        throw pipelineError(
-          PIPELINE_ERROR.QUALITY_GATE,
-          `Export blocked — this render cannot say what it is showing: ${blank[0]!.code}: ${blank[0]!.detail}`
-        );
-      }
-    }
-
     {
       const deliveredRecords = visualDedup.sourcingCache?.lineage?.allRecords() ?? [];
       const finalGate = deliveryGate({

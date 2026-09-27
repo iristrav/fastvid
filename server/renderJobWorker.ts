@@ -86,6 +86,7 @@ import {
 import {
   postRenderSpotCheckEnabled,
   spotCheckFinalVideo,
+  blankPictureFinding,
   type PostRenderSpotCheckResult,
 } from "./postRenderSpotCheck";
 import { resolveLocalStorageFilePath } from "./storageLocal";
@@ -992,6 +993,18 @@ export async function runRenderJob(params: {
           console.warn(`[RenderJob] video=${job.videoId} job=${job.id} contentCheck: ${w}`);
         }
       }
+    }
+    /**
+     * RONDE 662 — A BLANK FILM IS NOT DELIVERED, WHICHEVER PROCESS RENDERED IT.
+     *
+     * The warnings above stay non-blocking. This is the one content finding that is: every sample
+     * black. It is asked here, before the upload, so it holds on both delivery paths — the render
+     * the pipeline ran itself and the one the job worker ran while the pipeline waited.
+     */
+    const blank = blankPictureFinding(spotCheck);
+    if (blank) {
+      console.error(`[RenderJob] video=${job.videoId} job=${job.id} FINAL_PICTURE_IS_BLACK — ${blank}`);
+      return await fail(RENDER_ERROR.RENDER_FAILED, `FINAL_PICTURE_IS_BLACK: ${blank}`);
     }
 
     /**
