@@ -13243,6 +13243,12 @@ export async function fetchInternetArchiveClips(
           else ytMetrics.licenseRejected++;
           console.log(`[Pipeline] Scene ${sceneIndex}: ${formatYoutubeLicenseLine(licenseDecision)}`);
         }
+        if (licenseDecision.action === "ALLOW_UNVERIFIED") {
+          console.log(
+            `[Pipeline] Scene ${sceneIndex}: Archive item ${doc.identifier} licence UNVERIFIED ` +
+              `(licenseurl=${licenseUrl ?? "none"}, rights=${rights ?? "none"}) — used, rights NOT proven, verify manually`
+          );
+        }
         if (!licenseDecision.allowed) {
           // Cache the rejection (Phase 6) so a later cascade that resurfaces this identifier
           // skips it above without repeating the metadata call.
@@ -33102,6 +33108,19 @@ async function _runVideoPipelineInner(
       `(total elapsed so far: ${Math.round((Date.now() - pipelineWallStartMs) / 1000)}s)`
     );
 
+    /**
+     * ONE HARD DEADLINE FOR THE WHOLE VISUAL PHASE — the render's own retrieval budget, as a wall
+     * clock. Every chunk's scope is clamped to it, and every scope below inherits the clamp, so at
+     * this moment no search, download or fallback may start and in-flight ones are aborted. A beat
+     * or scene with no picture by then is a gap; the timeline holds the previous shot over it.
+     */
+    const visualDeadlineMs = (get_activeRenderBudget()?.perSceneRetrieveMs ?? 35_000) * scenes.length;
+    const visualDeadlineAtMs = Date.now() + visualDeadlineMs;
+    console.log(
+      `[Pipeline] video=${videoId} visual deadline ${Math.round(visualDeadlineMs / 1000)}s — ` +
+        `after it no search or download starts and an empty beat is a gap`
+    );
+
     const visualLimit = pLimit(perf.sceneParallelism);
     let completedVisuals = 0;
     let activeSceneIdx = 0;
@@ -33134,6 +33153,14 @@ async function _runVideoPipelineInner(
     for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
       const chunk = chunks[chunkIdx]!;
       const chunkScenes = scenes.slice(chunk.start, chunk.end);
+      /** Set when this chunk's scope ends; a scene that returns after that writes nothing. */
+      let chunkClosed = false;
+      const visualTimeLeftMs = visualDeadlineAtMs - Date.now();
+      if (visualTimeLeftMs <= 0) {
+        console.warn(
+          `[Pipeline] Visual deadline reached — chunk ${chunkIdx + 1}/${chunks.length} is not searched; its scenes are gaps`
+        );
+      } else
       try {
       await withSceneFetchTimeout(
         () => Promise.all(chunkScenes.map((scene, ci) => visualLimit(async () => {
@@ -33187,6 +33214,7 @@ async function _runVideoPipelineInner(
           visualDedup.lock = Promise.resolve();
           result = { clips: [], beatDurations: [] };
         }
+        if (chunkClosed) return result;
         sceneVisualResults[sceneIdx] = result;
         completedVisuals++;
         onProgress?.({
@@ -33195,22 +33223,31 @@ async function _runVideoPipelineInner(
         });
         return result;
       }))),
-      // RONDE 81: never below what the scenes in this chunk are each allowed to take.
-      chunkStageTimeoutMs(
-        visualStageTimeoutMs(videoLength, perf),
-        chunkScenes.length,
-        scenes.length,
-        20_000,
-        perf.sceneVisualTimeoutMs
+      // RONDE 81: never below what the scenes in this chunk are each allowed to take —
+      // and never past the visual deadline.
+      Math.min(
+        chunkStageTimeoutMs(
+          visualStageTimeoutMs(videoLength, perf),
+          chunkScenes.length,
+          scenes.length,
+          20_000,
+          perf.sceneVisualTimeoutMs
+        ),
+        visualTimeLeftMs
       ),
       `Visual generation stage chunk ${chunkIdx + 1}/${chunks.length}`
     );
     } catch (visualStageErr) {
+      chunkClosed = true;
       console.warn(
         `[Pipeline] Visual stage cap hit chunk ${chunkIdx + 1}/${chunks.length} (${completedVisuals}/${scenes.length} scenes done) — self-healing:`,
         (visualStageErr as Error).message
       );
       visualDedup.lock = Promise.resolve();
+    }
+    chunkClosed = true;
+    for (let si = chunk.start; si < chunk.end; si++) {
+      sceneVisualResults[si] ??= { clips: [], beatDurations: [] };
     }
 
     // Refine compose budget based on this chunk's actual clip mix from retrieval — recomputed
@@ -33250,40 +33287,6 @@ async function _runVideoPipelineInner(
     for (let si = chunk.start; si < chunk.end; si++) {
       const usable = (sceneVisualResults[si]?.clips ?? []).filter((c) => c && !isPipelineFallbackClip(c));
       if (usable.length > 0) continue;
-      /**
-       * The rule these layers ended in, kept: a longer video whose scene has no picture at all is
-       * refused with its reason (the strict refill's own throw); a one-minute video holds the
-       * previous shot, as its guaranteed-card branch did once the placeholder gate took the cards
-       * off the timeline.
-       */
-      if (!isFastShortVideoLength(videoLength)) {
-        /**
-         * RONDE 224/226/227/247 — the render's own explanation, printed at the exit it takes: the
-         * vision tally, the funnel, the decline census, the invariants, where the chosen pictures
-         * went and the time report. Their other readers are in the report, past this throw.
-         */
-        const why = formatNoVerdictReasons(visualDedup.beatImageGate);
-        const gate = visualDedup.beatImageGate;
-        console.error(
-          `[Pipeline] Scene ${scenes[si].index}: 0 bruikbare clips — vision attempts=${gate.judgementAttempts} ` +
-            `fits=${gate.judgementsFits} mismatch=${gate.judgementsMismatch} failed=${gate.judgementsFailed} ` +
-            `skipped=${gate.judgementsSkipped} providerUnavailable=${gate.judgementsProviderUnavailable} askImpossible=${gate.askImpossible}`
-        );
-        if (why) console.error(why);
-        for (const line of formatBeatShortlists(visualDedup.beatShortlist)) console.error(line);
-        const census = formatDeclineCensus(visualDedup.beatShortlist);
-        if (census) console.error(census);
-        for (const line of beatShortlistViolations(visualDedup.beatShortlist)) console.error(line);
-        reportLineageOutcomeInvariant(visualDedup.sourcingCache?.lineage, {
-          ok: (line) => console.log(line),
-          fail: (line) => console.error(line),
-        });
-        for (const line of pipelineStepTiming.toReportLines()) console.error(line);
-        throw pipelineError(
-          PIPELINE_ERROR.FFMPEG,
-          `Scene ${scenes[si].index}: no picture was found for any of its beats — export geblokkeerd`
-        );
-      }
       console.warn(`[Pipeline] Scene ${scenes[si].index}: no picture found — the timeline holds the previous shot`);
     }
 
@@ -33360,6 +33363,46 @@ async function _runVideoPipelineInner(
     } // end for (chunk of chunks)
     } finally {
       clearInterval(visualHeartbeat);
+    }
+
+    /**
+     * A scene with no picture is a gap the timeline holds over. A film with no picture in ANY scene
+     * has nothing to hold, so it is refused here, with the render's own explanation first.
+     */
+    const firstEmptySi = sceneVisualResults.findIndex(
+      (r) => !(r?.clips ?? []).some((c) => c && !isPipelineFallbackClip(c))
+    );
+    const noSceneHasPicture = sceneVisualResults.every(
+      (r) => !(r?.clips ?? []).some((c) => c && !isPipelineFallbackClip(c))
+    );
+    if (noSceneHasPicture && firstEmptySi >= 0) {
+      const si = firstEmptySi;
+      /**
+       * RONDE 224/226/227/247 — the render's own explanation, printed at the exit it takes: the
+       * vision tally, the funnel, the decline census, the invariants, where the chosen pictures
+       * went and the time report. Their other readers are in the report, past this throw.
+       */
+      const why = formatNoVerdictReasons(visualDedup.beatImageGate);
+      const gate = visualDedup.beatImageGate;
+      console.error(
+        `[Pipeline] Scene ${scenes[si].index}: 0 bruikbare clips — vision attempts=${gate.judgementAttempts} ` +
+          `fits=${gate.judgementsFits} mismatch=${gate.judgementsMismatch} failed=${gate.judgementsFailed} ` +
+          `skipped=${gate.judgementsSkipped} providerUnavailable=${gate.judgementsProviderUnavailable} askImpossible=${gate.askImpossible}`
+      );
+      if (why) console.error(why);
+      for (const line of formatBeatShortlists(visualDedup.beatShortlist)) console.error(line);
+      const census = formatDeclineCensus(visualDedup.beatShortlist);
+      if (census) console.error(census);
+      for (const line of beatShortlistViolations(visualDedup.beatShortlist)) console.error(line);
+      reportLineageOutcomeInvariant(visualDedup.sourcingCache?.lineage, {
+        ok: (line) => console.log(line),
+        fail: (line) => console.error(line),
+      });
+      for (const line of pipelineStepTiming.toReportLines()) console.error(line);
+      throw pipelineError(
+        PIPELINE_ERROR.FFMPEG,
+        `Scene ${scenes[si].index}: no picture was found for any of its beats — export geblokkeerd`
+      );
     }
     get_activeBudgetTracker()?.stageEnd("retrieval");
     console.log(`[Pipeline] Stage 3 (visuals): ${((Date.now()-t2)/1000).toFixed(1)}s`);

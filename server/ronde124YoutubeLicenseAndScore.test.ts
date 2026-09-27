@@ -198,13 +198,15 @@ describe("RONDE 124 — what the pipeline may do with each status", () => {
     }
   });
 
-  it("the flag is scoped to YouTube — a non-YouTube archive item is untouched", () => {
+  /** Product policy: an unknown licence is not a refusal for any archive item — still UNVERIFIED. */
+  it("a non-YouTube archive item with no licence metadata is allowed, and stays UNVERIFIED", () => {
     const d = youtubeLicenseDecision({
       identifier: "SomeNewsreel1943",
       allowUnverified: true,
     });
     expect(d.status).toBe("UNVERIFIED");
-    expect(d.allowed).toBe(false);
+    expect(d.allowed).toBe(true);
+    expect(d.action).toBe("ALLOW_UNVERIFIED");
     expect(d.youtubeVideoId).toBeNull();
   });
 

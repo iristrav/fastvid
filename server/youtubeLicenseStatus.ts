@@ -56,6 +56,8 @@ export type DecisionStatus = LicenseStatus | "OPERATOR_AUTHORIZED";
 export type LicenseAction =
   | "ALLOW"
   | "ALLOW_UNVERIFIED_YOUTUBE"
+  /** An archive item of any origin whose rights metadata says nothing: allowed, still UNVERIFIED. */
+  | "ALLOW_UNVERIFIED"
   | "ALLOW_OPERATOR_LICENSED_YOUTUBE"
   | "REJECT";
 
@@ -293,8 +295,12 @@ export function youtubeLicenseDecision(params: {
   let status: DecisionStatus = metadataStatus;
   let operatorAuthorized = false;
   if (metadataStatus === "VERIFIED") action = "ALLOW";
-  else if (metadataStatus === "UNVERIFIED" && isYoutube && allowUnverified) {
-    action = "ALLOW_UNVERIFIED_YOUTUBE";
+  else if (metadataStatus === "UNVERIFIED" && allowUnverified) {
+    /**
+     * Product policy: an unknown licence is not a refusal — the operator checks rights afterwards.
+     * Only UNVERIFIED qualifies; an explicitly restrictive licence (REJECTED) is still refused.
+     */
+    action = isYoutube ? "ALLOW_UNVERIFIED_YOUTUBE" : "ALLOW_UNVERIFIED";
   } else if (
     isOperatorAuthorizedYoutube({ identifier: params.identifier, allowOperatorLicensed })
   ) {
